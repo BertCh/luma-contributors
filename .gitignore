@@ -9,3 +9,8 @@ coverage-*/
 .DS_Store
 .playwright-artifacts/
 .typecheck/
+
+# Website build output
+website/dist/
+website/.tanstack/
+website/.output/

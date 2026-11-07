@@ -29,7 +29,7 @@ Plans go in `dev-docs/roadmap.md`; see `dev-docs/README.md` for the dev-docs ind
 | `docs/lens-records` | Generated lens records used by the docs and lens tests |
 | `dev-docs` | Roadmap, coverage matrix, upstream workarounds, research and archived plans |
 | `examples/deck` | Spatial analysis showcase and explorer (kepler-compute is parked) |
-| `website` | Staging for the future docs site (lens rendering plugins, not yet built) |
+| `website` | Static docs site (TanStack Start, prerendered); `yarn website-dev`, `yarn website-build` |
 | `scripts` | Build, export verification, upstream-first guard and the original split scripts |
 | `CHANGELOG.md` | Release history |
 

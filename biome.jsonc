@@ -23,7 +23,12 @@
       "examples/**/*.js",
       "examples/**/*.jsx",
       "examples/**/*.ts",
-      "examples/**/*.tsx"
+      "examples/**/*.tsx",
+      "website/src/**/*.ts",
+      "website/src/**/*.tsx",
+      "website/build/**/*.ts",
+      "website/vite.config.ts",
+      "!website/src/routeTree.gen.ts"
     ]
   },
   "formatter": {

@@ -7,7 +7,8 @@
   "workspaces": [
     "modules/*",
     "examples/deck/spatial-analysis-showcase",
-    "examples/deck/spatial-analysis-explorer"
+    "examples/deck/spatial-analysis-explorer",
+    "website"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -23,7 +24,9 @@
     "test-benchmarks": "LUMA_CONTRIBUTORS_BENCHMARKS=true vitest run --project headless",
     "check-upstream-first": "node scripts/check-upstream-first.mjs",
     "typecheck-watch": "mkdir -p .typecheck && tsc -p tsconfig.check-src.json --noEmit --watch --preserveWatchOutput --pretty false > .typecheck/watch.log 2>&1",
-    "typecheck-status": "node scripts/typecheck-status.mjs"
+    "typecheck-status": "node scripts/typecheck-status.mjs",
+    "website-dev": "yarn workspace @luma-contributors/website dev",
+    "website-build": "yarn workspace @luma-contributors/website build"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.8",
