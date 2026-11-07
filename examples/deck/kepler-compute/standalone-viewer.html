@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>luma.gl Kepler workspace</title>
+    <style>
+      html,body{margin:0;height:100%;font:14px system-ui,sans-serif;background:#10151d;color:#e6edf3}
+      #map{position:absolute;inset:0}
+      #status{position:absolute;left:12px;bottom:12px;max-width:60ch;padding:8px 12px;background:#000a;border-radius:6px;z-index:1}
+      #status button{margin-left:8px}
+      #panels{position:absolute;right:12px;top:12px;bottom:12px;width:240px;overflow:auto;z-index:1;display:flex;flex-direction:column;gap:8px}
+      .legend{background:#000a;border-radius:6px;padding:8px 10px;font-size:12px}
+      .legend h4{margin:0 0 6px;font-size:13px}
+      .legend .title{opacity:.75;margin:4px 0 2px}
+      .legend .ramp{height:10px;border-radius:2px}
+      .legend .labels{display:flex;justify-content:space-between;opacity:.8;gap:6px}
+      .legend .category{display:flex;align-items:center;gap:6px}
+      .legend .swatch{display:inline-block;width:12px;height:12px;border-radius:2px}
+      .legend input[type=range]{width:100%}
+      .legend.skipped{color:#f7c16b}
+      .basemap-attribution{position:absolute;right:12px;bottom:4px;z-index:2;font-size:11px;background:#fffa;color:#222;padding:1px 6px;border-radius:3px}
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div id="panels"><div id="filters"></div><div id="legends"></div></div>
+    <div id="status" role="status">Loading workspace...</div>
+    <!--LUMA_KEPLER_BUNDLE_PLACEHOLDER-->
+    <script type="module" src="/src/standalone-viewer-main.ts"></script>
+  </body>
+</html>

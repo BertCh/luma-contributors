@@ -1,0 +1,28 @@
+/* luma.gl */
+/* SPDX-License-Identifier: MIT */
+/* SPDX-FileCopyrightText: Copyright (c) vis.gl contributors */
+.dataset-eyebrow { font-size: 11px; letter-spacing: .14em; font-weight: 650; color: var(--muted); }
+.dataset-catalog > h1 { max-width: 700px; font-size: clamp(34px, 5vw, 58px); letter-spacing: -.04em; line-height: 1.08; }
+.dataset-tools { display: flex; align-items: end; flex-wrap: wrap; gap: 14px; margin: 32px 0 16px; }
+.dataset-tools > div:first-child { flex: 1 1 300px; }
+.dataset-tools label { display: block; font-size: var(--fs-sm); margin-bottom: 6px; }
+.dataset-tools input, .dataset-tools select { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); color: var(--text); font: inherit; }
+.dataset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.dataset-card { padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); overflow-wrap: anywhere; }
+.dataset-card h2 { font-size: 21px; line-height: 1.25; margin: 16px 0 12px; }
+.dataset-card > p { font-size: var(--fs-sm); line-height: 1.6; }
+.dataset-card-meta { display: flex; justify-content: space-between; gap: 16px; font-size: 11px; color: var(--muted); }
+.dataset-source { margin: 18px 0; font-size: var(--fs-sm); }
+.dataset-source summary { cursor: pointer; }
+.dataset-source-link { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
+.dataset-bounds { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; font-size: 11px; }
+.dataset-bounds dt { color: var(--muted); }
+.dataset-bounds dd { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+.dataset-studies { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 12px; }
+.dataset-studies ul { padding-left: 18px; font-size: var(--fs-sm); line-height: 1.7; }
+.dataset-empty { grid-column: 1 / -1; padding: 32px 0; }
+@media (max-width: 700px) {
+  .dataset-grid { grid-template-columns: 1fr; }
+  .dataset-card { padding: 20px; }
+  .dataset-bounds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

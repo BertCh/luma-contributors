@@ -1,0 +1,372 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {Device} from '@luma.gl/core';
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {expect, it} from 'vitest';
+import {
+  GPUSpatialCorrelogram,
+  type GPUSpatialCorrelogramBandMode
+} from '../../../src/gpu-dataframe/pair-statistics/gpu-spatial-correlogram';
+import {
+  getGPUSpatialCorrelogramParameterValues,
+  GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
+  GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH,
+  type GPUSpatialCorrelogramSettings
+} from '../../../src/gpu-dataframe/pair-statistics/spatial-correlogram-parameters';
+import {
+  createPairStatisticsHarness,
+  createPairStatisticsWindowHarness,
+  getFloatBits,
+  type HarnessViews,
+  type HarnessOutput
+} from './pair-statistics-harness';
+import {createRandom} from './pair-statistics-oracle';
+import {computeSpatialCorrelogramOnCPU} from './spatial-correlogram-oracle';
+import {CORRELOGRAM_OUTLIER_REFERENCES} from './correlogram-outlier-reference';
+import {createVariogramOutlierScene, VARIOGRAM_OUTLIER_FRAME} from './variogram-outlier-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
+
+import type {GPUStudyWindow} from '../../../src/analysis-core/contracts/study-window';
+import {
+  ORACLE_L_SHAPE,
+  getOracleWindowBounds,
+  isOracleInsideWindow,
+  type OracleStudyWindow
+} from '../../analysis-core/study-window-oracle';
+
+const BOUNDS = [0, 0, 100, 100] as const;
+
+/** Smooth field with noise, plus masked, NaN and out-of-bounds rows. */
+function createSmoothScene(seed: number, rows: number) {
+  const random = createRandom(seed);
+  const positions = new Float32Array(rows * 2);
+  const values = new Float32Array(rows);
+  const mask = new Uint32Array(rows);
+  for (let row = 0; row < rows; row++) {
+    const x = random() * 104 - 2;
+    const y = random() * 104 - 2;
+    positions[row * 2] = x;
+    positions[row * 2 + 1] = y;
+    values[row] = 5 * Math.sin(x / 10) * Math.cos(y / 12) + 2 * (random() - 0.5) + 100;
+    mask[row] = random() < 0.92 ? 1 : 0;
+    if (random() < 0.02) {
+      values[row] = NaN;
+    }
+  }
+  return {positions, values, mask};
+}
+
+function createHarness(
+  device: Device,
+  scene: ReturnType<typeof createSmoothScene>,
+  bandCount: number,
+  bandMode: GPUSpatialCorrelogramBandMode,
+  window?: OracleStudyWindow
+) {
+  const props = {
+    ...scene,
+    parameterLength: GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
+    outputs: {
+      moransI: {format: 'float32', length: bandCount},
+      zScores: {format: 'float32', length: bandCount},
+      pValues: {format: 'float32', length: bandCount},
+      expectedI: {format: 'float32', length: bandCount},
+      varianceI: {format: 'float32', length: bandCount},
+      pairCounts: {format: 'uint32', length: bandCount},
+      peakBands: {format: 'uint32', length: 2},
+      statistics: {format: 'float32', length: GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH},
+      overflow: {format: 'uint32', length: 1}
+    } satisfies Record<string, HarnessOutput>,
+    createContributor: (
+      views: HarnessViews<
+        | 'moransI'
+        | 'zScores'
+        | 'pValues'
+        | 'expectedI'
+        | 'varianceI'
+        | 'pairCounts'
+        | 'peakBands'
+        | 'statistics'
+        | 'overflow'
+      >,
+      studyWindow?: GPUStudyWindow
+    ) =>
+      new GPUSpatialCorrelogram({
+        studyWindow,
+        positions: views.positions,
+        values: views.values!,
+        mask: views.mask,
+        parameters: views.parameters,
+        gridSize: [32, 32],
+        bandCount,
+        bandMode,
+        output: {
+          moransI: views.outputs.moransI as never,
+          zScores: views.outputs.zScores as never,
+          pValues: views.outputs.pValues as never,
+          expectedI: views.outputs.expectedI as never,
+          varianceI: views.outputs.varianceI as never,
+          pairCounts: views.outputs.pairCounts as never,
+          peakBands: views.outputs.peakBands as never,
+          statistics: views.outputs.statistics as never,
+          status: {overflow: views.outputs.overflow as never}
+        }
+      })
+  };
+  return window
+    ? createPairStatisticsWindowHarness(device, {...props, window})
+    : createPairStatisticsHarness(device, props);
+}
+
+function expectClose(label: string, actual: number, expected: number, tolerance: number): void {
+  if (Number.isNaN(expected)) {
+    expect(actual, label).toBeNaN();
+    return;
+  }
+  if (!(Math.abs(actual - expected) <= tolerance)) {
+    throw new Error(`${label}: ${actual} != ${expected} (tolerance ${tolerance})`);
+  }
+}
+
+for (const bandMode of ['cumulative', 'annulus'] as const) {
+  it(`GPUSpatialCorrelogram (${bandMode}) matches the f64 oracle across per-frame changes without rebuilding`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const scene = createSmoothScene(bandMode === 'cumulative' ? 3 : 4, 2000);
+    const bandCount = 10;
+    const harness = createHarness(device, scene, bandCount, bandMode);
+    try {
+      const frames: (GPUSpatialCorrelogramSettings & {
+        bounds: readonly [number, number, number, number];
+      })[] = [
+        {bounds: BOUNDS, maximumDistance: 25},
+        {bounds: BOUNDS, maximumDistance: 25, varianceAssumption: 'normality'},
+        {bounds: BOUNDS, maximumDistance: 6},
+        {bounds: BOUNDS, maximumDistance: 300},
+        {bounds: [10, 20, 90, 70], maximumDistance: 40}
+      ];
+      for (const frame of frames) {
+        const label = `${bandMode} ${frame.maximumDistance} ${frame.varianceAssumption ?? ''}`;
+        const result = await harness.run(getGPUSpatialCorrelogramParameterValues(frame));
+        const oracle = computeSpatialCorrelogramOnCPU(scene, frame, bandCount, bandMode);
+        expect(result.overflow, `${label} overflow`).toEqual([0]);
+        let comparedBands = 0;
+        for (let band = 0; band < bandCount; band++) {
+          const countDifference = Math.abs(result.pairCounts[band] - oracle.pairCounts[band]);
+          expect(countDifference, `${label} count ${band}`).toBeLessThanOrEqual(
+            Math.ceil(oracle.edgePairCounts[band])
+          );
+          if (countDifference > 0) {
+            continue;
+          }
+          comparedBands++;
+          const expectedI = oracle.moransI[band];
+          expectClose(
+            `${label} I ${band}`,
+            result.moransI[band],
+            expectedI,
+            oracle.moransITolerance + 1e-4 * Math.abs(expectedI) + 1e-6
+          );
+          expectClose(`${label} E ${band}`, result.expectedI[band], oracle.expectedI[band], 1e-9);
+          expectClose(
+            `${label} Var ${band}`,
+            result.varianceI[band],
+            oracle.varianceI[band],
+            2e-3 * Math.abs(oracle.varianceI[band])
+          );
+          expectClose(
+            `${label} z ${band}`,
+            result.zScores[band],
+            oracle.zScores[band],
+            2e-3 + 2e-3 * Math.abs(oracle.zScores[band])
+          );
+          expectClose(
+            `${label} p ${band}`,
+            result.pValues[band],
+            oracle.pValues[band],
+            1e-5 + 5e-3 * oracle.pValues[band]
+          );
+        }
+        expect(comparedBands, label).toBeGreaterThanOrEqual(bandCount - 2);
+        expect(result.statistics[0], label).toBe(oracle.statistics[0]);
+        for (let slot = 1; slot < GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH; slot++) {
+          expectClose(
+            `${label} statistics ${slot}`,
+            result.statistics[slot],
+            oracle.statistics[slot],
+            1e-4 * Math.abs(oracle.statistics[slot]) + 1e-5
+          );
+        }
+        if (comparedBands === bandCount) {
+          expect(result.peakBands, label).toEqual(oracle.peakBands);
+        }
+        const again = await harness.run(getGPUSpatialCorrelogramParameterValues(frame));
+        expect(getFloatBits(again.moransI)).toEqual(getFloatBits(result.moransI));
+        expect(getFloatBits(again.zScores)).toEqual(getFloatBits(result.zScores));
+      }
+      // The smooth field is strongly positively autocorrelated at short range.
+      const short = await harness.run(
+        getGPUSpatialCorrelogramParameterValues({bounds: BOUNDS, maximumDistance: 25})
+      );
+      expect(short.moransI[0]).toBeGreaterThan(0.5);
+      expect(short.zScores[0]).toBeGreaterThan(10);
+      expect(harness.rebuildCount).toBe(0);
+    } finally {
+      harness.destroy();
+    }
+  }, 120000);
+}
+
+it('GPUSpatialCorrelogram reports NaN for empty bands and too few rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene = {
+    positions: new Float32Array([0, 0, 1, 0, 2, 0, 3, 0]),
+    values: new Float32Array([1, 2, 3, 4]),
+    mask: new Uint32Array([1, 1, 1, 1])
+  };
+  const harness = createHarness(device, scene, 4, 'annulus');
+  try {
+    // Annuli of width 1 over [0, 4]: lag-1 pairs sit in annulus 1, none in annulus 0.
+    const frame = {
+      bounds: [0, -1, 3, 1] as const,
+      maximumDistance: 4,
+      varianceAssumption: 'normality' as const
+    };
+    const result = await harness.run(getGPUSpatialCorrelogramParameterValues(frame));
+    const oracle = computeSpatialCorrelogramOnCPU(scene, frame, 4, 'annulus');
+    expect(result.pairCounts).toEqual([0, 3, 2, 1]);
+    expect(result.moransI[0]).toBeNaN();
+    expect(result.moransI[1]).toBeCloseTo(oracle.moransI[1], 5);
+    expect(result.varianceI[1]).toBeCloseTo(oracle.varianceI[1], 5);
+    // Two rows in a narrow window: n < 3 leaves every band undefined.
+    const narrow = await harness.run(
+      getGPUSpatialCorrelogramParameterValues({bounds: [0, -1, 1, 1], maximumDistance: 4})
+    );
+    expect(narrow.moransI.every(Number.isNaN)).toBe(true);
+    expect(narrow.peakBands).toEqual([0xffffffff, 0xffffffff]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it("GPUSpatialCorrelogram keeps Moran's I when one outlier or sentinel inflates the products", async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // N(0, 1) values on 4000 seeded points with an isolated outlier of 2e4 or 1e5 standard
+  // deviations: it joins no pair but pulls the mean (to 5 and 25) and the sum of squares. The
+  // former unit `2^24 / max|c|^2` rounded every pair product to 0 (I = 0). Reference: esda Moran,
+  // see correlogram-outlier-reference.ts.
+  const {bounds} = VARIOGRAM_OUTLIER_FRAME;
+  const bandCount = 4;
+  for (const name of ['clean', 'isolated-2e4', 'isolated-1e5']) {
+    const scene =
+      name === 'clean'
+        ? createVariogramOutlierScene()
+        : createVariogramOutlierScene(name === 'isolated-2e4' ? 2e4 : 1e5, 'isolated');
+    const reference = CORRELOGRAM_OUTLIER_REFERENCES[name];
+    const harness = createPairStatisticsHarness(device, {
+      ...scene,
+      parameterLength: GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
+      outputs: {
+        moransI: {format: 'float32', length: bandCount},
+        pairCounts: {format: 'uint32', length: bandCount},
+        overflow: {format: 'uint32', length: 1}
+      },
+      createContributor: views =>
+        new GPUSpatialCorrelogram({
+          positions: views.positions,
+          values: views.values!,
+          parameters: views.parameters,
+          gridSize: [32, 32],
+          bandCount,
+          bandMode: 'cumulative',
+          output: {
+            moransI: views.outputs.moransI as never,
+            pairCounts: views.outputs.pairCounts as never,
+            status: {overflow: views.outputs.overflow as never}
+          }
+        })
+    });
+    try {
+      const result = await harness.run(
+        getGPUSpatialCorrelogramParameterValues({
+          bounds: [...bounds],
+          maximumDistance: VARIOGRAM_OUTLIER_FRAME.maximumDistance
+        })
+      );
+      expect(result.overflow, name).toEqual([0]);
+      for (let band = 0; band < bandCount; band++) {
+        // GPU division rounding may move a pair lying on a band edge into the next band.
+        expect(
+          Math.abs(2 * result.pairCounts[band] - reference.weightSums[band]),
+          `${name} band ${band} pairs`
+        ).toBeLessThanOrEqual(8);
+        expectClose(
+          `${name} band ${band} I`,
+          result.moransI[band],
+          reference.moransI[band],
+          2e-3 * Math.abs(reference.moransI[band])
+        );
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);
+
+it('GPUSpatialCorrelogram L-shape inclusion matches pre-filtered rectangle rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = new Float32Array([
+    80, 90, 430, 200, 550, 480, 900, 310, 1450, 260, 1900, 550, 310, 900, 400, 1400, 300, 1900, 550,
+    650, 1100, 1100, 1700, 1700
+  ]);
+  const values = Float32Array.from({length: positions.length / 2}, (_, row) => row * row - 5 * row);
+  const mask = new Uint32Array(values.length).fill(1);
+  const scene = {positions, values, mask};
+  const included = Array.from({length: values.length}, (_, row) => row).filter(row =>
+    isOracleInsideWindow(ORACLE_L_SHAPE, [positions[2 * row], positions[2 * row + 1]])
+  );
+  expect(included.length).toBe(10);
+  const filtered = {
+    positions: Float32Array.from(
+      included.flatMap(row => [positions[2 * row], positions[2 * row + 1]])
+    ),
+    values: Float32Array.from(included.map(row => values[row])),
+    mask: new Uint32Array(included.length).fill(1)
+  };
+  const polygon = createHarness(device, scene, 6, 'annulus', ORACLE_L_SHAPE);
+  const rectangle = createHarness(device, filtered, 6, 'annulus');
+  try {
+    for (const maximumDistance of [431, 913]) {
+      const actual = await polygon.run(
+        getGPUSpatialCorrelogramParameterValues({bounds: 'study-window', maximumDistance})
+      );
+      const expected = await rectangle.run(
+        getGPUSpatialCorrelogramParameterValues({
+          bounds: getOracleWindowBounds(ORACLE_L_SHAPE),
+          maximumDistance
+        })
+      );
+      expect(actual.statistics[0]).toBe(included.length);
+      expect(actual.pairCounts).toEqual(expected.pairCounts);
+      for (const key of Object.keys(expected) as (keyof typeof expected)[]) {
+        actual[key].forEach((value, index) =>
+          expectClose(
+            `${key} ${index}`,
+            value,
+            expected[key][index],
+            1e-5 * Math.max(1, Math.abs(expected[key][index]))
+          )
+        );
+      }
+    }
+    expect(polygon.rebuildCount).toBe(0);
+  } finally {
+    polygon.destroy();
+    rectangle.destroy();
+  }
+});

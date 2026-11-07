@@ -1,0 +1,91 @@
+import {GPUCoreDocsTabs} from '@site/src/components/docs/gpu-core-docs-tabs';
+import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-contract';
+
+# GPUCompaction
+
+<GPUCoreDocsTabs active="compaction" />
+
+## Overview
+
+Compacts flagged values into a stable output prefix and reports its length.
+
+::lens{scenario=gpu-core.compaction rung=result caption="Rainfall flags select original row identifiers; inspect the first 16 compacted values."}
+
+`GPUCompaction` stably selects packed `uint32` values using packed `uint32` flags.
+
+<GPUOperationContract operation="gpu-compaction" />
+
+#### How it computes
+
+{/* lens:GPUCompaction */}
+
+::lens{scenario=gpu-core.compaction rung=kernel caption="Inspect the scatter kernel after its 256-lane nested scan."}
+
+::lens{scenario=gpu-core.compaction rung=graph caption="Follow selection offsets into 1 stable scatter pass."}
+
+::lens{scenario=gpu-core.compaction rung=datum caption="Follow station 9 through its flag, offset, and selected destination."}
+
+::lens{scenario=gpu-core.compaction rung=formula caption="Read how each flag of 1 assigns an output position."}
+
+## Concepts
+
+Compaction converts a sparse keep/discard decision into a dense output. An exclusive scan assigns
+each selected row its destination index, a scatter copies selected values in source order, and one
+count reports the valid output prefix. For input `[8, 3, 5, 2]` and flags `[1, 0, 1, 0]`, the valid
+output is `[8, 5]` with count `2`; capacity beyond that prefix is unspecified.
+
+### When to use it
+
+Use compaction when a later stage needs a dense work list rather than one flag per source row. It
+can turn a frustum mask into visible object IDs, a brush mask into selected record IDs, or a validity
+mask into jobs for a follow-up compute pass. Writing `count` into a `DrawCommandBuffer` also turns
+the same result directly into an indirect instance list.
+
+Keep the mask un-compacted when downstream shaders already visit every source row or need random
+source-aligned membership tests. Compaction adds scan and scatter work, and only the prefix selected
+by `count` is meaningful; it does not shrink the caller-owned output allocation.
+
+```ts
+graph.add(new GPUCompaction({
+  id: 'visible-ids',
+  input: sourceIds,
+  flags: visibilityFlags,
+  output: visibleIds,
+  count: visibleCount
+}));
+```
+
+Flags should contain `0` or `1`. Nonzero values are clamped to one by the scatter pass. Selected
+values retain their source order. `count` must provide at least one packed `uint32` row.
+
+`input`, `flags`, and `output` may each be a packed `GraphDataView<'uint32'>` or
+`GraphVectorView<'uint32'>`. Input and flag lengths must match, but their atomic/vector boundaries
+may differ. The output only needs enough logical capacity and may use an independent atomic or
+vector topology. Scan and compaction align source rows by logical position, preserve caller-owned
+buffers and output chunk boundaries, and report one vector-wide total without concatenating data.
+
+`strategy` selects the implementation. `'block'` (the default) counts accepted rows per
+1,024-row block, scans the block counts with `GPUScan` (which also writes `count`), and ranks and
+writes rows inside each block, using subgroup prefix sums where the device has them. It never
+materializes a per-row offset array and is faster than the scan path (about 1.4 ms against 3.6 ms
+at 8M rows, and 0.4 ms against 0.7 ms at 1M rows on an Apple GPU). It applies to single-view
+`input`, `flags`, and `output`; vector inputs always use the scan path. `strategy: 'scan'` keeps the
+previous behaviour and composes `GPUScan`, allocating graph-owned offset scratch with the flags'
+chunking, scattering selected values, and writing the final count. `scanAlgorithm:
+'decoupled-lookback'` makes that scan a single chained pass (see `GPUScan`).
+
+The scan path composes `GPUScan` and writes the final count. The count view may point at the
+`instanceCount` field of a `DrawCommandBuffer`, enabling compute-to-indirect-render dataflow without
+readback. Alignment borrows subviews from the original buffers; it does not pack source, flag, or
+output chunks, or require one scratch allocation for a streamed vector.
+
+The initial implementation compacts IDs rather than arbitrary records. Renderers and subsequent
+kernels use those IDs to fetch source data.
+
+## Performance notes
+
+`GPUCompaction` inherits the optional subgroup acceleration of its unsegmented `GPUScan`.
+`GPUIndexedRangeCompaction` and `GPUPartitionedIndexedRangeCompaction` also use subgroup prefix
+collectives for their dedicated per-range scans, reducing each local scan from 17 workgroup
+barriers to two. This path is used by the GPU Trace Viewer for stable span and dependency lists;
+CORE devices retain the original workgroup implementation.

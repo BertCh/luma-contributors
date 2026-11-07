@@ -1,0 +1,35 @@
+{
+  "id": "chicago-buildings",
+  "version": 1,
+  "kind": "polygons",
+  "license": "City of Chicago Data Portal Terms of Use",
+  "attribution": "City of Chicago Data Portal — Building Footprints",
+  "count": 1706,
+  "bbox": [
+    -87.65,
+    41.87,
+    -87.62,
+    41.895
+  ],
+  "crs": "EPSG:4326",
+  "geometry": {
+    "type": "polygons",
+    "file": "buildings.geojson"
+  },
+  "properties": {
+    "sourceDataset": "Building Footprints",
+    "sourceDatasetId": "syp8-uezg",
+    "sourceUrl": "https://data.cityofchicago.org/resource/syp8-uezg.geojson",
+    "queryBbox": [
+      -87.65,
+      41.87,
+      -87.62,
+      41.895
+    ],
+    "downloadedAt": "2026-10-24T22:14:25.801Z",
+    "payloadSha256": "1b34ed8229854d188b84fa61f1e165acfb1bebefa3dfdab979781053f82f2705",
+    "attribution": "City of Chicago Data Portal, Building Footprints (syp8-uezg)",
+    "license": "City of Chicago Data Portal Terms of Use",
+    "notes": "Bounded query result; available source fields include bldg_id, bldg_statu, stories, year_built and address components f_add1/t_add1. Story counts are incomplete and are not complete building heights."
+  }
+}

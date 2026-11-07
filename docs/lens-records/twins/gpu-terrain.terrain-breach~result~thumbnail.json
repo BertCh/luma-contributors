@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-breach",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-terrain.terrain-breach",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.terrain-breach: elevation → cutDepth.",
+  "description": "Result of gpu-terrain.terrain-breach: elevation → cutDepth. cells: 9. values read back from the GPU run. input elevation: 9 cells.",
+  "llms": "Result of gpu-terrain.terrain-breach: elevation → cutDepth\n\n- cells: 9\n- input elevation: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[3,3]]\" role=\"img\" aria-label=\"Result: cutDepth\"><defs><pattern id=\"lens-gpu-terrain-terrain-breach-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-breach-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-breach-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"context\"></g><g data-role=\"output\"><image width=\"84\" height=\"84\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"38\" y=\"6\" data-provenance=\"readback\" data-raster-width=\"3\" data-raster-height=\"3\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAMAAABh9kWNAAAACVBMVEWKv90ca7DZ2dkf8xUgAAAAF0lEQVR4AQEMAPP/AAABAAACAgIAAgICAEYADsDJ2RkAAAAASUVORK5CYII=\"></image></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:13:10.073Z",
+    "runId": "run-f0287a92",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-f0287a92",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,310 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {LayerProps} from '@deck.gl/core';
+import type {AnalysisFrame} from '../../engine/analysis-frame';
+import {getAnalysisFrameWgsl} from '../../engine/layer-wgsl';
+import type {Buffer} from '@luma.gl/core';
+import {StorageModelLayer} from './b1-storage-layer';
+import {writeShapeStyle} from '../../../../spatial-analysis-shared/geometry-helpers';
+import {SHAPE_PALETTE_SIZE} from '../../../../spatial-analysis-shared/geometry-helpers';
+import {ShapeColor} from '../../../../spatial-analysis-shared/geometry-helpers';
+import {LINE_WGSL} from '../../../../spatial-analysis-shared/layer-constants';
+import {MARKER_SHAPES} from '../../../../spatial-analysis-shared/layer-constants';
+
+// --- Group shape layers --------------------------------------------------------------------------
+// Draw `GPUGroupGeometry` and `GPUGroupConvexHull` outputs straight from their storage buffers.
+
+const SHAPE_PRELUDE_WGSL = /* wgsl */ `
+struct ShapeStyle {
+  palette: array<vec4<f32>, ${SHAPE_PALETTE_SIZE}>,
+  // widthPixels, opacity, sizePixels, unused
+  numbers: vec4<f32>,
+  // groupCount, segments, shape (0 disc, 1 ring, 2 diamond), mode (0 centers, 1 medoid rows)
+  config: vec4<u32>,
+};
+
+@group(0) @binding(auto) var<uniform> shapeStyle: ShapeStyle;
+
+fn projectShapePosition(position: vec2<f32>) -> vec4<f32> {
+  var clipPosition = project_position_to_clipspace(vec3<f32>(position, 0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+  // Deck's project32 matrices use OpenGL depth; WebGPU clip space requires [0, w].
+  clipPosition.z = (clipPosition.z + clipPosition.w) * 0.5;
+  return clipPosition;
+}
+
+fn isFiniteVector(value: vec2<f32>) -> bool {
+  return (bitcast<u32>(value.x) & 0x7f800000u) != 0x7f800000u &&
+    (bitcast<u32>(value.y) & 0x7f800000u) != 0x7f800000u;
+}
+
+`;
+
+function getShapeShader(source: string, frame: AnalysisFrame | undefined): string {
+  if (!frame) return source;
+  return source.replace(
+    /fn projectShapePosition\(position: vec2<f32>\) -> vec4<f32> \{[\s\S]*?\n\}/,
+    getAnalysisFrameWgsl(frame).replaceAll('projectSpatialAnalysisPosition', 'projectShapePosition')
+  );
+}
+
+const ELLIPSE_OUTLINE_SHADER = /* wgsl */ `
+${SHAPE_PRELUDE_WGSL}
+${LINE_WGSL}
+@group(0) @binding(auto) var<storage, read> groupCounts: array<u32>;
+@group(0) @binding(auto) var<storage, read> groupCenters: array<vec2<f32>>;
+@group(0) @binding(auto) var<storage, read> groupEllipses: array<f32>;
+
+fn getEllipsePoint(group: u32, step: u32) -> vec2<f32> {
+  let segments = shapeStyle.config.y;
+  let t = 6.283185307179586 * f32(step) / f32(segments);
+  let angle = groupEllipses[group * 3u];
+  let local = vec2<f32>(
+    groupEllipses[group * 3u + 1u] * cos(t),
+    groupEllipses[group * 3u + 2u] * sin(t)
+  );
+  return groupCenters[group] + vec2<f32>(
+    local.x * cos(angle) - local.y * sin(angle),
+    local.x * sin(angle) + local.y * cos(angle)
+  );
+}
+
+@vertex fn vertexMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  @builtin(instance_index) instance: u32
+) -> LineOutput {
+  let segments = shapeStyle.config.y;
+  let group = instance / segments;
+  let step = instance % segments;
+  if (group >= shapeStyle.config.x || groupCounts[group] < 3u) { return getHiddenLine(); }
+  return getLineVertex(
+    getEllipsePoint(group, step),
+    getEllipsePoint(group, step + 1u),
+    vertexIndex,
+    shapeStyle.palette[group % ${SHAPE_PALETTE_SIZE}u]
+  );
+}
+`;
+
+const BOUNDS_OUTLINE_SHADER = /* wgsl */ `
+${SHAPE_PRELUDE_WGSL}
+${LINE_WGSL}
+@group(0) @binding(auto) var<storage, read> groupCounts: array<u32>;
+@group(0) @binding(auto) var<storage, read> groupBounds: array<vec4<f32>>;
+
+fn getBoundsCorner(bounds: vec4<f32>, corner: u32) -> vec2<f32> {
+  let x = select(bounds.x, bounds.z, corner == 1u || corner == 2u);
+  let y = select(bounds.y, bounds.w, corner == 2u || corner == 3u);
+  return vec2<f32>(x, y);
+}
+
+@vertex fn vertexMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  @builtin(instance_index) instance: u32
+) -> LineOutput {
+  let group = instance / 4u;
+  let edge = instance % 4u;
+  if (group >= shapeStyle.config.x || groupCounts[group] == 0u) { return getHiddenLine(); }
+  let bounds = groupBounds[group];
+  return getLineVertex(
+    getBoundsCorner(bounds, edge),
+    getBoundsCorner(bounds, (edge + 1u) % 4u),
+    vertexIndex,
+    shapeStyle.palette[group % ${SHAPE_PALETTE_SIZE}u]
+  );
+}
+`;
+
+const GROUP_MARKER_SHADER = /* wgsl */ `
+${SHAPE_PRELUDE_WGSL}
+@group(0) @binding(auto) var<storage, read> groupCounts: array<u32>;
+@group(0) @binding(auto) var<storage, read> markerCenters: array<vec2<f32>>;
+@group(0) @binding(auto) var<storage, read> markerRows: array<u32>;
+@group(0) @binding(auto) var<storage, read> markerPositions: array<vec2<f32>>;
+
+struct MarkerOutput {
+  @builtin(position) position: vec4<f32>,
+  @location(0) corner: vec2<f32>,
+  @location(1) color: vec4<f32>,
+};
+
+@vertex fn vertexMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  @builtin(instance_index) group: u32
+) -> MarkerOutput {
+  let corners = array<vec2<f32>, 6>(
+    vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+    vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0)
+  );
+  var output: MarkerOutput;
+  output.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+  output.corner = vec2<f32>(0.0);
+  output.color = vec4<f32>(0.0);
+  if (group >= shapeStyle.config.x || groupCounts[group] == 0u) { return output; }
+  var position = markerCenters[group];
+  if (shapeStyle.config.w == 1u) {
+    let row = markerRows[group];
+    if (row == 0xffffffffu) { return output; }
+    position = markerPositions[row];
+  }
+  if (!isFiniteVector(position)) { return output; }
+  let corner = corners[vertexIndex];
+  var clipPosition = projectShapePosition(position);
+  clipPosition = vec4<f32>(
+    clipPosition.xy + project_pixel_size_to_clipspace(corner * shapeStyle.numbers.z),
+    clipPosition.z,
+    clipPosition.w
+  );
+  output.position = clipPosition;
+  output.corner = corner;
+  output.color = vec4<f32>(shapeStyle.palette[0].rgb, shapeStyle.palette[0].a * shapeStyle.numbers.y);
+  return output;
+}
+
+@fragment fn fragmentMain(input: MarkerOutput) -> @location(0) vec4<f32> {
+  var inside = length(input.corner);
+  if (shapeStyle.config.z == 2u) {
+    inside = abs(input.corner.x) + abs(input.corner.y);
+  }
+  if (inside > 1.0) { discard; }
+  var alpha = 1.0;
+  if (shapeStyle.config.z == 1u) {
+    alpha = smoothstep(0.45, 0.6, inside);
+  }
+  return vec4<f32>(input.color.rgb, input.color.a * alpha);
+}
+`;
+
+type ShapeStyleProps = {
+  /** Frame of every shape position; omitted for display metres. */
+  analysisFrame?: AnalysisFrame;
+  /** Number of groups the shape buffers hold. */
+  groupCount: number;
+  /** Colors indexed by `group % 8`, RGBA 0-255. Markers use the first entry. */
+  palette: readonly ShapeColor[];
+  /** Line width in CSS pixels. Defaults to 1.5. */
+  widthPixels?: number;
+  /** Overall opacity multiplier. Defaults to 1. */
+  opacity?: number;
+};
+
+/** Props for {@link EllipseOutlineLayer}. */
+export type EllipseOutlineLayerProps = LayerProps &
+  ShapeStyleProps & {
+    /** uint32 member count per group; groups with fewer than 3 are skipped. */
+    counts: Buffer;
+    /** `float32x2` ellipse centers per group, in the same plane as the ellipses. */
+    centers: Buffer;
+    /** float32 `[angle, sigmaX, sigmaY]` per group (`GPUGroupGeometry` `ellipses`). */
+    ellipses: Buffer;
+    /** Polyline segments per ellipse. Defaults to 48. */
+    segments?: number;
+  };
+
+/** Draws `GPUGroupGeometry` standard deviational ellipses, colored by group. */
+export class EllipseOutlineLayer extends StorageModelLayer<EllipseOutlineLayerProps> {
+  static override layerName = 'EllipseOutlineLayer';
+  protected getShaderSource(): string {
+    return getShapeShader(ELLIPSE_OUTLINE_SHADER, this.props.analysisFrame);
+  }
+  protected getVertexCount(): number {
+    return 6;
+  }
+  protected getInstanceCount(): number {
+    return this.props.groupCount * (this.props.segments ?? 48);
+  }
+  protected getBindings(styleBuffer: Buffer): Record<string, Buffer> {
+    return {
+      shapeStyle: styleBuffer,
+      groupCounts: this.props.counts,
+      groupCenters: this.props.centers,
+      groupEllipses: this.props.ellipses
+    };
+  }
+  protected writeStyle(styleBuffer: Buffer): void {
+    writeShapeStyle(styleBuffer, this.props, {segments: this.props.segments ?? 48});
+  }
+}
+
+/** Props for {@link BoundsOutlineLayer}. */
+export type BoundsOutlineLayerProps = LayerProps &
+  ShapeStyleProps & {
+    /** uint32 member count per group; empty groups are skipped. */
+    counts: Buffer;
+    /** `float32x4` `[minX, minY, maxX, maxY]` per group. */
+    bounds: Buffer;
+  };
+
+/** Draws `GPUGroupGeometry` bounding boxes, colored by group. */
+export class BoundsOutlineLayer extends StorageModelLayer<BoundsOutlineLayerProps> {
+  static override layerName = 'BoundsOutlineLayer';
+  protected getShaderSource(): string {
+    return getShapeShader(BOUNDS_OUTLINE_SHADER, this.props.analysisFrame);
+  }
+  protected getVertexCount(): number {
+    return 6;
+  }
+  protected getInstanceCount(): number {
+    return this.props.groupCount * 4;
+  }
+  protected getBindings(styleBuffer: Buffer): Record<string, Buffer> {
+    return {
+      shapeStyle: styleBuffer,
+      groupCounts: this.props.counts,
+      groupBounds: this.props.bounds
+    };
+  }
+  protected writeStyle(styleBuffer: Buffer): void {
+    writeShapeStyle(styleBuffer, this.props);
+  }
+}
+
+/** Props for {@link GroupMarkerLayer}. */
+export type GroupMarkerLayerProps = LayerProps &
+  ShapeStyleProps & {
+    /** uint32 member count per group; empty groups are skipped. */
+    counts: Buffer;
+    /** `float32x2` per-group positions (used when `source` is `'centers'`). */
+    centers: Buffer;
+    /** uint32 point row per group, or `0xffffffff` (used when `source` is `'medoids'`). */
+    medoidRows: Buffer;
+    /** `float32x2` positions that `medoidRows` index (used when `source` is `'medoids'`). */
+    positions: Buffer;
+    /** Where each marker sits. */
+    source: 'centers' | 'medoids';
+    /** `'disc'`, `'ring'` or `'diamond'`. Defaults to `'disc'`. */
+    shape?: 'disc' | 'ring' | 'diamond';
+    /** Half-size in CSS pixels. Defaults to 6. */
+    sizePixels?: number;
+  };
+
+/** One marker per group at its center or medoid, in the first palette color. */
+export class GroupMarkerLayer extends StorageModelLayer<GroupMarkerLayerProps> {
+  static override layerName = 'GroupMarkerLayer';
+  protected getShaderSource(): string {
+    return getShapeShader(GROUP_MARKER_SHADER, this.props.analysisFrame);
+  }
+  protected getVertexCount(): number {
+    return 6;
+  }
+  protected getInstanceCount(): number {
+    return this.props.groupCount;
+  }
+  protected getBindings(styleBuffer: Buffer): Record<string, Buffer> {
+    return {
+      shapeStyle: styleBuffer,
+      groupCounts: this.props.counts,
+      markerCenters: this.props.centers,
+      markerRows: this.props.medoidRows,
+      markerPositions: this.props.positions
+    };
+  }
+  protected writeStyle(styleBuffer: Buffer): void {
+    writeShapeStyle(styleBuffer, this.props, {
+      sizePixels: this.props.sizePixels ?? 6,
+      shape: MARKER_SHAPES[this.props.shape ?? 'disc'],
+      mode: this.props.source === 'medoids' ? 1 : 0
+    });
+  }
+}

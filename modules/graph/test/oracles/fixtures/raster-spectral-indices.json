@@ -1,0 +1,1575 @@
+{
+  "generator": "test/oracles/raster-spectral-indices.py",
+  "versions": {
+    "python": "3.12.13",
+    "numpy": "2.2.6",
+    "spyndex": "0.12.0"
+  },
+  "reference": {
+    "kind": "direct spyndex.computeIndex calls with explicit calibration/mask adapter",
+    "catalog": "bundled in spyndex 0.12.0; online=False",
+    "formulas": {
+      "NDWI": "(G-N)/(G+N)",
+      "NDMI": "(N-S1)/(N+S1)",
+      "NBR": "(N-S2)/(N+S2)",
+      "EVI": "g*(N-R)/(N+C1*R-C2*B+L)",
+      "SAVI": "(1.0+L)*(N-R)/(N+R+L)"
+    },
+    "gaoMapping": "NDMI supplies identical two-band algebra on caller-selected shortwave reflectance; not spectral-response equivalence or direct OTB execution"
+  },
+  "conventions": {
+    "units": "dimensionless reflectance and dimensionless index; no output integer scaling",
+    "invalid": "canonical NaN and validity zero; JSON represents invalid expected values as null",
+    "denominator": "abs(denominator) > epsilon, including equality rejection; signed denominators permitted",
+    "calibration": "raw * scale + offset; raw nodata and per-band masks retained",
+    "absoluteTolerance": 1e-05,
+    "relativeTolerance": 1e-05,
+    "toleranceReason": "float32 calibration and multi-pass arithmetic versus independent float64 evaluation; valid stress denominators bounded away from zero"
+  },
+  "cases": [
+    {
+      "name": "ndwi-mcfeeters-landsat-calibration-and-updates",
+      "index": "ndwi-mcfeeters",
+      "width": 6,
+      "height": 2,
+      "bands": {
+        "green": {
+          "format": "uint32",
+          "values": [
+            18639,
+            24000,
+            35000,
+            10000,
+            0,
+            12000,
+            20000,
+            16000,
+            40000,
+            8000,
+            28000,
+            32000
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            19039,
+            24400,
+            35400,
+            10400,
+            0,
+            12400,
+            20400,
+            16400,
+            40400,
+            8400,
+            28400,
+            32400
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "epsilon": 0.0001,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          -0.01729165520439524,
+          -0.011815252416756185,
+          -0.007161458333333412,
+          -0.06832298136645967,
+          null,
+          -0.040590405904059074,
+          -0.01547116736990156,
+          null,
+          null,
+          -0.21568627450980415,
+          -0.00955690703735873,
+          -0.008023340627279446
+        ],
+        "validity": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          0,
+          1,
+          1,
+          1
+        ]
+      },
+      "updatedBands": {
+        "green": {
+          "format": "uint32",
+          "values": [
+            20139,
+            25500,
+            36500,
+            11500,
+            0,
+            13500,
+            21500,
+            17500,
+            41500,
+            9500,
+            29500,
+            33500
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            20539,
+            25900,
+            36900,
+            11900,
+            0,
+            13900,
+            21900,
+            17900,
+            41900,
+            9900,
+            29900,
+            33900
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "updatedExpected": {
+        "values": [
+          -0.015306583918346347,
+          -0.01085347804637407,
+          null,
+          -0.04517453798767949,
+          null,
+          -0.03111739745403114,
+          -0.013862633900441094,
+          -0.019180470793374035,
+          -0.0058093477686822804,
+          -0.08239700374531846,
+          -0.008917713822456342,
+          -0.007567939456484431
+        ],
+        "validity": [
+          1,
+          1,
+          0,
+          1,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "ndwi-gao-landsat-calibration-and-updates",
+      "index": "ndwi-gao",
+      "width": 6,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            18639,
+            24000,
+            35000,
+            10000,
+            0,
+            12000,
+            20000,
+            16000,
+            40000,
+            8000,
+            28000,
+            32000
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "shortwaveInfrared": {
+          "format": "uint32",
+          "values": [
+            19039,
+            24400,
+            35400,
+            10400,
+            0,
+            12400,
+            20400,
+            16400,
+            40400,
+            8400,
+            28400,
+            32400
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "epsilon": 0.0001,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          -0.01729165520439524,
+          -0.011815252416756185,
+          -0.007161458333333412,
+          -0.06832298136645967,
+          null,
+          -0.040590405904059074,
+          -0.01547116736990156,
+          null,
+          null,
+          -0.21568627450980415,
+          -0.00955690703735873,
+          -0.008023340627279446
+        ],
+        "validity": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          0,
+          1,
+          1,
+          1
+        ]
+      },
+      "updatedBands": {
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            20139,
+            25500,
+            36500,
+            11500,
+            0,
+            13500,
+            21500,
+            17500,
+            41500,
+            9500,
+            29500,
+            33500
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "shortwaveInfrared": {
+          "format": "uint32",
+          "values": [
+            20539,
+            25900,
+            36900,
+            11900,
+            0,
+            13900,
+            21900,
+            17900,
+            41900,
+            9900,
+            29900,
+            33900
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "updatedExpected": {
+        "values": [
+          -0.015306583918346347,
+          -0.01085347804637407,
+          null,
+          -0.04517453798767949,
+          null,
+          -0.03111739745403114,
+          -0.013862633900441094,
+          -0.019180470793374035,
+          -0.0058093477686822804,
+          -0.08239700374531846,
+          -0.008917713822456342,
+          -0.007567939456484431
+        ],
+        "validity": [
+          1,
+          1,
+          0,
+          1,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "nbr-landsat-calibration-and-updates",
+      "index": "nbr",
+      "width": 6,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            18639,
+            24000,
+            35000,
+            10000,
+            0,
+            12000,
+            20000,
+            16000,
+            40000,
+            8000,
+            28000,
+            32000
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "shortwaveInfrared2": {
+          "format": "uint32",
+          "values": [
+            19039,
+            24400,
+            35400,
+            10400,
+            0,
+            12400,
+            20400,
+            16400,
+            40400,
+            8400,
+            28400,
+            32400
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "epsilon": 0.0001,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          -0.01729165520439524,
+          -0.011815252416756185,
+          -0.007161458333333412,
+          -0.06832298136645967,
+          null,
+          -0.040590405904059074,
+          -0.01547116736990156,
+          null,
+          null,
+          -0.21568627450980415,
+          -0.00955690703735873,
+          -0.008023340627279446
+        ],
+        "validity": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          0,
+          1,
+          1,
+          1
+        ]
+      },
+      "updatedBands": {
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            20139,
+            25500,
+            36500,
+            11500,
+            0,
+            13500,
+            21500,
+            17500,
+            41500,
+            9500,
+            29500,
+            33500
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "shortwaveInfrared2": {
+          "format": "uint32",
+          "values": [
+            20539,
+            25900,
+            36900,
+            11900,
+            0,
+            13900,
+            21900,
+            17900,
+            41900,
+            9900,
+            29900,
+            33900
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "updatedExpected": {
+        "values": [
+          -0.015306583918346347,
+          -0.01085347804637407,
+          null,
+          -0.04517453798767949,
+          null,
+          -0.03111739745403114,
+          -0.013862633900441094,
+          -0.019180470793374035,
+          -0.0058093477686822804,
+          -0.08239700374531846,
+          -0.008917713822456342,
+          -0.007567939456484431
+        ],
+        "validity": [
+          1,
+          1,
+          0,
+          1,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "evi-landsat-calibration-and-updates",
+      "index": "evi",
+      "width": 6,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            18639,
+            24000,
+            35000,
+            10000,
+            0,
+            12000,
+            20000,
+            16000,
+            40000,
+            8000,
+            28000,
+            32000
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "red": {
+          "format": "uint32",
+          "values": [
+            19039,
+            24400,
+            35400,
+            10400,
+            0,
+            12400,
+            20400,
+            16400,
+            40400,
+            8400,
+            28400,
+            32400
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "blue": {
+          "format": "uint32",
+          "values": [
+            19439,
+            24800,
+            35800,
+            10800,
+            0,
+            12800,
+            20800,
+            16800,
+            40800,
+            8800,
+            28800,
+            32800
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "epsilon": 0.0001,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          -0.03692694004911287,
+          -0.040983606557377095,
+          -0.052910052910053476,
+          -0.0318471337579618,
+          null,
+          -0.032894736842105296,
+          -0.037878787878787915,
+          null,
+          null,
+          null,
+          -0.044642857142856755,
+          -0.04901960784313772
+        ],
+        "validity": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          0,
+          0,
+          1,
+          1
+        ]
+      },
+      "updatedBands": {
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            20139,
+            25500,
+            36500,
+            11500,
+            0,
+            13500,
+            21500,
+            17500,
+            41500,
+            9500,
+            29500,
+            33500
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "red": {
+          "format": "uint32",
+          "values": [
+            20539,
+            25900,
+            36900,
+            11900,
+            0,
+            13900,
+            21900,
+            17900,
+            41900,
+            9900,
+            29900,
+            33900
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "blue": {
+          "format": "uint32",
+          "values": [
+            20939,
+            26300,
+            37300,
+            12300,
+            0,
+            14300,
+            22300,
+            18300,
+            42300,
+            10300,
+            30300,
+            34300
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "updatedExpected": {
+        "values": [
+          -0.03797876986764402,
+          -0.042283298097251995,
+          null,
+          -0.03262642740619889,
+          null,
+          -0.03372681281618888,
+          -0.03898635477582851,
+          -0.03616636528028935,
+          -0.06389776357827434,
+          -0.031595576619273334,
+          -0.046189376443417675,
+          -0.05089058524173075
+        ],
+        "validity": [
+          1,
+          1,
+          0,
+          1,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "savi-landsat-calibration-and-updates",
+      "index": "savi",
+      "width": 6,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            18639,
+            24000,
+            35000,
+            10000,
+            0,
+            12000,
+            20000,
+            16000,
+            40000,
+            8000,
+            28000,
+            32000
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "red": {
+          "format": "uint32",
+          "values": [
+            19039,
+            24400,
+            35400,
+            10400,
+            0,
+            12400,
+            20400,
+            16400,
+            40400,
+            8400,
+            28400,
+            32400
+          ],
+          "validity": [
+            1,
+            7,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "epsilon": 0.0001,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          -0.014522794185601323,
+          -0.011530398322851163,
+          -0.008104125736738792,
+          -0.024962178517397904,
+          null,
+          -0.02140077821011675,
+          -0.013625103220478954,
+          null,
+          null,
+          -0.029945553539019995,
+          -0.009993943064809115,
+          -0.008818813468733394
+        ],
+        "validity": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          0,
+          1,
+          1,
+          1
+        ]
+      },
+      "updatedBands": {
+        "nearInfrared": {
+          "format": "uint32",
+          "values": [
+            20139,
+            25500,
+            36500,
+            11500,
+            0,
+            13500,
+            21500,
+            17500,
+            41500,
+            9500,
+            29500,
+            33500
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        },
+        "red": {
+          "format": "uint32",
+          "values": [
+            20539,
+            25900,
+            36900,
+            11900,
+            0,
+            13900,
+            21900,
+            17900,
+            41900,
+            9900,
+            29900,
+            33900
+          ],
+          "validity": [
+            1,
+            7,
+            0,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "noDataValue": 0,
+          "scale": 2.75e-05,
+          "offset": -0.2
+        }
+      },
+      "updatedExpected": {
+        "values": [
+          -0.013539628029491784,
+          -0.010901883052527374,
+          null,
+          -0.022192333557498226,
+          null,
+          -0.01933216168717049,
+          -0.012756088132972566,
+          -0.01537028411737309,
+          -0.006893670357217399,
+          -0.026045777426992923,
+          -0.009518315546581972,
+          -0.008446378295367383
+        ],
+        "validity": [
+          1,
+          1,
+          0,
+          1,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "ndwi-mcfeeters-denominator-boundaries",
+      "index": "ndwi-mcfeeters",
+      "width": 3,
+      "height": 2,
+      "bands": {
+        "green": {
+          "format": "float32",
+          "values": [
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5
+          ]
+        },
+        "nearInfrared": {
+          "format": "float32",
+          "values": [
+            -0.5,
+            -0.375,
+            -0.25,
+            -0.625,
+            -0.75,
+            0.5
+          ]
+        }
+      },
+      "epsilon": 0.125,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          null,
+          null,
+          3.0,
+          null,
+          -5.0,
+          0.0
+        ],
+        "validity": [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "ndwi-gao-denominator-boundaries",
+      "index": "ndwi-gao",
+      "width": 3,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "float32",
+          "values": [
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5
+          ]
+        },
+        "shortwaveInfrared": {
+          "format": "float32",
+          "values": [
+            -0.5,
+            -0.375,
+            -0.25,
+            -0.625,
+            -0.75,
+            0.5
+          ]
+        }
+      },
+      "epsilon": 0.125,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          null,
+          null,
+          3.0,
+          null,
+          -5.0,
+          0.0
+        ],
+        "validity": [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "nbr-denominator-boundaries",
+      "index": "nbr",
+      "width": 3,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "float32",
+          "values": [
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5
+          ]
+        },
+        "shortwaveInfrared2": {
+          "format": "float32",
+          "values": [
+            -0.5,
+            -0.375,
+            -0.25,
+            -0.625,
+            -0.75,
+            0.5
+          ]
+        }
+      },
+      "epsilon": 0.125,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          null,
+          null,
+          3.0,
+          null,
+          -5.0,
+          0.0
+        ],
+        "validity": [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "evi-denominator-boundaries",
+      "index": "evi",
+      "width": 3,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "float32",
+          "values": [
+            0.5,
+            0.625,
+            0.75,
+            0.375,
+            0.5,
+            0.5
+          ]
+        },
+        "red": {
+          "format": "float32",
+          "values": [
+            0.375,
+            0.375,
+            0.375,
+            0.375,
+            0.25,
+            0.25
+          ]
+        },
+        "blue": {
+          "format": "float32",
+          "values": [
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.375
+          ]
+        }
+      },
+      "epsilon": 0.125,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          null,
+          null,
+          3.75,
+          null,
+          -0.8333333333333334,
+          3.3333333333333335
+        ],
+        "validity": [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "evi-explicit-clamp",
+      "index": "evi",
+      "width": 3,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "float32",
+          "values": [
+            0.5,
+            0.625,
+            0.75,
+            0.375,
+            0.5,
+            0.5
+          ]
+        },
+        "red": {
+          "format": "float32",
+          "values": [
+            0.375,
+            0.375,
+            0.375,
+            0.375,
+            0.25,
+            0.25
+          ]
+        },
+        "blue": {
+          "format": "float32",
+          "values": [
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.375
+          ]
+        }
+      },
+      "epsilon": 0.125,
+      "soilAdjustment": 0.5,
+      "clamp": [
+        -1,
+        1
+      ],
+      "expected": {
+        "values": [
+          null,
+          null,
+          1.0,
+          null,
+          -0.8333333333333334,
+          1.0
+        ],
+        "validity": [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "savi-denominator-boundaries",
+      "index": "savi",
+      "width": 3,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "float32",
+          "values": [
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5
+          ]
+        },
+        "red": {
+          "format": "float32",
+          "values": [
+            -1,
+            -0.875,
+            -0.75,
+            -1.125,
+            -1.25,
+            -0.5
+          ]
+        }
+      },
+      "epsilon": 0.125,
+      "soilAdjustment": 0.5,
+      "expected": {
+        "values": [
+          null,
+          null,
+          7.5,
+          null,
+          -10.5,
+          3.0
+        ],
+        "validity": [
+          0,
+          0,
+          1,
+          0,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "savi-soil-adjustment-0",
+      "index": "savi",
+      "width": 3,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "sint32",
+          "values": [
+            8,
+            6,
+            4,
+            2,
+            -2147483648,
+            12
+          ],
+          "scale": 0.0625,
+          "offset": 0.125,
+          "noDataValue": -2147483648
+        },
+        "red": {
+          "format": "uint32",
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "scale": 0.03125,
+          "offset": 0.0625
+        }
+      },
+      "epsilon": 0,
+      "soilAdjustment": 0,
+      "expected": {
+        "values": [
+          0.7391304347826086,
+          0.6,
+          0.4117647058823529,
+          0.14285714285714285,
+          null,
+          0.5555555555555556
+        ],
+        "validity": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "savi-soil-adjustment-1",
+      "index": "savi",
+      "width": 3,
+      "height": 2,
+      "bands": {
+        "nearInfrared": {
+          "format": "sint32",
+          "values": [
+            8,
+            6,
+            4,
+            2,
+            -2147483648,
+            12
+          ],
+          "scale": 0.0625,
+          "offset": 0.125,
+          "noDataValue": -2147483648
+        },
+        "red": {
+          "format": "uint32",
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "scale": 0.03125,
+          "offset": 0.0625
+        }
+      },
+      "epsilon": 0,
+      "soilAdjustment": 1,
+      "expected": {
+        "values": [
+          0.6181818181818182,
+          0.46153846153846156,
+          0.2857142857142857,
+          0.08695652173913043,
+          null,
+          0.5882352941176471
+        ],
+        "validity": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1
+        ]
+      }
+    }
+  ]
+}

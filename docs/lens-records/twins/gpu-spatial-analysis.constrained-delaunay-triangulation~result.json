@@ -1,0 +1,38 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.constrained-delaunay-triangulation",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(new GPUConstrainedDelaunayTriangulation(props));",
+    "language": "ts",
+    "lineCount": 1
+  },
+  "scenarioId": "gpu-spatial-analysis.constrained-delaunay-triangulation",
+  "viewId": "gpu-core-array-result",
+  "caption": "Read captured inputs into recorded array outputs. max indices: 3. values read back from the GPU run. 3 output panels from the recorded run.",
+  "description": "Read captured inputs into recorded array outputs. max indices: 3. values read back from the GPU run. 3 output panels from the recorded run.",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max indices: 3\n- 3 output panels from the recorded run\n- indices: 6 captured values (6 shown)\n- valid: 1 captured values (1 shown)\n- converged: 1 captured values (1 shown)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "max indices",
+    "value": "3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-gpu-core-array-result\"><svg class=\"cv-figure\" width=\"640\" height=\"140\" viewBox=\"0 0 640 140\" role=\"img\" aria-label=\"Recorded array inputs and outputs\"><defs><pattern id=\"lens-gpu-spatial-analysis-constrained-delaunay-triangulation-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g></g><g data-panel=\"indices\"><text class=\"cv-label\" x=\"16\" y=\"33\" fill=\"#5c636e\" font-size=\"11\">indices (6)</text><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis-constrained-delaunay-triangulation-snapshots-indices-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"\" x=\"113\" y=\"16\" width=\"83.33333333333333\" height=\"28\" data-token=\"value\"><title>indices[0] = 2</title></rect><text class=\"cv-label\" x=\"154.66666666666666\" y=\"34\" fill=\"#5c636e\" font-size=\"11\" text-anchor=\"middle\" data-numbered=\"true\" data-key=\"0\">2</text><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis-constrained-delaunay-triangulation-snapshots-indices-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\" data-key-space=\"\" x=\"198.33333333333331\" y=\"16\" width=\"83.33333333333333\" height=\"28\" data-token=\"value\"><title>indices[1] = 3</title></rect><text class=\"cv-label\" x=\"239.99999999999997\" y=\"34\" fill=\"#5c636e\" font-size=\"11\" text-anchor=\"middle\" data-numbered=\"true\" data-key=\"1\">3</text><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis-constrained-delaunay-triangulation-snapshots-indices-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\" data-key-space=\"\" x=\"283.66666666666663\" y=\"16\" width=\"83.33333333333333\" height=\"28\" data-token=\"value\"><title>indices[2] = 0</title></rect><text class=\"cv-label\" x=\"325.3333333333333\" y=\"34\" fill=\"#5c636e\" font-size=\"11\" text-anchor=\"middle\" data-numbered=\"true\" data-key=\"2\">0</text><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis-constrained-delaunay-triangulation-snapshots-indices-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\" data-key-space=\"\" x=\"369\" y=\"16\" width=\"83.33333333333333\" height=\"28\" data-token=\"value\"><title>indices[3] = 2</title></rect><text class=\"cv-label\" x=\"410.6666666666667\" y=\"34\" fill=\"#5c636e\" font-size=\"11\" text-anchor=\"middle\" data-numbered=\"true\" data-key=\"3\">2</text><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis-constrained-delaunay-triangulation-snapshots-indices-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"4\" data-key-space=\"\" x=\"454.3333333333333\" y=\"16\" width=\"83.33333333333333\" height=\"28\" data-token=\"value\"><title>indices[4] = 0</title></rect><text class=\"cv-label\" x=\"496\" y=\"34\" fill=\"#5c636e\" font-size=\"11\" text-anchor=\"middle\" data-numbered=\"true\" data-key=\"4\">0</text><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis-constrained-delaunay-triangulation-snapshots-indices-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"5\" data-key-space=\"\" x=\"539.6666666666666\" y=\"16\" width=\"83.33333333333333\" height=\"28\" data-token=\"value\"><title>indices[5] = 1</title></rect><text class=\"cv-label\" x=\"581.3333333333333\" y=\"34\" fill=\"#5c636e\" font-size=\"11\" text-anchor=\"middle\" data-numbered=\"true\" data-key=\"5\">1</text></g><g data-panel=\"valid\"><text class=\"cv-label\" x=\"16\" y=\"73\" fill=\"#5c636e\" font-size=\"11\">valid (1)</text><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis-constrained-delaunay-triangulation-snapshots-valid-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"\" x=\"113\" y=\"56\" width=\"510\" height=\"28\" data-token=\"value\"><title>valid[0] = 1</title></rect><text class=\"cv-label\" x=\"368\" y=\"74\" fill=\"#5c636e\" font-size=\"11\" text-anchor=\"middle\" data-numbered=\"true\" data-key=\"0\">1</text></g><g data-panel=\"converged\"><text class=\"cv-label\" x=\"16\" y=\"113\" fill=\"#5c636e\" font-size=\"11\">converged (1)</text><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis-constrained-delaunay-triangulation-snapshots-converged-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"\" x=\"113\" y=\"96\" width=\"510\" height=\"28\" data-token=\"value\"><title>converged[0] = 1</title></rect><text class=\"cv-label\" x=\"368\" y=\"114\" fill=\"#5c636e\" font-size=\"11\" text-anchor=\"middle\" data-numbered=\"true\" data-key=\"0\">1</text></g></svg></section>",
+    "width": 640,
+    "height": 140
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:12:07.178Z",
+    "runId": "run-24f76daf",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-24f76daf",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

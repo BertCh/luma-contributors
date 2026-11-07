@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.natural-neighbor",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(new GPUNaturalNeighbor(properties));\nreturn properties.output;",
+    "language": "ts",
+    "lineCount": 2
+  },
+  "scenarioId": "gpu-spatial-analysis.natural-neighbor",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.natural-neighbor: sampleValues → predictions. rows: 4. values read back from the GPU run. input sampleValues: 6 rows.",
+  "description": "Result of gpu-spatial-analysis.natural-neighbor: sampleValues → predictions. rows: 4. values read back from the GPU run. input sampleValues: 6 rows.",
+  "llms": "Result of gpu-spatial-analysis.natural-neighbor: sampleValues → predictions\n\n- rows: 4\n- input sampleValues: 6 rows\n- Planar coordinates (arbitrary planar units); uniform scale.\n- 6 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">sampleValues</th><th class=\"cv-col--output\" scope=\"col\">results</th><th class=\"cv-col--output\" scope=\"col\">statuses</th><th class=\"cv-col--output\" scope=\"col\">weights</th><th class=\"cv-col--output\" scope=\"col\">predictions</th></tr></thead><tbody><tr><td data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.13</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.13</td></tr><tr><td data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td></tr><tr><td data-provenance=\"readback\">2.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.13</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.13</td></tr><tr><td data-provenance=\"readback\">1.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.164</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td></tr><tr><td data-provenance=\"readback\">2.13</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.463</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">2.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.373</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"5\">… 18 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input sampleValues · blue: output queries, results, statuses, weights, predictions</p><p class=\"cv-note\">6 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid coordinateModel"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:12:35.564Z",
+    "runId": "run-7afbd87f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7afbd87f",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

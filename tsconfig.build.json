@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./modules/graph"
+    },
+    {
+      "path": "./modules/lenses"
+    },
+    {
+      "path": "./modules/kepler"
+    }
+  ]
+}

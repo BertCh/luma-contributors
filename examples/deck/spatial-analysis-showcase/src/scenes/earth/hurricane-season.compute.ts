@@ -1,0 +1,681 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
+import {HURRICANE_CLASS} from '../../cartography/hue-registry';
+import {
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  GPUTimeWindowFilter
+} from '@luma-contributors/graph/gpu-dataframe';
+import {
+  getGPUTrajectoryPlayheadParameterValues,
+  GPUTrajectoryPlayhead,
+  GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH
+} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {importGraphBuffer} from '../../engine/graph-buffers';
+import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {addKernelPass} from '../../engine/mode-kernels';
+import {createPlaybackClock} from '../../engine/playback';
+import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {SummaryReader} from '../../engine/summary-reader';
+import type {SceneContext, SceneInstance} from '../scene';
+import {
+  formatDayOfYear,
+  getCategoryOfWind,
+  getStormLabel,
+  HURRICANE_CATEGORIES,
+  loadHurricaneTracks
+} from './hurricane-data';
+
+/** Option state of the hurricane season scene. */
+export type HurricaneSeasonOptions = {
+  playing: boolean;
+  time: number;
+  speed: number;
+  loop: boolean;
+  dayRange: readonly [number, number];
+  seasons: readonly [number, number];
+  maxGapHours: number;
+  showTrails: boolean;
+  trailDays: number;
+  tailFade: number;
+  headColor: 'wind' | 'peak';
+  denominator: 'active' | 'share';
+  headSize: number;
+  showBackdrop: boolean;
+  backdropOpacity: number;
+};
+
+const STATUS_INTERVAL_FRAMES = 6;
+const DAYS_IN_YEAR = 365;
+const HOURS_PER_DAY = 24;
+const FIRST_SEASON = 1980;
+const LAST_SEASON = 2025;
+
+/**
+ * Hurricane season on one calendar: the fixes of every storm are re-based to 1 January of their
+ * own year, so the 46 seasons play on top of each other. `GPUTrajectoryPlayhead` places every storm
+ * at the playhead day, `GPUTimeWindowFilter` keeps the trail behind it, and a small kernel reads
+ * the interpolated wind at each head.
+ *
+ * Time is in days since 1 January 00:00 UTC (float32 days are exact to a few seconds over a year).
+ */
+export async function createHurricaneSeason(
+  ctx: SceneContext<HurricaneSeasonOptions>
+): Promise<SceneInstance<HurricaneSeasonOptions>> {
+  const storms = loadHurricaneTracks(ctx.datasets.get('ibtracs-north-atlantic'), {
+    projection: 'azimuthal',
+    timeBase: 'calendar'
+  });
+  const {device} = ctx;
+  const {trackCount, vertexCount, segmentCount} = storms;
+  const resources = new SpatialAnalysisResources(device, 'hurricane-season');
+  const drawProps = {coordinateSystem: COORDINATE_SYSTEM.LNGLAT} as const;
+
+  // Calendar hours to calendar days, for the playhead and the slider.
+  const days = Float32Array.from(storms.timestamps, hours => hours / HOURS_PER_DAY);
+  const segmentStartDays = Float32Array.from(
+    storms.segmentStartTimes,
+    hours => hours / HOURS_PER_DAY
+  );
+  const segmentEndDays = Float32Array.from(storms.segmentEndTimes, hours => hours / HOURS_PER_DAY);
+
+  // ---- Static inputs -------------------------------------------------------------------------
+  const lngLatBuffer = resources.createBuffer('lng-lat', storms.lngLat);
+  const daysBuffer = resources.createBuffer('days', days);
+  const offsetsBuffer = resources.createBuffer('offsets', storms.offsets);
+  const segmentsBuffer = resources.createBuffer('segments', storms.segments);
+  const segmentTracksBuffer = resources.createBuffer('segment-tracks', storms.segmentTracks);
+  const segmentEndsBuffer = resources.createBuffer('segment-ends', storms.segmentEndVertices);
+  const segmentStartDaysBuffer = resources.createBuffer('segment-start-days', segmentStartDays);
+  const segmentEndDaysBuffer = resources.createBuffer('segment-end-days', segmentEndDays);
+  const categoryBuffer = resources.createBuffer('category', storms.category);
+  const windBuffer = resources.createBuffer('wind', storms.wind);
+  const maxCategoryBuffer = resources.createBuffer('max-category', storms.maxCategoryWords);
+  const trackMaskBuffer = resources.createBuffer('track-mask', new Uint32Array(trackCount).fill(1));
+  const segmentMaskBuffer = resources.createBuffer(
+    'segment-mask',
+    new Uint32Array(segmentCount).fill(1)
+  );
+
+  // ---- Playhead graph and head kernel -------------------------------------------------------------
+  const currentPositions = resources.createBuffer('current-positions', trackCount * 8);
+  const segmentRows = resources.createBuffer('segment-rows', trackCount * 4);
+  const segmentFractions = resources.createBuffer('segment-fractions', trackCount * 4);
+  const status = resources.createBuffer('status', trackCount * 4);
+  const activeIds = resources.createBuffer('active-ids', trackCount * 4);
+  const activeCount = resources.createBuffer('active-count', 4);
+  const activeOverflow = resources.createBuffer('active-overflow', 4);
+  const headPositions = resources.createBuffer('head-positions', trackCount * 8);
+  const headWind = resources.createBuffer('head-wind', trackCount * 4);
+  const headCategory = resources.createBuffer('head-category', trackCount * 4);
+  const playheadParameters = resources.createParameterBuffer(
+    'playhead',
+    'float32',
+    GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH
+  );
+  const headDraw = resources.track(
+    new DrawCommandBuffer(device, {
+      id: 'season-head-draw',
+      type: 'draw',
+      commands: [{vertexCount: 6, instanceCount: 0}]
+    })
+  );
+  const playheadGraph = new GPUCommandGraph<void>(device, {id: 'season-playhead'});
+  const currentView = importGraphBuffer(
+    playheadGraph,
+    'current-positions',
+    currentPositions,
+    'float32x2',
+    trackCount
+  );
+  const rowsView = importGraphBuffer(
+    playheadGraph,
+    'segment-rows',
+    segmentRows,
+    'uint32',
+    trackCount
+  );
+  const fractionsView = importGraphBuffer(
+    playheadGraph,
+    'segment-fractions',
+    segmentFractions,
+    'float32',
+    trackCount
+  );
+  const statusView = importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount);
+  playheadGraph.add(
+    new GPUTrajectoryPlayhead({
+      id: 'season-playhead',
+      positions: importGraphBuffer(
+        playheadGraph,
+        'lng-lat',
+        lngLatBuffer,
+        'float32x2',
+        vertexCount
+      ),
+      timestamps: importGraphBuffer(playheadGraph, 'days', daysBuffer, 'float32', vertexCount),
+      trackOffsets: importGraphBuffer(
+        playheadGraph,
+        'offsets',
+        offsetsBuffer,
+        'uint32',
+        trackCount + 1
+      ),
+      parameters: playheadParameters.importToGraph(playheadGraph),
+      output: {
+        currentPositions: currentView,
+        segmentRows: rowsView,
+        segmentFractions: fractionsView,
+        trackStatus: statusView,
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'head-draw-count',
+          headDraw.getInstanceCountData(0)
+        )
+      }
+    })
+  );
+  // Heads: hide storms outside the chosen seasons and read the wind at the head from the
+  // bracketing fixes (the playhead reports the row and the fraction, not the wind).
+  addKernelPass(playheadGraph, {
+    id: 'season-heads',
+    invocationCount: trackCount,
+    declarations: `fn classOf(wind: f32) -> u32 {
+  var value = 0u;
+  if (wind >= 34.0) { value = 1u; }
+  if (wind >= 64.0) { value = 2u; }
+  if (wind >= 83.0) { value = 3u; }
+  if (wind >= 96.0) { value = 4u; }
+  if (wind >= 113.0) { value = 5u; }
+  if (wind >= 137.0) { value = 6u; }
+  return value;
+}`,
+    bindings: [
+      {name: 'currentPositions', view: currentView, type: 'f32', access: 'read'},
+      {name: 'segmentRows', view: rowsView, type: 'u32', access: 'read'},
+      {name: 'fractions', view: fractionsView, type: 'f32', access: 'read'},
+      {name: 'status', view: statusView, type: 'u32', access: 'read'},
+      {
+        name: 'trackMask',
+        view: importGraphBuffer(playheadGraph, 'track-mask', trackMaskBuffer, 'uint32', trackCount),
+        type: 'u32',
+        access: 'read'
+      },
+      {
+        name: 'wind',
+        view: importGraphBuffer(playheadGraph, 'wind', windBuffer, 'float32', vertexCount),
+        type: 'f32',
+        access: 'read'
+      },
+      {
+        name: 'headPositions',
+        view: importGraphBuffer(
+          playheadGraph,
+          'head-positions',
+          headPositions,
+          'float32x2',
+          trackCount
+        ),
+        type: 'f32',
+        access: 'read_write'
+      },
+      {
+        name: 'headWind',
+        view: importGraphBuffer(playheadGraph, 'head-wind', headWind, 'float32', trackCount),
+        type: 'f32',
+        access: 'read_write'
+      },
+      {
+        name: 'headCategory',
+        view: importGraphBuffer(playheadGraph, 'head-category', headCategory, 'uint32', trackCount),
+        type: 'u32',
+        access: 'read_write'
+      }
+    ],
+    body: `let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
+  let shown = status[statusOffset + index] == 1u && trackMask[trackMaskOffset + index] != 0u;
+  var x = nan;
+  var y = nan;
+  var blended = -1.0;
+  var kind = 0u;
+  if (shown) {
+    x = currentPositions[currentPositionsOffset + index * 2u];
+    y = currentPositions[currentPositionsOffset + index * 2u + 1u];
+    let row = segmentRows[segmentRowsOffset + index];
+    let fraction = fractions[fractionsOffset + index];
+    blended = wind[windOffset + row] * (1.0 - fraction) + wind[windOffset + row + 1u] * fraction;
+    kind = classOf(blended);
+  }
+  headPositions[headPositionsOffset + index * 2u] = x;
+  headPositions[headPositionsOffset + index * 2u + 1u] = y;
+  headWind[headWindOffset + index] = blended;
+  headCategory[headCategoryOffset + index] = kind;`
+  });
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
+
+  // ---- Trail (time window) graph ------------------------------------------------------------------
+  const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
+  const trailCount = resources.createBuffer('trail-count', 4);
+  const trailOverflow = resources.createBuffer('trail-overflow', 4);
+  const fadeWeights = resources.createBuffer('fade-weights', segmentCount * 4);
+  const clipFractions = resources.createBuffer('clip-fractions', segmentCount * 8);
+  const windowParameters = resources.createParameterBuffer(
+    'window',
+    'float32',
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
+  );
+  const trailDraw = resources.track(
+    new DrawCommandBuffer(device, {
+      id: 'season-trail-draw',
+      type: 'draw',
+      commands: [{vertexCount: 6, instanceCount: 0}]
+    })
+  );
+  const trailGraph = new GPUCommandGraph<void>(device, {id: 'season-trails'});
+  trailGraph.add(
+    new GPUTimeWindowFilter({
+      id: 'trail-window',
+      timestamps: importGraphBuffer(
+        trailGraph,
+        'segment-start-days',
+        segmentStartDaysBuffer,
+        'float32',
+        segmentCount
+      ),
+      endTimestamps: importGraphBuffer(
+        trailGraph,
+        'segment-end-days',
+        segmentEndDaysBuffer,
+        'float32',
+        segmentCount
+      ),
+      window: windowParameters.importToGraph(trailGraph),
+      additionalPredicates: [
+        {
+          kind: 'selection',
+          mask: importGraphBuffer(
+            trailGraph,
+            'segment-mask',
+            segmentMaskBuffer,
+            'uint32',
+            segmentCount
+          )
+        }
+      ],
+      output: {
+        ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        }
+      }
+    })
+  );
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
+
+  // ---- State -----------------------------------------------------------------------------------
+  const clock = createPlaybackClock(
+    ctx,
+    {time: 'time', play: 'playing', speed: 'speed', loop: 'loop'},
+    {range: [ctx.options.dayRange[0], ctx.options.dayRange[1]], rate: 1, step: 0.25}
+  );
+  let playhead = ctx.options.time;
+  let destroyed = false;
+  let statusStale = true;
+  let chartDay = -1;
+  let lastDenominator: HurricaneSeasonOptions['denominator'] = ctx.options.denominator;
+  let activeByDay = Array.from({length: 4}, () => new Float64Array(DAYS_IN_YEAR));
+  let selectedSeasonCount = 0;
+
+  function writeMasks(): void {
+    const [first, last] = ctx.options.seasons;
+    const trackMask = new Uint32Array(trackCount);
+    let selected = 0;
+    for (let track = 0; track < trackCount; track++) {
+      const inside = storms.season[track] >= first && storms.season[track] <= last;
+      trackMask[track] = inside ? 1 : 0;
+      if (inside) selected++;
+    }
+    const segmentMask = new Uint32Array(segmentCount);
+    for (let segment = 0; segment < segmentCount; segment++) {
+      segmentMask[segment] = trackMask[storms.segmentTracks[segment]];
+    }
+    trackMaskBuffer.write(trackMask);
+    segmentMaskBuffer.write(segmentMask);
+    selectedSeasonCount = Math.max(1, last - first + 1);
+    ctx.setReadout(
+      'seasonsShown',
+      `${first} to ${last}: ${selected} storms in ${last - first + 1} seasons, ${(selected / selectedSeasonCount).toFixed(1)} per season`
+    );
+    // Each selected storm contributes one classed active mark per day. The campfire is smoothed
+    // later, but its four bands always come from the same selected storms as the map.
+    activeByDay = Array.from({length: 4}, () => new Float64Array(DAYS_IN_YEAR));
+    for (let track = 0; track < trackCount; track++) {
+      if (!trackMask[track]) continue;
+      const strongestByDay = new Map<number, number>();
+      for (let vertex = storms.offsets[track]; vertex < storms.offsets[track + 1]; vertex++) {
+        const day = Math.min(DAYS_IN_YEAR - 1, Math.floor(days[vertex]));
+        strongestByDay.set(day, Math.max(strongestByDay.get(day) ?? 0, storms.wind[vertex]));
+      }
+      for (const [day, wind] of strongestByDay) {
+        const category = getCategoryOfWind(wind);
+        const band = category === 0 ? 0 : category === 1 ? 1 : category <= 3 ? 2 : 3;
+        activeByDay[band][day] += 1;
+      }
+    }
+    chartDay = -1;
+    updateCampfire();
+    statusStale = true;
+    ctx.requestLayers();
+  }
+
+  function updateCampfire(): void {
+    const day = Math.min(DAYS_IN_YEAR - 1, Math.max(0, Math.floor(playhead)));
+    if (day === chartDay && ctx.options.denominator === lastDenominator) return;
+    chartDay = day;
+    lastDenominator = ctx.options.denominator;
+    const divisor = ctx.options.denominator === 'share' ? selectedSeasonCount : 1;
+    const smooth = (values: Float64Array) =>
+      Float64Array.from(values, (_, index) => {
+        let total = 0;
+        let count = 0;
+        for (
+          let neighbor = Math.max(0, index - 2);
+          neighbor <= Math.min(DAYS_IN_YEAR - 1, index + 2);
+          neighbor++
+        ) {
+          total += values[neighbor] / divisor;
+          count++;
+        }
+        return total / count;
+      });
+    const bands = activeByDay.map(smooth);
+    const cumulative = bands.map((band, index) =>
+      Float64Array.from(
+        band,
+        (value, dayIndex) =>
+          value + bands.slice(0, index).reduce((sum, lower) => sum + lower[dayIndex], 0)
+      )
+    );
+    const x = Array.from({length: 245}, (_, index) => index + 120);
+    const labels = ['TD', 'TS', 'hurricane (Cat 1–2)', 'major (Cat 3–5)'];
+    ctx.setChart('seasonCampfire', {
+      kind: 'line',
+      series: cumulative.map((band, index) => ({
+        label: labels[index],
+        x,
+        y: band.slice(120, 365),
+        area: true,
+        color: index,
+        width: 1.2
+      })),
+      xLabel: 'month (May–Dec)',
+      yLabel:
+        ctx.options.denominator === 'share' ? 'mean active storms per season' : 'storms active',
+      formatX: value => formatDayOfYear(value),
+      formatY: value => (ctx.options.denominator === 'share' ? value.toFixed(2) : value.toFixed(0)),
+      markers: [
+        {x: day, label: 'playhead'},
+        {x: 252, label: 'NHC climatological reference: 10 Sep'}
+      ],
+      height: 150,
+      description: `Five-day-smoothed stacked active storm bands from 1 May to 31 December, shown as ${ctx.options.denominator === 'share' ? 'mean active storms per season' : 'storms active'}. The 10 September rule is an external NHC climatological reference, not a result calculated from this subset.`
+    });
+    const dailyTotals = Array.from({length: DAYS_IN_YEAR}, (_, index) =>
+      activeByDay.reduce((sum, band) => sum + band[index], 0)
+    );
+    const peak = Math.max(...dailyTotals);
+    // Use the first peak day when several days tie, keeping every band on the same day.
+    const peakDay = dailyTotals.indexOf(peak);
+    const totals = activeByDay.map(band => band[peakDay]);
+    ctx.setReadout('peakActive', `${peak.toFixed(0)} storms active (unsmoothed selected total)`);
+    ctx.setReadout(
+      'peakShare',
+      `${(peak / selectedSeasonCount).toFixed(2)} active storms per season`
+    );
+    ctx.setReadout(
+      'categoryComposition',
+      `${formatDayOfYear(peakDay)}: ${labels.map((label, index) => `${label} ${totals[index].toFixed(0)}`).join(' · ')}`
+    );
+  }
+
+  // ---- Readback ----------------------------------------------------------------------------------
+  const statusReader = new SummaryReader(
+    resources,
+    'season-status',
+    [
+      {buffer: headWind, size: trackCount * 4},
+      {buffer: trailCount, size: 4}
+    ],
+    bytes => {
+      if (destroyed) return;
+      const winds = new Float32Array(bytes, 0, trackCount);
+      const trail = new Uint32Array(bytes, trackCount * 4, 1)[0];
+      const classes = new Float64Array(HURRICANE_CATEGORIES.length);
+      let alive = 0;
+      let strongest = -1;
+      for (let track = 0; track < trackCount; track++) {
+        const wind = winds[track];
+        if (!(wind >= 0)) continue;
+        alive++;
+        classes[getCategoryOfWind(wind)]++;
+        if (strongest < 0 || wind > winds[strongest]) strongest = track;
+      }
+      ctx.setReadout('alive', alive);
+      ctx.setReadout(
+        'strongest',
+        strongest >= 0
+          ? `${getStormLabel(storms, strongest)}: ${winds[strongest].toFixed(0)} kt (${HURRICANE_CATEGORIES[getCategoryOfWind(winds[strongest])]})`
+          : 'no storm alive'
+      );
+      ctx.setReadout('trailSegments', trail);
+      ctx.setChart('classChart', {
+        kind: 'bars',
+        values: classes,
+        labels: HURRICANE_CATEGORIES.map(label => label.replace('Cat ', 'C')),
+        highlight: strongest >= 0 ? [getCategoryOfWind(winds[strongest])] : [],
+        height: 110,
+        yLabel: 'storms',
+        formatY: value => value.toFixed(0),
+        description:
+          'Storms alive on the playhead day by Saffir-Simpson class of the wind at their head.'
+      });
+    }
+  );
+
+  ctx.setReadout(
+    'storms',
+    `${formatCount(trackCount)} storms, ${formatCount(vertexCount)} fixes, ${LAST_SEASON - FIRST_SEASON + 1} seasons overlaid`
+  );
+  writeMasks();
+
+  // ---- Instance -----------------------------------------------------------------------------------
+  return {
+    getCompiledGraphs: () => [playheadCompiled, trailCompiled],
+
+    setOption(id) {
+      switch (id) {
+        case 'dayRange':
+          clock.setRange(ctx.options.dayRange[0], ctx.options.dayRange[1]);
+          break;
+        case 'seasons':
+          writeMasks();
+          break;
+        case 'denominator':
+          chartDay = -1;
+          updateCampfire();
+          break;
+        case 'time':
+        case 'playing':
+        case 'speed':
+        case 'loop':
+        case 'maxGapHours':
+        case 'trailDays':
+        case 'tailFade':
+          statusStale = true;
+          break;
+        default:
+          ctx.requestLayers();
+      }
+    },
+
+    onThemeChange() {
+      ctx.requestLayers();
+    },
+
+    encode(commandEncoder, frame) {
+      const options = ctx.options;
+      playhead = clock.advance(frame);
+      const hours = Math.round((playhead - Math.floor(playhead)) * 24);
+      ctx.setReadout(
+        'clock',
+        `${formatDayOfYear(playhead)}, ${String(hours % 24).padStart(2, '0')}:00 UTC`
+      );
+      updateCampfire();
+
+      playheadParameters.write(
+        getGPUTrajectoryPlayheadParameterValues({
+          playhead,
+          maximumGap: options.maxGapHours / HOURS_PER_DAY
+        })
+      );
+      playheadCompiled.encode(commandEncoder, {parameters: undefined});
+
+      if (options.showTrails) {
+        windowParameters.write(
+          getGPUTimeWindowFilterParameterValues({
+            start: playhead - options.trailDays,
+            end: playhead,
+            startFadeDuration: options.trailDays * options.tailFade
+          })
+        );
+        trailCompiled.encode(commandEncoder, {parameters: undefined});
+      }
+
+      if (statusStale || frame.frameIndex % STATUS_INTERVAL_FRAMES === 0) {
+        statusReader.markStale();
+        statusStale = false;
+      }
+      statusReader.flush(commandEncoder);
+    },
+
+    getLayers() {
+      const options = ctx.options;
+      const dark = ctx.theme() === 'dark';
+      const layers: Layer[] = [];
+      if (options.showBackdrop) {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'season-backdrop',
+            ...drawProps,
+            segments: segmentsBuffer,
+            instanceCount: segmentCount,
+            values: trackMaskBuffer,
+            valueFormat: 'uint32',
+            valueIndices: segmentTracksBuffer,
+            colormap: 'mask',
+            color: dark ? [190, 200, 220, 255] : [60, 70, 90, 255],
+            noDataColor: [0, 0, 0, 0],
+            widthPixels: 1,
+            opacity: options.backdropOpacity
+          })
+        );
+      }
+      if (options.showTrails) {
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'season-trails',
+            ...drawProps,
+            segments: segmentsBuffer,
+            ids: trailIds,
+            drawCommands: trailDraw,
+            weights: fadeWeights,
+            clipFractions,
+            values: categoryBuffer,
+            valueFormat: 'uint32',
+            valueIndices: segmentEndsBuffer,
+            colormap: 'category',
+            palette: HURRICANE_CLASS[ctx.ground()],
+            widthPixels: 2.6
+          })
+        );
+      }
+      const headProps =
+        options.headColor === 'wind'
+          ? {
+              values: headCategory,
+              valueFormat: 'uint32' as const,
+              colormap: 'category' as const,
+              palette: HURRICANE_CLASS[ctx.ground()]
+            }
+          : {
+              values: maxCategoryBuffer,
+              valueFormat: 'uint32' as const,
+              colormap: 'category' as const,
+              palette: HURRICANE_CLASS[ctx.ground()]
+            };
+      layers.push(
+        new SpatialAnalysisPointLayer({
+          id: 'season-head-halo',
+          ...drawProps,
+          positions: headPositions,
+          ids: activeIds,
+          drawCommands: headDraw,
+          radiusPixels: options.headSize + 2.2,
+          color: dark ? [10, 14, 24, 235] : [255, 255, 255, 235]
+        }),
+        new SpatialAnalysisPointLayer({
+          id: `season-heads-${options.headColor}`,
+          ...drawProps,
+          positions: headPositions,
+          ids: activeIds,
+          drawCommands: headDraw,
+          radiusPixels: options.headSize,
+          opacity: 1,
+          ...headProps
+        })
+      );
+      return layers;
+    },
+
+    destroy() {
+      destroyed = true;
+      statusReader.stop();
+      resources.destroy();
+    }
+  };
+}

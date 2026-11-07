@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "label": null,
+  "generatedAt": "2026-10-31T20:05:34.407Z",
+  "environment": {
+    "browser": "Chromium 151.0.7922.34 (headless)",
+    "deviceReport": null,
+    "tier": "unknown",
+    "tierReasons": [
+      "No device report was available"
+    ],
+    "gitRevision": "cc97a1c148a737d620d903c3f4424d8d23bca74b-dirty"
+  },
+  "runs": [
+    {
+      "rows": 1000000,
+      "evaluation": {
+        "tier": "unknown",
+        "rows": 1000000,
+        "results": [],
+        "summary": {
+          "passed": 0,
+          "failed": 0,
+          "unavailable": 0,
+          "blocked": 0
+        },
+        "verdict": "incomplete",
+        "missingTargets": [
+          "filterLatency",
+          "brushLatency",
+          "histogramLatency",
+          "styleLatency",
+          "linkedSummaryLatency",
+          "frameTime",
+          "uploadTime",
+          "memoryAccounted",
+          "warmUploadBytes",
+          "warmReadbackBytes"
+        ]
+      },
+      "rawSamples": {},
+      "notes": [
+        "Blocked: Admission or load failed: page.waitForFunction: Error: Dataset memory budget exceeded",
+        "Error: Dataset memory budget exceeded\n    at KeplerDatasetRegistry.assertCapacity (http://127.0.0.1:5318/@fs/Users/robertchristie/Documents/GitHub/vis.gl-build/luma-contributors/modules/kepler/src/runtime/dataset-registry.ts:452:10)\n    at KeplerDatasetRegistry.reserveMemoryDirect (http://127.0.0.1:5318/@fs/Users/robertchristie/Documents/GitHub/vis.gl-build/luma-contributors/modules/kepler/src/runtime/dataset-registry.ts:103:8)\n    at KeplerDatasetRegistry.reserveMemory (http://127.0.0.1:5318/@fs/Users/robertchristie/Documents/GitHub/vis.gl-build/luma-contributors/modules/kepler/src/runtime/dataset-registry.ts:95:16)\n    at new GPUKeplerSelectionScopes (http://127.0.0.1:5318/@fs/Users/robertchristie/Documents/GitHub/vis.gl-build/luma-contributors/modules/kepler/src/selection/gpu-selection-scopes.ts:79:38)\n    at new ResidentScopeBinding (http://127.0.0.1:5318/src/resident-scope-binding.ts:59:13)\n    at new ComputeRuntime (http://127.0.0.1:5318/src/compute-runtime.ts:132:19)\n    at initializeDevice (http://127.0.0.1:5318/src/main.tsx:2489:13)\n    at Object.onDeckInitialized (http://127.0.0.1:5318/src/main.tsx:2790:41)\n    at MapContainer._onDeckInitialized (http://127.0.0.1:5318/node_modules/.vite/deps/esm-Brhr_HAQ.js?v=bfff76ac:58632:51)\n    at Object.onDeviceInitialized (http://127.0.0.1:5318/node_modules/.vite/deps/esm-Brhr_HAQ.js?v=bfff76ac:58929:22)"
+      ]
+    }
+  ],
+  "verdict": "incomplete"
+}

@@ -1,0 +1,179 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {assert} from '@luma.gl/core';
+import type {
+  GPUCommandGraph,
+  GPUCommandNode,
+  GPUCommandNodeProducer,
+  GraphDataView
+} from '@luma-contributors/graph/gpu-core';
+import type {GPURasterBufferBand, GPURasterMetadata} from './types';
+import {getRasterBandViews, getRasterBufferBandNodes} from './raster-band-utils';
+import {createWGSLKernelNode} from '../utils/wgsl-kernel-nodes';
+import {createRasterCountNodes} from './remote-sensing/raster-kernel-utils';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {
+  requireRasterLength,
+  validateRasterExpansionGraph,
+  validateRasterExpansionViews
+} from './raster-expansion-utils';
+
+/** Caller-owned prepared surface and provenance. */
+export type GPURasterFillNoDataOutput = {
+  values: GraphDataView<'float32'>;
+  validity: GraphDataView<'uint32'>;
+  filled: GraphDataView<'uint32'>;
+  /** One row; missing cells for which the bounded search found no valid source. */
+  unresolvedCount: GraphDataView<'uint32'>;
+};
+/** Continuous interpolation of original valid samples; filled samples never become donors. */
+export type GPURasterFillNoDataProps = {
+  id?: string;
+  grid: GPURasterMetadata;
+  input: GPURasterBufferBand;
+  /**
+   * Euclidean distance in pixel coordinates; positive integer, at most 256. Every missing pixel
+   * scans a (2 * maximumDistance + 1)^2 window in one dispatch, so on large grids with many missing
+   * pixels a large distance can approach GPU watchdog limits; prefer the smallest sufficient distance.
+   */
+  maximumDistance: number;
+  /** Original-donor nearest, all-donor IDW, or GDAL four-quadrant IDW (no smoothing). */
+  method?: 'nearest' | 'inverse-distance' | 'gdal-four-quadrant';
+  output: GPURasterFillNoDataOutput;
+};
+
+/**
+ * Bounded, deterministic nodata interpolation on the GPU. Original valid calibrated values are
+ * preserved exactly. The default all-donor IDW and nearest contracts remain distinct from
+ * the explicit GDAL four-quadrant selection. All methods use zero smoothing iterations.
+ */
+export class GPURasterFillNoData implements GPUCommandNodeProducer {
+  readonly id: string;
+  readonly props: GPURasterFillNoDataProps;
+  constructor(props: GPURasterFillNoDataProps) {
+    this.id = props.id ?? 'raster-fill-nodata';
+    this.props = props;
+    // Reject unsupported interpolation names instead of silently choosing all-donor IDW.
+    assert(
+      props.method === undefined ||
+        ['nearest', 'inverse-distance', 'gdal-four-quadrant'].includes(props.method)
+    );
+    const count = validateRasterExpansionViews(
+      this.id,
+      props.grid,
+      getRasterBandViews(props.input),
+      Object.values(props.output)
+    );
+    for (const view of [props.output.values, props.output.validity, props.output.filled])
+      requireRasterLength(view, count);
+    requireRasterLength(props.output.unresolvedCount, 1);
+    // The disk search is deliberately bounded to avoid unbounded shader work.
+    assert(
+      Number.isInteger(props.maximumDistance) &&
+        props.maximumDistance > 0 &&
+        props.maximumDistance <= 256
+    );
+  }
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {props, id} = this;
+    const {output, grid} = props;
+    const count = grid.width * grid.height;
+    validateRasterExpansionGraph(id, graph, [
+      ...getRasterBandViews(props.input),
+      ...Object.values(output)
+    ]);
+    const source = getRasterBufferBandNodes(graph, id, props.input, grid, true);
+    return [
+      ...source.nodes,
+      createWGSLKernelNode(graph, {
+        id,
+        operation: 'GPURasterFillNoData',
+        invocationCount: count,
+        bindings: [
+          {name: 'source', view: source.band.storage.values, type: 'f32', access: 'read'},
+          {name: 'sourceValidity', view: source.band.validity!, type: 'u32', access: 'read'},
+          {name: 'values', view: output.values, type: 'f32', access: 'read_write'},
+          {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'},
+          {name: 'filled', view: output.filled, type: 'u32', access: 'read_write'}
+        ],
+        declarations: IS_FINITE_VALUE_WGSL,
+        body: `var result = source[sourceOffset + index];
+var valid = sourceValidity[sourceValidityOffset + index] != 0u;
+let originalValid = valid;
+if (!valid) {
+  var total = 0.0; var weight = 0.0; var nearestDistance = 3.402823e38;
+  let column = i32(index % ${grid.width}u); let row = i32(index / ${grid.width}u);
+  ${
+    props.method === 'gdal-four-quadrant'
+      ? getFourQuadrantSearch(grid, props.maximumDistance)
+      : `  for (var rowOffset = -${props.maximumDistance}; rowOffset <= ${props.maximumDistance}; rowOffset++) {
+    for (var columnOffset = -${props.maximumDistance}; columnOffset <= ${props.maximumDistance}; columnOffset++) {
+      let squaredDistance = columnOffset * columnOffset + rowOffset * rowOffset;
+      let sampleColumn = column + columnOffset; let sampleRow = row + rowOffset;
+      if (squaredDistance == 0 || squaredDistance > ${props.maximumDistance * props.maximumDistance} || sampleColumn < 0 || sampleRow < 0 || sampleColumn >= ${grid.width} || sampleRow >= ${grid.height}) { continue; }
+      let sampleIndex = u32(sampleRow) * ${grid.width}u + u32(sampleColumn);
+      if (sourceValidity[sourceValidityOffset + sampleIndex] == 0u) { continue; }
+      let distance = sqrt(f32(squaredDistance));
+      ${props.method === 'nearest' ? `if (distance < nearestDistance) { nearestDistance = distance; total = source[sourceOffset + sampleIndex]; weight = 1.0; }` : `let contribution = 1.0 / distance; total += source[sourceOffset + sampleIndex] * contribution; weight += contribution;`}
+    }
+  }`
+  }
+
+  valid = weight > 0.0; result = total / max(weight, 1.0e-30);
+}
+valid = valid && isFiniteValue(result);
+values[valuesOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), result, valid);
+validity[validityOffset + index] = u32(valid);
+filled[filledOffset + index] = u32(valid && !originalValid);`
+      }),
+      ...createRasterCountNodes(graph, {
+        id: `${id}-unresolved`,
+        operation: 'GPURasterFillNoData',
+        values: output.validity,
+        count,
+        condition: 'value == 0u',
+        output: output.unresolvedCount
+      })
+    ];
+  }
+}
+
+/** GDAL-compatible search order, quadrant axes, border clamping and strict distance ties. */
+function getFourQuadrantSearch(grid: GPURasterMetadata, maximumDistance: number): string {
+  return `var quadrantDistances = array<i32, 4>(${(maximumDistance + 1) ** 2}, ${(maximumDistance + 1) ** 2}, ${(maximumDistance + 1) ** 2}, ${(maximumDistance + 1) ** 2});
+  var quadrantValues: array<f32, 4>;
+  for (var step = 0; step <= ${maximumDistance}; step++) {
+    for (var side = 0; side < 2; side++) {
+      if (side == 1 && step == 0) { continue; }
+      let sampleColumn = select(max(0, column - step), min(${grid.width - 1}, column + step), side == 1);
+      for (var direction = 0; direction < 2; direction++) {
+        let quadrant = u32(side * 2 + direction);
+        for (var verticalOffset = direction; verticalOffset <= ${maximumDistance}; verticalOffset++) {
+          let sampleRow = select(row - verticalOffset, row + verticalOffset, direction == 1);
+          if (sampleRow < 0 || sampleRow >= ${grid.height}) { break; }
+          let sampleIndex = u32(sampleRow) * ${grid.width}u + u32(sampleColumn);
+          if (sourceValidity[sourceValidityOffset + sampleIndex] == 0u) { continue; }
+          let horizontalOffset = sampleColumn - column;
+          let squaredDistance = horizontalOffset * horizontalOffset + verticalOffset * verticalOffset;
+          if (squaredDistance > 0 && squaredDistance < quadrantDistances[quadrant]) {
+            quadrantDistances[quadrant] = squaredDistance;
+            quadrantValues[quadrant] = source[sourceOffset + sampleIndex];
+          }
+          // Only the closest original donor in this column/direction can win.
+          break;
+        }
+      }
+    }
+  }
+  for (var quadrant = 0u; quadrant < 4u; quadrant++) {
+    if (quadrantDistances[quadrant] <= ${maximumDistance ** 2}) {
+      let contribution = inverseSqrt(f32(quadrantDistances[quadrant]));
+      total += quadrantValues[quadrant] * contribution;
+      weight += contribution;
+    }
+  }`;
+}

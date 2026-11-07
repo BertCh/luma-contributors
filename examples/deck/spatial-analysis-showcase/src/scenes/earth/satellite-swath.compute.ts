@@ -1,0 +1,747 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {Layer} from '@deck.gl/core';
+import type {Buffer} from '@luma.gl/core';
+import {
+  getGPUOutlineGeometryParameterValues,
+  GPU_EARTH_MEAN_RADIUS_METERS,
+  getGPUOutlineGeometryVerticesPerInput,
+  GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH,
+  GPUOutlineGeometry
+} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {importGraphBuffer} from '../../engine/graph-buffers';
+import {addKernelPass} from '../../engine/mode-kernels';
+import {createPlaybackClock} from '../../engine/playback';
+import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {SummaryReader} from '../../engine/summary-reader';
+import type {SceneContext, SceneInstance} from '../scene';
+import {SatelliteCellLayer, SatelliteSwathLayer} from './satellite-layers';
+import {
+  createTrackSubset,
+  formatSatelliteClock,
+  loadSatelliteTracks,
+  SATELLITE_DATASET_ID,
+  SATELLITE_GROUP_COLORS,
+  selectTracksByGroup,
+  type SatelliteInfo,
+  type TrackSubset
+} from './satellite-tracks';
+import {toRadians} from '@math.gl/core';
+
+/** Sensors with a nominal swath, in the order of the select option. */
+export const SWATH_SENSORS = [
+  'OLI',
+  'C-SAR IW',
+  'MSI',
+  'OLCI',
+  'MODIS',
+  'TROPOMI',
+  'AVHRR',
+  'VIIRS'
+] as const;
+type Sensor = (typeof SWATH_SENSORS)[number];
+
+/** Option state of the swath coverage scene. */
+export type SatelliteSwathOptions = {
+  play: boolean;
+  time: number;
+  speed: number;
+  loop: boolean;
+  satellites: string;
+  swathMode: 'nominal' | 'custom';
+  customWidth: number;
+  compareGeometry: boolean;
+  showCoverage: boolean;
+  showSwaths: boolean;
+  swathOpacity: number;
+};
+
+/** Coverage grid: 1 degree cells from 180 W to 180 E and 85 S to 85 N. */
+export const COVERAGE_GRID = {
+  minLongitude: -180,
+  minLatitude: -85,
+  cell: 1,
+  columns: 360,
+  rows: 170
+};
+const JOIN_SEGMENTS = 16;
+/** Kilometers per degree of arc on the mean-radius sphere, for drawing the width bracket only. */
+const KILOMETERS_PER_DEGREE_OF_ARC = toRadians(GPU_EARTH_MEAN_RADIUS_METERS) / 1000;
+/**
+ * Great-circle point-to-arc test for the first-cover kernel. It is kept local on purpose: the
+ * library's `GEODESIC_WGSL` (`geodesicSegmentFraction` / `geodesicSegmentDistance`) models segments
+ * as straight in longitude/latitude and finds the closest point in the local equirectangular frame,
+ * which is exact only for kilometer-long segments. These ground-track steps are about 1,000 km and
+ * follow great circles, so the test needs true cross-track distance on the arc.
+ * Returns (angular distance in radians, fraction along the arc) from a unit-vector cell center to
+ * the arc a-b given as longitude/latitude degrees: the cross-track distance when the foot of the
+ * perpendicular lies inside the arc, otherwise the distance to the nearer endpoint.
+ */
+const GREAT_CIRCLE_ARC_WGSL = /* wgsl */ `
+const ARC_DEGREES_TO_RADIANS: f32 = 0.017453292;
+fn arcUnitVector(lngLat: vec2<f32>) -> vec3<f32> {
+  let lambda = lngLat.x * ARC_DEGREES_TO_RADIANS;
+  let phi = lngLat.y * ARC_DEGREES_TO_RADIANS;
+  let cosPhi = sin((90.0 - abs(lngLat.y)) * ARC_DEGREES_TO_RADIANS);
+  return vec3<f32>(cosPhi * cos(lambda), cosPhi * sin(lambda), sin(phi));
+}
+fn arcAngle(u: vec3<f32>, v: vec3<f32>) -> f32 {
+  return atan2(length(cross(u, v)), dot(u, v));
+}
+fn arcDistanceAndFraction(cellVector: vec3<f32>, startVector: vec3<f32>, endVector: vec3<f32>) -> vec2<f32> {
+  let normalRaw = cross(startVector, endVector);
+  let normalLength = length(normalRaw);
+  let arcAngleTotal = atan2(normalLength, dot(startVector, endVector));
+  if (normalLength < 1.0e-6) {
+    return vec2<f32>(arcAngle(cellVector, startVector), 0.0);
+  }
+  let normal = normalRaw / normalLength;
+  let offset = dot(cellVector, normal);
+  let foot = cellVector - normal * offset;
+  let footLength = length(foot);
+  if (footLength > 1.0e-6) {
+    let footVector = foot / footLength;
+    if (dot(cross(startVector, footVector), normal) >= 0.0 && dot(cross(footVector, endVector), normal) >= 0.0) {
+      let along = arcAngle(startVector, footVector);
+      return vec2<f32>(asin(clamp(abs(offset), 0.0, 1.0)), clamp(along / arcAngleTotal, 0.0, 1.0));
+    }
+  }
+  let toStart = arcAngle(cellVector, startVector);
+  let toEnd = arcAngle(cellVector, endVector);
+  if (toStart <= toEnd) {
+    return vec2<f32>(toStart, 0.0);
+  }
+  return vec2<f32>(toEnd, 1.0);
+}`;
+const TIME_BIN_SECONDS = 150;
+
+type SensorClass = {
+  sensor: Sensor;
+  subset: TrackSubset;
+  swathKm: number;
+  outline: Buffer;
+  times: Buffer;
+  satellites: Buffer;
+};
+
+/**
+ * Swath coverage of the Earth observation satellites. `GPUOutlineGeometry` buffers every ground
+ * track by half the swath width (one node per instrument, because the contributor has one distance
+ * per node) and a layer draws the triangles up to the playhead. A bespoke compute pass then finds,
+ * for every 1-degree cell, the first time any swath reached it, from which the covered area over time
+ * and the time to 50, 90 and 99 percent follow.
+ */
+export async function createSatelliteSwath(
+  ctx: SceneContext<SatelliteSwathOptions>
+): Promise<SceneInstance<SatelliteSwathOptions>> {
+  const tracks = loadSatelliteTracks(ctx.datasets.get(SATELLITE_DATASET_ID));
+  const resources = new SpatialAnalysisResources(ctx.device, 'satellite-swath');
+  const rowsPerInput = getGPUOutlineGeometryVerticesPerInput(JOIN_SEGMENTS);
+  const cellCount = COVERAGE_GRID.columns * COVERAGE_GRID.rows;
+  let destroyed = false;
+
+  const earthObservationTracks = selectTracksByGroup(tracks, [4]);
+  const all = createTrackSubset(tracks, earthObservationTracks);
+  const satelliteVisible = resources.createBuffer(
+    'satellite-visible',
+    new Uint32Array(tracks.satelliteCount).fill(1)
+  );
+  const infoOf = (satellite: number): SatelliteInfo => tracks.satellites[satellite];
+
+  // ---- Outline graphs ------------------------------------------------------------------------------
+  function createOutlineBuffers(name: string, subset: TrackSubset) {
+    return {
+      positions: resources.createBuffer(`${name}-positions`, subset.positions),
+      offsets: resources.createBuffer(`${name}-offsets`, subset.offsets),
+      outline: resources.createBuffer(`${name}-outline`, subset.vertexCount * rowsPerInput * 8),
+      times: resources.createBuffer(`${name}-times`, subset.timestamps),
+      satellites: resources.createBuffer(`${name}-satellites`, subset.vertexSatellite)
+    };
+  }
+
+  const nominalGraph = new GPUCommandGraph<void>(ctx.device, {id: 'satellite-swath-nominal'});
+  const classes: SensorClass[] = [];
+  for (const sensor of SWATH_SENSORS) {
+    const trackList = earthObservationTracks.filter(
+      track => infoOf(tracks.satelliteIndex[track]).sensor === sensor
+    );
+    if (!trackList.length) continue;
+    const subset = createTrackSubset(tracks, trackList);
+    const swathKm = subset.swathKm[0];
+    const name = sensor.replace(/[^A-Za-z0-9]/g, '-');
+    const buffers = createOutlineBuffers(`nominal-${name}`, subset);
+    const parameters = resources.createParameterBuffer(
+      `nominal-${name}-distance`,
+      'float32',
+      GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH,
+      getGPUOutlineGeometryParameterValues({distance: (swathKm * 1000) / 2})
+    );
+    nominalGraph.add(
+      new GPUOutlineGeometry({
+        id: `outline-${name}`,
+        positions: importGraphBuffer(
+          nominalGraph,
+          `${name}-positions`,
+          buffers.positions,
+          'float32x2',
+          subset.vertexCount
+        ),
+        geometryType: 'lines',
+        lineOffsets: importGraphBuffer(
+          nominalGraph,
+          `${name}-offsets`,
+          buffers.offsets,
+          'uint32',
+          subset.trackCount + 1
+        ),
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          datum: 'EPSG:4326',
+          metric: 'great-circle',
+          units: 'meters'
+        },
+        joinSegments: JOIN_SEGMENTS,
+        parameters: parameters.importToGraph(nominalGraph),
+        output: {
+          positions: importGraphBuffer(
+            nominalGraph,
+            `${name}-outline`,
+            buffers.outline,
+            'float32x2',
+            subset.vertexCount * rowsPerInput
+          )
+        }
+      })
+    );
+    classes.push({sensor, subset, swathKm, ...buffers});
+  }
+  const nominalCompiled = resources.track(await nominalGraph.compileAsync());
+
+  const customBuffers = createOutlineBuffers('custom', all);
+  const customParameters = resources.createParameterBuffer(
+    'custom-distance',
+    'float32',
+    GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH,
+    getGPUOutlineGeometryParameterValues({distance: (ctx.options.customWidth * 1000) / 2})
+  );
+  const customGraph = new GPUCommandGraph<void>(ctx.device, {id: 'satellite-swath-custom'});
+  customGraph.add(
+    new GPUOutlineGeometry({
+      id: 'outline-custom',
+      positions: importGraphBuffer(
+        customGraph,
+        'positions',
+        customBuffers.positions,
+        'float32x2',
+        all.vertexCount
+      ),
+      geometryType: 'lines',
+      lineOffsets: importGraphBuffer(
+        customGraph,
+        'offsets',
+        customBuffers.offsets,
+        'uint32',
+        all.trackCount + 1
+      ),
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        datum: 'EPSG:4326',
+        metric: 'great-circle',
+        units: 'meters'
+      },
+      joinSegments: JOIN_SEGMENTS,
+      parameters: customParameters.importToGraph(customGraph),
+      output: {
+        positions: importGraphBuffer(
+          customGraph,
+          'outline',
+          customBuffers.outline,
+          'float32x2',
+          all.vertexCount * rowsPerInput
+        )
+      }
+    })
+  );
+  const customCompiled = resources.track(await customGraph.compileAsync());
+
+  // ---- Coverage kernel -----------------------------------------------------------------------------
+  // One row per consecutive vertex pair of the Earth observation tracks.
+  let segmentCount = 0;
+  for (let track = 0; track < all.trackCount; track++) {
+    segmentCount += Math.max(0, all.offsets[track + 1] - all.offsets[track] - 1);
+  }
+  const segmentGeometry = new Float32Array(segmentCount * 4);
+  const segmentTimes = new Float32Array(segmentCount * 2);
+  const segmentSatellite = new Uint32Array(segmentCount);
+  let segmentRow = 0;
+  for (let track = 0; track < all.trackCount; track++) {
+    for (let vertex = all.offsets[track]; vertex < all.offsets[track + 1] - 1; vertex++) {
+      segmentGeometry.set(all.positions.subarray(vertex * 2, vertex * 2 + 4), segmentRow * 4);
+      segmentTimes[segmentRow * 2] = all.timestamps[vertex];
+      segmentTimes[segmentRow * 2 + 1] = all.timestamps[vertex + 1];
+      segmentSatellite[segmentRow] = all.satelliteIndex[track];
+      segmentRow++;
+    }
+  }
+  const segmentBuffer = resources.createBuffer('coverage-segments', segmentGeometry);
+  const segmentTimeBuffer = resources.createBuffer('coverage-segment-times', segmentTimes);
+  const halfWidthBuffer = resources.createBuffer('coverage-half-widths', segmentCount * 4);
+  const firstCoverBuffer = resources.createBuffer('first-cover', cellCount * 4);
+  const coverageGraph = new GPUCommandGraph<void>(ctx.device, {id: 'satellite-coverage'});
+  addKernelPass(coverageGraph, {
+    id: 'first-cover',
+    invocationCount: cellCount,
+    declarations: `const COLUMNS: u32 = ${COVERAGE_GRID.columns}u;
+const SEGMENTS: u32 = ${segmentCount}u;
+const CELL: f32 = ${COVERAGE_GRID.cell.toFixed(4)};
+const MIN_LONGITUDE: f32 = ${COVERAGE_GRID.minLongitude.toFixed(4)};
+const MIN_LATITUDE: f32 = ${COVERAGE_GRID.minLatitude.toFixed(4)};
+const EARTH_RADIUS_METERS: f32 = ${GPU_EARTH_MEAN_RADIUS_METERS.toFixed(1)};
+const RADIANS_TO_DEGREES: f32 = 57.29578;
+${GREAT_CIRCLE_ARC_WGSL}`,
+    bindings: [
+      {
+        name: 'segments',
+        view: importGraphBuffer(
+          coverageGraph,
+          'segments',
+          segmentBuffer,
+          'float32',
+          segmentCount * 4
+        ),
+        type: 'f32',
+        access: 'read'
+      },
+      {
+        name: 'segmentTimes',
+        view: importGraphBuffer(
+          coverageGraph,
+          'segment-times',
+          segmentTimeBuffer,
+          'float32',
+          segmentCount * 2
+        ),
+        type: 'f32',
+        access: 'read'
+      },
+      {
+        name: 'halfWidths',
+        view: importGraphBuffer(
+          coverageGraph,
+          'half-widths',
+          halfWidthBuffer,
+          'float32',
+          segmentCount
+        ),
+        type: 'f32',
+        access: 'read'
+      },
+      {
+        name: 'firstCover',
+        view: importGraphBuffer(
+          coverageGraph,
+          'first-cover',
+          firstCoverBuffer,
+          'float32',
+          cellCount
+        ),
+        type: 'f32',
+        access: 'read_write'
+      }
+    ],
+    // For the cell center, the earliest time any segment passes within its half swath. Distances are
+    // great-circle: cross-track to the segment arc, or to the nearer endpoint beyond it.
+    body: `let column = index % COLUMNS;
+  let row = index / COLUMNS;
+  let cellLongitude = MIN_LONGITUDE + (f32(column) + 0.5) * CELL;
+  let cellLatitude = MIN_LATITUDE + (f32(row) + 0.5) * CELL;
+  let cellVector = arcUnitVector(vec2<f32>(cellLongitude, cellLatitude));
+  var bestTime = 1.0e30;
+  for (var segment = 0u; segment < SEGMENTS; segment = segment + 1u) {
+    let halfWidth = halfWidths[halfWidthsOffset + segment];
+    if (halfWidth <= 0.0) {
+      continue;
+    }
+    let base = segmentsOffset + segment * 4u;
+    let startLngLat = vec2<f32>(segments[base], segments[base + 1u]);
+    let endLngLat = vec2<f32>(segments[base + 2u], segments[base + 3u]);
+    let halfAngle = halfWidth * 1000.0 / EARTH_RADIUS_METERS;
+    // Latitude prefilter; the 0.1 degree margin covers the arc bulging past its endpoints.
+    let reach = halfAngle * RADIANS_TO_DEGREES + 0.1;
+    let southLatitude = min(startLngLat.y, endLngLat.y);
+    let northLatitude = max(startLngLat.y, endLngLat.y);
+    if (cellLatitude < southLatitude - reach || cellLatitude > northLatitude + reach) {
+      continue;
+    }
+    let timeBase = segmentTimesOffset + segment * 2u;
+    let startTime = segmentTimes[timeBase];
+    let endTime = segmentTimes[timeBase + 1u];
+    if (startTime >= bestTime) {
+      continue;
+    }
+    let hit = arcDistanceAndFraction(cellVector, arcUnitVector(startLngLat), arcUnitVector(endLngLat));
+    if (hit.x <= halfAngle) {
+      bestTime = min(bestTime, startTime + hit.y * (endTime - startTime));
+    }
+  }
+  firstCover[firstCoverOffset + index] = select(-1.0, bestTime, bestTime < 1.0e29);`
+  });
+  const coverageCompiled = resources.track(await coverageGraph.compileAsync());
+
+  // ---- Selection and widths -----------------------------------------------------------------------
+  const nominalWidthOf = (satellite: number) => infoOf(satellite).swathKm;
+
+  function isSelected(satellite: number, selection: string): boolean {
+    const info = infoOf(satellite);
+    if (info.group !== 4) return false;
+    if (selection === 'all') return true;
+    if (selection === 'narrow') return info.swathKm < 300;
+    if (selection === 'wide') return info.swathKm > 1000;
+    return info.sensor === selection;
+  }
+
+  function widthOf(satellite: number): number {
+    return ctx.options.swathMode === 'custom' ? ctx.options.customWidth : nominalWidthOf(satellite);
+  }
+
+  let selectedCount = 0;
+  function writeSelection(): void {
+    const selection = ctx.options.satellites;
+    const visible = new Uint32Array(tracks.satelliteCount);
+    selectedCount = 0;
+    for (let satellite = 0; satellite < tracks.satelliteCount; satellite++) {
+      visible[satellite] = isSelected(satellite, selection) ? 1 : 0;
+      selectedCount += visible[satellite];
+    }
+    satelliteVisible.write(visible);
+    const halfWidths = new Float32Array(segmentCount);
+    for (let segment = 0; segment < segmentCount; segment++) {
+      const satellite = segmentSatellite[segment];
+      halfWidths[segment] = visible[satellite] ? widthOf(satellite) / 2 : 0;
+    }
+    halfWidthBuffer.write(halfWidths);
+    coverageDirty = true;
+    const satellite = tracks.satellites.findIndex((_info, index) => visible[index] === 1);
+    if (satellite < 0) {
+      ctx.setReadout('selectedWidth', 'unknown');
+      ctx.setAnnotations('swath-width', null);
+      return;
+    }
+    const info = infoOf(satellite);
+    const width = widthOf(satellite);
+    const track = tracks.satelliteIndex.findIndex(index => index === satellite);
+    const vertex = track < 0 ? -1 : tracks.offsets[track];
+    if (!(width > 0) || vertex < 0) {
+      ctx.setReadout('selectedWidth', `${info.name}: unknown width`);
+      ctx.setAnnotations('swath-width', null);
+      return;
+    }
+    const longitude = tracks.positions[vertex * 2];
+    const latitude = tracks.positions[vertex * 2 + 1];
+    const longitudeHalfWidth =
+      width / (2 * KILOMETERS_PER_DEGREE_OF_ARC * Math.max(Math.cos(toRadians(latitude)), 0.1));
+    ctx.setReadout(
+      'selectedWidth',
+      `${info.name} · ${width.toLocaleString()} km${ctx.options.swathMode === 'custom' ? ' hypothetical' : ' nominal'}`
+    );
+    ctx.setAnnotations('swath-width', [
+      {
+        kind: 'bracket',
+        id: 'swath-width-bracket',
+        from: [longitude - longitudeHalfWidth, latitude],
+        to: [longitude + longitudeHalfWidth, latitude],
+        text: `${width.toLocaleString()} km${ctx.options.swathMode === 'custom' ? ' hypothetical' : ' nominal swath'}`,
+        side: 'right',
+        tone: 'accent',
+        priority: 900
+      }
+    ]);
+  }
+
+  let coverageDirty = true;
+  let customDirty = true;
+  let nominalDone = false;
+  let result: {
+    firstCover: Float32Array;
+    cumulative: Float64Array;
+    covered: number;
+  } | null = null;
+
+  // Area weight of each cell row: cos(latitude), the area of a longitude/latitude cell.
+  const rowWeights = new Float64Array(COVERAGE_GRID.rows);
+  let totalWeight = 0;
+  for (let row = 0; row < COVERAGE_GRID.rows; row++) {
+    const latitude = COVERAGE_GRID.minLatitude + (row + 0.5) * COVERAGE_GRID.cell;
+    rowWeights[row] = Math.cos(toRadians(latitude));
+    totalWeight += rowWeights[row] * COVERAGE_GRID.columns;
+  }
+  const binCount = Math.ceil(tracks.durationSeconds / TIME_BIN_SECONDS);
+
+  const reader = new SummaryReader(
+    resources,
+    'first-cover',
+    [{buffer: firstCoverBuffer, size: cellCount * 4}],
+    bytes => {
+      if (destroyed) return;
+      const firstCover = new Float32Array(bytes);
+      const perBin = new Float64Array(binCount + 1);
+      let covered = 0;
+      for (let cell = 0; cell < cellCount; cell++) {
+        const time = firstCover[cell];
+        if (time < 0) continue;
+        const weight = rowWeights[Math.floor(cell / COVERAGE_GRID.columns)];
+        perBin[Math.min(binCount, Math.floor(time / TIME_BIN_SECONDS))] += weight;
+        covered += weight;
+      }
+      const cumulative = new Float64Array(binCount + 1);
+      let running = 0;
+      for (let bin = 0; bin <= binCount; bin++) {
+        running += perBin[bin];
+        cumulative[bin] = running / totalWeight;
+      }
+      result = {firstCover, cumulative, covered: covered / totalWeight};
+      describeResult();
+    }
+  );
+
+  function timeToFraction(target: number): string | null {
+    if (!result) return '...';
+    for (let bin = 0; bin <= binCount; bin++) {
+      if (result.cumulative[bin] >= target) {
+        const seconds = (bin + 1) * TIME_BIN_SECONDS;
+        return `${Math.floor(seconds / 3600)} h ${String(Math.round((seconds % 3600) / 60)).padStart(2, '0')} min`;
+      }
+    }
+    return null;
+  }
+
+  function describeResult(): void {
+    if (!result) return;
+    const hours = Array.from({length: binCount + 1}, (_, bin) => (bin * TIME_BIN_SECONDS) / 3600);
+    const percent = Float64Array.from(result.cumulative, value => value * 100);
+    ctx.setChart('coverageChart', {
+      kind: 'line',
+      xLabel: 'hours since 00:00 UTC',
+      yLabel: '% of analysed area reached',
+      xDomain: [0, tracks.durationSeconds / 3600],
+      yDomain: [0, 100],
+      height: 130,
+      series: [{label: 'covered', x: hours, y: percent, area: true}],
+      markers: [{x: clock.time / 3600, label: 'now'}],
+      formatX: value => value.toFixed(1),
+      formatY: value => `${Math.round(value)}`,
+      guides: [
+        {y: 50, label: '50%'},
+        {y: 90, label: '90%'}
+      ],
+      description:
+        'Share of the Earth between 85 S and 85 N inside at least one swath, against time. Cells are 1 degree and weighted by area.'
+    });
+    ctx.setReadout(
+      'covered3h',
+      `${(result.covered * 100).toFixed(1)}% of analysed area (85° S–85° N)`
+    );
+    ctx.setReadout('t50', timeToFraction(0.5));
+    ctx.setReadout('t90', timeToFraction(0.9));
+    ctx.setReadout('t99', timeToFraction(0.99));
+    updateNow();
+  }
+
+  function updateNow(): void {
+    if (!result) return;
+    const bin = Math.min(binCount, Math.floor(clock.time / TIME_BIN_SECONDS));
+    ctx.setReadout('coveredNow', `${(result.cumulative[bin] * 100).toFixed(1)}%`);
+  }
+
+  const clock = createPlaybackClock(
+    ctx,
+    {time: 'time', play: 'play', speed: 'speed', loop: 'loop'},
+    {range: [0, tracks.durationSeconds], rate: 1, step: 30}
+  );
+  writeSelection();
+  ctx.setReadout(
+    'satelliteCount',
+    `${selectedCount} satellites, ${formatCount(segmentCount)} track segments`
+  );
+  let lastChartBin = -1;
+
+  return {
+    getCompiledGraphs: () => [nominalCompiled, customCompiled, coverageCompiled],
+
+    setOption(id) {
+      switch (id) {
+        case 'satellites':
+        case 'swathMode':
+          writeSelection();
+          customDirty = true;
+          ctx.setReadout(
+            'satelliteCount',
+            `${selectedCount} satellites, ${formatCount(segmentCount)} track segments`
+          );
+          ctx.requestLayers();
+          break;
+        case 'customWidth':
+          customParameters.write(
+            getGPUOutlineGeometryParameterValues({distance: (ctx.options.customWidth * 1000) / 2})
+          );
+          customDirty = true;
+          writeSelection();
+          ctx.requestLayers();
+          break;
+        case 'time':
+        case 'play':
+        case 'speed':
+        case 'loop':
+          break;
+        default:
+          ctx.requestLayers();
+      }
+    },
+
+    onThemeChange() {
+      ctx.requestLayers();
+    },
+
+    onGroundChange() {
+      ctx.requestLayers();
+    },
+
+    encode(commandEncoder, frame) {
+      const playhead = clock.advance(frame);
+      ctx.setReadout('clock', formatSatelliteClock(tracks, playhead));
+      if (!nominalDone) {
+        nominalCompiled.encode(commandEncoder, {parameters: undefined});
+        nominalDone = true;
+      }
+      if (customDirty && ctx.options.swathMode === 'custom') {
+        customCompiled.encode(commandEncoder, {parameters: undefined});
+        customDirty = false;
+      }
+      if (coverageDirty) {
+        coverageCompiled.encode(commandEncoder, {parameters: undefined});
+        coverageDirty = false;
+        reader.request(commandEncoder);
+      } else {
+        reader.flush(commandEncoder);
+      }
+      const bin = Math.floor(playhead / TIME_BIN_SECONDS);
+      if (bin !== lastChartBin) {
+        lastChartBin = bin;
+        describeResult();
+      }
+    },
+
+    getLayers() {
+      const options = ctx.options;
+      const dark = ctx.ground() === 'dark';
+      const layers: Layer[] = [];
+      if (options.showCoverage) {
+        layers.push(
+          new SatelliteCellLayer({
+            id: 'satellite-coverage-cells',
+            values: firstCoverBuffer,
+            gridSize: [COVERAGE_GRID.columns, COVERAGE_GRID.rows],
+            grid: [
+              COVERAGE_GRID.minLongitude,
+              COVERAGE_GRID.minLatitude,
+              COVERAGE_GRID.cell,
+              COVERAGE_GRID.cell
+            ],
+            valueRange: [0, tracks.durationSeconds],
+            discardAtOrBelow: -0.5,
+            discardAbove: clock.time,
+            noDataColor: dark ? [190, 205, 225, 160] : [55, 70, 100, 145],
+            hatchNoData: true,
+            elapsedClasses: true,
+            opacity: 0.8
+          })
+        );
+      }
+      if (options.showSwaths) {
+        const color = SATELLITE_GROUP_COLORS[4];
+        const swathColor: [number, number, number, number] = dark
+          ? [color[0], color[1], color[2], 255]
+          : [120, 60, 200, 255];
+        const drawn =
+          options.swathMode === 'custom'
+            ? [
+                {
+                  id: 'custom',
+                  subset: all,
+                  outline: customBuffers.outline,
+                  times: customBuffers.times,
+                  satellites: customBuffers.satellites
+                }
+              ]
+            : classes.map(item => ({
+                id: item.sensor,
+                subset: item.subset,
+                outline: item.outline,
+                times: item.times,
+                satellites: item.satellites
+              }));
+        if (options.compareGeometry && options.swathMode === 'custom') {
+          // The nominal outlines share the same playhead and selected-satellite mask. This is a
+          // geometric compare only; the first-reach surface remains the selected custom scenario.
+          for (const item of classes) {
+            layers.push(
+              new SatelliteSwathLayer({
+                id: `satellite-swath-nominal-compare-${item.sensor}`,
+                positions: item.outline,
+                times: item.times,
+                satellites: item.satellites,
+                visibleSatellites: satelliteVisible,
+                rowsPerInput,
+                vertexCount: item.subset.vertexCount * rowsPerInput,
+                timeLimit: clock.time,
+                color: dark ? [135, 190, 240, 255] : [36, 105, 168, 255],
+                opacity: Math.min(0.42, options.swathOpacity + 0.08)
+              })
+            );
+          }
+        }
+        for (const item of drawn) {
+          layers.push(
+            new SatelliteSwathLayer({
+              id: `satellite-swath-${item.id}`,
+              positions: item.outline,
+              times: item.times,
+              satellites: item.satellites,
+              visibleSatellites: satelliteVisible,
+              rowsPerInput,
+              vertexCount: item.subset.vertexCount * rowsPerInput,
+              timeLimit: clock.time,
+              color: swathColor,
+              opacity: options.swathOpacity
+            })
+          );
+        }
+      }
+      return layers;
+    },
+
+    getTooltip(event) {
+      if (!result || !event.coordinate) return null;
+      const [longitude, latitude] = event.coordinate;
+      const column = Math.floor((longitude - COVERAGE_GRID.minLongitude) / COVERAGE_GRID.cell);
+      const row = Math.floor((latitude - COVERAGE_GRID.minLatitude) / COVERAGE_GRID.cell);
+      if (column < 0 || column >= COVERAGE_GRID.columns || row < 0 || row >= COVERAGE_GRID.rows) {
+        return null;
+      }
+      const time = result.firstCover[row * COVERAGE_GRID.columns + column];
+      if (time < 0) return 'not reached by any selected swath in 3 h';
+      return `first covered at ${formatSatelliteClock(tracks, time)}`;
+    },
+
+    destroy() {
+      destroyed = true;
+      reader.stop();
+      resources.destroy();
+    }
+  };
+}
+
+export type {SatelliteInfo};

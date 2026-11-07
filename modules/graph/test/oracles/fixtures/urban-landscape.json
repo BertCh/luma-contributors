@@ -1,0 +1,84 @@
+{
+  "versions": {
+    "R": "4.4.3",
+    "terra": "1.9.50",
+    "landscapemetrics": "2.2.1"
+  },
+  "conventions": {
+    "area": "square projected units; upstream hectares multiplied by 10000",
+    "connectivity": 4,
+    "background": "NA",
+    "edge": "count_boundary TRUE versus FALSE"
+  },
+  "cases": [
+    {
+      "name": "two-square-patches",
+      "width": 4,
+      "height": 2,
+      "cellSize": [1, 1],
+      "patches": [0, 0, 1, 1, 0, 0, 1, 1],
+      "patchClasses": [0, 1],
+      "area": [4, 4],
+      "perimeter": [8, 8],
+      "internalEdge": [2, 2],
+      "boundaryEdge": [8, 8],
+      "mesh": [2, 2],
+      "cohesion": [77.345908033901352, 77.345908033901352],
+      "aggregation": [100, 100],
+      "contagion": 13.903595255631874,
+      "landscapeMesh": 3.9999999999999996,
+      "landscapeAggregation": 100,
+      "landscapeCohesion": 77.345908033901352
+    },
+    {
+      "name": "interior-background",
+      "width": 4,
+      "height": 3,
+      "cellSize": [1, 1],
+      "patches": [0, 0, 1, 1, 0, 4294967295, 1, 1, 0, 0, 1, 1],
+      "patchClasses": [0, 1],
+      "area": [5, 6.0000000000000009],
+      "perimeter": [12, 10],
+      "internalEdge": [2, 2],
+      "boundaryEdge": [12, 10],
+      "mesh": [2.2727272727272729, 3.2727272727272738],
+      "cohesion": [79.1403554243673, 84.718871944802473],
+      "aggregation": [80, 100],
+      "contagion": 21.32987737911165,
+      "landscapeMesh": 5.5454545454545459,
+      "landscapeAggregation": 90.909090909090907,
+      "landscapeCohesion": 81.802566178767165
+    },
+    {
+      "name": "single-cell-class",
+      "width": 4,
+      "height": 1,
+      "cellSize": [1, 1],
+      "patches": [0, 1, 1, 1],
+      "patchClasses": [0, 1],
+      "area": [1, 3.0000000000000004],
+      "perimeter": [4, 8],
+      "internalEdge": [1, 1],
+      "boundaryEdge": [4, 8],
+      "mesh": [0.25, 2.2500000000000009],
+      "cohesion": [0, 84.52994616207485],
+      "aggregation": [null, 100],
+      "contagion": 37.418541630608857,
+      "landscapeMesh": 2.5,
+      "landscapeAggregation": 75,
+      "landscapeCohesion": 65.594457356122504
+    }
+  ],
+  "proximity": {
+    "width": 9,
+    "height": 5,
+    "patches": [0, 0, 0, 4294967295, 4294967295, 4294967295, 1, 1, 1, 0, 0, 0, 4294967295, 4294967295, 4294967295, 1, 1, 1, 0, 0, 0, 4294967295, 4294967295, 4294967295, 1, 1, 1, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295],
+    "patchClasses": [0, 0],
+    "area": [9, 9],
+    "nearest": [4, 4],
+    "composedProximity": [0.5625, 0.5625],
+    "coreEdge": [1, 1],
+    "coreOpen": [4, 4],
+    "convention": "Direct ENN/core; proximity is composed, no lsm_p_prox exists in pinned package."
+  }
+}

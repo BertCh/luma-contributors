@@ -1,0 +1,213 @@
+{
+  "id": "ncovr-new-jersey",
+  "version": 1,
+  "kind": "polygons",
+  "license": "Source data provided as-is with no warranties; no separate license asserted",
+  "attribution": "Messner, Anselin, Hawkins, Deane, Tolnay and Baller (2000), NCOVR; GeoDa archive prepared by Luc Anselin",
+  "count": 21,
+  "bbox": [
+    -75.570587,
+    38.95657,
+    -73.896568,
+    41.350479
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "fips": {
+      "file": "fips.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 21,
+      "description": "Source NCOVR FIPSNO county unit identifier"
+    },
+    "unemployment1970": {
+      "file": "unemployment1970.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "percent",
+      "description": "Civilian labor-force unemployment rate, 1970 census year"
+    },
+    "unemployment1980": {
+      "file": "unemployment1980.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "percent",
+      "description": "Civilian labor-force unemployment rate, 1980 census year"
+    },
+    "unemployment1990": {
+      "file": "unemployment1990.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "percent",
+      "description": "Civilian labor-force unemployment rate, 1990 census year"
+    },
+    "familyPoverty1969": {
+      "file": "familyPoverty1969.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "percent",
+      "description": "Families below poverty, 1969/1970 census vintage"
+    },
+    "familyPoverty1979": {
+      "file": "familyPoverty1979.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "percent",
+      "description": "Families below poverty, 1979/1980 census vintage"
+    },
+    "familyPoverty1989": {
+      "file": "familyPoverty1989.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "percent",
+      "description": "Families below poverty, 1989/1990 census vintage"
+    },
+    "logDensity1970": {
+      "file": "logDensity1970.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "natural-log persons per square mile",
+      "description": "Source log population density, 1970"
+    },
+    "logDensity1980": {
+      "file": "logDensity1980.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "natural-log persons per square mile",
+      "description": "Source log population density, 1980"
+    },
+    "logDensity1990": {
+      "file": "logDensity1990.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "natural-log persons per square mile",
+      "description": "Source log population density, 1990"
+    },
+    "population1970": {
+      "file": "population1970.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "persons",
+      "description": "Decennial county population, 1970"
+    },
+    "population1980": {
+      "file": "population1980.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "persons",
+      "description": "Decennial county population, 1980"
+    },
+    "population1990": {
+      "file": "population1990.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "persons",
+      "description": "Decennial county population, 1990"
+    },
+    "logPopulation1970": {
+      "file": "logPopulation1970.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "natural-log persons",
+      "description": "Source log population, 1970"
+    },
+    "logPopulation1980": {
+      "file": "logPopulation1980.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "natural-log persons",
+      "description": "Source log population, 1980"
+    },
+    "logPopulation1990": {
+      "file": "logPopulation1990.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 21,
+      "unit": "natural-log persons",
+      "description": "Source log population, 1990"
+    },
+    "queenOffsets": {
+      "file": "queenOffsets.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 22
+    },
+    "queenNeighbors": {
+      "file": "queenNeighbors.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 82
+    },
+    "rookOffsets": {
+      "file": "rookOffsets.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 22
+    },
+    "rookNeighbors": {
+      "file": "rookNeighbors.bin",
+      "dtype": "uint32",
+      "components": 1,
+      "length": 82
+    }
+  },
+  "geometry": {
+    "type": "polygons",
+    "file": "counties.geojson"
+  },
+  "properties": {
+    "rowOrder": "ascending NCOVR FIPSNO; all columns and geometry features use this order",
+    "units": "21 New Jersey county units represented in the NCOVR Horan-Hargis archive historical common-support template; the template label does not imply changed present county identities",
+    "analysisProjection": "Spherical azimuthal-equidistant planar-meter frame centered at [-74.55, 40.05], used consistently for local analysis and inverse-projected map display; source GeoJSON remains longitude/latitude",
+    "sourceVariables": "UE = percent civilian labor force unemployed; FP = percent of families below the period poverty threshold; DNL = log population density; PO = decennial population counts; POL = log population",
+    "limitations": "The three periods are 1970, 1980 and 1990 source observations, not an annual series. FP uses source census-vintage thresholds; FP59/1960 is excluded because its $3,000 threshold differs. Nominal income fields are not included.",
+    "sourceTerms": "GeoDa describes the data as provided as-is with no warranties. No additional license is asserted here.",
+    "derivedFilesSha256": {
+      "counties.geojson": "870a55eb53ef54da29b49928d6f9679624f772f0339ef4dd055a4fa248ca7c30",
+      "familyPoverty1969.bin": "5e4eeb8282366131218c3e2e3f625c5b2403212112db87cb78d0ed6426953721",
+      "familyPoverty1979.bin": "465c124b18977879f31eef598f66f4576c75ed42c0deb19965cb5af3a1ee16ce",
+      "familyPoverty1989.bin": "8b2a53eb9cca9b2a5bed1e65049ba4c735148073f9a19548364a055ca6d65f9a",
+      "fips.bin": "cf9c6573ee335e21b0a5685ca21d470367e5ae83996416afceffa2b71e3637a8",
+      "logDensity1970.bin": "33515aa957d66389eca9afeee7d42bea9855d3dad55486565e4801712d701d2d",
+      "logDensity1980.bin": "2d1d367f90cc121e578e5e97e9b10e8b00600e78ae8e2ad61c0e7077e3253599",
+      "logDensity1990.bin": "98814f38ae9f9ab9999bc68e0a227fd079f1d2315508a3d72392d845e274374d",
+      "logPopulation1970.bin": "660b927d2fdd11dd95fee1fa9e270ba9b934ff27fa2eb13da9475cf2918398db",
+      "logPopulation1980.bin": "7b8ea361b58269590d408666009669a3463eb5a46b303a4d1ccdcb155a09a421",
+      "logPopulation1990.bin": "f1e15e29bbaa7275c547e45cef6bd87cdcb6dcd3c4aeb836c4c01b4f3e636522",
+      "names.json": "cf2e985bdad55aaab853fcd920646753fb9404c6533255229353e3d9033cde52",
+      "population1970.bin": "721b28c62cede279a5af089442d1fc99bf0c7c45987689c7736f343992292e63",
+      "population1980.bin": "7425d0f74acf5618d25324b9d0aab556818f1fd9b9175e9b049e27a649ff5354",
+      "population1990.bin": "5b673ee039415ea4ae734a915952f8cb92182138000aa1e7db86562f2b6a1d04",
+      "queenNeighbors.bin": "994987d371c1a4bef1c0f41f33aa0377df95d66d2be8d7c70356d2318a76cded",
+      "queenOffsets.bin": "24a3ebb988d5bdaccc94b4e2a58794656ee7c70f213c0017e1708b32e4d1d035",
+      "rookNeighbors.bin": "994987d371c1a4bef1c0f41f33aa0377df95d66d2be8d7c70356d2318a76cded",
+      "rookOffsets.bin": "24a3ebb988d5bdaccc94b4e2a58794656ee7c70f213c0017e1708b32e4d1d035",
+      "unemployment1970.bin": "e7dc4a37825c06a92856ddb29c594323e744673050a3b8c25064f6fa2a722e16",
+      "unemployment1980.bin": "68c20545c6142e3bb98db642b976f7c5b1cfc2a19d1c9aba14051c0895f5e1da",
+      "unemployment1990.bin": "ae6bb3a2bd374be037d29dfccca81cda2501623c4cc8bd0cba5340ddba481f15"
+    },
+    "sources": {
+      "data": "https://geodacenter.github.io/data-and-lab/ncovr/",
+      "archive": "https://geodacenter.github.io/data-and-lab/data/ncovr.zip",
+      "archiveSha256": "e8cb04e6da634c6cd21808bd8cfe4dad6e295b22e8d40cc628e666887719cfe9",
+      "codebook": "NCOVR codebook.pdf in the archive",
+      "suppliedCodebookSha256": "229aac156c4005e70c2b43d15c69c73c0aacf4884a6af55f57487dbffe6b3de7",
+      "sourceHashVerification": "verified against pinned archive and codebook",
+      "attribution": "Messner, Anselin, Hawkins, Deane, Tolnay and Baller (2000), An Atlas of the Spatial Patterning of County-Level Homicide, 1960-1990; archive prepared by Luc Anselin, last updated 2003-10-04"
+    }
+  }
+}

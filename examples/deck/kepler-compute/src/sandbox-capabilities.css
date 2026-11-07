@@ -1,0 +1,25 @@
+.sandbox-capabilities {
+  margin-top: 20px;
+  border-top: 1px solid #405168;
+  padding-top: 14px;
+  color: #c5d4e4;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sandbox-capabilities summary { cursor: pointer; color: #e9eff7; }
+.sandbox-capabilities > summary { font-weight: 650; font-size: 14px; }
+.sandbox-capabilities input, .sandbox-capabilities select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #577084;
+  border-radius: 4px;
+  background: #0c1726;
+  color: #e9eff7;
+  font: inherit;
+}
+.sandbox-capabilities :focus-visible { outline: 2px solid #7ed6fa; outline-offset: 2px; }
+.sandbox-capabilities-results { max-height: 420px; overflow-y: auto; overscroll-behavior: contain; }
+.sandbox-capabilities-results > details { padding: 10px 4px; border-bottom: 1px solid #405168; }
+.sandbox-capabilities-results p { margin: 8px 0; }
+.sandbox-capabilities-stage { color: #7ed6fa; }

@@ -1,0 +1,542 @@
+{
+  "device": {
+    "type": "webgpu",
+    "vendor": "apple",
+    "renderer": "",
+    "version": "",
+    "gpu": "apple",
+    "gpuType": "unknown",
+    "gpuBackend": "unknown",
+    "gpuArchitecture": "metal-3",
+    "fallback": false,
+    "featureLevel": "max",
+    "subgroupMinSize": 32,
+    "subgroupMaxSize": 32,
+    "shadingLanguage": "wgsl",
+    "shadingLanguageVersion": 100
+  },
+  "results": [
+    {
+      "operation": "flow",
+      "size": 8,
+      "selective": false,
+      "uploadedBytes": 124,
+      "outputBytes": 92,
+      "uploadAndPreparationMilliseconds": 1.5,
+      "compilationMilliseconds": 1.0999999940395355,
+      "firstExecutionMilliseconds": 3.7000000029802322,
+      "medianWarmMilliseconds": 0.800000011920929,
+      "readbackMilliseconds": 0.7999999970197678,
+      "status": [
+        1,
+        1,
+        10,
+        0,
+        1,
+        1116471296,
+        10,
+        1
+      ]
+    },
+    {
+      "operation": "flow",
+      "size": 32,
+      "selective": false,
+      "uploadedBytes": 508,
+      "outputBytes": 284,
+      "uploadAndPreparationMilliseconds": 0.5,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 2.4000000059604645,
+      "medianWarmMilliseconds": 0.7000000029802322,
+      "readbackMilliseconds": 0.4000000059604645,
+      "status": [
+        1,
+        1,
+        10,
+        0,
+        1,
+        1134231552,
+        10,
+        1
+      ]
+    },
+    {
+      "operation": "flow",
+      "size": 128,
+      "selective": false,
+      "uploadedBytes": 2044,
+      "outputBytes": 1052,
+      "uploadAndPreparationMilliseconds": 0.29999999701976776,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 3.6000000089406967,
+      "medianWarmMilliseconds": 1.300000011920929,
+      "readbackMilliseconds": 0.5999999940395355,
+      "status": [
+        1,
+        1,
+        10,
+        0,
+        1,
+        1151254528,
+        10,
+        1
+      ]
+    },
+    {
+      "operation": "louvain",
+      "size": 4,
+      "selective": false,
+      "uploadedBytes": 72,
+      "outputBytes": 548,
+      "uploadAndPreparationMilliseconds": 0.3999999910593033,
+      "compilationMilliseconds": 0.10000000894069672,
+      "firstExecutionMilliseconds": 1,
+      "medianWarmMilliseconds": 0.5999999940395355,
+      "readbackMilliseconds": 0.7000000029802322,
+      "status": [
+        1,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "operation": "louvain",
+      "size": 16,
+      "selective": false,
+      "uploadedBytes": 1032,
+      "outputBytes": 596,
+      "uploadAndPreparationMilliseconds": 0.20000000298023224,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 13,
+      "medianWarmMilliseconds": 5,
+      "readbackMilliseconds": 0.4000000059604645,
+      "status": [
+        1,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "operation": "louvain",
+      "size": 32,
+      "selective": false,
+      "uploadedBytes": 4104,
+      "outputBytes": 660,
+      "uploadAndPreparationMilliseconds": 0.29999999701976776,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 44.8999999910593,
+      "medianWarmMilliseconds": 28.900000005960464,
+      "readbackMilliseconds": 0.4000000059604645,
+      "status": [
+        1,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "operation": "time-routing",
+      "size": 8,
+      "selective": false,
+      "uploadedBytes": 156,
+      "outputBytes": 80,
+      "uploadAndPreparationMilliseconds": 0.5,
+      "compilationMilliseconds": 0.10000000894069672,
+      "firstExecutionMilliseconds": 2.3999999910593033,
+      "medianWarmMilliseconds": 0.30000001192092896,
+      "readbackMilliseconds": 0.29999999701976776,
+      "status": [
+        1,
+        1,
+        7,
+        1088466002
+      ]
+    },
+    {
+      "operation": "time-routing",
+      "size": 64,
+      "selective": false,
+      "uploadedBytes": 1276,
+      "outputBytes": 528,
+      "uploadAndPreparationMilliseconds": 0.20000000298023224,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 2.5,
+      "medianWarmMilliseconds": 0.7000000029802322,
+      "readbackMilliseconds": 0.7000000029802322,
+      "status": [
+        1,
+        1,
+        63,
+        1115815060
+      ]
+    },
+    {
+      "operation": "time-routing",
+      "size": 256,
+      "selective": false,
+      "uploadedBytes": 5116,
+      "outputBytes": 2064,
+      "uploadAndPreparationMilliseconds": 0.29999999701976776,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 3.1000000089406967,
+      "medianWarmMilliseconds": 0.4000000059604645,
+      "readbackMilliseconds": 0.7000000029802322,
+      "status": [
+        1,
+        1,
+        255,
+        1133585932
+      ]
+    },
+    {
+      "operation": "point-routing",
+      "size": 8,
+      "selective": false,
+      "uploadedBytes": 152,
+      "outputBytes": 160,
+      "uploadAndPreparationMilliseconds": 0.5,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 2.7999999970197678,
+      "medianWarmMilliseconds": 0.29999999701976776,
+      "readbackMilliseconds": 0.30000001192092896,
+      "status": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "operation": "point-routing",
+      "size": 64,
+      "selective": false,
+      "uploadedBytes": 824,
+      "outputBytes": 1056,
+      "uploadAndPreparationMilliseconds": 0.29999999701976776,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 3.1000000089406967,
+      "medianWarmMilliseconds": 0.6000000089406967,
+      "readbackMilliseconds": 0.5999999940395355,
+      "status": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "operation": "point-routing",
+      "size": 128,
+      "selective": false,
+      "uploadedBytes": 1592,
+      "outputBytes": 2080,
+      "uploadAndPreparationMilliseconds": 0.20000000298023224,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 2.8999999910593033,
+      "medianWarmMilliseconds": 0.7000000029802322,
+      "readbackMilliseconds": 1.0999999940395355,
+      "status": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "operation": "facility",
+      "size": 4,
+      "selective": false,
+      "uploadedBytes": 88,
+      "outputBytes": 40,
+      "uploadAndPreparationMilliseconds": 0.4000000059604645,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 1.7999999970197678,
+      "medianWarmMilliseconds": 0.7000000029802322,
+      "readbackMilliseconds": 0.699999988079071,
+      "status": [
+        1,
+        1,
+        1,
+        16
+      ]
+    },
+    {
+      "operation": "facility",
+      "size": 8,
+      "selective": false,
+      "uploadedBytes": 296,
+      "outputBytes": 56,
+      "uploadAndPreparationMilliseconds": 0.20000000298023224,
+      "compilationMilliseconds": 0.29999999701976776,
+      "firstExecutionMilliseconds": 2.2000000029802322,
+      "medianWarmMilliseconds": 0.7000000029802322,
+      "readbackMilliseconds": 1.0999999940395355,
+      "status": [
+        1,
+        1,
+        1,
+        256
+      ]
+    },
+    {
+      "operation": "facility",
+      "size": 16,
+      "selective": false,
+      "uploadedBytes": 1096,
+      "outputBytes": 88,
+      "uploadAndPreparationMilliseconds": 0.29999999701976776,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 4.199999988079071,
+      "medianWarmMilliseconds": 3.2000000029802322,
+      "readbackMilliseconds": 0.5999999940395355,
+      "status": [
+        1,
+        1,
+        1,
+        65536
+      ]
+    },
+    {
+      "operation": "raam",
+      "size": 4,
+      "selective": false,
+      "uploadedBytes": 120,
+      "outputBytes": 112,
+      "uploadAndPreparationMilliseconds": 0.6000000089406967,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 1.5999999940395355,
+      "medianWarmMilliseconds": 1.199999988079071,
+      "readbackMilliseconds": 0.7000000029802322,
+      "status": [
+        1,
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "operation": "raam",
+      "size": 16,
+      "selective": false,
+      "uploadedBytes": 1176,
+      "outputBytes": 1168,
+      "uploadAndPreparationMilliseconds": 0.30000001192092896,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 2.800000011920929,
+      "medianWarmMilliseconds": 0.800000011920929,
+      "readbackMilliseconds": 0.5999999940395355,
+      "status": [
+        1,
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "operation": "raam",
+      "size": 64,
+      "selective": false,
+      "uploadedBytes": 8600,
+      "outputBytes": 8720,
+      "uploadAndPreparationMilliseconds": 0.30000001192092896,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 4.5999999940395355,
+      "medianWarmMilliseconds": 2.5,
+      "readbackMilliseconds": 0.9000000059604645,
+      "status": [
+        1,
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "operation": "kalman",
+      "size": 32,
+      "selective": false,
+      "uploadedBytes": 412,
+      "outputBytes": 2192,
+      "uploadAndPreparationMilliseconds": 0.5999999940395355,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 3,
+      "medianWarmMilliseconds": 0.5999999940395355,
+      "readbackMilliseconds": 0.7999999970197678,
+      "status": null
+    },
+    {
+      "operation": "kalman",
+      "size": 512,
+      "selective": false,
+      "uploadedBytes": 6292,
+      "outputBytes": 34832,
+      "uploadAndPreparationMilliseconds": 0.5,
+      "compilationMilliseconds": 0.10000000894069672,
+      "firstExecutionMilliseconds": 2.800000011920929,
+      "medianWarmMilliseconds": 0.30000001192092896,
+      "readbackMilliseconds": 0.29999999701976776,
+      "status": null
+    },
+    {
+      "operation": "kalman",
+      "size": 4096,
+      "selective": false,
+      "uploadedBytes": 50196,
+      "outputBytes": 278544,
+      "uploadAndPreparationMilliseconds": 0.9000000059604645,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 3.2000000029802322,
+      "medianWarmMilliseconds": 1,
+      "readbackMilliseconds": 1.0999999940395355,
+      "status": null
+    },
+    {
+      "operation": "restriction",
+      "size": 32,
+      "selective": false,
+      "uploadedBytes": 424,
+      "outputBytes": 944,
+      "uploadAndPreparationMilliseconds": 0.7000000029802322,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 2.4000000059604645,
+      "medianWarmMilliseconds": 0.7000000029802322,
+      "readbackMilliseconds": 0.699999988079071,
+      "status": null
+    },
+    {
+      "operation": "restriction",
+      "size": 512,
+      "selective": false,
+      "uploadedBytes": 6304,
+      "outputBytes": 14864,
+      "uploadAndPreparationMilliseconds": 0.29999999701976776,
+      "compilationMilliseconds": 0.09999999403953552,
+      "firstExecutionMilliseconds": 1.5,
+      "medianWarmMilliseconds": 0.7000000029802322,
+      "readbackMilliseconds": 0.6000000089406967,
+      "status": null
+    },
+    {
+      "operation": "restriction",
+      "size": 4096,
+      "selective": false,
+      "uploadedBytes": 50208,
+      "outputBytes": 118800,
+      "uploadAndPreparationMilliseconds": 1.0999999940395355,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 3.1000000089406967,
+      "medianWarmMilliseconds": 0.7000000029802322,
+      "readbackMilliseconds": 0.6000000089406967,
+      "status": null
+    },
+    {
+      "operation": "similarity",
+      "size": 64,
+      "selective": false,
+      "uploadedBytes": 9104,
+      "outputBytes": 1036,
+      "uploadAndPreparationMilliseconds": 1.7999999970197678,
+      "compilationMilliseconds": 0.7000000029802322,
+      "firstExecutionMilliseconds": 1.5,
+      "medianWarmMilliseconds": 0.7999999970197678,
+      "readbackMilliseconds": 1.0999999940395355,
+      "status": [
+        64,
+        64,
+        0
+      ]
+    },
+    {
+      "operation": "similarity",
+      "size": 64,
+      "selective": true,
+      "uploadedBytes": 9104,
+      "outputBytes": 1036,
+      "uploadAndPreparationMilliseconds": 0.699999988079071,
+      "compilationMilliseconds": 0.20000000298023224,
+      "firstExecutionMilliseconds": 1.0999999940395355,
+      "medianWarmMilliseconds": 0.7999999970197678,
+      "readbackMilliseconds": 0.6000000089406967,
+      "status": [
+        4,
+        4,
+        0
+      ]
+    },
+    {
+      "operation": "similarity",
+      "size": 1024,
+      "selective": false,
+      "uploadedBytes": 143504,
+      "outputBytes": 16396,
+      "uploadAndPreparationMilliseconds": 2.5,
+      "compilationMilliseconds": 0.5,
+      "firstExecutionMilliseconds": 2.5999999940395355,
+      "medianWarmMilliseconds": 2,
+      "readbackMilliseconds": 0.8999999910593033,
+      "status": [
+        1024,
+        1024,
+        0
+      ]
+    },
+    {
+      "operation": "similarity",
+      "size": 1024,
+      "selective": true,
+      "uploadedBytes": 143504,
+      "outputBytes": 16396,
+      "uploadAndPreparationMilliseconds": 3.5999999940395355,
+      "compilationMilliseconds": 0.4000000059604645,
+      "firstExecutionMilliseconds": 1.2999999970197678,
+      "medianWarmMilliseconds": 0.800000011920929,
+      "readbackMilliseconds": 0.6000000089406967,
+      "status": [
+        52,
+        52,
+        0
+      ]
+    },
+    {
+      "operation": "similarity",
+      "size": 4096,
+      "selective": false,
+      "uploadedBytes": 573584,
+      "outputBytes": 65548,
+      "uploadAndPreparationMilliseconds": 8.599999994039536,
+      "compilationMilliseconds": 0.4000000059604645,
+      "firstExecutionMilliseconds": 6,
+      "medianWarmMilliseconds": 5.200000002980232,
+      "readbackMilliseconds": 1.1000000089406967,
+      "status": [
+        4096,
+        4096,
+        0
+      ]
+    },
+    {
+      "operation": "similarity",
+      "size": 4096,
+      "selective": true,
+      "uploadedBytes": 573584,
+      "outputBytes": 65548,
+      "uploadAndPreparationMilliseconds": 9.5,
+      "compilationMilliseconds": 0.4000000059604645,
+      "firstExecutionMilliseconds": 2.2000000029802322,
+      "medianWarmMilliseconds": 1.0999999940395355,
+      "readbackMilliseconds": 0.7999999970197678,
+      "status": [
+        205,
+        205,
+        0
+      ]
+    }
+  ],
+  "measurement": {
+    "environment": "Chromium WebGPU, Apple Metal3; one device sample",
+    "repetitions": "one cold + three warm, median warm wall time includes encode/submit/queue completion",
+    "units": "milliseconds",
+    "limits": "Simple chains, disconnected community blocks, Euclidean facility grid, balanced access,16-observation tracks; not worst-case throughput or speedup over CPU. uploadedBytes/outputBytes exclude graph scratch; DP scratch controlled by survivorCapacity."
+  }
+}

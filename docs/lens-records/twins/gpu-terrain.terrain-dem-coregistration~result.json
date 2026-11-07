@@ -1,0 +1,40 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-dem-coregistration",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(new GPUTerrainDEMCoregistration(input));",
+    "language": "ts",
+    "lineCount": 1
+  },
+  "scenarioId": "gpu-terrain.terrain-dem-coregistration",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume. values: 3. values read back from the GPU run. input reference: 9 cells.",
+  "description": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume. values: 3. values read back from the GPU run. input reference: 9 cells.",
+  "llms": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume\n\n- values: 3\n- input reference: 9 cells\n- input moving: 9 cells\n- input stableMask: 9 cells\n- input differenceVariance: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "values",
+    "value": "3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"640\" height=\"100\" viewBox=\"0 0 640 100\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[3,3]]\" role=\"img\" aria-label=\"Result: volume\"><defs><pattern id=\"lens-gpu-terrain-terrain-dem-coregistration-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-dem-coregistration-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-dem-coregistration-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><text class=\"cv-label\" x=\"16\" y=\"30\" font-size=\"11\" dominant-baseline=\"central\">fit</text><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-4\" data-role=\"output\" stroke-width=\"1\" fill=\"#1c6bb0\" stroke=\"#ffffff\" x=\"88\" y=\"16\" width=\"134\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></rect><text class=\"cv-cell-text\" x=\"155\" y=\"30\">2</text><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"1\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"222\" y=\"16\" width=\"134\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></rect><text class=\"cv-cell-text\" x=\"289\" y=\"30\">0</text><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-5\" data-role=\"output\" stroke-width=\"1\" fill=\"#083d7f\" stroke=\"#ffffff\" x=\"356\" y=\"16\" width=\"134\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></rect><text class=\"cv-cell-text\" x=\"423\" y=\"30\">4</text><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"1\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"490\" y=\"16\" width=\"134\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\"></rect><text class=\"cv-cell-text\" x=\"557\" y=\"30\">0</text></g><g data-role=\"output\"><text class=\"cv-label\" x=\"16\" y=\"70\" font-size=\"11\" dominant-baseline=\"central\">volume</text><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-5\" data-role=\"output\" stroke-width=\"1\" fill=\"#083d7f\" stroke=\"#ffffff\" x=\"88\" y=\"56\" width=\"134\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></rect><text class=\"cv-cell-text\" x=\"155\" y=\"70\">101</text><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"1\" fill=\"#c6dbef\" stroke=\"#ffffff\" x=\"222\" y=\"56\" width=\"134\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></rect><text class=\"cv-cell-text\" x=\"289\" y=\"70\">6.49</text><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"1\" fill=\"#4a98c9\" stroke=\"#ffffff\" x=\"356\" y=\"56\" width=\"134\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></rect><text class=\"cv-cell-text\" x=\"423\" y=\"70\">9</text></g></svg><p class=\"cv-legend\">volume: <span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-1\" width=\"12\" height=\"12\" fill=\"#c6dbef\"></rect></svg> 6.485645771026611–7.49138746262</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-2\" width=\"12\" height=\"12\" fill=\"#8abfdd\"></rect></svg> 7.49138746262–8.49712915421</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-3\" width=\"12\" height=\"12\" fill=\"#4a98c9\"></rect></svg> 8.49712915421–27.4</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-4\" width=\"12\" height=\"12\" fill=\"#1c6bb0\"></rect></svg> 27.4–64.2</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-5\" width=\"12\" height=\"12\" fill=\"#083d7f\"></rect></svg> 64.2–101</span></p><p class=\"cv-note\">cell size 1 m · Raster pixel grid; origin not recorded · cell size 1 m · Raster pixel grid; origin not recorded · cell size 1 m · Raster pixel grid; origin not recorded · cell size 1 m · Raster pixel grid; origin not recorded · cell size 1 m · Raster pixel grid; origin not recorded</p></section>",
+    "width": 640,
+    "height": 100
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:13:10.526Z",
+    "runId": "run-4cbb465f",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-4cbb465f",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

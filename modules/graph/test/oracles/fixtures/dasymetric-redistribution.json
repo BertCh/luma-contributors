@@ -1,0 +1,531 @@
+{
+  "generator": "dasymetric-redistribution.py",
+  "command": "python -I modules/graph/test/oracles/dasymetric-redistribution.py",
+  "versions": {
+    "tobler": "0.14.0",
+    "shapely": "2.1.2",
+    "geopandas": "1.1.1",
+    "rasterio": "1.4.3",
+    "numpy": "2.2.6",
+    "scipy": "1.18.1",
+    "pandas": "3.1.0",
+    "pyproj": "3.8.0"
+  },
+  "conventions": {
+    "coordinates": "EPSG:3857 planar meters",
+    "areaUnits": "square meters",
+    "ancillaryUnits": "relative density per square meter",
+    "targetOwnership": "whole cells",
+    "sourceIds": "original feature rows, including zero-eligible sources",
+    "tolerance": "absolute 1e-4 plus relative 1e-5",
+    "rounding": "float32 GPU inputs, float64 GEOS oracle"
+  },
+  "sourceTotals": [
+    120.0,
+    80.0,
+    50.0
+  ],
+  "targetZones": [
+    0,
+    0,
+    1,
+    1,
+    4294967295,
+    2
+  ],
+  "targetZoneCount": 4,
+  "coverage": {
+    "zoneIds": [
+      0,
+      0,
+      0,
+      1,
+      1,
+      2
+    ],
+    "cellIds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "fractions": [
+      0.5,
+      1.0,
+      0.5,
+      0.5,
+      1.0,
+      1.0
+    ]
+  },
+  "sourcePositions": [
+    0.5,
+    0,
+    2.5,
+    0,
+    2.5,
+    1,
+    0.5,
+    1,
+    3.5,
+    0,
+    5,
+    0,
+    5,
+    1,
+    3.5,
+    1,
+    5,
+    0,
+    6,
+    0,
+    6,
+    1,
+    5,
+    1
+  ],
+  "cases": [
+    {
+      "name": "continuous-zone",
+      "reference": "composed GEOS area intersections and weighted extensive allocation",
+      "ancillary": [
+        2.0,
+        0.0,
+        1.0,
+        3.0,
+        1.0,
+        0.0
+      ],
+      "denominator": "zone",
+      "coverage": {
+        "zoneIds": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cellIds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "fractions": [
+          0.5,
+          1.0,
+          0.5,
+          0.5,
+          1.0,
+          1.0
+        ]
+      },
+      "targetTotals": [
+        80.0,
+        88.0,
+        0.0,
+        0.0
+      ],
+      "targetSupportWeights": [
+        1.0,
+        2.0,
+        0.0,
+        0.0
+      ],
+      "sourceEligibleWeights": [
+        1.5,
+        2.5,
+        0.0
+      ],
+      "sourceTransferredFractions": [
+        1.0,
+        0.6000000000000001,
+        null
+      ],
+      "sourceAllocatedTotals": [
+        120.0,
+        48.00000000000001,
+        0.0
+      ],
+      "sourceUnallocatedTotals": [
+        0.0,
+        31.999999999999993,
+        50.0
+      ]
+    },
+    {
+      "name": "continuous-overlap",
+      "reference": "composed GEOS area intersections and weighted extensive allocation",
+      "ancillary": [
+        2.0,
+        0.0,
+        1.0,
+        3.0,
+        1.0,
+        0.0
+      ],
+      "denominator": "overlap",
+      "coverage": {
+        "zoneIds": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cellIds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "fractions": [
+          0.5,
+          1.0,
+          0.5,
+          0.5,
+          1.0,
+          1.0
+        ]
+      },
+      "targetTotals": [
+        80.0,
+        120.0,
+        0.0,
+        0.0
+      ],
+      "targetSupportWeights": [
+        1.0,
+        2.0,
+        0.0,
+        0.0
+      ],
+      "sourceEligibleWeights": [
+        1.5,
+        2.5,
+        0.0
+      ],
+      "sourceTransferredFractions": [
+        1.0,
+        1.0,
+        null
+      ],
+      "sourceAllocatedTotals": [
+        120.0,
+        80.0,
+        0.0
+      ],
+      "sourceUnallocatedTotals": [
+        0.0,
+        0.0,
+        50.0
+      ]
+    },
+    {
+      "name": "binary-zone",
+      "reference": "composed GEOS area intersections and weighted extensive allocation",
+      "ancillary": [
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0
+      ],
+      "denominator": "zone",
+      "coverage": {
+        "zoneIds": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cellIds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "fractions": [
+          0.5,
+          1.0,
+          0.5,
+          0.5,
+          1.0,
+          1.0
+        ]
+      },
+      "targetTotals": [
+        60.0,
+        86.66666666666666,
+        0.0,
+        0.0
+      ],
+      "targetSupportWeights": [
+        0.5,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sourceEligibleWeights": [
+        1.0,
+        1.5,
+        0.0
+      ],
+      "sourceTransferredFractions": [
+        1.0,
+        0.3333333333333333,
+        null
+      ],
+      "sourceAllocatedTotals": [
+        120.0,
+        26.666666666666664,
+        0.0
+      ],
+      "sourceUnallocatedTotals": [
+        0.0,
+        53.333333333333336,
+        50.0
+      ]
+    },
+    {
+      "name": "binary-overlap",
+      "reference": "composed GEOS area intersections and weighted extensive allocation",
+      "ancillary": [
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0
+      ],
+      "denominator": "overlap",
+      "coverage": {
+        "zoneIds": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cellIds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "fractions": [
+          0.5,
+          1.0,
+          0.5,
+          0.5,
+          1.0,
+          1.0
+        ]
+      },
+      "targetTotals": [
+        60.0,
+        140.0,
+        0.0,
+        0.0
+      ],
+      "targetSupportWeights": [
+        0.5,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "sourceEligibleWeights": [
+        1.0,
+        1.5,
+        0.0
+      ],
+      "sourceTransferredFractions": [
+        1.0,
+        1.0,
+        null
+      ],
+      "sourceAllocatedTotals": [
+        120.0,
+        80.0,
+        0.0
+      ],
+      "sourceUnallocatedTotals": [
+        0.0,
+        0.0,
+        50.0
+      ]
+    },
+    {
+      "name": "aligned-binary-zone",
+      "reference": "composed GEOS area intersections and weighted extensive allocation",
+      "ancillary": [
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0
+      ],
+      "denominator": "zone",
+      "coverage": {
+        "zoneIds": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cellIds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "fractions": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "targetTotals": [
+        60.0,
+        100.0,
+        0.0,
+        0.0
+      ],
+      "targetSupportWeights": [
+        1.0,
+        2.0,
+        0.0,
+        0.0
+      ],
+      "sourceEligibleWeights": [
+        2.0,
+        2.0,
+        0.0
+      ],
+      "sourceTransferredFractions": [
+        1.0,
+        0.5,
+        null
+      ],
+      "sourceAllocatedTotals": [
+        120.0,
+        40.0,
+        0.0
+      ],
+      "sourceUnallocatedTotals": [
+        0.0,
+        40.0,
+        50.0
+      ],
+      "directReference": "tobler.dasymetric.masked_area_interpolate",
+      "directTargetTotals": [
+        60.0,
+        100.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "aligned-binary-overlap",
+      "reference": "composed GEOS area intersections and weighted extensive allocation",
+      "ancillary": [
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        0.0
+      ],
+      "denominator": "overlap",
+      "coverage": {
+        "zoneIds": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cellIds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "fractions": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "targetTotals": [
+        60.0,
+        140.0,
+        0.0,
+        0.0
+      ],
+      "targetSupportWeights": [
+        1.0,
+        2.0,
+        0.0,
+        0.0
+      ],
+      "sourceEligibleWeights": [
+        2.0,
+        2.0,
+        0.0
+      ],
+      "sourceTransferredFractions": [
+        1.0,
+        1.0,
+        null
+      ],
+      "sourceAllocatedTotals": [
+        120.0,
+        80.0,
+        0.0
+      ],
+      "sourceUnallocatedTotals": [
+        0.0,
+        0.0,
+        50.0
+      ],
+      "directReference": "tobler.dasymetric.masked_area_interpolate",
+      "directTargetTotals": [
+        60.0,
+        140.0,
+        0.0,
+        0.0
+      ]
+    }
+  ]
+}

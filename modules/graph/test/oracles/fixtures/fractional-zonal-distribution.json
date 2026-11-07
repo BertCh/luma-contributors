@@ -1,0 +1,526 @@
+{
+  "versions": {
+    "exactextract": "0.3.0",
+    "numpy": "2.3.4",
+    "shapely": "2.1.2",
+    "python": "3.12.13"
+  },
+  "reference": {
+    "direct": "exactextract.exact_extract: quantile, variance, mean, count",
+    "sampleVariance": "numpy.cov(aweights=coverage, ddof=1)",
+    "effectiveSupport": "composed numpy.sum(weights)**2 / numpy.dot(weights,weights)",
+    "quantileConvention": "exactextract 0.3.0: coverage histogram by distinct value; interpolated weighted plotting positions",
+    "coordinates": "planar unit area cells; no implicit resampling; NaN nodata ignored"
+  },
+  "cases": [
+    {
+      "name": "unequal-coverage-repeated-values",
+      "values": [
+        -4,
+        0,
+        2,
+        2,
+        9,
+        20
+      ],
+      "fractions": [
+        1,
+        0.5,
+        0.25,
+        0.75,
+        0.125,
+        0.0625
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": 0.13953488372093023,
+        "populationVariances": 20.49215792320173,
+        "sampleVariances": 27.778592375366568,
+        "effectiveSampleSizes": 3.8123711340206183,
+        "weightSums": 2.6875,
+        "squaredWeightSums": 1.89453125,
+        "coveredArea": 2.6875,
+        "validArea": 2.6875,
+        "quantiles": [
+          -4.0,
+          -3.0444445610046387,
+          -1.6111111640930176,
+          0.5,
+          2.1842105388641357,
+          6.93684196472168,
+          20.0
+        ],
+        "validity": 1,
+        "status": 0
+      }
+    },
+    {
+      "name": "one-observed-cell",
+      "values": [
+        7,
+        11
+      ],
+      "fractions": [
+        0.25,
+        0
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": 7.0,
+        "populationVariances": 0.0,
+        "sampleVariances": null,
+        "effectiveSampleSizes": 1.0,
+        "weightSums": 0.25,
+        "squaredWeightSums": 0.0625,
+        "coveredArea": 0.25,
+        "validArea": 0.25,
+        "quantiles": [
+          7.0,
+          7.0,
+          7.0,
+          7.0,
+          7.0,
+          7.0,
+          7.0
+        ],
+        "validity": 1,
+        "status": 8
+      }
+    },
+    {
+      "name": "one-observed-cell-nondyadic-weight",
+      "values": [
+        7,
+        11
+      ],
+      "fractions": [
+        0.09,
+        0
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": 7.0,
+        "populationVariances": 0.0,
+        "sampleVariances": null,
+        "effectiveSampleSizes": 1.0,
+        "weightSums": 0.09000000357627869,
+        "squaredWeightSums": 0.008100000643730176,
+        "coveredArea": 0.09000000357627869,
+        "validArea": 0.09000000357627869,
+        "quantiles": [
+          7.0,
+          7.0,
+          7.0,
+          7.0,
+          7.0,
+          7.0,
+          7.0
+        ],
+        "validity": 1,
+        "status": 8
+      }
+    },
+    {
+      "name": "equal-value-distinct-cell-support",
+      "values": [
+        3,
+        3,
+        3
+      ],
+      "fractions": [
+        1,
+        0.5,
+        0.25
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": 3.0,
+        "populationVariances": 0.0,
+        "sampleVariances": 0.0,
+        "effectiveSampleSizes": 2.3333333333333335,
+        "weightSums": 1.75,
+        "squaredWeightSums": 1.3125,
+        "coveredArea": 1.75,
+        "validArea": 1.75,
+        "quantiles": [
+          3.0,
+          3.0,
+          3.0,
+          3.0,
+          3.0,
+          3.0,
+          3.0
+        ],
+        "validity": 1,
+        "status": 0
+      }
+    },
+    {
+      "name": "nodata-retains-covered-area",
+      "values": [
+        null,
+        2,
+        null,
+        8
+      ],
+      "fractions": [
+        1,
+        0.5,
+        0.25,
+        0.125
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": 3.2,
+        "populationVariances": 5.76,
+        "sampleVariances": 18.0,
+        "effectiveSampleSizes": 1.4705882352941178,
+        "weightSums": 0.625,
+        "squaredWeightSums": 0.265625,
+        "coveredArea": 1.875,
+        "validArea": 0.625,
+        "quantiles": [
+          2.0,
+          2.5999999046325684,
+          3.5,
+          5.0,
+          6.5,
+          7.400000095367432,
+          8.0
+        ],
+        "validity": 1,
+        "status": 0
+      }
+    },
+    {
+      "name": "large-offset-small-spread",
+      "values": [
+        1048576,
+        1048576.25,
+        1048576.5
+      ],
+      "fractions": [
+        1,
+        0.5,
+        0.25
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": 1048576.142857143,
+        "populationVariances": 0.033163265323545146,
+        "sampleVariances": 0.05803571428571429,
+        "effectiveSampleSizes": 2.3333333333333335,
+        "weightSums": 1.75,
+        "squaredWeightSums": 1.3125,
+        "coveredArea": 1.75,
+        "validArea": 1.75,
+        "quantiles": [
+          1048576.0,
+          1048576.0,
+          1048576.125,
+          1048576.125,
+          1048576.25,
+          1048576.375,
+          1048576.5
+        ],
+        "validity": 1,
+        "status": 0
+      }
+    },
+    {
+      "name": "all-nodata",
+      "values": [
+        null,
+        null
+      ],
+      "fractions": [
+        0.5,
+        1
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": null,
+        "populationVariances": null,
+        "sampleVariances": null,
+        "effectiveSampleSizes": 0.0,
+        "weightSums": 0.0,
+        "squaredWeightSums": 0.0,
+        "coveredArea": 1.5,
+        "validArea": 0.0,
+        "quantiles": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "validity": 0,
+        "status": 12
+      }
+    },
+    {
+      "name": "empty-zone",
+      "values": [
+        2,
+        8
+      ],
+      "fractions": [
+        0,
+        0
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": null,
+        "populationVariances": null,
+        "sampleVariances": null,
+        "effectiveSampleSizes": 0.0,
+        "weightSums": 0.0,
+        "squaredWeightSums": 0.0,
+        "coveredArea": 0.0,
+        "validArea": 0.0,
+        "quantiles": [
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "validity": 0,
+        "status": 12
+      }
+    },
+    {
+      "name": "unit-weights-negative-positive",
+      "values": [
+        -8,
+        -2,
+        0,
+        4,
+        11
+      ],
+      "fractions": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": 1.0,
+        "populationVariances": 40.0,
+        "sampleVariances": 50.0,
+        "effectiveSampleSizes": 5.0,
+        "weightSums": 5.0,
+        "squaredWeightSums": 5.0,
+        "coveredArea": 5.0,
+        "validArea": 5.0,
+        "quantiles": [
+          -8.0,
+          -5.599999904632568,
+          -2.0,
+          0.0,
+          4.0,
+          8.199999809265137,
+          11.0
+        ],
+        "validity": 1,
+        "status": 0
+      }
+    },
+    {
+      "name": "tiny-positive-support",
+      "values": [
+        -2,
+        5,
+        10
+      ],
+      "fractions": [
+        0.000244140625,
+        0.0001220703125,
+        6.103515625e-05
+      ],
+      "probabilities": [
+        0,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.9,
+        1
+      ],
+      "expected": {
+        "means": 1.7142857142857142,
+        "populationVariances": 20.775510204081634,
+        "sampleVariances": 36.35714285714286,
+        "effectiveSampleSizes": 2.3333333333333335,
+        "weightSums": 0.00042724609375,
+        "squaredWeightSums": 7.82310962677002e-08,
+        "coveredArea": 0.00042724609375,
+        "validArea": 0.00042724609375,
+        "quantiles": [
+          -2.0,
+          -1.0199999809265137,
+          0.44999998807907104,
+          2.9000000953674316,
+          5.625,
+          8.25,
+          10.0
+        ],
+        "validity": 1,
+        "status": 0
+      }
+    }
+  ],
+  "coverageIntegration": {
+    "name": "partial-polygon-with-hole",
+    "values": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "fractions": [
+      0.5625,
+      0.75,
+      0.5625,
+      0.75,
+      0,
+      0.75,
+      0.5625,
+      0.75,
+      0.5625
+    ],
+    "probabilities": [
+      0,
+      0.1,
+      0.25,
+      0.5,
+      0.75,
+      0.9,
+      1
+    ],
+    "expected": {
+      "means": 5.0,
+      "populationVariances": 7.142857142857146,
+      "sampleVariances": 8.187134502923977,
+      "effectiveSampleSizes": 7.84,
+      "weightSums": 5.25,
+      "squaredWeightSums": 3.515625,
+      "coveredArea": 5.25,
+      "validArea": 5.25,
+      "quantiles": [
+        1.0,
+        1.784000039100647,
+        2.799999952316284,
+        5.0,
+        7.199999809265137,
+        8.215999603271484,
+        9.0
+      ],
+      "validity": 1,
+      "status": 0
+    },
+    "positions": [
+      0.25,
+      0.25,
+      2.75,
+      0.25,
+      2.75,
+      2.75,
+      0.25,
+      2.75,
+      1,
+      1,
+      1,
+      2,
+      2,
+      2,
+      2,
+      1
+    ],
+    "width": 3,
+    "height": 3
+  }
+}

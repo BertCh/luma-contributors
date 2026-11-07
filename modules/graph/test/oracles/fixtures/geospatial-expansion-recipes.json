@@ -1,0 +1,119 @@
+{
+  "provenance": {
+    "numpy": "2.5.4",
+    "networkx": "3.7"
+  },
+  "zones": [
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    2,
+    2
+  ],
+  "values": [
+    1.0,
+    3.0,
+    3.0,
+    4.0,
+    null,
+    8.0,
+    null,
+    null
+  ],
+  "probabilities": [
+    0,
+    0.25,
+    0.5,
+    0.75,
+    1
+  ],
+  "distributions": [
+    {
+      "count": 3,
+      "median": 3.0,
+      "mode": 3.0,
+      "unique": 2,
+      "quantiles": [
+        1.0,
+        2.0,
+        3.0,
+        3.0,
+        3.0
+      ]
+    },
+    {
+      "count": 2,
+      "median": 6.0,
+      "mode": 4.0,
+      "unique": 2,
+      "quantiles": [
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0
+      ]
+    },
+    {
+      "count": 0,
+      "median": null,
+      "mode": null,
+      "unique": 0,
+      "quantiles": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "count": 0,
+      "median": null,
+      "mode": null,
+      "unique": 0,
+      "quantiles": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  ],
+  "baseline": [
+    [
+      0,
+      1,
+      3,
+      4,
+      null
+    ],
+    [
+      null,
+      null,
+      0,
+      1,
+      null
+    ]
+  ],
+  "scenario": [
+    [
+      0,
+      1,
+      null,
+      null,
+      null
+    ],
+    [
+      null,
+      null,
+      0,
+      1,
+      null
+    ]
+  ]
+}

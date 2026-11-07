@@ -1,0 +1,181 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {Buffer, Device} from '@luma.gl/core';
+import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
+import {
+  getGPUPolygonRasterizationParameterValues,
+  GPUPolygonRasterization
+} from '../../../src/gpu-raster/polygon-rasterization';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32
+} from '../../utils/gpu-contributor-test-utils';
+import type {OraclePolygons} from './polygon-rasterization-oracle';
+
+/**
+ * Grid for an oracle extent `[originX, originY, cellWidth, cellHeight]`: row 0 is the row with the
+ * smallest y and rows advance toward larger y.
+ */
+export function makeExtentGrid(
+  width: number,
+  height: number,
+  extent: readonly [number, number, number, number]
+): GPURasterMetadata {
+  return makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: [extent[2], extent[3]],
+    origin: [extent[0], extent[1]],
+    rowDirection: 'north'
+  });
+}
+
+/** Packed raster placement of an oracle extent, see {@link makeExtentGrid}. */
+export function getExtentParameterValues(
+  width: number,
+  height: number,
+  extent: readonly [number, number, number, number]
+): Float32Array {
+  return getGPUPolygonRasterizationParameterValues(makeExtentGrid(width, height, extent));
+}
+
+/** Rasterization graph plus the buffers a test reads or rewrites. */
+export type RasterizationFixture = {
+  graph: GPUCommandGraph;
+  extent: GPUParameterBuffer<'float32'>;
+  extentView: GraphDataView<'float32'>;
+  zonesBuffer: Buffer;
+  boundaryBuffer: Buffer;
+  overflowBuffer: Buffer;
+  crossingCountBuffer: Buffer;
+  zonesView: GraphDataView<'uint32'>;
+  boundaryView: GraphDataView<'uint32'>;
+  polygonBuffers: Buffer[];
+  owned: Buffer[];
+  width: number;
+  height: number;
+  contributor: GPUPolygonRasterization;
+};
+
+/** Adds a `GPUPolygonRasterization` with every output to a new graph (not compiled). */
+export function createRasterizationFixture(
+  device: Device,
+  props: {
+    polygons: OraclePolygons;
+    width: number;
+    height: number;
+    extent: readonly [number, number, number, number];
+    crossingCapacity: number;
+  }
+): RasterizationFixture {
+  const {polygons, width, height} = props;
+  const graph = new GPUCommandGraph(device, {id: 'polygon-rasterization-test'});
+  const extent = new GPUParameterBuffer(device, {
+    id: 'extent',
+    format: 'float32',
+    length: 4,
+    values: getExtentParameterValues(width, height, props.extent)
+  });
+  const polygonBuffers = [
+    createInputBuffer(device, polygons.positions),
+    createInputBuffer(device, polygons.featureOffsets),
+    createInputBuffer(device, polygons.polygonOffsets),
+    createInputBuffer(device, polygons.ringOffsets)
+  ];
+  const cellCount = width * height;
+  const zonesBuffer = createOutputBuffer(device, cellCount);
+  const boundaryBuffer = createOutputBuffer(device, cellCount);
+  const overflowBuffer = createOutputBuffer(device, 1);
+  const crossingCountBuffer = createOutputBuffer(device, 1);
+  const extentView = extent.importToGraph(graph);
+  const zonesView = importGraphBuffer(graph, 'zones', zonesBuffer, 'uint32', cellCount);
+  const boundaryView = importGraphBuffer(graph, 'boundary', boundaryBuffer, 'uint32', cellCount);
+  const contributor = new GPUPolygonRasterization({
+    grid: makeExtentGrid(width, height, props.extent),
+    parameters: extentView,
+    positions: importGraphBuffer(
+      graph,
+      'positions',
+      polygonBuffers[0],
+      'float32x2',
+      polygons.positions.length / 2
+    ),
+    featureOffsets: importGraphBuffer(
+      graph,
+      'feature-offsets',
+      polygonBuffers[1],
+      'uint32',
+      polygons.featureOffsets.length
+    ),
+    polygonOffsets: importGraphBuffer(
+      graph,
+      'polygon-offsets',
+      polygonBuffers[2],
+      'uint32',
+      polygons.polygonOffsets.length
+    ),
+    ringOffsets: importGraphBuffer(
+      graph,
+      'ring-offsets',
+      polygonBuffers[3],
+      'uint32',
+      polygons.ringOffsets.length
+    ),
+    crossingCapacity: props.crossingCapacity,
+    output: {
+      zones: zonesView,
+      boundary: boundaryView,
+      status: {
+        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+        crossingCount: importGraphBuffer(graph, 'crossing-count', crossingCountBuffer, 'uint32', 1)
+      }
+    }
+  });
+  graph.add(contributor);
+  return {
+    graph,
+    extent,
+    extentView,
+    zonesBuffer,
+    boundaryBuffer,
+    overflowBuffer,
+    crossingCountBuffer,
+    zonesView,
+    boundaryView,
+    polygonBuffers,
+    owned: [...polygonBuffers, zonesBuffer, boundaryBuffer, overflowBuffer, crossingCountBuffer],
+    width,
+    height,
+    contributor
+  };
+}
+
+/** Reads zones, boundary flags, overflow, and the crossing count. */
+export async function readRasterization(fixture: RasterizationFixture): Promise<{
+  zones: number[];
+  boundary: number[];
+  overflow: number;
+  crossingCount: number;
+}> {
+  const cellCount = fixture.width * fixture.height;
+  return {
+    zones: await readUint32(fixture.zonesBuffer, cellCount),
+    boundary: await readUint32(fixture.boundaryBuffer, cellCount),
+    overflow: (await readUint32(fixture.overflowBuffer, 1))[0],
+    crossingCount: (await readUint32(fixture.crossingCountBuffer, 1))[0]
+  };
+}
+
+/** Destroys every buffer the fixture created. */
+export function destroyRasterizationFixture(fixture: RasterizationFixture): void {
+  for (const buffer of fixture.owned) {
+    buffer.destroy();
+  }
+  fixture.extent.destroy();
+}

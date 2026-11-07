@@ -1,0 +1,197 @@
+{
+  "provenance": "Unmodified primary upstream regression inputs/expected outputs, pinned by Git commit and SHA256. Reference binaries were not executed locally.",
+  "files": [
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "LICENSE.md",
+      "local": "Circuitscape.jl/LICENSE.md",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/LICENSE.md",
+      "sha256": "6b9f1b84e90c7b4029303db75e785a40a9aa2a513d54a9b84ff22361fe1da6eb"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "Project.toml",
+      "local": "Circuitscape.jl/Project.toml",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/Project.toml",
+      "sha256": "48bfe193e8e755ee0d37655136269c73006c7e5e02e906fc26472d0481835f8e"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/input/network/sgNetworkVerify2.ini",
+      "local": "Circuitscape.jl/sgNetworkVerify2.ini",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/input/network/sgNetworkVerify2.ini",
+      "sha256": "953677ab2709fcaf6f67e194118e43861b39db918e86f507a42e1af5d46714e5"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/input/network/sgNetworkVerify2_graph_conductances.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_graph_conductances.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/input/network/sgNetworkVerify2_graph_conductances.txt",
+      "sha256": "731a00cf3029f0b1a2fa5c2cf9d1f8b057e2fa8631b9c94dc9b1ac42f38df2f7"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_resistances.out",
+      "local": "Circuitscape.jl/sgNetworkVerify2_resistances.out",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_resistances.out",
+      "sha256": "f4bb6e2b693b3c7c98e0cb1fb1157f463b631c9465b4b325f44603fe6af7a738"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_voltages_0_1.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_voltages_0_1.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_voltages_0_1.txt",
+      "sha256": "38028ad16e4224c2bd7d98fcafd22f388011016ea959f70c8640909e9470eb38"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_branch_currents_0_1.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_branch_currents_0_1.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_branch_currents_0_1.txt",
+      "sha256": "ce05c204ff512d9fc2b2c25b2c1dbcbb5d731d6e8652bf35ee798862fdea29d8"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_voltages_0_4.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_voltages_0_4.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_voltages_0_4.txt",
+      "sha256": "cf0d9695453663ff00fea3fd7935ef4683a49966d49556371fff35cf828c7b73"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_branch_currents_0_4.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_branch_currents_0_4.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_branch_currents_0_4.txt",
+      "sha256": "f1283e6b89c840bdc6c2ede02145e2d4575f1a89e3e78a21a109d4d8baabfe2a"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_voltages_0_6.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_voltages_0_6.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_voltages_0_6.txt",
+      "sha256": "63ca608a8bd7877fbdb97db234e86d71584e33f6aeedfa01426b6662c668229e"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_branch_currents_0_6.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_branch_currents_0_6.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_branch_currents_0_6.txt",
+      "sha256": "97e27bc661c53d1a5a17dd780883288c03c357b3d1e80f4f37ae88338e045fd9"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_voltages_1_5.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_voltages_1_5.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_voltages_1_5.txt",
+      "sha256": "84fe0e4f7ea2b5b703061b22549e05fb2c127b905a972e88b632be0e1fc75a66"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_branch_currents_1_5.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_branch_currents_1_5.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_branch_currents_1_5.txt",
+      "sha256": "2d4fd508a54f4cc0328bf73ae8189b30a6266a34aa89b0dcb6774746d6f7126f"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_voltages_2_6.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_voltages_2_6.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_voltages_2_6.txt",
+      "sha256": "389c1c8136a482b7f8f8073b48fe475b1949e37bea48a92d9485b8796aa8667a"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_branch_currents_2_6.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_branch_currents_2_6.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_branch_currents_2_6.txt",
+      "sha256": "ea6d252f9b576e356479e9ef22aab718a1be865469d0132f703a5f44c054f31e"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_voltages_4_5.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_voltages_4_5.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_voltages_4_5.txt",
+      "sha256": "4f0b152106c8dc884cb340d8845c938d6fb801852c0bc76611f0130596d6d48d"
+    },
+    {
+      "repository": "Circuitscape/Circuitscape.jl",
+      "commit": "4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7",
+      "path": "test/output_verify/sgNetworkVerify2_branch_currents_4_5.txt",
+      "local": "Circuitscape.jl/sgNetworkVerify2_branch_currents_4_5.txt",
+      "url": "https://raw.githubusercontent.com/Circuitscape/Circuitscape.jl/4e0d29d3a7f2ed542a9f2ade782ea554c54b4ae7/test/output_verify/sgNetworkVerify2_branch_currents_4_5.txt",
+      "sha256": "dbc3fcbad977a6993fd88f260971d974127aa8ef6e2c0a16ccebd035ab184221"
+    },
+    {
+      "repository": "PDAL/PDAL",
+      "commit": "0e64af327cba0a4c54e501db0d61b62390b69a79",
+      "path": "LICENSE.txt",
+      "local": "PDAL/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/PDAL/PDAL/0e64af327cba0a4c54e501db0d61b62390b69a79/LICENSE.txt",
+      "sha256": "9ab1261b649806f4884539d5fd49d8f2c9a634762ee52f1ddd2330ef417f5cdf"
+    },
+    {
+      "repository": "PDAL/PDAL",
+      "commit": "0e64af327cba0a4c54e501db0d61b62390b69a79",
+      "path": "test/unit/filters/M3C2FilterTest.cpp",
+      "local": "PDAL/M3C2FilterTest.cpp",
+      "url": "https://raw.githubusercontent.com/PDAL/PDAL/0e64af327cba0a4c54e501db0d61b62390b69a79/test/unit/filters/M3C2FilterTest.cpp",
+      "sha256": "9a8c67e3afc732b3f24a5b68e42977a11d84877ef68f029ef50181afedf804e7"
+    },
+    {
+      "repository": "PDAL/PDAL",
+      "commit": "0e64af327cba0a4c54e501db0d61b62390b69a79",
+      "path": "filters/M3C2Filter.cpp",
+      "local": "PDAL/M3C2Filter.cpp",
+      "url": "https://raw.githubusercontent.com/PDAL/PDAL/0e64af327cba0a4c54e501db0d61b62390b69a79/filters/M3C2Filter.cpp",
+      "sha256": "928451716e6c5e7b285877fe4e8fcf2dc15da5d3149f660b6934a09109b1ae82"
+    },
+    {
+      "repository": "PDAL/PDAL",
+      "commit": "0e64af327cba0a4c54e501db0d61b62390b69a79",
+      "path": "test/data/autzen/autzen-bmx-2010.las",
+      "local": "PDAL/autzen-bmx-2010.las",
+      "url": "https://raw.githubusercontent.com/PDAL/PDAL/0e64af327cba0a4c54e501db0d61b62390b69a79/test/data/autzen/autzen-bmx-2010.las",
+      "sha256": "56a772e9ec79b2fa2efda8fbec579d28cdaa228a12f33766137427138102485d"
+    },
+    {
+      "repository": "PDAL/PDAL",
+      "commit": "0e64af327cba0a4c54e501db0d61b62390b69a79",
+      "path": "test/data/autzen/autzen-bmx-2023.las",
+      "local": "PDAL/autzen-bmx-2023.las",
+      "url": "https://raw.githubusercontent.com/PDAL/PDAL/0e64af327cba0a4c54e501db0d61b62390b69a79/test/data/autzen/autzen-bmx-2023.las",
+      "sha256": "7efa2b7b1040c045cb8a41ac54b5bdb02dc32d86d2c28c341ef5d37f36a7aab8"
+    },
+    {
+      "repository": "PDAL/PDAL",
+      "commit": "0e64af327cba0a4c54e501db0d61b62390b69a79",
+      "path": "test/data/autzen/autzen-bmx-largersample.txt",
+      "local": "PDAL/autzen-bmx-largersample.txt",
+      "url": "https://raw.githubusercontent.com/PDAL/PDAL/0e64af327cba0a4c54e501db0d61b62390b69a79/test/data/autzen/autzen-bmx-largersample.txt",
+      "sha256": "f38a8ed030ca9dcf67a996ba984983432e27a6a9b0e0adcc2587539637336f74"
+    },
+    {
+      "repository": "PDAL/PDAL",
+      "commit": "0e64af327cba0a4c54e501db0d61b62390b69a79",
+      "path": "test/data/autzen/autzen-bmx-m3c2.txt",
+      "local": "PDAL/autzen-bmx-m3c2.txt",
+      "url": "https://raw.githubusercontent.com/PDAL/PDAL/0e64af327cba0a4c54e501db0d61b62390b69a79/test/data/autzen/autzen-bmx-m3c2.txt",
+      "sha256": "9b8a83d803acbac3830311c1ad65c303bfc4453a2b492e97a549e65ad033efff"
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "device": {
+    "type": "webgpu",
+    "vendor": "apple",
+    "renderer": "",
+    "version": "",
+    "gpu": "apple",
+    "gpuType": "unknown",
+    "gpuBackend": "unknown",
+    "gpuArchitecture": "metal-3",
+    "fallback": false,
+    "featureLevel": "max",
+    "subgroupMinSize": 32,
+    "subgroupMaxSize": 32,
+    "shadingLanguage": "wgsl",
+    "shadingLanguageVersion": 100
+  },
+  "measurements": [
+    {
+      "features": 16,
+      "inputVertices": 96,
+      "uploadMilliseconds": 0.29999999701976776,
+      "constructionMilliseconds": 5.300000011920929,
+      "compilationMilliseconds": 6.5999999940395355,
+      "firstExecutionMilliseconds": 2870.7000000029802,
+      "medianWarmExecutionMilliseconds": 6.200000002980232,
+      "readbackMilliseconds": 3,
+      "updateUploadMilliseconds": 0,
+      "changedExecutionMilliseconds": 6.299999997019768,
+      "join": [
+        {
+          "split": false,
+          "firstMilliseconds": 12.600000008940697,
+          "medianWarmMilliseconds": 0.6000000089406967,
+          "candidates": 1024
+        },
+        {
+          "split": true,
+          "firstMilliseconds": 18,
+          "medianWarmMilliseconds": 0.29999999701976776,
+          "candidates": 512
+        }
+      ]
+    },
+    {
+      "features": 64,
+      "inputVertices": 384,
+      "uploadMilliseconds": 0,
+      "constructionMilliseconds": 1.9000000059604645,
+      "compilationMilliseconds": 3.5,
+      "firstExecutionMilliseconds": 3089.7000000029802,
+      "medianWarmExecutionMilliseconds": 5.4000000059604645,
+      "readbackMilliseconds": 2.7000000029802322,
+      "updateUploadMilliseconds": 0.09999999403953552,
+      "changedExecutionMilliseconds": 6.5,
+      "join": [
+        {
+          "split": false,
+          "firstMilliseconds": 11.5,
+          "medianWarmMilliseconds": 0.5,
+          "candidates": 4096
+        },
+        {
+          "split": true,
+          "firstMilliseconds": 19.5,
+          "medianWarmMilliseconds": 0.29999999701976776,
+          "candidates": 2048
+        }
+      ]
+    },
+    {
+      "features": 256,
+      "inputVertices": 1536,
+      "uploadMilliseconds": 0.10000000894069672,
+      "constructionMilliseconds": 1.5,
+      "compilationMilliseconds": 4.5,
+      "firstExecutionMilliseconds": 3203.9000000059605,
+      "medianWarmExecutionMilliseconds": 12.900000005960464,
+      "readbackMilliseconds": 1.5,
+      "updateUploadMilliseconds": 0,
+      "changedExecutionMilliseconds": 12.800000011920929,
+      "join": [
+        {
+          "split": false,
+          "firstMilliseconds": 12.299999997019768,
+          "medianWarmMilliseconds": 0.20000000298023224,
+          "candidates": 16384
+        },
+        {
+          "split": true,
+          "firstMilliseconds": 19.299999997019768,
+          "medianWarmMilliseconds": 1.2999999970197678,
+          "candidates": 8192
+        }
+      ]
+    }
+  ],
+  "command": "python3 /tmp/luma-contributors-round-two/run-gpu.py yarn test-headless --maxWorkers=1 --silent=false modules/graph/test/gpu-spatial-analysis/geometry-refinement/geometry-scaling.spec.ts",
+  "date": "2026-10-23",
+  "reference": "Independent analytic L-polygon radius and direct GPU bounding-box candidate counts"
+}

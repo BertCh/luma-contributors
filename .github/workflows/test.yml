@@ -1,0 +1,62 @@
+name: test
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Enable Corepack / Yarn 4
+        run: |
+          corepack enable
+          corepack prepare yarn@4.13.0 --activate
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Lint
+        run: yarn lint
+
+      - name: Typecheck sources
+        run: yarn typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Build packages
+        run: yarn build
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Verify package entry points
+        run: yarn verify-package-exports
+
+      - name: Node tests
+        run: yarn test-node
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Headless GPU tests
+        run: yarn test-headless
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192

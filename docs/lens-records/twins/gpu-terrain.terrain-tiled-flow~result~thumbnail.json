@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-tiled-flow",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-terrain.terrain-tiled-flow",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.terrain-tiled-flow: tile0Fractions, tile0Runoff, tile0Str…",
+  "description": "Result of gpu-terrain.terrain-tiled-flow: tile0Fractions, tile0Runoff, tile0Streams, tile1Fractions, tile1Runoff, tile1Streams → tile1Accumulation. cells: 9. values read back from the GPU run. input tile0Fractions: 72 values.",
+  "llms": "Result of gpu-terrain.terrain-tiled-flow: tile0Fractions, tile0Runoff, tile0Streams, tile1Fractions, tile1Runoff, tile1Streams → tile1Accumulation\n\n- cells: 9\n- input tile0Fractions: 72 values\n- input tile0Runoff: 9 cells\n- input tile0Streams: 9 cells\n- input tile1Fractions: 72 values\n- input tile1Runoff: 9 cells\n- input tile1Streams: 9 cells\n- Planar coordinates (m); uniform scale.\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[3,3]]\" role=\"img\" aria-label=\"Result: tile1Accumulation\"><defs><pattern id=\"lens-gpu-terrain-terrain-tiled-flow-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-tiled-flow-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-tiled-flow-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><image width=\"84\" height=\"84\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"38\" y=\"6\" data-provenance=\"readback\" data-raster-width=\"3\" data-raster-height=\"3\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAMAAABh9kWNAAAACVBMVEXZ2dlKmMmKv90vo1McAAAAF0lEQVR4AQEMAPP/AAABAgAAAQIAAAICAD4AC67Zst4AAAAASUVORK5CYII=\"></image></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:13:12.040Z",
+    "runId": "run-8a985fff",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-8a985fff",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

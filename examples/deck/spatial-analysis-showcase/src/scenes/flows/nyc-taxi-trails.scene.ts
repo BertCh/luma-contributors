@@ -1,0 +1,599 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {getClassTableLegend} from '../../cartography/class-table';
+import {joinCredits} from '../../cartography/credits';
+import {labelsFor, NYC} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import {playbackOptions} from '../../engine/playback';
+import {defineScene, type LegendSpec} from '../scene';
+import {storyFromMarkdown} from '../story-markdown';
+import narrative from './nyc-taxi-trails.md?raw';
+import type {NycTaxiTrailsOptions} from './nyc-taxi-trails.compute';
+import {FLOW_CREDITS} from './flows-style';
+import {
+  BACKDROP_INK,
+  CHORD_INK,
+  getFadeDiagram,
+  getFareTable,
+  HEAD_INK,
+  TRAIL_INK
+} from './nyc-taxi-trails-style';
+
+/** 07:59:00 local, the time origin of the dataset, in seconds since midnight. */
+const ORIGIN_SECONDS_OF_DAY = 7 * 3600 + 59 * 60;
+/** The window of the records on the dataset clock: 08:00 to 08:30 is 60 to 1,860 s. */
+const FIRST_SECOND = 60;
+const LAST_SECOND = 1860;
+
+const formatClock = (seconds: number): string => {
+  const total = ORIGIN_SECONDS_OF_DAY + Math.round(seconds);
+  return `${String(Math.floor(total / 3600)).padStart(2, '0')}:${String(Math.floor((total % 3600) / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
+
+const MIDTOWN = NYC.places.midtown.lngLat;
+
+/** The camera of the playing steps: Midtown at the scale where trails read as streets. */
+const MIDTOWN_VIEW = {
+  longitude: MIDTOWN[0],
+  latitude: MIDTOWN[1],
+  zoom: 12.2,
+  pitch: 0,
+  bearing: 0
+} as const;
+
+const CREDIT = joinCredits(FLOW_CREDITS.nycTaxi, FLOW_CREDITS.osrmRoutes);
+
+/** Place labels of the night ground: the basemap draws none, so every name is ours. */
+const PLACES = labelsFor(NYC, ['midtown', 'penn-station', 'grand-central', 'central-park'], {
+  midtown: {minZoom: 10},
+  'penn-station': {minZoom: 11.5},
+  'grand-central': {minZoom: 11.5},
+  'central-park': {minZoom: 10}
+});
+
+/** The cartouche of a step: line 1 here, the sample line and chips come from the scene. */
+const cartouche = (title: string) => ({
+  title: {title, subtitle: 'Yellow-cab trips, Fri 2 Jan 2015, 08:00-08:30'}
+});
+
+type FareData = {breaks: number[]; extent: [number, number]; counts: number[]};
+
+function getLegends(
+  state: NycTaxiTrailsOptions,
+  data: Readonly<Record<string, unknown>>
+): LegendSpec[] {
+  const legends: LegendSpec[] = [];
+  const fare = data['fare'] as FareData | undefined;
+  if (state.colorBy === 'fare' && fare) {
+    const match = state.compareRamps ? 'matched' : state.rampMatch;
+    legends.push(
+      getClassTableLegend(getFareTable({breaks: fare.breaks, extent: fare.extent, match}), {
+        title: 'Fare of the trip',
+        id: 'fare-classes',
+        basis: 'five classes, approximately a fifth of the trips each',
+        counts: fare.counts,
+        layout: 'list',
+        note: state.compareRamps
+          ? 'Right of the divider, matched to the dark ground. Left, the same classes run against it.'
+          : match === 'matched'
+            ? 'Brightest is dearest: the ramp runs toward contrast with the ground.'
+            : 'Mismatched: the dearest trips are the darkest and sink into the ground.'
+      })
+    );
+  } else if (state.colorBy === 'heading') {
+    legends.push({
+      kind: 'cyclic',
+      title: 'Heading of travel',
+      ramp: 'romao',
+      labels: ['N', 'E', 'S', 'W'],
+      note: 'Compass direction of modeled route segments, clockwise from north. The ramp ends where it starts; these are not GPS headings.'
+    });
+  } else {
+    legends.push({
+      kind: 'categories',
+      title: 'Taxi trails',
+      entries: [
+        {color: TRAIL_INK, label: 'Route behind a cab', shape: 'line'},
+        {color: HEAD_INK, label: 'Cab now', shape: 'dot'}
+      ],
+      note: 'A trail fades with age: opacity is (1 - age / trail length) squared.'
+    });
+  }
+  const context = [
+    ...(state.showBackdrop
+      ? [{color: BACKDROP_INK, label: 'Every route in the sample', shape: 'line' as const}]
+      : []),
+    ...(state.showChords
+      ? [{color: CHORD_INK, label: 'Straight chord, pickup to drop-off', shape: 'line' as const}]
+      : [])
+  ];
+  if (context.length) {
+    legends.push({kind: 'categories', title: 'Context', entries: context});
+  }
+  return legends;
+}
+
+function getSnippet(state: NycTaxiTrailsOptions): string {
+  const trailSeconds = state.trailMinutes * 60;
+  return `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUTimeWindowFilter} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUTrajectoryPlayhead} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPURoseStatistic} from '@luma-contributors/graph/gpu-spatial-analysis';
+
+// every taxi at the clock: interpolated position, heading, a compact list of live taxis
+const playheadGraph = new GPUCommandGraph(device);
+playheadGraph.add(new GPUTrajectoryPlayhead({
+  spatialContext: projection.spatialContext,
+  positions, timestamps, trackOffsets, parameters: playhead.importToGraph(playheadGraph),
+  output: {
+    currentPositions, headings, speeds, trackStatus: status,
+    activeTracks: {ids: activeIds, status: {count: activeCount, overflow: activeOverflow}},
+    drawInstanceCount                                // indirect draw count for the heads
+  }
+}));
+
+// GPU circular summaries of active modeled route headings. Fare labels remain descriptive.
+playheadGraph.add(new GPURoseStatistic({
+  starts: roseStarts, ends: roseEnds, mask: activeMask,
+  weights: ${state.roseWeighting === 'segment-length' ? 'currentSegmentLengths' : 'undefined'},
+  groupIds: fareClasses, groupCount: 5,
+  circular: {
+    mode: '${state.roseMode}', angleUnit: 'radians',
+    origin: 'positive-x-counter-clockwise', binCount: ${state.roseMode === 'directional' ? 36 : 18}
+  },
+  output: roseOutput
+}));
+
+// route segments of the last ${state.trailMinutes} min, with fade weights and clip fractions
+const trailGraph = new GPUCommandGraph(device);
+trailGraph.add(new GPUTimeWindowFilter({
+  timestamps: segmentStartTimes, endTimestamps: segmentEndTimes,
+  window: window.importToGraph(trailGraph),
+  trackIds: segmentTracks,
+  output: {
+    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    fadeWeights, clipFractions, trackVisibleCounts, drawInstanceCount
+  }
+}));
+
+// every frame: write the clock and the window (no recompile), then encode both
+playhead.write(getGPUTrajectoryPlayheadParameterValues({playhead: seconds}));
+window.write(getGPUTimeWindowFilterParameterValues({
+  start: seconds - ${trailSeconds}, end: seconds, startFadeDuration: ${trailSeconds}   // weight 1 at the head, 0 at the tail
+}));
+playheadCompiled.encode(commandEncoder, {parameters: undefined});
+trailCompiled.encode(commandEncoder, {parameters: undefined});
+
+// the layer squares the fade weight: alpha = (1 - age / tail)^2
+color.a = color.a * segmentWeights[row] * segmentWeights[row];`;
+}
+
+export default defineScene<NycTaxiTrailsOptions>({
+  id: 'nyc-taxi-trails',
+  title: 'What does a Friday rush hour look like?',
+  chapter: 'flows',
+  order: 5,
+  summary:
+    'A seeded 9,000-trip sample of Friday yellow-cab pickups and drop-offs is routed with OSRM; GPU playhead, time-window and circular-statistic graphs draw interpolated positions, recent route segments and active modeled-heading roses directly. These are modeled routes rather than GPS traces, and the sample undercounts all trips.',
+  contributors: ['GPUTrajectoryPlayhead', 'GPUTimeWindowFilter', 'GPURoseStatistic'],
+  datasets: [
+    {id: 'poopdeck-nyc-taxi-paths', role: '9,000 routed taxi trips with a time on every vertex'}
+  ],
+  initialView: {...MIDTOWN_VIEW},
+
+  options: [
+    ...playbackOptions<NycTaxiTrailsOptions>({
+      ids: {play: 'play', time: 'time', speed: 'playSpeed', loop: 'loop'},
+      time: {
+        min: FIRST_SECOND,
+        max: LAST_SECOND,
+        step: 5,
+        default: 480,
+        label: 'Clock',
+        format: formatClock,
+        help: 'Time of the playhead, local New York time on Friday 2 January 2015 (08:00 to 08:30). The playback clock moves this slider.'
+      },
+      speed: {
+        min: 10,
+        max: 240,
+        step: 10,
+        default: 60,
+        unit: 'x',
+        label: 'Playback speed',
+        help: 'Simulated seconds per real second. 60x plays one minute per second; 240x plays the whole window in eight seconds.'
+      },
+      loop: true
+    }),
+    {
+      kind: 'slider',
+      id: 'trailMinutes',
+      label: 'Trail length',
+      group: 'Trails',
+      apply: 'param',
+      min: 0.5,
+      max: 10,
+      step: 0.5,
+      default: 2,
+      unit: 'min',
+      marks: [{value: 2, label: 'default'}],
+      autoSweep: {from: 0.5, to: 10, durationMs: 9000},
+      describe: value => `Each cab shows the last ${value} min of its route`,
+      help: 'Width of the time window behind the playhead, in minutes of taxi time: a four-number parameter-buffer write. Short trails say where the cabs are; long ones say where they go, until the map becomes a line-density map.'
+    },
+    {
+      kind: 'select',
+      id: 'colorBy',
+      label: 'Colour by',
+      group: 'Colour',
+      apply: 'param',
+      display: 'segmented',
+      default: 'none',
+      help: 'One taxi yellow; the heading of each route segment on a cyclic ramp; or the fare of the trip in five quantile classes. A per-segment or per-trip buffer read through the segment row, so trails and legend share it.',
+      options: [
+        {value: 'none', label: 'One colour'},
+        {value: 'heading', label: 'Heading'},
+        {value: 'fare', label: 'Fare'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'roseMode',
+      label: 'Rose direction model',
+      group: 'Heading summary',
+      apply: 'param',
+      default: 'directional',
+      disabledWhen: state => state.colorBy !== 'heading',
+      help: 'Directional bins distinguish opposite travel directions; axial bins combine them. The route geometry is modeled, not a GPS bearing record.',
+      options: [
+        {value: 'directional', label: 'Directional · 360°'},
+        {value: 'axial', label: 'Axial · opposite headings together'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'roseWeighting',
+      label: 'Rose weight',
+      group: 'Heading summary',
+      apply: 'param',
+      default: 'equal',
+      disabledWhen: state => state.colorBy !== 'heading',
+      help: 'Equal mode counts each active trip once. Segment-length mode weights each modeled heading by the length of its current route segment in projected metres; this is descriptive geometry, not trip demand.',
+      options: [
+        {value: 'equal', label: 'Equal trips'},
+        {value: 'segment-length', label: 'Current segment length'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'roseGrouping',
+      label: 'Rose grouping',
+      group: 'Heading summary',
+      apply: 'param',
+      default: 'all',
+      disabledWhen: state => state.colorBy !== 'heading',
+      help: 'Show all active modeled routes together or as fare-quantile-class small multiples. The grouping is descriptive and does not imply fares affect route orientation.',
+      options: [
+        {value: 'all', label: 'All trips'},
+        {value: 'fare-class', label: 'Fare classes'}
+      ]
+    },
+    {
+      kind: 'toggle',
+      id: 'compareRamps',
+      label: 'Compare ramps',
+      group: 'Colour',
+      apply: 'param',
+      default: false,
+      disabledWhen: state => state.colorBy !== 'fare',
+      help: 'Draws the fare classes twice with a divider: the ramp run against the dark ground on the left, matched to it on the right.'
+    },
+    {
+      kind: 'select',
+      id: 'rampMatch',
+      label: 'Ramp',
+      group: 'Colour',
+      apply: 'param',
+      display: 'segmented',
+      default: 'matched',
+      disabledWhen: state => state.colorBy !== 'fare' || state.compareRamps,
+      help: 'Matched: brightest is dearest, toward contrast with the dark ground. Mismatched: the same ramp reversed, so the dearest trips are the darkest.',
+      options: [
+        {value: 'matched', label: 'Matched'},
+        {value: 'mismatched', label: 'Mismatched'}
+      ]
+    },
+    {
+      kind: 'toggle',
+      id: 'showBackdrop',
+      label: 'Show every route',
+      group: 'Context',
+      apply: 'param',
+      default: false,
+      help: 'Draws all route segments of every trip as a faint network below the trails, so the roads the sample uses are visible.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showChords',
+      label: 'Chords',
+      group: 'Context',
+      apply: 'param',
+      default: false,
+      help: 'Draws, for up to 40 cabs on the road, the straight line from pickup to drop-off (dashed) and the full route that was modelled between them. Pause the clock to freeze the set.'
+    },
+    {
+      kind: 'toggle',
+      id: 'inspect',
+      label: 'Inspect one taxi',
+      group: 'Inspect',
+      apply: 'param',
+      default: false,
+      help: 'Picks a long route among the cabs on the road and draws its whole route in grey with a tick at each vertex of its timestamp table: the table that the GPU binary-searches. The camera flies to it only while the clock is paused.'
+    },
+    {
+      kind: 'button',
+      id: 'pickTaxi',
+      label: 'Pick another long taxi',
+      group: 'Inspect',
+      help: 'Inspects the longest route among the other cabs on the road now.'
+    }
+  ],
+
+  readouts: [
+    {id: 'clock', label: 'Local time', help: 'New York local time of the playhead.'},
+    {
+      id: 'active',
+      label: 'Cabs on the road',
+      format: 'integer',
+      emphasis: 'tile',
+      help: 'Trips whose start is before the clock and whose end is after it, from the playhead graph. It counts the sample, about half of the trips of the window.'
+    },
+    {id: 'trips', label: 'Trips in the sample', format: 'integer'},
+    {
+      id: 'segments',
+      label: 'Trail segments drawn',
+      format: 'integer',
+      help: 'Route segments inside the trail window, from the time-window graph.'
+    },
+    {
+      id: 'circuity',
+      label: 'Median route over chord',
+      help: 'Circuity: the length of the modelled route divided by the straight line between its ends, for trips whose ends are more than 200 m apart.'
+    },
+    {
+      id: 'detourShare',
+      label: 'Trips with a clear detour',
+      help: 'Share of those trips whose route is more than 1.3 times its chord.'
+    },
+    {
+      id: 'dominantHeading',
+      label: 'Modeled-heading concentration',
+      help: 'Share of active modeled route headings within the busiest 30-degree compass span, plus weighted resultant length R. R is descriptive; no significance claim is made.'
+    },
+    {
+      id: 'roseCoverage',
+      label: 'Rose support / weight',
+      help: 'Nonzero modeled route segments contributing to this GPU rose and, in segment-length mode, their total current length in the local metric frame.'
+    },
+    {
+      id: 'searchSteps',
+      label: 'Binary search of this cab',
+      help: "Steps of the playhead search in this cab's timestamp table: about log2 of its vertex count."
+    },
+    {id: 'inspectRoute', label: 'Route of this cab'},
+    {
+      id: 'roadChart',
+      label: 'Cabs on the road',
+      kind: 'chart',
+      help: 'Trips on the road per half minute in the sample. Click to move the clock. The window opens with few cabs already under way, so the first minutes are shaded.'
+    },
+    {
+      id: 'headingRose',
+      label: 'Active modeled route headings',
+      kind: 'chart',
+      help: 'GPU circular statistic of active modeled route headings. A half-bin rotation centers the contributor’s floor-based bins on the displayed compass-sector centers; the reported mean direction is shifted back. Directional/axial mode, equal/current-segment-length weighting and all/fare-class grouping alter the GPU output. Length weighting and fare grouping are descriptive only. Resultant length is descriptive; Rayleigh z is unweighted and no p-value is reported.'
+    },
+    {
+      id: 'fareHistogram',
+      label: 'Fares of the sample',
+      kind: 'chart',
+      help: 'The fares with the four quintile breaks marked, in the colours of the map.'
+    },
+    {id: 'vertices', label: 'Route vertices', format: 'integer', hood: true},
+    {id: 'segmentsTotal', label: 'Route segments', format: 'integer', hood: true},
+    {
+      id: 'overflow',
+      label: 'List overflow',
+      hood: true,
+      help: 'Yes means a compact id list was shorter than the number of live taxis or segments.'
+    }
+  ],
+
+  pipeline: [
+    {
+      id: 'playhead',
+      label: 'Playhead',
+      detail: 'One thread per cab: binary-search its timestamps, interpolate position and heading'
+    },
+    {
+      id: 'window',
+      label: 'Time window',
+      detail: 'One thread per segment: overlap with the trail, fade weight, clip fractions'
+    },
+    {
+      id: 'rose',
+      label: 'Circular statistic',
+      detail: 'GPU bins active modeled route headings directionally or axially'
+    },
+    {
+      id: 'compact',
+      label: 'Compact',
+      detail: 'Live cabs and segments gathered into id lists; counts written for the draw'
+    },
+    {id: 'draw', label: 'Draw', detail: 'The layers read the buffers directly: no CPU geometry'}
+  ],
+
+  legends: getLegends,
+
+  basemap: ground('night'),
+  furniture: {
+    title: {
+      title: 'What does a Friday rush hour look like?',
+      subtitle: 'Yellow-cab trips, Fri 2 Jan 2015, 08:00-08:30',
+      chips: ['Sample', 'Modelled routes']
+    },
+    scaleBar: {units: 'metric'},
+    credit: CREDIT,
+    caveat:
+      'The 9,000-trip sample uses modeled routes between recorded endpoints, not GPS traces; counts underrepresent all yellow-cab trips and early trail windows are incomplete.',
+    clock: {
+      option: 'time',
+      // The archive stores New York local time as if UTC: 07:59:00 local is 12:59:00 UTC.
+      time: {origin: '2015-01-02T12:59:00Z', unit: 'seconds'},
+      zones: ['America/New_York', 'UTC'],
+      show: 'time',
+      progress: [FIRST_SECOND, LAST_SECOND]
+    }
+  },
+  annotations: PLACES,
+
+  snippet: getSnippet,
+
+  about: {
+    what: 'Previously: net flow on a hexagon lattice. Next: the airline network as a graph.\n\n`GPUTrajectoryPlayhead` interpolates every trajectory to one instant in a compute pass and compacts the ids of the live ones; `GPUTimeWindowFilter` selects the route segments inside a time window, weights them by how recent they are and clips the segment at the window edge. The layers read both outputs directly from GPU storage, with the instance counts written by the GPU. Under the hood: the playhead (the mechanics are taught in "Who is moving in New York Harbor?" in the movement chapter).',
+    why: 'Replaying movement is the way to see rhythm: where trips concentrate, which corridors carry them, how the picture changes in minutes. Because the clock and the window are small buffers, one compiled graph plays any speed, any trail length and any scrub position. A GPU circular statistic summarizes the active modeled route headings as directional or axial bins; it is not a measurement of cab bearings.',
+    howToRead:
+      'Each white dot is a taxi now; the line behind it is the last stretch of its route, fading with age. The routes come from a routing engine between the recorded pickup and drop-off, not from GPS: a cab never queues, and every cab on an avenue is routed along the same line. The data are a seeded half of the yellow-cab trips of a holiday-week Friday in 2015, so counts are lower bounds, and the first minutes undercount because the window opens with few cabs under way. Times are New York local time; the archive stores them as if UTC.'
+  },
+
+  create: async ctx => (await import('./nyc-taxi-trails.compute')).createNycTaxiTrails(ctx),
+
+  story: storyFromMarkdown<NycTaxiTrailsOptions>(narrative, {
+    'eight-oclock': {
+      headline: 'GPU playhead locates active modeled taxi trips',
+      textAlternative:
+        'Midtown map of active trips from a 9,000-trip sample; white points mark GPU-interpolated taxi positions and yellow lines show two minutes of modeled route history.',
+      evidence:
+        '**{{active}}** sampled trips are active at **{{clock}}**; **{{trips}}** is the full retained trip count.',
+      caveat:
+        'Trips are a seeded half-sample routed between recorded endpoints, not GPS traces; counts are lower bounds and early trail windows are incomplete.',
+      optionsMode: 'fresh',
+      options: {
+        play: true,
+        time: 480,
+        playSpeed: 60,
+        trailMinutes: 2,
+        colorBy: 'none',
+        showBackdrop: false,
+        showChords: false,
+        inspect: false
+      },
+      controls: ['play', 'playSpeed'],
+      readouts: ['clock', 'active', 'trips', 'roadChart'],
+      camera: {...MIDTOWN_VIEW, transitionMs: 1400},
+      furniture: cartouche('Active modeled taxi trips'),
+      stage: 'playhead'
+    },
+    'trail-is-memory': {
+      headline: 'Trail duration determines visible route history',
+      textAlternative:
+        'Midtown map of active sampled trips as the trail window increases; each line shows a longer interval of the modeled route and the visible segment count rises.',
+      optionsMode: 'fresh',
+      options: {play: true, time: 480, playSpeed: 60, trailMinutes: 2, colorBy: 'none'},
+      controls: ['trailMinutes'],
+      readouts: ['segments', 'active'],
+      camera: {...MIDTOWN_VIEW, transitionMs: 0},
+      furniture: cartouche('A trail is the map’s memory'),
+      diagram: getFadeDiagram(),
+      stage: 'window'
+    },
+    'routes-not-traces': {
+      headline: 'Displayed paths are modeled routes, not traces',
+      textAlternative:
+        'Paused Midtown map showing all modeled OSRM routes in gray, pickup-to-drop-off chords as dashed lines and selected full routes at one playhead time.',
+      optionsMode: 'fresh',
+      options: {
+        play: false,
+        time: 900,
+        trailMinutes: 1,
+        colorBy: 'none',
+        showBackdrop: true,
+        showChords: true
+      },
+      controls: ['time', 'showChords'],
+      readouts: ['circuity', 'detourShare', 'active'],
+      camera: {...MIDTOWN_VIEW, transitionMs: 1400},
+      furniture: cartouche('Routes are modelled, not recorded'),
+      stage: 'draw'
+    },
+    heading: {
+      headline: 'Modeled routes preserve paired avenue directions',
+      textAlternative:
+        'Midtown modeled route segments colored by compass heading on a cyclic ramp, with a rose chart counting active sampled trips by heading.',
+      optionsMode: 'fresh',
+      options: {
+        play: true,
+        time: 600,
+        playSpeed: 60,
+        trailMinutes: 1.5,
+        colorBy: 'heading',
+        roseMode: 'directional',
+        showBackdrop: false
+      },
+      controls: ['colorBy', 'roseMode', 'roseWeighting', 'roseGrouping'],
+      readouts: ['dominantHeading', 'roseCoverage', 'headingRose', 'active'],
+      camera: {...MIDTOWN_VIEW, zoom: 13.2, transitionMs: 0},
+      furniture: cartouche('Direction is a cycle'),
+      stage: 'playhead'
+    },
+    'fare-colour': {
+      headline: 'Fare ramp orientation changes class contrast',
+      textAlternative:
+        'Split Midtown map using the same five fare quantile classes; the reversed ramp at left gives higher fares lower contrast, while the matched ramp at right makes them brighter.',
+      optionsMode: 'fresh',
+      options: {
+        play: true,
+        time: 600,
+        playSpeed: 60,
+        trailMinutes: 1.5,
+        colorBy: 'fare',
+        compareRamps: true
+      },
+      controls: ['compareRamps', 'rampMatch'],
+      readouts: ['fareHistogram', 'active'],
+      compare: {labels: ['Mismatched ramp', 'Matched ramp'], position: 0.5},
+      camera: {...MIDTOWN_VIEW, zoom: 13.2, transitionMs: 0},
+      furniture: cartouche('A ramp must face its ground'),
+      stage: 'draw'
+    },
+    'how-the-gpu-does-it': {
+      headline: 'Each update searches every trip timeline',
+      textAlternative:
+        'Paused Midtown map with one modeled trip route, timestamped vertices and interpolated position, plus readouts for binary-search steps and visible route segments.',
+      optionsMode: 'fresh',
+      options: {
+        play: false,
+        time: 900,
+        playSpeed: 20,
+        trailMinutes: 2,
+        colorBy: 'none',
+        showBackdrop: true,
+        inspect: true
+      },
+      controls: ['pickTaxi', 'trailMinutes', 'colorBy'],
+      readouts: ['searchSteps', 'segments', 'overflow'],
+      camera: {...MIDTOWN_VIEW, transitionMs: 1400},
+      furniture: cartouche('One cab, one binary search'),
+      stage: 'playhead'
+    }
+  }).map(step =>
+    step.id === 'eight-oclock'
+      ? {
+          ...step,
+          title: 'Active modeled taxi trips',
+          body: '`GPUTrajectoryPlayhead` binary-searches the modeled timestamp vertices for each routed trip and interpolates active positions. GPU-produced active ids and indirect draw counts remain on the device; the CPU reads small status summaries for the card. **{{active}}** sample trips are active at **{{clock}}**. Use **Play** or **Playback speed** below.'
+        }
+      : step
+  )
+});

@@ -1,0 +1,12 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+export {
+  GPUTrackSimilarity,
+  GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT,
+  GPU_TRACK_SIMILARITY_STATUS
+} from './gpu-track-similarity';
+export type {GPUTrackSimilarityOutput, GPUTrackSimilarityProps} from './gpu-track-similarity';
+export {GPUTrackSimilaritySearch} from './gpu-track-similarity-search';
+export type {GPUTrackSimilaritySearchProps} from './gpu-track-similarity-search';

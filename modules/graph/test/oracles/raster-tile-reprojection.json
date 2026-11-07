@@ -1,0 +1,91 @@
+{
+  "provenance": {
+    "numpy": "2.2.6",
+    "rasterio": "1.4.3",
+    "gdal": "3.9.3",
+    "reference": "NumPy ordered mosaic + equal-weight sample composition; Rasterio direct interior bilinear"
+  },
+  "source": [
+    10.0,
+    20.0,
+    30.0,
+    40.0,
+    50.0,
+    60.0,
+    70.0,
+    80.0
+  ],
+  "seamStrict": [
+    15.0,
+    25.0,
+    35.0,
+    null,
+    55.0,
+    65.0,
+    75.0,
+    null
+  ],
+  "seamRenormalize": [
+    15.0,
+    25.0,
+    35.0,
+    40.0,
+    55.0,
+    65.0,
+    75.0,
+    80.0
+  ],
+  "diagonalRasterio": [
+    35.0,
+    45.0,
+    55.0
+  ],
+  "missingStrict": [
+    15.0,
+    null,
+    null,
+    null,
+    55.0,
+    null,
+    null,
+    null
+  ],
+  "missingRenormalize": [
+    15.0,
+    20.0,
+    null,
+    null,
+    55.0,
+    60.0,
+    null,
+    null
+  ],
+  "overlapStrict": [
+    105.0,
+    null,
+    null,
+    null,
+    325.0,
+    650.0,
+    390.0,
+    null
+  ],
+  "overlapRenormalize": [
+    105.0,
+    200.0,
+    40.0,
+    40.0,
+    325.0,
+    650.0,
+    390.0,
+    80.0
+  ],
+  "rasterioInterior": [
+    15.0,
+    25.0,
+    35.0,
+    55.0,
+    65.0,
+    75.0
+  ]
+}

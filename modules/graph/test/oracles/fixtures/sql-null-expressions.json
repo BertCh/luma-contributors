@@ -1,0 +1,123 @@
+{
+  "reference": {
+    "duckdb": "1.4.1",
+    "pyarrow": "22.0.0"
+  },
+  "expressions": [
+    {
+      "expression": "COALESCE(NULL, fare, 7)",
+      "values": [
+        7.0,
+        8.0,
+        3.0,
+        10.0,
+        11.0
+      ]
+    },
+    {
+      "expression": "CASE WHEN fare >= 8 THEN fare WHEN fare IS NULL THEN 7 ELSE NULL END",
+      "values": [
+        7.0,
+        8.0,
+        null,
+        10.0,
+        11.0
+      ]
+    },
+    {
+      "expression": "CASE fare WHEN NULL THEN 100 WHEN 8 THEN 80 WHEN 3 THEN 30 ELSE 7 END",
+      "values": [
+        7,
+        80,
+        30,
+        7,
+        7
+      ]
+    },
+    {
+      "expression": "CASE WHEN NULL THEN 100 WHEN FALSE THEN 200 ELSE 7 END",
+      "values": [
+        7,
+        7,
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "expression": "CASE WHEN fare > 9 THEN fare END",
+      "values": [
+        null,
+        null,
+        null,
+        10.0,
+        11.0
+      ]
+    },
+    {
+      "expression": "COALESCE(NULL, CASE WHEN fare > 9 THEN fare END)",
+      "values": [
+        null,
+        null,
+        null,
+        10.0,
+        11.0
+      ]
+    },
+    {
+      "expression": "COALESCE(NULL, NULL)",
+      "values": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  ],
+  "counts": [
+    {
+      "query": "SELECT COUNT(*) AS rows, COUNT(fare) AS present FROM trips",
+      "rows": [
+        [
+          5,
+          4
+        ]
+      ]
+    },
+    {
+      "query": "SELECT COUNT(*) AS rows, COUNT(fare) AS present FROM trips WHERE fare IS NULL",
+      "rows": [
+        [
+          1,
+          0
+        ]
+      ]
+    },
+    {
+      "query": "SELECT COUNT(*) AS rows, COUNT(fare) AS present FROM trips WHERE FALSE",
+      "rows": [
+        [
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "query": "SELECT category, COUNT(*) AS rows, COUNT(fare) AS present FROM trips GROUP BY category ORDER BY category",
+      "rows": [
+        [
+          0,
+          3,
+          2
+        ],
+        [
+          1,
+          2,
+          2
+        ]
+      ]
+    }
+  ],
+  "nonfiniteCount": 3
+}

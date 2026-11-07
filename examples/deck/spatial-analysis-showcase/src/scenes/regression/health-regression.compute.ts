@@ -1,0 +1,1556 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {LocalMetricProjection} from '../../engine/projection';
+import type {Layer} from '@deck.gl/core';
+import {COORDINATE_SYSTEM} from '@deck.gl/core';
+import type {Buffer} from '@luma.gl/core';
+import {VALIDATION_FOLD_COLORS} from './health-regression.constants';
+import {
+  addSpatialRegressionRecipe,
+  getGPUNeighborSearchParameterValues,
+  getGPUOrdinaryLeastSquaresModelResult,
+  getGPUOrdinaryLeastSquaresParameterValues,
+  getGPUSpatialErrorGMModelResult,
+  getGPUSpatialTwoStageLeastSquaresDiagnostics,
+  getGPUSpatialTwoStageLeastSquaresModelResult,
+  GPUContiguityWeights,
+  GPUNeighborSearch,
+  getSpatialRegressionSpecification,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_OLS,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_LAG,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_ERROR,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_LAG_AND_ERROR,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_UNDETERMINED,
+  GPUSpatialCrossValidatedOLS,
+  GPUSpatialErrorGM,
+  GPUSpatialTwoStageLeastSquares,
+  GPUSpatialWeightsTransform,
+  GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+  GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ADJUSTED_R_SQUARED,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_AIC,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BIC,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPU_SPATIAL_ERROR_GM_STATUS_OK,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH,
+  GPU_SPATIAL_ERROR_GM_TABLE_STRIDE,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_EXPECTATION,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_I,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_ERROR,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_LAG,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_SARMA,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_MORAN_RESIDUALS,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_ERROR,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE,
+  type GPUSpatialRegressionRecipeResult
+} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma-contributors/graph/gpu-core';
+import {importGraphBuffer} from '../../engine/graph-buffers';
+import {addKernelPass} from '../../engine/mode-kernels';
+import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
+import {SpatialAnalysisResources} from '../../engine/resources';
+import type {SceneContext, SceneInstance} from '../scene';
+import {createNamedReader} from './b6-reader';
+import {PolygonFillLayer} from './b6-fill-layer';
+import {
+  buildOutlineSegments,
+  computeCentroids,
+  computeQueenAdjacency,
+  createFeatureLocator,
+  formatInteger,
+  formatNumber,
+  formatP,
+  getFeaturePolygonOffsets,
+  getLargestComponent,
+  getMoments,
+  getQuantile,
+  NO_ROW,
+  projectRows,
+  readPolygonGeometry,
+  subsetPolygonGeometry,
+  triangulatePolygonGeometry
+} from './b6-polygons';
+
+/** Option state of the health-regression scene. */
+export type HealthRegressionOptions = {
+  outcome: 'diabetes' | 'obesity' | 'asthma' | 'depression' | 'heartDisease' | 'smoking';
+  model: 'income' | 'economic' | 'full';
+  weights: 'queen' | 'rook' | 'knn4' | 'knn8' | 'knn12';
+  instruments: '1' | '2';
+  ridge: number;
+  significance: number;
+  map:
+    | 'residuals'
+    | 'fitted'
+    | 'observed'
+    | 'clusters'
+    | 'lag'
+    | 'error'
+    | 'validationResiduals'
+    | 'validationFolds';
+  validationDesign: 'spatial' | 'random';
+  validationBuffer: '0' | '500' | '1000';
+};
+
+type ModelId = HealthRegressionOptions['model'];
+type WeightsKind = HealthRegressionOptions['weights'];
+type MapKind = HealthRegressionOptions['map'];
+
+/** Predictor catalogue: label and how to compute it from tract columns. */
+const PREDICTORS = [
+  {id: 'income', label: 'ln income per capita'},
+  {id: 'poverty', label: 'Poverty rate'},
+  {id: 'uninsured', label: 'Uninsured rate'},
+  {id: 'unemployed', label: 'Unemployment rate'},
+  {id: 'age65', label: 'Age 65+ share'},
+  {id: 'disability', label: 'Disability rate'},
+  {id: 'noVehicle', label: 'No-vehicle households'},
+  {id: 'black', label: 'Black share'},
+  {id: 'hispanic', label: 'Hispanic share'}
+] as const;
+type PredictorId = (typeof PREDICTORS)[number]['id'];
+
+/** Predictor sets of the `model` option. */
+export const MODEL_PREDICTORS: Record<ModelId, readonly PredictorId[]> = {
+  income: ['income'],
+  economic: ['income', 'poverty', 'uninsured', 'unemployed'],
+  full: ['income', 'poverty', 'uninsured', 'age65', 'disability', 'noVehicle', 'black', 'hispanic']
+};
+
+const OUTCOME_LABELS: Record<HealthRegressionOptions['outcome'], string> = {
+  diabetes: 'Diabetes prevalence',
+  obesity: 'Obesity prevalence',
+  asthma: 'Current asthma prevalence',
+  depression: 'Depression prevalence',
+  heartDisease: 'Coronary heart disease prevalence',
+  smoking: 'Current smoking prevalence'
+};
+
+const SLOTS_PER_ROW = 32;
+const MAXIMUM_PREDICTORS = 8;
+const GRID_SIZE: readonly [number, number] = [64, 64];
+
+const NEIGHBOR_COUNTS: Record<string, number> = {knn4: 4, knn8: 8, knn12: 12};
+
+/** Quadrant colors of the residual local Moran (index = quadrant code). */
+export const RESIDUAL_CLUSTER_COLORS = [
+  [150, 150, 158, 120],
+  [214, 69, 65, 235],
+  [138, 176, 232, 235],
+  [49, 104, 190, 235],
+  [240, 160, 60, 235]
+] as const;
+
+type Variant = {
+  predictorCount: number;
+  names: string[];
+  recipe: CompiledGPUCommandGraph<void>;
+  /** Repacks the significance level into the parameter buffer shared by every variant. */
+  setSettings: GPUSpatialRegressionRecipeResult['setSettings'];
+  lag: Map<'1' | '2', CompiledGPUCommandGraph<void>>;
+  error: CompiledGPUCommandGraph<void>;
+  buffers: {
+    predictors: Buffer;
+    olsResiduals: Buffer;
+    fitted: Buffer;
+    quadrants: Buffer;
+    lagResiduals: Buffer;
+    errorResiduals: Buffer;
+  };
+  addLag: (order: '1' | '2') => Promise<CompiledGPUCommandGraph<void>>;
+  reader: ReturnType<typeof createNamedReader>;
+  validation: CompiledGPUCommandGraph<void>;
+  validationReader: ReturnType<typeof createNamedReader>;
+  validationBuffers: {oofResiduals: Buffer; oofFolds: Buffer};
+};
+
+const VALIDATION_FOLD_COUNT = 5;
+const VALIDATION_BLOCK_SIZE_METERS = 3000;
+
+/**
+ * Regression of a PLACES health outcome on tract covariates for Chicago. The recipe graph
+ * (`addSpatialRegressionRecipe`) runs `GPUOrdinaryLeastSquares`, `GPUSpatialRegressionDiagnostics`
+ * and a residual `GPULocalMoran` on the study tracts; `GPUSpatialTwoStageLeastSquares` and
+ * `GPUSpatialErrorGM` fit the lag and error alternatives on the same weights. Weights come from a
+ * compiled `GPUContiguityWeights` (queen or rook, row-standardized by `GPUSpatialWeightsTransform`)
+ * or `GPUNeighborSearch` kNN. Predictor sets, weights and instrument order are compile-time
+ * choices: each variant is compiled the first time it is chosen and kept. Ridge penalty, outcome,
+ * significance level and the map are parameter or layer changes. Results are written to
+ * caller-owned buffers that the fill layer reads directly; small summaries and per-row result
+ * columns are read back once per change (never per frame) for the readouts and tooltips.
+ */
+export async function createHealthRegression(
+  ctx: SceneContext<HealthRegressionOptions>
+): Promise<SceneInstance<HealthRegressionOptions>> {
+  const tracts = ctx.datasets.get('chicago-tracts');
+  const {device} = ctx;
+  const resources = new SpatialAnalysisResources(device, 'health-regression');
+
+  // ---- Study set: tracts with every column finite, in the largest queen-connected group. ----
+  const fullGeometry = readPolygonGeometry(tracts);
+  const featureCount = fullGeometry.featureCount;
+  const column = (name: string) => tracts.column<Float32Array>(name);
+  const population = column('population');
+  const households = column('households');
+  const income = column('perCapitaIncome');
+  const share = (numerator: string, denominator: Float32Array) => {
+    const values = column(numerator);
+    return Float32Array.from(values, (value, index) =>
+      denominator[index] > 0 ? (100 * value) / denominator[index] : Number.NaN
+    );
+  };
+  const rawPredictors: Record<PredictorId, Float32Array> = {
+    income: Float32Array.from(income, value => (value > 0 ? Math.log(value) : Number.NaN)),
+    poverty: column('poverty150Pct'),
+    uninsured: column('uninsuredPct'),
+    unemployed: column('unemployedPct'),
+    age65: column('age65Pct'),
+    disability: column('disabilityPct'),
+    noVehicle: column('noVehiclePct'),
+    black: share('nhBlack', population),
+    hispanic: share('hispanic', population)
+  };
+  const outcomes = Object.fromEntries(
+    (Object.keys(OUTCOME_LABELS) as HealthRegressionOptions['outcome'][]).map(key => [
+      key,
+      column(key)
+    ])
+  ) as Record<HealthRegressionOptions['outcome'], Float32Array>;
+  const candidates: number[] = [];
+  for (let feature = 0; feature < featureCount; feature++) {
+    let finite = population[feature] >= 300 && households[feature] > 0;
+    for (const values of Object.values(rawPredictors)) finite &&= Number.isFinite(values[feature]);
+    for (const values of Object.values(outcomes)) finite &&= Number.isFinite(values[feature]);
+    if (finite) candidates.push(feature);
+  }
+  const fullAdjacency = computeQueenAdjacency(fullGeometry);
+  const features = getLargestComponent(fullAdjacency, candidates);
+  const rowCount = features.length;
+  const rowOfFeature = new Uint32Array(featureCount).fill(NO_ROW);
+  features.forEach((feature, row) => {
+    rowOfFeature[feature] = row;
+  });
+  const geometry = subsetPolygonGeometry(fullGeometry, features);
+  const lngLat = computeCentroids(geometry);
+  const origin = tracts.defaultOrigin;
+  const projection = new LocalMetricProjection(origin);
+  const meters = projectRows(lngLat, (longitude, latitude) =>
+    projection.project(longitude, latitude)
+  );
+  const geoids = (tracts.manifest as unknown as {geoid: string[]}).geoid;
+
+  // Standardized predictors (z-scores over the study tracts), one array per predictor.
+  const standardized = {} as Record<PredictorId, Float32Array>;
+  for (const {id} of PREDICTORS) {
+    const raw = Float32Array.from(features, feature => rawPredictors[id][feature]);
+    const {mean, deviation} = getMoments(raw);
+    standardized[id] = Float32Array.from(raw, value => (value - mean) / deviation);
+  }
+  const getResponse = (outcome: HealthRegressionOptions['outcome']) =>
+    Float32Array.from(features, feature => outcomes[outcome][feature]);
+
+  // ---- Geometry buffers. ----
+  const triangles = triangulatePolygonGeometry(geometry);
+  const excludedRows = new Uint32Array(featureCount).fill(NO_ROW);
+  for (let feature = 0; feature < featureCount; feature++) {
+    if (rowOfFeature[feature] === NO_ROW) excludedRows[feature] = 0;
+  }
+  const allTriangles = triangulatePolygonGeometry(fullGeometry, excludedRows);
+  const trianglesBuffer = resources.createBuffer('triangles', triangles.corners);
+  const ownersBuffer = resources.createBuffer('owners', triangles.owners);
+  const excludedTrianglesBuffer = resources.createBuffer(
+    'excluded-triangles',
+    allTriangles.corners
+  );
+  const excludedOwnersBuffer = resources.createBuffer('excluded-owners', allTriangles.owners);
+  const outlineSegments = buildOutlineSegments(fullGeometry);
+  const outlineBuffer = resources.createBuffer('outline', outlineSegments);
+  const locate = createFeatureLocator(geometry);
+
+  // ---- Inputs and weights buffers. ----
+  let minimumX = Infinity;
+  let minimumY = Infinity;
+  let maximumX = -Infinity;
+  let maximumY = -Infinity;
+  for (let row = 0; row < rowCount; row++) {
+    minimumX = Math.min(minimumX, meters[row * 2]);
+    maximumX = Math.max(maximumX, meters[row * 2]);
+    minimumY = Math.min(minimumY, meters[row * 2 + 1]);
+    maximumY = Math.max(maximumY, meters[row * 2 + 1]);
+  }
+  const positionsBuffer = resources.createBuffer('positions', meters);
+  const validationBlocks = new Uint32Array(rowCount);
+  const validationBlockColumns =
+    Math.ceil((maximumX - minimumX) / VALIDATION_BLOCK_SIZE_METERS) + 1;
+  for (let row = 0; row < rowCount; row++) {
+    const blockX = Math.floor((meters[row * 2] - minimumX) / VALIDATION_BLOCK_SIZE_METERS);
+    const blockY = Math.floor((meters[row * 2 + 1] - minimumY) / VALIDATION_BLOCK_SIZE_METERS);
+    validationBlocks[row] = blockX + validationBlockColumns * blockY;
+  }
+  const validationBlocksBuffer = resources.createBuffer('validation-blocks', validationBlocks);
+  const randomValidationBlocksBuffer = resources.createBuffer(
+    'validation-random-row-blocks',
+    Uint32Array.from({length: rowCount}, (_, row) => row)
+  );
+  let validationGeneration = 0;
+  const validationGenerationBuffer = resources.createBuffer(
+    'validation-generation',
+    Uint32Array.of(validationGeneration)
+  );
+  const verticesBuffer = resources.createBuffer('vertices', geometry.vertices);
+  const ringOffsetsBuffer = resources.createBuffer('ring-offsets', geometry.ringOffsets);
+  const featureOffsetsBuffer = resources.createBuffer(
+    'feature-offsets',
+    getFeaturePolygonOffsets(geometry)
+  );
+  const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', geometry.partRingOffsets);
+  const responseBuffer = resources.createBuffer('response', getResponse(ctx.options.outcome));
+  const capacity = rowCount * SLOTS_PER_ROW;
+  const offsetsBuffer = resources.createBuffer('offsets', (rowCount + 1) * 4);
+  const neighborsBuffer = resources.createBuffer('neighbors', capacity * 4);
+  const weightValuesBuffer = resources.createBuffer('weight-values', capacity * 4);
+  const overflowBuffer = resources.createBuffer('overflow', 4);
+  const totalNeighborsBuffer = resources.createBuffer('total-neighbors', 4);
+  const candidateOverflowBuffer = resources.createBuffer('candidate-overflow', 4);
+  const searchParameters = resources.createParameterBuffer(
+    'search-parameters',
+    'float32',
+    GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
+  );
+  const olsParameters = resources.createParameterBuffer(
+    'ols-parameters',
+    'float32',
+    GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH
+  );
+  const moranParameters = resources.createParameterBuffer(
+    'moran-parameters',
+    'float32',
+    GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+  );
+
+  const bounds: [number, number, number, number] = [
+    minimumX - 500,
+    minimumY - 500,
+    maximumX + 500,
+    maximumY + 500
+  ];
+
+  // ---- Weights graphs (compiled when first chosen). ----
+  const importWeights = (graph: GPUCommandGraph<void>) => ({
+    spatialContext: projection.spatialContext,
+    offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', rowCount + 1),
+    neighbors: importGraphBuffer(graph, 'neighbors', neighborsBuffer, 'uint32', capacity),
+    weights: importGraphBuffer(graph, 'weight-values', weightValuesBuffer, 'float32', capacity)
+  });
+  const weightsGraphs = new Map<WeightsKind, CompiledGPUCommandGraph<void>>();
+  const getWeightsGraph = async (kind: WeightsKind): Promise<CompiledGPUCommandGraph<void>> => {
+    let compiled = weightsGraphs.get(kind);
+    if (compiled) return compiled;
+    const graph = new GPUCommandGraph<void>(device, {id: `health-weights-${kind}`});
+    const weights = importWeights(graph);
+    const status = {
+      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+      requiredCount: importGraphBuffer(graph, 'total-neighbors', totalNeighborsBuffer, 'uint32', 1)
+    };
+    if (kind === 'queen' || kind === 'rook') {
+      graph.add(
+        new GPUContiguityWeights({
+          id: 'contiguity',
+          criterion: kind,
+          polygons: {
+            kind: 'polygons',
+            positions: importGraphBuffer(
+              graph,
+              'vertices',
+              verticesBuffer,
+              'float32x2',
+              geometry.vertices.length / 2
+            ),
+            featureOffsets: importGraphBuffer(
+              graph,
+              'feature-offsets',
+              featureOffsetsBuffer,
+              'uint32',
+              geometry.featureCount + 1
+            ),
+            polygonOffsets: importGraphBuffer(
+              graph,
+              'polygon-offsets',
+              polygonOffsetsBuffer,
+              'uint32',
+              geometry.partRingOffsets.length
+            ),
+            ringOffsets: importGraphBuffer(
+              graph,
+              'ring-offsets',
+              ringOffsetsBuffer,
+              'uint32',
+              geometry.ringOffsets.length
+            )
+          },
+          output: {
+            ...weights,
+            status: {
+              ...status,
+              candidateOverflow: importGraphBuffer(
+                graph,
+                'candidate-overflow',
+                candidateOverflowBuffer,
+                'uint32',
+                1
+              )
+            }
+          }
+        })
+      );
+      graph.add(
+        new GPUSpatialWeightsTransform({
+          spatialContext: projection.spatialContext,
+          id: 'row-standardize',
+          operation: 'row',
+          weights
+        })
+      );
+    } else {
+      graph.add(
+        new GPUNeighborSearch({
+          spatialContext: projection.spatialContext,
+          id: 'knn',
+          mode: 'knn',
+          k: NEIGHBOR_COUNTS[kind],
+          gridSize: GRID_SIZE,
+          positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
+          parameters: searchParameters.importToGraph(graph),
+          output: {...weights, status}
+        })
+      );
+    }
+    compiled = resources.track(await graph.compileAsync());
+    weightsGraphs.set(kind, compiled);
+    return compiled;
+  };
+  searchParameters.write(
+    getGPUNeighborSearchParameterValues({
+      bounds,
+      radius: Infinity,
+      weightKind: 'binary',
+      rowStandardize: true
+    })
+  );
+
+  // ---- Model variants (compiled when first chosen). ----
+  const variants = new Map<string, Variant>();
+  const getVariantKey = (
+    model: ModelId,
+    validationDesign = ctx.options.validationDesign,
+    validationBuffer = ctx.options.validationBuffer
+  ) => `${model}:${validationDesign}:${validationBuffer}`;
+  const getVariant = async (
+    model: ModelId,
+    validationDesign = ctx.options.validationDesign,
+    validationBuffer = ctx.options.validationBuffer
+  ): Promise<Variant> => {
+    const variantKey = getVariantKey(model, validationDesign, validationBuffer);
+    const existing = variants.get(variantKey);
+    if (existing) return existing;
+    const ids = MODEL_PREDICTORS[model];
+    const predictorCount = ids.length;
+    if (predictorCount > MAXIMUM_PREDICTORS) throw new Error('Too many predictors');
+    const predictorValues = new Float32Array(rowCount * predictorCount);
+    ids.forEach((id, columnIndex) => {
+      for (let row = 0; row < rowCount; row++) {
+        predictorValues[row * predictorCount + columnIndex] = standardized[id][row];
+      }
+    });
+    const validationPredictors = new Float32Array(rowCount * predictorCount);
+    ids.forEach((id, columnIndex) => {
+      for (let row = 0; row < rowCount; row++) {
+        validationPredictors[row * predictorCount + columnIndex] = rawPredictors[id][features[row]];
+      }
+    });
+    const tag = `${model}-`;
+    const make = (name: string, bytes: number) => resources.createBuffer(`${tag}${name}`, bytes);
+    const buffers = {
+      predictors: resources.createBuffer(`${tag}predictors`, predictorValues),
+      coefficients: make('coefficients', (predictorCount + 1) * 4),
+      standardErrors: make('standard-errors', (predictorCount + 1) * 4),
+      tStatistics: make('t-statistics', (predictorCount + 1) * 4),
+      olsSummary: make('ols-summary', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4),
+      olsStatus: make('ols-status', 4),
+      olsResiduals: make('ols-residuals', rowCount * 4),
+      fitted: make('fitted', rowCount * 4),
+      tests: make('tests', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH * 4),
+      diagnosticsSummary: make(
+        'diagnostics-summary',
+        GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH * 4
+      ),
+      diagnosticsStatus: make('diagnostics-status', 4),
+      zScores: make('moran-z', rowCount * 4),
+      localI: make('moran-i', rowCount * 4),
+      quadrants: make('quadrants', rowCount * 4),
+      pValues: make('moran-p', rowCount * 4),
+      lagTable: make(
+        'lag-table',
+        (predictorCount + 2) * GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE * 4
+      ),
+      lagSummary: make('lag-summary', GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH * 4),
+      lagStatus: make('lag-status', 4),
+      lagResiduals: make('lag-residuals', rowCount * 4),
+      errorTable: make('error-table', (predictorCount + 2) * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE * 4),
+      errorSummary: make('error-summary', GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH * 4),
+      errorStatus: make('error-status', 4),
+      errorResiduals: make('error-residuals', rowCount * 4)
+    };
+
+    // Recipe graph: OLS, diagnostics and the residual local Moran in one compiled graph.
+    const recipeGraph = new GPUCommandGraph<void>(device, {id: `health-recipe-${model}`});
+    const view = <F extends 'float32' | 'uint32'>(
+      graph: GPUCommandGraph<void>,
+      name: string,
+      buffer: Buffer,
+      format: F,
+      length: number
+    ) => importGraphBuffer(graph, name, buffer, format, length) as GraphDataView<F>;
+    const predictorView = (graph: GPUCommandGraph<void>) =>
+      view(graph, 'predictors', buffers.predictors, 'float32', rowCount * predictorCount);
+    const responseView = (graph: GPUCommandGraph<void>) =>
+      view(graph, 'response', responseBuffer, 'float32', rowCount);
+    const recipeResult = addSpatialRegressionRecipe(recipeGraph, {
+      id: 'health',
+      predictors: predictorView(recipeGraph),
+      response: responseView(recipeGraph),
+      predictorCount,
+      weights: importWeights(recipeGraph),
+      settings: {significanceLevel: ctx.options.significance},
+      parameters: moranParameters,
+      olsParameters: olsParameters.importToGraph(recipeGraph),
+      outputs: {
+        ols: {
+          coefficients: view(
+            recipeGraph,
+            'coefficients',
+            buffers.coefficients,
+            'float32',
+            predictorCount + 1
+          ),
+          standardErrors: view(
+            recipeGraph,
+            'standard-errors',
+            buffers.standardErrors,
+            'float32',
+            predictorCount + 1
+          ),
+          tStatistics: view(
+            recipeGraph,
+            't-statistics',
+            buffers.tStatistics,
+            'float32',
+            predictorCount + 1
+          ),
+          summary: view(
+            recipeGraph,
+            'ols-summary',
+            buffers.olsSummary,
+            'float32',
+            GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
+          ),
+          status: {code: view(recipeGraph, 'ols-status', buffers.olsStatus, 'uint32', 1)},
+          residuals: view(recipeGraph, 'ols-residuals', buffers.olsResiduals, 'float32', rowCount),
+          fitted: view(recipeGraph, 'fitted', buffers.fitted, 'float32', rowCount)
+        },
+        diagnostics: {
+          tests: view(
+            recipeGraph,
+            'tests',
+            buffers.tests,
+            'float32',
+            GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
+          ),
+          summary: view(
+            recipeGraph,
+            'diagnostics-summary',
+            buffers.diagnosticsSummary,
+            'float32',
+            GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
+          ),
+          status: {
+            code: view(recipeGraph, 'diagnostics-status', buffers.diagnosticsStatus, 'uint32', 1)
+          }
+        },
+        residualMoran: {
+          zScores: view(recipeGraph, 'moran-z', buffers.zScores, 'float32', rowCount),
+          localI: view(recipeGraph, 'moran-i', buffers.localI, 'float32', rowCount),
+          quadrants: view(recipeGraph, 'quadrants', buffers.quadrants, 'uint32', rowCount),
+          pValues: view(recipeGraph, 'moran-p', buffers.pValues, 'float32', rowCount)
+        }
+      }
+    });
+    const recipe = resources.track(await recipeGraph.compileAsync());
+
+    // Spatial error model graph.
+    const errorGraph = new GPUCommandGraph<void>(device, {id: `health-error-${model}`});
+    errorGraph.add(
+      new GPUSpatialErrorGM({
+        id: 'error-gm',
+        weights: importWeights(errorGraph),
+        predictors: predictorView(errorGraph),
+        response: responseView(errorGraph),
+        predictorCount,
+        output: {
+          table: view(
+            errorGraph,
+            'error-table',
+            buffers.errorTable,
+            'float32',
+            (predictorCount + 2) * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE
+          ),
+          summary: view(
+            errorGraph,
+            'error-summary',
+            buffers.errorSummary,
+            'float32',
+            GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH
+          ),
+          status: {code: view(errorGraph, 'error-status', buffers.errorStatus, 'uint32', 1)},
+          residuals: view(
+            errorGraph,
+            'error-residuals',
+            buffers.errorResiduals,
+            'float32',
+            rowCount
+          )
+        }
+      })
+    );
+    const error = resources.track(await errorGraph.compileAsync());
+
+    const lag = new Map<'1' | '2', CompiledGPUCommandGraph<void>>();
+    const addLag = async (order: '1' | '2') => {
+      let compiled = lag.get(order);
+      if (compiled) return compiled;
+      const lagGraph = new GPUCommandGraph<void>(device, {id: `health-lag-${model}-${order}`});
+      lagGraph.add(
+        new GPUSpatialTwoStageLeastSquares({
+          id: 'two-stage',
+          weights: importWeights(lagGraph),
+          predictors: predictorView(lagGraph),
+          response: responseView(lagGraph),
+          predictorCount,
+          instrumentOrder: order === '2' ? 2 : 1,
+          output: {
+            table: view(
+              lagGraph,
+              'lag-table',
+              buffers.lagTable,
+              'float32',
+              (predictorCount + 2) * GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE
+            ),
+            summary: view(
+              lagGraph,
+              'lag-summary',
+              buffers.lagSummary,
+              'float32',
+              GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH
+            ),
+            status: {code: view(lagGraph, 'lag-status', buffers.lagStatus, 'uint32', 1)},
+            residuals: view(lagGraph, 'lag-residuals', buffers.lagResiduals, 'float32', rowCount)
+          }
+        })
+      );
+      compiled = resources.track(await lagGraph.compileAsync());
+      lag.set(order, compiled);
+      return compiled;
+    };
+
+    const reader = createNamedReader(
+      resources,
+      `health-${model}`,
+      [
+        {name: 'coefficients', buffer: buffers.coefficients, bytes: (predictorCount + 1) * 4},
+        {name: 'standardErrors', buffer: buffers.standardErrors, bytes: (predictorCount + 1) * 4},
+        {name: 'tStatistics', buffer: buffers.tStatistics, bytes: (predictorCount + 1) * 4},
+        {
+          name: 'olsSummary',
+          buffer: buffers.olsSummary,
+          bytes: GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4
+        },
+        {name: 'olsStatus', buffer: buffers.olsStatus, bytes: 4},
+        {
+          name: 'tests',
+          buffer: buffers.tests,
+          bytes: GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH * 4
+        },
+        {
+          name: 'diagnosticsSummary',
+          buffer: buffers.diagnosticsSummary,
+          bytes: GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH * 4
+        },
+        {name: 'diagnosticsStatus', buffer: buffers.diagnosticsStatus, bytes: 4},
+        {
+          name: 'lagTable',
+          buffer: buffers.lagTable,
+          bytes: (predictorCount + 2) * GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE * 4
+        },
+        {
+          name: 'lagSummary',
+          buffer: buffers.lagSummary,
+          bytes: GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH * 4
+        },
+        {name: 'lagStatus', buffer: buffers.lagStatus, bytes: 4},
+        {
+          name: 'errorTable',
+          buffer: buffers.errorTable,
+          bytes: (predictorCount + 2) * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE * 4
+        },
+        {
+          name: 'errorSummary',
+          buffer: buffers.errorSummary,
+          bytes: GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH * 4
+        },
+        {name: 'errorStatus', buffer: buffers.errorStatus, bytes: 4},
+        {name: 'overflow', buffer: overflowBuffer, bytes: 4},
+        {name: 'totalNeighbors', buffer: totalNeighborsBuffer, bytes: 4},
+        {name: 'candidateOverflow', buffer: candidateOverflowBuffer, bytes: 4},
+        {name: 'olsResiduals', buffer: buffers.olsResiduals, bytes: rowCount * 4},
+        {name: 'fitted', buffer: buffers.fitted, bytes: rowCount * 4},
+        {name: 'quadrants', buffer: buffers.quadrants, bytes: rowCount * 4},
+        {name: 'lagResiduals', buffer: buffers.lagResiduals, bytes: rowCount * 4},
+        {name: 'errorResiduals', buffer: buffers.errorResiduals, bytes: rowCount * 4}
+      ],
+      get => onResult(model, predictorCount, variantKey, get)
+    );
+    const validationBuffers = {
+      predictors: make('validation-predictors', validationPredictors.byteLength),
+      folds: make('validation-folds', rowCount * 4),
+      training: make('validation-training', rowCount * VALIDATION_FOLD_COUNT * 4),
+      testing: make('validation-testing', rowCount * VALIDATION_FOLD_COUNT * 4),
+      foldCounts: make('validation-fold-counts', VALIDATION_FOLD_COUNT * 3 * 4),
+      foldStatus: make('validation-fold-status', VALIDATION_FOLD_COUNT * 4),
+      coefficients: make(
+        'validation-coefficients',
+        VALIDATION_FOLD_COUNT * (predictorCount + 1) * 4
+      ),
+      predictions: make('validation-predictions', VALIDATION_FOLD_COUNT * rowCount * 4),
+      fitStatus: make('validation-fit-status', VALIDATION_FOLD_COUNT * 4),
+      metrics: make('validation-metrics', VALIDATION_FOLD_COUNT * 6 * 4),
+      metricStatus: make('validation-metric-status', VALIDATION_FOLD_COUNT * 4),
+      oofResiduals: make('validation-oof-residuals', rowCount * 4),
+      oofFolds: make('validation-oof-folds', rowCount * 4),
+      generation: make('validation-generation-output', 4)
+    };
+    validationBuffers.predictors.write(validationPredictors);
+    const validationBufferDistance = Number(validationBuffer);
+    const validationGraph = new GPUCommandGraph<void>(device, {
+      id: `health-validation-${variantKey}`
+    });
+    const validationView = <F extends 'float32' | 'float32x2' | 'uint32'>(
+      name: string,
+      buffer: Buffer,
+      format: F,
+      length: number
+    ) => importGraphBuffer(validationGraph, name, buffer, format, length);
+    const validationFoldsView = validationView(
+      'folds',
+      validationBuffers.folds,
+      'uint32',
+      rowCount
+    );
+    const validationPredictionsView = validationView(
+      'predictions',
+      validationBuffers.predictions,
+      'float32',
+      VALIDATION_FOLD_COUNT * rowCount
+    );
+    const validationResponseView = validationView('response', responseBuffer, 'float32', rowCount);
+    const validationFitStatusView = validationView(
+      'fit-status',
+      validationBuffers.fitStatus,
+      'uint32',
+      VALIDATION_FOLD_COUNT
+    );
+    validationGraph.add(
+      new GPUSpatialCrossValidatedOLS({
+        id: `health-cross-validated-ols-${variantKey}`,
+        folds: {
+          positions: validationView('positions', positionsBuffer, 'float32x2', rowCount),
+          blocks: validationView(
+            'blocks',
+            validationDesign === 'spatial' ? validationBlocksBuffer : randomValidationBlocksBuffer,
+            'uint32',
+            rowCount
+          ),
+          foldCount: VALIDATION_FOLD_COUNT,
+          seed: 31,
+          bufferDistance: validationBufferDistance,
+          output: {
+            folds: validationFoldsView,
+            training: validationView(
+              'training',
+              validationBuffers.training,
+              'uint32',
+              rowCount * VALIDATION_FOLD_COUNT
+            ),
+            testing: validationView(
+              'testing',
+              validationBuffers.testing,
+              'uint32',
+              rowCount * VALIDATION_FOLD_COUNT
+            ),
+            counts: validationView(
+              'fold-counts',
+              validationBuffers.foldCounts,
+              'uint32',
+              VALIDATION_FOLD_COUNT * 3
+            ),
+            status: validationView(
+              'fold-status',
+              validationBuffers.foldStatus,
+              'uint32',
+              VALIDATION_FOLD_COUNT
+            )
+          }
+        },
+        predictors: validationView(
+          'predictors',
+          validationBuffers.predictors,
+          'float32',
+          rowCount * predictorCount
+        ),
+        predictorCount,
+        response: validationResponseView,
+        output: {
+          coefficients: validationView(
+            'coefficients',
+            validationBuffers.coefficients,
+            'float32',
+            VALIDATION_FOLD_COUNT * (predictorCount + 1)
+          ),
+          predictions: validationPredictionsView,
+          fitStatus: validationFitStatusView,
+          metrics: validationView(
+            'metrics',
+            validationBuffers.metrics,
+            'float32',
+            VALIDATION_FOLD_COUNT * 6
+          ),
+          metricStatus: validationView(
+            'metric-status',
+            validationBuffers.metricStatus,
+            'uint32',
+            VALIDATION_FOLD_COUNT
+          )
+        }
+      })
+    );
+    addKernelPass(validationGraph, {
+      id: `health-validation-oof-${variantKey}`,
+      invocationCount: rowCount,
+      bindings: [
+        {
+          name: 'folds',
+          view: validationFoldsView,
+          type: 'u32',
+          access: 'read'
+        },
+        {
+          name: 'predictions',
+          view: validationPredictionsView,
+          type: 'f32',
+          access: 'read'
+        },
+        {
+          name: 'response',
+          view: validationResponseView,
+          type: 'f32',
+          access: 'read'
+        },
+        {
+          name: 'foldStatus',
+          view: validationFitStatusView,
+          type: 'u32',
+          access: 'read'
+        },
+        {
+          name: 'residuals',
+          view: validationView(
+            'oof-residuals',
+            validationBuffers.oofResiduals,
+            'float32',
+            rowCount
+          ),
+          type: 'f32',
+          access: 'read_write'
+        },
+        {
+          name: 'foldOutput',
+          view: validationView('oof-fold-output', validationBuffers.oofFolds, 'uint32', rowCount),
+          type: 'u32',
+          access: 'read_write'
+        }
+      ],
+      declarations: `const ROW_COUNT: u32 = ${rowCount}u;\nconst FOLD_COUNT: u32 = ${VALIDATION_FOLD_COUNT}u;\nfn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }`,
+      body: `let fold = folds[foldsOffset + index];
+if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
+  let prediction = predictions[predictionsOffset + fold * ROW_COUNT + index];
+  let observed = response[responseOffset + index];
+  if (isFiniteValue(prediction) && isFiniteValue(observed)) {
+    residuals[residualsOffset + index] = observed - prediction;
+    foldOutput[foldOutputOffset + index] = fold + 1u;
+  } else {
+    residuals[residualsOffset + index] = bitcast<f32>(0x7fc00000u | (index & 0u));
+    foldOutput[foldOutputOffset + index] = 0u;
+  }
+} else {
+  residuals[residualsOffset + index] = bitcast<f32>(0x7fc00000u | (index & 0u));
+  foldOutput[foldOutputOffset + index] = 0u;
+}`
+    });
+    addKernelPass(validationGraph, {
+      id: `health-validation-generation-${variantKey}`,
+      invocationCount: 1,
+      bindings: [
+        {
+          name: 'generation',
+          view: validationView('generation-input', validationGenerationBuffer, 'uint32', 1),
+          type: 'u32',
+          access: 'read'
+        },
+        {
+          name: 'generationOutput',
+          view: validationView('generation-output', validationBuffers.generation, 'uint32', 1),
+          type: 'u32',
+          access: 'read_write'
+        }
+      ],
+      body: 'generationOutput[generationOutputOffset] = generation[generationOffset];'
+    });
+    const validation = resources.track(await validationGraph.compileAsync());
+    const validationReader = createNamedReader(
+      resources,
+      `health-validation-${variantKey}`,
+      [
+        {name: 'metrics', buffer: validationBuffers.metrics, bytes: VALIDATION_FOLD_COUNT * 6 * 4},
+        {
+          name: 'metricStatus',
+          buffer: validationBuffers.metricStatus,
+          bytes: VALIDATION_FOLD_COUNT * 4
+        },
+        {
+          name: 'counts',
+          buffer: validationBuffers.foldCounts,
+          bytes: VALIDATION_FOLD_COUNT * 3 * 4
+        },
+        {
+          name: 'foldStatus',
+          buffer: validationBuffers.foldStatus,
+          bytes: VALIDATION_FOLD_COUNT * 4
+        },
+        {name: 'fitStatus', buffer: validationBuffers.fitStatus, bytes: VALIDATION_FOLD_COUNT * 4},
+        {name: 'generation', buffer: validationBuffers.generation, bytes: 4},
+        {name: 'oofResiduals', buffer: validationBuffers.oofResiduals, bytes: rowCount * 4},
+        {name: 'oofFolds', buffer: validationBuffers.oofFolds, bytes: rowCount * 4}
+      ],
+      get => {
+        if (
+          model !== ctx.options.model ||
+          variantKey !== getVariantKey(model) ||
+          get('generation').u32[0] !== validationGeneration
+        )
+          return;
+        const metrics = get('metrics').f32;
+        const metricStatus = get('metricStatus').u32;
+        const counts = get('counts').u32;
+        const foldStatus = get('foldStatus').u32;
+        const fitStatus = get('fitStatus').u32;
+        latestValidation = {
+          residuals: get('oofResiduals').f32,
+          folds: get('oofFolds').u32,
+          design: validationDesign,
+          bufferDistance: validationBufferDistance,
+          counts
+        };
+        let sumSquaredError = 0;
+        let scoredRows = 0;
+        let foldSummary = '';
+        for (let fold = 0; fold < VALIDATION_FOLD_COUNT; fold++) {
+          const offset = fold * 6;
+          const count = metrics[offset];
+          if (fold > 0) foldSummary += ' · ';
+          // R² may be undefined for a constant held-out response (status bit 4); RMSE,
+          // MAE and bias remain valid. Reject every other metric status bit.
+          if (foldStatus[fold] !== 0 || fitStatus[fold] !== 0 || (metricStatus[fold] & ~4) !== 0) {
+            foldSummary += `F${fold + 1}: unavailable (status ${foldStatus[fold]}/${fitStatus[fold]}/${metricStatus[fold]})`;
+            continue;
+          }
+          foldSummary += `F${fold + 1} test=${formatInteger(counts[fold * 3 + 1])}, buffered out=${formatInteger(counts[fold * 3 + 2])}, scored=${formatInteger(count)}; RMSE ${formatNumber(Math.sqrt(metrics[offset + 2]))}, MAE ${formatNumber(metrics[offset + 3])}, bias ${formatNumber(metrics[offset + 4])}`;
+          sumSquaredError += metrics[offset + 2] * count;
+          scoredRows += count;
+        }
+        const overallRmse = scoredRows > 0 ? Math.sqrt(sumSquaredError / scoredRows) : NaN;
+        ctx.setReadout(
+          'validation',
+          `Five ${validationDesign === 'spatial' ? 'spatial 3 km block' : 'seeded random-row'} folds; ${formatInteger(validationBufferDistance)} m training exclusion; unpenalized OLS fit and centering use training rows only. Held-out RMSE ${formatNumber(overallRmse)} across ${formatInteger(scoredRows)} rows. ${foldSummary}`
+        );
+        const foldRmse = Array.from({length: VALIDATION_FOLD_COUNT}, (_, fold) => {
+          const offset = fold * 6;
+          return foldStatus[fold] === 0 && fitStatus[fold] === 0 && (metricStatus[fold] & ~4) === 0
+            ? Math.sqrt(metrics[offset + 2])
+            : NaN;
+        });
+        ctx.setChart('validationFolds', {
+          kind: 'bars',
+          title: `Held-out RMSE by ${validationDesign} fold`,
+          values: foldRmse,
+          labels: ['Fold 1', 'Fold 2', 'Fold 3', 'Fold 4', 'Fold 5'],
+          yLabel: 'RMSE, percentage points',
+          formatY: value => value.toFixed(2),
+          description: `Unpenalized OLS refit on training rows only in each ${validationDesign} fold; test tracts and the ${validationBufferDistance} m exclusion buffer are omitted from that fit.`
+        });
+      }
+    );
+    const variant: Variant = {
+      predictorCount,
+      names: ['Intercept', ...ids.map(id => PREDICTORS.find(entry => entry.id === id)!.label)],
+      recipe,
+      setSettings: recipeResult.setSettings,
+      lag,
+      error,
+      buffers: {
+        predictors: buffers.predictors,
+        olsResiduals: buffers.olsResiduals,
+        fitted: buffers.fitted,
+        quadrants: buffers.quadrants,
+        lagResiduals: buffers.lagResiduals,
+        errorResiduals: buffers.errorResiduals
+      },
+      addLag,
+      reader,
+      validation,
+      validationReader,
+      validationBuffers: {
+        oofResiduals: validationBuffers.oofResiduals,
+        oofFolds: validationBuffers.oofFolds
+      }
+    };
+    variants.set(variantKey, variant);
+    return variant;
+  };
+
+  // ---- Result state (CPU copies for tooltips, legends and ranges). ----
+  let olsSigma = 1;
+  let latest: {
+    olsResiduals: Float32Array;
+    fitted: Float32Array;
+    lagResiduals: Float32Array;
+    errorResiduals: Float32Array;
+    quadrants: Uint32Array;
+  } | null = null;
+  let latestValidation: {
+    residuals: Float32Array;
+    folds: Uint32Array;
+    design: HealthRegressionOptions['validationDesign'];
+    bufferDistance: number;
+    counts: Uint32Array;
+  } | null = null;
+  let responseRange: [number, number] = [0, 1];
+  let selectedRow = -1;
+
+  const updateResponseRange = () => {
+    const response = getResponse(ctx.options.outcome);
+    responseRange = [getQuantile(response, 0.02), getQuantile(response, 0.98)];
+    ctx.setLegendExtent('value', responseRange);
+  };
+
+  const onResult = (
+    model: ModelId,
+    predictorCount: number,
+    variantKey: string,
+    get: (name: string) => {f32: Float32Array; u32: Uint32Array}
+  ) => {
+    if (model !== ctx.options.model || variantKey !== activeVariantKey) return;
+    const variant = variants.get(variantKey)!;
+    const summary = get('olsSummary').f32;
+    const coefficients = get('coefficients').f32;
+    const standardErrors = get('standardErrors').f32;
+    const tStatistics = get('tStatistics').f32;
+    const tests = get('tests').f32;
+    const diagnostics = get('diagnosticsSummary').f32;
+    const lagTable = get('lagTable').f32;
+    const lagSummary = get('lagSummary').f32;
+    const errorTable = get('errorTable').f32;
+    const errorSummary = get('errorSummary').f32;
+    const statuses = [
+      get('olsStatus').u32[0],
+      get('diagnosticsStatus').u32[0],
+      get('lagStatus').u32[0],
+      get('errorStatus').u32[0]
+    ];
+    olsSigma = Math.sqrt(Math.max(0, summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED]));
+    ctx.setLegendExtent('residual', [-2 * olsSigma, 2 * olsSigma]);
+    latest = {
+      olsResiduals: get('olsResiduals').f32,
+      fitted: get('fitted').f32,
+      lagResiduals: get('lagResiduals').f32,
+      errorResiduals: get('errorResiduals').f32,
+      quadrants: get('quadrants').u32
+    };
+
+    ctx.setReadout('rows', `${formatInteger(rowCount)} of ${formatInteger(featureCount)} tracts`);
+    const overflow = get('overflow').u32[0];
+    const candidateOverflow = get('candidateOverflow').u32[0];
+    const linkTotal = Math.min(get('totalNeighbors').u32[0], capacity);
+    ctx.setReadout(
+      'links',
+      `${formatInteger(linkTotal)} (mean ${(linkTotal / rowCount).toFixed(1)} per tract)${overflow ? ', OVERFLOW' : ''}${candidateOverflow ? ' (pair list full: lower bound)' : ''}`
+    );
+    ctx.setReadout(
+      'fit',
+      `R² ${formatNumber(summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED])}, adjusted ${formatNumber(summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ADJUSTED_R_SQUARED])}`
+    );
+    ctx.setReadout(
+      'criteria',
+      `AIC ${formatNumber(summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_AIC], 1)}, BIC ${formatNumber(summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BIC], 1)}`
+    );
+    ctx.setReadout(
+      'normality',
+      formatP(summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA_P_VALUE])
+    );
+    ctx.setReadout(
+      'heteroskedasticity',
+      formatP(summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE])
+    );
+
+    const stride = GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE;
+    const test = (row: number) => ({statistic: tests[row * stride], p: tests[row * stride + 2]});
+    const moranRow = test(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_MORAN_RESIDUALS);
+    ctx.setReadout(
+      'moran',
+      `I ${formatNumber(diagnostics[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_I])} (expected ${formatNumber(diagnostics[GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_EXPECTATION], 4)}), z ${formatNumber(moranRow.statistic, 1)}, ${formatP(moranRow.p)}`
+    );
+    const lagTest = test(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_LAG);
+    const errorTest = test(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_ERROR);
+    const robustLag = test(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG);
+    const robustError = test(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_ERROR);
+    const sarma = test(GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_SARMA);
+    const describe = (entry: {statistic: number; p: number}) =>
+      `${formatNumber(entry.statistic, 1)}, ${formatP(entry.p)}`;
+    ctx.setReadout('lmLag', describe(lagTest));
+    ctx.setReadout('lmError', describe(errorTest));
+    ctx.setReadout('robustLag', describe(robustLag));
+    ctx.setReadout('robustError', describe(robustError));
+    ctx.setReadout('sarma', describe(sarma));
+    const alpha = 0.05;
+    const specification =
+      statuses[0] === 0
+        ? getSpatialRegressionSpecification(tests, statuses[1], alpha)
+        : GPU_SPATIAL_REGRESSION_SPECIFICATION_UNDETERMINED;
+    const verdicts: Record<number, string> = {
+      [GPU_SPATIAL_REGRESSION_SPECIFICATION_OLS]:
+        'No LM test detected spatial dependence at 5%; retain OLS as the baseline. This does not establish that OLS is adequate or rule out spatial structure.',
+      [GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_LAG]:
+        'The Anselin LM screen points to a spatial lag specification for further assessment; this diagnostic is not a model-selection proof.',
+      [GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_ERROR]:
+        'The Anselin LM screen points to a spatial error specification for further assessment; this diagnostic is not a model-selection proof.',
+      [GPU_SPATIAL_REGRESSION_SPECIFICATION_LAG_AND_ERROR]:
+        'Both robust LM tests are significant; consider a joint lag-and-error specification or further model checks. Neither smaller p-value nor this screen alone selects a model.',
+      [GPU_SPATIAL_REGRESSION_SPECIFICATION_UNDETERMINED]: `Undetermined: OLS/diagnostic status ${statuses[0]}/${statuses[1]} or a required test result is unavailable.`
+    };
+    ctx.setReadout('verdict', verdicts[specification]);
+
+    // The three fits as the shared model result: estimate, standard error and p-value per
+    // coefficient, one convention for sigma squared, and the conditioning evidence.
+    const predictorNames = variant.names.slice(1, predictorCount + 1);
+    const lagStride = GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE;
+    const errorStride = GPU_SPATIAL_ERROR_GM_TABLE_STRIDE;
+    const olsResult = getGPUOrdinaryLeastSquaresModelResult(
+      {
+        coefficients: coefficients.subarray(0, predictorCount + 1),
+        standardErrors: standardErrors.subarray(0, predictorCount + 1),
+        tStatistics: tStatistics.subarray(0, predictorCount + 1),
+        summary,
+        status: get('olsStatus').u32
+      },
+      {predictorNames}
+    );
+    const lagResult = getGPUSpatialTwoStageLeastSquaresModelResult(
+      {
+        table: lagTable.subarray(0, (predictorCount + 2) * lagStride),
+        summary: lagSummary,
+        status: get('lagStatus').u32
+      },
+      {predictorNames}
+    );
+    const errorResult = getGPUSpatialErrorGMModelResult(
+      {
+        table: errorTable.subarray(0, (predictorCount + 2) * errorStride),
+        summary: errorSummary,
+        status: get('errorStatus').u32
+      },
+      {predictorNames}
+    );
+    const describeCoefficient = (entry: {
+      estimate: number;
+      standardError: number;
+      pValue: number;
+    }) =>
+      `${formatNumber(entry.estimate, 2)} (se ${formatNumber(entry.standardError, 2)}, ${formatP(entry.pValue)})`;
+    for (let index = 0; index <= MAXIMUM_PREDICTORS; index++) {
+      if (index > predictorCount) {
+        ctx.setReadout(`coefficient${index}`, null);
+        continue;
+      }
+      ctx.setReadout(
+        `coefficient${index}`,
+        `${variant.names[index]}: OLS ${describeCoefficient(olsResult.coefficients[index])}; lag ${describeCoefficient(lagResult.coefficients[index])}; error ${describeCoefficient(errorResult.coefficients[index])}`
+      );
+    }
+    const rho = lagResult.coefficients[predictorCount + 1];
+    ctx.setReadout(
+      'rho',
+      statuses[2] === 0
+        ? `ρ ${formatNumber(rho.estimate)} ± ${formatNumber(rho.standardError)} (z ${formatNumber(rho.statistic, 1)}, ${formatP(rho.pValue)})`
+        : `fit failed (status ${statuses[2]})`
+    );
+    const diagnosticsLag = getGPUSpatialTwoStageLeastSquaresDiagnostics(lagSummary);
+    ctx.setReadout(
+      'lagFit',
+      `pseudo R² ${formatNumber(lagResult.pseudoRSquared)}; Anselin-Kelejian ${formatNumber(lagResult.tests.anselinKelejian?.statistic ?? NaN, 1)}, ${formatP(lagResult.tests.anselinKelejian?.pValue ?? NaN)}; first-stage F ${formatNumber(diagnosticsLag.firstStageF, 1)}${diagnosticsLag.rhoOutsideAdmissibleRange ? '; ρ outside the admissible range' : ''}`
+    );
+    const lambda = errorResult.coefficients[predictorCount + 1];
+    ctx.setReadout(
+      'lambda',
+      statuses[3] === GPU_SPATIAL_ERROR_GM_STATUS_OK
+        ? `λ ${formatNumber(lambda.estimate)} ± ${formatNumber(lambda.standardError)} (z ${formatNumber(lambda.statistic, 1)}, ${formatP(lambda.pValue)}); pseudo R² ${formatNumber(errorResult.pseudoRSquared)}`
+        : `fit failed (status ${statuses[3]})`
+    );
+    const conditioning = (name: string, result: typeof olsResult) =>
+      result.conditioning
+        ? `${name} ${formatNumber(result.conditioning.conditionNumber, 1)}${result.conditioning.illConditioned ? ' (float32 precision warning)' : ''}`
+        : `${name} n/a`;
+    ctx.setReadout(
+      'conditioning',
+      `${conditioning('OLS', olsResult)}; ${conditioning('lag', lagResult)}; ${conditioning('error', errorResult)}; largest VIF ${formatNumber(olsResult.conditioning?.maximumVarianceInflationFactor ?? NaN, 1)}`
+    );
+    ctx.setReadout('status', statuses.join(' / '));
+
+    // Residual clusters.
+    const counts = [0, 0, 0, 0, 0];
+    for (const quadrant of latest.quadrants) if (quadrant < 5) counts[quadrant]++;
+    ctx.setReadout(
+      'clusters',
+      `${counts[1]} high-high / ${counts[3]} low-low / ${counts[2]} low-high / ${counts[4]} high-low`
+    );
+    ctx.requestLayers();
+  };
+
+  // ---- Parameters and dirtiness. ----
+  let weightsDirty = true;
+  let modelDirty = true;
+  let activeWeights: WeightsKind = ctx.options.weights;
+  let activeModel: ModelId = ctx.options.model;
+  let activeVariantKey = getVariantKey(activeModel);
+  let activeOrder: '1' | '2' = ctx.options.instruments;
+  const writeRidge = () => {
+    const ridge = ctx.options.ridge;
+    olsParameters.write(
+      getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: ridge <= -2 ? 0 : 10 ** ridge})
+    );
+  };
+  const writeSignificance = () => {
+    ctx.setReadout('localInference', `α = ${ctx.options.significance}`);
+    // Every variant's recipe fills the same `moranParameters`, so the active one repacks for all.
+    for (const variant of variants.values())
+      variant.setSettings({significanceLevel: ctx.options.significance});
+  };
+  writeRidge();
+  writeSignificance();
+  updateResponseRange();
+  /** The compiled variant of the active model; `commitSelection` only activates compiled ones. */
+  const getActiveVariant = (): Variant => variants.get(activeVariantKey)!;
+
+  /** The weights, model and instrument order a build compiled. */
+  type Selection = {
+    weights: WeightsKind;
+    model: ModelId;
+    order: '1' | '2';
+    validationDesign: HealthRegressionOptions['validationDesign'];
+    validationBuffer: HealthRegressionOptions['validationBuffer'];
+    variantKey: string;
+  };
+
+  /** Compiles what the current options select; the active graphs keep running meanwhile. */
+  const compileSelection = async (): Promise<Selection> => {
+    const {weights, model, instruments: order, validationDesign, validationBuffer} = ctx.options;
+    const variantKey = getVariantKey(model, validationDesign, validationBuffer);
+    await getWeightsGraph(weights);
+    await (await getVariant(model, validationDesign, validationBuffer)).addLag(order);
+    return {weights, model, order, validationDesign, validationBuffer, variantKey};
+  };
+  const commitSelection = (next: Selection) => {
+    if (next.weights !== activeWeights) weightsDirty = true;
+    activeWeights = next.weights;
+    activeModel = next.model;
+    activeVariantKey = next.variantKey;
+    activeOrder = next.order;
+    modelDirty = true;
+    ctx.requestLayers();
+  };
+  // Graphs and variants stay cached (owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
+  commitSelection(await compileSelection());
+  ctx.setStatus(`${formatInteger(rowCount)} Chicago tracts`);
+
+  const dark = () => ctx.theme() === 'dark';
+
+  return {
+    getCompiledGraphs: () => {
+      const variant = getActiveVariant();
+      return [
+        weightsGraphs.get(activeWeights)!,
+        variant.recipe,
+        variant.lag.get(activeOrder)!,
+        variant.error,
+        variant.validation
+      ];
+    },
+
+    setOption(id) {
+      if (id === 'map') {
+        ctx.requestLayers();
+        return;
+      }
+      if (id === 'ridge') writeRidge();
+      if (id === 'significance') writeSignificance();
+      if (id === 'outcome') {
+        validationGeneration++;
+        validationGenerationBuffer.write(Uint32Array.of(validationGeneration));
+        latestValidation = null;
+        responseBuffer.write(getResponse(ctx.options.outcome));
+        updateResponseRange();
+      }
+      if (id === 'validationDesign' || id === 'validationBuffer' || id === 'model') {
+        validationGeneration++;
+        validationGenerationBuffer.write(Uint32Array.of(validationGeneration));
+        latestValidation = null;
+      }
+      if (
+        id === 'weights' ||
+        id === 'model' ||
+        id === 'instruments' ||
+        id === 'validationDesign' ||
+        id === 'validationBuffer'
+      ) {
+        void graphSwap.request({build: compileSelection, commit: commitSelection});
+      }
+      modelDirty = true;
+      ctx.requestLayers();
+    },
+
+    encode(commandEncoder, frame) {
+      if (frame.frameIndex < 2) {
+        weightsDirty = true;
+        modelDirty = true;
+      }
+      const variant = getActiveVariant();
+      if (weightsDirty) {
+        weightsGraphs.get(activeWeights)!.encode(commandEncoder, {parameters: undefined});
+        weightsDirty = false;
+        modelDirty = true;
+      }
+      if (modelDirty) {
+        variant.recipe.encode(commandEncoder, {parameters: undefined});
+        variant.lag.get(activeOrder)!.encode(commandEncoder, {parameters: undefined});
+        variant.error.encode(commandEncoder, {parameters: undefined});
+        variant.validation.encode(commandEncoder, {parameters: undefined});
+        variant.reader.request(commandEncoder);
+        variant.validationReader.request(commandEncoder);
+        modelDirty = false;
+      } else {
+        variant.reader.flush(commandEncoder);
+        variant.validationReader.flush(commandEncoder);
+      }
+    },
+
+    getLayers() {
+      const variant = getActiveVariant();
+      const map: MapKind = ctx.options.map;
+      const layers: Layer[] = [];
+      const isDark = dark();
+      layers.push(
+        new PolygonFillLayer({
+          id: 'health-excluded',
+          triangles: excludedTrianglesBuffer,
+          owners: excludedOwnersBuffer,
+          triangleCount: allTriangles.triangleCount,
+          colormap: 'uniform',
+          color: isDark ? [90, 94, 104, 150] : [170, 172, 178, 150]
+        })
+      );
+      const common = {
+        triangles: trianglesBuffer,
+        owners: ownersBuffer,
+        triangleCount: triangles.triangleCount,
+        opacity: 0.86,
+        selectedRow
+      };
+      if (map === 'validationFolds') {
+        layers.push(
+          new PolygonFillLayer({
+            ...common,
+            id: 'health-validation-folds',
+            values: variant.validationBuffers.oofFolds,
+            valueFormat: 'uint32',
+            colormap: 'category',
+            palette: VALIDATION_FOLD_COLORS,
+            noDataValue: 0
+          })
+        );
+      } else if (map === 'clusters') {
+        layers.push(
+          new PolygonFillLayer({
+            ...common,
+            id: 'health-clusters',
+            values: variant.buffers.quadrants,
+            valueFormat: 'uint32',
+            colormap: 'category',
+            palette: RESIDUAL_CLUSTER_COLORS,
+            noDataValue: NO_ROW
+          })
+        );
+      } else if (map === 'fitted' || map === 'observed') {
+        layers.push(
+          new PolygonFillLayer({
+            ...common,
+            id: `health-${map}`,
+            values: map === 'fitted' ? variant.buffers.fitted : responseBuffer,
+            valueFormat: 'float32',
+            colormap: 'ylorrd',
+            valueRange: responseRange,
+            color: [255, 255, 255, 255],
+            noDataColor: [0, 0, 0, 0]
+          })
+        );
+      } else if (map === 'validationResiduals') {
+        layers.push(
+          new PolygonFillLayer({
+            ...common,
+            id: 'health-validation-residuals',
+            values: variant.validationBuffers.oofResiduals,
+            valueFormat: 'float32',
+            colormap: 'diverging',
+            valueRange: [-2 * olsSigma, 2 * olsSigma],
+            color: [255, 255, 255, 255]
+          })
+        );
+      } else {
+        layers.push(
+          new PolygonFillLayer({
+            ...common,
+            id: `health-${map}`,
+            values:
+              map === 'residuals'
+                ? variant.buffers.olsResiduals
+                : map === 'lag'
+                  ? variant.buffers.lagResiduals
+                  : variant.buffers.errorResiduals,
+            valueFormat: 'float32',
+            colormap: 'diverging',
+            valueRange: [-2 * olsSigma, 2 * olsSigma],
+            color: [255, 255, 255, 255]
+          })
+        );
+      }
+      layers.push(
+        new SpatialAnalysisSegmentLayer({
+          id: 'health-outline',
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          segments: outlineBuffer,
+          instanceCount: outlineSegments.length / 4,
+          widthPixels: 0.8,
+          color: isDark ? [225, 228, 238, 70] : [40, 44, 56, 90]
+        })
+      );
+      return layers;
+    },
+
+    onThemeChange() {
+      ctx.requestLayers();
+    },
+
+    getTooltip(event) {
+      if (!event.coordinate) return null;
+      const row = locate(event.coordinate[0], event.coordinate[1]);
+      if (row < 0 || !latest) return null;
+      const feature = features[row];
+      const response = getResponse(ctx.options.outcome)[row];
+      const lines = [
+        `Tract ${geoids[feature]}`,
+        `${OUTCOME_LABELS[ctx.options.outcome]}: ${response.toFixed(1)}%`,
+        `Income per capita: $${formatInteger(income[feature])}`,
+        `Poverty: ${rawPredictors.poverty[feature].toFixed(0)}%`
+      ];
+      if (ctx.options.map === 'validationResiduals' && latestValidation) {
+        const residual = latestValidation.residuals[row];
+        const fold = latestValidation.folds[row];
+        if (fold > 0 && Number.isFinite(residual)) {
+          lines.push(
+            `Out-of-fold residual: ${residual >= 0 ? '+' : ''}${residual.toFixed(1)} percentage points`
+          );
+        }
+        lines.push(
+          `Validation fold: ${fold || 'not scored'}`,
+          `Design: ${latestValidation.design}; ${latestValidation.bufferDistance} m exclusion`
+        );
+      } else if (ctx.options.map === 'validationFolds' && latestValidation) {
+        const fold = latestValidation.folds[row];
+        lines.push(
+          `Held-out fold: ${fold || 'not scored'}`,
+          `Design: ${latestValidation.design}; ${latestValidation.bufferDistance} m exclusion`
+        );
+      } else {
+        lines.push(
+          `Fitted (OLS): ${latest.fitted[row].toFixed(1)}%`,
+          `Residual: ${latest.olsResiduals[row] >= 0 ? '+' : ''}${latest.olsResiduals[row].toFixed(1)} points`
+        );
+      }
+      if (ctx.options.map === 'lag')
+        lines.push(`Lag-model residual: ${latest.lagResiduals[row].toFixed(1)}`);
+      if (ctx.options.map === 'error')
+        lines.push(`Error-model residual: ${latest.errorResiduals[row].toFixed(1)}`);
+      return lines.join('\n');
+    },
+
+    onClick(event) {
+      if (!event.coordinate) return false;
+      const row = locate(event.coordinate[0], event.coordinate[1]);
+      selectedRow = row === selectedRow ? -1 : row;
+      ctx.requestLayers();
+      return true;
+    },
+
+    destroy() {
+      for (const variant of variants.values()) {
+        variant.reader.stop();
+        variant.validationReader.stop();
+      }
+      resources.destroy();
+    }
+  };
+}

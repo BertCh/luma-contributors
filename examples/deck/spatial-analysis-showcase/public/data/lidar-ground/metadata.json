@@ -1,0 +1,87 @@
+{
+  "title": "USGS 3DEP King County 2021 tile 2282, clipped sample",
+  "source": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/WA_KingCounty_2021_B21/WA_KingCo_1_2021/LAZ/USGS_LPC_WA_KingCounty_2021_B21_King_2282.laz",
+  "sourceItem": "https://www.sciencebase.gov/catalog/item/619ce206d34eb622f694418b",
+  "sourceMetadata": "https://thor-f5.er.usgs.gov/ngtoc/metadata/waf/elevation/lidar_point_cloud/laz/WA_KingCo_1_2021/USGS_LPC_WA_KingCounty_2021_B21_King_2282.xml",
+  "sourceSha256": "cfceeda5525b335ba523613b9837c650d72d7cc40b8c32d22c18ff7344124ab3",
+  "sourcePointCount": 6373072,
+  "sourceBoundsFeet": {
+    "easting": [
+      1264500.0,
+      1268999.99
+    ],
+    "northing": [
+      220500.0,
+      224999.99
+    ],
+    "elevationNAVD88Geoid18": [
+      -732.61,
+      848.75
+    ]
+  },
+  "collectionDates": [
+    "2021-04-01",
+    "2021-04-24"
+  ],
+  "license": "U.S. Government work; USGS 3DEP products are public domain",
+  "horizontalCrs": "EPSG:6597 (NAD83(2011) / Washington North, US survey feet)",
+  "verticalCrs": "EPSG:6360 (NAVD88 height, Geoid18, US survey feet)",
+  "outputCoordinates": "EPSG:4326 positions; NAVD88 elevation in metres",
+  "origin": [
+    -122.33976786609728,
+    47.595888866686835
+  ],
+  "boundsWgs84": [
+    -122.34098606255156,
+    47.595064533227394,
+    -122.33873237750235,
+    47.59671148171778
+  ],
+  "cropCenterSourceCoordinates": [
+    1268750.0,
+    221000.0
+  ],
+  "cropSizeMeters": [
+    180.0003600006096,
+    180.0003600006096
+  ],
+  "sampleSpacingMeters": 0.5,
+  "sampling": "one seeded random original return per occupied 0.5 m horizontal cell; no fabricated or interpolated points",
+  "seed": 20210424,
+  "croppedPointCount": 301727,
+  "samplePointCount": 116213,
+  "finiteXYZCount": 116213,
+  "sampleBoundsLocalMetres": {
+    "east": [
+      -89.99542799085881,
+      76.19710439420595
+    ],
+    "north": [
+      -89.9984759969488,
+      89.99847599695767
+    ],
+    "elevationNAVD88": [
+      1.8714757429514859,
+      74.62128524257048
+    ]
+  },
+  "classCounts": {
+    "1": 72567,
+    "2": 43619,
+    "7": 11,
+    "9": 5,
+    "18": 5,
+    "20": 6
+  },
+  "columns": {
+    "position": "position.bin (longitude, latitude float64 pairs)",
+    "elevation": "elevation.bin (NAVD88 metres float32)",
+    "classification": "classification.bin (LAS class uint32)"
+  },
+  "manifest": "manifest.json",
+  "outputSha256": {
+    "position.bin": "50effd406a52bdab0576957b7de025f5ff839268078c51d564222885c38eaf3b",
+    "elevation.bin": "202dfe5206b1aac4bca2a44f75f4318202838727bbb53437de8d31053f71c94b",
+    "classification.bin": "ab20d3287279d734d61534623ec67c68eda880a94c5461a4d2fe66602b9000f4"
+  }
+}

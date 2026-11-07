@@ -1,0 +1,103 @@
+{
+  "compilerOptions": {
+    "rootDir": ".",
+    "types": [
+      "@webgpu/types",
+      "node"
+    ],
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable",
+      "ES2025.Float16"
+    ],
+    "module": "ES2022",
+    "jsx": "react",
+    "allowJs": true,
+    "checkJs": false,
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": false,
+    "paths": {
+      "@luma-contributors/graph": [
+        "./modules/graph/src/index.ts"
+      ],
+      "@luma-contributors/graph/_internal/arrow": [
+        "./modules/graph/src/arrow/internal.ts"
+      ],
+      "@luma-contributors/graph/gpu-simple-graph/webgl": [
+        "./modules/graph/src/gpu-simple-graph/operations/webgl/index.ts"
+      ],
+      "@luma-contributors/graph/gpu-simple-graph/webgpu": [
+        "./modules/graph/src/gpu-simple-graph/operations/webgpu/index.ts"
+      ],
+      "@luma-contributors/graph/gpu-simple-graph/cpu": [
+        "./modules/graph/src/gpu-simple-graph/operations/cpu/index.ts"
+      ],
+      "@luma-contributors/graph/test/*": [
+        "./modules/graph/test/*"
+      ],
+      "@luma-contributors/graph/*": [
+        "./modules/graph/src/*"
+      ],
+      "@luma-contributors/lenses": [
+        "./modules/lenses/src/index.ts"
+      ],
+      "@luma-contributors/lenses/*": [
+        "./modules/lenses/src/*"
+      ],
+      "@luma-contributors/kepler": [
+        "./modules/kepler/src/index.ts"
+      ],
+      "@luma-contributors/kepler/*": [
+        "./modules/kepler/src/*"
+      ],
+      "test/*": [
+        "./test/*"
+      ]
+    },
+    "plugins": [
+      {
+        "transform": "@vis.gl/ts-plugins/ts-transform-append-extension",
+        "extensions": [
+          ".js",
+          ".lens.js",
+          ".example.js",
+          ".run.js",
+          ".scenarios.js"
+        ],
+        "after": true
+      },
+      {
+        "transform": "@vis.gl/ts-plugins/ts-transform-append-extension",
+        "extensions": [
+          ".js",
+          ".lens.js",
+          ".example.js",
+          ".run.js",
+          ".scenarios.js"
+        ],
+        "afterDeclarations": true
+      }
+    ]
+  },
+  "include": [
+    "modules/*/src",
+    "modules/*/test",
+    "test/**/*"
+  ],
+  "exclude": [
+    "modules/**/dist",
+    "node_modules"
+  ]
+}

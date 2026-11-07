@@ -1,0 +1,6 @@
+numpy==2.2.6
+scipy==1.15.3
+pysheds==0.5
+xdem==0.1.6
+rasterio==1.4.3
+whitebox==2.3.6

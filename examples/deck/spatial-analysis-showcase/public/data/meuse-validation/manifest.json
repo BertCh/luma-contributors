@@ -1,0 +1,199 @@
+{
+  "id": "meuse-validation",
+  "version": 1,
+  "kind": "points",
+  "license": "GPL-2.0-or-later (R package sp data)",
+  "attribution": "Meuse topsoil and river data distributed with R package sp 2.2-4; data collectors Ruud van Rijn and Mathieu Rikken; compiled by Edzer Pebesma.",
+  "count": 155,
+  "bbox": [
+    5.72110901209086,
+    50.955769978096875,
+    5.765169971896177,
+    50.992716749472116
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "samplePosition": {
+      "file": "samplePosition.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 155
+    },
+    "samplePositionRD": {
+      "file": "samplePositionRD.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 155
+    },
+    "sampleZinc": {
+      "file": "sampleZinc.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "sampleCopper": {
+      "file": "sampleCopper.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "sampleLead": {
+      "file": "sampleLead.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "sampleCadmium": {
+      "file": "sampleCadmium.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "sampleDist": {
+      "file": "sampleDist.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "logZinc": {
+      "file": "logZinc.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "logCopper": {
+      "file": "logCopper.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "logLead": {
+      "file": "logLead.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "logCadmium": {
+      "file": "logCadmium.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "sampleElevation": {
+      "file": "sampleElevation.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "sampleOrganicMatter": {
+      "file": "sampleOrganicMatter.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "sampleDistanceMeters": {
+      "file": "sampleDistanceMeters.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 155
+    },
+    "sampleSoil": {
+      "file": "sampleSoil.bin",
+      "dtype": "uint8",
+      "components": 1,
+      "length": 155,
+      "categories": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    "sampleLime": {
+      "file": "sampleLime.bin",
+      "dtype": "uint8",
+      "components": 1,
+      "length": 155,
+      "categories": [
+        "0",
+        "1"
+      ]
+    },
+    "sampleFloodFrequency": {
+      "file": "sampleFloodFrequency.bin",
+      "dtype": "uint8",
+      "components": 1,
+      "length": 155,
+      "categories": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    "sampleLandUse": {
+      "file": "sampleLandUse.bin",
+      "dtype": "uint8",
+      "components": 1,
+      "length": 155,
+      "categories": [
+        "Aa",
+        "Ab",
+        "Ag",
+        "Ah",
+        "Am",
+        "B",
+        "Bw",
+        "DEN",
+        "Fh",
+        "Fw",
+        "Ga",
+        "SPO",
+        "STA",
+        "Tv",
+        "W",
+        "missing"
+      ]
+    },
+    "gridPosition": {
+      "file": "gridPosition.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 3103
+    },
+    "gridPositionRD": {
+      "file": "gridPositionRD.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 3103
+    },
+    "gridDist": {
+      "file": "gridDist.bin",
+      "dtype": "float32",
+      "components": 1,
+      "length": 3103
+    }
+  },
+  "geometry": {
+    "type": "lines",
+    "file": "river.geojson"
+  },
+  "properties": {
+    "description": "155 measured topsoil zinc samples and the 3,103-cell 40 m prediction support grid, in the original EPSG:28992 frame and WGS84 for display.",
+    "source": "R package sp 2.2-4, dataset meuse / meuse.grid / meuse.riv; package commit eae4821e83b8b9eb5fc46c9f05bb9523747c8598.",
+    "sourceUrls": {
+      "samples": "https://edzer.r-universe.dev/sp/data/meuse/json",
+      "grid": "https://edzer.r-universe.dev/sp/data/meuse.grid/json",
+      "river": "https://edzer.r-universe.dev/sp/data/meuse.riv/json"
+    },
+    "sourceSHA256": {
+      "samples": "aea92cadbf125b4bb7dc60d81b88bf1a1f15bf66eea22e27074d9093a65e8bd3",
+      "grid": "71057969ba536a79fc4af11733de75b0d83c074bfd758d7565f98c8d298e1c52",
+      "river": "f07fd4efecd86750854245490e39b0c20564ec804990c6b3a8d5572cf042daec"
+    },
+    "sourceCrs": "EPSG:28992",
+    "displayCrs": "EPSG:4326",
+    "response": "log(zinc mg/kg); the exponentiated log-scale prediction is a median, not original-scale expected zinc.",
+    "sampleCaution": "Each topsoil observation is a composite sample over a 15 m by 15 m area represented by one point. The published cadmium series replaces recorded zeros with 0.2 mg/kg; do not interpret those entries as measured exact concentrations.",
+    "gridCaution": "The original documentation says the grid soil/flooding classes have uncertain provenance; only its x/y coordinates and dist covariate are used here.",
+    "license": "GPL-2.0-or-later (R package sp data)."
+  }
+}

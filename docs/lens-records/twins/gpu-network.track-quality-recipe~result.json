@@ -1,0 +1,41 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.track-quality-recipe",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "return addTrackQualityRecipe(graph, props);",
+    "language": "ts",
+    "lineCount": 1
+  },
+  "scenarioId": "gpu-network.track-quality-recipe",
+  "viewId": "result-view",
+  "caption": "Result of gpu-network.track-quality-recipe: positions, timestamps, trackOffsets, thresholds → flaggedCounts. rows: 1. values read back from the GPU run. input positions: 4 points.",
+  "description": "Result of gpu-network.track-quality-recipe: positions, timestamps, trackOffsets, thresholds → flaggedCounts. rows: 1. values read back from the GPU run. input positions: 4 points.",
+  "llms": "Result of gpu-network.track-quality-recipe: positions, timestamps, trackOffsets, thresholds → flaggedCounts\n\n- rows: 1\n- input positions: 4 points\n- input timestamps: 4 rows\n- input trackOffsets: 2 rows\n- input thresholds: 2 rows\n- Planar coordinates (unit unknown); uniform scale.\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients track-quality-recipe-speeds, track-quality-recipe-lengths, track-quality-recipe-durations, track-quality-recipe-maximum-speeds, track-quality-recipe-flags, track-quality-recipe-flagged-counts retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">timestamps</th><th scope=\"col\">trackOffsets</th><th scope=\"col\">thresholds</th><th class=\"cv-col--output\" scope=\"col\">stepSpeeds</th><th class=\"cv-col--output\" scope=\"col\">flags</th><th class=\"cv-col--output\" scope=\"col\">trackLengths</th><th class=\"cv-col--output\" scope=\"col\">trackDurations</th><th class=\"cv-col--output\" scope=\"col\">maximumSpeeds</th><th class=\"cv-col--output\" scope=\"col\">flaggedCounts</th></tr></thead><tbody><tr><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">1.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">20</td><td class=\"cv-col--output\" data-provenance=\"readback\">10</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td></tr><tr><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">5</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">—</td><td data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">10</td><td data-provenance=\"readback\">—</td><td data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">12</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr></tbody></table><p class=\"cv-legend\">grey: input positions, timestamps, trackOffsets, thresholds · blue: output stepSpeeds, flags, trackLengths, trackDurations, maximumSpeeds, flaggedCounts</p><p class=\"cv-note\">4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:11:46.554Z",
+    "runId": "run-a9c7a918",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients track-quality-recipe-speeds, track-quality-recipe-lengths, track-quality-recipe-durations, track-quality-recipe-maximum-speeds, track-quality-recipe-flags, track-quality-recipe-flagged-counts retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-a9c7a918",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

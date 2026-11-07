@@ -1,0 +1,65 @@
+{
+  "name": "@luma-contributors/lenses",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "description": "Computation lenses, views, and view packs that document and visualize @luma.gl/graph operations",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/visgl/luma-contributors",
+    "directory": "modules/lenses"
+  },
+  "license": "SEE LICENSE IN src/computation-lenses/data/README.md",
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./computation-lenses": {
+      "types": "./dist/computation-lenses/index.d.ts",
+      "import": "./dist/computation-lenses/index.js",
+      "require": "./dist/computation-lenses/index.cjs"
+    },
+    "./computation-views": {
+      "types": "./dist/computation-views/index.d.ts",
+      "import": "./dist/computation-views/index.js",
+      "require": "./dist/computation-views/index.cjs"
+    },
+    "./computation-lenses/scenarios/index": {
+      "types": "./dist/computation-lenses/scenarios/index.d.ts",
+      "import": "./dist/computation-lenses/scenarios/index.js",
+      "require": "./dist/computation-lenses/scenarios/index.cjs"
+    },
+    "./computation-lenses/registry": {
+      "types": "./dist/computation-lenses/registry.d.ts",
+      "import": "./dist/computation-lenses/registry.js"
+    },
+    "./computation-lenses/data/*": "./dist/computation-lenses/data/*",
+    "./*/computation-pack/index": {
+      "types": "./dist/*/computation-pack/index.d.ts",
+      "import": "./dist/*/computation-pack/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": [
+    "./dist/computation-lenses/scenarios/**",
+    "./src/computation-lenses/scenarios/**",
+    "./dist/**/computation-pack/**",
+    "./src/**/computation-pack/**"
+  ],
+  "dependencies": {
+    "@luma-contributors/graph": "0.1.0-alpha.0",
+    "@luma.gl/core": "10.0.0-alpha.10",
+    "@luma.gl/shaders": "10.0.0-alpha.10",
+    "@math.gl/core": "~5.0.0-beta.4",
+    "@math.gl/geospatial": "~5.0.0-beta.4"
+  }
+}

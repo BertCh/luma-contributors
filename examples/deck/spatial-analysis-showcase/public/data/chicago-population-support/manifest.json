@@ -1,0 +1,96 @@
+{
+  "id": "chicago-population-support",
+  "version": 1,
+  "kind": "raster",
+  "license": "Public domain (US Census Bureau, CDC/ATSDR); ESA WorldCover CC BY 4.0",
+  "attribution": "US Census Bureau 2022 TIGER/Cartographic Boundary; CDC/ATSDR SVI 2022; © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data 2021 processed by WorldCover consortium",
+  "count": 4096,
+  "bbox": [
+    -87.606407,
+    41.785874,
+    -87.575801,
+    41.802512
+  ],
+  "crs": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"Unknown based on WGS 84 ellipsoid\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Lambert_Azimuthal_Equal_Area\"],PARAMETER[\"latitude_of_center\",41.795],PARAMETER[\"longitude_of_center\",-87.59],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+  "raster": {
+    "file": "support-fractions.bin",
+    "encoding": "float32-bin",
+    "width": 64,
+    "height": 64,
+    "depth": 3,
+    "bounds": [
+      -87.6140694416774,
+      41.776990683809174,
+      -87.56593055832262,
+      41.813006744114865
+    ],
+    "unit": "fraction",
+    "projection": {
+      "kind": "lambert-equal-area",
+      "origin": [
+        -87.59,
+        41.795
+      ],
+      "cellSizeMeters": 62.5,
+      "affine": [
+        62.5,
+        0.0,
+        -2000.0,
+        0.0,
+        -62.5,
+        2000.0
+      ],
+      "frameBoundsMeters": [
+        -2000.0,
+        -2000.0,
+        2000.0,
+        2000.0
+      ],
+      "crs": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"Unknown based on WGS 84 ellipsoid\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"Lambert_Azimuthal_Equal_Area\"],PARAMETER[\"latitude_of_center\",41.795],PARAMETER[\"longitude_of_center\",-87.59],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]"
+    },
+    "bands": [
+      "builtUpFraction",
+      "treeCoverFraction",
+      "validFraction"
+    ]
+  },
+  "properties": {
+    "source": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N39W090_Map.tif",
+    "sourceEtag": "91546122dc8cf821894accc63dee8462-9",
+    "nativeWindow": {
+      "colOff": 28631,
+      "rowOff": 2244,
+      "width": 578,
+      "height": 432,
+      "affine": [
+        8.333333333333333e-05,
+        0.0,
+        -87.61408333333333,
+        0.0,
+        -8.333333333333333e-05,
+        41.813
+      ],
+      "crs": "EPSG:4326",
+      "sha256": "04247940e005d2f7997907a57b31f3bf0b8f9d0f41039ff82294e49cdc65471a"
+    },
+    "nativeFile": "worldcover-native.bin",
+    "indicatorBeforeAreaAverage": true,
+    "resampling": "area average of binary class indicators onto 62.5 m cells",
+    "sourceClasses": {
+      "builtUp": 50,
+      "treeCover": 10,
+      "noData": 0
+    },
+    "sourcePopulation": "CDC/ATSDR SVI 2022, ACS 2018\u20132022 five-year; selected on communityArea=41",
+    "geoidFile": "tract-geoid.txt",
+    "populationFile": "population.bin",
+    "nhBlackFile": "nhBlack.bin",
+    "tractGeometry": "tracts.geojson",
+    "populationSum": 29559.0,
+    "tractCount": 12,
+    "licenses": {
+      "population": "Public domain",
+      "worldcover": "CC BY 4.0"
+    }
+  }
+}

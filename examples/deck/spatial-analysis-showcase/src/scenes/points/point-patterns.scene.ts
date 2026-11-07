@@ -1,0 +1,863 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {getClassTableLegend} from '../../cartography/class-table';
+import {CHICAGO, CITY_FRAMES, findPlace, labelsFor} from '../../cartography/gazetteer';
+import {ground} from '../../cartography/grounds';
+import {formatDistance} from '../../cartography/live-text';
+import type {ClassTable} from '../../cartography/types';
+import {defineScene, type LegendSpec} from '../scene';
+import {formatCategory} from './b1-nature-data';
+import {
+  getGhostColor,
+  getParameterInk,
+  getSecondColor,
+  getSubjectColor,
+  nextStoryLine,
+  pointsCartouche,
+  POINTS_CREDITS,
+  type PointsGround
+} from './b1-points-look';
+import type {QuadratClasses} from './point-patterns-classes';
+import type {PointPatternOptions} from './point-patterns.compute';
+
+const GROUP_CATEGORIES = [
+  'Plants',
+  'Birds',
+  'Insects',
+  'Fungi',
+  'Mammals',
+  'Spiders and kin',
+  'Amphibians and reptiles',
+  'Snails and mussels',
+  'Fish',
+  'Other life'
+];
+
+const PLACE_CATEGORIES: readonly [string, string][] = [
+  ['restaurant_cafe', 'Restaurants and cafes'],
+  ['bar_nightlife', 'Bars and nightlife'],
+  ['grocery', 'Grocery and convenience'],
+  ['health', 'Health care'],
+  ['school_education', 'Schools and education'],
+  ['park_recreation', 'Parks and recreation'],
+  ['transit', 'Transit stops'],
+  ['retail', 'Retail'],
+  ['finance_business', 'Finance and business'],
+  ['personal_services', 'Personal services'],
+  ['arts_culture', 'Arts and culture'],
+  ['worship_community', 'Worship and community'],
+  ['lodging', 'Lodging'],
+  ['other', 'Other']
+];
+
+/** The camera of one gazetteer place, at `zoom` (the gazetteer owns every coordinate). */
+function getPlaceView(id: string, zoom: number) {
+  const place = findPlace(CHICAGO, id);
+  return place
+    ? {longitude: place.lngLat[0], latitude: place.lngLat[1], zoom}
+    : {...CITY_FRAMES.chicago};
+}
+
+/** The camera halfway between two gazetteer places, at `zoom`. */
+function getMidpointView(firstId: string, secondId: string, zoom: number) {
+  const first = findPlace(CHICAGO, firstId);
+  const second = findPlace(CHICAGO, secondId);
+  return first && second
+    ? {
+        longitude: (first.lngLat[0] + second.lngLat[0]) / 2,
+        latitude: (first.lngLat[1] + second.lngLat[1]) / 2,
+        zoom
+      }
+    : {...CITY_FRAMES.chicago};
+}
+
+const NIGHT = ground('night');
+
+export default defineScene<PointPatternOptions>({
+  id: 'point-patterns',
+  title: 'Are the points clustered, random or regular?',
+  chapter: 'points',
+  order: 3,
+  summary:
+    'Compare Chicago point patterns with 39 conditional random patterns using Ripley K and L, nearest-neighbour functions, quadrats, pointwise envelopes and a GPU global curve test with explicit study-window support.',
+  contributors: [
+    'GPUStudyWindowPreparation',
+    'GPURectangleClip',
+    'GPURandomPointsInPolygon',
+    'GPURipley',
+    'GPURipleyDistanceFunctions',
+    'GPUPointPatternIndices',
+    'GPUPointPatternEnvelope'
+  ],
+  datasets: [
+    {id: 'chicago-nature', role: 'iNaturalist observations (2023)'},
+    {id: 'chicago-places', role: 'Overture places, for comparison'},
+    {id: 'chicago-boundary', role: 'city limit and lake: the study window and the null'}
+  ],
+  initialView: {...CITY_FRAMES.chicago},
+
+  options: [
+    {
+      kind: 'select',
+      id: 'subject',
+      label: 'Point set',
+      group: 'Pattern',
+      apply: 'compile',
+      default: 'observations',
+      help: 'Nature observations or Overture places. Each has its own compiled graph (cached after first use).',
+      options: [
+        {value: 'observations', label: 'Nature observations (2023)'},
+        {value: 'places', label: 'Places (restaurants, shops, schools, ...)'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'groupCategory',
+      label: 'Observation group',
+      group: 'Pattern',
+      apply: 'param',
+      default: 'Birds',
+      disabledWhen: state => state.subject !== 'observations',
+      help: 'Rows of other groups are masked out: a mask buffer write, no recompile. The chart keeps the previous selection as a dashed grey curve for comparison.',
+      options: [
+        {value: 'all', label: 'All groups'},
+        ...GROUP_CATEGORIES.map(name => ({value: name, label: formatCategory(name)}))
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'placeCategory',
+      label: 'Place type',
+      group: 'Pattern',
+      apply: 'param',
+      default: 'restaurant_cafe',
+      disabledWhen: state => state.subject !== 'places',
+      help: 'Mask by Overture category. Also a buffer write.',
+      options: [
+        {value: 'all', label: 'All places'},
+        ...PLACE_CATEGORIES.map(([value, label]) => ({value, label}))
+      ]
+    },
+    {
+      kind: 'slider',
+      id: 'radius',
+      label: 'Radius r',
+      group: 'Pattern',
+      apply: 'param',
+      min: 100,
+      max: 5000,
+      step: 50,
+      default: 400,
+      unit: 'm',
+      describe: value => `a circle ${formatDistance(value * 2)} across`,
+      autoSweep: {from: 100, to: 1500, durationMs: 9000, ease: 'in-out'},
+      help: 'The radius the map ring and the chart marker show: K counts the neighbours inside this circle. Drag the marker on the chart, or the slider. The curves themselves always run up to the largest radius.'
+    },
+    {
+      kind: 'slider',
+      id: 'maximumDistance',
+      label: 'Largest radius',
+      group: 'Pattern',
+      apply: 'param',
+      min: 200,
+      max: 5000,
+      step: 100,
+      default: 1500,
+      unit: 'm',
+      help: 'The curves are evaluated at evenly spaced radii up to this distance. Large radii leave fewer interior points and increase edge-weight variance; isotropic weights are capped at 100. Changing it restarts the random patterns.'
+    },
+    {
+      kind: 'select',
+      id: 'window',
+      label: 'Study window',
+      group: 'Pattern',
+      apply: 'compile',
+      default: 'city',
+      help: 'City uses all city polygons and their holes, prepared on the GPU in a Lambert equal-area frame. Rectangle includes the lake as a teaching contrast. Map view uses city land clipped to the viewport, with holes excluded. Pan and zoom rewrite the clip inputs and invalidate the prepared window.',
+      options: [
+        {value: 'city', label: 'City polygon (land only)'},
+        {value: 'rectangle', label: 'City bounding rectangle (lake included)'},
+        {value: 'view', label: 'City land in the current map view'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'nullModel',
+      label: 'Null model',
+      group: 'The null',
+      apply: 'compile',
+      default: 'city',
+      display: 'segmented',
+      help: 'On city land is exact GPU sampling, uniform per square metre inside the city polygons with holes excluded. In the rectangle samples the bounding box, lake included: compare both nulls with the rectangle study window. A polygon study window excludes any sampled points outside it. In map-view mode the city choice samples the clipped land inside the view directly; the rectangle choice samples the whole viewport. If the sampler cannot place every point (for example an all-water view), the envelope stops and reports it. The grey band summarizes 39 GPU-sampled patterns; changing the null restarts them.',
+      options: [
+        {value: 'window', label: 'In the rectangle (contrast)'},
+        {value: 'city', label: 'On city land (GPU-sampled)'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'envelopeSource',
+      label: 'Envelope source',
+      group: 'Global inference',
+      apply: 'param',
+      default: 'shared',
+      help: 'Shared keeps the accepted 39-pattern whole-curve global tests. Direct CSR runs GPURipleyEnvelope on demand for a rank-1 pointwise comparison at one predetermined radius. Its curve band is a visual guide, not simultaneous; later radius exploration is not familywise controlled. It requires a matching rectangle window, no observed-only jitter, and none or isotropic correction.',
+      options: [
+        {value: 'shared', label: 'Shared patterns'},
+        {value: 'direct-pointwise', label: 'Direct CSR pointwise'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'globalStatistic',
+      label: 'Global curve statistic',
+      group: 'Global inference',
+      apply: 'param',
+      default: 'maximum-deviation',
+      help: 'GPU test over the full L(r)-r curve. Maximum deviation is in metres; integrated squared deviation uses positive dr weights and has units m³; extreme-rank is dimensionless and also returns a global rank band. Uses all 39 simulations and does not refit parameters.',
+      options: [
+        {value: 'maximum-deviation', label: 'Maximum deviation'},
+        {value: 'integrated-squared-deviation', label: 'Integrated squared deviation'},
+        {value: 'extreme-rank', label: 'Extreme-rank envelope'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'significanceLevel',
+      label: 'Decision α',
+      group: 'Global inference',
+      apply: 'param',
+      default: '0.05',
+      help: 'Threshold for the conservative p-value decision for every global statistic; the GPU rank band also uses it as a target. With 39 simulations, attainable p-values have 1/40 = 0.025 resolution, so α = 0.01 cannot be resolved.',
+      options: [
+        {value: '0.05', label: '0.05'},
+        {value: '0.01', label: '0.01 (below resolution)'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'ripleyCorrection',
+      label: 'Edge correction of K and L',
+      group: 'Edge effects',
+      apply: 'param',
+      default: 'isotropic',
+      help: 'Points near the window edge have fewer neighbours inside it. Isotropic (Ripley 1977) weights each pair by the inside fraction of its circle; border uses only points far enough from the edge; none ignores the problem.',
+      options: [
+        {value: 'isotropic', label: 'Isotropic (Ripley 1977)'},
+        {value: 'border', label: 'Border (reduced sample)'},
+        {value: 'none', label: 'None'}
+      ]
+    },
+    {
+      kind: 'toggle',
+      id: 'compareCorrections',
+      label: 'Compare the three corrections',
+      group: 'Edge effects',
+      apply: 'param',
+      default: false,
+      help: 'Draws the curve for none, border and isotropic together: the same compiled graph, run three times with a different edge-correction parameter.'
+    },
+    {
+      kind: 'select',
+      id: 'distanceCorrection',
+      label: 'Edge correction of G, F and J',
+      group: 'Edge effects',
+      apply: 'param',
+      default: 'border',
+      help: 'The same idea for the nearest-neighbour and empty-space functions: border (reduced sample), Kaplan-Meier (censored distances), Hanisch / Chiu-Stoyan weights, or none (biased low near the edge).',
+      options: [
+        {value: 'border', label: 'Border (reduced sample)'},
+        {value: 'kaplan-meier', label: 'Kaplan-Meier'},
+        {value: 'hanisch', label: 'Hanisch (G) / Chiu-Stoyan (F)'},
+        {value: 'none', label: 'None'}
+      ]
+    },
+    {
+      kind: 'slider',
+      id: 'jitter',
+      label: 'Jitter shared coordinates',
+      group: 'Data quality',
+      apply: 'param',
+      min: 0,
+      max: 60,
+      step: 5,
+      default: 0,
+      unit: 'm',
+      autoSweep: {durationMs: 6000, ease: 'in-out'},
+      help: 'Many records share an exact coordinate with another (repeat visits to one spot, reused map pins). Jitter moves each point by a random offset up to this radius (a GPU sampler and offset pass). Large-scale K and L barely change; nearest-neighbour measures change a lot.'
+    },
+    {
+      kind: 'select',
+      id: 'radiusCount',
+      label: 'Number of radii',
+      group: 'Resolution',
+      apply: 'compile',
+      default: '30',
+      expert: true,
+      help: 'How many distances the curves are sampled at (compile-time, 1 to 256).',
+      options: [
+        {value: '20', label: '20'},
+        {value: '30', label: '30'},
+        {value: '60', label: '60'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'quadratGrid',
+      label: 'Quadrat grid',
+      group: 'Resolution',
+      apply: 'compile',
+      default: '12',
+      display: 'segmented',
+      help: 'The window is cut into n x n quadrats and the points counted in each (compile-time). Coarse quadrats test large-scale variation; fine ones need fewer points per cell.',
+      options: [
+        {value: '6', label: '6 x 6'},
+        {value: '12', label: '12 x 12'},
+        {value: '24', label: '24 x 24'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'referenceGrid',
+      label: 'F reference lattice',
+      group: 'Resolution',
+      apply: 'compile',
+      default: '47',
+      expert: true,
+      help: 'The empty-space function F measures the distance from a regular lattice of reference locations to the nearest point. A finer lattice reduces sampling noise (compile-time).',
+      options: [
+        {value: '24', label: '24 x 24 locations'},
+        {value: '47', label: '47 x 47 locations'},
+        {value: '94', label: '94 x 94 locations'}
+      ]
+    },
+    {
+      kind: 'select',
+      id: 'colorPoints',
+      label: 'Color points by',
+      group: 'Display',
+      apply: 'param',
+      default: 'selection',
+      display: 'segmented',
+      help: 'The selected points, or each point classed by the distance to its nearest neighbour as a multiple of the distance a random pattern would give (the GPUPointPatternIndices distance output).',
+      options: [
+        {value: 'selection', label: 'Selection'},
+        {value: 'nearest', label: 'Nearest neighbour'}
+      ]
+    },
+    {
+      kind: 'toggle',
+      id: 'showRandom',
+      label: 'Show a random pattern',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      disabledWhen: state => state.colorPoints === 'nearest',
+      help: 'Swaps the selected points for one random pattern of the same size under the chosen null model (the first of the 39 the envelope runs), so the comparison is fair.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showRadius',
+      label: 'Show the radius on the map',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Draws the circle of radius r on the densest selected point, with the number of neighbours inside, and a tick on the scale bar.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showQuadrats',
+      label: 'Show quadrat counts',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Classes each quadrat by its observed count divided by the count expected from its GPU-measured area inside the window. Zero-area quadrats are outside.'
+    },
+    {
+      kind: 'toggle',
+      id: 'emphasizeEdge',
+      label: 'Emphasise the window edge',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Strengthens the hatch over land where no record can fall and names how much of the window it covers.'
+    },
+    {
+      kind: 'toggle',
+      id: 'showOthers',
+      label: 'Show unselected points',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Draws the masked-out points faintly for context. Off by default so the subject beats the context.'
+    },
+    {
+      kind: 'button',
+      id: 'measure',
+      label: 'Time the pattern graph',
+      group: 'Compare',
+      help: 'GPU time of Ripley, the distance functions and the point-pattern indices together at the current radius.'
+    }
+  ],
+
+  readouts: [
+    {
+      id: 'included',
+      label: 'Points analysed',
+      emphasis: 'tile',
+      help: 'Selected points inside the window.'
+    },
+    {
+      id: 'intensity',
+      label: 'Intensity',
+      help: 'GPU included count divided by the GPU study-window area. City and map-view polygon windows exclude outside areas; the rectangle window includes water.'
+    },
+    {id: 'windowArea', label: 'Study window area', hood: true},
+    {
+      id: 'windowLandShare',
+      label: 'City land / bounding rectangle',
+      emphasis: 'tile',
+      help: 'GPU polygon area divided by city bounding-box area, or by viewport rectangle area in view mode. The view numerator is clipped city land; this is not the fraction of the polygon window that is land.'
+    },
+    {id: 'outsideShare', label: 'Outside-city share of bounding box', hood: true},
+    {id: 'nullName', label: 'Null model', hood: true},
+    {
+      id: 'lCurve',
+      label: 'L(r) - r against random patterns',
+      kind: 'chart',
+      help: 'Besag L minus r. The grey band is pointwise by default; when extreme-rank is selected and its GPU test completes, it becomes a global band calibrated over the full plotted radius range. Drag the marker to set the radius.'
+    },
+    {id: 'lPeak', label: 'Strongest clustering'},
+    {id: 'peakR', label: 'Radius of the peak', hood: true},
+    {
+      id: 'lAt1km',
+      label: 'L(r) - r at 1 km',
+      help: 'Barely moves when the shared coordinates are jittered.'
+    },
+    {id: 'withinRadius', label: 'At the densest point'},
+    {id: 'simulations', label: 'Random patterns run'},
+    {
+      id: 'globalTest',
+      label: 'GPU global statistic',
+      help: 'Computed by GPUPointPatternEnvelope from the observed curve and all 39 simulation curves. A non-finite curve invalidates inference instead of being dropped.'
+    },
+    {id: 'globalDecision', label: 'Global test status'},
+    {
+      id: 'directPointwise',
+      label: 'Direct CSR pointwise band',
+      kind: 'chart',
+      help: 'GPU-generated 39-pattern rank-1 L(r)-r bounds, shown across the radius range as a visual guide. For a rectangle, n ≥ 2, finite radii, and none or isotropic correction, every simulated radius is mathematically defined; numerical non-finite values are still checked. The displayed comparison uses one predetermined radius snapped to the nearest actual grid radius. Do not interpret between grid radii or treat later radius exploration as familywise controlled; this does not replace the shared-replicate global test.'
+    },
+    {id: 'pointwiseAtRadius', label: 'Pointwise result at tested grid radius'},
+    {id: 'pointwiseStatus', label: 'Direct CSR status'},
+    {
+      id: 'gfjCurves',
+      label: 'G, F and J',
+      kind: 'chart',
+      help: 'G: fraction of points whose nearest neighbour is within r (climbing early means clustering). F: fraction of a reference lattice within r of a point (climbing late means gaps). J = (1-G)/(1-F): below 1 clustering, above 1 regularity.'
+    },
+    {
+      id: 'clarkEvansGauge',
+      label: 'Clark-Evans gauge',
+      kind: 'chart',
+      help: 'R below 1 is clustered, above 1 dispersed; the shaded band is where a random pattern falls.'
+    },
+    {id: 'clarkEvansR', label: 'Clark-Evans R', emphasis: 'tile'},
+    {id: 'clarkEvans', label: 'Clark-Evans index', hood: true},
+    {
+      id: 'expectedNN',
+      label: 'Expected nearest-neighbour distance',
+      help: 'Guard correction averages only focus points at least guardDistance from the boundary; their neighbours may be anywhere inside. guardDistance = max(2/√λ, current radius step), with λ = n/A from the last GPU readback. The CSR expectation is 0.5/√λ. No interior focus points means an undefined index.'
+    },
+    {id: 'observedNN', label: 'Observed nearest-neighbour distance'},
+    {
+      id: 'quadratHistogram',
+      label: 'Quadrats relative to expected',
+      kind: 'chart',
+      help: 'Observed count divided by its area-weighted expected count. The GPU estimates each quadrat’s polygon area; zero-area quadrats are outside. The marker at 1 is the CSR expectation.'
+    },
+    {
+      id: 'vmr',
+      label: 'Quadrat reduced chi-square',
+      help: 'Chi-square divided by degrees of freedom, with expected counts proportional to GPU quadrat areas. About 1 under the uniform null; larger values indicate uneven intensity.'
+    },
+    {id: 'chiSquare', label: 'Quadrat chi-square', hood: true},
+    {
+      id: 'duplicateShare',
+      label: 'Records on a shared coordinate',
+      help: 'Share of the selected records whose exact coordinate another selected record also has.'
+    },
+    {id: 'timing', label: 'Pattern graph timing', hood: true},
+    {id: 'isotropicCap', label: 'Numerical notes', hood: true},
+    {id: 'graphs', label: 'Compiled graphs and runs', hood: true}
+  ],
+
+  pipeline: [
+    {
+      id: 'lattice',
+      label: 'Lattice',
+      detail: 'Rows are sorted into a 96 x 96 grid of cells at least as wide as the largest radius'
+    },
+    {
+      id: 'pairs',
+      label: 'Pairs',
+      detail:
+        'Each row scans the 3 x 3 cells around it and adds integer fixed-point sums, so the result is bitwise reproducible'
+    },
+    {
+      id: 'curves',
+      label: 'Curves',
+      detail: 'K, L, G, F and J from the pair counts and nearest-neighbour distances'
+    },
+    {
+      id: 'envelope',
+      label: 'Envelope',
+      detail: '39 random patterns sampled on the GPU: the same compiled graph, a new seed each time'
+    },
+    {id: 'draw', label: 'Draw', detail: 'Layers read the same GPU buffers'}
+  ],
+
+  legends: (state, data) => {
+    const darkGround = ((data['ground'] as PointsGround | undefined) ?? 'dark') === 'dark';
+    const legendGround: PointsGround = darkGround ? 'dark' : 'light';
+    const legends: LegendSpec[] = [];
+    const nearestTable = data['nearestTable'] as ClassTable | undefined;
+    const nearestExpected = data['nearestExpected'] as number | undefined;
+    if (state.colorPoints === 'nearest' && nearestTable) {
+      legends.push(
+        getClassTableLegend(nearestTable, {
+          title: 'Distance to nearest neighbour (m)',
+          layout: 'list',
+          note:
+            nearestExpected !== undefined
+              ? `Expected under a random pattern: ${formatDistance(nearestExpected)}`
+              : undefined
+        })
+      );
+    } else {
+      const groupName =
+        state.subject === 'observations'
+          ? state.groupCategory === 'all'
+            ? 'All observations'
+            : formatCategory(state.groupCategory)
+          : (PLACE_CATEGORIES.find(([value]) => value === state.placeCategory)?.[1] ??
+            'All places');
+      const subjectColor =
+        state.subject === 'observations'
+          ? getSubjectColor(legendGround, 255)
+          : getSecondColor(legendGround, 255);
+      legends.push({
+        kind: 'categories',
+        title: 'Points and window',
+        layout: 'list',
+        entries: [
+          {color: subjectColor, label: groupName, shape: 'dot'},
+          ...(state.showRandom
+            ? [
+                {
+                  color:
+                    state.subject === 'observations'
+                      ? getSecondColor(legendGround, 255)
+                      : ([233, 236, 240, 255] as const),
+                  label: 'One random pattern, same size',
+                  shape: 'dot' as const
+                }
+              ]
+            : []),
+          ...(state.showOthers
+            ? [
+                {
+                  color: getGhostColor(legendGround, 160),
+                  label: 'Other records',
+                  shape: 'dot' as const
+                }
+              ]
+            : []),
+          {
+            color: getParameterInk(legendGround, 160),
+            label: 'Outside the city boundary',
+            shape: 'hatch'
+          },
+          {color: getParameterInk(legendGround, 235), label: 'Study window', shape: 'line'}
+        ]
+      });
+    }
+    const quadrat = data['quadrat'] as QuadratClasses | undefined;
+    if (state.showQuadrats && quadrat) {
+      legends.push(
+        getClassTableLegend(quadrat.table, {
+          title: 'Observed / area-weighted expected',
+          layout: 'list',
+          counts: quadrat.counts
+        })
+      );
+    }
+    return legends;
+  },
+
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {
+  GPUStudyWindowPreparation, GPURandomPointsInPolygon,
+  getGPUDotDensityParameterValues
+} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {
+  GPURipley, GPURipleyDistanceFunctions, GPUPointPatternIndices,
+  getGPURipleyParameterValues, getGPURipleyDistanceFunctionsParameterValues,
+  getGPUPointPatternIndicesParameterValues
+} from '@luma-contributors/graph/gpu-dataframe';
+
+// Project points AND polygon columns with one Lambert equal-area frame.
+// Each graph imports its own views of those buffers.
+const graph = new GPUCommandGraph(device, {id: 'point-pattern'});
+const preparedWindow = new GPUStudyWindowPreparation({
+  ...windowColumns, spatialContext, output: {summary: windowSummary}
+});
+graph.add(preparedWindow); // before consumers
+const studyWindow = ${state.window === 'rectangle' ? "'rectangle'" : 'preparedWindow'};
+const bounds = ${state.window === 'rectangle' ? 'windowBounds' : "'study-window'"};
+// For view mode, windowColumns are GPURectangleClip(city, viewport) outputs.
+// After rewriting window geometry: preparedWindow.invalidate().
+// Dispose preparedWindow.destroy() with this compiled graph.
+graph.add(new GPURipley({
+  spatialContext, studyWindow, positions, mask,
+  parameters: ripleyParameters.importToGraph(graph),
+  gridSize: [96, 96], radiusCount: ${state.radiusCount},
+  output: {k, l, lMinusR, radii}
+}));
+graph.add(new GPURipleyDistanceFunctions({
+  spatialContext, studyWindow, positions, mask,
+  parameters: distanceParameters.importToGraph(graph),
+  gridSize: [96, 96], referenceGrid: [${state.referenceGrid}, ${state.referenceGrid}],
+  radiusCount: ${state.radiusCount}, output: {g, f, j}
+}));
+graph.add(new GPUPointPatternIndices({
+  spatialContext, studyWindow, positions, mask,
+  parameters: indicesParameters.importToGraph(graph),
+  gridSize: [96, 96], quadratGrid: [${state.quadratGrid}, ${state.quadratGrid}],
+  output: {nearestNeighborDistances, clarkEvans, quadratCounts, quadratAreas, quadratStatistics}
+}));
+const compiled = await graph.compileAsync();
+ripleyParameters.write(getGPURipleyParameterValues({
+  bounds, maximumDistance: ${state.maximumDistance}, edgeCorrection: '${state.ripleyCorrection}'
+}));
+distanceParameters.write(getGPURipleyDistanceFunctionsParameterValues({
+  bounds, maximumDistance: ${state.maximumDistance}, edgeCorrection: '${state.distanceCorrection}'
+}));
+// n and area come from the last GPU summary; bootstrap once using the radius step.
+indicesParameters.write(getGPUPointPatternIndicesParameterValues({
+  bounds, maximumDistance: ${Math.min(state.maximumDistance, 400)}, clarkEvansCorrection: 'guard',
+  guardDistance: Math.max(2 / Math.sqrt(n / area), ${state.maximumDistance / Number(state.radiusCount)})
+}));
+compiled.encode(commandEncoder, {parameters: undefined});
+
+// In the simulation graph, add its own window preparation and this sampler BEFORE statistics.
+// nullColumns = city land (under view: the GPURectangleClip output, whose empty and
+// degenerate rings the sampler skips) or the rectangle polygon.
+simulationGraph.add(new GPURandomPointsInPolygon({
+  ...nullColumns, spatialContext, counts: simulationCounts,
+  parameters: randomParameters.importToGraph(simulationGraph),
+  output: {positions: simulationPositions, dots: {ids: dotIds, status: {count: dotCount, overflow}}}
+}));
+// Add Ripley and G/F/J on simulationPositions with the simulation graph's studyWindow.
+const compiledSimulation = await simulationGraph.compileAsync();
+// One simulation per frame; retain simulation 0 in a GPU display buffer.
+simulationCountsBuffer.write(Uint32Array.of(n));
+randomParameters.write(getGPUDotDensityParameterValues({seed: 4242 + simulationIndex}));
+compiledSimulation.encode(commandEncoder, {parameters: undefined});`,
+
+  about: {
+    what: "`GPURipley` counts pairs of points within growing radii to estimate K(r) and Besag's L(r) = sqrt(K/pi), with edge corrections. `GPURipleyDistanceFunctions` adds the nearest-neighbour function G, the empty-space function F and J = (1-G)/(1-F). `GPUPointPatternIndices` gives each point's nearest-neighbour distance, the Clark-Evans ratio (guard correction using interior focus points, with a two-sided p-value) and quadrat dispersion (chi-square with a p-value). The story reruns the same compiled graph over 39 random patterns for a Monte Carlo envelope. Both points and the city polygon use a Lambert equal-area frame, also supplied to the display layers. City-scale distance distortion is below 0.01%. GPU-prepared windows include holes and disconnected parts; the rectangle is an optional contrast.",
+    why: 'Before modelling a point pattern you need to know how it departs from complete spatial randomness: at what distance do events attract, and is the clustering real or an artefact of the window? The curves answer that scale by scale, and the envelope says what chance alone would draw.',
+    howToRead:
+      'L(r) - r above zero is clustering at that radius; it is only convincing above the grey band of random patterns. G rising early and F rising late both indicate clustering; J below 1 agrees. Clark-Evans R below 1 and a quadrat reduced chi-square above 1 are the single-number versions. Hatching marks the area outside the city, including holes. The default polygon window excludes it; the rectangle window includes it and demonstrates how the window and null change the comparison.'
+  },
+
+  // Night ground: additive amber points. Step 5 switches to paper for a classed fill.
+  basemap: NIGHT,
+  furniture: {
+    title: pointsCartouche(
+      'Clustered, or just crowded?',
+      'Bird records and a random pattern of the same size'
+    ),
+    scaleBar: {units: 'metric'},
+    credit: POINTS_CREDITS.natureAndPlaces,
+    caveat:
+      'Bird records follow observer effort, so clustering against a uniform random pattern partly measures where people go.'
+  },
+  annotations: labelsFor(CHICAGO, ['lake-michigan']),
+
+  create: async ctx => (await import('./point-patterns.compute')).createPointPatterns(ctx),
+
+  story: [
+    {
+      id: 'the-pile-up',
+      title: 'Is this more clumped than chance?',
+      headline: 'Compare bird records with random points on city land',
+      textAlternative:
+        'Dark map of Chicago with amber dots for bird records, densest along the lakefront, inside the city polygon study window, with outside-city areas hatched.',
+      body: 'Each dot is a bird record: **{{included}}** in a window of {{windowArea}}, {{intensity}}. "Clustered" only means more than a null model gives, and the null here is complete spatial randomness: the same number of points thrown down at random. Tick **Show a random pattern** to swap the birds for one such scatter. Clark-Evans R, {{clarkEvansR}}, is the one-number verdict: 1 is random.',
+      optionsMode: 'fresh',
+      options: {showRandom: false},
+      controls: ['showRandom'],
+      readouts: ['included', 'intensity', 'clarkEvansR'],
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1400},
+      basemap: NIGHT,
+      furniture: {
+        title: pointsCartouche(
+          'Clustered, or just crowded?',
+          'Bird records and a random pattern of the same size'
+        )
+      },
+      annotations: labelsFor(CHICAGO, ['montrose-point', 'lincoln-park'])
+    },
+    {
+      id: 'k-and-l',
+      title: 'Count neighbours within r',
+      headline: 'How clumped depends on the radius you ask',
+      textAlternative:
+        'Map of Montrose Point with a dashed ring on the densest bird record, and a chart of L(r) minus r rising far above a grey band of random patterns.',
+      body: 'Draw a circle of radius r round each sighting and count the others inside: that is K. L(r) − r subtracts what chance gives, so zero is random. Slide **Radius r**: the ring sits on the densest point, {{withinRadius}}, and the marker rides the curve. Compare the curve with the pointwise grey band from {{simulations}}; its peak radius is {{peakR}}. Crossing this band is a comparison at that radius, not a test of the whole curve. **Largest radius** sets how far the curve runs.',
+      optionsMode: 'fresh',
+      options: {showRadius: true, radius: 400, maximumDistance: 1500},
+      controls: ['radius', 'maximumDistance'],
+      readouts: ['lCurve', 'lPeak', 'simulations'],
+      stage: 'pairs',
+      camera: {...getPlaceView('montrose-point', 12.5), transitionMs: 1600},
+      basemap: NIGHT,
+      furniture: {
+        title: pointsCartouche(
+          'How far do neighbours reach?',
+          'L(r) − r for bird records, with 39 random patterns'
+        )
+      },
+      annotations: labelsFor(CHICAGO, ['montrose-point'])
+    },
+    {
+      id: 'window-and-edges',
+      title: 'The window sets the null',
+      headline: 'The city boundary changes the comparison',
+      textAlternative:
+        'City map with the city boundary or its bounding rectangle outlined, outside-city areas hatched, and curves compared with GPU-sampled random patterns.',
+      body: 'The GPU measures {{windowArea}} of study area; city land occupies {{windowLandShare}} of its bounding box. **Study window** defaults to the city polygon with holes excluded. Switch to the bounding rectangle to include the lake, then compare **Null model** choices: "In the rectangle (contrast)" and "On city land (GPU-sampled)". Read the resulting curve and grey band rather than assuming how far either will move. **Edge correction of K and L** accounts for missing neighbours beyond the chosen boundary.\n\n*A pattern is clustered only relative to a window and a null.*',
+      optionsMode: 'fresh',
+      options: {
+        window: 'rectangle',
+        nullModel: 'window',
+        emphasizeEdge: true,
+        compareCorrections: true
+      },
+      controls: ['window', 'nullModel', 'ripleyCorrection'],
+      readouts: ['lCurve', 'windowArea', 'windowLandShare', 'lPeak'],
+      stage: 'envelope',
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1600},
+      basemap: NIGHT,
+      furniture: {
+        title: pointsCartouche(
+          'Clustered against what window?',
+          'L(r) − r under two nulls and three edge corrections'
+        )
+      },
+      annotations: labelsFor(CHICAGO, ['loop'], {loop: {minZoom: 10.2}})
+    },
+    {
+      id: 'nearest-neighbours',
+      title: 'Nearest neighbours tell the small-scale story',
+      headline: 'Nearest neighbours tell the small-scale story',
+      textAlternative:
+        'Map of the north lakefront with each bird record coloured by its distance to its nearest neighbour, bright for short, and a ring on the densest point; charts of G, F and J and a Clark-Evans gauge.',
+      body: 'Each dot is classed by its distance to the nearest neighbour, in multiples of E, the {{expectedNN}} a random scatter would give; the birds average {{observedNN}}. Clustering shows as G climbing early, F late and J below 1; Clark-Evans R is {{clarkEvansR}}. Choose **Edge correction of G, F and J**, or switch **Color points by** back to the selection.',
+      optionsMode: 'fresh',
+      options: {colorPoints: 'nearest', showRadius: true},
+      controls: ['distanceCorrection', 'colorPoints'],
+      readouts: ['gfjCurves', 'clarkEvansGauge', 'expectedNN', 'observedNN'],
+      stage: 'curves',
+      camera: {...getMidpointView('lincoln-park', 'montrose-point', 11.4), transitionMs: 1600},
+      basemap: NIGHT,
+      furniture: {
+        title: pointsCartouche(
+          'How close is the nearest neighbour?',
+          'Distance to the nearest record, in multiples of random'
+        )
+      },
+      annotations: labelsFor(CHICAGO, ['lincoln-park', 'montrose-point'])
+    },
+    {
+      id: 'stacks-and-quadrats',
+      title: 'Stacks and quadrat counts',
+      headline: 'Many records share one exact spot',
+      textAlternative:
+        'Paper-coloured map of Chicago with small dark dots over a blue classed grid of observed counts relative to area-weighted expectations, the lake and suburbs hatched, and a histogram of observed-to-expected ratios.',
+      body: 'Cut the window into **Quadrat grid** cells. The GPU estimates each cell’s area inside the polygon, so its expected count is proportional to that area. The fill shows observed / expected; zero-area cells are outside. Reduced chi-square is {{vmr}} (about 1 under the uniform null). {{duplicateShare}} of records share an exact coordinate. Slide **Jitter shared coordinates**: compare Clark-Evans R, {{clarkEvansR}}, with L at a kilometre, {{lAt1km}}, to see their different sensitivity to shared coordinates. A classed fill reads on paper. The grid is a choice, as in the [density story](#/story/nature-density).',
+      optionsMode: 'fresh',
+      options: {showQuadrats: true, quadratGrid: '12', jitter: 0},
+      controls: ['quadratGrid', 'jitter'],
+      readouts: ['quadratHistogram', 'duplicateShare', 'clarkEvansR', 'lAt1km'],
+      stage: 'curves',
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1600},
+      basemap: ground('paperCity'),
+      furniture: {
+        title: pointsCartouche(
+          'Do the quadrats agree?',
+          'Quadrat counts relative to area-weighted expectation'
+        )
+      },
+      annotations: labelsFor(CHICAGO, ['loop'], {loop: {minZoom: 10.2}})
+    },
+    {
+      id: 'birds-vs-restaurants',
+      title: 'Restaurants and birds',
+      headline: 'Restaurants cluster on corridors, birds on the lake',
+      textAlternative:
+        'Dark map of Chicago with sky-blue dots for restaurants and cafes along commercial corridors, a ring on the densest point, and a chart of L(r) minus r with the bird curve as a dashed grey ghost.',
+      body:
+        'Both patterns follow people: observers for birds, customers for restaurants; Overture coverage is thinner on the South and West Sides. Pick a **Point set** and **Place type**; the dashed grey ghost is the birds. Set **Study window** to the map view to test city land within that neighbourhood’s viewport.\n\n*Numerical note: isotropic weights are capped at 100; Kaplan-Meier and Hanisch exist for G, F and J only; positions are float32 metres.*\n\n' +
+        nextStoryLine('point-patterns'),
+      optionsMode: 'fresh',
+      options: {subject: 'places', placeCategory: 'restaurant_cafe', showRadius: true},
+      controls: ['subject', 'placeCategory', 'window'],
+      readouts: ['lCurve', 'lPeak', 'included'],
+      stage: 'draw',
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1600},
+      basemap: NIGHT,
+      furniture: {
+        title: pointsCartouche(
+          'Same test, different pattern',
+          'Restaurants and cafes, with the birds as a ghost',
+          {effort: false}
+        )
+      },
+      annotations: labelsFor(CHICAGO, ['loop', 'lincoln-park'], {loop: {minZoom: 10.2}})
+    },
+    {
+      id: 'global-curve-test',
+      title: 'Test the curve as a whole',
+      headline: 'One global test accounts for the full radius range',
+      textAlternative:
+        'The shared source compares the full L(r) minus r curve with 39 simulated curves for global tests. Direct CSR separately shows pointwise rank bounds and reports one predetermined grid radius.',
+      body: 'Select a **Global curve statistic** to summarize the entire observed curve against all 39 fixed-count conditional random patterns. The GPU returns a conservative Monte Carlo p-value with resolution 1/40; an extreme-rank tie interval exposes tied ranks and its band is global across the plotted radii. Choose **Envelope source** below to run a separate direct CSR comparison: the chart shows 39 rank-1 bounds as a continuous visual guide, while the displayed pointwise result is indexed at the nearest actual radius grid value to the radius selected when the run starts. The readout shows requested and tested radii when they differ. This is one predetermined-radius comparison; exploring additional radii afterward is not familywise controlled, and the guide gives no decision between grid radii. Direct CSR fixes the study window and null to the same rectangle and requires zero jitter and none or isotropic correction. Its fixed reproducible seed is shown in the status. These tests condition on the selected count; a non-rejection is not evidence that the null is true.',
+      optionsMode: 'fresh',
+      options: {
+        window: 'rectangle',
+        nullModel: 'window',
+        globalStatistic: 'extreme-rank',
+        significanceLevel: '0.05',
+        showRadius: false,
+        showRandom: false
+      },
+      controls: ['globalStatistic', 'envelopeSource', 'radius', 'window', 'jitter'],
+      readouts: ['globalTest', 'globalDecision', 'directPointwise', 'pointwiseAtRadius'],
+      stage: 'envelope',
+      camera: {...CITY_FRAMES.chicago, transitionMs: 1500},
+      basemap: NIGHT,
+      furniture: {
+        title: pointsCartouche(
+          'Does the whole curve depart from chance?',
+          'GPU global curve test over L(r) − r'
+        )
+      },
+      annotations: labelsFor(CHICAGO, ['montrose-point'])
+    }
+  ]
+});

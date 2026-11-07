@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+coverage-*/
+*.tsbuildinfo
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+.DS_Store
+.playwright-artifacts/

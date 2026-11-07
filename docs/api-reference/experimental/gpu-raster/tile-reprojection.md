@@ -1,0 +1,66 @@
+# GPURasterTileReprojection
+
+`GPURasterTileReprojection` explicitly assembles resident source tiles on the GPU, then delegates
+projection and sampling to `GPURasterReprojection`. It implements `GPUCommandNodeProducer` and can
+be added to a `GPUCommandGraph`. It does not fetch tiles or read source data back to the CPU.
+
+## Source contract
+
+Supply `sourceGrid`, `destinationGrid`, `sources`, `output`, and the existing reprojection options
+`inverseProjection`, `method` and `noDataPolicy`. Each source has a borrowed `input` buffer band and
+half-open integer `pixelBounds: [left, top, right, bottom]` relative to the top-left sourceGrid pixel.
+Its packed row-major storage covers exactly that rectangle, including any supplied halo.
+Bounds must be nonempty and contained in sourceGrid. Empty source lists are supported.
+
+The sourceGrid declares one shared CRS, pixel interpretation, affine lattice and resolution for all
+source tiles. Bounds select cells on that lattice; mixed overviews, resolutions or CRS require
+separate explicit alignment passes. Rotated and sheared affine lattices are supported. The caller
+selects the finite source window; tile discovery and automatic window planning are outside this API.
+When adapting `GPURasterTile` or `GPURasterTileHaloSource`, subtract the selected source window's
+pixel origin from their absolute available bounds, and use the corresponding source window affine.
+Do not silently mix level-zero bounds and overview-level pixel bounds.
+
+## Priority, coverage and interpolation
+
+Sources are ordered from low to high priority. Later sources overwrite earlier samples, including
+invalid samples. This rule is stable across overlapping cores and halos; put authoritative cores
+after lower-priority halo sources. Each band resolves its own raw nodata, validity, finite-value
+checks, scale and offset before copying. Missing coverage and invalid samples produce output
+validity zero and NaN values. Invalid higher-priority samples do not fall back to older tiles.
+
+Bilinear interpolation resolves all four taps from the assembled mosaic, so taps can cross both
+horizontal and vertical tile boundaries. Only positive-weight taps matter. `strict` requires every
+such tap; `renormalize` divides by the sum of available valid weights. Missing outer support remains
+nodata under strict sampling; there is no implicit edge clamp. Include an interpolation halo of one
+source pixel beyond the required sample centers when dividing work into independent windows.
+Nearest sampling uses the existing floor(coordinate + 0.5) tie convention.
+
+Projection remains destination driven. An explicit inverse projection is required when destination
+and source CRS differ. Projection-domain invalidity propagates to output validity. Coordinates and
+samples are float32; the adapter does not add double-single projection support or longitude wrapping.
+Use local coordinates and bounded windows when large world origins would lose pixel precision.
+
+## Resources and reuse
+
+Packing is explicit: dense mosaic scratch uses eight bytes per sourceGrid pixel (float32 values and
+uint32 validity), plus the existing per-tile calibration and projection intermediates. This is intended
+for bounded local source windows, not a sparse whole-world atlas. Each buffer must fit the device's
+storage binding and allocation limits. Sequential copy passes use four storage bindings, independent
+of source tile count; compile size and dispatch overhead grow with tile count. There is no measured
+throughput or large-window performance guarantee.
+
+Changing borrowed input buffer contents and executing the same compiled graph recomputes the mosaic
+and output. Tile metadata and source order are graph topology: rebuild the contributor and graph when
+they change. After destroying the compiled graph, call `contributor.destroy()` to release optional
+projection resources. Borrowed input buffers remain caller-owned.
+
+## Reference evidence
+
+`test/oracles/raster-tile-reprojection.py` generates the checked-in JSON using NumPy 2.2.6 and
+Rasterio 1.4.3 / GDAL 3.9.3. Rasterio directly checks interior horizontal and corner-seam bilinear
+samples. Strict missing-support edges, renormalization, and nodata-overwriting overlap priority are
+explicit NumPy compositions; they are not claims of matching GDAL's edge-clamping behavior.
+
+The focused tests cover shader parsing and eight-storage-binding limits with 32 source tiles, real
+WebGPU core-device seam and corner-seam sampling, missing tiles, overlap priority, nodata, empty
+coverage, and changed borrowed inputs on a reused compiled graph.

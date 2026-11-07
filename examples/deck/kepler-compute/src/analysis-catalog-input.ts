@@ -1,0 +1,310 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {CatalogFeature, CatalogFeatureCollection} from '@luma-contributors/kepler';
+
+export const MAXIMUM_CATALOG_NATIVE_ROWS = 20000;
+
+type NativeDatasetLike = {
+  fields: readonly {name: string}[];
+  dataContainer: {numRows(): number; valueAt(rowIndex: number, columnIndex: number): unknown};
+};
+
+function readGeometry(value: unknown): CatalogFeature['geometry'] {
+  const parsed =
+    typeof value === 'string' && value.trim().startsWith('{') ? JSON.parse(value) : value;
+  if (!parsed || typeof parsed !== 'object') return null;
+  const candidate = parsed as {type?: string; geometry?: CatalogFeature['geometry']};
+  if (candidate.type === 'Feature') return candidate.geometry ?? null;
+  return typeof candidate.type === 'string' ? (candidate as CatalogFeature['geometry']) : null;
+}
+
+/** Candidate geometry fields: those whose first non-null value reads as GeoJSON. */
+export function findNativeGeometryFields(dataset: NativeDatasetLike): string[] {
+  const rowCount = dataset.dataContainer.numRows();
+  const names: string[] = [];
+  dataset.fields.forEach((field, columnIndex) => {
+    for (let rowIndex = 0; rowIndex < Math.min(rowCount, 16); rowIndex++) {
+      const value = dataset.dataContainer.valueAt(rowIndex, columnIndex);
+      if (value === null || value === undefined) continue;
+      try {
+        if (readGeometry(value)) names.push(field.name);
+      } catch {
+        // Not JSON text; this field is not a GeoJSON geometry column.
+      }
+      return;
+    }
+  });
+  return names;
+}
+
+/** Explicit, capacity-bounded read of a native dataset's GeoJSON column; other columns become properties. */
+export function readCatalogFeaturesFromNativeDataset(
+  dataset: NativeDatasetLike,
+  geometryField: string
+): CatalogFeatureCollection {
+  const rowCount = dataset.dataContainer.numRows();
+  // Row capacity exceeded; filter or sample the dataset before analysis.
+  if (rowCount > MAXIMUM_CATALOG_NATIVE_ROWS)
+    throw new Error('Native dataset exceeds catalog capacity');
+  const geometryIndex = dataset.fields.findIndex(field => field.name === geometryField);
+  if (geometryIndex < 0) throw new Error('Geometry field not found');
+  const features: CatalogFeature[] = [];
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+    const properties: Record<string, unknown> = {};
+    dataset.fields.forEach((field, columnIndex) => {
+      if (columnIndex === geometryIndex) return;
+      const value = dataset.dataContainer.valueAt(rowIndex, columnIndex);
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+        properties[field.name] = value;
+    });
+    features.push({
+      id: rowIndex,
+      geometry: readGeometry(dataset.dataContainer.valueAt(rowIndex, geometryIndex)),
+      properties
+    });
+  }
+  return {type: 'FeatureCollection', features};
+}
+
+function lines(
+  rows: {id: string; coordinates: number[][]; properties?: Record<string, unknown>}[]
+): string {
+  return JSON.stringify({
+    type: 'FeatureCollection',
+    features: rows.map(row => ({
+      type: 'Feature',
+      id: row.id,
+      properties: row.properties ?? {},
+      geometry: {type: 'LineString', coordinates: row.coordinates}
+    }))
+  });
+}
+
+function points(coordinates: number[][]): string {
+  return JSON.stringify({
+    type: 'FeatureCollection',
+    features: coordinates.map(position => ({
+      type: 'Feature',
+      properties: {},
+      geometry: {type: 'Point', coordinates: position}
+    }))
+  });
+}
+
+function polygons(rings: number[][][][]): string {
+  return JSON.stringify({
+    type: 'FeatureCollection',
+    features: rings.map((polygon, index) => ({
+      type: 'Feature',
+      id: `polygon-${index}`,
+      properties: {},
+      geometry: {type: 'Polygon', coordinates: polygon}
+    }))
+  });
+}
+
+const SQUARE = (x: number, y: number, size: number) => [
+  [x, y],
+  [x + size, y],
+  [x + size, y + size],
+  [x, y + size],
+  [x, y]
+];
+
+// City-scale samples around one longitude/latitude for the GPU operations (degrees, EPSG:4326).
+const CITY = (east: number, north: number): number[] => [-87.65 + east, 41.88 + north];
+const CITY_SQUARE = (east: number, north: number, size: number) => [
+  CITY(east, north),
+  CITY(east + size, north),
+  CITY(east + size, north + size),
+  CITY(east, north + size),
+  CITY(east, north)
+];
+
+// Three by three street grid whose lines share vertices at every junction.
+const CITY_GRID_NETWORK = lines(
+  [0, 0.005, 0.01].flatMap((offset, index) => [
+    {
+      id: `row-${index}`,
+      coordinates: [CITY(0, offset), CITY(0.005, offset), CITY(0.01, offset)]
+    },
+    {
+      id: `column-${index}`,
+      coordinates: [CITY(offset, 0), CITY(offset, 0.005), CITY(offset, 0.01)]
+    }
+  ])
+);
+
+// Small planar network (coordinate units): a one-way loop, a spur only enterable from its tip,
+// a one-way feeder and a disconnected island, in meters-sized units.
+const SAMPLE_NETWORK = lines([
+  {
+    id: 'ab',
+    coordinates: [
+      [0, 0],
+      [10, 0]
+    ]
+  },
+  {
+    id: 'bc',
+    coordinates: [
+      [10, 0],
+      [30, 0]
+    ]
+  },
+  {
+    id: 'cd',
+    coordinates: [
+      [30, 0],
+      [30, 10]
+    ],
+    properties: {oneway: 'yes'}
+  },
+  {
+    id: 'de',
+    coordinates: [
+      [30, 10],
+      [0, 5]
+    ],
+    properties: {oneway: 'yes'}
+  },
+  {
+    id: 'ea',
+    coordinates: [
+      [0, 5],
+      [0, 0]
+    ]
+  },
+  {
+    id: 'island',
+    coordinates: [
+      [100, 100],
+      [110, 100]
+    ]
+  },
+  {
+    id: 'spur',
+    coordinates: [
+      [30, 10],
+      [30, 20]
+    ],
+    properties: {oneway: '-1'}
+  },
+  {
+    id: 'ga',
+    coordinates: [
+      [-10, 0],
+      [0, 0]
+    ],
+    properties: {oneway: 'yes'}
+  }
+]);
+
+/** Sample GeoJSON text per operation input name, small and planar-friendly. */
+export function getCatalogSampleInputs(operationId: string): Record<string, string> {
+  switch (operationId) {
+    case 'geometry-validity':
+      return {
+        polygons: polygons([
+          [SQUARE(0, 0, 10)],
+          [
+            [
+              [20, 0],
+              [30, 10],
+              [30, 0],
+              [20, 10],
+              [20, 0]
+            ]
+          ],
+          [SQUARE(40, 0, 10), SQUARE(60, 0, 2)]
+        ])
+      };
+    case 'geometry-measures':
+      return {features: polygons([[SQUARE(0, 0, 10), SQUARE(2, 2, 2).reverse()]])};
+    case 'geometry-point-buffer':
+      return {
+        points: points([
+          [-122.4, 37.8],
+          [-74, 40.7]
+        ])
+      };
+    case 'geometry-line-segmentize':
+      return {
+        lines: lines([
+          {
+            id: 'diagonal',
+            coordinates: [
+              [0, 0],
+              [10, 10]
+            ]
+          }
+        ])
+      };
+    case 'geometry-convex-clip':
+      return {
+        features: polygons([[SQUARE(0, 0, 10)], [SQUARE(50, 50, 1)]]),
+        clip: polygons([[SQUARE(5, 5, 10)]])
+      };
+    case 'network-build-graph':
+      return {lines: SAMPLE_NETWORK};
+    case 'network-shortest-path':
+      return {
+        lines: SAMPLE_NETWORK,
+        origin: points([[0, 0]]),
+        destinations: points([
+          [30, 10],
+          [100, 100],
+          [30, 20]
+        ])
+      };
+    case 'network-service-area':
+      return {lines: SAMPLE_NETWORK, origin: points([[0, 0]])};
+    case 'geometry-line-buffer':
+      return {
+        lines: lines([
+          {id: 'crossing-a', coordinates: [CITY(0, 0), CITY(0.01, 0.01)]},
+          {id: 'crossing-b', coordinates: [CITY(0, 0.01), CITY(0.01, 0)]}
+        ])
+      };
+    case 'geometry-polygon-buffer':
+      return {
+        polygons: polygons([
+          [CITY_SQUARE(0, 0, 0.01), CITY_SQUARE(0.004, 0.004, 0.002).reverse()],
+          [CITY_SQUARE(0.012, 0, 0.004)]
+        ])
+      };
+    case 'geometry-overlay-intersection':
+    case 'geometry-overlay-union':
+    case 'geometry-overlay-difference':
+      return {
+        left: polygons([[CITY_SQUARE(0, 0, 0.01)]]),
+        right: polygons([[CITY_SQUARE(0.005, 0.005, 0.01)]])
+      };
+    case 'geometry-topology-repair':
+      return {
+        polygons: polygons([
+          [[CITY(0, 0), CITY(0.01, 0.01), CITY(0.01, 0), CITY(0, 0.01), CITY(0, 0)]],
+          [CITY_SQUARE(0.02, 0, 0.01)]
+        ])
+      };
+    case 'network-crossing-noding':
+      return {
+        lines: lines([
+          {id: 'east-west', coordinates: [CITY(0, 0.005), CITY(0.01, 0.005)]},
+          {id: 'north-south', coordinates: [CITY(0.005, 0), CITY(0.005, 0.01)]},
+          {id: 'diagonal', coordinates: [CITY(0, 0), CITY(0.01, 0.01)]}
+        ])
+      };
+    case 'network-multi-origin-service-area':
+      return {
+        lines: CITY_GRID_NETWORK,
+        origins: points([CITY(0, 0), CITY(0.01, 0.01)])
+      };
+    case 'network-isochrone-polygons':
+      return {lines: CITY_GRID_NETWORK, origins: points([CITY(0.005, 0.005)])};
+    default:
+      return {};
+  }
+}

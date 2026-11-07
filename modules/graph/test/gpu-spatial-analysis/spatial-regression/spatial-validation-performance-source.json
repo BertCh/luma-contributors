@@ -1,0 +1,12 @@
+{
+  "revision": "e6375c5d683ee8a6289789f07ea8e24e7b87c21e",
+  "files": {
+    "modules/graph/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts": "3022d4d06bd68f931112ffe18ad678c9060f57c287c5a1271598127addd4a1b7",
+    "modules/graph/src/gpu-spatial-analysis/spatial-validation/gpu-spatial-cross-validated-ols.ts": "efef08fd4d886af19c03a83b9ec28da294f7142b2fe075796c7cbb2dbcbdf054",
+    "modules/graph/src/gpu-spatial-analysis/spatial-validation/gpu-spatial-cross-validation.ts": "e9dc63f9eabde2fb000585e060169e43713fbf1a1a98a9523fb91a734ca0232b",
+    "modules/graph/src/gpu-spatial-analysis/spatial-validation/index.ts": "cabc54817b5879f55a3f45c37785099f0fc033212b76e5cdcd419f360419dec6",
+    "modules/graph/src/gpu-spatial-analysis/spatial-validation/spatial-validation-descriptors.ts": "6a0f301b9c99e2c15b6e7647c8acb4dfd9af625b2bf74d9aec45dc686ad706d4",
+    "modules/graph/src/gpu-spatial-analysis/spatial-validation/spatial-validation-design.ts": "bccfbb17273637bad2eb48beb4800eda111d342fef58b8af8180b20be2815cb7",
+    "modules/graph/test/gpu-spatial-analysis/spatial-regression/spatial-validation-performance-benchmark.spec.ts": "edf712ea9de1fcd8c3066cdc6952476dcbed3bed254d594ec919ea51c3268b83"
+  }
+}

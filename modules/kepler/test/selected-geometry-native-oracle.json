@@ -1,0 +1,124 @@
+[
+  {
+    "input": {
+      "type": "FeatureCollection",
+      "bbox": [
+        0,
+        0,
+        9,
+        9
+      ],
+      "features": [
+        {
+          "type": "Feature",
+          "id": "old",
+          "bbox": [
+            1,
+            2,
+            1,
+            2
+          ],
+          "properties": {
+            "name": "first",
+            "zero": 0
+          },
+          "geometry": {
+            "type": "Point",
+            "coordinates": [
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        {
+          "type": "Feature",
+          "properties": {
+            "name": "second"
+          },
+          "geometry": {
+            "type": "Point",
+            "coordinates": [
+              8,
+              9
+            ]
+          }
+        }
+      ]
+    },
+    "expected": {
+      "properties": {
+        "name": "first",
+        "zero": 0
+      },
+      "type": "Feature",
+      "id": "old",
+      "bbox": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          1,
+          2,
+          3
+        ]
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [
+            0,
+            0
+          ],
+          [
+            1,
+            0
+          ],
+          [
+            0,
+            1
+          ],
+          [
+            0,
+            0
+          ]
+        ]
+      ]
+    },
+    "expected": {
+      "properties": {},
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              0
+            ]
+          ]
+        ]
+      }
+    }
+  }
+]

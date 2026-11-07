@@ -1,0 +1,57 @@
+{
+  "generator": "NumPy2.2.6 / SciPy1.15.3 cdist Gaussian covariance sum",
+  "reference": [
+    0.0,
+    0.0,
+    -0.1,
+    0.4,
+    0.0,
+    0.0,
+    0.0,
+    0.4,
+    0.1,
+    0.4,
+    0.4,
+    0.05,
+    5.0,
+    0.0,
+    9.0
+  ],
+  "comparison": [
+    0.0,
+    0.0,
+    0.15,
+    0.4,
+    0.0,
+    0.25,
+    0.0,
+    0.4,
+    0.35,
+    0.4,
+    0.4,
+    0.3,
+    5.0,
+    0.0,
+    9.25
+  ],
+  "radius": 0.8,
+  "halfDepth": 1.0,
+  "correlationLength": 0.5,
+  "referenceVariance": 0.04,
+  "comparisonVariance": 0.09,
+  "registrationVariance": 0.01,
+  "counts": [
+    4,
+    4
+  ],
+  "changes": [
+    0.25,
+    -0.38520756969508496,
+    0.885207569695085
+  ],
+  "roughness": [
+    0.08539125638299666,
+    0.08539125638299665,
+    0.635207569695085
+  ]
+}

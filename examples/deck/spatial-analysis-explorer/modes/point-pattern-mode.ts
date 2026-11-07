@@ -1,0 +1,1734 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+/**
+ * Point-pattern analysis of New York points of interest by category. The graphs share the
+ * POI positions:
+ *
+ * - A distribution graph: `GPUGeographicDistribution` per category (mean and median centres,
+ *   standard distance circles, standard deviational ellipses), optionally weighted by nearby taxi
+ *   activity. The ellipse and circle rings it writes are turned into segments on the GPU and drawn
+ *   directly.
+ * - A pattern graph over one selected category (or all): `GPURipley` (L(r) - r with edge
+ *   correction), `GPUVariogram` (directional semivariogram of local taxi activity, CPU model fit on
+ *   the readback), `GPUSpatialCorrelogram` (Moran's I by distance band) and `GPUPointPatternIndices`
+ *   (Clark-Evans and quadrat variance-to-mean ratio).
+ *
+ * Polygon and rectangle pattern variants compile once each, lazily. Window bounds, distance,
+ * corrections, azimuth, category and weighting are buffer writes. Each variant owns one persistent
+ * window preparation, invalidated when its geometry changes. Graphs encode only on input changes;
+ * the existing readback ring carries statistics and the GPU window summary to the charts/readouts.
+ */
+
+import {scheduleReadback} from '../readback-scheduling';
+import type {Layer} from '@deck.gl/core';
+import {
+  createTransientView,
+  GPUCommandGraph,
+  GPUReadbackRing
+} from '@luma-contributors/graph/gpu-core';
+import {
+  fitVariogramModel,
+  evaluateVariogramModel,
+  getGPUPointPatternIndicesParameterValues,
+  getGPURipleyDistanceFunctionsParameterValues,
+  getGPURipleyParameterValues,
+  getGPUSpatialCorrelogramParameterValues,
+  getGPUVariogramParameterValues,
+  GPU_CLARK_EVANS_LENGTH,
+  GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
+  GPU_QUADRAT_STATISTICS_LENGTH,
+  GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,
+  GPU_RIPLEY_PARAMETER_LENGTH,
+  GPU_SPATIAL_CORRELOGRAM_NO_BAND,
+  GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
+  GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH,
+  GPU_VARIOGRAM_PARAMETER_LENGTH,
+  GPU_VARIOGRAM_STATISTICS_LENGTH,
+  GPUPointPatternIndices,
+  GPURipley,
+  GPURipleyDistanceFunctions,
+  GPUSpatialCorrelogram,
+  GPUVariogram,
+  type GPURipleyDistanceEdgeCorrection,
+  type GPURipleyEdgeCorrection,
+  type GPUSpatialCorrelogramVarianceAssumption,
+  type VariogramModel,
+  type VariogramModelType
+} from '@luma-contributors/graph/gpu-dataframe';
+import {
+  getGPUGeographicDistributionParameterValues,
+  GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
+  GPUGeographicDistribution,
+  GPURectangleClip,
+  GPUStudyWindowPreparation,
+  GPU_STUDY_WINDOW_SUMMARY_LENGTH
+} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
+import {NEW_YORK_LAND} from '../new-york-land';
+import {
+  SpatialAnalysisPointLayer,
+  SpatialAnalysisSegmentLayer,
+  type SpatialAnalysisColor
+} from '../spatial-analysis-layers';
+import type {
+  SpatialAnalysisModeDefinition,
+  SpatialAnalysisModeInstance
+} from '../spatial-analysis-mode';
+import {
+  formatCount,
+  getViewportMetricBounds,
+  SpatialAnalysisResources
+} from '../spatial-analysis-resources';
+import {addKernelPass} from './mode-kernels';
+import {MiniChart} from './point-pattern-chart';
+import {formatCompiledGraphTiming, measureCompiledGraph} from './vector-timing';
+
+import {toRadians} from '@math.gl/core';
+
+/** Number of categories analyzed (the most frequent ones). */
+const GROUP_COUNT = 6;
+/** Neighbor-search lattice of the pair statistics (compile-time; speed only). */
+const GRID_SIZE: readonly [number, number] = [64, 64];
+const RIPLEY_RADII = 30;
+/** Reference lattice of the empty-space function F (compile-time). */
+const REFERENCE_GRID: readonly [number, number] = [47, 47];
+const LAG_COUNT = 20;
+const DIRECTION_COUNT = 4;
+const BAND_COUNT = 20;
+const QUADRAT_GRID: readonly [number, number] = [12, 12];
+const RING_VERTICES = 64;
+/** Cell size in meters used to turn nearby trip vertices into a POI activity value. */
+const ACTIVITY_CELL_METERS = 150;
+
+const HIDDEN: SpatialAnalysisColor = [0, 0, 0, 0];
+const GROUP_COLORS: readonly (readonly [number, number, number])[] = [
+  [78, 201, 255],
+  [255, 148, 72],
+  [189, 122, 255],
+  [87, 235, 168],
+  [255, 105, 168],
+  [245, 220, 87]
+];
+
+// Float32 word offsets of the readback summary.
+type SummaryLayoutKey =
+  | 'windowSummary'
+  | 'rippleL'
+  | 'ripleyG'
+  | 'ripleyF'
+  | 'ripleyJ'
+  | 'semivariances'
+  | 'variogramPairs'
+  | 'variogramDistances'
+  | 'variogramStatistics'
+  | 'variogramOverflow'
+  | 'correlogramOverflow'
+  | 'moransI'
+  | 'zScores'
+  | 'bandPairs'
+  | 'peakBands'
+  | 'correlogramStatistics'
+  | 'clarkEvans'
+  | 'quadrat'
+  | 'counts'
+  | 'meanCenters'
+  | 'medianCenters'
+  | 'standardDistances'
+  | 'ellipses';
+
+const SUMMARY_LAYOUT = (() => {
+  const layout = {} as Record<SummaryLayoutKey | 'words', number>;
+  let offset = 0;
+  const add = (name: SummaryLayoutKey, words: number) => {
+    layout[name] = offset;
+    offset += words;
+  };
+  add('windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH);
+  add('rippleL', RIPLEY_RADII);
+  add('ripleyG', RIPLEY_RADII);
+  add('ripleyF', RIPLEY_RADII);
+  add('ripleyJ', RIPLEY_RADII);
+  add('semivariances', LAG_COUNT * DIRECTION_COUNT);
+  add('variogramPairs', LAG_COUNT * DIRECTION_COUNT);
+  add('variogramDistances', LAG_COUNT * DIRECTION_COUNT);
+  add('variogramStatistics', GPU_VARIOGRAM_STATISTICS_LENGTH);
+  add('variogramOverflow', 1);
+  add('correlogramOverflow', 1);
+  add('moransI', BAND_COUNT);
+  add('zScores', BAND_COUNT);
+  add('bandPairs', BAND_COUNT);
+  add('peakBands', 2);
+  add('correlogramStatistics', GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH);
+  add('clarkEvans', GPU_CLARK_EVANS_LENGTH);
+  add('quadrat', GPU_QUADRAT_STATISTICS_LENGTH);
+  add('counts', GROUP_COUNT);
+  add('meanCenters', GROUP_COUNT * 2);
+  add('medianCenters', GROUP_COUNT * 2);
+  add('standardDistances', GROUP_COUNT);
+  add('ellipses', GROUP_COUNT * 3);
+  layout.words = offset;
+  return layout;
+})();
+
+type WindowChoice = 'land' | 'extent' | 'view';
+type CategoryChoice = 'all' | `${number}`;
+type Bounds = [number, number, number, number];
+
+/** Explores point-pattern statistics in the New York AEQD frame. */
+export const pointPatternMode: SpatialAnalysisModeDefinition = {
+  id: 'point-pattern',
+  title: 'Pattern',
+  contributors: [
+    'GPUVariogram',
+    'GPUSpatialCorrelogram',
+    'GPURipley',
+    'GPURipleyDistanceFunctions',
+    'GPUPointPatternIndices',
+    'GPUGeographicDistribution',
+    'GPURectangleClip',
+    'GPUStudyWindowPreparation'
+  ],
+  description:
+    'Where do the points of interest of each category sit, and how clustered are they? Mean ' +
+    'centres, standard distances and deviational ellipses per category; Ripley L(r) - r and G, F and J, ' +
+    'Clark-Evans, quadrats, a semivariogram and a correlogram for the selected category, over a ' +
+    'window that can follow the map. Switch the edge correction of G, F and J between border, ' +
+    'Kaplan-Meier, Hanisch and none to see how the estimators differ near the window edge.',
+  initialViewState: {longitude: -73.985, latitude: 40.735, zoom: 12.2},
+
+  async create(context) {
+    const [pois, trips] = await Promise.all([
+      context.data.getNewYorkPointsOfInterest(),
+      context.data.getNewYorkTrips()
+    ]);
+    context.signal.throwIfAborted();
+    const {device} = context;
+    const resources = new SpatialAnalysisResources(device, 'point-pattern');
+    const pointCount = pois.positions.length / 2;
+    const projection = pois.frame;
+
+    // Top categories by count; every other category maps to a group id that is excluded.
+    const categoryTotals = new Map<number, number>();
+    for (const category of pois.categories) {
+      categoryTotals.set(category, (categoryTotals.get(category) ?? 0) + 1);
+    }
+    const topCategories = [...categoryTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, GROUP_COUNT)
+      .map(entry => entry[0]);
+    const groupOfCategory = new Map(topCategories.map((category, group) => [category, group]));
+    const groupIds = new Uint32Array(pointCount);
+    const groupTotals = new Array<number>(GROUP_COUNT).fill(0);
+    for (let index = 0; index < pointCount; index++) {
+      const group = groupOfCategory.get(pois.categories[index]) ?? GROUP_COUNT;
+      groupIds[index] = group;
+      if (group < GROUP_COUNT) groupTotals[group]++;
+    }
+    const groupNames = topCategories.map(category => pois.categoryNames[category]);
+
+    // POI activity: trip vertices in the POI's cell (sqrt keeps the variogram well scaled).
+    const activityCells = new Map<number, number>();
+    const getCellKey = (x: number, y: number) =>
+      (Math.floor(x / ACTIVITY_CELL_METERS) + 32768) * 65536 +
+      (Math.floor(y / ACTIVITY_CELL_METERS) + 32768);
+    for (let index = 0; index < trips.vertexPositions.length; index += 2) {
+      const key = getCellKey(trips.vertexPositions[index], trips.vertexPositions[index + 1]);
+      activityCells.set(key, (activityCells.get(key) ?? 0) + 1);
+    }
+    const activity = new Float32Array(pointCount);
+    for (let index = 0; index < pointCount; index++) {
+      activity[index] = Math.sqrt(
+        activityCells.get(getCellKey(pois.positions[index * 2], pois.positions[index * 2 + 1])) ?? 0
+      );
+    }
+    const unitWeights = new Float32Array(pointCount).fill(1);
+    const activityWeights = Float32Array.from(activity, value => 1 + value);
+
+    let minimumX = Infinity;
+    let minimumY = Infinity;
+    let maximumX = -Infinity;
+    let maximumY = -Infinity;
+    for (let index = 0; index < pointCount; index++) {
+      minimumX = Math.min(minimumX, pois.positions[index * 2]);
+      maximumX = Math.max(maximumX, pois.positions[index * 2]);
+      minimumY = Math.min(minimumY, pois.positions[index * 2 + 1]);
+      maximumY = Math.max(maximumY, pois.positions[index * 2 + 1]);
+    }
+    const extentBounds: Bounds = [minimumX - 5, minimumY - 5, maximumX + 5, maximumY + 5];
+
+    // Controls state.
+    const hasLandWindow = pois.source === 'remote';
+    let windowChoice: WindowChoice = hasLandWindow ? 'land' : 'extent';
+    const usesPolygonWindow = () => hasLandWindow && windowChoice !== 'extent';
+    let maximumDistance = 800;
+    let edgeCorrection: GPURipleyEdgeCorrection = 'isotropic';
+    let distanceEdgeCorrection: GPURipleyDistanceEdgeCorrection = 'border';
+    let varianceAssumption: GPUSpatialCorrelogramVarianceAssumption = 'randomization';
+    let azimuthDegrees = 60;
+    let directionChoice = 'all';
+    let modelType: VariogramModelType = 'spherical';
+    let categoryChoice: CategoryChoice = 'all';
+    let standardDeviations = 1;
+    let ellipseConvention: 'arcgis' | 'standard' = 'arcgis';
+    let weighted = false;
+    let inspectedGroup = 0;
+    const visibleGroups = new Array<boolean>(GROUP_COUNT).fill(true);
+    let showEllipses = true;
+    let showCircles = false;
+    let showMedian = false;
+    let showPoints = true;
+    let currentBounds: Bounds = extentBounds;
+    let patternDirty = true;
+    let distributionDirty = true;
+    let needsReadback = true;
+    let readbackPending = false;
+    let destroyed = false;
+    let inputRevision = 0;
+    let guardDistance = 800 / RIPLEY_RADII;
+    let lastSummaryGuardDistance = guardDistance;
+    let lastSummaryRevision = -1;
+    let lastViewSignature = '';
+    let lastViewport: Parameters<SpatialAnalysisModeInstance['encode']>[1]['viewport'] | null =
+      null;
+    let lastSummary: Float32Array | null = null;
+    let lastSummaryWords: Uint32Array | null = null;
+
+    // Shared inputs.
+    const positionsBuffer = resources.createBuffer('positions', pois.positions);
+    const valuesBuffer = resources.createBuffer('activity', activity);
+    const groupIdsBuffer = resources.createBuffer('group-ids', groupIds);
+    const weightsBuffer = resources.createBuffer('weights', unitWeights);
+    const maskBuffer = resources.createBuffer('mask', new Uint32Array(pointCount).fill(1));
+    const groupIndexBuffer = resources.createBuffer(
+      'group-index',
+      Uint32Array.from({length: GROUP_COUNT}, (_, group) => group)
+    );
+    const groupVisibleBuffer = resources.createBuffer(
+      'group-visible',
+      new Uint32Array(GROUP_COUNT).fill(1)
+    );
+
+    const parameterBuffers = {
+      ripley: resources.createParameterBuffer('ripley', 'float32', GPU_RIPLEY_PARAMETER_LENGTH),
+      ripleyDistance: resources.createParameterBuffer(
+        'ripley-distance',
+        'float32',
+        GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH
+      ),
+      variogram: resources.createParameterBuffer(
+        'variogram',
+        'float32',
+        GPU_VARIOGRAM_PARAMETER_LENGTH
+      ),
+      correlogram: resources.createParameterBuffer(
+        'correlogram',
+        'float32',
+        GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH
+      ),
+      indices: resources.createParameterBuffer(
+        'indices',
+        'float32',
+        GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH
+      ),
+      distribution: resources.createParameterBuffer(
+        'distribution',
+        'float32',
+        GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH
+      )
+    };
+
+    // Data preparation only: project the boundary once into exactly the POI analysis frame.
+    const landPositions = new Float32Array(hasLandWindow ? NEW_YORK_LAND.lngLat.length : 0);
+    for (let index = 0; index < landPositions.length; index += 2) {
+      landPositions.set(
+        projection.project(NEW_YORK_LAND.lngLat[index], NEW_YORK_LAND.lngLat[index + 1]),
+        index
+      );
+    }
+    const landPositionsBuffer = resources.createBuffer('land-positions', landPositions);
+    const landRingOffsetsBuffer = resources.createBuffer(
+      'land-rings',
+      Uint32Array.from(NEW_YORK_LAND.ringOffsets)
+    );
+    const landPolygonOffsetsBuffer = resources.createBuffer(
+      'land-polygons',
+      Uint32Array.from(NEW_YORK_LAND.polygonOffsets)
+    );
+    const landFeatureOffsetsBuffer = resources.createBuffer(
+      'land-feature',
+      Uint32Array.of(0, NEW_YORK_LAND.polygonOffsets.length - 1)
+    );
+    const rectanglePositionsBuffer = resources.createBuffer('rectangle-positions', 8 * 4);
+    const rectangleRingOffsetsBuffer = resources.createBuffer(
+      'rectangle-rings',
+      Uint32Array.of(0, 4)
+    );
+    const rectanglePolygonOffsetsBuffer = resources.createBuffer(
+      'rectangle-polygons',
+      Uint32Array.of(0, 1)
+    );
+    const rectangleFeatureOffsetsBuffer = resources.createBuffer(
+      'rectangle-feature',
+      Uint32Array.of(0, 1)
+    );
+    const clipParameters = resources.createParameterBuffer('clip-bounds', 'float32', 4);
+    // Four clip stages can each double the vertex count. Empty ring slots remain in the output.
+    const windowVertexCapacity = Math.max(4, (landPositions.length / 2) * 16);
+    const patternSwap = resources.track(new GraphSwap());
+
+    // Pattern outputs.
+    const outputs = {
+      windowSummary: resources.createBuffer('window-summary', GPU_STUDY_WINDOW_SUMMARY_LENGTH * 4),
+      windowOutline: resources.createBuffer('window-outline', windowVertexCapacity * 16),
+      nearestDistances: resources.createBuffer('nearest-distances', pointCount * 4),
+      displayGroups: resources.createBuffer('display-groups', pointCount * 4),
+      quadratAreas: resources.createBuffer('quadrat-areas', QUADRAT_GRID[0] * QUADRAT_GRID[1] * 4),
+      lMinusR: resources.createBuffer('l-minus-r', RIPLEY_RADII * 4),
+      ripleyG: resources.createBuffer('ripley-g', RIPLEY_RADII * 4),
+      ripleyF: resources.createBuffer('ripley-f', RIPLEY_RADII * 4),
+      ripleyJ: resources.createBuffer('ripley-j', RIPLEY_RADII * 4),
+      semivariances: resources.createBuffer('semivariances', LAG_COUNT * DIRECTION_COUNT * 4),
+      variogramPairs: resources.createBuffer('variogram-pairs', LAG_COUNT * DIRECTION_COUNT * 4),
+      variogramDistances: resources.createBuffer(
+        'variogram-distances',
+        LAG_COUNT * DIRECTION_COUNT * 4
+      ),
+      variogramStatistics: resources.createBuffer(
+        'variogram-statistics',
+        GPU_VARIOGRAM_STATISTICS_LENGTH * 4
+      ),
+      variogramOverflow: resources.createBuffer('variogram-overflow', 4),
+      correlogramOverflow: resources.createBuffer('correlogram-overflow', 4),
+      moransI: resources.createBuffer('morans-i', BAND_COUNT * 4),
+      zScores: resources.createBuffer('z-scores', BAND_COUNT * 4),
+      bandPairs: resources.createBuffer('band-pairs', BAND_COUNT * 4),
+      peakBands: resources.createBuffer('peak-bands', 2 * 4),
+      correlogramStatistics: resources.createBuffer(
+        'correlogram-statistics',
+        GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH * 4
+      ),
+      clarkEvans: resources.createBuffer('clark-evans', GPU_CLARK_EVANS_LENGTH * 4),
+      quadrat: resources.createBuffer('quadrat', GPU_QUADRAT_STATISTICS_LENGTH * 4),
+      counts: resources.createBuffer('counts', GROUP_COUNT * 4),
+      meanCenters: resources.createBuffer('mean-centers', GROUP_COUNT * 8),
+      medianCenters: resources.createBuffer('median-centers', GROUP_COUNT * 8),
+      standardDistances: resources.createBuffer('standard-distances', GROUP_COUNT * 4),
+      ellipses: resources.createBuffer('ellipses', GROUP_COUNT * 12),
+      ellipseVertices: resources.createBuffer('ellipse-vertices', GROUP_COUNT * RING_VERTICES * 8),
+      circleVertices: resources.createBuffer('circle-vertices', GROUP_COUNT * RING_VERTICES * 8),
+      ellipseSegments: resources.createBuffer('ellipse-segments', GROUP_COUNT * RING_VERTICES * 16),
+      circleSegments: resources.createBuffer('circle-segments', GROUP_COUNT * RING_VERTICES * 16)
+    };
+    const readbackRing = resources.track(
+      new GPUReadbackRing(device, {
+        id: 'point-pattern-summary',
+        byteLength: SUMMARY_LAYOUT['words'] * 4
+      })
+    );
+
+    // Both cached variants share imported outputs; only the active variant is ever encoded.
+    async function buildPatternVariant(polygon: boolean) {
+      const patternGraph = new GPUCommandGraph<void>(device, {
+        id: polygon ? 'pattern-land' : 'pattern-rectangle'
+      });
+      const geometry = polygon
+        ? {
+            positions: importGraphBuffer(
+              patternGraph,
+              'land-input-positions',
+              landPositionsBuffer,
+              'float32x2'
+            ),
+            ringOffsets: importGraphBuffer(
+              patternGraph,
+              'land-input-rings',
+              landRingOffsetsBuffer,
+              'uint32'
+            ),
+            polygonOffsets: importGraphBuffer(
+              patternGraph,
+              'land-input-polygons',
+              landPolygonOffsetsBuffer,
+              'uint32'
+            ),
+            featureOffsets: importGraphBuffer(
+              patternGraph,
+              'land-input-feature',
+              landFeatureOffsetsBuffer,
+              'uint32'
+            )
+          }
+        : {
+            positions: importGraphBuffer(
+              patternGraph,
+              'rectangle-input-positions',
+              rectanglePositionsBuffer,
+              'float32x2'
+            ),
+            ringOffsets: importGraphBuffer(
+              patternGraph,
+              'rectangle-input-rings',
+              rectangleRingOffsetsBuffer,
+              'uint32'
+            ),
+            polygonOffsets: importGraphBuffer(
+              patternGraph,
+              'rectangle-input-polygons',
+              rectanglePolygonOffsetsBuffer,
+              'uint32'
+            ),
+            featureOffsets: importGraphBuffer(
+              patternGraph,
+              'rectangle-input-feature',
+              rectangleFeatureOffsetsBuffer,
+              'uint32'
+            )
+          };
+      if (polygon) {
+        const positions = createTransientView(
+          patternGraph,
+          'clipped-positions',
+          'float32x2',
+          windowVertexCapacity
+        );
+        const ringOffsets = createTransientView(
+          patternGraph,
+          'clipped-rings',
+          'uint32',
+          geometry.ringOffsets.length
+        );
+        patternGraph.add(
+          new GPURectangleClip({
+            id: 'clip-land',
+            geometryType: 'polygons',
+            ...geometry,
+            spatialContext: projection.spatialContext,
+            parameters: clipParameters.importToGraph(patternGraph),
+            output: {
+              positions,
+              lineOffsets: ringOffsets,
+              status: {
+                count: createTransientView(patternGraph, 'clip-count', 'uint32', 1),
+                overflow: createTransientView(patternGraph, 'clip-overflow', 'uint32', 1)
+              }
+            }
+          })
+        );
+        // Feed the clip's offsets and positions directly to the persistent preparation.
+        geometry.positions = positions;
+        geometry.ringOffsets = ringOffsets;
+      }
+      const preparation = resources.track(
+        new GPUStudyWindowPreparation({
+          id: 'study-window',
+          ...geometry,
+          spatialContext: projection.spatialContext,
+          output: {
+            summary: importGraphBuffer(
+              patternGraph,
+              'window-summary',
+              outputs.windowSummary,
+              'float32'
+            )
+          }
+        })
+      );
+      patternGraph.add(preparation);
+      const studyWindow = polygon ? preparation : ('rectangle' as const);
+      const positions = importGraphBuffer(
+        patternGraph,
+        'positions',
+        positionsBuffer,
+        'float32x2',
+        pointCount
+      );
+      const values = importGraphBuffer(patternGraph, 'values', valuesBuffer, 'float32', pointCount);
+      const mask = importGraphBuffer(patternGraph, 'mask', maskBuffer, 'uint32', pointCount);
+      const view = <Format extends 'float32' | 'uint32'>(
+        name: keyof typeof outputs,
+        format: Format,
+        length: number
+      ) => importGraphBuffer(patternGraph, name, outputs[name], format, length);
+      patternGraph.add(
+        new GPURipley({
+          spatialContext: pois.frame.spatialContext,
+          studyWindow,
+          id: 'ripley',
+          positions,
+          mask,
+          parameters: parameterBuffers.ripley.importToGraph(patternGraph),
+          gridSize: GRID_SIZE,
+          radiusCount: RIPLEY_RADII,
+          output: {
+            k: importGraphBuffer(
+              patternGraph,
+              'ripley-k',
+              resources.createBuffer('ripley-k', RIPLEY_RADII * 4),
+              'float32',
+              RIPLEY_RADII
+            ),
+            lMinusR: view('lMinusR', 'float32', RIPLEY_RADII)
+          }
+        })
+      );
+      patternGraph.add(
+        new GPURipleyDistanceFunctions({
+          spatialContext: pois.frame.spatialContext,
+          studyWindow,
+          id: 'ripley-distance',
+          positions,
+          mask,
+          parameters: parameterBuffers.ripleyDistance.importToGraph(patternGraph),
+          gridSize: GRID_SIZE,
+          referenceGrid: REFERENCE_GRID,
+          radiusCount: RIPLEY_RADII,
+          output: {
+            g: view('ripleyG', 'float32', RIPLEY_RADII),
+            f: view('ripleyF', 'float32', RIPLEY_RADII),
+            j: view('ripleyJ', 'float32', RIPLEY_RADII)
+          }
+        })
+      );
+      patternGraph.add(
+        new GPUVariogram({
+          spatialContext: pois.frame.spatialContext,
+          studyWindow,
+          id: 'variogram',
+          positions,
+          values,
+          mask,
+          parameters: parameterBuffers.variogram.importToGraph(patternGraph),
+          gridSize: GRID_SIZE,
+          lagCount: LAG_COUNT,
+          directionCount: DIRECTION_COUNT,
+          output: {
+            semivariances: view('semivariances', 'float32', LAG_COUNT * DIRECTION_COUNT),
+            pairCounts: view('variogramPairs', 'uint32', LAG_COUNT * DIRECTION_COUNT),
+            meanDistances: view('variogramDistances', 'float32', LAG_COUNT * DIRECTION_COUNT),
+            statistics: view('variogramStatistics', 'float32', GPU_VARIOGRAM_STATISTICS_LENGTH),
+            status: {overflow: view('variogramOverflow', 'uint32', 1)}
+          }
+        })
+      );
+      patternGraph.add(
+        new GPUSpatialCorrelogram({
+          spatialContext: pois.frame.spatialContext,
+          studyWindow,
+          id: 'correlogram',
+          positions,
+          values,
+          mask,
+          parameters: parameterBuffers.correlogram.importToGraph(patternGraph),
+          gridSize: GRID_SIZE,
+          bandCount: BAND_COUNT,
+          bandMode: 'cumulative',
+          output: {
+            moransI: view('moransI', 'float32', BAND_COUNT),
+            zScores: view('zScores', 'float32', BAND_COUNT),
+            pairCounts: view('bandPairs', 'uint32', BAND_COUNT),
+            status: {overflow: view('correlogramOverflow', 'uint32', 1)},
+            peakBands: view('peakBands', 'uint32', 2),
+            statistics: view(
+              'correlogramStatistics',
+              'float32',
+              GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
+            )
+          }
+        })
+      );
+      const nearestDistances = view('nearestDistances', 'float32', pointCount);
+      patternGraph.add(
+        new GPUPointPatternIndices({
+          spatialContext: pois.frame.spatialContext,
+          studyWindow,
+          id: 'indices',
+          positions,
+          mask,
+          parameters: parameterBuffers.indices.importToGraph(patternGraph),
+          gridSize: GRID_SIZE,
+          quadratGrid: QUADRAT_GRID,
+          output: {
+            nearestNeighborDistances: nearestDistances,
+            quadratAreas: view('quadratAreas', 'float32', QUADRAT_GRID[0] * QUADRAT_GRID[1]),
+            clarkEvans: view('clarkEvans', 'float32', GPU_CLARK_EVANS_LENGTH),
+            quadratStatistics: view('quadrat', 'float32', GPU_QUADRAT_STATISTICS_LENGTH),
+            quadratCounts: importGraphBuffer(
+              patternGraph,
+              'quadrat-counts',
+              resources.createBuffer('quadrat-counts', QUADRAT_GRID[0] * QUADRAT_GRID[1] * 4),
+              'uint32',
+              QUADRAT_GRID[0] * QUADRAT_GRID[1]
+            )
+          }
+        })
+      );
+      const edges = preparation.getViews(patternGraph).edges;
+      addKernelPass(patternGraph, {
+        id: 'window-outline',
+        invocationCount: edges.length,
+        bindings: [
+          {name: 'edges', view: edges, type: 'f32', access: 'read'},
+          {
+            name: 'outline',
+            view: view('windowOutline', 'float32', edges.length),
+            type: 'f32',
+            access: 'read_write'
+          }
+        ],
+        body: 'outline[outlineOffset + index] = edges[edgesOffset + index];'
+      });
+      addKernelPass(patternGraph, {
+        id: 'point-display-groups',
+        invocationCount: pointCount,
+        bindings: [
+          {
+            name: 'nearest',
+            view: nearestDistances,
+            type: 'f32',
+            access: 'read'
+          },
+          {
+            name: 'groups',
+            view: importGraphBuffer(patternGraph, 'display-input-groups', groupIdsBuffer, 'uint32'),
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'display',
+            view: view('displayGroups', 'uint32', pointCount),
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        // Excluded rows have NaN nearest distances. Their category is drawn only in the dim layer.
+        body: `let finite = (bitcast<u32>(nearest[nearestOffset + index]) & 0x7f800000u) != 0x7f800000u;
+          display[displayOffset + index] = select(0xffffffffu, groups[groupsOffset + index], finite);`
+      });
+      const compiled = resources.track(await patternGraph.compileAsync());
+      return {compiled, preparation, polygon, edgeCapacity: edges.length / 4};
+    }
+    type PatternVariant = Awaited<ReturnType<typeof buildPatternVariant>>;
+    const patternVariants = new Map<boolean, PatternVariant>();
+    async function getPatternVariant(polygon: boolean): Promise<PatternVariant> {
+      const existing = patternVariants.get(polygon);
+      if (existing) return existing;
+      const variant = await buildPatternVariant(polygon);
+      patternVariants.set(polygon, variant);
+      return variant;
+    }
+    let activePattern = await getPatternVariant(usesPolygonWindow());
+    context.signal.throwIfAborted();
+
+    // The distribution graph plus the passes that turn its rings into drawable segments.
+    const distributionGraph = new GPUCommandGraph<void>(device, {id: 'distribution'});
+    {
+      const positions = importGraphBuffer(
+        distributionGraph,
+        'positions',
+        positionsBuffer,
+        'float32x2',
+        pointCount
+      );
+      const view = <Format extends 'float32' | 'uint32' | 'float32x2'>(
+        name: keyof typeof outputs,
+        format: Format,
+        length: number
+      ) => importGraphBuffer(distributionGraph, name, outputs[name], format, length);
+      const ellipseVertices = view('ellipseVertices', 'float32x2', GROUP_COUNT * RING_VERTICES);
+      const circleVertices = view('circleVertices', 'float32x2', GROUP_COUNT * RING_VERTICES);
+      distributionGraph.add(
+        new GPUGeographicDistribution({
+          spatialContext: pois.frame.spatialContext,
+          id: 'distribution',
+          positions,
+          weights: importGraphBuffer(
+            distributionGraph,
+            'weights',
+            weightsBuffer,
+            'float32',
+            pointCount
+          ),
+          groupIds: importGraphBuffer(
+            distributionGraph,
+            'group-ids',
+            groupIdsBuffer,
+            'uint32',
+            pointCount
+          ),
+          groupCount: GROUP_COUNT,
+          polygonVertexCount: RING_VERTICES,
+          parameters: parameterBuffers.distribution.importToGraph(distributionGraph),
+          output: {
+            counts: view('counts', 'uint32', GROUP_COUNT),
+            meanCenters: view('meanCenters', 'float32x2', GROUP_COUNT),
+            medianCenters: view('medianCenters', 'float32x2', GROUP_COUNT),
+            standardDistances: view('standardDistances', 'float32', GROUP_COUNT),
+            ellipses: view('ellipses', 'float32', GROUP_COUNT * 3),
+            ellipseVertices,
+            circleVertices
+          }
+        })
+      );
+      for (const [name, vertices, segments] of [
+        ['ellipse', ellipseVertices, outputs.ellipseSegments],
+        ['circle', circleVertices, outputs.circleSegments]
+      ] as const) {
+        addKernelPass(distributionGraph, {
+          id: `${name}-segments`,
+          invocationCount: GROUP_COUNT * RING_VERTICES,
+          bindings: [
+            {name: 'vertices', view: vertices, type: 'f32', access: 'read'},
+            {
+              name: 'segments',
+              view: importGraphBuffer(
+                distributionGraph,
+                `${name}-segments`,
+                segments,
+                'float32',
+                GROUP_COUNT * RING_VERTICES * 4
+              ),
+              type: 'f32',
+              access: 'read_write'
+            }
+          ],
+          declarations: `const RING: u32 = ${RING_VERTICES}u;`,
+          body: /* wgsl */ `
+  let ring = index / RING;
+  let vertex = index % RING;
+  let next = ring * RING + (vertex + 1u) % RING;
+  let current = index;
+  segments[segmentsOffset + index * 4u] = vertices[verticesOffset + current * 2u];
+  segments[segmentsOffset + index * 4u + 1u] = vertices[verticesOffset + current * 2u + 1u];
+  segments[segmentsOffset + index * 4u + 2u] = vertices[verticesOffset + next * 2u];
+  segments[segmentsOffset + index * 4u + 3u] = vertices[verticesOffset + next * 2u + 1u];`
+        });
+      }
+    }
+    const distributionCompiled = resources.track(await distributionGraph.compileAsync());
+
+    const writePatternParameters = () => {
+      patternBoundsGuard(currentBounds);
+      const bounds = usesPolygonWindow() ? 'study-window' : currentBounds;
+      inputRevision++;
+      parameterBuffers.ripley.write(
+        getGPURipleyParameterValues({bounds, maximumDistance, edgeCorrection})
+      );
+      parameterBuffers.ripleyDistance.write(
+        getGPURipleyDistanceFunctionsParameterValues({
+          bounds,
+          maximumDistance,
+          edgeCorrection: distanceEdgeCorrection
+        })
+      );
+      parameterBuffers.variogram.write(
+        getGPUVariogramParameterValues({
+          bounds,
+          maximumDistance,
+          azimuthOffset: toRadians(azimuthDegrees)
+        })
+      );
+      parameterBuffers.correlogram.write(
+        getGPUSpatialCorrelogramParameterValues({bounds, maximumDistance, varianceAssumption})
+      );
+      parameterBuffers.indices.write(
+        getGPUPointPatternIndicesParameterValues({
+          bounds,
+          maximumDistance,
+          clarkEvansCorrection: 'guard',
+          guardDistance
+        })
+      );
+      patternDirty = true;
+      needsReadback = true;
+    };
+    const patternBoundsGuard = (bounds: Bounds) => {
+      if (!(bounds[2] > bounds[0] && bounds[3] > bounds[1])) {
+        throw new Error('Pattern window has no area');
+      }
+    };
+    const writeWindowGeometry = () => {
+      clipParameters.write(Float32Array.from(currentBounds));
+      const [minimumX, minimumY, maximumX, maximumY] = currentBounds;
+      rectanglePositionsBuffer.write(
+        Float32Array.of(
+          minimumX,
+          minimumY,
+          maximumX,
+          minimumY,
+          maximumX,
+          maximumY,
+          minimumX,
+          maximumY
+        )
+      );
+      for (const variant of patternVariants.values()) variant.preparation.invalidate();
+      writePatternParameters();
+    };
+    const writeDistributionParameters = () => {
+      inputRevision++;
+      parameterBuffers.distribution.write(
+        getGPUGeographicDistributionParameterValues({standardDeviations, ellipseConvention})
+      );
+      distributionDirty = true;
+      needsReadback = true;
+    };
+    const writeMask = () => {
+      inputRevision++;
+      const mask = new Uint32Array(pointCount);
+      const selected = categoryChoice === 'all' ? -1 : Number(categoryChoice);
+      for (let index = 0; index < pointCount; index++) {
+        mask[index] = selected < 0 || groupIds[index] === selected ? 1 : 0;
+      }
+      maskBuffer.write(mask);
+      patternDirty = true;
+      needsReadback = true;
+    };
+
+    // ---- Controls ----
+    context.controls.addSelect<CategoryChoice>({
+      label: 'Pattern analysis: category (mask buffer write)',
+      options: [
+        {value: 'all', label: `All points of interest (${formatCount(pointCount)})`},
+        ...groupNames.map((name, group) => ({
+          value: `${group}` as CategoryChoice,
+          label: `${name} (${formatCount(groupTotals[group])})`
+        }))
+      ],
+      value: categoryChoice,
+      onChange: value => {
+        categoryChoice = value;
+        writeMask();
+      }
+    });
+    context.controls.addSelect<WindowChoice>({
+      label: 'Analysis window',
+      options: [
+        ...(hasLandWindow
+          ? [{value: 'land' as const, label: 'New York land inside the POI extent'}]
+          : []),
+        {
+          value: 'extent',
+          label: hasLandWindow ? 'Extent rectangle (includes water)' : 'Data extent rectangle'
+        },
+        {
+          value: 'view',
+          label: hasLandWindow ? 'New York land in current view' : 'Current view rectangle'
+        }
+      ],
+      value: windowChoice,
+      onChange: value => {
+        windowChoice = value;
+        lastViewSignature = '';
+        currentBounds =
+          value === 'view' && lastViewport
+            ? getViewportMetricBounds(lastViewport, projection)
+            : extentBounds;
+        writeWindowGeometry();
+        const polygon = usesPolygonWindow();
+        void patternSwap
+          .request({
+            build: () => getPatternVariant(polygon),
+            commit: variant => {
+              activePattern = variant;
+              // Shared summary/outline outputs may still hold the other variant's results.
+              writeWindowGeometry();
+              context.updateLayers();
+            }
+          })
+          .catch(error => {
+            if (!destroyed) patternTimingReadout.setValue(`failed: ${String(error)}`);
+          });
+      }
+    });
+    context.controls.addSlider({
+      label: 'Maximum distance (per-frame parameter)',
+      min: 100,
+      max: 3000,
+      step: 100,
+      value: maximumDistance,
+      format: value => `${value} m`,
+      onChange: value => {
+        maximumDistance = value;
+        guardDistance = Math.max(guardDistance, maximumDistance / RIPLEY_RADII);
+        writePatternParameters();
+      }
+    });
+    context.controls.addSelect<GPURipleyEdgeCorrection>({
+      label: 'Edge correction of K / L (per-frame)',
+      options: [
+        {value: 'isotropic', label: 'Isotropic (Ripley 1977)'},
+        {value: 'border', label: 'Border (reduced sample)'},
+        {value: 'none', label: 'None'}
+      ],
+      value: edgeCorrection,
+      onChange: value => {
+        edgeCorrection = value;
+        writePatternParameters();
+      }
+    });
+    context.controls.addSelect<GPURipleyDistanceEdgeCorrection>({
+      label: 'Edge correction of G, F, J (per-frame)',
+      options: [
+        {value: 'border', label: 'Border (reduced sample, rs)'},
+        {value: 'kaplan-meier', label: 'Kaplan-Meier (km)'},
+        {value: 'hanisch', label: 'Hanisch (G) / Chiu-Stoyan (F)'},
+        {value: 'none', label: 'None (biased low near the edge)'}
+      ],
+      value: distanceEdgeCorrection,
+      onChange: value => {
+        distanceEdgeCorrection = value;
+        writePatternParameters();
+      }
+    });
+    context.controls.addSelect<GPUSpatialCorrelogramVarianceAssumption>({
+      label: 'Correlogram variance (per-frame parameter)',
+      options: [
+        {value: 'randomization', label: 'Randomization'},
+        {value: 'normality', label: 'Normality'}
+      ],
+      value: varianceAssumption,
+      onChange: value => {
+        varianceAssumption = value;
+        writePatternParameters();
+      }
+    });
+    context.controls.addSlider({
+      label: 'Variogram azimuth offset (per-frame parameter)',
+      min: 0,
+      max: 165,
+      step: 15,
+      value: azimuthDegrees,
+      format: value => `${value}°`,
+      onChange: value => {
+        azimuthDegrees = value;
+        writePatternParameters();
+      }
+    });
+    context.controls.addSelect<string>({
+      label: 'Variogram direction (sector of 45°, read back)',
+      options: [
+        {value: 'all', label: 'All directions'},
+        ...Array.from({length: DIRECTION_COUNT}, (_, sector) => ({
+          value: `${sector}`,
+          label: `Sector ${sector + 1}`
+        }))
+      ],
+      value: directionChoice,
+      onChange: value => {
+        directionChoice = value;
+        redrawCharts();
+      }
+    });
+    context.controls.addSelect<VariogramModelType>({
+      label: 'Variogram model (CPU weighted fit of the readback)',
+      options: [
+        {value: 'spherical', label: 'Spherical'},
+        {value: 'exponential', label: 'Exponential'},
+        {value: 'gaussian', label: 'Gaussian'}
+      ],
+      value: modelType,
+      onChange: value => {
+        modelType = value;
+        redrawCharts();
+      }
+    });
+    context.controls.addSlider({
+      label: 'Distribution: standard deviations (per-frame parameter)',
+      min: 1,
+      max: 3,
+      step: 1,
+      value: standardDeviations,
+      format: value => `${value}`,
+      onChange: value => {
+        standardDeviations = value;
+        writeDistributionParameters();
+      }
+    });
+    context.controls.addSelect<'arcgis' | 'standard'>({
+      label: 'Ellipse convention (per-frame parameter)',
+      options: [
+        {value: 'arcgis', label: 'ArcGIS (axes scaled by sqrt 2)'},
+        {value: 'standard', label: 'Standard deviation'}
+      ],
+      value: ellipseConvention,
+      onChange: value => {
+        ellipseConvention = value;
+        writeDistributionParameters();
+      }
+    });
+    context.controls.addToggle({
+      label: 'Weight by nearby taxi activity (weights buffer write)',
+      value: weighted,
+      onChange: value => {
+        weighted = value;
+        inputRevision++;
+        weightsBuffer.write(value ? activityWeights : unitWeights);
+        distributionDirty = true;
+        needsReadback = true;
+      }
+    });
+    groupNames.forEach((name, group) => {
+      context.controls.addToggle({
+        label: `Show ${name}`,
+        value: true,
+        onChange: value => {
+          visibleGroups[group] = value;
+          groupVisibleBuffer.write(Uint32Array.from(visibleGroups, flag => (flag ? 1 : 0)));
+          context.updateLayers();
+        }
+      });
+    });
+    context.controls.addToggle({
+      label: 'Ellipses',
+      value: showEllipses,
+      onChange: value => {
+        showEllipses = value;
+        context.updateLayers();
+      }
+    });
+    context.controls.addToggle({
+      label: 'Standard distance circles',
+      value: showCircles,
+      onChange: value => {
+        showCircles = value;
+        context.updateLayers();
+      }
+    });
+    context.controls.addToggle({
+      label: 'Median centres (Weiszfeld)',
+      value: showMedian,
+      onChange: value => {
+        showMedian = value;
+        context.updateLayers();
+      }
+    });
+    context.controls.addToggle({
+      label: 'Points of interest',
+      value: showPoints,
+      onChange: value => {
+        showPoints = value;
+        context.updateLayers();
+      }
+    });
+    context.controls.addSelect<string>({
+      label: 'Inspect distribution of',
+      options: groupNames.map((name, group) => ({value: `${group}`, label: name})),
+      value: '0',
+      onChange: value => {
+        inspectedGroup = Number(value);
+        updateReadouts();
+      }
+    });
+    context.controls.addLegend({
+      title: 'Category',
+      entries: groupNames.map((name, group) => ({
+        color: [...GROUP_COLORS[group], 255],
+        label: `${name} (${formatCount(groupTotals[group])})`
+      }))
+    });
+    context.controls.addNote(
+      'Discs are mean centres; circles are standard distances, ellipses the standard deviational ' +
+        'ellipse. Charts: Ripley L(r) - r (above 0 is clustered), G and F against the complete-spatial-randomness curve and J (below 1 is clustered), the empirical semivariogram ' +
+        '(points sized by pair count) with its fitted model and the variance as sill, and ' +
+        "Moran's I per distance band (filled where |z| > 1.96)."
+    );
+
+    context.controls.addNote(
+      hasLandWindow
+        ? 'Land is NYC DCP shoreline geometry within the POI extent plus 500 m. View clips this local fixture to the viewport; panning beyond it does not load more land. Extent includes water as a teaching contrast. Points outside the window are excluded from pattern statistics and dimmed; distribution ellipses still describe all category points.'
+        : 'Synthetic points are not on real land: extent and view both use rectangle windows.'
+    );
+    context.controls.addNote(
+      'Clark-Evans uses a guard band in both window variants, at least one radius step and twice the spacing estimated from the GPU count/area. Quadrats use window-area-weighted expectations.'
+    );
+
+    const rippleChart = new MiniChart('Ripley L(r) - r', 'm');
+    const distanceChart = new MiniChart('Ripley G (blue), F (orange), CSR (grey)', 'm');
+    const jChart = new MiniChart('Ripley J = (1 - G) / (1 - F), CSR = 1', 'm');
+    const variogramChart = new MiniChart('Semivariogram of POI taxi activity', 'm');
+    const correlogramChart = new MiniChart("Correlogram: Moran's I by band", 'm');
+    const readoutAnchor = document.querySelector('[data-mode-readouts]');
+    for (const chart of [rippleChart, distanceChart, jChart, variogramChart, correlogramChart]) {
+      chart.insertBefore(readoutAnchor);
+    }
+
+    context.controls.addReadout('Points of interest', formatCount(pointCount));
+    const windowReadout = context.controls.addReadout('Window (area)');
+    const selectedReadout = context.controls.addReadout('Included in the pattern');
+    const intensityReadout = context.controls.addReadout('Intensity (points / km² of window)');
+    const landShareReadout = context.controls.addReadout('Land share of view rectangle');
+    const guardReadout = context.controls.addReadout('Clark-Evans guard distance');
+    const preparationReadout = context.controls.addReadout('Pattern variants / window builds');
+    const clarkEvansReadout = context.controls.addReadout(
+      'Clark-Evans R (z, two-sided p, edge corrected)'
+    );
+    const nearestReadout = context.controls.addReadout('Mean NN distance (expected)');
+    const quadratReadout = context.controls.addReadout('Quadrats dispersion (12 x 12)');
+    const quadratTestReadout = context.controls.addReadout('Quadrat chi-square (df), p');
+    const rippleReadout = context.controls.addReadout('Ripley max L - r (at r)');
+    const nearestFunctionReadout = context.controls.addReadout(
+      'Ripley G, F vs CSR (max distance / 3)'
+    );
+    const jReadout = context.controls.addReadout('Ripley J (max distance / 3)');
+    const modelReadout = context.controls.addReadout('Variogram nugget / sill / range');
+    const peakReadout = context.controls.addReadout('Correlogram first peak / max z band');
+    const overflowReadout = context.controls.addReadout('Pair-count overflow');
+    const countReadout = context.controls.addReadout('Distribution: count');
+    const meanReadout = context.controls.addReadout('Mean centre (x, y from origin)');
+    const medianReadout = context.controls.addReadout('Median centre offset');
+    const distanceReadout = context.controls.addReadout('Standard distance');
+    const ellipseReadout = context.controls.addReadout('Ellipse sigma long / short');
+    const bearingReadout = context.controls.addReadout('Ellipse long axis bearing');
+    context.controls.addReadout(
+      'Data',
+      `${pois.attribution}; ${trips.attribution}${hasLandWindow ? `; ${NEW_YORK_LAND.attribution}` : ''}`
+    );
+    const patternTimingReadout = context.controls.addReadout('Pattern graph (GPU)', '...');
+    const distributionTimingReadout = context.controls.addReadout(
+      'Distribution graph (GPU)',
+      '...'
+    );
+    context.controls.addButton({
+      label: 'Measure the graphs',
+      onClick: () => {
+        void (async () => {
+          const options = {
+            parameters: undefined,
+            completionBuffer: outputs.peakBands,
+            signal: context.signal
+          };
+          try {
+            if (patternSwap.pending || activePattern.polygon !== usesPolygonWindow()) return;
+            const patternCompiled = activePattern.compiled;
+            const pattern = await measureCompiledGraph(device, patternCompiled, options);
+            if (destroyed) return;
+            patternTimingReadout.setValue(
+              `${patternCompiled.stats.nodeOrder.length} nodes, ${formatCompiledGraphTiming(pattern)}`
+            );
+            const distribution = await measureCompiledGraph(device, distributionCompiled, {
+              ...options,
+              runs: 1,
+              warmUpRuns: 0
+            });
+            if (destroyed) return;
+            distributionTimingReadout.setValue(
+              `${distributionCompiled.stats.nodeOrder.length} nodes, ${formatCompiledGraphTiming(distribution)} (1 run)`
+            );
+          } catch (error) {
+            if (!destroyed) patternTimingReadout.setValue(`failed: ${String(error)}`);
+          }
+        })();
+      }
+    });
+
+    writeWindowGeometry();
+    writeDistributionParameters();
+    writeMask();
+
+    // ---- Readout and chart updates from the last summary ----
+    const formatNumber = (value: number, digits = 3) =>
+      Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
+    const formatP = (value: number) =>
+      !Number.isFinite(value) ? 'n/a' : value < 0.001 ? '< 0.001' : value.toFixed(3);
+
+    function getSlice(name: SummaryLayoutKey, length: number): Float32Array {
+      return lastSummary!.subarray(SUMMARY_LAYOUT[name], SUMMARY_LAYOUT[name] + length);
+    }
+
+    function redrawCharts() {
+      if (!lastSummary || !lastSummaryWords || lastSummaryRevision !== inputRevision) return;
+      // Ripley.
+      const rippleValues = getSlice('rippleL', RIPLEY_RADII);
+      const radii = Array.from(
+        {length: RIPLEY_RADII},
+        (_, index) => (maximumDistance * (index + 1)) / RIPLEY_RADII
+      );
+      rippleChart.update({
+        series: [{kind: 'line', x: radii, y: rippleValues, color: '#4ec9ff'}],
+        referenceLines: [{y: 0, color: '#7f90ad', dashed: true}],
+        xRange: [0, maximumDistance]
+      });
+
+      // Ripley G, F and J against complete spatial randomness: 1 - exp(-lambda pi r^2).
+      const includedCount = getSlice('clarkEvans', GPU_CLARK_EVANS_LENGTH)[0];
+      const windowArea = getSlice('windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH)[4];
+      const intensity = includedCount / windowArea;
+      const theory = radii.map(radius => 1 - Math.exp(-intensity * Math.PI * radius * radius));
+      const ripleyG = getSlice('ripleyG', RIPLEY_RADII);
+      const ripleyF = getSlice('ripleyF', RIPLEY_RADII);
+      const ripleyJ = getSlice('ripleyJ', RIPLEY_RADII);
+      distanceChart.update({
+        series: [
+          {kind: 'line', x: radii, y: theory, color: '#7f90ad'},
+          {kind: 'line', x: radii, y: ripleyG, color: '#4ec9ff'},
+          {kind: 'line', x: radii, y: ripleyF, color: '#ff9448'}
+        ],
+        xRange: [0, maximumDistance]
+      });
+      jChart.update({
+        series: [{kind: 'line', x: radii, y: ripleyJ, color: '#57eba8'}],
+        referenceLines: [{y: 1, color: '#7f90ad', dashed: true}],
+        xRange: [0, maximumDistance]
+      });
+      // Report at a third of the maximum distance, before G and F saturate at 1.
+      const reportIndex = Math.floor(RIPLEY_RADII / 3) - 1;
+      const reportRadius = formatNumber(radii[reportIndex], 0);
+      nearestFunctionReadout.setValue(
+        Number.isFinite(ripleyG[reportIndex])
+          ? `G ${formatNumber(ripleyG[reportIndex], 2)}, F ${formatNumber(ripleyF[reportIndex], 2)} vs CSR ${formatNumber(theory[reportIndex], 2)} at ${reportRadius} m`
+          : 'n/a'
+      );
+      jReadout.setValue(
+        Number.isFinite(ripleyJ[reportIndex])
+          ? `${formatNumber(ripleyJ[reportIndex], 2)} at ${reportRadius} m (${
+              ripleyJ[reportIndex] < 1 ? 'clustered' : 'regular'
+            })`
+          : 'n/a'
+      );
+
+      // Variogram: aggregate sectors for 'all', otherwise one sector.
+      const semivariances = getSlice('semivariances', LAG_COUNT * DIRECTION_COUNT);
+      const pairs = lastSummaryWords.subarray(
+        SUMMARY_LAYOUT['variogramPairs'],
+        SUMMARY_LAYOUT['variogramPairs'] + LAG_COUNT * DIRECTION_COUNT
+      );
+      const distances = getSlice('variogramDistances', LAG_COUNT * DIRECTION_COUNT);
+      const lagDistances: number[] = [];
+      const lagSemivariances: number[] = [];
+      const lagPairs: number[] = [];
+      for (let lag = 0; lag < LAG_COUNT; lag++) {
+        let pairTotal = 0;
+        let distanceSum = 0;
+        let semivarianceSum = 0;
+        for (let sector = 0; sector < DIRECTION_COUNT; sector++) {
+          if (directionChoice !== 'all' && Number(directionChoice) !== sector) continue;
+          const bin = sector * LAG_COUNT + lag;
+          const count = pairs[bin];
+          if (count === 0 || !Number.isFinite(semivariances[bin])) continue;
+          pairTotal += count;
+          distanceSum += count * distances[bin];
+          semivarianceSum += count * semivariances[bin];
+        }
+        if (pairTotal > 0) {
+          lagDistances.push(distanceSum / pairTotal);
+          lagSemivariances.push(semivarianceSum / pairTotal);
+          lagPairs.push(pairTotal);
+        }
+      }
+      const variogramOverflowed = lastSummaryWords[SUMMARY_LAYOUT['variogramOverflow']] !== 0;
+      const correlogramOverflowed = lastSummaryWords[SUMMARY_LAYOUT['correlogramOverflow']] !== 0;
+      overflowReadout.setValue(
+        [
+          variogramOverflowed ? 'variogram pair counts saturated (model not fitted)' : '',
+          correlogramOverflowed ? 'correlogram pair counts saturated' : ''
+        ]
+          .filter(Boolean)
+          .join('; ') || 'none'
+      );
+      const variance = lastSummary[SUMMARY_LAYOUT['variogramStatistics'] + 2];
+      let model: VariogramModel | null = null;
+      try {
+        // Saturated pair counts would distort the pair weights, so skip the fit.
+        if (variogramOverflowed) throw new Error('variogram pair counts saturated');
+        model = fitVariogramModel(
+          {distances: lagDistances, semivariances: lagSemivariances, pairCounts: lagPairs},
+          {model: modelType}
+        );
+      } catch {
+        model = null;
+      }
+      const largestPairCount = Math.max(1, ...lagPairs);
+      const curveX = Array.from({length: 40}, (_, index) => (maximumDistance * index) / 39);
+      variogramChart.update({
+        series: [
+          {
+            kind: 'points',
+            x: lagDistances,
+            y: lagSemivariances,
+            color: '#ff9448',
+            radius: lagPairs.map(count => 1.5 + 3 * Math.sqrt(count / largestPairCount))
+          },
+          ...(model
+            ? [
+                {
+                  kind: 'line' as const,
+                  x: curveX,
+                  y: curveX.map(distance => evaluateVariogramModel(model, distance)),
+                  color: '#57eba8'
+                }
+              ]
+            : [])
+        ],
+        referenceLines: [{y: variance, color: '#7f90ad', dashed: true}],
+        xRange: [0, maximumDistance]
+      });
+      modelReadout.setValue(
+        model
+          ? `${formatNumber(model.nugget, 2)} / ${formatNumber(model.nugget + model.sill, 2)} / ${formatNumber(model.range, 0)} m`
+          : 'n/a (too few bins)'
+      );
+
+      // Correlogram.
+      const moransI = getSlice('moransI', BAND_COUNT);
+      const zScores = getSlice('zScores', BAND_COUNT);
+      const bandUpper = Array.from(
+        {length: BAND_COUNT},
+        (_, band) => (maximumDistance * (band + 1)) / BAND_COUNT
+      );
+      const statistics = getSlice(
+        'correlogramStatistics',
+        GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
+      );
+      const expected = -1 / (statistics[0] - 1);
+      correlogramChart.update({
+        series: [
+          {kind: 'line', x: bandUpper, y: moransI, color: '#bd7aff'},
+          {
+            kind: 'points',
+            x: bandUpper,
+            y: moransI,
+            color: '#bd7aff',
+            radius: 2.8,
+            filled: index => Math.abs(zScores[index]) > 1.96
+          }
+        ],
+        referenceLines: [{y: expected, color: '#7f90ad', dashed: true}],
+        xRange: [0, maximumDistance]
+      });
+    }
+
+    function updateReadouts() {
+      if (!lastSummary || !lastSummaryWords || lastSummaryRevision !== inputRevision) return;
+      const summary = getSlice('windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH);
+      const area = summary[4];
+      const rectangleArea =
+        (currentBounds[2] - currentBounds[0]) * (currentBounds[3] - currentBounds[1]);
+      windowReadout.setValue(
+        `${usesPolygonWindow() ? 'Land' : 'Rectangle'}: ${formatNumber(area / 1e6, 2)} km²${area > 0 ? '' : ' (empty window)'}`
+      );
+      const clark = getSlice('clarkEvans', GPU_CLARK_EVANS_LENGTH);
+      const selectedCount =
+        categoryChoice === 'all' ? pointCount : groupTotals[Number(categoryChoice)];
+      selectedReadout.setValue(
+        `${formatCount(clark[0])}; ${formatCount(Math.max(0, selectedCount - clark[0]))} selected points outside the window`
+      );
+      intensityReadout.setValue(formatNumber(area > 0 ? (clark[0] / area) * 1e6 : NaN, 1));
+      landShareReadout.setValue(
+        windowChoice === 'view' && hasLandWindow
+          ? `${formatNumber((area / rectangleArea) * 100, 1)}% (local land fixture)`
+          : 'n/a'
+      );
+      guardReadout.setValue(`${formatNumber(lastSummaryGuardDistance, 1)} m`);
+      preparationReadout.setValue(
+        `${patternVariants.size} / ${[...patternVariants.values()].reduce((sum, variant) => sum + variant.preparation.encodedBuildCount, 0)}`
+      );
+      clarkEvansReadout.setValue(
+        `${formatNumber(clark[3])} (z ${formatNumber(clark[5], 1)}, p ${formatP(clark[6])})`
+      );
+      nearestReadout.setValue(`${formatNumber(clark[1], 1)} m (${formatNumber(clark[2], 1)} m)`);
+      const quadrat = getSlice('quadrat', GPU_QUADRAT_STATISTICS_LENGTH);
+      quadratReadout.setValue(
+        `${formatNumber(quadrat[3], 2)} (mean ${formatNumber(quadrat[1], 1)}, var ${formatNumber(quadrat[2], 1)})`
+      );
+      quadratTestReadout.setValue(
+        `${formatNumber(quadrat[4], 0)} (${formatNumber(quadrat[5], 0)}), p ${formatP(quadrat[6])}`
+      );
+      const rippleValues = getSlice('rippleL', RIPLEY_RADII);
+      let bestIndex = -1;
+      for (let index = 0; index < rippleValues.length; index++) {
+        if (
+          Number.isFinite(rippleValues[index]) &&
+          (bestIndex < 0 || rippleValues[index] > rippleValues[bestIndex])
+        ) {
+          bestIndex = index;
+        }
+      }
+      rippleReadout.setValue(
+        bestIndex < 0
+          ? 'n/a'
+          : `${formatNumber(rippleValues[bestIndex], 1)} m at ${formatNumber(
+              (maximumDistance * (bestIndex + 1)) / RIPLEY_RADII,
+              0
+            )} m`
+      );
+      const peakWords = lastSummaryWords.subarray(
+        SUMMARY_LAYOUT['peakBands'],
+        SUMMARY_LAYOUT['peakBands'] + 2
+      );
+      const describeBand = (band: number) =>
+        band === GPU_SPATIAL_CORRELOGRAM_NO_BAND
+          ? 'none'
+          : `${formatNumber((maximumDistance * (band + 1)) / BAND_COUNT, 0)} m`;
+      peakReadout.setValue(`${describeBand(peakWords[0])} / ${describeBand(peakWords[1])}`);
+
+      const group = inspectedGroup;
+      const counts = lastSummaryWords.subarray(
+        SUMMARY_LAYOUT['counts'],
+        SUMMARY_LAYOUT['counts'] + GROUP_COUNT
+      );
+      const meanCenters = getSlice('meanCenters', GROUP_COUNT * 2);
+      const medianCenters = getSlice('medianCenters', GROUP_COUNT * 2);
+      const standardDistances = getSlice('standardDistances', GROUP_COUNT);
+      const ellipses = getSlice('ellipses', GROUP_COUNT * 3);
+      countReadout.setValue(
+        `${formatCount(counts[group])}${weighted ? ' (activity-weighted)' : ''}`
+      );
+      meanReadout.setValue(
+        `${formatNumber(meanCenters[group * 2], 0)}, ${formatNumber(meanCenters[group * 2 + 1], 0)} m`
+      );
+      medianReadout.setValue(
+        `${formatNumber(
+          Math.hypot(
+            medianCenters[group * 2] - meanCenters[group * 2],
+            medianCenters[group * 2 + 1] - meanCenters[group * 2 + 1]
+          ),
+          0
+        )} m`
+      );
+      distanceReadout.setValue(`${formatNumber(standardDistances[group], 0)} m`);
+      ellipseReadout.setValue(
+        `${formatNumber(ellipses[group * 3 + 2], 0)} / ${formatNumber(ellipses[group * 3 + 1], 0)} m`
+      );
+      // Short axis angle counter-clockwise from +x; the long axis is 90 degrees further, which
+      // is a clockwise-from-north bearing of -angle (modulo 180).
+      const bearing = ((((-ellipses[group * 3] * 180) / Math.PI) % 180) + 180) % 180;
+      bearingReadout.setValue(`${formatNumber(bearing, 0)}° from north`);
+    }
+
+    const readSummary = async (
+      commandEncoder: Parameters<SpatialAnalysisModeInstance['encode']>[0]
+    ) => {
+      const revision = inputRevision;
+      const encodedGuardDistance = guardDistance;
+      const ticket = readbackRing.tryAcquire();
+      if (!ticket) return;
+      const copy = (name: keyof typeof outputs, key: SummaryLayoutKey, words: number) =>
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: outputs[name],
+          destinationBuffer: ticket.buffer,
+          destinationOffset: SUMMARY_LAYOUT[key] * 4,
+          size: words * 4
+        });
+      copy('windowSummary', 'windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH);
+      copy('lMinusR', 'rippleL', RIPLEY_RADII);
+      copy('ripleyG', 'ripleyG', RIPLEY_RADII);
+      copy('ripleyF', 'ripleyF', RIPLEY_RADII);
+      copy('ripleyJ', 'ripleyJ', RIPLEY_RADII);
+      copy('semivariances', 'semivariances', LAG_COUNT * DIRECTION_COUNT);
+      copy('variogramPairs', 'variogramPairs', LAG_COUNT * DIRECTION_COUNT);
+      copy('variogramDistances', 'variogramDistances', LAG_COUNT * DIRECTION_COUNT);
+      copy('variogramStatistics', 'variogramStatistics', GPU_VARIOGRAM_STATISTICS_LENGTH);
+      copy('variogramOverflow', 'variogramOverflow', 1);
+      copy('correlogramOverflow', 'correlogramOverflow', 1);
+      copy('moransI', 'moransI', BAND_COUNT);
+      copy('zScores', 'zScores', BAND_COUNT);
+      copy('bandPairs', 'bandPairs', BAND_COUNT);
+      copy('peakBands', 'peakBands', 2);
+      copy(
+        'correlogramStatistics',
+        'correlogramStatistics',
+        GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
+      );
+      copy('clarkEvans', 'clarkEvans', GPU_CLARK_EVANS_LENGTH);
+      copy('quadrat', 'quadrat', GPU_QUADRAT_STATISTICS_LENGTH);
+      copy('counts', 'counts', GROUP_COUNT);
+      copy('meanCenters', 'meanCenters', GROUP_COUNT * 2);
+      copy('medianCenters', 'medianCenters', GROUP_COUNT * 2);
+      copy('standardDistances', 'standardDistances', GROUP_COUNT);
+      copy('ellipses', 'ellipses', GROUP_COUNT * 3);
+      ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_LAYOUT['words'] * 4});
+      readbackPending = true;
+      needsReadback = false;
+      try {
+        const bytes = await scheduleReadback(() => ticket.read());
+        if (destroyed) return;
+        if (revision !== inputRevision) {
+          needsReadback = true;
+          return;
+        }
+        lastSummaryGuardDistance = encodedGuardDistance;
+        lastSummaryRevision = revision;
+        // Copy: the ring recycles its mapped memory.
+        const copyBuffer = bytes.slice().buffer;
+        lastSummary = new Float32Array(copyBuffer, 0, SUMMARY_LAYOUT['words']);
+        lastSummaryWords = new Uint32Array(copyBuffer, 0, SUMMARY_LAYOUT['words']);
+        updateReadouts();
+        redrawCharts();
+        const area = getSlice('windowSummary', GPU_STUDY_WINDOW_SUMMARY_LENGTH)[4];
+        const count = getSlice('clarkEvans', GPU_CLARK_EVANS_LENGTH)[0];
+        const nextGuardDistance = Math.max(
+          maximumDistance / RIPLEY_RADII,
+          count > 0 && area > 0 ? 2 * Math.sqrt(area / count) : 0
+        );
+        // One follow-up encoding uses the GPU-derived guard; the count/area do not depend on it.
+        if (Math.abs(nextGuardDistance - guardDistance) > 0.01) {
+          guardDistance = nextGuardDistance;
+          writePatternParameters();
+        }
+      } catch {
+        needsReadback = true;
+      } finally {
+        readbackPending = false;
+      }
+    };
+
+    // The view window follows the map: re-derive it when the view moved noticeably.
+    const followView = (
+      viewport: Parameters<SpatialAnalysisModeInstance['encode']>[1]['viewport']
+    ) => {
+      const bounds = getViewportMetricBounds(viewport, projection);
+      // Fixed metre quantization also detects zooms centred on the frame origin.
+      const signature = bounds.map(value => Math.round(value / 5)).join(',');
+      if (signature === lastViewSignature) return;
+      lastViewSignature = signature;
+      currentBounds = bounds;
+      writeWindowGeometry();
+    };
+
+    const instance: SpatialAnalysisModeInstance = {
+      getCompiledGraphs: () => [activePattern.compiled, distributionCompiled],
+      encode(commandEncoder, frame) {
+        lastViewport = frame.viewport;
+        if (windowChoice === 'view') followView(frame.viewport);
+        // Static data: re-run a graph only when one of its inputs or parameters changed.
+        const patternReady = !patternSwap.pending && activePattern.polygon === usesPolygonWindow();
+        if (patternReady && (patternDirty || frame.frameIndex < 2)) {
+          activePattern.compiled.encode(commandEncoder, {parameters: undefined});
+          patternDirty = false;
+        }
+        if (distributionDirty || frame.frameIndex < 2) {
+          distributionCompiled.encode(commandEncoder, {parameters: undefined});
+          distributionDirty = false;
+        }
+        if (patternReady && needsReadback && !readbackPending && frame.frameIndex >= 1) {
+          void readSummary(commandEncoder);
+        }
+      },
+      getLayers() {
+        const coordinateOrigin: [number, number, number] = [pois.origin[0], pois.origin[1], 0];
+        const palette = (alpha: number): SpatialAnalysisColor[] =>
+          Array.from({length: 8}, (_, index) =>
+            index < GROUP_COUNT && visibleGroups[index] ? [...GROUP_COLORS[index], alpha] : HIDDEN
+          ) as SpatialAnalysisColor[];
+        const layers: Layer[] = [];
+        if (showPoints) {
+          layers.push(
+            new SpatialAnalysisPointLayer({
+              id: 'pattern-points-dim',
+              coordinateOrigin,
+              positions: positionsBuffer,
+              instanceCount: pointCount,
+              values: groupIdsBuffer,
+              valueFormat: 'uint32',
+              colormap: 'category',
+              palette: palette(30),
+              radiusPixels: 1.8
+            }),
+            new SpatialAnalysisPointLayer({
+              id: 'pattern-points',
+              coordinateOrigin,
+              positions: positionsBuffer,
+              instanceCount: pointCount,
+              values: outputs.displayGroups,
+              valueFormat: 'uint32',
+              colormap: 'category',
+              palette: palette(150),
+              noDataColor: HIDDEN,
+              radiusPixels: 1.8
+            })
+          );
+        }
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'pattern-window',
+            coordinateOrigin,
+            segments: outputs.windowOutline,
+            instanceCount: activePattern.edgeCapacity,
+            widthPixels: 1.5,
+            color: [235, 230, 195, 235]
+          })
+        );
+        const ringCommon = {
+          coordinateOrigin,
+          instanceCount: GROUP_COUNT * RING_VERTICES,
+          values: groupIndexBuffer,
+          valueFormat: 'uint32' as const,
+          valueDivisor: RING_VERTICES,
+          colormap: 'category' as const,
+          palette: palette(255)
+        };
+        if (showCircles) {
+          layers.push(
+            new SpatialAnalysisSegmentLayer({
+              ...ringCommon,
+              id: 'pattern-circles',
+              segments: outputs.circleSegments,
+              widthPixels: 1.6,
+              palette: palette(190)
+            })
+          );
+        }
+        if (showEllipses) {
+          layers.push(
+            new SpatialAnalysisSegmentLayer({
+              ...ringCommon,
+              id: 'pattern-ellipses',
+              segments: outputs.ellipseSegments,
+              widthPixels: 2.6
+            })
+          );
+        }
+        const centerCommon = {
+          coordinateOrigin,
+          instanceCount: GROUP_COUNT,
+          values: groupIndexBuffer,
+          valueFormat: 'uint32' as const,
+          colormap: 'category' as const
+        };
+        layers.push(
+          new SpatialAnalysisPointLayer({
+            id: 'pattern-center-halos',
+            coordinateOrigin,
+            positions: outputs.meanCenters,
+            instanceCount: GROUP_COUNT,
+            values: groupVisibleBuffer,
+            valueFormat: 'uint32',
+            colormap: 'mask',
+            color: [255, 255, 255, 255],
+            noDataColor: HIDDEN,
+            radiusPixels: 9
+          }),
+          new SpatialAnalysisPointLayer({
+            ...centerCommon,
+            id: 'pattern-mean-centers',
+            positions: outputs.meanCenters,
+            palette: palette(255),
+            radiusPixels: 7
+          })
+        );
+        if (showMedian) {
+          layers.push(
+            new SpatialAnalysisPointLayer({
+              ...centerCommon,
+              id: 'pattern-median-centers',
+              positions: outputs.medianCenters,
+              palette: palette(255),
+              radiusPixels: 4
+            })
+          );
+        }
+        return layers;
+      },
+      destroy() {
+        destroyed = true;
+        for (const chart of [rippleChart, distanceChart, jChart, variogramChart, correlogramChart])
+          chart.destroy();
+        resources.destroy();
+      }
+    };
+    return instance;
+  }
+};

@@ -1,0 +1,379 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {ground} from '../../cartography/grounds';
+import {defineScene} from '../scene';
+import type {TransitFrequencyOptions} from './transit-frequency.compute';
+import {TRANSIT_MODE_LABELS, TRANSIT_MODES} from './transit-data';
+import {
+  getServiceClassColors,
+  RANDSTAD_DATA_FRAME,
+  RANDSTAD_ORIENTATION,
+  RANDSTAD_SCHEDULE_CREDIT,
+  SERVICE_LABELS
+} from './randstad-network-cartography';
+
+const RANDSTAD_VIEW = {longitude: 4.75, latitude: 52.12, zoom: 8.8};
+const CONTINUOUS_NIGHT_RAMP = 'magma' as const;
+
+export default defineScene<TransitFrequencyOptions>({
+  id: 'transit-frequency',
+  title: 'Where does service concentrate?',
+  chapter: 'networks',
+  order: 7,
+  summary:
+    'Scheduled Randstad trips from 07:00–09:00 are clipped on the GPU to a selectable grid, where in-cell route length estimates vehicles per hour; small cell and line summaries are read to the CPU. Both directions and parallel routes add, so the metric is not observed arrivals or a route headway.',
+  contributors: ['GPULineDensity', 'GPUTrajectoryMetrics', 'GPUGroupStatistics'],
+  datasets: [{id: 'poopdeck-gtfs-nl', role: 'scheduled trips (OVapi GTFS, 3 July 2026)'}],
+  initialView: RANDSTAD_VIEW,
+  basemap: ground('night', {labels: 'above', labelPreset: 'places-only'}),
+  furniture: {
+    title: {subtitle: 'Scheduled service · 07:00–09:00 CEST · 250 m cells'},
+    scaleBar: {units: 'metric'},
+    credit: RANDSTAD_SCHEDULE_CREDIT,
+    caveat:
+      'Both directions and parallel routes add within each cell; scheduled vehicles per hour is not observed arrivals or a single-route headway.'
+  },
+  annotations: RANDSTAD_ORIENTATION,
+
+  options: [
+    {
+      kind: 'select',
+      id: 'modeFilter',
+      label: 'Mode',
+      group: 'Density',
+      apply: 'compile',
+      default: 'all',
+      help: 'Which trips feed the density. Each choice has its own GPULineDensity graph (its own positions and offsets), compiled the first time you pick it and kept; switching afterwards is instant.',
+      options: [
+        {value: 'all', label: 'All modes'},
+        ...TRANSIT_MODES.map(mode => ({value: mode, label: TRANSIT_MODE_LABELS[mode]}))
+      ]
+    },
+    {
+      kind: 'slider',
+      id: 'cellMeters',
+      label: 'Cell size',
+      group: 'Density',
+      apply: 'param',
+      min: 200,
+      max: 800,
+      step: 50,
+      default: 250,
+      unit: 'm',
+      help: 'Edge of a square grid cell. The grid is 384 x 384 cells centred on the Randstad, so 200 m covers 77 km and 800 m 307 km. The cell size is a four-float parameter write: the graph is not recompiled, only re-run.'
+    },
+    {
+      kind: 'select',
+      id: 'representation',
+      label: 'Map shows',
+      group: 'Display',
+      apply: 'param',
+      default: 'cells',
+      display: 'segmented',
+      help: 'Cells teach the grid calculation; routes restore the actual route geometry. Both keeps the computation and its source visible together.',
+      options: [
+        {value: 'cells', label: 'Cells'},
+        {value: 'routes', label: 'Routes'},
+        {value: 'both', label: 'Both'}
+      ]
+    },
+    {
+      kind: 'toggle',
+      id: 'frequentOnly',
+      label: 'Emphasise 15-minute service',
+      group: 'Display',
+      apply: 'param',
+      default: false,
+      help: 'Fades the first three classes below 8 both-direction vehicles per hour (about every 15 minutes per direction). It is an analytical lens, not a service guarantee.'
+    },
+    {
+      kind: 'select',
+      id: 'serviceStyle',
+      label: 'Service display',
+      group: 'Display',
+      apply: 'param',
+      default: 'classes',
+      display: 'segmented',
+      help: 'Night glow uses one fixed magma square-root scale. Paper steps use the frozen six rider-facing service classes.',
+      options: [
+        {value: 'continuous', label: 'Continuous glow'},
+        {value: 'classes', label: 'Six classes'}
+      ]
+    },
+    {
+      kind: 'toggle',
+      id: 'showRoutes',
+      label: 'Show route context',
+      group: 'Display',
+      apply: 'param',
+      default: true,
+      help: 'Thin route geometry gives the blocky grid an honest reference.'
+    }
+  ],
+
+  readouts: [
+    {
+      id: 'concentration',
+      label: 'How concentrated is service?',
+      kind: 'chart',
+      help: 'Occupied cells by the vehicles per hour that cross them. A long tail of busy cells hugs the corridors.'
+    },
+    {
+      id: 'modeSpeed',
+      label: 'Mean speed by mode',
+      kind: 'chart',
+      help: 'Total distance over total time of the trips of each mode in the window, from GPUTrajectoryMetrics and GPUGroupStatistics.'
+    },
+    {
+      id: 'busiestLines',
+      label: 'Busiest lines',
+      kind: 'chart',
+      help: 'Lines with most scheduled trips per hour in the window. Trips are grouped by (mode, line name), so a number shared by several cities counts together.'
+    },
+    {id: 'comparisonStatus', label: 'Resolution comparison'},
+    {
+      id: 'cellComparison',
+      label: 'Busiest value by cell size',
+      kind: 'chart',
+      help: 'The selected mode’s segments clipped to 200, 400 and 800 metre grids with the same GPU estimator as the map; maxima are length divided by cell width and the two-hour window.'
+    },
+    {
+      id: 'vehicleKilometers',
+      label: 'Distance scheduled',
+      help: 'Sum of every trip length inside the grid, in the window.'
+    },
+    {id: 'occupied', label: 'Cells with service'},
+    {
+      id: 'busiest',
+      label: 'Busiest cell',
+      help: 'Vehicles per hour through the busiest cell at the current cell size.'
+    },
+    {
+      id: 'pieces',
+      label: 'Line density pieces',
+      help: 'Segment-cell pieces GPULineDensity produced; the capacity is four times the vertex count and an overflow would show here.'
+    },
+    {id: 'trips', label: 'Trips'},
+    {
+      id: 'modeTable',
+      label: 'Trips, distance and speed by mode',
+      layout: 'block',
+      help: 'Per-mode totals added up from the per-line statistics (trips, kilometres inside the window, mean speed).'
+    },
+    {id: 'topLine', label: 'Busiest line'},
+    {
+      id: 'flex',
+      label: 'On-demand Flex trips',
+      help: 'The feed lists demand-responsive services as scheduled trips named Flex; they are left out of the busiest-lines chart.'
+    },
+    {
+      id: 'cellValue',
+      label: 'Clicked cell',
+      help: 'Click the map to read the vehicles per hour of a cell.'
+    }
+  ],
+
+  legends: (state, data) => [
+    ...(state.representation === 'cells' || state.representation === 'both'
+      ? [
+          ...(state.serviceStyle === 'continuous'
+            ? [
+                {
+                  kind: 'ramp' as const,
+                  title: 'Scheduled service through a cell',
+                  ramp: CONTINUOUS_NIGHT_RAMP,
+                  extent: [0, 60] as const,
+                  unit: 'veh/h',
+                  format: (value: number) => value.toFixed(0),
+                  note: 'Fixed square-root scale, both directions summed.'
+                }
+              ]
+            : [
+                {
+                  kind: 'categories' as const,
+                  title: 'Scheduled service through a cell',
+                  entries: SERVICE_LABELS.map((label, index) => ({
+                    color: getServiceClassColors(data.ground !== 'light')[index],
+                    label
+                  })),
+                  note: 'Both directions summed; headway is approximate.'
+                }
+              ])
+        ]
+      : []),
+    ...(state.representation === 'routes' || state.representation === 'both'
+      ? [
+          {
+            kind: 'line' as const,
+            title: 'Route geometry',
+            entries: [
+              {color: [66, 72, 84, 180] as const, widthPixels: 1, label: 'scheduled trip segment'}
+            ]
+          }
+        ]
+      : [])
+  ],
+
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPULineDensity, getGPULineDensityParameterValues, GPUTrajectoryMetrics} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUGroupStatistics} from '@luma-contributors/graph/gpu-dataframe';
+
+// densityPositions: WGS84 Lambert meters; positions: AEQD meters, both about trips.origin
+// lineOffsets: one path per trip
+const graph = new GPUCommandGraph(device, {id: 'frequency'});
+graph.add(new GPULineDensity({
+  positions: densityPositions, lineOffsets,
+  columns: 384, rows: 384,                 // compile time
+  spatialContext: densityProjection.spatialContext,
+  parameters: gridParameters.importToGraph(graph),
+  output: {lengths, status: {overflow, requiredCount: totalRecords}}
+}));
+const compiled = await graph.compileAsync();  // once per mode: ${state.modeFilter}
+
+// per frame (or per change): the grid is a parameter write
+gridParameters.write(getGPULineDensityParameterValues({
+  minX: centerX - 384 * ${state.cellMeters} / 2, minY: centerY - 384 * ${state.cellMeters} / 2,
+  cellWidth: ${state.cellMeters}, cellHeight: ${state.cellMeters}
+}));
+compiled.encode(commandEncoder, {parameters: undefined});
+// vehicles per hour in a cell = lengths[cell] / ${state.cellMeters} / 2 hours
+
+// per-trip metrics, then statistics per line
+graph2.add(new GPUTrajectoryMetrics({spatialContext: trips.spatialContext, positions, timestamps, trackOffsets, output: {trackLengths, trackDurations, averageSpeeds}}));
+graph2.add(new GPUGroupStatistics({
+  keys: lineIds, keyCount: lineCount,       // dense: row k is line k
+  columns: [{values: trackLengths, statistics: ['sum'], output: {sumValues}},
+            {values: averageSpeeds, statistics: ['mean', 'median'], output: {means, medians}}],
+  output: {keys, counts: tripsPerLine, status: {count, overflow}}
+}));`,
+
+  about: {
+    what: '`GPULineDensity` clips every segment of every trip to a grid (Liang-Barsky) and walks it through the cells it crosses, emitting one `(cell, length)` piece per cell; the pieces are summed per cell in a fixed order, so the result is reproducible. `GPUTrajectoryMetrics` measures each trip (length, duration, mean speed) and `GPUGroupStatistics` groups the trips by line and reports counts, sums, means and medians.',
+    why: 'Service frequency is what a rider experiences as "I do not need a timetable". Summing scheduled length per cell turns thousands of trips into a map of where the service really is, which is the first screen of any question about transit coverage, equity of service or where a new line would add least.',
+    howToRead:
+      'A cell is coloured by the **vehicles per hour** that cross it: summed line length divided by the cell width and by the two hours of the window. A line that runs straight through a cell contributes its crossing length (one cell width), so the value is exact for straight-through traffic and a slight over-estimate for diagonals. Every vehicle in both directions counts, so a tram line with a 10-minute interval each way reads as 12 vehicles per hour.'
+  },
+
+  create: async ctx => (await import('./transit-frequency.compute')).createTransitFrequency(ctx),
+
+  story: [
+    {
+      id: 'glow',
+      headline: 'Scheduled segment length defines the cell metric',
+      textAlternative:
+        'Continuous-color 250-meter grid of scheduled Randstad trips from 07:00 to 09:00; brighter cells contain more summed route length per cell width and hour.',
+      title: 'Scheduled frequency by grid cell',
+      body: 'The GPU clips each scheduled trip segment to 250 m cells. Summed in-cell length divided by cell width and the two-hour window estimates vehicles per hour. The cell buffer remains on the GPU for display; small totals and class counts are read to the CPU for the card and charts.',
+      evidence:
+        'The mapped timetable contains **{{vehicleKilometers}}**; **{{busiest}}** is the highest current cell value.',
+      caveat:
+        'The GTFS schedule is not an observation of service delivered, and overlapping routes and directions are summed.',
+      camera: {...RANDSTAD_VIEW, transitionMs: 1200},
+      optionsMode: 'fresh',
+      basemap: ground('night', {labels: 'above', labelPreset: 'places-only'}),
+      furniture: {
+        title: {subtitle: 'Scheduled service · continuous intensity'},
+        credit: RANDSTAD_SCHEDULE_CREDIT,
+        scaleBar: {units: 'metric'}
+      },
+      options: {
+        modeFilter: 'all',
+        cellMeters: 250,
+        serviceStyle: 'continuous',
+        representation: 'cells'
+      },
+      controls: ['modeFilter'],
+      readouts: ['vehicleKilometers', 'busiest', 'concentration']
+    },
+    {
+      id: 'service-ladder',
+      headline: 'Frequency classes approximate per-direction headway',
+      textAlternative:
+        'Randstad grid cells classed by scheduled vehicles per hour, with labels giving approximate per-direction headway after both directions and overlapping routes are summed.',
+      title: 'Translate frequency into waiting',
+      body: 'The same density is now classified as vehicles per hour and an approximate per-direction headway. A cell at 4–8 veh/h reads as roughly every 15–30 minutes each way. These are useful classes, but parallel routes and both directions add: they do not promise a single route frequency.',
+      optionsMode: 'fresh',
+      basemap: ground('paperCity', {labels: 'above'}),
+      options: {
+        modeFilter: 'all',
+        cellMeters: 250,
+        serviceStyle: 'classes',
+        representation: 'cells'
+      },
+      controls: ['representation'],
+      readouts: ['concentration', 'busiest'],
+      annotations: RANDSTAD_DATA_FRAME
+    },
+    {
+      id: 'cell-size',
+      headline: 'Cell size changes the reported maximum',
+      textAlternative:
+        'Amsterdam scheduled-trip segments shown with route lines and 400-meter grid cells; a chart compares the busiest cell at 200, 400 and 800 meters.',
+      title: 'The number belongs to the cell',
+      body: 'Cell width is a parameter write, not a rebuild. At 200 m streets separate; at 800 m parallel routes fall together and the busiest cell can grow. This is the modifiable areal unit problem in miniature: quote the cell size with every density value.',
+      camera: {longitude: 4.9, latitude: 52.37, zoom: 11, transitionMs: 1400},
+      callout: {coordinate: [4.9003, 52.3791], text: 'Amsterdam Centraal'},
+      optionsMode: 'fresh',
+      options: {cellMeters: 400, serviceStyle: 'classes', representation: 'both'},
+      controls: ['cellMeters', 'representation'],
+      readouts: ['busiest', 'comparisonStatus', 'cellComparison', 'cellValue']
+    },
+    {
+      id: 'modes',
+      headline: 'Mode filters use separate scheduled trip sets',
+      textAlternative:
+        'The Hague tram trips shown as classed 200-meter cells over thin scheduled route geometry, with charts of modeled speed and trips per line.',
+      title: 'Rail, tram and bus differ',
+      body: 'Mode chooses a cached compile variant because each choice has different trip buffers. The first selection builds its graph; returning to it is instant. Tram webs read at city scale, while rail joins the cities. Mode hue identifies routes only—service magnitude stays ordered by the class ladder.',
+      optionsMode: 'fresh',
+      options: {
+        modeFilter: 'tram',
+        cellMeters: 200,
+        serviceStyle: 'classes',
+        representation: 'both'
+      },
+      camera: {longitude: 4.32, latitude: 52.08, zoom: 11.4, transitionMs: 1600},
+      callout: {coordinate: [4.3247, 52.0808], text: 'Den Haag Centraal'},
+      controls: ['modeFilter'],
+      readouts: ['modeSpeed', 'busiestLines']
+    },
+    {
+      id: 'frequent',
+      headline: 'Eight vehicles per hour sets the filter',
+      textAlternative:
+        'Randstad cells below eight scheduled vehicles per hour are faded; this approximates 15-minute per-direction service only when direction totals are balanced.',
+      title: 'Keep service you can rely on',
+      body: 'The 15-minute threshold begins at 8 both-direction veh/h because the per-direction inversion is 120 ÷ veh/h. It fades the first three classes while preserving the fixed legend. This analytical lens distinguishes frequent from occasional service without claiming that every route in a busy cell follows that interval.',
+      optionsMode: 'fresh',
+      options: {
+        modeFilter: 'all',
+        cellMeters: 400,
+        serviceStyle: 'classes',
+        representation: 'cells',
+        frequentOnly: true
+      },
+      controls: ['frequentOnly'],
+      readouts: ['concentration', 'busiestLines']
+    },
+    {
+      id: 'representation',
+      headline: 'Grid cells aggregate intersecting route segments',
+      textAlternative:
+        'Full Randstad map comparing classed 400-meter cells with thin route geometry; cells sum every intersecting scheduled segment, including parallel routes and diagonal crossings.',
+      title: 'Cells simplify lines',
+      body: 'A grid makes comparison easy, but its values depend on clipping: diagonal crossings can be up to √2 longer than a straight crossing, parallel routes add, and the dashed frame marks the data extent. Routes restore the geometry. Flex trips are included in scheduled kilometres but do not imply fixed service.',
+      optionsMode: 'fresh',
+      options: {
+        modeFilter: 'all',
+        cellMeters: 400,
+        serviceStyle: 'classes',
+        representation: 'both'
+      },
+      camera: {longitude: 4.4, latitude: 52.07, zoom: 10.2, transitionMs: 1400},
+      controls: ['representation', 'cellMeters'],
+      readouts: ['pieces', 'flex']
+    }
+  ]
+});

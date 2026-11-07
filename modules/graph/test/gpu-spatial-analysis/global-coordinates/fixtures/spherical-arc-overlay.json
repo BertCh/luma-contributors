@@ -1,0 +1,150 @@
+{
+  "provenance": "s2geometry==0.14.0 direct S2BooleanOperation.Build/GetArea/Contains; equatorial zigzag loops cannot fit in one hemisphere chart; reversed S2Loops represent complements",
+  "left": [
+    [
+      -0.6830127018922193,
+      -0.6830127018922194,
+      -0.25881904510252074
+    ],
+    [
+      0.6408563820557885,
+      -0.6408563820557884,
+      0.42261826174069944
+    ],
+    [
+      0.6830127018922194,
+      0.6830127018922193,
+      -0.25881904510252074
+    ],
+    [
+      -0.6408563820557884,
+      0.6408563820557885,
+      0.42261826174069944
+    ]
+  ],
+  "right": [
+    [
+      -0.6408563820557884,
+      -0.6408563820557885,
+      0.42261826174069944
+    ],
+    [
+      0.6830127018922194,
+      -0.6830127018922193,
+      -0.25881904510252074
+    ],
+    [
+      0.6408563820557885,
+      0.6408563820557884,
+      0.42261826174069944
+    ],
+    [
+      -0.6830127018922193,
+      0.6830127018922194,
+      -0.25881904510252074
+    ]
+  ],
+  "reference": [
+    6.123233995736766e-17,
+    0.0,
+    1.0
+  ],
+  "cases": [
+    {
+      "operation": "intersection",
+      "leftInside": true,
+      "rightInside": true,
+      "area": 4.389724883040204,
+      "rings": 1,
+      "referenceInside": true
+    },
+    {
+      "operation": "union",
+      "leftInside": true,
+      "rightInside": true,
+      "area": 6.696891926478106,
+      "rings": 1,
+      "referenceInside": true
+    },
+    {
+      "operation": "difference",
+      "leftInside": true,
+      "rightInside": true,
+      "area": 1.153583521718951,
+      "rings": 2,
+      "referenceInside": false
+    },
+    {
+      "operation": "symmetric-difference",
+      "leftInside": true,
+      "rightInside": true,
+      "area": 2.307167043437903,
+      "rings": 4,
+      "referenceInside": false
+    },
+    {
+      "operation": "intersection",
+      "leftInside": false,
+      "rightInside": true,
+      "area": 1.1535835217189518,
+      "rings": 2,
+      "referenceInside": false
+    },
+    {
+      "operation": "union",
+      "leftInside": false,
+      "rightInside": true,
+      "area": 11.412787092640222,
+      "rings": 2,
+      "referenceInside": true
+    },
+    {
+      "operation": "difference",
+      "leftInside": false,
+      "rightInside": true,
+      "area": 5.869478687881067,
+      "rings": 1,
+      "referenceInside": false
+    },
+    {
+      "operation": "symmetric-difference",
+      "leftInside": false,
+      "rightInside": true,
+      "area": 10.25920357092127,
+      "rings": 2,
+      "referenceInside": true
+    },
+    {
+      "operation": "intersection",
+      "leftInside": false,
+      "rightInside": false,
+      "area": 5.869478687881067,
+      "rings": 1,
+      "referenceInside": false
+    },
+    {
+      "operation": "union",
+      "leftInside": false,
+      "rightInside": false,
+      "area": 8.176645731318969,
+      "rings": 1,
+      "referenceInside": false
+    },
+    {
+      "operation": "difference",
+      "leftInside": false,
+      "rightInside": false,
+      "area": 1.1535835217189514,
+      "rings": 2,
+      "referenceInside": false
+    },
+    {
+      "operation": "symmetric-difference",
+      "leftInside": false,
+      "rightInside": false,
+      "area": 2.307167043437902,
+      "rings": 4,
+      "referenceInside": false
+    }
+  ]
+}

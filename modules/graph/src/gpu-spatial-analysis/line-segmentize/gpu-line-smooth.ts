@@ -1,0 +1,302 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  createTransientView,
+  GPUScan,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandNodeProducer} from '@luma-contributors/graph/gpu-core';
+import {
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {createIdentitySourceLineIndicesNode} from './line-segmentize-kernels';
+import {
+  createSmoothLevelNode,
+  createSmoothLevelStateNode,
+  createSmoothPrepareNode,
+  createSmoothPublishNode
+} from './line-smooth-kernels';
+import type {GPULineGeometryOutput} from './line-segmentize-types';
+import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geometry-output';
+
+const OPERATION = 'GPULineSmooth';
+
+/** Largest accepted number of Chaikin iterations. */
+export const GPU_LINE_SMOOTH_MAXIMUM_ITERATIONS = 10;
+
+/** Number of float32 elements in a `GPULineSmooth` parameter buffer. */
+export const GPU_LINE_SMOOTH_PARAMETER_LENGTH = 4;
+
+/** CPU description of the per-frame parameters of `GPULineSmooth`. */
+export type GPULineSmoothSettings = {
+  /**
+   * Chaikin cut ratio in `(0, 0.5]`. Each edge `(a, b)` is replaced by `mix(a, b, ratio)` and
+   * `mix(a, b, 1 - ratio)`. Default 0.25 (classic Chaikin).
+   */
+  ratio?: number;
+};
+
+/**
+ * Packs `GPULineSmooth` parameters into the 4-element float32 layout `[ratio, 0, 0, 0]`.
+ *
+ * @param settings Settings to encode.
+ * @param target Optional destination of at least 4 elements.
+ * @throws If the ratio is outside `(0, 0.5]` or `target` is too short.
+ */
+export function getGPULineSmoothParameterValues(
+  settings: GPULineSmoothSettings = {},
+  target: Float32Array = new Float32Array(GPU_LINE_SMOOTH_PARAMETER_LENGTH)
+): Float32Array {
+  if (target.length < GPU_LINE_SMOOTH_PARAMETER_LENGTH) {
+    throw new Error(`Line smooth target must hold ${GPU_LINE_SMOOTH_PARAMETER_LENGTH} elements`);
+  }
+  const ratio = settings.ratio ?? 0.25;
+  if (!(ratio > 0 && ratio <= 0.5)) {
+    throw new Error('Line smooth ratio must be in (0, 0.5]');
+  }
+  target.set([ratio, 0, 0, 0]);
+  return target;
+}
+
+/**
+ * Properties for {@link GPULineSmooth}.
+ *
+ * Per-frame (no recompile): the contents of `parameters` (cut ratio) and of every input buffer.
+ * Compile-time: view lengths, the line count, `iterationCount`, `closed`, the output capacity, and
+ * which optional outputs are present.
+ */
+export type GPULineSmoothProps = {
+  /** Prefix for generated node and transient IDs. Defaults to `'line-smooth'`. */
+  id?: string;
+  /** Packed planar positions sorted by line. */
+  positions: GraphDataView<'float32x2'>;
+  /** `lineCount + 1` monotonic row offsets. */
+  lineOffsets: GraphDataView<'uint32'>;
+  /** Planar only; a longitude/latitude context throws (project positions first). */
+  spatialContext?: GPUSpatialContext;
+  /** Compile-time number of Chaikin passes in `[1, 10]`. Each one doubles the vertex count. */
+  iterationCount: number;
+  /**
+   * Treat every line as a closed ring (polygon outlines). A repeated closing vertex in the input is
+   * ignored, and every smoothed ring repeats its first vertex at the end. Default false.
+   */
+  closed?: boolean;
+  /**
+   * Per-frame packed float32 view of at least {@link GPU_LINE_SMOOTH_PARAMETER_LENGTH} elements
+   * written with `getGPULineSmoothParameterValues`.
+   */
+  parameters: GraphDataView<'float32'>;
+  /**
+   * Smoothed lines, one per input line. `sourceRows` and `measures` are not supported (a smoothed
+   * vertex blends several input vertices).
+   */
+  output: GPULineGeometryOutput;
+};
+
+/**
+ * Chaikin corner-cutting smoothing of many lines or rings at once (turf `polygonSmooth`, QGIS
+ * Smooth, the usual way to soften generalized boundaries or GPS tracks).
+ *
+ * One iteration replaces every edge `(a, b)` with `mix(a, b, r)` and `mix(a, b, 1 - r)`. Open lines
+ * keep their two endpoints, so `n` vertices become `2n`; closed rings of `n` distinct vertices
+ * become `2n` (plus the repeated first vertex in the output). Lines too short to smooth (fewer than
+ * two vertices, or rings with fewer than three) are copied unchanged. After `k` iterations a line
+ * has `n * 2^k` vertices.
+ *
+ * Output sizes depend only on the input layout, so two exclusive scans of per-line counts give
+ * every level's line offsets in closed form; each level is one kernel over the capacity whose
+ * slots find their line by binary search and blend two vertices of the previous level. Levels
+ * ping-pong through two capacity-sized graph transients, which is enough because a vertex past the
+ * capacity at one level only feeds vertices past the capacity at the next. Deterministic.
+ *
+ * Planar only: a longitude/latitude `spatialContext` throws at construction.
+ */
+export class GPULineSmooth implements GPUCommandNodeProducer {
+  /** Prefix for every node and transient ID. */
+  readonly id: string;
+  /** Validated properties. */
+  readonly props: GPULineSmoothProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Whether lines are closed rings. */
+  readonly closed: boolean;
+
+  constructor(props: GPULineSmoothProps) {
+    this.id = props.id ?? 'line-smooth';
+    this.props = props;
+    this.closed = props.closed ?? false;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    const {id} = this;
+    const {iterationCount} = props;
+    validateCapacity(id, 'iterationCount', iterationCount, 1, GPU_LINE_SMOOTH_MAXIMUM_ITERATIONS);
+    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    const rowCount = props.positions.length;
+    if (rowCount < 1) {
+      throw new Error(`${id} needs at least one position`);
+    }
+    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    if (props.lineOffsets.length < 2) {
+      throw new Error(`${id} lineOffsets needs two rows`);
+    }
+    const lineCount = props.lineOffsets.length - 1;
+    if (rowCount * 2 ** iterationCount + lineCount > 0xffffffff) {
+      throw new Error(`${id} positions.length * 2^iterationCount must fit in 32 bits`);
+    }
+    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    if (props.parameters.length < GPU_LINE_SMOOTH_PARAMETER_LENGTH) {
+      throw new Error(
+        `${id} parameters must hold ${GPU_LINE_SMOOTH_PARAMETER_LENGTH} float32 values`
+      );
+    }
+    validateLineGeometryOutput(id, props.output, lineCount);
+    if (props.output.sourceRows || props.output.measures) {
+      throw new Error(`${id} output.sourceRows and output.measures are not supported`);
+    }
+    validateGraphOutputsDisjointFromInputs(id, getLineGeometryOutputViews(props.output), [
+      props.positions,
+      props.lineOffsets,
+      props.parameters
+    ]);
+  }
+
+  /** Returns the prepare node, the scan nodes, one node per iteration, publish and source lines. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {props, id, closed} = this;
+    const {output, iterationCount} = props;
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.positions,
+      props.lineOffsets,
+      props.parameters,
+      ...getLineGeometryOutputViews(output)
+    ]);
+    const lineCount = props.lineOffsets.length - 1;
+    const capacity = output.positions.length;
+    const column = (name: string) =>
+      createTransientView(graph, `${id}-${name}`, 'uint32', lineCount + 1);
+    const smoothCounts = column('smooth-counts');
+    const plainCounts = column('plain-counts');
+    const smoothFlags = column('smooth-flags');
+    const smoothStarts = column('smooth-starts');
+    const plainStarts = column('plain-starts');
+    const smoothFlagStarts = closed ? column('smooth-flag-starts') : undefined;
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createSmoothPrepareNode<Parameters>(graph, {
+        id: `${id}-prepare`,
+        operation: OPERATION,
+        positions: props.positions,
+        lineOffsets: props.lineOffsets,
+        closed,
+        smoothCounts,
+        plainCounts,
+        smoothFlags
+      }),
+      ...new GPUScan({
+        id: `${id}-smooth-scan`,
+        input: smoothCounts,
+        output: smoothStarts
+      }).getCommandNodes(graph),
+      ...new GPUScan({
+        id: `${id}-plain-scan`,
+        input: plainCounts,
+        output: plainStarts
+      }).getCommandNodes(graph)
+    ];
+    if (smoothFlagStarts) {
+      nodes.push(
+        ...new GPUScan({
+          id: `${id}-flag-scan`,
+          input: smoothFlags,
+          output: smoothFlagStarts
+        }).getCommandNodes(graph)
+      );
+    }
+    // Two ping-pong level buffers, only as many as the intermediate levels need.
+    const levelBuffers = [0, 1]
+      .slice(0, Math.min(iterationCount - 1, 2))
+      .map(index => createTransientView(graph, `${id}-level-${index}`, 'float32x2', capacity));
+    const levelState = createTransientView(graph, `${id}-level-state`, 'uint32', 1);
+    nodes.push(
+      createSmoothLevelStateNode<Parameters>(graph, {
+        id: `${id}-level-reset`,
+        operation: OPERATION,
+        levelState,
+        reset: true
+      })
+    );
+    let source: GraphDataView<'float32x2'> = props.positions;
+    for (let level = 0; level < iterationCount; level++) {
+      const isFinal = level === iterationCount - 1;
+      const destination = isFinal ? output.positions : levelBuffers[level % 2];
+      nodes.push(
+        createSmoothLevelNode<Parameters>(graph, {
+          id: `${id}-level-${level}`,
+          operation: OPERATION,
+          level,
+          levelState,
+          isFinal,
+          closed,
+          lineCount,
+          source,
+          lineOffsets: props.lineOffsets,
+          smoothStarts,
+          plainStarts,
+          smoothFlagStarts,
+          parameters: props.parameters,
+          destination
+        })
+      );
+      if (!isFinal) {
+        nodes.push(
+          createSmoothLevelStateNode<Parameters>(graph, {
+            id: `${id}-level-${level}-advance`,
+            operation: OPERATION,
+            levelState,
+            reset: false
+          })
+        );
+      }
+      source = destination;
+    }
+    nodes.push(
+      createSmoothPublishNode<Parameters>(graph, {
+        id: `${id}-publish`,
+        operation: OPERATION,
+        iterationCount,
+        closed,
+        lineCount,
+        smoothStarts,
+        plainStarts,
+        smoothFlagStarts,
+        capacity,
+        outputLineOffsets: output.lineOffsets,
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount,
+        lineCountOutput: output.status.lineCount
+      })
+    );
+    if (output.sourceLineIndices) {
+      nodes.push(
+        createIdentitySourceLineIndicesNode<Parameters>(graph, {
+          id: `${id}-source-line-indexs`,
+          operation: OPERATION,
+          sourceLineIndices: output.sourceLineIndices
+        })
+      );
+    }
+    return nodes;
+  }
+}

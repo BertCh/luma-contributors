@@ -1,0 +1,28 @@
+.resident-table-modal { background: #fff; color: #223146; display: flex; flex-direction: column; min-height: 0; max-height: 75vh; gap: 12px; padding: 16px; font: 14px system-ui, sans-serif; }
+.resident-table-modal h2, .resident-table-modal p { margin: 0; }
+.resident-table-modal button, .resident-table-modal select { font: inherit; padding: 7px 10px; border: 1px solid #9caabd; border-radius: 4px; background: #f5f8fb; color: #223146; }
+.resident-table-modal button { cursor: pointer; }
+.resident-table-modal button:disabled { opacity: .55; cursor: default; }
+.resident-table-modal :focus-visible { outline: 2px solid #075eab; outline-offset: 2px; }
+.resident-table-modal nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.resident-table-modal button[aria-pressed=true] { background: #d7eaff; border-color: #075eab; }
+.resident-table-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.resident-table-scroll { overflow: auto; min-height: 100px; flex: 1; border: 1px solid #bfcbd8; }
+.resident-table-scroll table { border-collapse: separate; border-spacing: 0; min-width: 100%; text-align: left; font-variant-numeric: tabular-nums; }
+.resident-table-scroll caption { padding: 8px; text-align: left; }
+.resident-table-scroll td, .resident-table-scroll th { padding: 6px 10px; border-bottom: 1px solid #e2e9f0; white-space: nowrap; }
+.resident-table-scroll thead th { position: sticky; top: 0; background: #edf3f9; }
+.resident-table-column { display: inline-flex; gap: 5px; margin: 8px; }
+.resident-table-note { color: #47596c; font-size: 12px; }
+.resident-table-modal [role=alert] { color: #a42424; }
+.resident-table-scroll tr > th:first-child { position: sticky; left: 0; z-index: 1; min-width: 6rem; background: #fff; box-shadow: 1px 0 #bfcbd8; }
+.resident-table-scroll thead tr > th:first-child { z-index: 2; background: #edf3f9; }
+.resident-table-scroll td { max-width: 48ch; overflow: hidden; text-overflow: ellipsis; }
+.resident-table-wrap-control { display: inline-flex; align-items: center; gap: 5px; }
+.resident-table-wrap td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+
+.resident-table-scroll [data-pinned] { position: sticky; z-index: 1; background: #fff; box-shadow: 1px 0 #bfcbd8; }
+.resident-table-scroll thead [data-pinned] { z-index: 2; background: #edf3f9; }
+.resident-table-column-tools { margin: 4px 0; }
+.resident-table-statistics { border-collapse: collapse; margin: 8px 0; }
+.resident-table-statistics th, .resident-table-statistics td { padding: 3px 12px; text-align: left; border-bottom: 1px solid #e2e9f0; }

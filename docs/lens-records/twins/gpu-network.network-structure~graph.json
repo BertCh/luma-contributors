@@ -1,0 +1,36 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-structure",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-network.network-structure",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-network.network-structure. nodes: 51. structure metadata only. 1 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-network.network-structure. nodes: 51. structure metadata only. 1 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-network.network-structure\n\n- nodes: 51\n- 1 visible units vs budget 24\n- 51 hidden nodes\n- Edges by kind: raw 155, indirect 40, war 40\n- compute passes were not coalesced as in production\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "51"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"64\" style=\"grid-column:1;grid-row:1 / span 1\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-network-network-structure-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-network-network-structure-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-network-network-structure-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:network-structure\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:network-structure\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">network-structure</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:network-structure\" aria-label=\"Expand network-structure\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">network-structure-strong-components-initialize: commandCount=1 · network-structure-strong-components-initialize: maximumWorkgroupCount=1 · network-structure-strong-components-initialize: maximumInvocationCount=4</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:network-structure\" aria-label=\"Inspect network-structure\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 64
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:11:46.446Z",
+    "runId": "run-a4ba88a7",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-a4ba88a7",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

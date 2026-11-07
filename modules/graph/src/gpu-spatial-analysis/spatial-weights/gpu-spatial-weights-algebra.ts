@@ -1,0 +1,766 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {
+  assertCompatibleGPUSpatialContexts,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  createTransientView,
+  GPUSort,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer,
+  type GraphDataView
+} from '@luma-contributors/graph/gpu-core';
+import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  describeGPUSpatialWeights,
+  getGPUSpatialWeightsStatusViews,
+  getGPUSpatialWeightsViews,
+  type GPUSpatialWeights,
+  type GPUSpatialWeightsInformation,
+  type GPUSpatialWeightsOutput,
+  type GPUSpatialWeightsTransformState,
+  validateGPUSpatialWeights,
+  validateGPUSpatialWeightsOutput
+} from './spatial-weights';
+import {
+  createCSRStages,
+  getContainsFunctionWGSL,
+  getMergeVisitWGSL
+} from './spatial-weights-algebra-wgsl';
+import {
+  getBinaryMergeStages,
+  getSelfWeightStages,
+  getSubgraphStages
+} from './spatial-weights-row-local-stages';
+
+const OPERATION = 'GPUSpatialWeightsAlgebra';
+
+/** Maximum `order` of the `'higherOrder'` operation (one expansion level is added to the graph per order). */
+export const GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER = 32;
+
+/**
+ * How `'union'` and `'intersection'` combine the weights of a neighbor that both operands list.
+ * A neighbor listed by one operand only keeps that operand's weight.
+ *
+ * - `'left'` (default): the weight of `left`.
+ * - `'right'`: the weight of `right`.
+ * - `'sum'`, `'min'`, `'max'`, `'product'`: the named combination of the two weights.
+ * - `'binary'`: every output weight is 1 for every operation, including `difference` and
+ *   `symmetricDifference`. This is what libpysal 4.15 `Graph.union/intersection/difference/
+ *   symmetric_difference` return (verified: they ignore the operands' weights and give 1.0).
+ */
+export type GPUSpatialWeightsCombineRule =
+  | 'left'
+  | 'right'
+  | 'sum'
+  | 'min'
+  | 'max'
+  | 'product'
+  | 'binary';
+
+/** Properties shared by every {@link GPUSpatialWeightsAlgebra} operation. */
+export type GPUSpatialWeightsAlgebraBaseProps = {
+  /** Prefix for generated node IDs. Defaults to `'spatial-weights-algebra'`. */
+  id?: string;
+  /**
+   * Destination CSR with `rows + 1` offsets and the result capacity (`neighbors.length`). It must
+   * not share buffers with the inputs. `output.distances` is written only when present, and is
+   * not supported by `'higherOrder'` and `'block'` (they have no geometric distances).
+   *
+   * `status.overflow` (required) is set to 1 when the result needs more than the output capacity,
+   * else 0. On overflow the output is still a valid CSR: offsets are clamped to the capacity, so
+   * the leading rows are complete, the row in which the capacity runs out is a sorted prefix and
+   * the following rows are empty. `status.requiredCount` (optional) receives the slot count the
+   * final result needs, even past the capacity. It is exact for every operation except
+   * `'higherOrder'` with `order > 1`, where an overflowing intermediate set makes it a lower
+   * bound, so `outputWeights.status` does not publish it in that case; raise `workCapacity`
+   * instead.
+   */
+  output: GPUSpatialWeightsOutput;
+};
+
+/**
+ * Set operation of two weights on the same row set. Row `i` of the result is the sorted merge of
+ * row `i` of `left` and `right`, keeping the neighbor IDs that satisfy the operation:
+ * - `'union'`: IDs in either operand.
+ * - `'intersection'`: IDs in both.
+ * - `'difference'`: IDs in `left` but not `right` (weights from `left`).
+ * - `'symmetricDifference'`: IDs in exactly one operand (weights from the operand that has it).
+ *
+ * Distances come from `left` where it lists the neighbor, else from `right`.
+ */
+export type GPUSpatialWeightsBinaryProps = GPUSpatialWeightsAlgebraBaseProps & {
+  operation: 'union' | 'intersection' | 'difference' | 'symmetricDifference';
+  /** Left operand. */
+  left: GPUSpatialWeights;
+  /** Right operand, with the same row count as `left`. */
+  right: GPUSpatialWeights;
+  /** Weight rule for neighbors both operands list (only `'union'` and `'intersection'`). Defaults to `'left'`. */
+  weightRule?: GPUSpatialWeightsCombineRule;
+};
+
+/**
+ * Exactly-`order`-step neighbors (libpysal `Graph.higher_order`): `j` is in row `i` when the
+ * shortest directed path from `i` to `j` in `weights` has exactly `order` steps. Row `i` itself is
+ * never listed, even when `weights` lists self weights or `j` can return to `i`. Every weight is 1.
+ * With `cumulative` the result lists all neighbors within `order` steps (libpysal `lower_order=True`).
+ *
+ * Each level expands the previous frontier through `weights` and drops IDs seen at lower orders,
+ * then insertion-sorts the row. Work grows with the squared frontier degree, which suits the
+ * sparse contiguity and k-nearest-neighbor weights this entry produces, not dense graphs.
+ */
+export type GPUSpatialWeightsHigherOrderProps = GPUSpatialWeightsAlgebraBaseProps & {
+  operation: 'higherOrder';
+  /** Base weights (square). Only the sparsity pattern is used. */
+  weights: GPUSpatialWeights;
+  /** Step count, an integer in `[1, GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER]`. */
+  order: number;
+  /** Include all lower orders too. Defaults to false. */
+  cumulative?: boolean;
+  /**
+   * Slot capacity of the intermediate frontier and visited sets. Defaults to the output capacity.
+   * Exact lower-order sets can be larger than an exact-`order` output, so raise it when `overflow`
+   * is set although the final result would fit. `overflow` also reports intermediate overflow.
+   */
+  workCapacity?: number;
+};
+
+/**
+ * Adds or replaces the self entry of every row (the diagonal `w_ii`). This relaxes the
+ * `w_ii = 0` invariant of {@link GPUSpatialWeights}, see the class documentation for which
+ * consumers accept the result. The self distance is 0.
+ */
+export type GPUSpatialWeightsSelfWeightProps = GPUSpatialWeightsAlgebraBaseProps & {
+  operation: 'selfWeight';
+  /** Weights to extend. */
+  weights: GPUSpatialWeights;
+  /**
+   * Self weight: one non-negative finite number for every row, or a per-row float32 view (so it
+   * can change between encodings without recompiling). A row that already lists itself has that
+   * weight replaced.
+   */
+  selfWeight: number | GraphDataView<'float32'>;
+};
+
+/**
+ * Restricts weights to the rows selected by `mask` (libpysal `Graph.subgraph`). Row and neighbor
+ * IDs are not renumbered: a masked-out row becomes empty and every slot pointing to a masked-out
+ * row is dropped, so the result still indexes the same row space. Renumber with `GPUCompaction`
+ * when a dense subset is needed.
+ */
+export type GPUSpatialWeightsSubgraphProps = GPUSpatialWeightsAlgebraBaseProps & {
+  operation: 'subgraph';
+  /** Weights to restrict. */
+  weights: GPUSpatialWeights;
+  /** One uint32 per row; nonzero keeps the row. */
+  mask: GraphDataView<'uint32'>;
+};
+
+/**
+ * Block weights from group IDs (libpysal `Graph.build_block_contiguity`): row `i` lists every
+ * other row with the same group ID, with weight 1. Rows whose ID is `>= groupCount` have no group
+ * and stay empty. The output size is the sum of squared group sizes minus the row count.
+ */
+export type GPUSpatialWeightsBlockProps = GPUSpatialWeightsAlgebraBaseProps & {
+  operation: 'block';
+  /** Group ID per row, one uint32 each. The row count is `groupIds.length`. */
+  groupIds: GraphDataView<'uint32'>;
+  /** Group IDs are in `[0, groupCount)`; larger values mean no group. */
+  groupCount: number;
+};
+
+/** Properties for {@link GPUSpatialWeightsAlgebra}. */
+export type GPUSpatialWeightsAlgebraProps =
+  | GPUSpatialWeightsBinaryProps
+  | GPUSpatialWeightsHigherOrderProps
+  | GPUSpatialWeightsSelfWeightProps
+  | GPUSpatialWeightsSubgraphProps
+  | GPUSpatialWeightsBlockProps;
+
+export const COMBINE_RULES: Record<GPUSpatialWeightsCombineRule, string> = {
+  left: 'leftValue',
+  right: 'rightValue',
+  sum: 'leftValue + rightValue',
+  min: 'min(leftValue, rightValue)',
+  max: 'max(leftValue, rightValue)',
+  product: 'leftValue * rightValue',
+  binary: '1.0'
+};
+
+/** Transform state of a result whose weights come from operands of the given states. */
+export function combineAlgebraTransforms(
+  ...states: (GPUSpatialWeightsTransformState | undefined)[]
+): GPUSpatialWeightsTransformState {
+  // Only unscaled states survive dropping or merging slots; row sums and totals change otherwise.
+  const first = states[0] ?? 'unknown';
+  return (first === 'raw' || first === 'binary') && states.every(state => state === first)
+    ? first
+    : 'unknown';
+}
+
+/** Returns whether every operand is known to be symmetric. */
+function allSymmetric(...operands: GPUSpatialWeights[]): boolean | 'unknown' {
+  return operands.every(operand => operand.information?.symmetric === true) ? true : 'unknown';
+}
+
+/** Describes the result of an algebra operation for `outputWeights.information`. */
+function getAlgebraOutputInformation(
+  props: GPUSpatialWeightsAlgebraProps,
+  rowCount: number
+): GPUSpatialWeightsInformation {
+  const provenance = {source: OPERATION, criterion: props.operation};
+  switch (props.operation) {
+    case 'union':
+    case 'intersection':
+    case 'difference':
+    case 'symmetricDifference': {
+      const operands = props.operation === 'difference' ? [props.left] : [props.left, props.right];
+      return {
+        rowCount,
+        transform:
+          props.weightRule === 'binary'
+            ? 'binary'
+            : props.weightRule === 'sum'
+              ? combineAlgebraTransforms(
+                  ...operands.map(operand =>
+                    operand.information?.transform === 'binary'
+                      ? 'unknown'
+                      : operand.information?.transform
+                  )
+                )
+              : combineAlgebraTransforms(
+                  ...operands.map(operand => operand.information?.transform)
+                ),
+        // Difference of two symmetric operands is symmetric too, so both are required.
+        symmetric: allSymmetric(props.left, props.right),
+        hasSelfWeights: false,
+        provenance
+      };
+    }
+    case 'higherOrder':
+      return {
+        rowCount,
+        transform: 'binary',
+        symmetric: allSymmetric(props.weights),
+        hasSelfWeights: false,
+        provenance: {...provenance, order: props.order}
+      };
+    case 'selfWeight':
+      return {
+        rowCount,
+        // The self weight is arbitrary, so only an unscaled input stays unscaled.
+        transform: props.weights.information?.transform === 'raw' ? 'raw' : 'unknown',
+        symmetric: allSymmetric(props.weights),
+        hasSelfWeights: true,
+        provenance
+      };
+    case 'subgraph':
+      return {
+        rowCount,
+        transform: combineAlgebraTransforms(props.weights.information?.transform),
+        symmetric: allSymmetric(props.weights),
+        hasSelfWeights: props.weights.information?.hasSelfWeights,
+        provenance
+      };
+    default:
+      return {rowCount, transform: 'binary', symmetric: true, hasSelfWeights: false, provenance};
+  }
+}
+
+/**
+ * Algebra on {@link GPUSpatialWeights}: set operations, higher orders, self weights, subgraphs and
+ * block weights, producing a new CSR on the GPU with a bounded output and an overflow flag. This
+ * is the libpysal `Graph` algebra (`union`, `intersection`, `difference`, `symmetric_difference`,
+ * `higher_order`, `subgraph`, `build_block_contiguity`, `fill_diagonal`) over our CSR.
+ *
+ * Invariants preserved in the output: `offsets` non-decreasing from 0 with
+ * `offsets[rows] <= capacity`, strictly ascending neighbor IDs per row (no duplicates), finite
+ * non-negative weights. Binary operations are per-row two-pointer merges, so they are
+ * deterministic and need both operands to satisfy those invariants.
+ *
+ * Weight rules: libpysal 4.15 set operations return weight 1 for every link (use
+ * `weightRule: 'binary'` to match). By default we keep information instead: `union` and
+ * `intersection` keep the left operand's weight where both list a link (see `weightRule`),
+ * `difference` keeps left weights, `symmetricDifference` keeps the weight of the operand that has
+ * the link. `higherOrder` and `block` give weight 1 (as libpysal `higher_order`); `subgraph`
+ * keeps weights unchanged. For a binary operation the left operand's row count defines the row
+ * space; both operands need the same count.
+ *
+ * Self weights: `'selfWeight'` writes `w_ii != 0`, which relaxes the `w_ii = 0` invariant. Consumers
+ * that sum over slots keep the self term and accept it: `GPUSpatialLag` (a lag with the self
+ * weight gives Getis-Ord G* style sums), `GPUSpatialWeightsTransform` (row, binary, kernel,
+ * symmetrize, double, variance) and this class's own operations. The permutation tests,
+ * `GPUGlobalSpatialStatistics` and the local spatial-autocorrelation kernels skip `neighbor ==
+ * row` entries by design, so passing self weights to them silently ignores the diagonal.
+ *
+ * Metadata: {@link GPUSpatialWeightsAlgebra.outputWeights} is `output` with `information` (row count,
+ * transform state, symmetric flag, provenance) and `status` (`overflow`, `requiredCount`)
+ * attached. `symmetric` is `true` only when it is guaranteed by the operands' `information.symmetric`
+ * (union, intersection, difference and symmetric difference of two symmetric operands, a symmetric
+ * `higherOrder`, `selfWeight` or `subgraph` input, and `block`), else `'unknown'`. The
+ * status of `outputWeights` is this operation's own `overflow`; it does not repeat the operands'
+ * status, so check an overflowing operand before trusting a result built from it.
+ *
+ * Capacity grow loop: pass `output.status.requiredCount`, read it and `overflow` after a frame;
+ * when `overflow` is 1 reallocate the output with
+ * `getGPUSpatialWeightsCapacityPlan({rowCount, capacity, requiredCount}).capacity` slots and
+ * rebuild.
+ *
+ * Capacity: row counts run first, then an exclusive scan and clamped offsets, so an operation
+ * that fits reproduces the CPU result exactly and an overflowing one is flagged and truncated.
+ */
+export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
+  /** Prefix for every node ID. */
+  readonly id: string;
+  /** Validated properties. */
+  readonly props: GPUSpatialWeightsAlgebraProps;
+  /** The `output` CSR with `information` and `status` attached, for consumers. */
+  readonly outputWeights: GPUSpatialWeights;
+
+  constructor(props: GPUSpatialWeightsAlgebraProps) {
+    const id = props.id ?? 'spatial-weights-algebra';
+    this.id = id;
+    this.props = props;
+    const outputRows = validateGPUSpatialWeightsOutput(id, props.output);
+    const inputs = this.getInputWeights();
+    let spatialContext: GPUSpatialContext | undefined;
+    for (const input of inputs) {
+      if (spatialContext && input.spatialContext) {
+        assertCompatibleGPUSpatialContexts(id, spatialContext, input.spatialContext);
+      }
+      spatialContext ??= input.spatialContext;
+    }
+    const checkRows = (weights: GPUSpatialWeights, name: string) => {
+      const rows = validateGPUSpatialWeights(id, weights, name);
+      if (rows !== outputRows) {
+        throw new Error(`${id} ${name}.offsets length must equal output.offsets length`);
+      }
+    };
+    switch (props.operation) {
+      case 'union':
+      case 'intersection':
+      case 'difference':
+      case 'symmetricDifference':
+        checkRows(props.left, 'left');
+        checkRows(props.right, 'right');
+        if (props.weightRule && !(props.weightRule in COMBINE_RULES)) {
+          throw new Error(`${id} unknown weightRule ${props.weightRule}`);
+        }
+        if (props.output.distances) {
+          const needsRight =
+            props.operation === 'union' || props.operation === 'symmetricDifference';
+          if (!props.left.distances || (needsRight && !props.right.distances)) {
+            throw new Error(`${id} output.distances needs operand distances`);
+          }
+        }
+        break;
+      case 'higherOrder':
+        checkRows(props.weights, 'weights');
+        validateCapacity(id, 'order', props.order, 1, GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER);
+        if (props.workCapacity !== undefined) {
+          validateCapacity(id, 'workCapacity', props.workCapacity);
+        }
+        break;
+      case 'selfWeight':
+        checkRows(props.weights, 'weights');
+        if (typeof props.selfWeight === 'number') {
+          if (!(Number.isFinite(props.selfWeight) && props.selfWeight >= 0)) {
+            throw new Error(`${id} selfWeight must be a non-negative finite number`);
+          }
+        } else if (props.selfWeight.length !== outputRows) {
+          throw new Error(`${id} selfWeight view length must equal the row count`);
+        }
+        break;
+      case 'subgraph':
+        checkRows(props.weights, 'weights');
+        validatePackedView(props.mask, ['uint32'], `${id} mask`);
+        if (props.mask.length !== outputRows) {
+          throw new Error(`${id} mask length must equal the row count`);
+        }
+        break;
+      case 'block':
+        validatePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
+        if (props.groupIds.length !== outputRows) {
+          throw new Error(`${id} groupIds length must equal the row count`);
+        }
+        validateCapacity(id, 'groupCount', props.groupCount);
+        break;
+      default:
+        throw new Error(`${id} unknown operation`);
+    }
+    if (
+      props.output.distances &&
+      (props.operation === 'higherOrder' || props.operation === 'block')
+    ) {
+      throw new Error(`${id} '${props.operation}' has no distances: omit output.distances`);
+    }
+    if (
+      props.output.distances &&
+      (props.operation === 'selfWeight' || props.operation === 'subgraph') &&
+      !props.weights.distances
+    ) {
+      throw new Error(`${id} output.distances requires weights.distances`);
+    }
+    this.outputWeights = describeGPUSpatialWeights(props.output, {
+      spatialContext,
+      information: getAlgebraOutputInformation(props, outputRows),
+      status: {
+        ...props.output.status,
+        requiredCount:
+          props.operation === 'higherOrder' && props.order > 1
+            ? undefined
+            : props.output.status.requiredCount
+      }
+    });
+    const outputViews = [
+      ...getGPUSpatialWeightsViews(props.output),
+      ...getGPUSpatialWeightsStatusViews(props.output)
+    ];
+    validateGraphOutputsDisjointFromInputs(id, outputViews, [
+      ...inputs.flatMap(getGPUSpatialWeightsViews),
+      props.operation === 'subgraph' ? props.mask : undefined,
+      props.operation === 'block' ? props.groupIds : undefined,
+      props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
+        ? props.selfWeight
+        : undefined
+    ]);
+  }
+
+  /** Returns every input weights structure. */
+  private getInputWeights(): GPUSpatialWeights[] {
+    const {props} = this;
+    switch (props.operation) {
+      case 'union':
+      case 'intersection':
+      case 'difference':
+      case 'symmetricDifference':
+        return [props.left, props.right];
+      case 'higherOrder':
+      case 'selfWeight':
+      case 'subgraph':
+        return [props.weights];
+      default:
+        return [];
+    }
+  }
+
+  /** Returns the algebra nodes in dependency order. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {props, id} = this;
+    validateGraphViewsBelongToGraph(id, graph, [
+      ...this.getInputWeights().flatMap(getGPUSpatialWeightsViews),
+      ...getGPUSpatialWeightsViews(props.output),
+      ...getGPUSpatialWeightsStatusViews(props.output),
+      props.operation === 'subgraph' ? props.mask : undefined,
+      props.operation === 'block' ? props.groupIds : undefined,
+      props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
+        ? props.selfWeight
+        : undefined
+    ]);
+    switch (props.operation) {
+      case 'higherOrder':
+        return this.getHigherOrderNodes(graph, props);
+      case 'selfWeight':
+        return this.getSelfWeightNodes(graph, props);
+      case 'subgraph':
+        return this.getSubgraphNodes(graph, props);
+      case 'block':
+        return this.getBlockNodes(graph, props);
+      default:
+        return this.getBinaryNodes(graph, props);
+    }
+  }
+
+  private getBinaryNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPUSpatialWeightsBinaryProps
+  ): GPUCommandNode<Parameters>[] {
+    const {left, right, output, operation} = props;
+    const rule = props.weightRule ?? 'left';
+    return getBinaryMergeStages(graph, this.getStageBase(output), {
+      operation,
+      left,
+      right,
+      output,
+      isBinaryRule: rule === 'binary',
+      combineExpression: COMBINE_RULES[rule]
+    });
+  }
+
+  /** The count/scan/emit settings of a whole-CSR stage; chunked weights add `chunk`. */
+  private getStageBase(output: GPUSpatialWeightsOutput) {
+    return {
+      id: this.id,
+      operation: OPERATION,
+      rows: output.offsets.length - 1,
+      targetOffsets: output.offsets,
+      capacity: output.neighbors.length,
+      overflow: output.status.overflow,
+      initializesOverflow: true,
+      totalNeighbors: output.status.requiredCount
+    };
+  }
+
+  private getHigherOrderNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPUSpatialWeightsHigherOrderProps
+  ): GPUCommandNode<Parameters>[] {
+    const {id} = this;
+    const {weights, output, order} = props;
+    const cumulative = props.cumulative ?? false;
+    const rows = output.offsets.length - 1;
+    const workCapacity = props.workCapacity ?? output.neighbors.length;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    type Pattern = {offsets: GraphDataView<'uint32'>; neighbors: GraphDataView<'uint32'>};
+    const createPattern = (name: string): Pattern => ({
+      offsets: createTransientView(graph, `${id}-${name}-offsets`, 'uint32', rows + 1),
+      neighbors: createTransientView(graph, `${id}-${name}-neighbors`, 'uint32', workCapacity)
+    });
+    const outputPattern: Pattern = {offsets: output.offsets, neighbors: output.neighbors};
+    let initializesOverflow = true;
+    const stageBase = (name: string, target: Pattern, last: boolean) => {
+      const stage = {
+        id: `${id}-${name}`,
+        operation: OPERATION,
+        rows,
+        targetOffsets: target.offsets,
+        capacity: target.neighbors.length,
+        overflow: props.output.status.overflow,
+        initializesOverflow,
+        totalNeighbors: last ? props.output.status.requiredCount : undefined,
+        attributes: [
+          {name: 'neighbors', output: target.neighbors, type: 'u32' as const, value: 'id'}
+        ]
+      };
+      initializesOverflow = false;
+      return stage;
+    };
+    const readBinding = (name: string, view: GraphDataView) => ({
+      name,
+      view,
+      type: 'u32' as const,
+      access: 'read' as const
+    });
+
+    // Level 1: the pattern of `weights` without the diagonal.
+    const first = order === 1 ? outputPattern : createPattern('exact-1');
+    nodes.push(
+      ...createCSRStages(graph, {
+        ...stageBase('exact-1', first, order === 1),
+        bindings: [
+          readBinding('baseOffsets', weights.offsets),
+          readBinding('baseNeighbors', weights.neighbors)
+        ],
+        visit:
+          onItem => `for (var slot = baseOffsets[baseOffsetsOffset + index]; slot < baseOffsets[baseOffsetsOffset + index + 1u]; slot++) {
+    let id = baseNeighbors[baseNeighborsOffset + slot];
+    if (id != index && id < ROWS) {
+      ${onItem}
+    }
+  }`
+      })
+    );
+    let frontier = first;
+    let visited = first;
+    for (let level = 2; level <= order; level++) {
+      const isLast = level === order;
+      const frontierTarget =
+        isLast && !cumulative ? outputPattern : createPattern(`exact-${level}`);
+      nodes.push(
+        ...createCSRStages(graph, {
+          ...stageBase(`exact-${level}`, frontierTarget, isLast && !cumulative),
+          bindings: [
+            readBinding('baseOffsets', weights.offsets),
+            readBinding('baseNeighbors', weights.neighbors),
+            readBinding('frontierOffsets', frontier.offsets),
+            readBinding('frontierNeighbors', frontier.neighbors),
+            readBinding('visitedOffsets', visited.offsets),
+            readBinding('visitedNeighbors', visited.neighbors)
+          ],
+          declarations: `${getContainsFunctionWGSL('baseContains', 'baseNeighbors')}
+${getContainsFunctionWGSL('visitedContains', 'visitedNeighbors')}`,
+          // Candidates c of row i come from the frontier rows. Keep c when it is not i, not
+          // visited at a lower order, and not already produced by an earlier frontier neighbor.
+          visit: onItem => `let frontierBegin = frontierOffsets[frontierOffsetsOffset + index];
+  let frontierEnd = frontierOffsets[frontierOffsetsOffset + index + 1u];
+  let visitedBegin = visitedOffsets[visitedOffsetsOffset + index];
+  let visitedEnd = visitedOffsets[visitedOffsetsOffset + index + 1u];
+  for (var frontierSlot = frontierBegin; frontierSlot < frontierEnd; frontierSlot++) {
+    let middle = frontierNeighbors[frontierNeighborsOffset + frontierSlot];
+    if (middle >= ROWS) {
+      continue;
+    }
+    for (var slot = baseOffsets[baseOffsetsOffset + middle]; slot < baseOffsets[baseOffsetsOffset + middle + 1u]; slot++) {
+      let id = baseNeighbors[baseNeighborsOffset + slot];
+      if (id == index || id >= ROWS || visitedContains(visitedBegin, visitedEnd, id)) {
+        continue;
+      }
+      var seen = false;
+      for (var earlier = frontierBegin; earlier < frontierSlot; earlier++) {
+        let earlierMiddle = frontierNeighbors[frontierNeighborsOffset + earlier];
+        if (earlierMiddle < ROWS && baseContains(baseOffsets[baseOffsetsOffset + earlierMiddle], baseOffsets[baseOffsetsOffset + earlierMiddle + 1u], id)) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen) {
+        ${onItem}
+      }
+    }
+  }`,
+          sortRows: true
+        })
+      );
+      if (isLast && !cumulative) {
+        frontier = frontierTarget;
+        break;
+      }
+      const visitedTarget = isLast ? outputPattern : createPattern(`visited-${level}`);
+      nodes.push(
+        ...createCSRStages(graph, {
+          ...stageBase(`visited-${level}`, visitedTarget, isLast),
+          bindings: [
+            readBinding('leftOffsets', visited.offsets),
+            readBinding('leftNeighbors', visited.neighbors),
+            readBinding('rightOffsets', frontierTarget.offsets),
+            readBinding('rightNeighbors', frontierTarget.neighbors)
+          ],
+          visit: onItem => getMergeVisitWGSL('union', onItem)
+        })
+      );
+      frontier = frontierTarget;
+      visited = visitedTarget;
+    }
+    nodes.push(createFillWeightsNode(graph, `${id}-weights`, output));
+    return nodes;
+  }
+
+  private getSelfWeightNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPUSpatialWeightsSelfWeightProps
+  ): GPUCommandNode<Parameters>[] {
+    return getSelfWeightStages(graph, this.getStageBase(props.output), props);
+  }
+
+  private getSubgraphNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPUSpatialWeightsSubgraphProps
+  ): GPUCommandNode<Parameters>[] {
+    return getSubgraphStages(graph, this.getStageBase(props.output), props);
+  }
+
+  private getBlockNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPUSpatialWeightsBlockProps
+  ): GPUCommandNode<Parameters>[] {
+    const {id} = this;
+    const {output, groupIds, groupCount} = props;
+    const rows = output.offsets.length - 1;
+    const sortKeys = createTransientView(graph, `${id}-sort-keys`, 'uint32', rows);
+    const sortRowIds = createTransientView(graph, `${id}-sort-rows`, 'uint32', rows);
+    const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', rows);
+    const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', rows);
+    return [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-sort-prepare`,
+        operation: OPERATION,
+        variant: 'sort-prepare',
+        bindings: [
+          {name: 'groupIds', view: groupIds, type: 'u32', access: 'read'},
+          {name: 'sortKeys', view: sortKeys, type: 'u32', access: 'read_write'},
+          {name: 'sortRows', view: sortRowIds, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        declarations: `const GROUP_COUNT: u32 = ${groupCount}u;`,
+        body: `sortKeys[sortKeysOffset + index] = min(groupIds[groupIdsOffset + index], GROUP_COUNT);
+  sortRows[sortRowsOffset + index] = index;`
+      }),
+      // The sort is stable, so each group lists its rows in ascending ID order.
+      ...new GPUSort({
+        id: `${id}-sort`,
+        keys: sortKeys,
+        values: sortRowIds,
+        outputKeys: sortedKeys,
+        outputValues: sortedRows,
+        keyBits: getSortKeyBits(groupCount)
+      }).getCommandNodes(graph),
+      ...createCSRStages(graph, {
+        id,
+        operation: OPERATION,
+        rows,
+        targetOffsets: output.offsets,
+        capacity: output.neighbors.length,
+        overflow: props.output.status.overflow,
+        initializesOverflow: true,
+        totalNeighbors: props.output.status.requiredCount,
+        bindings: [
+          {name: 'groupIds', view: groupIds, type: 'u32', access: 'read'},
+          {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
+          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'}
+        ],
+        declarations: `const GROUP_COUNT: u32 = ${groupCount}u;
+fn lowerBound(key: u32) -> u32 {
+  var low = 0u;
+  var high = ${rows}u;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (sortedKeys[sortedKeysOffset + middle] < key) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}`,
+        visit: onItem => `let group = min(groupIds[groupIdsOffset + index], GROUP_COUNT);
+  if (group < GROUP_COUNT) {
+    let groupEnd = lowerBound(group + 1u);
+    for (var position = lowerBound(group); position < groupEnd; position++) {
+      let id = sortedRows[sortedRowsOffset + position];
+      if (id != index) {
+        ${onItem}
+      }
+    }
+  }`,
+        attributes: [
+          {name: 'neighbors', output: output.neighbors, type: 'u32', value: 'id'},
+          {name: 'weights', output: output.weights, type: 'f32', value: '1.0'}
+        ]
+      })
+    ];
+  }
+}
+
+/** Writes weight 1 into every used slot of `output`. */
+function createFillWeightsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  output: GPUSpatialWeights
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id,
+    operation: OPERATION,
+    variant: 'weights',
+    bindings: [
+      {name: 'offsets', view: output.offsets, type: 'u32', access: 'read'},
+      {name: 'weights', view: output.weights, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: output.offsets.length - 1,
+    body: `for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
+    weights[weightsOffset + slot] = 1.0;
+  }`
+  });
+}

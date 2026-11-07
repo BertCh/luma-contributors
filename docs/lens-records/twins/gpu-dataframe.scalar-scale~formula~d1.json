@@ -1,0 +1,110 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.scalar-scale",
+  "rung": "formula",
+  "datum": 1,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.scalar-scale",
+  "viewId": "formula-card",
+  "caption": "Formula y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0. outputValues: 13.46. valu…",
+  "description": "Formula y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0. outputValues: 13.46. valu…",
+  "llms": "Formula y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0.\n\n- outputValues: 13.46\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "outputValues",
+    "value": "13.46"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUScalarScale</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{outputValues}{y}=\\term{firstRange}{r_0}(1-\\term{position}{t})+\\term{secondRange}{r_1}\\,\\term{position}{t},\\quad \\term{position}{t}=\\frac{\\term{transformed}{T(x)}-\\term{first}{T(d_0)}}{\\term{second}{T(d_1)}-\\term{first}{T(d_0)}}</pre><p class=\"lens-ascii\">y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0.</p></div><div class=\"lens-worked-example\"><h4>Entity 1</h4><div><pre class=\"lens-tex\">\\term{outputValues}{13.4591}=\\term{firstRange}{r_0}(1-\\term{position}{t})+\\term{secondRange}{r_1}\\,\\term{position}{t},\\quad \\term{position}{t}=\\frac{\\term{transformed}{T(x)}-\\term{first}{T(d_0)}}{\\term{second}{T(d_1)}-\\term{first}{T(d_0)}}</pre><p class=\"lens-ascii\">y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"outputValues\">outputValues · output · outputValues<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"firstRange\">firstRange · input · firstRange</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"secondRange\">secondRange · input · secondRange</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"position\">position · intermediate · position</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"transformed\">transformed · intermediate · transformed</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"first\">first · intermediate · first</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"second\">second · intermediate · second</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "outputValues",
+        "output",
+        "outputValues",
+        "13.459134101867676",
+        "readback"
+      ],
+      [
+        "firstRange",
+        "input",
+        "firstRange",
+        "—",
+        "metadata"
+      ],
+      [
+        "secondRange",
+        "input",
+        "secondRange",
+        "—",
+        "metadata"
+      ],
+      [
+        "position",
+        "intermediate",
+        "position",
+        "—",
+        "metadata"
+      ],
+      [
+        "transformed",
+        "intermediate",
+        "transformed",
+        "—",
+        "metadata"
+      ],
+      [
+        "first",
+        "intermediate",
+        "first",
+        "—",
+        "metadata"
+      ],
+      [
+        "second",
+        "intermediate",
+        "second",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{outputValues}{y}=\\term{firstRange}{r_0}(1-\\term{position}{t})+\\term{secondRange}{r_1}\\,\\term{position}{t},\\quad \\term{position}{t}=\\frac{\\term{transformed}{T(x)}-\\term{first}{T(d_0)}}{\\term{second}{T(d_1)}-\\term{first}{T(d_0)}}",
+    "ascii": "y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:11:42.045Z",
+    "runId": "run-a5d413be",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a5d413be",
+    "rung": "formula",
+    "bindings": {
+      "entity": 1
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

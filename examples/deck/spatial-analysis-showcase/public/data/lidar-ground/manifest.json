@@ -1,0 +1,59 @@
+{
+  "id": "lidar-ground",
+  "version": 1,
+  "kind": "points",
+  "license": "Public domain (U.S. Government work; USGS 3DEP)",
+  "attribution": "U.S. Geological Survey, 3D Elevation Program (3DEP), King County 2021",
+  "count": 116213,
+  "bbox": [
+    -122.34098606255156,
+    47.595064533227394,
+    -122.33873237750235,
+    47.59671148171778
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "position": {
+      "file": "position.bin",
+      "dtype": "float64",
+      "components": 2,
+      "length": 116213
+    },
+    "elevation": {
+      "file": "elevation.bin",
+      "dtype": "float32",
+      "length": 116213,
+      "unit": "m NAVD88"
+    },
+    "classification": {
+      "file": "classification.bin",
+      "dtype": "uint32",
+      "length": 116213,
+      "unit": "LAS classification code"
+    }
+  },
+  "properties": {
+    "source": "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/WA_KingCounty_2021_B21/WA_KingCo_1_2021/LAZ/USGS_LPC_WA_KingCounty_2021_B21_King_2282.laz",
+    "sourceItem": "https://www.sciencebase.gov/catalog/item/619ce206d34eb622f694418b",
+    "sourceMetadata": "https://thor-f5.er.usgs.gov/ngtoc/metadata/waf/elevation/lidar_point_cloud/laz/WA_KingCo_1_2021/USGS_LPC_WA_KingCounty_2021_B21_King_2282.xml",
+    "sourceSha256": "cfceeda5525b335ba523613b9837c650d72d7cc40b8c32d22c18ff7344124ab3",
+    "collectionDates": [
+      "2021-04-01",
+      "2021-04-24"
+    ],
+    "license": "U.S. Government work; USGS 3DEP products are public domain",
+    "horizontalCrs": "EPSG:6597 (NAD83(2011) / Washington North, US survey feet)",
+    "verticalCrs": "EPSG:6360 (NAVD88 height, Geoid18, US survey feet)",
+    "verticalOutput": "NAVD88 metres",
+    "origin": [
+      -122.33976786609728,
+      47.595888866686835
+    ],
+    "cropSizeMeters": [
+      180.0003600006096,
+      180.0003600006096
+    ],
+    "sampling": "one seeded random original return per occupied 0.5 m horizontal cell; no fabricated or interpolated points",
+    "seed": 20210424
+  }
+}

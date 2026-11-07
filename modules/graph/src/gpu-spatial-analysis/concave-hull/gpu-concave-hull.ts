@@ -1,0 +1,447 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {getGraphOutputViews} from '../../utils/gpu-contributor-utils';
+import {assert} from '@luma.gl/core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer,
+  type GraphDataView
+} from '@luma-contributors/graph/gpu-core';
+import {
+  GPUDelaunayTessellation,
+  getDelaunayMaximumTriangleCount
+} from '../delaunay-tessellation/gpu-delaunay-tessellation';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {
+  validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs
+} from '../../utils/gpu-contributor-utils';
+import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {
+  createTriangleEdgeAdjacencyNodes,
+  TRIANGLE_ADJACENCY_NONE
+} from '../shared/triangle-edge-adjacency';
+
+export type GPUConcaveHullProps = {
+  id?: string;
+  positions: GraphDataView<'float32x2'>;
+  spatialContext?: GPUSpatialContext;
+  /** Maximum circumradius of retained Delaunay triangles in planar coordinate units. */
+  maximumCircumradius: number;
+  output: {
+    /** Dense oriented boundary edges, each pair references source positions; edgeValidity masks padding. */
+    boundaryEdges: GraphDataView<'uint32x2'>;
+    edgeValidity: GraphDataView<'uint32'>;
+    /** Retained Delaunay triangles; triangleValidity masks removed triangles and padding. */
+    triangles: GraphDataView<'uint32x3'>;
+    triangleValidity: GraphDataView<'uint32'>;
+    /** One row; zero if tessellation did not finish. */
+    status: {converged: GraphDataView<'uint32'>};
+  };
+};
+
+/**
+ * Planar alpha-complex hull: retain triangles whose circumradius does not exceed the requested
+ * radius, then expose their oriented boundary. Holes and disconnected components are preserved.
+ * This deliberately uses radius-based alpha-shape semantics, not GEOS's ratio-based concave hull.
+ * Isolated points and lines produce no area boundary. Capacity is 2*n-5 triangles and three edges
+ * per triangle. Boundary edges can be passed to ring assembly without geometric intersection work.
+ */
+export class GPUConcaveHull implements GPUCommandNodeProducer {
+  readonly id: string;
+  readonly props: GPUConcaveHullProps;
+  constructor(props: GPUConcaveHullProps) {
+    this.id = props.id ?? 'concave-hull';
+    this.props = props;
+    const capacity = getDelaunayMaximumTriangleCount(props.positions.length);
+    // maximumCircumradius must be positive and representable as a finite f32.
+    assert(
+      Number.isFinite(Math.fround(props.maximumCircumradius)) && props.maximumCircumradius > 0
+    );
+    assert(
+      props.output.triangles.length === capacity &&
+        props.output.triangleValidity.length === capacity &&
+        props.output.boundaryEdges.length === 3 * capacity &&
+        props.output.edgeValidity.length === 3 * capacity &&
+        props.output.status.converged.length >= 1
+    );
+    assert(
+      new Set(getGraphOutputViews(props.output).map(view => view.buffer)).size ===
+        getGraphOutputViews(props.output).length
+    );
+    validateGraphOutputsDisjointFromInputs(this.id, getGraphOutputViews(props.output), [
+      props.positions
+    ]);
+  }
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {id, props} = this;
+    const {output} = props;
+    validateGraphViewsBelongToGraph(id, graph, [props.positions, ...getGraphOutputViews(output)]);
+    const count = createTransientView(graph, `${id}-count`, 'uint32', 1);
+    const requiredCount = createTransientView(graph, `${id}-required`, 'uint32', 1);
+    const overflow = createTransientView(graph, `${id}-overflow`, 'uint32', 1);
+    const nodes = [
+      ...new GPUDelaunayTessellation({
+        id: `${id}-delaunay`,
+        positions: props.positions,
+        spatialContext: props.spatialContext,
+        output: {
+          triangles: output.triangles,
+          status: {count, requiredCount, overflow, converged: output.status.converged}
+        }
+      }).getCommandNodes(graph)
+    ];
+    const adjacency = createTransientView(
+      graph,
+      `${id}-adjacency`,
+      'uint32',
+      output.boundaryEdges.length
+    );
+    nodes.push(
+      createRetainTrianglesNode(graph, {
+        id: `${id}-retain`,
+        positions: props.positions,
+        triangles: output.triangles,
+        count,
+        converged: output.status.converged,
+        validity: output.triangleValidity,
+        maximumCircumradius: props.maximumCircumradius
+      }),
+      ...createTriangleEdgeAdjacencyNodes(graph, {
+        id: `${id}-adjacency`,
+        operation: 'GPUConcaveHull',
+        pointCount: props.positions.length,
+        triangles: output.triangles,
+        triangleCount: count,
+        validity: output.triangleValidity,
+        adjacency
+      }),
+      createBoundaryEdgesNode(graph, {
+        id: `${id}-boundary`,
+        triangles: output.triangles,
+        validity: output.triangleValidity,
+        adjacency,
+        boundaryEdges: output.boundaryEdges,
+        edgeValidity: output.edgeValidity
+      })
+    );
+    return nodes;
+  }
+}
+
+/**
+ * Marks the triangles whose circumradius is at most `maximumCircumradius`. With `groupIds`,
+ * `converged` has one row per group and a triangle takes the row of its first vertex's group.
+ */
+function createRetainTrianglesNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    positions: GraphDataView<'float32x2'>;
+    triangles: GraphDataView<'uint32x3'>;
+    count: GraphDataView<'uint32'>;
+    converged: GraphDataView<'uint32'>;
+    validity: GraphDataView<'uint32'>;
+    maximumCircumradius: number;
+    groupIds?: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode(graph, {
+    id: props.id,
+    operation: 'GPUConcaveHull',
+    invocationCount: props.triangles.length,
+    bindings: [
+      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'triangles', view: props.triangles, type: 'u32', access: 'read'},
+      {name: 'count', view: props.count, type: 'u32', access: 'read'},
+      {name: 'converged', view: props.converged, type: 'u32', access: 'read'},
+      {name: 'validity', view: props.validity, type: 'u32', access: 'read_write'},
+      ...(props.groupIds
+        ? [{name: 'groupIds', view: props.groupIds, type: 'u32' as const, access: 'read' as const}]
+        : [])
+    ],
+    // The radius threshold is a pipeline override so changing it does not rebuild the module.
+    declarations: `${EXACT_ORIENTATION_WGSL}
+override MAXIMUM_CIRCUMRADIUS: f32;
+fn position(row: u32) -> vec2f { return vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]); }`,
+    constants: {MAXIMUM_CIRCUMRADIUS: Math.fround(props.maximumCircumradius)},
+    body: `var retain = false;
+if (index < count[countOffset]${
+      props.groupIds
+        ? ` && converged[convergedOffset + groupIds[groupIdsOffset + triangles[trianglesOffset + index * 3u]]] != 0u`
+        : ' && converged[convergedOffset] != 0u'
+    }) {
+  let triangle = vec3<u32>(triangles[trianglesOffset + index * 3u], triangles[trianglesOffset + index * 3u + 1u], triangles[trianglesOffset + index * 3u + 2u]);
+  let first = position(triangle.x); let second = position(triangle.y); let third = position(triangle.z);
+  // Exact orientation rejects only truly collinear triangles; results 0 and 2 are degenerate.
+  let orientation = orientSign(first, second, third);
+  if (orientation != 0 && orientation != 2) {
+    // Circumcenter relative to the first vertex avoids cancellation far from the origin.
+    let firstEdge = second - first; let secondEdge = third - first;
+    let denominator = 2.0 * (firstEdge.x * secondEdge.y - firstEdge.y * secondEdge.x);
+    let firstLength = dot(firstEdge, firstEdge); let secondLength = dot(secondEdge, secondEdge);
+    let offset = vec2f((secondEdge.y * firstLength - firstEdge.y * secondLength) / denominator, (firstEdge.x * secondLength - secondEdge.x * firstLength) / denominator);
+    let radius = length(offset);
+    // NaN and infinite radii fail the comparison and are not retained.
+    retain = radius <= MAXIMUM_CIRCUMRADIUS;
+  }
+}
+validity[validityOffset + index] = u32(retain);`
+  });
+}
+
+/** Marks the boundary edges of the retained triangles (those with no retained neighbor). */
+function createBoundaryEdgesNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    triangles: GraphDataView<'uint32x3'>;
+    validity: GraphDataView<'uint32'>;
+    adjacency: GraphDataView<'uint32'>;
+    boundaryEdges: GraphDataView<'uint32x2'>;
+    edgeValidity: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode(graph, {
+    id: props.id,
+    operation: 'GPUConcaveHull',
+    invocationCount: props.boundaryEdges.length,
+    bindings: [
+      {name: 'triangles', view: props.triangles, type: 'u32', access: 'read'},
+      {name: 'validity', view: props.validity, type: 'u32', access: 'read'},
+      {name: 'adjacency', view: props.adjacency, type: 'u32', access: 'read'},
+      {name: 'edges', view: props.boundaryEdges, type: 'u32', access: 'read_write'},
+      {name: 'edgeValidity', view: props.edgeValidity, type: 'u32', access: 'read_write'}
+    ],
+    // A retained triangle edge is on the boundary when no retained triangle shares it.
+    body: `let triangleIndex = index / 3u; let edgeIndex = index % 3u;
+var boundary = false; var edge = vec2<u32>(0u);
+if (triangleIndex < ${props.triangles.length}u && validity[validityOffset + triangleIndex] != 0u) {
+  let triangle = vec3<u32>(triangles[trianglesOffset + triangleIndex * 3u], triangles[trianglesOffset + triangleIndex * 3u + 1u], triangles[trianglesOffset + triangleIndex * 3u + 2u]);
+  edge = vec2<u32>(triangle[edgeIndex], triangle[(edgeIndex + 1u) % 3u]);
+  boundary = adjacency[adjacencyOffset + index] == ${TRIANGLE_ADJACENCY_NONE}u;
+}
+edges[edgesOffset + index * 2u] = edge.x; edges[edgesOffset + index * 2u + 1u] = edge.y;
+edgeValidity[edgeValidityOffset + index] = u32(boundary);`
+  });
+}
+
+export type GPUGroupConcaveHullProps = GPUConcaveHullProps & {
+  groupIds: GraphDataView<'uint32'>;
+  /** Explicit group capacity; groups outside [0,groupCount) are omitted. */
+  groupCount: number;
+};
+
+/**
+ * Independent alpha complexes for GPU-resident labels. Each group reserves 2*n-5 triangles and
+ * three boundary slots per triangle; converged has one row per group. All groups are triangulated
+ * by one group-aware {@link GPUDelaunayTessellation} (sites are keyed by group, so no triangle
+ * mixes groups and one pipeline serves every group), then retained and outlined once in a packed
+ * list and scattered into the per-group slots. Work is O(n log n) in the point count; only the
+ * output reservation is O(groupCount*n), so callers should still bound cluster capacity.
+ * Triangles of group `g` start at slot `g*(2*n-5)` in ascending canonical order, and its edges at
+ * `3*` that slot.
+ */
+export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
+  readonly id: string;
+  readonly props: GPUGroupConcaveHullProps;
+  constructor(props: GPUGroupConcaveHullProps) {
+    this.id = props.id ?? 'group-concave-hull';
+    this.props = props;
+    const capacity = getDelaunayMaximumTriangleCount(props.positions.length) * props.groupCount;
+    assert(
+      Number.isInteger(props.groupCount) &&
+        props.groupCount > 0 &&
+        props.groupIds.length >= props.positions.length
+    );
+    assert(
+      props.output.triangles.length === capacity &&
+        props.output.triangleValidity.length === capacity &&
+        props.output.boundaryEdges.length === 3 * capacity &&
+        props.output.edgeValidity.length === 3 * capacity &&
+        props.output.status.converged.length >= props.groupCount
+    );
+    assert(
+      new Set(getGraphOutputViews(props.output).map(view => view.buffer)).size ===
+        getGraphOutputViews(props.output).length
+    );
+    validateGraphOutputsDisjointFromInputs(this.id, getGraphOutputViews(props.output), [
+      props.positions,
+      props.groupIds
+    ]);
+  }
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {id, props} = this;
+    const {output, groupCount} = props;
+    const pointCount = props.positions.length;
+    const capacity = getDelaunayMaximumTriangleCount(pointCount);
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.positions,
+      props.groupIds,
+      ...getGraphOutputViews(output)
+    ]);
+    const scalar = (name: string, length = 1) =>
+      createTransientView(graph, `${id}-${name}`, 'uint32', length);
+    const count = scalar('count');
+    const requiredCount = scalar('required');
+    const overflow = scalar('overflow');
+    const groupCounts = scalar('group-counts', groupCount);
+    const groupOffsets = scalar('group-offsets', groupCount);
+    const groupConverged = scalar('group-converged', groupCount);
+    // Packed (group-major) triangles of every group.
+    const packedTriangles = createTransientView(
+      graph,
+      `${id}-packed-triangles`,
+      'uint32x3',
+      capacity
+    );
+    const packedValidity = scalar('packed-validity', capacity);
+    const packedEdges = createTransientView(graph, `${id}-packed-edges`, 'uint32x2', 3 * capacity);
+    const packedEdgeValidity = scalar('packed-edge-validity', 3 * capacity);
+    const adjacency = scalar('adjacency', 3 * capacity);
+    const nodes: GPUCommandNode<Parameters>[] = [
+      ...new GPUDelaunayTessellation({
+        id: `${id}-delaunay`,
+        positions: props.positions,
+        groups: {ids: props.groupIds, count: groupCount},
+        spatialContext: props.spatialContext,
+        output: {
+          triangles: packedTriangles,
+          status: {count, requiredCount, overflow},
+          groups: {
+            triangleCounts: groupCounts,
+            triangleOffsets: groupOffsets,
+            status: {converged: groupConverged}
+          }
+        }
+      }).getCommandNodes(graph)
+    ];
+    if (capacity > 0) {
+      nodes.push(
+        createRetainTrianglesNode(graph, {
+          id: `${id}-retain`,
+          positions: props.positions,
+          triangles: packedTriangles,
+          count,
+          converged: groupConverged,
+          validity: packedValidity,
+          maximumCircumradius: props.maximumCircumradius,
+          groupIds: props.groupIds
+        }),
+        ...createTriangleEdgeAdjacencyNodes(graph, {
+          id: `${id}-adjacency`,
+          operation: 'GPUGroupConcaveHull',
+          pointCount,
+          triangles: packedTriangles,
+          triangleCount: count,
+          validity: packedValidity,
+          adjacency
+        }),
+        createBoundaryEdgesNode(graph, {
+          id: `${id}-boundary`,
+          triangles: packedTriangles,
+          validity: packedValidity,
+          adjacency,
+          boundaryEdges: packedEdges,
+          edgeValidity: packedEdgeValidity
+        })
+      );
+    }
+    // Per-group slots: clear, then scatter the packed lists to `group * capacity + rank`.
+    if (capacity > 0) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-clear-triangles`,
+          operation: 'GPUGroupConcaveHull',
+          invocationCount: output.triangles.length,
+          bindings: [
+            {name: 'triangles', view: output.triangles, type: 'u32', access: 'read_write'},
+            {name: 'valid', view: output.triangleValidity, type: 'u32', access: 'read_write'}
+          ],
+          body: `triangles[trianglesOffset + index * 3u] = 0u; triangles[trianglesOffset + index * 3u + 1u] = 0u; triangles[trianglesOffset + index * 3u + 2u] = 0u;
+valid[validOffset + index] = 0u;`
+        }),
+        createWGSLKernelNode(graph, {
+          id: `${id}-clear-edges`,
+          operation: 'GPUGroupConcaveHull',
+          invocationCount: output.boundaryEdges.length,
+          bindings: [
+            {name: 'edges', view: output.boundaryEdges, type: 'u32', access: 'read_write'},
+            {name: 'valid', view: output.edgeValidity, type: 'u32', access: 'read_write'}
+          ],
+          body: `edges[edgesOffset + index * 2u] = 0u; edges[edgesOffset + index * 2u + 1u] = 0u;
+valid[validOffset + index] = 0u;`
+        })
+      );
+    }
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-publish-converged`,
+        operation: 'GPUGroupConcaveHull',
+        invocationCount: groupCount,
+        bindings: [
+          {name: 'source', view: groupConverged, type: 'u32', access: 'read'},
+          {name: 'converged', view: output.status.converged, type: 'u32', access: 'read_write'}
+        ],
+        body: 'converged[convergedOffset + index] = source[sourceOffset + index];'
+      })
+    );
+    if (capacity > 0) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-triangles-publish`,
+          operation: 'GPUGroupConcaveHull',
+          invocationCount: capacity,
+          bindings: [
+            {name: 'groups', view: props.groupIds, type: 'u32', access: 'read'},
+            {name: 'offsets', view: groupOffsets, type: 'u32', access: 'read'},
+            {name: 'count', view: count, type: 'u32', access: 'read'},
+            {name: 'triangles', view: packedTriangles, type: 'u32', access: 'read'},
+            {name: 'valid', view: packedValidity, type: 'u32', access: 'read'},
+            {name: 'outputTriangles', view: output.triangles, type: 'u32', access: 'read_write'},
+            {name: 'outputValid', view: output.triangleValidity, type: 'u32', access: 'read_write'}
+          ],
+          body: `if (index >= count[countOffset]) { return; }
+let group = groups[groupsOffset + triangles[trianglesOffset + index * 3u]];
+let slot = group * ${capacity}u + index - offsets[offsetsOffset + group];
+for (var vertex = 0u; vertex < 3u; vertex++) {
+  outputTriangles[outputTrianglesOffset + slot * 3u + vertex] = triangles[trianglesOffset + index * 3u + vertex];
+}
+outputValid[outputValidOffset + slot] = valid[validOffset + index];`
+        }),
+        createWGSLKernelNode(graph, {
+          id: `${id}-edges-publish`,
+          operation: 'GPUGroupConcaveHull',
+          invocationCount: 3 * capacity,
+          bindings: [
+            {name: 'groups', view: props.groupIds, type: 'u32', access: 'read'},
+            {name: 'offsets', view: groupOffsets, type: 'u32', access: 'read'},
+            {name: 'count', view: count, type: 'u32', access: 'read'},
+            {name: 'triangles', view: packedTriangles, type: 'u32', access: 'read'},
+            {name: 'edges', view: packedEdges, type: 'u32', access: 'read'},
+            {name: 'valid', view: packedEdgeValidity, type: 'u32', access: 'read'},
+            {name: 'outputEdges', view: output.boundaryEdges, type: 'u32', access: 'read_write'},
+            {name: 'outputValid', view: output.edgeValidity, type: 'u32', access: 'read_write'}
+          ],
+          body: `let triangle = index / 3u;
+if (triangle >= count[countOffset]) { return; }
+let group = groups[groupsOffset + triangles[trianglesOffset + triangle * 3u]];
+let slot = (group * ${capacity}u + triangle - offsets[offsetsOffset + group]) * 3u + index % 3u;
+outputEdges[outputEdgesOffset + slot * 2u] = edges[edgesOffset + index * 2u];
+outputEdges[outputEdgesOffset + slot * 2u + 1u] = edges[edgesOffset + index * 2u + 1u];
+outputValid[outputValidOffset + slot] = valid[validOffset + index];`
+        })
+      );
+    }
+    return nodes;
+  }
+}

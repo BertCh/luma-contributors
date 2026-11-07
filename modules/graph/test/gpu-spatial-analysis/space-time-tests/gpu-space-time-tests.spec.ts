@@ -1,0 +1,497 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {expect, it} from 'vitest';
+import {
+  getGPUSpaceTimeParameterValues,
+  getKnoxPoissonPValue,
+  GPUKnoxTest,
+  GPUMantelTest,
+  GPU_SPACE_TIME_SUMMARY,
+  GPU_SPACE_TIME_SUMMARY_LENGTH
+} from '../../../src/gpu-spatial-analysis/space-time-tests/index';
+import {
+  getGPUNeighborSearchParameterValues,
+  GPUNeighborSearch
+} from '../../../src/gpu-spatial-analysis/neighbor-search/index';
+import {AnalysisRig, type CPUWeights} from '../catchment-accessibility/rig';
+import {buildBand, createEvents, uploadPairs} from './space-time-scenes';
+import {computeKnoxOracle, computeMantelOracle} from './space-time-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
+
+it('GPUKnoxTest matches the swap-or-not permutation oracle exactly', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const {count, radius, threshold, permutations, seed} of [
+    {count: 240, radius: 9, threshold: 3, permutations: 99, seed: 7},
+    {count: 37, radius: 40, threshold: 25.5, permutations: 31, seed: 123456789012},
+    // More rows than blocks, not a multiple of them: the interleaved row walk wraps around.
+    {count: 701, radius: 6, threshold: 4, permutations: 40, seed: 99}
+  ]) {
+    const {positions, times} = createEvents(count, 5);
+    const csr = buildBand(positions, radius);
+    const rig = new AnalysisRig(device);
+    const maximumPermutations = 128;
+    const statistics = rig.output('uint32', maximumPermutations + 1);
+    const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+    rig.run(
+      new GPUKnoxTest({
+        pairs: rig.weights(csr, 4),
+        times: rig.input(times, 'float32'),
+        parameters: rig.input(
+          getGPUSpaceTimeParameterValues({
+            seed,
+            permutationCount: permutations,
+            timeThreshold: threshold
+          }),
+          'uint32'
+        ),
+        maximumPermutations,
+        output: {statistics, summary}
+      })
+    );
+    const expected = computeKnoxOracle(csr, times, seed, permutations, threshold);
+    const actual = await rig.readUint(statistics);
+    expect(expected.statistics[0]).toBeGreaterThan(0);
+    expect(new Set(expected.statistics).size).toBeGreaterThan(3);
+    expect(actual.slice(0, permutations + 1)).toEqual(expected.statistics);
+    expect(actual.slice(permutations + 1).every(value => value === 0)).toBe(true);
+    const result = await rig.readFloat(summary);
+    const index = GPU_SPACE_TIME_SUMMARY;
+    expect(result[index.observed]).toBe(expected.statistics[0]);
+    expect(result[index.pairCount]).toBe(expected.pairCount);
+    expect(result[index.timeClosePairs]).toBe(expected.timeClose);
+    expect(Math.abs(result[index.expected] - expected.expected)).toBeLessThan(
+      1e-4 * expected.expected
+    );
+    expect(result[index.greaterCount]).toBe(expected.greater);
+    expect(result[index.lesserCount]).toBe(expected.lesser);
+    expect(result[index.pseudoPGreater]).toBeCloseTo(
+      (expected.greater + 1) / (permutations + 1),
+      6
+    );
+    const permuted = expected.statistics.slice(1);
+    const mean = permuted.reduce((sum, value) => sum + value, 0) / permutations;
+    expect(Math.abs(result[index.permutationMean] - mean)).toBeLessThan(1e-3 * (1 + mean));
+    // Space-time clustering is built in, so the observed count exceeds the permutation mean.
+    if (count > 100) {
+      expect(result[index.observed]).toBeGreaterThan(result[index.permutationMean]);
+      expect(result[index.pseudoPGreater]).toBeLessThan(0.05);
+    }
+    rig.destroy();
+  }
+});
+
+it('GPUKnoxTest re-evaluates a new threshold and seed without rebuilding', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {positions, times} = createEvents(150, 9);
+  const csr = buildBand(positions, 10);
+  const rig = new AnalysisRig(device);
+  const statistics = rig.output('uint32', 65);
+  const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+  const parameters = rig.input(
+    getGPUSpaceTimeParameterValues({seed: 1, permutationCount: 16, timeThreshold: 2}),
+    'uint32'
+  );
+  rig.run(
+    new GPUKnoxTest({
+      pairs: rig.weights(csr, 4),
+      times: rig.input(times, 'float32'),
+      parameters,
+      maximumPermutations: 64,
+      output: {statistics, summary}
+    })
+  );
+  const first = await rig.readUint(statistics);
+  expect(first.slice(0, 17)).toEqual(computeKnoxOracle(csr, times, 1, 16, 2).statistics);
+  rig.destroy();
+  // A different seed changes permuted counts but not the observed count.
+  const second = new AnalysisRig(device);
+  const statistics2 = second.output('uint32', 65);
+  second.run(
+    new GPUKnoxTest({
+      pairs: second.weights(csr, 4),
+      times: second.input(times, 'float32'),
+      parameters: second.input(
+        getGPUSpaceTimeParameterValues({seed: 2, permutationCount: 16, timeThreshold: 2}),
+        'uint32'
+      ),
+      maximumPermutations: 64,
+      output: {
+        statistics: statistics2,
+        summary: second.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+      }
+    })
+  );
+  const other = await second.readUint(statistics2);
+  expect(other[0]).toBe(first[0]);
+  expect(other.slice(1, 17)).not.toEqual(first.slice(1, 17));
+  second.destroy();
+});
+
+it('GPUMantelTest matches the double-precision oracle with permuted times', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {positions, times} = createEvents(200, 11);
+  const csr = buildBand(positions, 14);
+  const permutations = 49;
+  const seed = 99;
+  const rig = new AnalysisRig(device);
+  const statistics = rig.output('float32', 64 + 1);
+  const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+  rig.run(
+    new GPUMantelTest({
+      pairs: uploadPairs(rig, csr),
+      times: rig.input(times, 'float32'),
+      parameters: rig.input(
+        getGPUSpaceTimeParameterValues({seed, permutationCount: permutations}),
+        'uint32'
+      ),
+      maximumPermutations: 64,
+      output: {statistics, summary}
+    })
+  );
+  const expected = computeMantelOracle(csr, times, seed, permutations);
+  const actual = await rig.readFloat(statistics);
+  expect(Math.abs(expected[0])).toBeGreaterThan(0.05);
+  for (let slot = 0; slot <= permutations; slot++) {
+    expect(Math.abs(actual[slot] - expected[slot]), `slot ${slot}`).toBeLessThan(2e-4);
+  }
+  expect(actual.slice(permutations + 1).every(value => value === 0)).toBe(true);
+  const result = await rig.readFloat(summary);
+  const index = GPU_SPACE_TIME_SUMMARY;
+  expect(result[index.pairCount]).toBe(csr.neighbors.length / 2);
+  expect(Math.abs(result[index.observed] - expected[0])).toBeLessThan(2e-4);
+  const greater = actual.slice(1, permutations + 1).filter(value => value >= actual[0]).length;
+  expect(result[index.greaterCount]).toBe(greater);
+  expect(result[index.pseudoPGreater]).toBeCloseTo((greater + 1) / (permutations + 1), 6);
+  expect(result[index.zScore]).toBeGreaterThan(2);
+  rig.destroy();
+});
+
+it('GPUKnoxTest runs on pairs written by GPUNeighborSearch', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {positions, times} = createEvents(200, 13);
+  const radius = 8.3;
+  const rig = new AnalysisRig(device);
+  const capacity = 200 * 200;
+  const offsets = rig.output('uint32', 201);
+  const neighbors = rig.output('uint32', capacity);
+  const weights = rig.output('float32', capacity);
+  const statistics = rig.output('uint32', 33);
+  const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+  rig.run(
+    new GPUNeighborSearch({
+      mode: 'radius',
+      gridSize: [8, 8],
+      positions: rig.input(positions, 'float32x2', 200),
+      parameters: rig.input(
+        getGPUNeighborSearchParameterValues({bounds: [-1, -1, 101, 101], radius}),
+        'float32'
+      ),
+      output: {offsets, neighbors, weights, status: {overflow: rig.output('uint32', 1)}}
+    }),
+    new GPUKnoxTest({
+      pairs: {offsets, neighbors, weights},
+      times: rig.input(times, 'float32'),
+      parameters: rig.input(
+        getGPUSpaceTimeParameterValues({seed: 3, permutationCount: 32, timeThreshold: 3}),
+        'uint32'
+      ),
+      maximumPermutations: 32,
+      output: {statistics, summary}
+    })
+  );
+  const csrOffsets = await rig.readUint(offsets);
+  const csrNeighbors = (await rig.readUint(neighbors)).slice(0, csrOffsets[200]);
+  expect(csrNeighbors.length).toBeGreaterThan(100);
+  const expected = computeKnoxOracle(
+    {offsets: csrOffsets, neighbors: csrNeighbors},
+    times,
+    3,
+    32,
+    3
+  );
+  expect(await rig.readUint(statistics)).toEqual(expected.statistics);
+  rig.destroy();
+});
+
+it('getKnoxPoissonPValue returns the Poisson upper tail', () => {
+  expect(getKnoxPoissonPValue(0, 3)).toBe(1);
+  // P(X >= 3 | mean 3) = 1 - (e^-3)(1 + 3 + 4.5) = 0.5768...
+  expect(getKnoxPoissonPValue(3, 3)).toBeCloseTo(1 - Math.exp(-3) * 8.5, 10);
+  expect(getKnoxPoissonPValue(20, 3)).toBeLessThan(1e-8);
+});
+
+// Reference values from pointpats 'Knox.from_dataframe' (delta=3, tau=4, permutations=0) on the
+// fixture below, generated with the PySAL venv: statistic 29, expected 31.76091954, p_poisson 0.64655.
+const POINTPATS_XY = [
+  9.431, 5.113, 9.762, 0.808, 6.074, 3.765, 8.019, 1.745, 8.716, 5.439, 9.022, 4.772, 4.305, 7.889,
+  9.842, 3.697, 9.689, 9.29, 1.777, 6.089, 7.049, 9.428, 6.657, 1.334, 4.979, 4.936, 5.002, 9.586,
+  3.499, 2.238, 5.221, 6.412, 9.391, 5.82, 2.678, 9.298, 4.917, 6.758, 4.76, 2.17, 6.926, 7.706,
+  1.908, 4.599, 3.618, 1.707, 2.214, 9.625, 8.842, 3.823, 7.395, 0.42, 9.151, 5.372, 8.203, 2.759,
+  3.761, 3.48, 9.724, 4.295
+];
+const POINTPATS_TIMES = [
+  9.994, 19.12, 18.064, 7.9, 6.147, 16.141, 2.149, 7.844, 17.529, 18.353, 4.67, 1.574, 15.755,
+  12.436, 4.75, 10.118, 1.428, 14.002, 10.535, 14.093, 1.763, 12.896, 7.407, 9.986, 6.71, 12.682,
+  11.365, 12.342, 1.268, 4.503
+];
+
+it('GPUKnoxTest reproduces the pointpats Knox statistic and expectation', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = Float32Array.from(POINTPATS_XY);
+  const times = Float32Array.from(POINTPATS_TIMES);
+  const csr = buildBand(positions, 3);
+  const rig = new AnalysisRig(device);
+  const statistics = rig.output('uint32', 17);
+  const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+  rig.run(
+    new GPUKnoxTest({
+      pairs: rig.weights(csr, 4),
+      times: rig.input(times, 'float32'),
+      parameters: rig.input(
+        getGPUSpaceTimeParameterValues({seed: 1, permutationCount: 16, timeThreshold: 4}),
+        'uint32'
+      ),
+      maximumPermutations: 16,
+      output: {statistics, summary}
+    })
+  );
+  const result = await rig.readFloat(summary);
+  expect(result[GPU_SPACE_TIME_SUMMARY.observed]).toBe(29);
+  expect(Math.abs(result[GPU_SPACE_TIME_SUMMARY.expected] - 31.76091954)).toBeLessThan(1e-3);
+  // pointpats reports P(X > observed) (scipy poisson.sf); getKnoxPoissonPValue is P(X >= observed).
+  const expected = result[GPU_SPACE_TIME_SUMMARY.expected];
+  expect(Math.abs(getKnoxPoissonPValue(30, expected) - 0.6465526)).toBeLessThan(1e-3);
+  rig.destroy();
+});
+
+it('GPUMantelTest matches the oracle with more rows than blocks and a skewed pair list', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 600 rows (more than the 256 blocks, with a ragged last pass); the clustered core makes some
+  // rows list far more pairs than others.
+  const {positions, times} = createEvents(600, 21);
+  const csr = buildBand(positions, 9);
+  const permutations = 40;
+  const seed = 5;
+  const rig = new AnalysisRig(device);
+  const statistics = rig.output('float32', 64 + 1);
+  rig.run(
+    new GPUMantelTest({
+      pairs: uploadPairs(rig, csr),
+      times: rig.input(times, 'float32'),
+      parameters: rig.input(
+        getGPUSpaceTimeParameterValues({seed, permutationCount: permutations}),
+        'uint32'
+      ),
+      maximumPermutations: 64,
+      output: {statistics, summary: rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH)}
+    })
+  );
+  const expected = computeMantelOracle(csr, times, seed, permutations);
+  const actual = await rig.readFloat(statistics);
+  const degrees = csr.offsets.slice(1).map((end, row) => end - csr.offsets[row]);
+  expect(Math.max(...degrees)).toBeGreaterThan(2 * (csr.neighbors.length / 600));
+  for (let slot = 0; slot <= permutations; slot++) {
+    expect(Math.abs(actual[slot] - expected[slot]), `slot ${slot}`).toBeLessThan(2e-4);
+  }
+  rig.destroy();
+});
+
+/**
+ * Drops one direction of most pairs (some only from the lower row, some only from the higher row,
+ * the kNN-style asymmetry) and adds duplicate entries, keeping every unordered pair listed at
+ * least once.
+ */
+function makeAsymmetric(csr: CPUWeights & {distances: number[]}) {
+  const rows = csr.offsets.length - 1;
+  const result = {
+    offsets: [0],
+    neighbors: [] as number[],
+    weights: [] as number[],
+    distances: [] as number[]
+  };
+  for (let row = 0; row < rows; row++) {
+    let firstEntry = -1;
+    for (let entry = csr.offsets[row]; entry < csr.offsets[row + 1]; entry++) {
+      const other = csr.neighbors[entry];
+      const mode = (row + other) % 3;
+      // mode 0: higher row only; mode 1: lower row only; mode 2: both directions.
+      const keep = mode === 2 || (mode === 0 ? row > other : row < other);
+      if (!keep) continue;
+      if (firstEntry < 0) firstEntry = entry;
+      result.neighbors.push(other);
+      result.weights.push(1);
+      result.distances.push(csr.distances[entry]);
+    }
+    if (firstEntry >= 0 && row % 7 === 0) {
+      // A duplicate of an existing entry must not count twice.
+      result.neighbors.push(csr.neighbors[firstEntry]);
+      result.weights.push(1);
+      result.distances.push(csr.distances[firstEntry]);
+    }
+    result.offsets.push(result.neighbors.length);
+  }
+  return result;
+}
+
+it('GPUKnoxTest counts a pair listed only from the higher row exactly once', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {positions, times} = createEvents(240, 5);
+  const symmetric = buildBand(positions, 9);
+  const asymmetric = makeAsymmetric(symmetric);
+  // The asymmetric list really has higher-row-only pairs, and fewer entries than the symmetric one.
+  expect(asymmetric.neighbors.length).toBeLessThan(symmetric.neighbors.length);
+  const permutations = 40;
+  const seed = 17;
+  const threshold = 3;
+  const run = async (csr: CPUWeights & {distances: number[]}) => {
+    const rig = new AnalysisRig(device);
+    const statistics = rig.output('uint32', 64 + 1);
+    const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+    rig.run(
+      new GPUKnoxTest({
+        pairs: rig.weights(csr, 4),
+        times: rig.input(times, 'float32'),
+        parameters: rig.input(
+          getGPUSpaceTimeParameterValues({
+            seed,
+            permutationCount: permutations,
+            timeThreshold: threshold
+          }),
+          'uint32'
+        ),
+        maximumPermutations: 64,
+        output: {statistics, summary}
+      })
+    );
+    const result = {
+      statistics: Array.from((await rig.readUint(statistics)).slice(0, permutations + 1)),
+      summary: await rig.readFloat(summary)
+    };
+    rig.destroy();
+    return result;
+  };
+  const full = await run(symmetric);
+  const partial = await run(asymmetric);
+  const expected = computeKnoxOracle(asymmetric, times, seed, permutations, threshold);
+  expect(partial.statistics).toEqual(expected.statistics);
+  // Same unordered pair set, so identical counts, pair count and expectation.
+  expect(partial.statistics).toEqual(full.statistics);
+  expect(partial.summary[GPU_SPACE_TIME_SUMMARY.pairCount]).toBe(symmetric.neighbors.length / 2);
+  expect(partial.summary[GPU_SPACE_TIME_SUMMARY.pairCount]).toBe(expected.pairCount);
+  expect(partial.summary[GPU_SPACE_TIME_SUMMARY.expected]).toBeCloseTo(
+    full.summary[GPU_SPACE_TIME_SUMMARY.expected],
+    4
+  );
+});
+
+it('GPUMantelTest uses each unordered pair once with asymmetric and duplicated lists', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {positions, times} = createEvents(200, 11);
+  const symmetric = buildBand(positions, 14);
+  const asymmetric = makeAsymmetric(symmetric);
+  const permutations = 30;
+  const seed = 4;
+  const run = async (csr: CPUWeights & {distances: number[]}) => {
+    const rig = new AnalysisRig(device);
+    const statistics = rig.output('float32', 32 + 1);
+    const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+    rig.run(
+      new GPUMantelTest({
+        pairs: uploadPairs(rig, csr),
+        times: rig.input(times, 'float32'),
+        parameters: rig.input(
+          getGPUSpaceTimeParameterValues({seed, permutationCount: permutations}),
+          'uint32'
+        ),
+        maximumPermutations: 32,
+        output: {statistics, summary}
+      })
+    );
+    const result = {
+      statistics: await rig.readFloat(statistics),
+      pairCount: (await rig.readFloat(summary))[GPU_SPACE_TIME_SUMMARY.pairCount]
+    };
+    rig.destroy();
+    return result;
+  };
+  const partial = await run(asymmetric);
+  const expected = computeMantelOracle(asymmetric, times, seed, permutations);
+  expect(partial.pairCount).toBe(symmetric.neighbors.length / 2);
+  for (let slot = 0; slot <= permutations; slot++) {
+    expect(Math.abs(partial.statistics[slot] - expected[slot]), `slot ${slot}`).toBeLessThan(2e-4);
+  }
+});
+
+it('GPUKnoxTest and GPUMantelTest state the one-sided alternative', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {positions, times} = createEvents(50, 3);
+  const csr = buildBand(positions, 20);
+  const rig = new AnalysisRig(device);
+  const parameters = rig.input(
+    getGPUSpaceTimeParameterValues({seed: 1, permutationCount: 8}),
+    'uint32'
+  );
+  const knox = new GPUKnoxTest({
+    pairs: rig.weights(csr, 4),
+    times: rig.input(times, 'float32'),
+    parameters,
+    maximumPermutations: 8,
+    output: {
+      statistics: rig.output('uint32', 9),
+      summary: rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+    }
+  });
+  expect(knox.getInferenceMetadata({seed: 1, permutationCount: 8})).toMatchObject({
+    alternative: 'greater',
+    permutationCount: 8,
+    multipleTesting: 'none'
+  });
+  expect(knox.getInferenceMetadata({seed: 5, permutationCount: 4})).toMatchObject({
+    permutationCount: 4,
+    seed: 5
+  });
+  rig.destroy();
+});
+
+// Oracle: <scratchpad>/fix/work/B/knox_pointpats.py (pointpats 2.6.0 Knox, delta=3, tau=4, permutations=0)
+// gives nst = 29 and ns = the number of spatial pairs; an asymmetric, duplicated list of the same
+// pairs must reproduce both.
+it('GPUKnoxTest reproduces the pointpats count from an asymmetric pair list', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = Float32Array.from(POINTPATS_XY);
+  const times = Float32Array.from(POINTPATS_TIMES);
+  const symmetric = buildBand(positions, 3);
+  const csr = makeAsymmetric(symmetric);
+  const rig = new AnalysisRig(device);
+  const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+  rig.run(
+    new GPUKnoxTest({
+      pairs: rig.weights(csr, 4),
+      times: rig.input(times, 'float32'),
+      parameters: rig.input(
+        getGPUSpaceTimeParameterValues({seed: 1, permutationCount: 16, timeThreshold: 4}),
+        'uint32'
+      ),
+      maximumPermutations: 16,
+      output: {statistics: rig.output('uint32', 17), summary}
+    })
+  );
+  const result = await rig.readFloat(summary);
+  expect(result[GPU_SPACE_TIME_SUMMARY.observed]).toBe(29);
+  expect(result[GPU_SPACE_TIME_SUMMARY.pairCount]).toBe(symmetric.neighbors.length / 2);
+  expect(Math.abs(result[GPU_SPACE_TIME_SUMMARY.expected] - 31.76091954)).toBeLessThan(1e-3);
+  rig.destroy();
+});

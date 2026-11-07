@@ -1,0 +1,270 @@
+{
+  "id": "ahk-rock-glacier",
+  "version": 1,
+  "kind": "points",
+  "license": "CC BY 4.0",
+  "attribution": "Winiwarter, Anders, Zahs, Hämmerle and Höfle (2021), heiDATA, doi:10.11588/data/XHYB10; sample via 3DGeo Heidelberg py4dgeo-test-data (CC BY 4.0)",
+  "count": 258,
+  "bbox": [
+    11.00517852176768,
+    46.83819343604209,
+    11.005675070657384,
+    46.83852989854902
+  ],
+  "crs": "EPSG:4326 display positions; native UTM32N computational XYZ",
+  "columns": {
+    "referencePosition": {
+      "file": "referencePosition.bin",
+      "dtype": "float64",
+      "length": 5192,
+      "components": 2,
+      "unit": "longitude/latitude degrees"
+    },
+    "referenceXYZ": {
+      "file": "referenceXYZ.bin",
+      "dtype": "float32",
+      "length": 5192,
+      "components": 3,
+      "unit": "native UTM32N metres relative to nativeOrigin"
+    },
+    "referenceSourceRow": {
+      "file": "referenceSourceRow.bin",
+      "dtype": "uint32",
+      "length": 5192,
+      "unit": "original LAZ row"
+    },
+    "comparisonPosition": {
+      "file": "comparisonPosition.bin",
+      "dtype": "float64",
+      "length": 5407,
+      "components": 2,
+      "unit": "longitude/latitude degrees"
+    },
+    "comparisonXYZ": {
+      "file": "comparisonXYZ.bin",
+      "dtype": "float32",
+      "length": 5407,
+      "components": 3,
+      "unit": "native UTM32N metres relative to nativeOrigin"
+    },
+    "comparisonSourceRow": {
+      "file": "comparisonSourceRow.bin",
+      "dtype": "uint32",
+      "length": 5407,
+      "unit": "original LAZ row"
+    },
+    "normal": {
+      "file": "normal.bin",
+      "dtype": "float32",
+      "length": 258,
+      "components": 3,
+      "unit": "unit vector in native frame"
+    },
+    "position": {
+      "file": "position.bin",
+      "dtype": "float64",
+      "length": 258,
+      "components": 2,
+      "unit": "longitude/latitude degrees"
+    },
+    "coresXYZ": {
+      "file": "coresXYZ.bin",
+      "dtype": "float32",
+      "length": 258,
+      "components": 3,
+      "unit": "native UTM32N metres relative to nativeOrigin"
+    },
+    "coresSourceRow": {
+      "file": "coresSourceRow.bin",
+      "dtype": "uint32",
+      "length": 258,
+      "unit": "original LAZ row"
+    },
+    "demReference": {
+      "file": "demReference.bin",
+      "dtype": "float32",
+      "length": 1406,
+      "unit": "native elevation metres relative to nativeOrigin Z; NaN if fewer than three returns"
+    },
+    "demReferenceCount": {
+      "file": "demReferenceCount.bin",
+      "dtype": "uint32",
+      "length": 1406,
+      "unit": "retained original returns in cell"
+    },
+    "demComparison": {
+      "file": "demComparison.bin",
+      "dtype": "float32",
+      "length": 1406,
+      "unit": "native elevation metres relative to nativeOrigin Z; NaN if fewer than three returns"
+    },
+    "demComparisonCount": {
+      "file": "demComparisonCount.bin",
+      "dtype": "uint32",
+      "length": 1406,
+      "unit": "retained original returns in cell"
+    },
+    "demPosition": {
+      "file": "demPosition.bin",
+      "dtype": "float64",
+      "length": 1406,
+      "components": 2,
+      "unit": "longitude/latitude degrees at DEM cell centres"
+    }
+  },
+  "properties": {
+    "source": "https://doi.org/10.11588/data/XHYB10",
+    "sourceArchive": "https://github.com/3dgeo-heidelberg/py4dgeo-test-data/releases/download/2026-01-29/data.tar.gz",
+    "sourceArchiveSha256": "f4c2edb52a6e2c40206ca07782c4b70e450742fb60aa48478674e776e6a33651",
+    "license": "CC BY 4.0",
+    "attribution": "Winiwarter, Anders, Zahs, H\u00e4mmerle and H\u00f6fle (2021), heiDATA, doi:10.11588/data/XHYB10; sample distributed by 3DGeo Heidelberg py4dgeo-test-data",
+    "epochs": [
+      "2017",
+      "2018A"
+    ],
+    "location": "\u00c4u\u00dferes Hochebenkar rock glacier, Obergurgl, Tirol, Austria",
+    "nativeOrigin": [
+      652920.0,
+      5189155.0,
+      2485.0
+    ],
+    "origin": [
+      11.005414391236211,
+      46.83836570985789
+    ],
+    "nativeFrame": "Provider UTM32N horizontal coordinates and supplied elevation, metres; vertical datum not specified in sample",
+    "displayProjection": "EPSG:32632 assumed solely for longitude/latitude map placement; computational XYZ remains in native metres",
+    "sampling": "First original LAZ row in each occupied 0.6 m 3D voxel; source row order restored. Every eighth provided core point and its provided normal retained.",
+    "voxelSizeMeters": 0.6,
+    "voxelOrigin": [
+      652900.0,
+      5189100.0,
+      2470.0
+    ],
+    "alignment": "Comparison epoch transformed once by supplied tfM.csv around supplied redPoint.csv, following py4dgeo M3C2-EP documentation. No additional local ICP alignment applied during preparation.",
+    "comparisonAffineTransform": [
+      [
+        0.9998475148882,
+        0.0001487360966392,
+        0.0004475801632529,
+        0.1181336402267
+      ],
+      [
+        -4.221261878166e-07,
+        0.99985384642,
+        0.0001005727369557,
+        -0.06154701111023
+      ],
+      [
+        5.447799727864e-05,
+        2.769622720431e-05,
+        0.9999691610357,
+        0.02097008275849
+      ]
+    ],
+    "comparisonReductionOrigin": [
+      652786.0,
+      5189682.0,
+      2506.0
+    ],
+    "uncertainty": "Sampling changes roughness and support. This subset is not the published M3C2-EP result and does not carry the original full 12x12 registration covariance or per-scanner measurement propagation.",
+    "sources": {
+      "reference": {
+        "sourceFile": "ahk_2017_652900_5189100_gnd_subarea.laz",
+        "sourceSha256": "37de69b3ced8503407754c2fb5b49911dd90714daaf57afda4e07e000be79cae",
+        "sourceCount": 1195012,
+        "retainedCount": 5192,
+        "nativeBounds": [
+          [
+            652902.46775,
+            5189136.29175,
+            2475.0195
+          ],
+          [
+            652939.43425,
+            5189172.81,
+            2498.2144999999996
+          ]
+        ]
+      },
+      "comparison": {
+        "sourceFile": "ahk_2018A_652900_5189100_gnd_subarea.laz",
+        "sourceSha256": "62de94c78f8ad229a7cf9fe9f61a6542304fa6f78c4c0315baa193880c1b31b3",
+        "sourceCount": 1324416,
+        "retainedCount": 5407,
+        "nativeBounds": [
+          [
+            652902.4847475049,
+            5189136.309563651,
+            2475.4446390371436
+          ],
+          [
+            652939.445975329,
+            5189172.820077242,
+            2497.971463840063
+          ]
+        ]
+      },
+      "cores": {
+        "sourceFile": "ahk_cp_652900_5189100_subarea.laz",
+        "sourceSha256": "b1beee07033e803f7870e1b9180c5a8e80e2d3418983be472c8fec1736e596dd",
+        "sourceCount": 2064,
+        "retainedCount": 258,
+        "nativeBounds": [
+          [
+            652902.77,
+            5189136.55,
+            2475.95
+          ],
+          [
+            652938.71,
+            5189172.31,
+            2497.5
+          ]
+        ],
+        "invalidNormalCount": 3,
+        "normalPolicy": "Preserve provider normals, including nonfinite values; reject invalid normals during change analysis rather than synthesizing an orientation."
+      }
+    },
+    "demGrid": {
+      "width": 38,
+      "height": 37,
+      "affine": [
+        1.0,
+        0,
+        -18.0,
+        0,
+        -1.0,
+        18.0
+      ],
+      "pixelInterpretation": "area",
+      "cellSizeMeters": 1.0,
+      "bounds": [
+        11.005172125188482,
+        46.838198967786006,
+        11.005682535929893,
+        46.83852299842193
+      ],
+      "minimumReturns": 3,
+      "algorithm": "Arithmetic mean of retained original returns per fixed north-up 1 m native-XY cell; fewer than three returns are NaN. No interpolation or hole filling.",
+      "uncertainty": "No observed stable-control mask or calibrated difference variance is supplied. Any chosen control region and measurement covariance are explicit scenario assumptions."
+    },
+    "checksums": {
+      "referencePosition.bin": "0074badfe07f5ab2eeb27b0c34f75da41fec52158f1ca24674b8b80e8b48f4e9",
+      "referenceXYZ.bin": "63e04d98ea2ba4aa4c8f37f265e774e5fa29d2a2bad0b6a6be84b1598098b2d5",
+      "referenceSourceRow.bin": "5eae48156f7d451d9bc5736e986d26680383281df4d1e25537f08609912637de",
+      "comparisonPosition.bin": "9c0503cbd794b99d6cc0096f7fc0cb273cfd6e7ff03b4edd4f5b9a7d4c2a7d33",
+      "comparisonXYZ.bin": "6516b69baaaa2946f20e2449c7b6ffc71e0473e40f1e7edbf943357478f02066",
+      "comparisonSourceRow.bin": "52268fde8a614c52ded21dec664f3e29872cd1cd6efbae3e37d104c887aa89e3",
+      "normal.bin": "a123e68d6ffa44b3ce8483eacca43e59537553e5a6ffde29e6ea506fbe4a63a9",
+      "position.bin": "70a3cd5429a6591309f9466c1963ebb1585685722a245b466a43a174b12a52f6",
+      "coresXYZ.bin": "56a8429406ed19f161de1eb319dc65027704346be535fdc511601d6c26ad45cd",
+      "coresSourceRow.bin": "7aa738ad088a166d2ad76f9fae1769a79cf0788df73b0f7c234d1001b8562a9b",
+      "demReference.bin": "9c3871c34588c62396b80f5135b74eb96aa2ff06e92bec89905c4a5225688e5e",
+      "demReferenceCount.bin": "c03508c7ba0ebab5d013606aed6cb8624fad17113d6d7c401b39fb1c16eafd9b",
+      "demComparison.bin": "350ddd52436e8475fc06fd110dbb8db2e53d0cc899a004a9f23dedd0b4b9ac49",
+      "demComparisonCount.bin": "074cdb87bfe1d886c11218698f446751ba072897960f55fd45e20e0b79b46c67",
+      "demPosition.bin": "445f9c9754caf132610e8f1c1cdda7ce28e886c4cc6647394fca6014b8f2c6d9"
+    }
+  }
+}

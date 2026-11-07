@@ -1,0 +1,712 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+/**
+ * Least-cost travel over the San Francisco elevation raster, entirely on the GPU. Two compiled
+ * graphs share caller-owned buffers. The cost graph computes slope (`GPUTerrainDerivatives`), a
+ * friction surface from it (`1 + weight * (slope / 10 degrees)^2`, a small mode-local kernel)
+ * and the accumulated cost, back-links,
+ * isochrone bands and convergence flags (`GPUCostDistance`). The path graph follows the back-links
+ * from the destination (`GPUCostDistancePath`) and converts the cell list to line segments that a
+ * layer draws with an indirect instance count. Sea (elevation 0) is invalid and impassable.
+ *
+ * The source cell, destination cell, slope weight, base friction (`frictionParameters`, the
+ * contributor's per-frame friction calibration) and cost limit are parameter buffer writes.
+ * The cost graph is encoded only when the source, weight or limit changed (relaxation is the
+ * expensive part); the path graph also re-encodes when only the destination moved.
+ */
+
+import {scheduleReadback} from '../readback-scheduling';
+import type {Layer} from '@deck.gl/core';
+import type {Buffer} from '@luma.gl/core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma-contributors/graph/gpu-core';
+import {
+  makeGPURasterMetadata,
+  getGPUCostDistanceParameterValues,
+  GPU_COST_DISTANCE_NONE,
+  GPU_COST_DISTANCE_PARAMETER_LENGTH,
+  GPUCostDistance,
+  GPUCostDistancePath
+} from '@luma-contributors/graph/gpu-raster';
+import {
+  getGPUTerrainDerivativesParameterValues,
+  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
+  GPUTerrainDerivatives
+} from '@luma-contributors/graph/gpu-terrain';
+import {importGraphBuffer} from '../graph-buffers';
+import {
+  SpatialAnalysisPointLayer,
+  SpatialAnalysisRasterLayer,
+  SpatialAnalysisSegmentLayer
+} from '../spatial-analysis-layers';
+import type {
+  SpatialAnalysisModeDefinition,
+  SpatialAnalysisModeInstance,
+  SpatialAnalysisPointerEvent
+} from '../spatial-analysis-mode';
+import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
+import {addPathSegmentsPass, addSlopeFrictionPass} from './terrain-kernels';
+
+import {clamp} from '@math.gl/core';
+
+/** Compile-time relaxation limit; the graph stops early on the GPU once costs converge. */
+const MAXIMUM_ITERATIONS = 128;
+/** Compile-time path capacity in cells. Longer paths report overflow. */
+const PATH_CAPACITY = 2048;
+const BAND_COUNT = 8;
+const READBACK_INTERVAL_FRAMES = 15;
+const SUN_AZIMUTH_DEGREES = 315;
+const SUN_ALTITUDE_DEGREES = 40;
+/** Cost limit slider maximum; this value means no limit. Units are kilometers of flat ground. */
+const NO_LIMIT_KILOMETERS = 60;
+/** Color range of the cost and band displays when there is no limit, in kilometers. */
+const UNLIMITED_RANGE_KILOMETERS = 30;
+const SOURCE_LONGITUDE_LATITUDE: readonly [number, number] = [-122.4194, 37.7599];
+const DESTINATION_LONGITUDE_LATITUDE: readonly [number, number] = [-122.4725, 37.7536];
+const BAND_PALETTE = [
+  [253, 231, 37, 235],
+  [160, 218, 57, 235],
+  [74, 193, 109, 235],
+  [31, 161, 135, 235],
+  [39, 127, 142, 235],
+  [54, 92, 141, 235],
+  [70, 50, 127, 235],
+  [68, 1, 84, 235]
+] as const;
+
+type Display = 'cost' | 'bands' | 'friction';
+type Placement = 'source' | 'destination';
+
+export const costDistanceMode: SpatialAnalysisModeDefinition = {
+  id: 'cost-distance',
+  title: 'Cost distance',
+  contributors: ['GPUCostDistance', 'GPUCostDistancePath', 'GPUTerrainDerivatives'],
+  description:
+    'Least-cost travel over San Francisco terrain, where steep slopes are expensive. Choose ' +
+    'whether a click places the source or the destination; slope weight, base friction ' +
+    '(GPUCostDistance frictionParameters), cost limit, source and destination are buffer ' +
+    'writes, never a recompile. The Converged readout shows iterations used of the unrolled ' +
+    'budget.',
+  initialViewState: {longitude: -122.445, latitude: 37.758, zoom: 12.2},
+
+  async create(context) {
+    const terrain = await context.data.getSanFranciscoTerrain();
+    context.signal.throwIfAborted();
+    const {device} = context;
+    const {width, height, bounds, cellSize} = terrain;
+    const cellCount = width * height;
+    const grid = makeGPURasterMetadata({width, height, cellSize});
+    const projection = terrain.frame;
+    const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
+    const resources = new SpatialAnalysisResources(device, 'cost-distance');
+
+    // Sea (elevation 0) is invalid: it has no slope, no friction and is impassable.
+    const validityValues = new Uint32Array(cellCount);
+    for (let index = 0; index < cellCount; index++) {
+      validityValues[index] = terrain.elevation[index] > 0.5 ? 1 : 0;
+    }
+    const elevationBuffer = resources.createBuffer('elevation', terrain.elevation);
+    const validityBuffer = resources.createBuffer('validity', validityValues);
+    const hillshadeBuffer = resources.createBuffer('hillshade', cellCount * 4);
+    const slopeBuffer = resources.createBuffer('slope', cellCount * 4);
+    const frictionBuffer = resources.createBuffer('friction', cellCount * 4);
+    const costsBuffer = resources.createBuffer('costs', cellCount * 4);
+    const backLinksBuffer = resources.createBuffer('back-links', cellCount * 4);
+    const bandsBuffer = resources.createBuffer('bands', cellCount * 4);
+    const bandCountsBuffer = resources.createBuffer('band-counts', BAND_COUNT * 4);
+    const convergedBuffer = resources.createBuffer('converged', 4);
+    const iterationCountBuffer = resources.createBuffer('iteration-count', 4);
+    const pathIdsBuffer = resources.createBuffer('path-ids', PATH_CAPACITY * 4);
+    const pathCountBuffer = resources.createBuffer('path-count', 4);
+    const pathOverflowBuffer = resources.createBuffer('path-overflow', 4);
+    const pathTotalBuffer = resources.createBuffer('path-total', 4);
+    const pathLimitBuffer = resources.createBuffer('path-iteration-limit', 4);
+    const pathSegmentsBuffer = resources.createBuffer('path-segments', PATH_CAPACITY * 16);
+    const markerBuffer = resources.createBuffer('markers', 16);
+    const destinationIdBuffer = resources.createBuffer('destination-id', Uint32Array.of(1));
+    const derivativesSettings = resources.createParameterBuffer(
+      'derivatives-settings',
+      'float32',
+      GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
+    );
+    const costSettings = resources.createParameterBuffer(
+      'cost-settings',
+      'float32',
+      GPU_COST_DISTANCE_PARAMETER_LENGTH
+    );
+    const slopeWeight = resources.createParameterBuffer('slope-weight', 'float32', 1);
+    const frictionParameters = resources.createParameterBuffer('friction-parameters', 'float32', 2);
+    const sources = resources.createParameterBuffer('sources', 'uint32', 1);
+    const target = resources.createParameterBuffer('target', 'uint32', 1);
+    const bandThresholds = resources.createParameterBuffer(
+      'band-thresholds',
+      'float32',
+      BAND_COUNT
+    );
+    const drawCommands = resources.track(
+      new DrawCommandBuffer(device, {
+        id: 'cost-distance-path-draw',
+        type: 'draw',
+        commands: [{vertexCount: 6, instanceCount: 0}]
+      })
+    );
+    // Cost at the destination, path count, overflow and total, converged, iterations, band counts.
+    const summaryWordCount = 7 + BAND_COUNT;
+    const readbackRing = resources.track(
+      new GPUReadbackRing(device, {id: 'cost-distance-summary', byteLength: summaryWordCount * 4})
+    );
+
+    // --- Cost graph: slope, friction, accumulated cost, back-links, bands -----------------------
+    const costGraph = new GPUCommandGraph<void>(device, {id: 'cost-distance'});
+    const elevation = {
+      // terrain.png names no vertical datum (and may use synthetic fallback), so verticalDatum stays undeclared.
+      id: 'elevation',
+      format: 'float32' as const,
+      storage: {
+        kind: 'buffer' as const,
+        values: importGraphBuffer(costGraph, 'elevation', elevationBuffer, 'float32', cellCount)
+      },
+      validity: importGraphBuffer(costGraph, 'validity', validityBuffer, 'uint32', cellCount)
+    };
+    const slope = importGraphBuffer(costGraph, 'slope', slopeBuffer, 'float32', cellCount);
+    const friction = importGraphBuffer(costGraph, 'friction', frictionBuffer, 'float32', cellCount);
+    costGraph.add(
+      new GPUTerrainDerivatives({
+        id: 'derivatives',
+        grid,
+        elevation,
+        parameters: derivativesSettings.importToGraph(costGraph),
+        output: {
+          slope,
+          hillshade: importGraphBuffer(
+            costGraph,
+            'hillshade',
+            hillshadeBuffer,
+            'float32',
+            cellCount
+          )
+        },
+        cellSizeMode: 'uniform',
+        rowDirection: 'south'
+      })
+    );
+    addSlopeFrictionPass(costGraph, {
+      id: 'slope-friction',
+      cellCount,
+      slope,
+      weight: slopeWeight.importToGraph(costGraph),
+      output: friction
+    });
+    costGraph.add(
+      new GPUCostDistance({
+        id: 'cost',
+        grid,
+        friction: {
+          id: 'friction',
+          format: 'float32',
+          storage: {kind: 'buffer', values: friction},
+          validity: importGraphBuffer(
+            costGraph,
+            'friction-validity',
+            validityBuffer,
+            'uint32',
+            cellCount
+          )
+        },
+        frictionParameters: frictionParameters.importToGraph(costGraph),
+        parameters: costSettings.importToGraph(costGraph),
+        cellSizeMode: 'uniform',
+        sources: sources.importToGraph(costGraph),
+        maximumIterations: MAXIMUM_ITERATIONS,
+        costBreaks: bandThresholds.importToGraph(costGraph),
+        output: {
+          costs: importGraphBuffer(costGraph, 'costs', costsBuffer, 'float32', cellCount),
+          backLinks: importGraphBuffer(
+            costGraph,
+            'back-links',
+            backLinksBuffer,
+            'uint32',
+            cellCount
+          ),
+          bands: importGraphBuffer(costGraph, 'bands', bandsBuffer, 'uint32', cellCount),
+          bandCounts: importGraphBuffer(
+            costGraph,
+            'band-counts',
+            bandCountsBuffer,
+            'uint32',
+            BAND_COUNT
+          ),
+          status: {
+            converged: importGraphBuffer(costGraph, 'converged', convergedBuffer, 'uint32', 1),
+            iterationCount: importGraphBuffer(
+              costGraph,
+              'iteration-count',
+              iterationCountBuffer,
+              'uint32',
+              1
+            )
+          }
+        }
+      })
+    );
+    const compiledCost: CompiledGPUCommandGraph<void> = resources.track(
+      await costGraph.compileAsync()
+    );
+
+    // --- Path graph: back-links to a cell list to line segments ---------------------------------
+    const pathGraph = new GPUCommandGraph<void>(device, {id: 'cost-distance-path'});
+    const pathIds = importGraphBuffer(
+      pathGraph,
+      'path-ids',
+      pathIdsBuffer,
+      'uint32',
+      PATH_CAPACITY
+    );
+    const pathCount = importGraphBuffer(pathGraph, 'path-count', pathCountBuffer, 'uint32', 1);
+    pathGraph.add(
+      new GPUCostDistancePath({
+        id: 'path',
+        grid,
+        backLinks: importGraphBuffer(pathGraph, 'back-links', backLinksBuffer, 'uint32', cellCount),
+        target: target.importToGraph(pathGraph),
+        output: {
+          path: {
+            ids: pathIds,
+            status: {
+              count: pathCount,
+              overflow: importGraphBuffer(
+                pathGraph,
+                'path-overflow',
+                pathOverflowBuffer,
+                'uint32',
+                1
+              ),
+              requiredCount: importGraphBuffer(
+                pathGraph,
+                'path-total-output',
+                pathTotalBuffer,
+                'uint32',
+                1
+              )
+            }
+          },
+          // 1 when the cost phase hit its iteration limit: back-links are unresolved, path is empty.
+          status: {
+            iterationLimitReached: importGraphBuffer(
+              pathGraph,
+              'path-iteration-limit',
+              pathLimitBuffer,
+              'uint32',
+              1
+            )
+          }
+        }
+      })
+    );
+    addPathSegmentsPass(pathGraph, {
+      id: 'path-segments',
+      width,
+      capacity: PATH_CAPACITY,
+      bounds,
+      cellSize,
+      ids: pathIds,
+      count: pathCount,
+      segments: importGraphBuffer(
+        pathGraph,
+        'path-segments',
+        pathSegmentsBuffer,
+        'float32',
+        PATH_CAPACITY * 4
+      )
+    });
+    const compiledPath: CompiledGPUCommandGraph<void> = resources.track(
+      await pathGraph.compileAsync()
+    );
+
+    // --- State ---------------------------------------------------------------------------------
+    let display: Display = 'cost';
+    let placement: Placement = 'source';
+    let slopeWeightValue = 2;
+    let baseFrictionValue = 0;
+    let limitKilometers = 25;
+    let sourceCell = getDefaultCell(SOURCE_LONGITUDE_LATITUDE, [0.35, 0.4]);
+    let destinationCell = getDefaultCell(DESTINATION_LONGITUDE_LATITUDE, [0.8, 0.7]);
+    let costDirty = true;
+    let pathDirty = true;
+    let destroyed = false;
+    let readbackPending = false;
+
+    function getCellCenter(cell: number): [number, number] {
+      return [
+        bounds[0] + ((cell % width) + 0.5) * cellSize[0],
+        bounds[3] - (Math.floor(cell / width) + 0.5) * cellSize[1]
+      ];
+    }
+
+    function getCellAt(longitude: number, latitude: number): number {
+      const [x, y] = projection.project(longitude, latitude);
+      const column = clamp(Math.floor((x - bounds[0]) / cellSize[0]), 0, width - 1);
+      const row = clamp(Math.floor((bounds[3] - y) / cellSize[1]), 0, height - 1);
+      return row * width + column;
+    }
+
+    /** Returns the land cell closest to `cell` in grid space. */
+    function findNearestLandCell(cell: number): number {
+      const column = cell % width;
+      const row = Math.floor(cell / width);
+      let best = cell;
+      let bestDistance = Infinity;
+      for (let candidate = 0; candidate < cellCount; candidate++) {
+        if (validityValues[candidate] === 0) continue;
+        const distance =
+          ((candidate % width) - column) ** 2 + (Math.floor(candidate / width) - row) ** 2;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = candidate;
+        }
+      }
+      return best;
+    }
+
+    /** Default endpoint: a real place for San Francisco data, a fixed grid fraction otherwise. */
+    function getDefaultCell(
+      place: readonly [number, number],
+      fraction: readonly [number, number]
+    ): number {
+      const cell =
+        terrain.source === 'synthetic'
+          ? Math.floor(height * fraction[1]) * width + Math.floor(width * fraction[0])
+          : getCellAt(place[0], place[1]);
+      return findNearestLandCell(cell);
+    }
+
+    const getLimit = () =>
+      limitKilometers >= NO_LIMIT_KILOMETERS ? Infinity : limitKilometers * 1000;
+    const getRange = () =>
+      getLimit() === Infinity ? UNLIMITED_RANGE_KILOMETERS * 1000 : getLimit();
+
+    const writeSettings = () => {
+      costSettings.write(getGPUCostDistanceParameterValues({costLimit: getLimit()}, grid));
+      bandThresholds.write(
+        Float32Array.from({length: BAND_COUNT}, (_, band) => ((band + 1) * getRange()) / BAND_COUNT)
+      );
+      slopeWeight.write(Float32Array.of(slopeWeightValue));
+      // friction = value * scale + offset, applied on the GPU by GPUCostDistance.
+      frictionParameters.write(Float32Array.of(1, baseFrictionValue));
+      costDirty = true;
+      pathDirty = true;
+    };
+    const writeEndpoints = () => {
+      sources.write(Uint32Array.of(sourceCell));
+      target.write(Uint32Array.of(destinationCell));
+      markerBuffer.write(
+        Float32Array.from([...getCellCenter(sourceCell), ...getCellCenter(destinationCell)])
+      );
+    };
+    derivativesSettings.write(
+      getGPUTerrainDerivativesParameterValues(
+        {
+          azimuthDegrees: SUN_AZIMUTH_DEGREES,
+          altitudeDegrees: SUN_ALTITUDE_DEGREES
+        },
+        grid
+      )
+    );
+    writeSettings();
+    writeEndpoints();
+
+    // --- Controls ------------------------------------------------------------------------------
+    context.controls.addSelect<Placement>({
+      label: 'Click places',
+      options: [
+        {value: 'source', label: 'Source (white)'},
+        {value: 'destination', label: 'Destination (red)'}
+      ],
+      value: placement,
+      onChange: value => {
+        placement = value;
+      }
+    });
+    context.controls.addSelect<Display>({
+      label: 'Raster display',
+      options: [
+        {value: 'cost', label: 'Accumulated cost'},
+        {value: 'bands', label: 'Cost isochrone bands'},
+        {value: 'friction', label: 'Friction surface'}
+      ],
+      value: display,
+      onChange: value => {
+        display = value;
+        context.updateLayers();
+      }
+    });
+    context.controls.addSlider({
+      label: 'Slope weight (per-frame)',
+      min: 0,
+      max: 8,
+      step: 0.25,
+      value: slopeWeightValue,
+      format: value => (value === 0 ? '0 (straight line)' : `${value}`),
+      onChange: value => {
+        slopeWeightValue = value;
+        writeSettings();
+      }
+    });
+    context.controls.addSlider({
+      label: 'Base friction added (per-frame)',
+      min: 0,
+      max: 4,
+      step: 0.25,
+      value: baseFrictionValue,
+      format: value => (value === 0 ? '0 (none)' : `+${value} per meter`),
+      onChange: value => {
+        baseFrictionValue = value;
+        writeSettings();
+      }
+    });
+    context.controls.addSlider({
+      label: 'Cost limit (per-frame)',
+      min: 1,
+      max: NO_LIMIT_KILOMETERS,
+      step: 1,
+      value: limitKilometers,
+      format: value => (value >= NO_LIMIT_KILOMETERS ? 'none' : `${value} km of flat ground`),
+      onChange: value => {
+        limitKilometers = value;
+        writeSettings();
+        context.updateLayers();
+      }
+    });
+    context.controls.addLegend({
+      title: 'Accumulated cost (0 to the limit)',
+      gradient: {
+        colors: [
+          [68, 1, 84],
+          [33, 145, 140],
+          [253, 231, 37]
+        ],
+        minimumLabel: '0',
+        maximumLabel: 'limit'
+      }
+    });
+    context.controls.addLegend({
+      title: 'Cost bands (share of the limit)',
+      entries: BAND_PALETTE.map((color, band) => ({
+        color,
+        label: `${(band * 100) / BAND_COUNT}-${((band + 1) * 100) / BAND_COUNT}%`
+      }))
+    });
+    context.controls.addNote(
+      'Friction = 1 + weight × (slope / 10°)², cost per meter. Pick what a click places, then ' +
+        'click the map. Sea is impassable.'
+    );
+    context.controls.addReadout('Raster', `${width} × ${height} cells`);
+    const convergedReadout = context.controls.addReadout('Converged', 'pending');
+    const pathReadout = context.controls.addReadout('Path', 'pending');
+    const bandReadout = context.controls.addReadout('Cells per band', 'pending');
+    context.controls.addReadout('Data', terrain.attribution);
+
+    function placeEndpoint(event: SpatialAnalysisPointerEvent): boolean {
+      if (!event.coordinate) return false;
+      const cell = getCellAt(event.coordinate[0], event.coordinate[1]);
+      if (validityValues[cell] === 0) {
+        context.setStatus('Sea is impassable: click on land.');
+        return true;
+      }
+      context.setStatus('');
+      if (placement === 'source') {
+        sourceCell = cell;
+        costDirty = true;
+      } else {
+        destinationCell = cell;
+      }
+      pathDirty = true;
+      writeEndpoints();
+      return true;
+    }
+
+    // --- Per-frame encode ----------------------------------------------------------------------
+    const readSummary = async (
+      commandEncoder: Parameters<SpatialAnalysisModeInstance['encode']>[0]
+    ) => {
+      const ticket = readbackRing.tryAcquire();
+      if (!ticket) return;
+      const copies: [Buffer, number, number, number][] = [
+        [costsBuffer, destinationCell * 4, 0, 4],
+        [pathCountBuffer, 0, 4, 4],
+        [pathOverflowBuffer, 0, 8, 4],
+        [pathTotalBuffer, 0, 12, 4],
+        [convergedBuffer, 0, 16, 4],
+        [iterationCountBuffer, 0, 20, 4],
+        [pathLimitBuffer, 0, 24, 4],
+        [bandCountsBuffer, 0, 28, BAND_COUNT * 4]
+      ];
+      for (const [sourceBuffer, sourceOffset, destinationOffset, size] of copies) {
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer,
+          sourceOffset,
+          destinationBuffer: ticket.buffer,
+          destinationOffset,
+          size
+        });
+      }
+      ticket.markEncoded({byteOffset: 0, byteLength: summaryWordCount * 4});
+      readbackPending = true;
+      try {
+        const bytes = await scheduleReadback(() => ticket.read());
+        if (destroyed) return;
+        const words = new Uint32Array(bytes.buffer, bytes.byteOffset, summaryWordCount);
+        const cost = new Float32Array(words.buffer, words.byteOffset, 1)[0];
+        convergedReadout.setValue(
+          `${words[4] ? 'yes' : 'no (iteration limit)'} after ${words[5]} of ${MAXIMUM_ITERATIONS} iterations`
+        );
+        pathReadout.setValue(
+          words[6]
+            ? 'unresolved: iteration limit reached before the back-links settled (no path)'
+            : words[3] === 0
+              ? 'destination unreached'
+              : `${formatCount(words[3])} cells, cost ${(cost / 1000).toFixed(1)} km-equivalent${words[2] ? ', overflow' : ''}`
+        );
+        bandReadout.setValue(Array.from(words.subarray(7), formatCount).join(' / '));
+      } catch {
+        // The ring or device was destroyed while the read was in flight.
+      } finally {
+        readbackPending = false;
+      }
+    };
+
+    const instance: SpatialAnalysisModeInstance = {
+      getCompiledGraphs: () => [compiledCost, compiledPath],
+      encode(commandEncoder, frame) {
+        // Outputs persist in their buffers: relax only when source, weight or limit changed.
+        if (costDirty || frame.frameIndex < 2) {
+          compiledCost.encode(commandEncoder, {parameters: undefined});
+          costDirty = false;
+          pathDirty = true;
+        }
+        if (pathDirty) {
+          compiledPath.encode(commandEncoder, {parameters: undefined});
+          // Instance-count word of the one 16-byte draw record: one segment per path cell.
+          commandEncoder.copyBufferToBuffer({
+            sourceBuffer: pathCountBuffer,
+            sourceOffset: 0,
+            destinationBuffer: drawCommands.buffer,
+            destinationOffset: 4,
+            size: 4
+          });
+          pathDirty = false;
+        }
+        if (frame.frameIndex % READBACK_INTERVAL_FRAMES === 1 && !readbackPending) {
+          void readSummary(commandEncoder);
+        }
+      },
+      getLayers() {
+        const rasterProps = {
+          coordinateOrigin: origin,
+          gridSize: [width, height] as const,
+          bounds,
+          rowOrigin: 'north' as const
+        };
+        const range = getRange();
+        const layers: Layer[] = [
+          new SpatialAnalysisRasterLayer({
+            ...rasterProps,
+            id: 'cost-distance-hillshade',
+            values: hillshadeBuffer,
+            valueFormat: 'float32',
+            colormap: 'grayscale',
+            valueRange: [0, 1],
+            color: [255, 255, 255, 140]
+          })
+        ];
+        if (display === 'cost') {
+          layers.push(
+            new SpatialAnalysisRasterLayer({
+              ...rasterProps,
+              id: 'cost-distance-cost',
+              values: costsBuffer,
+              valueFormat: 'float32',
+              colormap: 'viridis',
+              valueRange: [0, range],
+              color: [255, 255, 255, 170]
+            })
+          );
+        } else if (display === 'bands') {
+          layers.push(
+            new SpatialAnalysisRasterLayer({
+              ...rasterProps,
+              id: 'cost-distance-bands',
+              values: bandsBuffer,
+              valueFormat: 'uint32',
+              colormap: 'category',
+              palette: BAND_PALETTE,
+              noDataValue: GPU_COST_DISTANCE_NONE
+            })
+          );
+        } else {
+          layers.push(
+            new SpatialAnalysisRasterLayer({
+              ...rasterProps,
+              id: 'cost-distance-friction',
+              values: frictionBuffer,
+              valueFormat: 'float32',
+              colormap: 'inferno',
+              valueRange: [1, 1 + slopeWeightValue * 9],
+              color: [255, 255, 255, 200]
+            })
+          );
+        }
+        layers.push(
+          new SpatialAnalysisSegmentLayer({
+            id: 'cost-distance-path-halo',
+            coordinateOrigin: origin,
+            segments: pathSegmentsBuffer,
+            drawCommands,
+            drawCommandIndex: 0,
+            widthPixels: 6,
+            color: [0, 0, 0, 200]
+          }),
+          new SpatialAnalysisSegmentLayer({
+            id: 'cost-distance-path',
+            coordinateOrigin: origin,
+            segments: pathSegmentsBuffer,
+            drawCommands,
+            drawCommandIndex: 0,
+            widthPixels: 3.5,
+            color: [255, 80, 70, 255]
+          }),
+          new SpatialAnalysisPointLayer({
+            id: 'cost-distance-source',
+            coordinateOrigin: origin,
+            positions: markerBuffer,
+            instanceCount: 1,
+            radiusPixels: 8,
+            color: [255, 255, 255, 255]
+          }),
+          new SpatialAnalysisPointLayer({
+            id: 'cost-distance-destination',
+            coordinateOrigin: origin,
+            positions: markerBuffer,
+            ids: destinationIdBuffer,
+            instanceCount: 1,
+            radiusPixels: 8,
+            color: [235, 40, 60, 255]
+          })
+        );
+        return layers;
+      },
+      onClick: placeEndpoint,
+      destroy() {
+        destroyed = true;
+        resources.destroy();
+      }
+    };
+    return instance;
+  }
+};

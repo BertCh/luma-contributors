@@ -1,0 +1,165 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {Device} from '@luma.gl/core';
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {expect, test} from 'vitest';
+import {getCatalogBinding, runCatalogOperationAsync} from '../src/analysis/catalog-bindings';
+import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
+import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+
+// These bindings have no CPU engine: independent CPU formulas in this spec are the oracle.
+
+async function getDevice(): Promise<Device> {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  return device;
+}
+
+const COLUMNS = 10;
+const ROWS = 8;
+
+function makeGrid(): CatalogFeatureCollection {
+  const features: CatalogFeatureCollection['features'] = [];
+  for (let row = 0; row < ROWS; row++)
+    for (let column = 0; column < COLUMNS; column++)
+      features.push({
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [column * 10, row * 10],
+              [column * 10 + 10, row * 10],
+              [column * 10 + 10, row * 10 + 10],
+              [column * 10, row * 10 + 10],
+              [column * 10, row * 10]
+            ]
+          ]
+        },
+        properties: {
+          // Clustered black block plus noise.
+          b: column < 5 && row < 4 ? 1 : (column * 7 + row * 3) % 11 === 0 ? 1 : 0,
+          x: Math.sin(column / 2) * 3 + row * 0.7 + ((column * 13 + row * 5) % 7) * 0.2,
+          y: Math.cos(row / 2) * 2 + column * 0.4 + ((column * 3 + row * 11) % 5) * 0.3
+        }
+      });
+  return {type: 'FeatureCollection', features};
+}
+
+/** Queen neighbors (shared vertex) of the unit grid. */
+function getQueenNeighbors(): number[][] {
+  return Array.from({length: ROWS * COLUMNS}, (_, index) => {
+    const row = Math.floor(index / COLUMNS);
+    const column = index % COLUMNS;
+    const list: number[] = [];
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++) {
+        const r = row + dr;
+        const c = column + dc;
+        if ((dr || dc) && r >= 0 && r < ROWS && c >= 0 && c < COLUMNS) list.push(r * COLUMNS + c);
+      }
+    return list;
+  });
+}
+
+const properties = (collection: CatalogFeatureCollection, name: string) =>
+  collection.features.map(feature => (feature.properties as Record<string, number>)[name]);
+
+test('global-join-counts-getis-ord matches independent join counts', async () => {
+  const device = await getDevice();
+  const features = makeGrid();
+  const binding = getCatalogBinding('global-join-counts-getis-ord')!;
+  expect(binding.engine).toBe('gpu');
+  const result = await runCatalogOperationAsync(
+    binding,
+    {valueProperty: 'b', neighborhood: 'queen', coordinateSystem: 'planar'},
+    {features},
+    {device}
+  );
+  expect(result.engine).toBe('gpu');
+  expect(result.dispatchedContributors).toEqual(['GPUGlobalSpatialStatistics']);
+  const black = properties(features, 'b');
+  const neighbors = getQueenNeighbors();
+  let blackBlack = 0;
+  let blackWhite = 0;
+  let whiteWhite = 0;
+  neighbors.forEach((list, a) =>
+    list.forEach(b => {
+      if (b <= a) return;
+      if (black[a] && black[b]) blackBlack++;
+      else if (black[a] || black[b]) blackWhite++;
+      else whiteWhite++;
+    })
+  );
+  const table = result.tables[0];
+  const statistics = table.columns['statistic'] as string[];
+  const values = table.columns['value'] as number[];
+  expect(values[statistics.indexOf('join-count-black-black')]).toBe(blackBlack);
+  expect(values[statistics.indexOf('join-count-black-white')]).toBe(blackWhite);
+  expect(values[statistics.indexOf('join-count-white-white')]).toBe(whiteWhite);
+  // Clustered black cells must show more black-black joins than expected.
+  const z = table.columns['z_score'] as number[];
+  expect(z[statistics.indexOf('join-count-black-black')]).toBeGreaterThan(2);
+  expect(Number.isFinite(values[statistics.indexOf('getis-ord-g')])).toBe(true);
+});
+
+test('local-lisa-variants matches independent local statistics', async () => {
+  const device = await getDevice();
+  const features = makeGrid();
+  const binding = getCatalogBinding('local-lisa-variants')!;
+  const base = {
+    neighborhood: 'queen',
+    coordinateSystem: 'planar',
+    permutations: 99,
+    seed: 4,
+    significance: 0.05,
+    valueProperty: 'x'
+  };
+  const neighbors = getQueenNeighbors();
+  const run = (extra: Record<string, unknown>) =>
+    runCatalogOperationAsync(binding, {...base, ...extra}, {features}, {device});
+
+  const join = await run({variant: 'local-join-count', valueProperty: 'b'});
+  expect(join.engine, join.fallbackReason).toBe('gpu');
+  const black = properties(features, 'b');
+  const joinStatistic = join.tables[0].columns['statistic'] as number[];
+  neighbors.forEach((list, row) =>
+    expect(joinStatistic[row], `join ${row}`).toBe(
+      black[row] * list.reduce((sum, other) => sum + black[other], 0)
+    )
+  );
+
+  const x = properties(features, 'x');
+  const total = x.reduce((sum, value) => sum + value, 0);
+  const g = await run({variant: 'local-getis-ord-g'});
+  const gStatistic = g.tables[0].columns['statistic'] as number[];
+  neighbors.forEach((list, row) => {
+    const expected =
+      list.reduce((sum, other) => sum + x[other] / list.length, 0) / (total - x[row]);
+    expect(Math.abs(gStatistic[row] - expected), `G ${row}`).toBeLessThan(1e-4);
+  });
+
+  const star = await run({variant: 'local-getis-ord-g-star'});
+  expect(star.tables[0].columns['statistic'].every(value => Number.isFinite(value as number))).toBe(
+    true
+  );
+  const starP = star.tables[0].columns['p_value'] as number[];
+  expect(starP.every(value => value > 0 && value <= 1)).toBe(true);
+
+  const y = properties(features, 'y');
+  const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
+  const mx = mean(x);
+  const my = mean(y);
+  const ssx = x.reduce((sum, value) => sum + (value - mx) ** 2, 0);
+  const ssy = y.reduce((sum, value) => sum + (value - my) ** 2, 0);
+  const n = x.length;
+  const bivariate = await run({variant: 'local-bivariate-moran', secondValueProperty: 'y'});
+  expect(bivariate.engine, bivariate.fallbackReason).toBe('gpu');
+  const bivariateStatistic = bivariate.tables[0].columns['statistic'] as number[];
+  neighbors.forEach((list, row) => {
+    const lag = list.reduce((sum, other) => sum + (y[other] - my) / list.length, 0);
+    const expected = ((n - 1) * (x[row] - mx) * lag) / Math.sqrt(ssx * ssy);
+    expect(Math.abs(bivariateStatistic[row] - expected), `BV ${row}`).toBeLessThan(2e-3);
+  });
+});

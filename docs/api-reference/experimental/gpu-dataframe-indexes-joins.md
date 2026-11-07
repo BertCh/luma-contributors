@@ -1,0 +1,157 @@
+---
+title: GPU Dataframe indexes and joins
+description: Build bounded unique-key lookups and share GPU outputs with filtering and rendering.
+---
+
+import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
+
+# GPU Dataframe indexes and joins
+
+<ExperimentalDocsTabs active="gpu-dataframe-indexes-joins" />
+
+## Join or look up unique right-side keys
+
+### `GPUDataFrameJoinQuery`
+
+Match each left row to its unique right-side key and publish paired stable row ids for inner, left, semi or anti joins.
+
+::lens{scenario=gpu-dataframe.data-frame-join-query rung=result caption="All 1,500 observations pair with a tract; observation 0 (tract 46) gets poverty 9.7%."}
+
+GPU Dataframe supports bounded, unique-right-key `uint32` inner, left outer, semi, and anti joins, together
+with source-aligned lookups. Left and right tables may have different batch topologies, empty
+chunks, nullable keys, and explicit original source-row offsets. The right-side hash index is built
+directly from its original batches; neither side is concatenated or repacked.
+
+```ts
+const joined = customers
+  .filter(column('customerId').isValid())
+  .innerJoin(accounts, {
+    leftOn: 'customerId',
+    rightOn: 'accountId',
+    capacity: 1024,
+    indexCapacity: 4096,
+    maxProbeCount: 64
+  })
+  .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(device));
+
+joined.rowIndices;
+joined.rightRowIndices;
+joined.rightValidity;
+joined.joinType;
+joined.requiredCounts;
+joined.selectedCounts;
+joined.overflows;
+joined.indexStatistics;
+joined.lookupStatistics;
+joined.contractViolation;
+joined.rightTable;
+
+const leftOuter = customers
+  .leftJoin(accounts, {leftOn: 'customerId', rightOn: 'accountId'})
+  .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(device));
+
+const matchedCustomers = customers
+  .semiJoin(accounts, {leftOn: 'customerId', rightOn: 'accountId'})
+  .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(device));
+
+const unmatchedCustomers = customers
+  .antiJoin(accounts, {leftOn: 'customerId', rightOn: 'accountId'})
+  .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(device));
+```
+
+For every join, `rowIndices` and `rightRowIndices` contain paired stable source identifiers;
+`selectedCounts` gives the published prefix while `requiredCounts` reports all selected result rows
+before capacity truncation. `overflows` flags insufficient output capacity per original left batch.
+`rightValidity` is a compacted, GPU-resident `uint32` sidecar: `1` means a right partner exists;
+`0` means the published left row is unmatched and its right identifier is the reserved
+`0xffffffff` marker.
+
+- `innerJoin` publishes only matching left rows and their right partners.
+- `leftJoin` publishes every selected left row, including missing and nullable left keys, and
+  explicitly marks unmatched right partners through `rightValidity`.
+- `semiJoin` publishes only selected left rows with an existing right partner.
+- `antiJoin` publishes only selected unmatched left rows, including nullable left keys; every
+  published `rightValidity` entry is zero.
+
+All four join modes support the same `capacity`, `indexCapacity`, and `maxProbeCount` options and
+compose with filtered, projected, or derived left plans. Publication remains stable within each
+original left batch; no implicit global row ordering or source-column materialization occurs.
+
+The six GPU-resident index statistic words are, in order, unique entries, duplicate keys, index
+overflow, invalid keys, total probe count, and maximum probe count. A valid key equal to
+`0xffffffff` is reserved and therefore invalid; nullable right rows are ignored. Duplicate right
+keys, reserved valid keys, or incomplete hash-index construction set `contractViolation` and
+suppress all published rows in every join mode instead of returning ambiguous results or treating
+an incomplete index as missing matches. After submitting the encoded work, call
+`await joined.readContractViolation()` (an explicit one-word readback) and treat `true` as "the
+result is invalid", not as "no matches"; `contractViolation` stays available for GPU-resident use. Dictionary-encoded keys must have identical labels and
+ordering on both sides.
+
+Many-to-many joins, right/full outer joins, multi-key joins, string-key hashing, and CPU-side result
+materialization remain intentionally unsupported.
+
+#### How it computes
+
+{/* lens:GPUDataFrameJoinQuery */}
+
+::lens{scenario=gpu-dataframe.data-frame-join-query rung=datum bind=page datum=0 caption="Pair 0 joins observation 0 to tract row 46, whose poverty rate is 9.7%."}
+::lens{scenario=gpu-dataframe.data-frame-join-query rung=kernel caption="Look at the right-index build and the per-batch probe: matches are counted, then published."}
+::lens{scenario=gpu-dataframe.data-frame-join-query rung=graph caption="Build the right hash index, validate its contract, probe each left row, then scan and publish pairs."}
+
+### `GPUDataFrameLookupQuery`
+
+Look up each left row's unique right-side partner and publish source-aligned right row ids with a match flag.
+
+::lens{scenario=gpu-dataframe.data-frame-lookup-query rung=result caption="All 1,500 observations match a tract; the gathered poverty rate sits beside each source row."}
+
+```ts
+const lookups = customers
+  .lookup(accounts, {leftOn: 'customerId', rightOn: 'accountId'})
+  .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(device));
+
+lookups.rowIndices;
+lookups.rightRowIndices;
+lookups.matchMask;
+lookups.probeCounts;
+lookups.indexStatistics;
+lookups.contractViolation;
+```
+
+`lookup` preserves source-aligned right identifiers and exposes a match flag and probe count for
+every left row without compacting the original batches. It shares the join's unique-right-key
+contract, the six index statistic words, and `contractViolation`.
+
+#### How it computes
+
+{/* lens:GPUDataFrameLookupQuery */}
+
+::lens{scenario=gpu-dataframe.data-frame-lookup-query rung=datum bind=page datum=0 caption="Observation 0 (tract 46) matches tract row 46 and reads poverty 9.7%."}
+::lens{scenario=gpu-dataframe.data-frame-lookup-query rung=kernel caption="Look at the per-row probe: each observation hashes its key and walks a bounded number of slots."}
+::lens{scenario=gpu-dataframe.data-frame-lookup-query rung=graph caption="Build the right hash index, validate its contract, then probe every left row; nothing is compacted."}
+
+## Share GPU outputs with rendering and GPUCrossfilter
+
+Visualization shaders can consume `compiled.selectionMask`, `compiled.rowIndices`, aggregated GPU
+columns, and joined source-row identifiers directly as storage or vertex buffers. Import the same
+existing table vectors into a separate [`GPUCrossfilter`](/docs/api-reference/experimental/gpu-crossfilter)
+graph when an application needs linked ranges, brushes, histograms, or visibility views:
+
+```ts
+const interactionGraph = new GPUCommandGraph(device);
+const fare = interactionGraph.importGPUVector('fare', dataframe.table.gpuVectors.fare);
+const category = interactionGraph.importGPUVector('category', dataframe.table.gpuVectors.category);
+
+const fareValidity = dataframe.validity.fare
+  ? interactionGraph.importGPUVector('fare-validity', dataframe.validity.fare)
+  : undefined;
+```
+
+GPUCrossfilter and other lower-level consumers do not automatically interpret GPU Dataframe's nullable sidecars;
+combine the explicit validity mask into their selection before treating nullable values as valid.
+Sharing vectors does not transfer ownership, merge source batches, or require CPU row readback.
+
+## Related pages
+
+- [GPU Dataframe overview](/docs/api-reference/experimental/gpu-dataframe)
+- [GPU Dataframe operations index](/docs/api-reference/experimental/gpu-dataframe-operations)
+- [GPU tables](/docs/api-reference/experimental/gpu-tables)

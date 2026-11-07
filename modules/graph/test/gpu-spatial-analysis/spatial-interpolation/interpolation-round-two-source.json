@@ -1,0 +1,27 @@
+{
+  "revision": "e6375c5d683ee8a6289789f07ea8e24e7b87c21e",
+  "capturedAt": "2026-10-24T02:25:50.130481+00:00",
+  "files": {
+    "modules/graph/src/gpu-dataframe/pair-statistics/gpu-variogram-model-fit.ts": "bda0eb47d0edaa8236fbc61d45a82979dee608c0075aaaf15cd0ad5188d14cf7",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-conditional-gaussian-simulation.ts": "2737ff5e81cdbebd4deec8c8cb110ec358d04f997d1cac23b04be79206fda7c2",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-focal-statistics.ts": "060dfa155c8775de2e830cc35a493f4d0f2ebf540fa672f0ecc5dd4936df2eec",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-inverse-distance-weighting.ts": "61d99a8f9dde3c2ad5968d5671d505f56319ec9688ed36536f1c452438f54ce0",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-kriging.ts": "66b9fd194e34930ced7f9a582dad953b147a849e4caccba99c3c1dbcc15a6386",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging.ts": "21b6c7f7d4aa92b5a77f51bbd49c9c1b71a1ab794f75164f95b6d2da0765a47c",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-rbf.ts": "0a3a81295a90ab50ff90cfa0910d3de3c9232294ceae7bacaec51461d5830710",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-natural-neighbor.ts": "f2b942ad0924294a49ca3dd75c7dae17f74628c85c810cc0c0492bf611008a52",
+    "modules/graph/src/utils/gpu-prediction-utils.ts": "4934e7d424dba15a39b38563a173696d78020efbeb8001d97717bb0c18fde9d5",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-advanced.spec.ts": "e4db254eae0987a9e7841c4205b3559142c758dee1267ce884ab822941074e77",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-coverage-reference.ts": "93337b5bf2cdd382a1a2f89d9b0fdf4e12ca07a40dc76ca357c262b0ba3855f8",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-coverage.node.spec.ts": "60ed816fb10e00425df4538626548ac73e354663894bdc312961e6ad05bff2f0",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-coverage.spec.ts": "68ee9adb0da235b27b57ae83dd34df4f80cbab169a94e712326c2b18c5575388",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-fit-comparison.ts": "f5c7b648f4df82fe22bee1b98f667d641a403e17cc3d7ac1ee2d72920ff3b26a",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance-benchmark.spec.ts": "364d43c010c7098d60f70adc88db5fc3be7be0630ddd2d9c7230a8551c93e124",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance-fixtures.ts": "d5559cedd538351d5073ae0ee1f1cd8d1d8ebb05976f76d80935179422796c3e",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance-harness.ts": "786baf22870bbea1e33c349be6b2c6d48005e511de5aedbb26059871cba85dba",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance.node.spec.ts": "2beb656d989dfdb15126164a41ba0223678aa6840696e678d8bcc6f02822b71a",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-scaling-fixtures.ts": "10a9e42a3c422d1e5abcde94cf39eaa26fba57730c854f9b38b0c706d41fe8f7"
+  },
+  "sha256": "1858bee1eb10e42d2596cb3731f1c6f00b98385a5fe07d5068e334ff54aa6f27",
+  "scope": "Interpolation implementation, tests, fixtures, and benchmark source hashes; shared repository has additional uncommitted changes."
+}

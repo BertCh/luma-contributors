@@ -1,0 +1,42 @@
+{
+  "description": "Unmodified WebGPU map screenshots, including legends and dataset/basemap attribution. Illustrative previews; consult each live story for controls, evidence and limitations.",
+  "capturedAt": "2026-10-25T23:06:58.447Z",
+  "bundleSha256": "31e545703f8e9c2990ab47eb3c8ec879c9e3532b9a386c16da552c59782e7eaf",
+  "captures": [
+    {
+      "sceneId": "transit-frequency",
+      "stepIndex": 0,
+      "filename": "transit-frequency.png",
+      "width": 730,
+      "height": 528
+    },
+    {
+      "sceneId": "burn-severity",
+      "stepIndex": 0,
+      "filename": "burn-severity.png",
+      "width": 730,
+      "height": 528
+    },
+    {
+      "sceneId": "h3-aggregation",
+      "stepIndex": 0,
+      "filename": "h3-aggregation.png",
+      "width": 730,
+      "height": 528
+    },
+    {
+      "sceneId": "watersheds",
+      "stepIndex": 0,
+      "filename": "watersheds.png",
+      "width": 730,
+      "height": 528
+    },
+    {
+      "sceneId": "rainfall-interpolation",
+      "stepIndex": 0,
+      "filename": "rainfall-interpolation.png",
+      "width": 730,
+      "height": 528
+    }
+  ]
+}

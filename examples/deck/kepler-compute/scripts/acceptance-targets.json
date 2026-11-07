@@ -1,0 +1,1035 @@
+{
+  "version": 1,
+  "description": "Kepler compute acceptance targets. origin=plan only where dev-docs/roadmaps/kepler-compute-integration-plan.md states the target; origin=ratified values were scaled from the plan and ratified by the project owner on 2026-10-31; memoryAccounted scales as max(512 MiB, 96 bytes per row). Tier rule semantics: within one rule all keys must hold; *array keys match if any substring occurs (case-insensitive) in vendor/architecture/device/description (text = all four); exclude* keys reject on any match; match.anyOf is satisfied by any rule; an empty match always matches.",
+  "sizes": [
+    1000000,
+    5000000,
+    10000000
+  ],
+  "tiers": [
+    {
+      "id": "reference-desktop",
+      "description": "Discrete GPU or Apple M-class desktop/laptop with at least 1 GiB buffer limits; the plan reference class.",
+      "match": {
+        "anyOf": [
+          {
+            "vendor": [
+              "nvidia",
+              "amd",
+              "ati"
+            ],
+            "excludeText": [
+              "swiftshader",
+              "llvmpipe",
+              "software",
+              "basic render"
+            ],
+            "excludeUserAgent": [
+              "android",
+              "iphone",
+              "ipad",
+              "mobile"
+            ],
+            "minMaxBufferSize": 1073741824,
+            "minMaxStorageBufferBindingSize": 1073741824
+          },
+          {
+            "text": [
+              "geforce",
+              "radeon rx",
+              "radeon pro",
+              "rtx",
+              "quadro",
+              "intel arc"
+            ],
+            "excludeText": [
+              "swiftshader",
+              "llvmpipe",
+              "software"
+            ],
+            "excludeUserAgent": [
+              "android",
+              "iphone",
+              "ipad",
+              "mobile"
+            ],
+            "minMaxBufferSize": 1073741824,
+            "minMaxStorageBufferBindingSize": 1073741824
+          },
+          {
+            "vendor": [
+              "apple"
+            ],
+            "excludeUserAgent": [
+              "iphone",
+              "ipad",
+              "mobile"
+            ],
+            "minMaxBufferSize": 1073741824,
+            "minMaxStorageBufferBindingSize": 1073741824
+          }
+        ]
+      }
+    },
+    {
+      "id": "integrated",
+      "description": "Integrated desktop/laptop GPU sharing system memory (Intel UHD/Iris/Xe, AMD APU graphics).",
+      "match": {
+        "anyOf": [
+          {
+            "vendor": [
+              "intel"
+            ],
+            "excludeText": [
+              "swiftshader",
+              "llvmpipe",
+              "software"
+            ],
+            "excludeUserAgent": [
+              "android",
+              "mobile"
+            ],
+            "minMaxStorageBufferBindingSize": 134217728
+          },
+          {
+            "text": [
+              "radeon graphics",
+              "integrated",
+              "uhd graphics",
+              "iris"
+            ],
+            "excludeText": [
+              "swiftshader",
+              "llvmpipe",
+              "software"
+            ],
+            "excludeUserAgent": [
+              "android",
+              "mobile"
+            ],
+            "minMaxStorageBufferBindingSize": 134217728
+          }
+        ]
+      }
+    },
+    {
+      "id": "low-power",
+      "description": "Mobile, software-rendered, or limits-constrained adapters. Qualified separately from the reference tier.",
+      "match": {
+        "anyOf": [
+          {
+            "text": [
+              "swiftshader",
+              "llvmpipe",
+              "software",
+              "basic render",
+              "lavapipe"
+            ]
+          },
+          {
+            "isFallbackAdapter": true
+          },
+          {
+            "userAgent": [
+              "android",
+              "iphone",
+              "ipad"
+            ]
+          },
+          {
+            "vendor": [
+              "qualcomm",
+              "arm",
+              "img",
+              "imagination",
+              "broadcom"
+            ],
+            "text": []
+          },
+          {
+            "maxMaxStorageBufferBindingSize": 134217727
+          }
+        ]
+      }
+    },
+    {
+      "id": "unclassified",
+      "description": "Fallback when adapter information is missing or matches no other tier.",
+      "match": {}
+    }
+  ],
+  "targets": {
+    "reference-desktop": {
+      "1000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 50,
+          "unit": "ms",
+          "origin": "plan",
+          "note": "Plan: warm simple filter-to-map update p95 < 50 ms at 1M points on the reference desktop (checked as <=)."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 50,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 100,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 50,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 100,
+          "unit": "ms",
+          "origin": "plan",
+          "note": "Plan: linked compact summaries (histogram/Count) < 100 ms; statistic p95 chosen to match the filter statistic."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 16.7,
+          "unit": "ms",
+          "origin": "plan",
+          "note": "Plan: 16.7 ms playback frame budget on the reference desktop (p95 of host-submitted frame intervals)."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 2000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 536870912,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      },
+      "5000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 150,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 150,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 300,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 150,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 300,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 50.1,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 6000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 536870912,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      },
+      "10000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 300,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 300,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 600,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 300,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 600,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 100.2,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 12000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 960000000,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      }
+    },
+    "integrated": {
+      "1000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 150,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 150,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 300,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 150,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 300,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 50.1,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 6000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 536870912,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      },
+      "5000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 450,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 450,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 900,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 450,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 900,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 150.3,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 18000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 536870912,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      },
+      "10000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 900,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 900,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 1800,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 900,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 1800,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 300.6,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 36000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 960000000,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      }
+    },
+    "low-power": {
+      "1000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 1000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 1000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 167,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 20000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 536870912,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      },
+      "5000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 1500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 1500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 1500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 501,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 60000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 536870912,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      },
+      "10000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 6000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 6000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 1002,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 120000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 960000000,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      }
+    },
+    "unclassified": {
+      "1000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 1000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 1000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 167,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 20000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 536870912,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      },
+      "5000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 1500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 1500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 1500,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 501,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 60000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 536870912,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      },
+      "10000000": {
+        "filterLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "brushLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "histogramLatency": {
+          "statistic": "p95",
+          "maxValue": 6000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "styleLatency": {
+          "statistic": "p95",
+          "maxValue": 3000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "linkedSummaryLatency": {
+          "statistic": "p95",
+          "maxValue": 6000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "frameTime": {
+          "statistic": "p95",
+          "maxValue": 1002,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "uploadTime": {
+          "statistic": "value",
+          "maxValue": 120000,
+          "unit": "ms",
+          "origin": "ratified",
+          "note": "Scaled from the plan; ratified 2026-10-31."
+        },
+        "memoryAccounted": {
+          "statistic": "value",
+          "maxValue": 960000000,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Ratified 2026-10-31: max(512 MiB registry default, 96 bytes per row); larger sizes need ?memoryBudgetMebibytes."
+        },
+        "warmUploadBytes": {
+          "statistic": "value",
+          "maxValue": 0,
+          "unit": "bytes",
+          "origin": "plan",
+          "note": "Plan: zero full-dataset upload on warm filter/style interactions."
+        },
+        "warmReadbackBytes": {
+          "statistic": "value",
+          "maxValue": 4096,
+          "unit": "bytes",
+          "origin": "ratified",
+          "note": "Bounded explorer readback is allowed by the plan; 4096 bytes per interaction batch (a few compact summary bins) was ratified 2026-10-31."
+        }
+      }
+    }
+  }
+}

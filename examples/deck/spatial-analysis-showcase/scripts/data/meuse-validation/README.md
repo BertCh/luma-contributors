@@ -1,0 +1,9 @@
+# Meuse validation inputs
+
+This builder exports the `meuse`, `meuse.grid` and `meuse.riv` datasets from R package `sp` 2.2-4. It retains 155 field samples, the 3,103-cell 40 m-spaced prediction grid and the 176-coordinate river outline. Coordinates originate in EPSG:28992; WGS84 copies are included only for display. Original planar coordinates are retained for model distances. The field records also preserve measured distance, elevation, organic matter, soil, lime, flood frequency and land-use fields for later scenes.
+
+The builder downloads JSON exports from `https://edzer.r-universe.dev/sp/data/`. The source package is GPL-2.0-or-later; the `meuse` data notes identify collectors Ruud van Rijn and Mathieu Rikken and compilation by Edzer Pebesma. See the `sp` dataset documentation at <https://raw.githubusercontent.com/edzer/sp/master/man/meuse.Rd>, <https://raw.githubusercontent.com/edzer/sp/master/man/meuse.grid.Rd> and <https://raw.githubusercontent.com/edzer/sp/master/man/meuse.riv.Rd>.
+
+Create a temporary Python environment with `pyproj`, then run `python build.py`. No repository package or global Python installation is needed. The script verifies source row counts, writes little-endian float32 columns, emits source and transformation metadata, and writes `sha256.json` for the generated files.
+
+The grid soil and flood-frequency attributes are deliberately omitted: the upstream documentation says their provenance is uncertain. The interpolation scene uses grid coordinates and the documented distance covariate only. The source notes that topsoil records are 15 m × 15 m composite samples represented by points and that recorded cadmium zeros were replaced by 0.2 mg/kg; therefore the cadmium values must not be interpreted as exact measured zeros. The scene logs each response before fitting. Exponentiating a predicted log value gives a median under a lognormal interpretation, not an original-scale expectation.

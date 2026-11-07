@@ -1,0 +1,168 @@
+{
+  "recordedAt": "2026-10-24T02:38:27.625132+00:00",
+  "sourceState": "shared uncommitted roadmap implementation",
+  "method": "Preparation includes CPU fixture creation, buffer allocation/upload and queue completion; execution is CPU encode/submit/queue completion; readback separate; shared device pipeline cache not cleared; graph transient bytes are not process/driver peak memory.",
+  "device": {
+    "info": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "max",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "maximumStorageBindingBytes": 4294967292,
+    "clock": "CPU encode + submit + queue completion; readback separate; no claimed GPU timestamp or driver cold start"
+  },
+  "measurements": [
+    {
+      "kind": "sur",
+      "rows": 64,
+      "preparationMilliseconds": 12.5,
+      "compileMilliseconds": 1.5,
+      "firstExecutionMilliseconds": 138.09999999403954,
+      "residentMilliseconds": [
+        2.2000000029802322,
+        1.7999999970197678,
+        1.7999999970197678
+      ],
+      "readbackMilliseconds": 0.7999999970197678,
+      "inputBytes": 1024,
+      "outputBytes": 612,
+      "transientBytes": 0,
+      "logicalTransientBytes": 0,
+      "nodeCount": 2,
+      "certificate": [
+        2.002042055130005,
+        0.7014951109886169,
+        1.000726580619812,
+        -0.2990523874759674
+      ]
+    },
+    {
+      "kind": "sur",
+      "rows": 1024,
+      "preparationMilliseconds": 1.2000000029802322,
+      "compileMilliseconds": 0.29999999701976776,
+      "firstExecutionMilliseconds": 113.59999999403954,
+      "residentMilliseconds": [
+        6.200000002980232,
+        4.799999997019768,
+        4.5
+      ],
+      "readbackMilliseconds": 0.30000001192092896,
+      "inputBytes": 16384,
+      "outputBytes": 8292,
+      "transientBytes": 0,
+      "logicalTransientBytes": 0,
+      "nodeCount": 2,
+      "certificate": [
+        2.0000805854797363,
+        0.6998337507247925,
+        1.0000293254852295,
+        -0.29999780654907227
+      ]
+    },
+    {
+      "kind": "sur",
+      "rows": 16384,
+      "preparationMilliseconds": 3,
+      "compileMilliseconds": 0.29999999701976776,
+      "firstExecutionMilliseconds": 187.5,
+      "residentMilliseconds": [
+        64.59999999403954,
+        63.400000005960464,
+        63.79999999701977
+      ],
+      "readbackMilliseconds": 0.7999999970197678,
+      "inputBytes": 262144,
+      "outputBytes": 131172,
+      "transientBytes": 0,
+      "logicalTransientBytes": 0,
+      "nodeCount": 2,
+      "certificate": [
+        2.0003044605255127,
+        0.6999897956848145,
+        1.0001559257507324,
+        -0.30000194907188416
+      ]
+    },
+    {
+      "kind": "poisson-bandwidth-selection",
+      "rows": 32,
+      "preparationMilliseconds": 2.199999988079071,
+      "compileMilliseconds": 1,
+      "firstExecutionMilliseconds": 219.1000000089407,
+      "residentMilliseconds": [
+        3.2000000029802322,
+        2.5,
+        2.4000000059604645
+      ],
+      "readbackMilliseconds": 0.7999999970197678,
+      "inputBytes": 648,
+      "outputBytes": 660,
+      "transientBytes": 1928,
+      "logicalTransientBytes": 3336,
+      "nodeCount": 18,
+      "certificate": [
+        2.0980801582336426,
+        1.8070449829101562,
+        1.7817744016647339
+      ]
+    },
+    {
+      "kind": "poisson-bandwidth-selection",
+      "rows": 128,
+      "preparationMilliseconds": 2,
+      "compileMilliseconds": 0.6000000089406967,
+      "firstExecutionMilliseconds": 193.70000000298023,
+      "residentMilliseconds": [
+        7.899999991059303,
+        7,
+        6.9000000059604645
+      ],
+      "readbackMilliseconds": 1,
+      "inputBytes": 2568,
+      "outputBytes": 2580,
+      "transientBytes": 7688,
+      "logicalTransientBytes": 13320,
+      "nodeCount": 18,
+      "certificate": [
+        1.6664869785308838,
+        1.5352500677108765,
+        1.5074357986450195
+      ]
+    },
+    {
+      "kind": "poisson-bandwidth-selection",
+      "rows": 512,
+      "preparationMilliseconds": 1.1000000089406967,
+      "compileMilliseconds": 0.5999999940395355,
+      "firstExecutionMilliseconds": 195.40000000596046,
+      "residentMilliseconds": [
+        17.5,
+        17.700000002980232,
+        17.399999991059303
+      ],
+      "readbackMilliseconds": 1,
+      "inputBytes": 10248,
+      "outputBytes": 10260,
+      "transientBytes": 30728,
+      "logicalTransientBytes": 53256,
+      "nodeCount": 18,
+      "certificate": [
+        1.4844691753387451,
+        1.4707319736480713,
+        1.4753787517547607
+      ]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-flow-fractions",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-terrain.terrain-flow-fractions",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeL…",
+  "description": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths. values: 72. values read back from the GPU run. input elevation: 9 cells.",
+  "llms": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths\n\n- values: 72\n- input elevation: 9 cells\n- input flowDirections: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- 72 values, 16 shown\n- 72 values, 16 shown\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "values",
+    "value": "72"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[3,3]]\" role=\"img\" aria-label=\"Result: edgeLengths\"><defs><pattern id=\"lens-gpu-terrain-terrain-flow-fractions-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-flow-fractions-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-flow-fractions-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"6\" y=\"6\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"24.5\" y=\"6\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"43\" y=\"6\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"61.5\" y=\"6\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"80\" y=\"6\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"4\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"98.5\" y=\"6\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"5\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#4a98c9\" stroke=\"#ffffff\" x=\"117\" y=\"6\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"6\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#4a98c9\" stroke=\"#ffffff\" x=\"135.5\" y=\"6\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"7\"></rect></g><g data-role=\"output\"><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-time-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#adacd2\" stroke=\"#ffffff\" x=\"6\" y=\"38\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-time-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#adacd2\" stroke=\"#ffffff\" x=\"24.5\" y=\"38\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-time-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#adacd2\" stroke=\"#ffffff\" x=\"43\" y=\"38\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-time-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#adacd2\" stroke=\"#ffffff\" x=\"61.5\" y=\"38\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-time-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#adacd2\" stroke=\"#ffffff\" x=\"80\" y=\"38\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"4\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-time-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#adacd2\" stroke=\"#ffffff\" x=\"98.5\" y=\"38\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"5\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-time-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#adacd2\" stroke=\"#ffffff\" x=\"117\" y=\"38\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"6\"></rect><rect class=\"cv-mark cv-mark--output cv-cell cv-v cv-time-2\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#adacd2\" stroke=\"#ffffff\" x=\"135.5\" y=\"38\" width=\"18.5\" height=\"28\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"7\"></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-07T11:13:10.908Z",
+    "runId": "run-d380b683",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d380b683",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

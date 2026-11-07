@@ -1,0 +1,140 @@
+{
+  "generator": "network-movement-postgres.py",
+  "versions": {
+    "postgresql": "16.6",
+    "postgis": "3.5.3",
+    "pgrouting": "3.8.0",
+    "mobilitydb": "MobilityDB 1.2.1"
+  },
+  "routing": [
+    {
+      "query": [
+        0,
+        0
+      ],
+      "fractions": [
+        0.25,
+        0.75
+      ],
+      "cost": 2
+    },
+    {
+      "query": [
+        0,
+        1
+      ],
+      "fractions": [
+        0.25,
+        0.5
+      ],
+      "cost": 5
+    },
+    {
+      "query": [
+        0,
+        0
+      ],
+      "fractions": [
+        0.75,
+        0.25
+      ],
+      "cost": null
+    },
+    {
+      "query": [
+        2,
+        1
+      ],
+      "fractions": [
+        0.25,
+        0.5
+      ],
+      "cost": 6.5
+    }
+  ],
+  "clip": [
+    {
+      "interval": [
+        1.0,
+        2.0
+      ],
+      "closed": [
+        true,
+        true
+      ]
+    },
+    {
+      "interval": [
+        4.0,
+        5.0
+      ],
+      "closed": [
+        true,
+        true
+      ]
+    }
+  ],
+  "timeBoundaries": [
+    {
+      "policy": "closed",
+      "interval": [
+        1.0,
+        5.0
+      ],
+      "closed": [
+        true,
+        true
+      ]
+    },
+    {
+      "policy": "open",
+      "interval": [
+        1.0,
+        5.0
+      ],
+      "closed": [
+        false,
+        false
+      ]
+    },
+    {
+      "policy": "left-closed",
+      "interval": [
+        1.0,
+        5.0
+      ],
+      "closed": [
+        true,
+        false
+      ]
+    },
+    {
+      "policy": "right-closed",
+      "interval": [
+        1.0,
+        5.0
+      ],
+      "closed": [
+        false,
+        true
+      ]
+    }
+  ],
+  "pairwise": {
+    "interval": [
+      1.0,
+      3.0
+    ],
+    "closed": [
+      true,
+      true
+    ],
+    "ever": true,
+    "always": false,
+    "directADwithin": true,
+    "disjointEver": null,
+    "disjointAlways": null
+  },
+  "normalization": "SQL NULL unreachable cost maps to GPU +Infinity; NULL temporal relation maps to uint32 0xffffffff. Seconds are timestamp differences from explicit UTC epoch.",
+  "referenceDifference": "MobilityDB 1.2.1 aDwithin returns true for this partial crossing; always_eq(tDwithin(first,second,1),true) returns false and is the reference for full-common-support always semantics. The raw aDwithin result is retained, not matched by the GPU."
+}

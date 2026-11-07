@@ -1,0 +1,1208 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {Buffer, Device} from '@luma.gl/core';
+import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {expect, it} from 'vitest';
+import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {
+  getGPUCostDistanceParameterValues,
+  GPUCostDistance,
+  GPUCostDistancePath,
+  GPU_COST_DISTANCE_NONE,
+  GPU_COST_DISTANCE_UNRESOLVED,
+  type GPUCostDistanceSettings
+} from '../../../src/gpu-raster/cost-distance';
+import {
+  getRasterGridGeoreference,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
+import {
+  makeGPURasterBand,
+  makeGPURasterMetadata,
+  type GPURasterMetadata
+} from '../../../src/gpu-raster';
+import {getOracleWebMercatorY} from '../../gpu-terrain/terrain-oracle-utils';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readFloat32,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
+import {
+  checkBackLinks,
+  checkBackLinkWalks,
+  computeBandCounts,
+  computeBands,
+  computeCostDistance,
+  createHoleFriction,
+  createRandom,
+  createRandomFriction,
+  createUniformFriction,
+  createWallFriction,
+  type CostDistanceOracleOptions
+} from './cost-distance-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
+
+const NONE = GPU_COST_DISTANCE_NONE;
+
+type BufferName =
+  | 'friction'
+  | 'costs'
+  | 'converged'
+  | 'iterationCount'
+  | 'mask'
+  | 'backLinks'
+  | 'bands'
+  | 'bandCounts'
+  | 'ids'
+  | 'count'
+  | 'overflow'
+  | 'requiredCount'
+  | 'iterationLimitReached';
+
+type FixtureOptions = {
+  width: number;
+  height: number;
+  friction: Float32Array;
+  noDataValue?: number;
+  /** Packed settings; the cell size and latitude band come from `cellSize` and `origin`. */
+  settings?: GPUCostDistanceSettings;
+  /** Ground cell size of the grid. Defaults to 1. */
+  cellSize?: number | [number, number];
+  /** World position of the top-left corner of the grid. Defaults to `[0, 0]`. */
+  origin?: [number, number];
+  cellSizeMode?: GPURasterCellSizeMode;
+  sources?: number[];
+  sourceCosts?: number[];
+  sourceCount?: number;
+  mask?: Uint32Array;
+  thresholds?: number[];
+  maximumIterations?: number;
+  maximumTieIterations?: number;
+  frictionParameters?: number[];
+  backLinks?: boolean;
+  path?: {target: number; capacity: number};
+};
+
+type Fixture = {
+  graph: GPUCommandGraph;
+  options: FixtureOptions;
+  grid: GPURasterMetadata;
+  cellCount: number;
+  frictionBuffer: Buffer;
+  settings: GPUParameterBuffer<'float32'>;
+  sources?: GPUParameterBuffer<'uint32'>;
+  sourceCosts?: GPUParameterBuffer<'float32'>;
+  sourceCount?: GPUParameterBuffer<'uint32'>;
+  target?: GPUParameterBuffer<'uint32'>;
+  thresholds?: GPUParameterBuffer<'float32'>;
+  frictionParameters?: GPUParameterBuffer<'float32'>;
+  /** Buffers that the options did not request are absent at runtime. */
+  buffers: Record<BufferName, Buffer>;
+  parameters: GPUParameterBuffer[];
+};
+
+function createFixture(device: Device, options: FixtureOptions): Fixture {
+  const {width, height} = options;
+  const grid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: options.cellSize,
+    origin: options.origin
+  });
+  const cellCount = width * height;
+  const graph = new GPUCommandGraph(device, {id: 'cost-distance-test'});
+  const parameters: GPUParameterBuffer[] = [];
+  const createParameter = <Format extends 'uint32' | 'float32'>(
+    name: string,
+    format: Format,
+    values: number[]
+  ) => {
+    const parameter = new GPUParameterBuffer(device, {
+      id: `cd-${name}`,
+      format,
+      length: values.length,
+      values: format === 'uint32' ? Uint32Array.from(values) : Float32Array.from(values)
+    });
+    parameters.push(parameter);
+    return parameter;
+  };
+  const frictionBuffer = createInputBuffer(device, options.friction);
+  const buffers = {
+    costs: createOutputBuffer(device, cellCount),
+    converged: createOutputBuffer(device, 1),
+    iterationCount: createOutputBuffer(device, 1)
+  } as Record<BufferName, Buffer>;
+  const settings = createParameter(
+    'settings',
+    'float32',
+    Array.from(getGPUCostDistanceParameterValues(options.settings ?? {}, grid))
+  ) as GPUParameterBuffer<'float32'>;
+  const sources = options.sources
+    ? createParameter('sources', 'uint32', options.sources)
+    : undefined;
+  const sourceCosts = options.sourceCosts
+    ? createParameter('source-costs', 'float32', options.sourceCosts)
+    : undefined;
+  const sourceCount =
+    options.sourceCount !== undefined
+      ? createParameter('source-count', 'uint32', [options.sourceCount])
+      : undefined;
+  const thresholds = options.thresholds
+    ? createParameter('thresholds', 'float32', options.thresholds)
+    : undefined;
+  const frictionParameters = options.frictionParameters
+    ? (createParameter(
+        'friction-parameters',
+        'float32',
+        options.frictionParameters
+      ) as GPUParameterBuffer<'float32'>)
+    : undefined;
+  const target = options.path
+    ? createParameter('target', 'uint32', [options.path.target])
+    : undefined;
+  let maskBuffer: Buffer | undefined;
+  if (options.mask) {
+    maskBuffer = createInputBuffer(device, options.mask);
+    buffers.mask = maskBuffer;
+  }
+  if (options.backLinks || options.path) buffers.backLinks = createOutputBuffer(device, cellCount);
+  if (thresholds) {
+    buffers.bands = createOutputBuffer(device, cellCount);
+    buffers.bandCounts = createOutputBuffer(device, options.thresholds!.length);
+  }
+  const views = new Map<string, unknown>();
+  const view = <Format extends 'uint32' | 'float32'>(
+    name: BufferName,
+    format: Format,
+    length: number
+  ) => {
+    if (!views.has(name)) {
+      views.set(name, importGraphBuffer(graph, `cd-${name}`, buffers[name], format, length));
+    }
+    return views.get(name) as ReturnType<typeof importGraphBuffer<Format, void>>;
+  };
+  graph.add(
+    new GPUCostDistance({
+      id: 'cd',
+      grid,
+      friction: makeGPURasterBand(
+        importGraphBuffer(graph, 'cd-friction', frictionBuffer, 'float32', cellCount),
+        grid,
+        {id: 'friction', noDataValue: options.noDataValue}
+      ),
+      frictionParameters: frictionParameters?.importToGraph(graph),
+      parameters: settings.importToGraph(graph),
+      cellSizeMode: options.cellSizeMode,
+      sources: sources?.importToGraph(graph),
+      sourceCosts: sourceCosts?.importToGraph(graph),
+      sourceCount: sourceCount?.importToGraph(graph),
+      sourceMask: maskBuffer ? view('mask', 'uint32', cellCount) : undefined,
+      maximumIterations: options.maximumIterations,
+      maximumTieIterations: options.maximumTieIterations,
+      costBreaks: thresholds?.importToGraph(graph),
+      output: {
+        costs: view('costs', 'float32', cellCount),
+        backLinks: buffers.backLinks ? view('backLinks', 'uint32', cellCount) : undefined,
+        bands: thresholds ? view('bands', 'uint32', cellCount) : undefined,
+        bandCounts: thresholds
+          ? view('bandCounts', 'uint32', options.thresholds!.length)
+          : undefined,
+        status: {
+          converged: view('converged', 'uint32', 1),
+          iterationCount: view('iterationCount', 'uint32', 1)
+        }
+      }
+    })
+  );
+  if (options.path) {
+    buffers.ids = createOutputBuffer(device, options.path.capacity);
+    buffers.count = createOutputBuffer(device, 1);
+    buffers.overflow = createOutputBuffer(device, 1);
+    buffers.requiredCount = createOutputBuffer(device, 1);
+    buffers.iterationLimitReached = createOutputBuffer(device, 1);
+    graph.add(
+      new GPUCostDistancePath({
+        id: 'cdp',
+        grid,
+        backLinks: view('backLinks', 'uint32', cellCount),
+        target: target!.importToGraph(graph),
+        output: {
+          path: {
+            ids: view('ids', 'uint32', options.path.capacity),
+            status: {
+              count: view('count', 'uint32', 1),
+              overflow: view('overflow', 'uint32', 1),
+              requiredCount: view('requiredCount', 'uint32', 1)
+            }
+          },
+          status: {iterationLimitReached: view('iterationLimitReached', 'uint32', 1)}
+        }
+      })
+    );
+  }
+  return {
+    graph,
+    options,
+    grid,
+    cellCount,
+    frictionBuffer,
+    settings,
+    sources,
+    sourceCosts,
+    sourceCount,
+    target,
+    thresholds,
+    frictionParameters,
+    buffers: {...buffers, friction: frictionBuffer},
+    parameters
+  };
+}
+
+function destroyFixture(fixture: Fixture): void {
+  for (const parameter of fixture.parameters) parameter.destroy();
+  for (const buffer of Object.values(fixture.buffers)) buffer.destroy();
+}
+
+/** Returns the oracle options for the fixture's current CPU-side description. */
+function getOracleOptions(
+  fixture: Fixture,
+  sources: {cell: number; cost: number}[],
+  settings: GPUCostDistanceSettings = fixture.options.settings ?? {},
+  friction: Float32Array = fixture.options.friction,
+  grid: GPURasterMetadata = fixture.grid
+): CostDistanceOracleOptions {
+  const {noDataValue} = fixture.options;
+  return {
+    width: fixture.options.width,
+    height: fixture.options.height,
+    friction: Float64Array.from(friction, value => (value === noDataValue ? NaN : value)),
+    cellSizeMode: fixture.options.cellSizeMode,
+    georeference: getRasterGridGeoreference(grid),
+    sources,
+    costLimit: settings.costLimit
+  };
+}
+
+function expectCostsClose(actual: number[], expected: Float64Array, costLimit?: number): void {
+  expect(actual.length).toBe(expected.length);
+  for (const [index, value] of expected.entries()) {
+    if (!Number.isFinite(value) || !Number.isFinite(actual[index])) {
+      if (Number.isFinite(value) !== Number.isFinite(actual[index]) && costLimit !== undefined) {
+        // A cell within float rounding of the limit may land on either side.
+        const finite = Number.isFinite(value) ? value : actual[index];
+        expect(Math.abs(finite - costLimit)).toBeLessThan(1e-3 * costLimit);
+        continue;
+      }
+      expect(actual[index]).toBe(value);
+      continue;
+    }
+    expect(Math.abs(actual[index] - value)).toBeLessThanOrEqual(Math.max(1e-4 * value, 1e-5));
+  }
+}
+
+async function run(device: Device, fixture: Fixture) {
+  const compiled = fixture.graph.compile();
+  submitGraph(device, compiled, undefined);
+  return compiled;
+}
+
+async function readCosts(fixture: Fixture): Promise<number[]> {
+  return readFloat32(fixture.buffers.costs, fixture.cellCount);
+}
+
+async function readIterations(fixture: Fixture) {
+  const [[converged], [iterationCount]] = await Promise.all([
+    readUint32(fixture.buffers.converged, 1),
+    readUint32(fixture.buffers.iterationCount, 1)
+  ]);
+  return {converged, iterationCount};
+}
+
+it('GPUCostDistance spreads octile distances symmetrically from a center source', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const size = 31;
+  const center = 15 * size + 15;
+  const fixture = createFixture(device, {
+    width: size,
+    height: size,
+    friction: createUniformFriction(size, size, 1),
+    cellSize: 2,
+    sources: [center],
+    backLinks: true
+  });
+  const compiled = await run(device, fixture);
+  const costs = await readCosts(fixture);
+  const oracle = computeCostDistance(getOracleOptions(fixture, [{cell: center, cost: 0}]));
+  expectCostsClose(costs, oracle);
+  for (const [dx, dy] of [
+    [3, 5],
+    [7, 0],
+    [12, 12]
+  ]) {
+    const values = [
+      [dx, dy],
+      [-dx, dy],
+      [dx, -dy],
+      [-dx, -dy],
+      [dy, dx],
+      [-dy, dx],
+      [dy, -dx],
+      [-dy, -dx]
+    ].map(([x, y]) => costs[(15 + y) * size + 15 + x]);
+    for (const value of values) expect(Math.abs(value - values[0])).toBeLessThan(1e-4 * values[0]);
+  }
+  expect(costs[center]).toBe(0);
+  expect(costs[center + 1]).toBeCloseTo(2, 5);
+  expect(costs[center + size + 1]).toBeCloseTo(2 * Math.SQRT2, 5);
+  const backLinks = await readUint32(fixture.buffers.backLinks, fixture.cellCount);
+  expect(checkBackLinks(getOracleOptions(fixture, []), costs, backLinks)).toBeUndefined();
+  expect(backLinks[center]).toBe(0);
+  const {converged, iterationCount} = await readIterations(fixture);
+  expect(converged).toBe(1);
+  console.log(`cost-distance uniform 31x31 iterations: ${iterationCount}`);
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance matches Dijkstra on random friction with listed sources, costs, and count', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 97;
+  const height = 61;
+  const friction = createRandomFriction(width, height, 11);
+  friction[5] = NaN;
+  const sources = [10 * width + 20, 50 * width + 90, 30 * width + 3, 99999, 5, 0];
+  const sourceCosts = [0, 3.5, 1, 0, 0, 2];
+  const thresholds = [10, 40, 80];
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources,
+    sourceCosts,
+    sourceCount: 5,
+    thresholds,
+    backLinks: true
+  });
+  const compiled = await run(device, fixture);
+  const seeds = sources.slice(0, 5).map((cell, index) => ({cell, cost: sourceCosts[index]}));
+  const oracleOptions = getOracleOptions(fixture, seeds);
+  const oracle = computeCostDistance(oracleOptions);
+  const costs = await readCosts(fixture);
+  expectCostsClose(costs, oracle);
+  expect(costs[5]).toBe(Infinity);
+  const seedMap = new Map(
+    seeds
+      .filter(seed => seed.cell < width * height && seed.cell !== 5)
+      .map(seed => [seed.cell, seed.cost])
+  );
+  const backLinks = await readUint32(fixture.buffers.backLinks, width * height);
+  expect(checkBackLinks(oracleOptions, costs, backLinks, seedMap)).toBeUndefined();
+  expect(backLinks[5]).toBe(NONE);
+  const bands = await readUint32(fixture.buffers.bands, width * height);
+  expect(bands).toEqual(Array.from(computeBands(Float32Array.from(costs), thresholds)));
+  expect(await readUint32(fixture.buffers.bandCounts, 3)).toEqual(
+    computeBandCounts(bands, thresholds.length)
+  );
+  const {converged, iterationCount} = await readIterations(fixture);
+  expect(converged).toBe(1);
+  console.log(`cost-distance random 97x61 iterations: ${iterationCount}`);
+
+  // Per-frame source changes without recompiling.
+  fixture.sources!.write(Uint32Array.from([0, 1, 2, 3, 4, 5].map(i => i * width + 7)));
+  fixture.sourceCosts!.write(Float32Array.from([0, 0, 0, 1, 2, 0]));
+  fixture.sourceCount!.write(Uint32Array.from([4]));
+  submitGraph(device, compiled, undefined);
+  const nextSeeds = [0, 1, 2, 3].map((i, index) => ({
+    cell: i * width + 7,
+    cost: [0, 0, 0, 1][index]
+  }));
+  expectCostsClose(
+    await readCosts(fixture),
+    computeCostDistance(getOracleOptions(fixture, nextSeeds))
+  );
+  fixture.sourceCount!.write(Uint32Array.from([0]));
+  submitGraph(device, compiled, undefined);
+  expect((await readCosts(fixture)).every(value => value === Infinity)).toBe(true);
+  expect(await readIterations(fixture)).toMatchObject({converged: 1});
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance seeds from a source mask', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 50;
+  const height = 40;
+  const friction = createRandomFriction(width, height, 5);
+  const random = createRandom(9);
+  const mask = Uint32Array.from({length: width * height}, () => (random() < 0.005 ? 1 : 0));
+  mask[0] = 1;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    mask,
+    backLinks: true
+  });
+  const compiled = await run(device, fixture);
+  const seeds = Array.from(mask, (value, cell) => ({cell, cost: 0, value}))
+    .filter(entry => entry.value)
+    .map(({cell, cost}) => ({cell, cost}));
+  const options = getOracleOptions(fixture, seeds);
+  const costs = await readCosts(fixture);
+  expectCostsClose(costs, computeCostDistance(options));
+  const backLinks = await readUint32(fixture.buffers.backLinks, width * height);
+  expect(
+    checkBackLinks(options, costs, backLinks, new Map(seeds.map(seed => [seed.cell, 0])))
+  ).toBeUndefined();
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance routes around a barrier wall through its gap', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 41;
+  const height = 21;
+  const friction = createWallFriction(width, height, 20, [18]);
+  const source = 2 * width + 2;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources: [source],
+    backLinks: true
+  });
+  const compiled = await run(device, fixture);
+  const options = getOracleOptions(fixture, [{cell: source, cost: 0}]);
+  const costs = await readCosts(fixture);
+  expectCostsClose(costs, computeCostDistance(options));
+  const across = costs[2 * width + 38];
+  expect(across).toBeGreaterThan(40);
+  expect(costs[2 * width + 20]).toBe(Infinity);
+  const backLinks = await readUint32(fixture.buffers.backLinks, width * height);
+  expect(checkBackLinks(options, costs, backLinks)).toBeUndefined();
+  expect(backLinks[2 * width + 20]).toBe(NONE);
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance treats nodata holes as barriers', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 64;
+  const height = 48;
+  const friction = createHoleFriction(width, height, 21, -9999, 0.2);
+  friction[0] = 3;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    noDataValue: -9999,
+    sources: [0],
+    backLinks: true
+  });
+  const compiled = await run(device, fixture);
+  const options = getOracleOptions(fixture, [{cell: 0, cost: 0}]);
+  const costs = await readCosts(fixture);
+  expectCostsClose(costs, computeCostDistance(options));
+  expect(costs.some(value => value === Infinity)).toBe(true);
+  const backLinks = await readUint32(fixture.buffers.backLinks, width * height);
+  expect(checkBackLinks(options, costs, backLinks)).toBeUndefined();
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance uses row-dependent distances in web-mercator and geographic modes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The grids span the latitude bands the old normalized edges named: Web Mercator y from 0.3 to
+  // 0.36 of the world, and 60 to 59.9 degrees.
+  const cases: {
+    mode: GPURasterCellSizeMode;
+    cellSize: [number, number];
+    origin: [number, number];
+  }[] = [
+    {
+      mode: 'web-mercator',
+      cellSize: [60000, (getOracleWebMercatorY(0.3) - getOracleWebMercatorY(0.36)) / 40],
+      origin: [0, getOracleWebMercatorY(0.3)]
+    },
+    {mode: 'geographic', cellSize: [0.001, 0.0025], origin: [0, 60]}
+  ];
+  for (const {mode, cellSize, origin} of cases) {
+    const width = 40;
+    const height = 40;
+    const friction = createRandomFriction(width, height, 3);
+    const source = 5 * width + 5;
+    const fixture = createFixture(device, {
+      width,
+      height,
+      friction,
+      cellSize,
+      origin,
+      cellSizeMode: mode,
+      sources: [source],
+      backLinks: true
+    });
+    const compiled = await run(device, fixture);
+    const options = getOracleOptions(fixture, [{cell: source, cost: 0}]);
+    const costs = await readCosts(fixture);
+    expectCostsClose(costs, computeCostDistance(options));
+    const backLinks = await readUint32(fixture.buffers.backLinks, width * height);
+    expect(checkBackLinks(options, costs, backLinks)).toBeUndefined();
+    compiled.destroy();
+    destroyFixture(fixture);
+  }
+});
+
+it('GPUCostDistance changes cost limit and friction per frame without recompiling', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 60;
+  const height = 45;
+  const friction = createRandomFriction(width, height, 17);
+  const source = 20 * width + 30;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources: [source]
+  });
+  const compiled = await run(device, fixture);
+  const seeds = [{cell: source, cost: 0}];
+  expectCostsClose(await readCosts(fixture), computeCostDistance(getOracleOptions(fixture, seeds)));
+
+  const limited: GPUCostDistanceSettings = {costLimit: 23.37};
+  fixture.settings.write(getGPUCostDistanceParameterValues(limited, fixture.grid));
+  submitGraph(device, compiled, undefined);
+  const limitedCosts = await readCosts(fixture);
+  expectCostsClose(
+    limitedCosts,
+    computeCostDistance(getOracleOptions(fixture, seeds, limited)),
+    23.37
+  );
+  expect(limitedCosts.some(value => value === Infinity)).toBe(true);
+
+  const doubled: GPUCostDistanceSettings = {};
+  const doubledGrid = makeGPURasterMetadata({width, height, cellSize: 2});
+  fixture.settings.write(getGPUCostDistanceParameterValues(doubled, doubledGrid));
+  const changed = createRandomFriction(width, height, 18);
+  fixture.frictionBuffer.write(changed);
+  submitGraph(device, compiled, undefined);
+  expectCostsClose(
+    await readCosts(fixture),
+    computeCostDistance(getOracleOptions(fixture, seeds, doubled, changed, doubledGrid))
+  );
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance applies frictionParameters scale and offset per frame', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 40;
+  const height = 30;
+  const friction = createRandomFriction(width, height, 5);
+  const source = 10 * width + 12;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources: [source],
+    frictionParameters: [2, 0.5]
+  });
+  const compiled = await run(device, fixture);
+  const seeds = [{cell: source, cost: 0}];
+  const calibrate = (scale: number, offset: number) =>
+    Float32Array.from(friction, value => value * scale + offset);
+  expectCostsClose(
+    await readCosts(fixture),
+    computeCostDistance(getOracleOptions(fixture, seeds, undefined, calibrate(2, 0.5)))
+  );
+  const first = await readIterations(fixture);
+  expect(first.converged).toBe(1);
+  expect(first.iterationCount).toBeGreaterThan(0);
+  fixture.frictionParameters!.write(Float32Array.of(1, 0));
+  submitGraph(device, compiled, undefined);
+  expectCostsClose(await readCosts(fixture), computeCostDistance(getOracleOptions(fixture, seeds)));
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance reports non-convergence when maximumIterations is too small', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 200;
+  const height = 10;
+  const friction = createUniformFriction(width, height, 1);
+  // One impassable cell keeps its final +Infinity.
+  friction[3 * width + 100] = -1;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources: [5 * width],
+    thresholds: [10, 1000],
+    maximumIterations: 1
+  });
+  const compiled = await run(device, fixture);
+  expect(await readIterations(fixture)).toEqual({
+    converged: 0,
+    iterationCount: 1
+  });
+  // Review C-09: one iteration leaves upper bounds (cell 1 already holds its exact cost 1, cell
+  // 199 is still unreached), so every passable cost is unresolved NaN rather than a value that
+  // reads as converged; bands and band counts say unresolved too.
+  const costs = await readCosts(fixture);
+  expect(costs[5 * width + 1]).toBeNaN();
+  expect(costs[5 * width + 199]).toBeNaN();
+  expect(costs[3 * width + 100]).toBe(Infinity);
+  const bands = await readUint32(fixture.buffers.bands, width * height);
+  expect(bands[5 * width + 1]).toBe(GPU_COST_DISTANCE_UNRESOLVED);
+  expect(bands[3 * width + 100]).toBe(GPU_COST_DISTANCE_NONE);
+  expect(await readUint32(fixture.buffers.bandCounts, 2)).toEqual([
+    GPU_COST_DISTANCE_UNRESOLVED,
+    GPU_COST_DISTANCE_UNRESOLVED
+  ]);
+  compiled.destroy();
+
+  // Enough iterations on the same grid converge to the oracle.
+  const second = createFixture(device, {
+    width,
+    height,
+    friction: createUniformFriction(width, height, 1),
+    sources: [5 * width],
+    maximumIterations: 40
+  });
+  const secondCompiled = await run(device, second);
+  expect((await readIterations(second)).converged).toBe(1);
+  expectCostsClose(
+    await readCosts(second),
+    computeCostDistance(getOracleOptions(second, [{cell: 5 * width, cost: 0}]))
+  );
+  console.log(`cost-distance 200x10 iterations: ${(await readIterations(second)).iterationCount}`);
+  secondCompiled.destroy();
+  destroyFixture(fixture);
+  destroyFixture(second);
+});
+
+/** Corridors 4 cells wide separated by 4-thick walls; the wall gaps alternate sides. */
+function createSerpentineFriction(size: number): Float32Array {
+  const friction = new Float32Array(size * size).fill(1);
+  for (let row = 0; row < size; row++) {
+    if ((row & 7) < 4) continue;
+    const gapOnLeft = (row >> 3) % 2 === 0;
+    for (let column = 0; column < size; column++) {
+      const inGap = gapOnLeft ? column < 8 : column >= size - 8;
+      if (!inGap) friction[row * size + column] = NaN;
+    }
+  }
+  return friction;
+}
+
+/** Nested square corridors 4 cells wide; each wall ring has one gap on alternating sides. */
+function createSpiralFriction(size: number): Float32Array {
+  const friction = new Float32Array(size * size).fill(1);
+  for (let row = 0; row < size; row++) {
+    for (let column = 0; column < size; column++) {
+      const ring = Math.min(row, column, size - 1 - row, size - 1 - column);
+      if ((ring & 7) < 4) continue;
+      const gapOnLeft = (ring >> 3) % 2 === 0;
+      const inGap =
+        Math.abs(row - (size >> 1)) < 2 && (gapOnLeft ? column < size >> 1 : column >= size >> 1);
+      if (!inGap) friction[row * size + column] = NaN;
+    }
+  }
+  return friction;
+}
+
+for (const [name, createFriction] of [
+  ['serpentine', createSerpentineFriction],
+  ['spiral', createSpiralFriction]
+] as const) {
+  for (const size of [256, 512]) {
+    it(`GPUCostDistance converges at defaults on a ${size}x${size} ${name} and matches Dijkstra`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const friction = createFriction(size);
+      const fixture = createFixture(device, {width: size, height: size, friction, sources: [0]});
+      const compiled = await run(device, fixture);
+      const {converged, iterationCount} = await readIterations(fixture);
+      console.log(`cost-distance ${name} ${size}^2 iterations: ${iterationCount}`);
+      expect(converged).toBe(1);
+      const oracle = computeCostDistance(getOracleOptions(fixture, [{cell: 0, cost: 0}]));
+      expect(Number.isFinite(oracle[size * size - 1]) || name === 'spiral').toBe(true);
+      expectCostsClose(await readCosts(fixture), oracle);
+      compiled.destroy();
+      destroyFixture(fixture);
+    }, 120000);
+  }
+}
+
+it('GPUCostDistance handles a single-cell grid and an empty source count', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const single = createFixture(device, {
+    width: 1,
+    height: 1,
+    friction: Float32Array.of(2),
+    sources: [0],
+    sourceCosts: [1.5],
+    backLinks: true
+  });
+  const singleCompiled = await run(device, single);
+  expect(await readCosts(single)).toEqual([1.5]);
+  expect(await readUint32(single.buffers.backLinks, 1)).toEqual([0]);
+  expect(await readIterations(single)).toMatchObject({converged: 1});
+  singleCompiled.destroy();
+  destroyFixture(single);
+
+  const empty = createFixture(device, {
+    width: 20,
+    height: 20,
+    friction: createUniformFriction(20, 20, 1),
+    sources: [0, 1],
+    sourceCount: 0,
+    backLinks: true
+  });
+  const emptyCompiled = await run(device, empty);
+  expect((await readCosts(empty)).every(value => value === Infinity)).toBe(true);
+  expect((await readUint32(empty.buffers.backLinks, 400)).every(value => value === NONE)).toBe(
+    true
+  );
+  expect(await readIterations(empty)).toMatchObject({converged: 1});
+  emptyCompiled.destroy();
+  destroyFixture(empty);
+});
+
+it('GPUCostDistance ignores impassable sources and negative source costs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const friction = createUniformFriction(8, 8, 1);
+  friction[0] = NaN;
+  const fixture = createFixture(device, {
+    width: 8,
+    height: 8,
+    friction,
+    sources: [0, 9, 63],
+    sourceCosts: [0, -1, 4]
+  });
+  const compiled = await run(device, fixture);
+  expectCostsClose(
+    await readCosts(fixture),
+    computeCostDistance(getOracleOptions(fixture, [{cell: 63, cost: 4}]))
+  );
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistance emits exact back-links and GPUCostDistancePath extracts exact paths', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Row 0: . . .   Row 1: . X .   Row 2: . X .   Source at cell 0, path 8 -> 5 -> 1 -> 0.
+  const friction = Float32Array.of(1, 1, 1, 1, NaN, 1, 1, NaN, 1);
+  const fixture = createFixture(device, {
+    width: 3,
+    height: 3,
+    friction,
+    sources: [0],
+    path: {target: 8, capacity: 8}
+  });
+  const compiled = await run(device, fixture);
+  expect(await readUint32(fixture.buffers.backLinks, 9)).toEqual([
+    0,
+    16,
+    16,
+    64,
+    NONE,
+    32,
+    64,
+    NONE,
+    64
+  ]);
+  expect((await readCosts(fixture)).map(value => Number(value.toFixed(4)))).toEqual([
+    0,
+    1,
+    2,
+    1,
+    Infinity,
+    2.4142,
+    2,
+    Infinity,
+    3.4142
+  ]);
+  const readPath = async () => {
+    const [count] = await readUint32(fixture.buffers.count, 1);
+    return {
+      ids: await readUint32(fixture.buffers.ids, count),
+      count,
+      overflow: (await readUint32(fixture.buffers.overflow, 1))[0],
+      total: (await readUint32(fixture.buffers.requiredCount, 1))[0]
+    };
+  };
+  expect(await readPath()).toEqual({
+    ids: [8, 5, 1, 0],
+    count: 4,
+    overflow: 0,
+    total: 4
+  });
+
+  fixture.target!.write(Uint32Array.of(2));
+  submitGraph(device, compiled, undefined);
+  expect(await readPath()).toEqual({
+    ids: [2, 1, 0],
+    count: 3,
+    overflow: 0,
+    total: 3
+  });
+
+  fixture.target!.write(Uint32Array.of(0));
+  submitGraph(device, compiled, undefined);
+  expect(await readPath()).toEqual({
+    ids: [0],
+    count: 1,
+    overflow: 0,
+    total: 1
+  });
+
+  fixture.target!.write(Uint32Array.of(4));
+  submitGraph(device, compiled, undefined);
+  expect(await readPath()).toEqual({
+    ids: [],
+    count: 0,
+    overflow: 0,
+    total: 0
+  });
+
+  fixture.target!.write(Uint32Array.of(100));
+  submitGraph(device, compiled, undefined);
+  expect(await readPath()).toEqual({
+    ids: [],
+    count: 0,
+    overflow: 0,
+    total: 0
+  });
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistancePath reports overflow with the exact total when capacity is short', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const friction = Float32Array.of(1, 1, 1, 1, NaN, 1, 1, NaN, 1);
+  const fixture = createFixture(device, {
+    width: 3,
+    height: 3,
+    friction,
+    sources: [0],
+    path: {target: 8, capacity: 2}
+  });
+  const compiled = await run(device, fixture);
+  expect(await readUint32(fixture.buffers.ids, 2)).toEqual([8, 5]);
+  expect(await readUint32(fixture.buffers.count, 1)).toEqual([2]);
+  expect(await readUint32(fixture.buffers.overflow, 1)).toEqual([1]);
+  expect(await readUint32(fixture.buffers.requiredCount, 1)).toEqual([4]);
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+it('GPUCostDistancePath walks a long path on a random grid and ends at the source', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 97;
+  const height = 61;
+  const source = 3 * width + 3;
+  const target = 57 * width + 93;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction: createRandomFriction(width, height, 29),
+    sources: [source],
+    path: {target, capacity: width * height}
+  });
+  const compiled = await run(device, fixture);
+  const [count] = await readUint32(fixture.buffers.count, 1);
+  const ids = await readUint32(fixture.buffers.ids, count);
+  expect(ids[0]).toBe(target);
+  expect(ids[count - 1]).toBe(source);
+  expect(count).toBeGreaterThanOrEqual(90);
+  expect(new Set(ids).size).toBe(count);
+  expect(await readUint32(fixture.buffers.overflow, 1)).toEqual([0]);
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
+/** Runs cost distance with back-links on a friction raster and checks costs and back-link walks. */
+async function expectTieSafeBackLinks(
+  device: Device,
+  options: {
+    width: number;
+    height: number;
+    friction: Float32Array;
+    sources: number[];
+    sourceCosts?: number[];
+    maximumIterations?: number;
+    maximumTieIterations?: number;
+    path?: {target: number; capacity: number};
+  }
+) {
+  const {width, height} = options;
+  const fixture = createFixture(device, {
+    ...options,
+    maximumIterations: options.maximumIterations ?? 16,
+    backLinks: true
+  });
+  const compiled = await run(device, fixture);
+  const seeds = options.sources.map((cell, index) => ({
+    cell,
+    cost: options.sourceCosts?.[index] ?? 0
+  }));
+  const oracleOptions = getOracleOptions(fixture, seeds);
+  const costs = await readCosts(fixture);
+  expectCostsClose(costs, computeCostDistance(oracleOptions));
+  const backLinks = await readUint32(fixture.buffers.backLinks, width * height);
+  const seedMap = new Map<number, number>();
+  for (const seed of seeds) {
+    seedMap.set(seed.cell, Math.min(seed.cost, seedMap.get(seed.cell) ?? Infinity));
+  }
+  expect(checkBackLinkWalks(oracleOptions, costs, backLinks, seedMap)).toBeUndefined();
+  const iterations = await readIterations(fixture);
+  const result = {costs, backLinks, converged: iterations.converged};
+  let path: number[] | undefined;
+  if (options.path) {
+    const [count] = await readUint32(fixture.buffers.count, 1);
+    const [total] = await readUint32(fixture.buffers.requiredCount, 1);
+    path = await readUint32(fixture.buffers.ids, count);
+    expect(total).toBe(count);
+  }
+  compiled.destroy();
+  destroyFixture(fixture);
+  return {...result, path};
+}
+
+it('GPUCostDistance back-links cross zero-friction corridors and plateaus to a source', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 40;
+  const height = 24;
+  // Friction 3 everywhere, a zero-friction snake corridor, and a zero-friction block.
+  const friction = createUniformFriction(width, height, 3);
+  for (let column = 2; column < 36; column++) friction[2 * width + column] = 0;
+  for (let row = 2; row < 20; row++) friction[row * width + 35] = 0;
+  for (let column = 10; column < 35; column++) friction[19 * width + column] = 0;
+  for (let row = 8; row < 14; row++) {
+    for (let column = 12; column < 22; column++) friction[row * width + column] = 0;
+  }
+  const source = 2 * width + 2;
+  const target = 19 * width + 10;
+  const result = await expectTieSafeBackLinks(device, {
+    width,
+    height,
+    friction,
+    sources: [source],
+    maximumIterations: 64,
+    path: {target, capacity: width * height}
+  });
+  expect(result.converged).toBe(1);
+  // The whole corridor has cost 0, so the target path crosses plateau cells and reaches the source.
+  expect(result.path![0]).toBe(target);
+  expect(result.path![result.path!.length - 1]).toBe(source);
+  expect(new Set(result.path).size).toBe(result.path!.length);
+  // A cell deep in the zero-cost corridor must not claim to be a source.
+  expect(result.backLinks[2 * width + 30]).not.toBe(0);
+  expect(result.backLinks[source]).toBe(0);
+});
+
+it('GPUCostDistance back-links reach a source through equal-cost plateaus and tied sources', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 36;
+  const height = 30;
+  const friction = createUniformFriction(width, height, 1);
+  // Two zero-friction blocks entered across positive friction, reached at equal cost from two sources.
+  for (const [row0, column0] of [
+    [4, 4],
+    [18, 20]
+  ]) {
+    for (let row = row0; row < row0 + 7; row++) {
+      for (let column = column0; column < column0 + 9; column++) {
+        friction[row * width + column] = 0;
+      }
+    }
+  }
+  const result = await expectTieSafeBackLinks(device, {
+    width,
+    height,
+    friction,
+    sources: [0, width * height - 1, 12 * width + 12],
+    sourceCosts: [0, 0, 5],
+    maximumIterations: 64
+  });
+  expect(result.converged).toBe(1);
+});
+
+it('GPUCostDistance back-links stay valid on random zero-heavy friction', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const seed of [3, 11, 23]) {
+    const width = 48;
+    const height = 36;
+    const random = createRandom(seed);
+    const friction = Float32Array.from({length: width * height}, () => {
+      const draw = random();
+      return draw < 0.45 ? 0 : 1 + Math.floor(random() * 4);
+    });
+    const sources = [5 * width + 5, 30 * width + 40, 17 * width + 17];
+    const result = await expectTieSafeBackLinks(device, {
+      width,
+      height,
+      friction,
+      sources,
+      sourceCosts: [0, 0, 2],
+      maximumIterations: 64,
+      maximumTieIterations: 64
+    });
+    expect(result.converged).toBe(1);
+  }
+});
+
+it('GPUCostDistance reports non-convergence when maximumTieIterations cannot cover a plateau', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 96;
+  const height = 4;
+  const friction = createUniformFriction(width, height, 3);
+  for (let column = 0; column < width; column++) friction[column] = 0;
+  const fixture = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources: [0],
+    maximumIterations: 64,
+    maximumTieIterations: 1,
+    backLinks: true
+  });
+  const compiled = await run(device, fixture);
+  expect((await readIterations(fixture)).converged).toBe(0);
+  compiled.destroy();
+  destroyFixture(fixture);
+  const covered = await expectTieSafeBackLinks(device, {
+    width,
+    height,
+    friction,
+    sources: [0],
+    maximumIterations: 64,
+    maximumTieIterations: 8
+  });
+  expect(covered.converged).toBe(1);
+});
+
+it('GPUCostDistance resolves a 320-cell zero-cost plateau at the default tie budget (review C-02)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 320;
+  const height = 4;
+  const friction = createUniformFriction(width, height, 3);
+  for (let column = 0; column < width; column++) friction[column] = 0;
+  const target = 300;
+  // Before C-02 the 8 tie iterations stopped near column 128 and cell 300 claimed link 0.
+  const result = await expectTieSafeBackLinks(device, {
+    width,
+    height,
+    friction,
+    sources: [0],
+    maximumIterations: 64,
+    path: {target, capacity: width * height}
+  });
+  expect(result.converged).toBe(1);
+  expect(result.backLinks[target]).toBe(16);
+  expect(result.path).toEqual(Array.from({length: target + 1}, (_, index) => target - index));
+});
+
+it('GPUCostDistance marks budget-truncated back-links unresolved and the path reports it', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 320;
+  const height = 4;
+  const friction = createUniformFriction(width, height, 3);
+  for (let column = 0; column < width; column++) friction[column] = 0;
+  const target = 300;
+  // Tie budget 1: levels reach at least tile 0 (columns 0-15) and never column 300.
+  const ties = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources: [0],
+    maximumIterations: 64,
+    maximumTieIterations: 1,
+    path: {target, capacity: width * height}
+  });
+  let compiled = await run(device, ties);
+  expect((await readIterations(ties)).converged).toBe(0);
+  let links = await readUint32(ties.buffers.backLinks, width * height);
+  expect(links[0]).toBe(0);
+  expect(links[5]).toBe(16);
+  expect(links[target]).toBe(GPU_COST_DISTANCE_UNRESOLVED);
+  // Cells with a strict link (row 1 reaches the strip at cost 3) stay certified.
+  expect(links[width + 5]).not.toBe(GPU_COST_DISTANCE_UNRESOLVED);
+  expect(await readUint32(ties.buffers.count, 1)).toEqual([0]);
+  expect(await readUint32(ties.buffers.requiredCount, 1)).toEqual([0]);
+  expect(await readUint32(ties.buffers.iterationLimitReached, 1)).toEqual([1]);
+  // A target whose links are resolved still gets its full path, with the flag cleared.
+  ties.target!.write(Uint32Array.of(5));
+  submitGraph(device, compiled, undefined);
+  expect(await readUint32(ties.buffers.ids, 6)).toEqual([5, 4, 3, 2, 1, 0]);
+  expect(await readUint32(ties.buffers.iterationLimitReached, 1)).toEqual([0]);
+  compiled.destroy();
+  destroyFixture(ties);
+
+  // Cost budget 1: no passable cell is certified.
+  const costs = createFixture(device, {
+    width,
+    height,
+    friction: createUniformFriction(width, height, 1),
+    sources: [0],
+    maximumIterations: 1,
+    path: {target: width + 40, capacity: width * height}
+  });
+  compiled = await run(device, costs);
+  expect((await readIterations(costs)).converged).toBe(0);
+  links = await readUint32(costs.buffers.backLinks, width * height);
+  expect(links.every(link => link === GPU_COST_DISTANCE_UNRESOLVED)).toBe(true);
+  expect(await readUint32(costs.buffers.count, 1)).toEqual([0]);
+  expect(await readUint32(costs.buffers.iterationLimitReached, 1)).toEqual([1]);
+  compiled.destroy();
+  destroyFixture(costs);
+});
+
+it('GPUCostDistance back-links never take a strictly cheaper but non-tight predecessor', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Cell 1 is reached at cost 1000 from source 0 across a zero-friction edge. Source 2 is strictly
+  // cheaper (999.995) but its edge costs 0.01, so the move through it costs 1000.005: within the
+  // former 1e-5 relative slack (0.01 at cost 1000) yet not on a least-cost path. Dijkstra links
+  // cell 1 west across the tie to source 0.
+  const fixture = createFixture(device, {
+    width: 3,
+    height: 1,
+    friction: Float32Array.of(0, 0, 0.02),
+    sources: [0, 2],
+    sourceCosts: [1000, 999.995],
+    backLinks: true
+  });
+  const compiled = await run(device, fixture);
+  const costs = await readCosts(fixture);
+  expect(costs[1]).toBe(1000);
+  const backLinks = await readUint32(fixture.buffers.backLinks, 3);
+  expect(backLinks).toEqual([0, 16, 0]);
+  compiled.destroy();
+  destroyFixture(fixture);
+});

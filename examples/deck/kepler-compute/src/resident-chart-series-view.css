@@ -1,0 +1,17 @@
+.resident-series-view { min-width: 0; color: #edf2f7; }
+.resident-series-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; padding: 0; margin: 0 0 8px; list-style: none; max-height: 112px; overflow: auto; font-size: 12px; }
+.resident-series-legend li { display: flex; align-items: baseline; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.resident-series-legend svg { flex-shrink: 0; }
+.resident-series-scroll { overflow: auto; max-height: 420px; }
+.resident-series-plot { display: block; width: 100%; height: auto; }
+.resident-series-axis line { stroke: #66758b; stroke-opacity: 0.35; }
+.resident-series-axis text, .resident-series-label { fill: #c4cfdd; font-size: 10px; }
+.resident-series-axis-title { fill: #edf2f7; font-size: 11px; }
+.resident-series-zero { stroke: #aab6c6; stroke-width: 1; }
+.resident-series-hit { fill: transparent; stroke: transparent; pointer-events: all; }
+.resident-series-mark[role=button] { cursor: pointer; }
+.resident-series-mark:focus-visible { outline: none; }
+.resident-series-mark:focus-visible .resident-series-hit { stroke: #ffffff; stroke-width: 1.5; }
+.resident-series-mark[role=button]:hover { opacity: 0.7; }
+.resident-series-note { margin: 5px 0; color: #c4cfdd; font-size: 11px; line-height: 1.4; }
+.resident-series-view[data-read-only] .resident-series-scroll, .resident-series-view[data-read-only] .resident-series-legend { max-height: none; overflow: visible; }

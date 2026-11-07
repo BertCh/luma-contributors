@@ -1,0 +1,174 @@
+{
+  "package": "pygeoda==0.1.3",
+  "sourceSemantics": "GeoDaCenter/libgeoda@71238cb58979032048081434ce6e36a53e254280",
+  "seed": 314159,
+  "permutations": 9999,
+  "significanceLevel": 0.1,
+  "cases": [
+    {
+      "name": "negative values and type-five quarter break",
+      "observed": [
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pseudoPValues": [
+        0.3114,
+        0.1765,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "classes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "interior ties go to higher class",
+      "observed": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pseudoPValues": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "classes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "tied class includes lower boundary",
+      "observed": [
+        0.0,
+        0.0,
+        1.0,
+        2.0,
+        2.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "pseudoPValues": [
+        null,
+        null,
+        0.1949,
+        0.2013,
+        0.1849,
+        0.1868,
+        null,
+        null
+      ],
+      "classes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "constant first class is empty",
+      "observed": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pseudoPValues": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "classes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "constant final class contains every row",
+      "observed": [
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "pseudoPValues": [
+        0.0001,
+        0.0001,
+        0.0001,
+        0.0001,
+        0.0001,
+        0.0001,
+        0.0001,
+        0.0001
+      ],
+      "classes": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  ]
+}
