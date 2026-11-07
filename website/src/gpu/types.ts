@@ -20,6 +20,24 @@ export type GpuSceneContext = {
   reducedMotion: boolean;
   /** Deterministic seed shared with the static fallback. */
   seed: number;
+  /** Initial values of the scene's declared parameters, keyed by parameter id. */
+  parameters: Record<string, number>;
+};
+
+/**
+ * A user-adjustable scene parameter. <GpuCanvas controls> renders one slider per parameter and
+ * calls `setParameters` as it moves, so the picture answers the reader live.
+ */
+export type GpuSceneParameter = {
+  id: string;
+  /** Short label, for example `Bandwidth`. */
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+  /** Optional unit shown after the value, for example `px` or `%`. */
+  unit?: string;
 };
 
 export type GpuSceneInstance = {
@@ -28,10 +46,21 @@ export type GpuSceneInstance = {
   resize?(width: number, height: number): void;
   /** Pointer position in canvas pixels, or null when the pointer leaves. */
   setPointer?(position: [number, number] | null): void;
+  /** New parameter values from the controls; only changed ids need to be present. */
+  setParameters?(values: Record<string, number>): void;
   destroy(): void;
 };
 
 export type GpuScene = (context: GpuSceneContext) => GpuSceneInstance | Promise<GpuSceneInstance>;
 
-/** A lazily imported module whose default export is a scene. Keeps luma.gl out of the HTML. */
-export type GpuSceneLoader = () => Promise<{default: GpuScene}>;
+/** A scene module: the scene plus the parameters it exposes, if any. */
+export type GpuSceneModule = {default: GpuScene; parameters?: GpuSceneParameter[]};
+
+/** A lazily imported scene module. Keeps luma.gl out of the HTML. */
+export type GpuSceneLoader = () => Promise<GpuSceneModule>;
+
+/**
+ * Parameters known without loading the scene, so controls render in the prerendered HTML. Pages pass
+ * them to <GpuCanvas parameters={...}>; they must match the module's `parameters`.
+ */
+export type GpuSceneParameters = readonly GpuSceneParameter[];
