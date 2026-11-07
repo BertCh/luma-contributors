@@ -1,0 +1,1304 @@
+{
+ "contributor": [
+  {
+   "name": "GPUGraphAlgorithmsTopologyView",
+   "n": 3,
+   "where": "gpu-graph-algorithms/gpu-graph-topology-view.ts"
+  },
+  {
+   "name": "GPUGraphAlgorithmsStronglyConnectedComponents",
+   "n": 2,
+   "where": "gpu-graph-algorithms/gpu-graph-strongly-connected-components.ts"
+  },
+  {
+   "name": "GPUClassBreaks",
+   "n": 7,
+   "where": "gpu-dataframe/column-classification/gpu-class-breaks.ts"
+  },
+  {
+   "name": "GPUVariableStandardization",
+   "n": 2,
+   "where": "gpu-dataframe/variable-standardization/gpu-variable-standardization.ts"
+  },
+  {
+   "name": "GPUClassBreaksProps",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/gpu-class-breaks.ts"
+  },
+  {
+   "name": "GPUVariableStandardizationProps",
+   "n": 1,
+   "where": "gpu-dataframe/variable-standardization/gpu-variable-standardization.ts"
+  },
+  {
+   "name": "makeGPURasterMetadata",
+   "n": 14,
+   "where": "gpu-raster/raster-grid/gpu-raster-grid.ts"
+  },
+  {
+   "name": "GPUPointBuffer",
+   "n": 1,
+   "where": "gpu-geometry/gpu-point-buffer.ts"
+  },
+  {
+   "name": "getGPUPointBufferParameterValues",
+   "n": 1,
+   "where": "gpu-geometry/gpu-point-buffer.ts"
+  },
+  {
+   "name": "GPUPolygonRasterization",
+   "n": 5,
+   "where": "gpu-raster/polygon-rasterization/gpu-polygon-rasterization.ts"
+  },
+  {
+   "name": "GPURasterJoin",
+   "n": 2,
+   "where": "gpu-raster/polygon-rasterization/gpu-raster-join.ts"
+  },
+  {
+   "name": "getGPUPolygonRasterizationParameterValues",
+   "n": 6,
+   "where": "gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts"
+  },
+  {
+   "name": "makeGPURasterBand",
+   "n": 40,
+   "where": "gpu-raster/raster-grid/gpu-raster-grid.ts"
+  },
+  {
+   "name": "GPUParameterBuffer",
+   "n": 47,
+   "where": "utils/gpu-contributor-utils.ts"
+  },
+  {
+   "name": "getGPUDistanceFieldParameterValues",
+   "n": 3,
+   "where": "gpu-raster/distance-field/distance-field-parameters.ts"
+  },
+  {
+   "name": "fitVariogramModel",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/variogram-model.ts"
+  },
+  {
+   "name": "VariogramModelType",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/variogram-model.ts"
+  },
+  {
+   "name": "getGPUClassBreaksParameterValues",
+   "n": 9,
+   "where": "gpu-dataframe/column-classification/class-breaks-parameters.ts"
+  },
+  {
+   "name": "GPUColumnProfile",
+   "n": 2,
+   "where": "gpu-dataframe/column-profile/gpu-column-profile.ts"
+  },
+  {
+   "name": "GPU_COLUMN_PROFILE_STATISTIC",
+   "n": 2,
+   "where": "gpu-dataframe/column-profile/column-profile-parameters.ts"
+  },
+  {
+   "name": "GPU_COLUMN_PROFILE_STATISTIC_COUNT",
+   "n": 3,
+   "where": "gpu-dataframe/column-profile/column-profile-parameters.ts"
+  },
+  {
+   "name": "GPUVariableStandardizationMethod",
+   "n": 1,
+   "where": "gpu-dataframe/variable-standardization/gpu-variable-standardization.ts"
+  },
+  {
+   "name": "PrepareArrowTableForGPUAnalyticsOptions",
+   "n": 4,
+   "where": "arrow/gpu/arrow-analytics-normalization.ts"
+  },
+  {
+   "name": "GPUTimeWindowFilter",
+   "n": 2,
+   "where": "gpu-dataframe/time-window-filter/gpu-time-window-filter.ts"
+  },
+  {
+   "name": "getGPUTimeWindowFilterWordParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/time-window-filter/time-words.ts"
+  },
+  {
+   "name": "PreparedArrowAnalyticsTable",
+   "n": 4,
+   "where": "arrow/gpu/arrow-analytics-normalization.ts"
+  },
+  {
+   "name": "prepareArrowTableForGPUAnalytics",
+   "n": 2,
+   "where": "arrow/gpu/arrow-analytics-normalization.ts"
+  },
+  {
+   "name": "makeGPUTimeVectorFromPreparedArrowColumn",
+   "n": 2,
+   "where": "arrow/gpu/arrow-analytics-time-upload.ts"
+  },
+  {
+   "name": "GPUTimeVectorFromPreparedArrowColumn",
+   "n": 1,
+   "where": "arrow/gpu/arrow-analytics-time-upload.ts"
+  },
+  {
+   "name": "GPUColorScale",
+   "n": 2,
+   "where": "gpu-dataframe/column-classification/gpu-color-scale.ts"
+  },
+  {
+   "name": "GPUColumnQuantiles",
+   "n": 2,
+   "where": "gpu-dataframe/column-classification/gpu-column-quantiles.ts"
+  },
+  {
+   "name": "GPUScalarScale",
+   "n": 2,
+   "where": "gpu-dataframe/column-classification/gpu-scalar-scale.ts"
+  },
+  {
+   "name": "getGPUColorScaleParameterValues",
+   "n": 4,
+   "where": "gpu-dataframe/column-classification/color-scale-parameters.ts"
+  },
+  {
+   "name": "getGPUColumnQuantilesParameterValues",
+   "n": 2,
+   "where": "gpu-dataframe/column-classification/column-quantiles-parameters.ts"
+  },
+  {
+   "name": "getGPUScalarScaleParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/scalar-scale-parameters.ts"
+  },
+  {
+   "name": "prepareGPUScalarScaleControls",
+   "n": 2,
+   "where": "gpu-dataframe/column-classification/scalar-scale-parameters.ts"
+  },
+  {
+   "name": "describeGPUGraphCompilation",
+   "n": 1,
+   "where": "gpu-core/gpu-graph-describe.ts"
+  },
+  {
+   "name": "getGPUBivariateClassificationParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/bivariate-classification-parameters.ts"
+  },
+  {
+   "name": "GPUBivariateClassification",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/gpu-bivariate-classification.ts"
+  },
+  {
+   "name": "packGPUColor",
+   "n": 5,
+   "where": "gpu-dataframe/column-classification/color-scale-parameters.ts"
+  },
+  {
+   "name": "getGPUCalendarBucketsParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/calendar-buckets/calendar-buckets-parameters.ts"
+  },
+  {
+   "name": "getInt64TimeWords",
+   "n": 1,
+   "where": "gpu-dataframe/time-window-filter/time-words.ts"
+  },
+  {
+   "name": "GPUCalendarBuckets",
+   "n": 1,
+   "where": "gpu-dataframe/calendar-buckets/gpu-calendar-buckets.ts"
+  },
+  {
+   "name": "GPU_CALENDAR_BUCKETS_MATRIX_LENGTH",
+   "n": 2,
+   "where": "gpu-dataframe/calendar-buckets/calendar-buckets-parameters.ts"
+  },
+  {
+   "name": "GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/calendar-buckets/calendar-buckets-parameters.ts"
+  },
+  {
+   "name": "getGPUClassBreaksParameterLength",
+   "n": 8,
+   "where": "gpu-dataframe/column-classification/class-breaks-parameters.ts"
+  },
+  {
+   "name": "GPU_CLASS_BREAKS_METHODS",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/class-breaks-parameters.ts"
+  },
+  {
+   "name": "GPU_COLOR_SCALE_CODES",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/color-scale-parameters.ts"
+  },
+  {
+   "name": "getGPUColumnQuantilesParameterLength",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/column-quantiles-parameters.ts"
+  },
+  {
+   "name": "GPU_COLUMN_QUANTILE_INTERPOLATION_CODES",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/column-quantiles-parameters.ts"
+  },
+  {
+   "name": "GPU_COLUMN_QUANTILES_PARAMETER_HEADER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/column-quantiles-parameters.ts"
+  },
+  {
+   "name": "getGPUCompositeScoreParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/composite-score-parameters.ts"
+  },
+  {
+   "name": "GPUCompositeScore",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/gpu-composite-score.ts"
+  },
+  {
+   "name": "GPU_COMPOSITE_SCORE_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/composite-score-parameters.ts"
+  },
+  {
+   "name": "GPU_COMPOSITE_SCORE_AGGREGATION",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/composite-score-parameters.ts"
+  },
+  {
+   "name": "GPU_COMPOSITE_SCORE_COLUMN_STATISTICS_STRIDE",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/composite-score-parameters.ts"
+  },
+  {
+   "name": "GPU_COMPOSITE_SCORE_SCALER",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/composite-score-parameters.ts"
+  },
+  {
+   "name": "GPUCrossVariogram",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-cross-variogram.ts"
+  },
+  {
+   "name": "GPUCrossVariogramProps",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-cross-variogram.ts"
+  },
+  {
+   "name": "GPUGroupStatistics",
+   "n": 1,
+   "where": "gpu-dataframe/group-statistics/gpu-group-statistics.ts"
+  },
+  {
+   "name": "getGPUInequalityParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/inequality-parameters.ts"
+  },
+  {
+   "name": "GPUInequality",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/gpu-inequality.ts"
+  },
+  {
+   "name": "GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/inequality-parameters.ts"
+  },
+  {
+   "name": "GPU_INEQUALITY_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/inequality-parameters.ts"
+  },
+  {
+   "name": "GPU_INEQUALITY_DEFAULT_PALMA_BOTTOM_SHARE",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/inequality-parameters.ts"
+  },
+  {
+   "name": "GPU_INEQUALITY_DEFAULT_PALMA_TOP_SHARE",
+   "n": 1,
+   "where": "gpu-dataframe/composite-indicators/inequality-parameters.ts"
+  },
+  {
+   "name": "GPUKeyJoin",
+   "n": 1,
+   "where": "gpu-dataframe/key-join/gpu-key-join.ts"
+  },
+  {
+   "name": "GPUMarkedPointStatistics",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-marked-point-statistics.ts"
+  },
+  {
+   "name": "GPUMarkedPointStatisticsProps",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-marked-point-statistics.ts"
+  },
+  {
+   "name": "getGPUPointPatternIndicesParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/point-pattern-indices-parameters.ts"
+  },
+  {
+   "name": "GPUPointPatternIndices",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-point-pattern-indices.ts"
+  },
+  {
+   "name": "GPU_CLARK_EVANS_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/point-pattern-indices-parameters.ts"
+  },
+  {
+   "name": "GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/point-pattern-indices-parameters.ts"
+  },
+  {
+   "name": "GPU_QUADRAT_STATISTICS_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/point-pattern-indices-parameters.ts"
+  },
+  {
+   "name": "GPU_CLARK_EVANS_CORRECTION",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/point-pattern-indices-parameters.ts"
+  },
+  {
+   "name": "getGPURipleyDistanceFunctionsParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/ripley-distance-parameters.ts"
+  },
+  {
+   "name": "GPURipleyDistanceFunctions",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-ripley-distance-functions.ts"
+  },
+  {
+   "name": "GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/ripley-distance-parameters.ts"
+  },
+  {
+   "name": "GPURipleyDistanceEdgeCorrection",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/ripley-distance-parameters.ts"
+  },
+  {
+   "name": "getGPURipleyParameterValues",
+   "n": 2,
+   "where": "gpu-dataframe/pair-statistics/ripley-parameters.ts"
+  },
+  {
+   "name": "GPURipley",
+   "n": 2,
+   "where": "gpu-dataframe/pair-statistics/gpu-ripley.ts"
+  },
+  {
+   "name": "GPURipleyEnvelope",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-ripley-envelope.ts"
+  },
+  {
+   "name": "GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/ripley-parameters.ts"
+  },
+  {
+   "name": "GPU_RIPLEY_PARAMETER_LENGTH",
+   "n": 2,
+   "where": "gpu-dataframe/pair-statistics/ripley-parameters.ts"
+  },
+  {
+   "name": "GPU_RIPLEY_EDGE_CORRECTION",
+   "n": 2,
+   "where": "gpu-dataframe/pair-statistics/ripley-parameters.ts"
+  },
+  {
+   "name": "GPU_SCALAR_SCALE_CODES",
+   "n": 1,
+   "where": "gpu-dataframe/column-classification/scalar-scale-parameters.ts"
+  },
+  {
+   "name": "GPUSpaceTimeVariogram",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-cross-variogram.ts"
+  },
+  {
+   "name": "GPUSpaceTimeVariogramProps",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-cross-variogram.ts"
+  },
+  {
+   "name": "getGPUSpatialCorrelogramParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/spatial-correlogram-parameters.ts"
+  },
+  {
+   "name": "GPUSpatialCorrelogram",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-spatial-correlogram.ts"
+  },
+  {
+   "name": "GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/spatial-correlogram-parameters.ts"
+  },
+  {
+   "name": "GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/spatial-correlogram-parameters.ts"
+  },
+  {
+   "name": "getGPUTemporalReductionParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/temporal-reduction/temporal-reduction-parameters.ts"
+  },
+  {
+   "name": "GPUTemporalReduction",
+   "n": 1,
+   "where": "gpu-dataframe/temporal-reduction/gpu-temporal-reduction.ts"
+  },
+  {
+   "name": "GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/temporal-reduction/temporal-reduction-parameters.ts"
+  },
+  {
+   "name": "getGPUTimeWindowFilterParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/time-window-filter/time-window-parameters.ts"
+  },
+  {
+   "name": "GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/time-window-filter/time-window-parameters.ts"
+  },
+  {
+   "name": "splitTimestamps",
+   "n": 1,
+   "where": "gpu-dataframe/time-window-filter/time-window-parameters.ts"
+  },
+  {
+   "name": "GPUVariogramModelFit",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-variogram-model-fit.ts"
+  },
+  {
+   "name": "GPUVariogramModelFitProps",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-variogram-model-fit.ts"
+  },
+  {
+   "name": "getGPUVariogramParameterValues",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/variogram-parameters.ts"
+  },
+  {
+   "name": "GPUVariogram",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/gpu-variogram.ts"
+  },
+  {
+   "name": "GPU_VARIOGRAM_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-dataframe/pair-statistics/variogram-parameters.ts"
+  },
+  {
+   "name": "GPUChangeDetection",
+   "n": 1,
+   "where": "gpu-raster/change-detection/gpu-change-detection.ts"
+  },
+  {
+   "name": "GPU_CHANGE_DETECTION_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/change-detection/change-detection-parameters.ts"
+  },
+  {
+   "name": "getGPUChangeDetectionParameterValues",
+   "n": 2,
+   "where": "gpu-raster/change-detection/change-detection-parameters.ts"
+  },
+  {
+   "name": "GPUCostDistance",
+   "n": 2,
+   "where": "gpu-raster/cost-distance/gpu-cost-distance.ts"
+  },
+  {
+   "name": "GPU_COST_DISTANCE_PARAMETER_LENGTH",
+   "n": 2,
+   "where": "gpu-raster/cost-distance/gpu-cost-distance.ts"
+  },
+  {
+   "name": "GPUCostDistancePath",
+   "n": 1,
+   "where": "gpu-raster/cost-distance/gpu-cost-distance-path.ts"
+  },
+  {
+   "name": "GPUCostDistancePathOutput",
+   "n": 1,
+   "where": "gpu-raster/cost-distance/gpu-cost-distance-path.ts"
+  },
+  {
+   "name": "getGPUCostDistanceParameterValues",
+   "n": 2,
+   "where": "gpu-raster/cost-distance/gpu-cost-distance.ts"
+  },
+  {
+   "name": "GPURasterEVI",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-spectral-indices.ts"
+  },
+  {
+   "name": "GPURasterEVIProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-spectral-indices.ts"
+  },
+  {
+   "name": "GPURasterFocalPairs",
+   "n": 1,
+   "where": "gpu-raster/focal-pairs/gpu-raster-focal-pairs.ts"
+  },
+  {
+   "name": "GPURasterFocalPairsProps",
+   "n": 1,
+   "where": "gpu-raster/focal-pairs/gpu-raster-focal-pairs.ts"
+  },
+  {
+   "name": "GPURasterFractionalCategoricalStatistics",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fractional-categorical-statistics.ts"
+  },
+  {
+   "name": "GPURasterFractionalCategoricalStatisticsProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fractional-categorical-statistics.ts"
+  },
+  {
+   "name": "GPURasterFractionalZonalDistribution",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fractional-zonal-distribution.ts"
+  },
+  {
+   "name": "GPURasterFractionalZonalDistributionProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fractional-zonal-distribution.ts"
+  },
+  {
+   "name": "GPURasterNBR",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-spectral-indices.ts"
+  },
+  {
+   "name": "GPURasterNBRProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-spectral-indices.ts"
+  },
+  {
+   "name": "GPURasterNDWI",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-spectral-indices.ts"
+  },
+  {
+   "name": "GPURasterNDWIProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-spectral-indices.ts"
+  },
+  {
+   "name": "GPURasterSAVI",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-spectral-indices.ts"
+  },
+  {
+   "name": "GPURasterSAVIProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-spectral-indices.ts"
+  },
+  {
+   "name": "GPUDistanceField",
+   "n": 1,
+   "where": "gpu-raster/distance-field/gpu-distance-field.ts"
+  },
+  {
+   "name": "GPU_DISTANCE_FIELD_PARAMETER_LENGTH",
+   "n": 2,
+   "where": "gpu-raster/distance-field/distance-field-parameters.ts"
+  },
+  {
+   "name": "GPUIsobandRings",
+   "n": 1,
+   "where": "gpu-raster/isolines/gpu-isoband-rings.ts"
+  },
+  {
+   "name": "GPU_ISOBANDS_PARAMETER_LENGTH",
+   "n": 2,
+   "where": "gpu-raster/isolines/isobands-parameters.ts"
+  },
+  {
+   "name": "getGPUIsobandsParameterValues",
+   "n": 2,
+   "where": "gpu-raster/isolines/isobands-parameters.ts"
+  },
+  {
+   "name": "GPUIsobands",
+   "n": 1,
+   "where": "gpu-raster/isolines/gpu-isobands.ts"
+  },
+  {
+   "name": "GPUIsolinesPolylineOutput",
+   "n": 1,
+   "where": "gpu-raster/isolines/gpu-isolines.ts"
+  },
+  {
+   "name": "GPUIsolines",
+   "n": 1,
+   "where": "gpu-raster/isolines/gpu-isolines.ts"
+  },
+  {
+   "name": "GPU_ISOLINES_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/isolines/isolines-parameters.ts"
+  },
+  {
+   "name": "getGPUIsolinesParameterValues",
+   "n": 1,
+   "where": "gpu-raster/isolines/isolines-parameters.ts"
+  },
+  {
+   "name": "GPULineIntegralConvolution",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/gpu-line-integral-convolution.ts"
+  },
+  {
+   "name": "GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/line-integral-convolution-parameters.ts"
+  },
+  {
+   "name": "GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/line-integral-convolution-parameters.ts"
+  },
+  {
+   "name": "getGPULineIntegralConvolutionParameterValues",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/line-integral-convolution-parameters.ts"
+  },
+  {
+   "name": "getGPULineIntegralConvolutionUint32ParameterValues",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/line-integral-convolution-parameters.ts"
+  },
+  {
+   "name": "GPUParticleAdvection",
+   "n": 1,
+   "where": "gpu-raster/particle-advection/gpu-particle-advection.ts"
+  },
+  {
+   "name": "GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/particle-advection/particle-advection-parameters.ts"
+  },
+  {
+   "name": "GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/particle-advection/particle-advection-parameters.ts"
+  },
+  {
+   "name": "getGPUParticleAdvectionParameterValues",
+   "n": 1,
+   "where": "gpu-raster/particle-advection/particle-advection-parameters.ts"
+  },
+  {
+   "name": "getGPUParticleAdvectionUint32ParameterValues",
+   "n": 1,
+   "where": "gpu-raster/particle-advection/particle-advection-parameters.ts"
+  },
+  {
+   "name": "GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH",
+   "n": 3,
+   "where": "gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts"
+  },
+  {
+   "name": "GPURasterArithmetic",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/gpu-raster-arithmetic.ts"
+  },
+  {
+   "name": "GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/local-operations-parameters.ts"
+  },
+  {
+   "name": "getGPURasterArithmeticParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/local-operations-parameters.ts"
+  },
+  {
+   "name": "GPURasterCellStatistics",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/gpu-raster-cell-statistics.ts"
+  },
+  {
+   "name": "GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/local-operations-parameters.ts"
+  },
+  {
+   "name": "getGPURasterCellStatisticsParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/local-operations-parameters.ts"
+  },
+  {
+   "name": "GPURasterConditional",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/gpu-raster-conditional.ts"
+  },
+  {
+   "name": "GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/local-operations-parameters.ts"
+  },
+  {
+   "name": "getGPURasterConditionalParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/local-operations-parameters.ts"
+  },
+  {
+   "name": "GPURasterExtremaPyramid",
+   "n": 1,
+   "where": "gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid.ts"
+  },
+  {
+   "name": "GPURasterFillHoles",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-reconstruction.ts"
+  },
+  {
+   "name": "GPURasterFillHolesProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-reconstruction.ts"
+  },
+  {
+   "name": "GPURasterFillNoData",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fill-nodata.ts"
+  },
+  {
+   "name": "GPURasterFillNoDataProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fill-nodata.ts"
+  },
+  {
+   "name": "GPURasterFractionalCoverage",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fractional-coverage.ts"
+  },
+  {
+   "name": "GPURasterFractionalCoverageProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fractional-coverage.ts"
+  },
+  {
+   "name": "GPURasterFractionalZonalStatistics",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fractional-coverage.ts"
+  },
+  {
+   "name": "GPURasterFractionalZonalStatisticsProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-fractional-coverage.ts"
+  },
+  {
+   "name": "GPURasterMedialAxis",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-skeleton.ts"
+  },
+  {
+   "name": "GPURasterMedialAxisProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-skeleton.ts"
+  },
+  {
+   "name": "GPURasterPatchMetrics",
+   "n": 1,
+   "where": "gpu-raster/raster-patches/gpu-raster-patch-metrics.ts"
+  },
+  {
+   "name": "GPURasterProfile",
+   "n": 1,
+   "where": "gpu-raster/raster-sampling/gpu-raster-profile.ts"
+  },
+  {
+   "name": "GPURasterProfileOutput",
+   "n": 1,
+   "where": "gpu-raster/raster-sampling/gpu-raster-profile.ts"
+  },
+  {
+   "name": "GPU_RASTER_PROFILE_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/raster-sampling/raster-sampling-parameters.ts"
+  },
+  {
+   "name": "getGPURasterProfileParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-sampling/raster-sampling-parameters.ts"
+  },
+  {
+   "name": "GPURasterRankFilter",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-rank-filter.ts"
+  },
+  {
+   "name": "GPURasterRankFilterProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-rank-filter.ts"
+  },
+  {
+   "name": "GPURasterReclassify",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/gpu-raster-reclassify.ts"
+  },
+  {
+   "name": "GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/reclassify-parameters.ts"
+  },
+  {
+   "name": "getGPURasterReclassifyParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/reclassify-parameters.ts"
+  },
+  {
+   "name": "GPURasterReconstruction",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-reconstruction.ts"
+  },
+  {
+   "name": "GPURasterReconstructionProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-reconstruction.ts"
+  },
+  {
+   "name": "GPURasterReprojection",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-reprojection.ts"
+  },
+  {
+   "name": "GPURasterReprojectionProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-reprojection.ts"
+  },
+  {
+   "name": "GPURasterSampling",
+   "n": 1,
+   "where": "gpu-raster/raster-sampling/gpu-raster-sampling.ts"
+  },
+  {
+   "name": "GPU_RASTER_SAMPLING_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/raster-sampling/raster-sampling-parameters.ts"
+  },
+  {
+   "name": "getGPURasterSamplingParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-sampling/raster-sampling-parameters.ts"
+  },
+  {
+   "name": "GPURasterSieve",
+   "n": 1,
+   "where": "gpu-raster/raster-patches/gpu-raster-sieve.ts"
+  },
+  {
+   "name": "GPU_RASTER_SIEVE_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/raster-patches/gpu-raster-sieve-parameters.ts"
+  },
+  {
+   "name": "getGPURasterSieveParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-patches/gpu-raster-sieve-parameters.ts"
+  },
+  {
+   "name": "GPURasterSkeleton",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-skeleton.ts"
+  },
+  {
+   "name": "GPURasterSkeletonProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-skeleton.ts"
+  },
+  {
+   "name": "GPURasterStretch",
+   "n": 1,
+   "where": "gpu-raster/raster-stretch/gpu-raster-stretch.ts"
+  },
+  {
+   "name": "GPU_RASTER_STRETCH_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/raster-stretch/raster-stretch-parameters.ts"
+  },
+  {
+   "name": "getGPURasterStretchParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-stretch/raster-stretch-parameters.ts"
+  },
+  {
+   "name": "GPURasterTileReprojection",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-tile-reprojection.ts"
+  },
+  {
+   "name": "GPURasterTileReprojectionProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-tile-reprojection.ts"
+  },
+  {
+   "name": "GPURasterWalkingCost",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-walking-cost.ts"
+  },
+  {
+   "name": "GPURasterWalkingCostProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-walking-cost.ts"
+  },
+  {
+   "name": "GPURasterWatershedSegmentation",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-watershed-segmentation.ts"
+  },
+  {
+   "name": "GPURasterWatershedSegmentationProps",
+   "n": 1,
+   "where": "gpu-raster/gpu-raster-watershed-segmentation.ts"
+  },
+  {
+   "name": "GPURasterZonalStatistics",
+   "n": 1,
+   "where": "gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics.ts"
+  },
+  {
+   "name": "GPURasterConservativeRemapping",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-conservative-remapping.ts"
+  },
+  {
+   "name": "GPURasterConservativeRemappingProps",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-conservative-remapping.ts"
+  },
+  {
+   "name": "addRasterRegionGraphTiles",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/raster-region-tiles.ts"
+  },
+  {
+   "name": "GPURasterRegionGraphTilesProps",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/raster-region-tiles.ts"
+  },
+  {
+   "name": "GPURasterRegistration",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-registration.ts"
+  },
+  {
+   "name": "GPURasterRegistrationProps",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-registration.ts"
+  },
+  {
+   "name": "GPURasterSeasonalBreak",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-seasonal-break.ts"
+  },
+  {
+   "name": "GPURasterSeasonalBreakProps",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-seasonal-break.ts"
+  },
+  {
+   "name": "GPURasterSpectralUnmixing",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-spectral-unmixing.ts"
+  },
+  {
+   "name": "GPURasterSpectralUnmixingProps",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-spectral-unmixing.ts"
+  },
+  {
+   "name": "GPURasterTemporal",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-temporal.ts"
+  },
+  {
+   "name": "GPURasterTemporalProps",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-temporal.ts"
+  },
+  {
+   "name": "GPURasterTexture",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-texture.ts"
+  },
+  {
+   "name": "GPURasterTextureProps",
+   "n": 1,
+   "where": "gpu-raster/remote-sensing/gpu-raster-texture.ts"
+  },
+  {
+   "name": "GPUStreamlinesOutput",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/gpu-streamlines.ts"
+  },
+  {
+   "name": "GPUStreamlines",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/gpu-streamlines.ts"
+  },
+  {
+   "name": "GPU_STREAMLINES_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/streamlines-parameters.ts"
+  },
+  {
+   "name": "GPU_STREAMLINES_UINT32_PARAMETER_LENGTH",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/streamlines-parameters.ts"
+  },
+  {
+   "name": "getGPUStreamlinesParameterValues",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/streamlines-parameters.ts"
+  },
+  {
+   "name": "getGPUStreamlinesUint32ParameterValues",
+   "n": 1,
+   "where": "gpu-raster/flow-texture/streamlines-parameters.ts"
+  },
+  {
+   "name": "GPUWeightedOverlay",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/gpu-weighted-overlay.ts"
+  },
+  {
+   "name": "getGPUWeightedOverlayParameterLength",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/weighted-overlay-parameters.ts"
+  },
+  {
+   "name": "getGPUWeightedOverlayParameterValues",
+   "n": 1,
+   "where": "gpu-raster/raster-algebra/weighted-overlay-parameters.ts"
+  },
+  {
+   "name": "createWGSLKernelNode",
+   "n": 4,
+   "where": "utils/wgsl-kernel-nodes.ts"
+  },
+  {
+   "name": "GPU_COLOR_SCALE_PARAMETER_LENGTH",
+   "n": 2,
+   "where": "gpu-dataframe/column-classification/color-scale-parameters.ts"
+  }
+ ],
+ "lumaForked": [
+  {
+   "name": "getSpatialOperationNodes",
+   "n": 10,
+   "where": "utils/gpu-spatial-operation.ts"
+  },
+  {
+   "name": "GPUSegmentedReduction",
+   "n": 5,
+   "where": "gpu-core/gpu-segmented-reduction.ts"
+  },
+  {
+   "name": "getRasterLocalOrigin",
+   "n": 4,
+   "where": "gpu-raster/raster-utils.ts"
+  },
+  {
+   "name": "getGraphVectorData",
+   "n": 3,
+   "where": "gpu-core/graph-vector-view-utils.ts"
+  },
+  {
+   "name": "getGPUPartitionDescriptorFromArrowTable",
+   "n": 3,
+   "where": "arrow/gpu/arrow-gpu-analytics-adapters.ts"
+  },
+  {
+   "name": "setGPUComputeDispatchWorkgroups",
+   "n": 2,
+   "where": "gpu-core/gpu-command-dispatch-metadata.ts"
+  },
+  {
+   "name": "getBoundedDispatchOverrides",
+   "n": 2,
+   "where": "gpu-core/gpu-dispatch-utils.ts"
+  },
+  {
+   "name": "getBoundedInvocationIndexOverrideSource",
+   "n": 2,
+   "where": "gpu-core/gpu-dispatch-utils.ts"
+  },
+  {
+   "name": "alignGraphVectorViews",
+   "n": 2,
+   "where": "gpu-core/graph-vector-view-utils.ts"
+  },
+  {
+   "name": "validateRasterExtent",
+   "n": 2,
+   "where": "gpu-raster/raster-utils.ts"
+  },
+  {
+   "name": "assertRasterStorageBindingFits",
+   "n": 2,
+   "where": "gpu-raster/raster-utils.ts"
+  },
+  {
+   "name": "GPU_GRID_COORDINATE_WGSL",
+   "n": 2,
+   "where": "gpu-core/gpu-spatial-utils.ts"
+  },
+  {
+   "name": "GPUCommandGraphRecordingOptions",
+   "n": 2,
+   "where": "gpu-core/gpu-command-graph-types.ts"
+  },
+  {
+   "name": "getBufferHandle",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "getTextureHandle",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "getTextureByteLength",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "inferGPUCommandGraphDependencies",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "isBufferReadUsage",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "isBufferWriteUsage",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "isGraphBufferUse",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "isGraphTextureUse",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "isTextureReadUsage",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "isTextureWriteUsage",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "GPUCommandGraphCompilation",
+   "n": 1,
+   "where": "gpu-core/gpu-command-graph-compiler.ts"
+  },
+  {
+   "name": "getGPUComputeDispatchWorkgroups",
+   "n": 1,
+   "where": "gpu-core/gpu-command-dispatch-metadata.ts"
+  },
+  {
+   "name": "GPUQueryExpressionShaderPlan",
+   "n": 1,
+   "where": "gpu-dataframe/gpu-expression-shader.ts"
+  },
+  {
+   "name": "GPUQueryExpressionStatement",
+   "n": 1,
+   "where": "gpu-dataframe/gpu-expression-shader.ts"
+  },
+  {
+   "name": "validateColumn",
+   "n": 1,
+   "where": "gpu-graph-algorithms/gpu-graph-connected-components.ts"
+  },
+  {
+   "name": "validateRasterBand",
+   "n": 1,
+   "where": "gpu-raster/raster-utils.ts"
+  },
+  {
+   "name": "WebGPUDispatchLayout",
+   "n": 1,
+   "where": "gpu-simple-graph/operations/webgpu/common/dispatch.ts"
+  },
+  {
+   "name": "GPUJacobiPCG",
+   "n": 1,
+   "where": "gpu-core/gpu-pcg.ts"
+  },
+  {
+   "name": "GPUSegmentedReductionOperation",
+   "n": 1,
+   "where": "gpu-core/gpu-segmented-reduction.ts"
+  },
+  {
+   "name": "addGPUQueryPredicatePass",
+   "n": 1,
+   "where": "gpu-dataframe/gpu-query-compiler.ts"
+  },
+  {
+   "name": "makeGPUQueryExpressionShaderPlan",
+   "n": 1,
+   "where": "gpu-dataframe/gpu-expression-shader.ts"
+  },
+  {
+   "name": "GPUSQLStatement",
+   "n": 1,
+   "where": "gpu-sql/gpu-sql.ts"
+  }
+ ],
+ "both": [],
+ "unknown": [
+  {
+   "name": "isOutOfMemoryError",
+   "n": 1,
+   "where": ""
+  }
+ ]
+}
