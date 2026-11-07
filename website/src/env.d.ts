@@ -5,3 +5,9 @@ declare module 'virtual:docs-index' {
   const docsIndex: {slug: string; title: string}[];
   export default docsIndex;
 }
+
+declare module 'virtual:catalog-summaries' {
+  import type {CatalogSummary} from './catalog/index';
+  const catalogSummaries: CatalogSummary[];
+  export default catalogSummaries;
+}

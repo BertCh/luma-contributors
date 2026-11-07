@@ -10,11 +10,30 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ExploreRouteImport } from './routes/explore'
+import { Route as HowItWorksRouteImport } from './routes/how-it-works'
 import { Route as DocsSplatRouteImport } from './routes/docs/$'
+import { Route as ExploreIndexRouteImport } from './routes/explore/index'
+import { Route as FnIdRouteImport } from './routes/fn/$id'
+import { Route as HowItWorksIndexRouteImport } from './routes/how-it-works/index'
+import { Route as HowItWorksTopicRouteImport } from './routes/how-it-works/$topic'
+import { Route as ExploreDataIdRouteImport } from './routes/explore/data.$id'
+import { Route as ExploreDomainIdRouteImport } from './routes/explore/domain.$id'
+import { Route as ExploreUseIdRouteImport } from './routes/explore/use.$id'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ExploreRoute = ExploreRouteImport.update({
+  id: '/explore',
+  path: '/explore',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HowItWorksRoute = HowItWorksRouteImport.update({
+  id: '/how-it-works',
+  path: '/how-it-works',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DocsSplatRoute = DocsSplatRouteImport.update({
@@ -22,31 +41,126 @@ const DocsSplatRoute = DocsSplatRouteImport.update({
   path: '/docs/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ExploreIndexRoute = ExploreIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ExploreRoute,
+} as any)
+const FnIdRoute = FnIdRouteImport.update({
+  id: '/fn/$id',
+  path: '/fn/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HowItWorksIndexRoute = HowItWorksIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => HowItWorksRoute,
+} as any)
+const HowItWorksTopicRoute = HowItWorksTopicRouteImport.update({
+  id: '/$topic',
+  path: '/$topic',
+  getParentRoute: () => HowItWorksRoute,
+} as any)
+const ExploreDataIdRoute = ExploreDataIdRouteImport.update({
+  id: '/data/$id',
+  path: '/data/$id',
+  getParentRoute: () => ExploreRoute,
+} as any)
+const ExploreDomainIdRoute = ExploreDomainIdRouteImport.update({
+  id: '/domain/$id',
+  path: '/domain/$id',
+  getParentRoute: () => ExploreRoute,
+} as any)
+const ExploreUseIdRoute = ExploreUseIdRouteImport.update({
+  id: '/use/$id',
+  path: '/use/$id',
+  getParentRoute: () => ExploreRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/explore': typeof ExploreRouteWithChildren
+  '/how-it-works': typeof HowItWorksRouteWithChildren
   '/docs/$': typeof DocsSplatRoute
+  '/fn/$id': typeof FnIdRoute
+  '/how-it-works/$topic': typeof HowItWorksTopicRoute
+  '/explore/': typeof ExploreIndexRoute
+  '/how-it-works/': typeof HowItWorksIndexRoute
+  '/explore/data/$id': typeof ExploreDataIdRoute
+  '/explore/domain/$id': typeof ExploreDomainIdRoute
+  '/explore/use/$id': typeof ExploreUseIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/docs/$': typeof DocsSplatRoute
+  '/fn/$id': typeof FnIdRoute
+  '/how-it-works/$topic': typeof HowItWorksTopicRoute
+  '/explore': typeof ExploreIndexRoute
+  '/how-it-works': typeof HowItWorksIndexRoute
+  '/explore/data/$id': typeof ExploreDataIdRoute
+  '/explore/domain/$id': typeof ExploreDomainIdRoute
+  '/explore/use/$id': typeof ExploreUseIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/explore': typeof ExploreRouteWithChildren
+  '/how-it-works': typeof HowItWorksRouteWithChildren
   '/docs/$': typeof DocsSplatRoute
+  '/fn/$id': typeof FnIdRoute
+  '/how-it-works/$topic': typeof HowItWorksTopicRoute
+  '/explore/': typeof ExploreIndexRoute
+  '/how-it-works/': typeof HowItWorksIndexRoute
+  '/explore/data/$id': typeof ExploreDataIdRoute
+  '/explore/domain/$id': typeof ExploreDomainIdRoute
+  '/explore/use/$id': typeof ExploreUseIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/docs/$'
+  fullPaths:
+    | '/'
+    | '/explore'
+    | '/how-it-works'
+    | '/docs/$'
+    | '/fn/$id'
+    | '/how-it-works/$topic'
+    | '/explore/'
+    | '/how-it-works/'
+    | '/explore/data/$id'
+    | '/explore/domain/$id'
+    | '/explore/use/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/docs/$'
-  id: '__root__' | '/' | '/docs/$'
+  to:
+    | '/'
+    | '/docs/$'
+    | '/fn/$id'
+    | '/how-it-works/$topic'
+    | '/explore'
+    | '/how-it-works'
+    | '/explore/data/$id'
+    | '/explore/domain/$id'
+    | '/explore/use/$id'
+  id:
+    | '__root__'
+    | '/'
+    | '/explore'
+    | '/how-it-works'
+    | '/docs/$'
+    | '/fn/$id'
+    | '/how-it-works/$topic'
+    | '/explore/'
+    | '/how-it-works/'
+    | '/explore/data/$id'
+    | '/explore/domain/$id'
+    | '/explore/use/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ExploreRoute: typeof ExploreRouteWithChildren
+  HowItWorksRoute: typeof HowItWorksRouteWithChildren
   DocsSplatRoute: typeof DocsSplatRoute
+  FnIdRoute: typeof FnIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -58,6 +172,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/explore': {
+      id: '/explore'
+      path: '/explore'
+      fullPath: '/explore'
+      preLoaderRoute: typeof ExploreRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/how-it-works': {
+      id: '/how-it-works'
+      path: '/how-it-works'
+      fullPath: '/how-it-works'
+      preLoaderRoute: typeof HowItWorksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/docs/$': {
       id: '/docs/$'
       path: '/docs/$'
@@ -65,12 +193,95 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DocsSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/explore/': {
+      id: '/explore/'
+      path: '/'
+      fullPath: '/explore/'
+      preLoaderRoute: typeof ExploreIndexRouteImport
+      parentRoute: typeof ExploreRoute
+    }
+    '/fn/$id': {
+      id: '/fn/$id'
+      path: '/fn/$id'
+      fullPath: '/fn/$id'
+      preLoaderRoute: typeof FnIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/how-it-works/': {
+      id: '/how-it-works/'
+      path: '/'
+      fullPath: '/how-it-works/'
+      preLoaderRoute: typeof HowItWorksIndexRouteImport
+      parentRoute: typeof HowItWorksRoute
+    }
+    '/how-it-works/$topic': {
+      id: '/how-it-works/$topic'
+      path: '/$topic'
+      fullPath: '/how-it-works/$topic'
+      preLoaderRoute: typeof HowItWorksTopicRouteImport
+      parentRoute: typeof HowItWorksRoute
+    }
+    '/explore/data/$id': {
+      id: '/explore/data/$id'
+      path: '/data/$id'
+      fullPath: '/explore/data/$id'
+      preLoaderRoute: typeof ExploreDataIdRouteImport
+      parentRoute: typeof ExploreRoute
+    }
+    '/explore/domain/$id': {
+      id: '/explore/domain/$id'
+      path: '/domain/$id'
+      fullPath: '/explore/domain/$id'
+      preLoaderRoute: typeof ExploreDomainIdRouteImport
+      parentRoute: typeof ExploreRoute
+    }
+    '/explore/use/$id': {
+      id: '/explore/use/$id'
+      path: '/use/$id'
+      fullPath: '/explore/use/$id'
+      preLoaderRoute: typeof ExploreUseIdRouteImport
+      parentRoute: typeof ExploreRoute
+    }
   }
 }
 
+interface ExploreRouteChildren {
+  ExploreIndexRoute: typeof ExploreIndexRoute
+  ExploreDataIdRoute: typeof ExploreDataIdRoute
+  ExploreDomainIdRoute: typeof ExploreDomainIdRoute
+  ExploreUseIdRoute: typeof ExploreUseIdRoute
+}
+
+const ExploreRouteChildren: ExploreRouteChildren = {
+  ExploreIndexRoute: ExploreIndexRoute,
+  ExploreDataIdRoute: ExploreDataIdRoute,
+  ExploreDomainIdRoute: ExploreDomainIdRoute,
+  ExploreUseIdRoute: ExploreUseIdRoute,
+}
+
+const ExploreRouteWithChildren =
+  ExploreRoute._addFileChildren(ExploreRouteChildren)
+
+interface HowItWorksRouteChildren {
+  HowItWorksTopicRoute: typeof HowItWorksTopicRoute
+  HowItWorksIndexRoute: typeof HowItWorksIndexRoute
+}
+
+const HowItWorksRouteChildren: HowItWorksRouteChildren = {
+  HowItWorksTopicRoute: HowItWorksTopicRoute,
+  HowItWorksIndexRoute: HowItWorksIndexRoute,
+}
+
+const HowItWorksRouteWithChildren = HowItWorksRoute._addFileChildren(
+  HowItWorksRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ExploreRoute: ExploreRouteWithChildren,
+  HowItWorksRoute: HowItWorksRouteWithChildren,
   DocsSplatRoute: DocsSplatRoute,
+  FnIdRoute: FnIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

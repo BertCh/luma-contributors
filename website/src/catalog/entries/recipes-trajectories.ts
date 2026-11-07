@@ -1,0 +1,3617 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Catalog group: recipes and trajectories. Ready-made multi-step analysis recipes (add*Recipe),
+// landscape ecology, and trajectory analysis (resample, metrics, encounters, similarity, zones).
+
+import type {CatalogEntry, OutputDoc, ParamDoc} from '../schema';
+
+const IMPORT_PATH = '@luma-contributors/analysis/gpu-spatial-analysis';
+const RECIPES_REFERENCE = 'api/gpu-spatial-analysis/recipes';
+const EXPANSION_REFERENCE = 'api/gpu-spatial-analysis/expansion-lenses';
+const ECOLOGY_REFERENCE = 'api/gpu-spatial-analysis/urban-ecology-lenses';
+const LINES_REFERENCE = 'api/gpu-spatial-analysis/operators-lines';
+const MOVEMENT_REFERENCE = 'api/gpu-network/network-movement-coverage';
+
+const COMPILE_AND_ENCODE = `const compiled = await graph.compileAsync();
+compiled.encode(device.commandEncoder, {parameters: undefined});`;
+
+const idParameter: ParamDoc = {
+  name: 'id',
+  type: 'string | undefined',
+  description: 'Prefix for every node and transient ID; set it when composing recipes.'
+};
+const outputsOverrideParameter: ParamDoc = {
+  name: 'outputs',
+  type: 'Partial<Output> | undefined',
+  description: 'Caller-owned views to keep; every other result is a graph transient.'
+};
+const positionsParameter: ParamDoc = {
+  name: 'positions',
+  type: 'GraphDataView<"float32x2">',
+  required: true,
+  description: 'Planar sample positions, one float32x2 per observation.'
+};
+const timestampsParameter: ParamDoc = {
+  name: 'timestamps',
+  type: 'GraphDataView<"float32"> | GraphDataView<"uint32x2">',
+  required: true,
+  description: 'Sample times: float32, or Int64 epoch-millisecond words.'
+};
+const trackOffsetsParameter: ParamDoc = {
+  name: 'trackOffsets',
+  type: 'GraphDataView<"uint32">',
+  required: true,
+  description: 'Track-to-position offsets with one terminal entry.'
+};
+const spatialContextParameter: ParamDoc = {
+  name: 'spatialContext',
+  type: 'GPUSpatialContext | undefined',
+  description: 'Coordinate space and metric; planar when omitted.'
+};
+const eventsParameter: ParamDoc = {
+  name: 'events',
+  type: 'GPUFloat32OrUint32Values',
+  required: true,
+  description: 'Event count per feature (float32 or uint32).'
+};
+const populationsParameter: ParamDoc = {
+  name: 'populations',
+  type: 'GPUFloat32OrUint32Values',
+  required: true,
+  description: 'Positive population at risk per feature.'
+};
+const gridParameter: ParamDoc = {
+  name: 'grid',
+  type: 'GPURasterMetadata',
+  required: true,
+  description: 'Raster grid: width, height and affine transform.'
+};
+const patchesParameter: ParamDoc = {
+  name: 'patches',
+  type: 'GraphDataView<"uint32">',
+  required: true,
+  description: 'Connected-patch ID per cell over the complete raster.'
+};
+const patchClassesParameter: ParamDoc = {
+  name: 'patchClasses',
+  type: 'GraphDataView<"uint32">',
+  required: true,
+  description: 'Class ID per patch.'
+};
+const cellSizeParameter: ParamDoc = {
+  name: 'cellSize',
+  type: 'readonly [number, number]',
+  required: true,
+  description: 'Positive planar cell width and height.'
+};
+const pairListOutput = (description: string): OutputDoc => ({
+  name: 'output.pairs',
+  type: 'GPUCompactOutput & {...}',
+  description
+});
+
+export const entries: CatalogEntry[] = [
+  // ------------------------------------------------------------ hot spots, rates and regression
+  {
+    id: 'hot-spot-analysis-recipe',
+    symbol: 'addHotSpotAnalysisRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Hot spot analysis',
+    summary:
+      'Turns points on a study area, or a raster, into Getis-Ord Gi* hot and cold spot cells.',
+    explanation:
+      'Use it to answer where events cluster beyond chance, in one call. It bins points to cells, builds neighbors, runs Gi* and can confirm bins with conditional permutations and class colors. Change `settings` per frame with `result.setSettings` and nothing recompiles.',
+    dataTypes: {input: ['points', 'cells'], output: ['cells', 'table']},
+    useCases: ['find-patterns'],
+    domains: ['spatial-statistics', 'urban'],
+    params: [
+      {
+        name: 'source',
+        type: 'GPUHotSpotPointsSource | GPUHotSpotLatticeSource',
+        required: true,
+        description: 'Points on a study area, or a raster lattice.'
+      },
+      {
+        name: 'parameters',
+        type: 'GPUParameterBuffer<"float32">',
+        required: true,
+        description: 'Autocorrelation parameter buffer the recipe fills from settings.'
+      },
+      {
+        name: 'settings',
+        type: 'GPUHotSpotAnalysisRecipeSettings | undefined',
+        description: 'Significance level, seed and permutation count.'
+      },
+      {
+        name: 'selfWeight',
+        type: 'number | undefined',
+        description: 'Weight of the focal row in Gi*.'
+      },
+      {
+        name: 'analyze',
+        type: '"count" | "density" | undefined',
+        description: 'Points source only: analyze counts or area density.'
+      },
+      {
+        name: 'multipleTesting',
+        type: 'GPUMultipleTestingMethod | undefined',
+        description: 'Correction applied to the Gi* bins.'
+      },
+      {
+        name: 'permutation',
+        type: 'GPUHotSpotPermutationOptions | undefined',
+        description: 'Permutation confirmation; skipped when absent.'
+      },
+      {
+        name: 'color',
+        type: 'GPUHotSpotColorOptions | undefined',
+        description: 'Class breaks and palette for the z-scores; skipped when absent.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'zScores',
+        type: 'GraphDataView<"float32">',
+        description: 'Gi* z-score per analyzed cell.'
+      },
+      {
+        name: 'bins',
+        type: 'GraphDataView<"sint32">',
+        description: 'Confidence bin from -3 (cold) to +3 (hot).'
+      },
+      {
+        name: 'pValues',
+        type: 'GraphDataView<"float32">',
+        description: 'Analytic p-value per cell.'
+      },
+      {
+        name: 'permutation',
+        type: 'object | undefined',
+        description: 'Pseudo p-values and a significant mask.'
+      },
+      {
+        name: 'setSettings',
+        type: '(settings) => void',
+        description: 'Repacks inference settings per frame.'
+      }
+    ],
+    example: `import {addHotSpotAnalysisRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; the polygon views follow the GeoArrow four-level layout
+const hotSpots = addHotSpotAnalysisRecipe(graph, {
+  source: {
+    kind: 'points', positions, family: 'quadbin', resolution: 8, cellCapacity: 4096,
+    studyArea: {kind: 'polygons', positions: studyPositions, featureOffsets, polygonOffsets,
+      ringOffsets, candidateCapacity: 16384}
+  },
+  settings: {significanceLevel: 0.05, seed: 7, permutationCount: 199},
+  parameters: autocorrelationParameters, // GPUParameterBuffer the recipe fills
+  outputs: {zScores, bins},
+  permutation: {parameters: permutationParameters, maximumPermutations: 199}
+});
+${COMPILE_AND_ENCODE}
+hotSpots.setSettings({significanceLevel: 0.01, seed: 7, permutationCount: 99});`,
+    preview: {
+      kind: 'hotspots',
+      caption: 'Points binned to cells, then Gi* hot and cold.',
+      seed: 101
+    },
+    related: [
+      'hot-spot-analysis-gi-star',
+      'local-morans-i',
+      'space-time-hot-spots-recipe',
+      'cell-aggregation'
+    ],
+    lensScenario: 'gpu-spatial-analysis.hot-spot-analysis-recipe',
+    reference: RECIPES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'space-time-hot-spots-recipe',
+    symbol: 'addSpaceTimeHotSpotsRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Space-time hot spots',
+    summary:
+      'Turns timestamped events into an emerging hot spot map: new, sporadic, persistent, diminishing.',
+    explanation:
+      'Use it to see where and when events intensify. It slices events into calendar buckets, counts them into a cell by time cube, then runs Gi* per slice and a trend test. Categories can be colored in the same graph.',
+    dataTypes: {input: ['points', 'time-series'], output: ['cells', 'table']},
+    useCases: ['find-patterns', 'detect-change'],
+    domains: ['spatial-statistics', 'urban'],
+    params: [
+      {
+        name: 'timestamps',
+        type: 'GraphDataView<"uint32x2">',
+        required: true,
+        description: 'Epoch-millisecond event times as Int64 words.'
+      },
+      {
+        name: 'calendarParameters',
+        type: 'GraphDataView<"sint32">',
+        required: true,
+        description: 'Calendar bucket settings from getGPUCalendarBucketsParameterValues.'
+      },
+      {
+        name: 'slices',
+        type: 'GPUSpaceTimeSlices',
+        required: true,
+        description: 'Time slices of the cube.'
+      },
+      {
+        name: 'cells',
+        type: 'GPUSpaceTimeCellIds | GPUSpaceTimeLattice',
+        required: true,
+        description: 'Spatial cells and their neighborhood.'
+      },
+      {
+        name: 'settings',
+        type: 'GPUSpaceTimeHotSpotsRecipeSettings',
+        required: true,
+        description: 'Temporal window, radius and confidence, changeable per frame.'
+      },
+      {
+        name: 'parameters',
+        type: 'GPUParameterBuffer<"float32">',
+        required: true,
+        description: 'Emerging hot spot parameter buffer filled from settings.'
+      },
+      {
+        name: 'finalSlice',
+        type: '"require" | "last-valid" | undefined',
+        description: 'Whether the final slice must be valid for a category.'
+      },
+      {
+        name: 'color',
+        type: '{palette, parameters, ...} | undefined',
+        description: 'Category colors; skipped when absent.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'cube',
+        type: 'GraphDataView<"uint32">',
+        description: 'Event counts, cell * sliceCount + slice.'
+      },
+      {
+        name: 'giZScores',
+        type: 'GraphDataView<"float32">',
+        description: 'Gi* z-score per cell and slice.'
+      },
+      {
+        name: 'trendZ',
+        type: 'GraphDataView<"float32">',
+        description: 'Mann-Kendall trend z-score per cell.'
+      },
+      {
+        name: 'category',
+        type: 'GraphDataView<"uint32">',
+        description: 'Emerging hot spot class per cell.'
+      },
+      {
+        name: 'colors',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Packed rgba8 per cell.'
+      }
+    ],
+    example: `import {addSpaceTimeHotSpotsRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; timestamps are Int64 millisecond words
+const emerging = addSpaceTimeHotSpotsRecipe(graph, {
+  timestamps,
+  calendarParameters, // getGPUCalendarBucketsParameterValues({...})
+  slices: {step: 'month', origin: {year: 2025}, count: 12},
+  cells: {kind: 'lattice', positions: eventPositions, width: 64, height: 64, bounds},
+  settings: {temporalWindow: 3, radius: 1, confidenceLevel: 0.95},
+  parameters: emergingParameters, // GPUParameterBuffer, filled from settings
+  finalSlice: 'last-valid'
+});
+${COMPILE_AND_ENCODE}
+// emerging.category: one class per cell, emerging.giZScores: cell x slice`,
+    preview: {kind: 'hotspots', caption: 'Cells heat up over time slices.', seed: 102},
+    related: ['emerging-hot-spots', 'hot-spot-analysis-recipe', 'period-comparison-recipe'],
+    lensScenario: 'gpu-spatial-analysis.space-time-hot-spots-recipe',
+    reference: 'api/gpu-spatial-analysis/operators-statistics',
+    maturity: 'stable'
+  },
+  {
+    id: 'rate-cluster-map-recipe',
+    symbol: 'addRateClusterMapRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Rate cluster map',
+    summary:
+      'Counts and populations in, significant local Moran clusters of smoothed rates out, colored by quadrant.',
+    explanation:
+      'Use it to map risk without small-area noise: rates are empirical-Bayes smoothed, neighbors come from polygon contiguity, and local Moran finds clusters. Add `permutation` for the reference 999-permutation confirmation.',
+    dataTypes: {input: ['polygons', 'table'], output: ['polygons', 'table']},
+    useCases: ['find-patterns'],
+    domains: ['demographics', 'spatial-statistics'],
+    params: [
+      eventsParameter,
+      populationsParameter,
+      {
+        name: 'polygons',
+        type: 'Omit<GPUPolygonGeometryPort, "positions" | "sourceIds"> & {...}',
+        required: true,
+        description: 'Polygon features in the four-level layout.'
+      },
+      {
+        name: 'neighborCapacity',
+        type: 'number',
+        required: true,
+        description: 'Slots of the contiguity CSR.'
+      },
+      {
+        name: 'criterion',
+        type: 'GPUContiguityCriterion | undefined',
+        default: "'queen'",
+        description: "'queen' or 'rook' contiguity."
+      },
+      {
+        name: 'analyze',
+        type: 'GPURateClusterMapRate | undefined',
+        description: 'Which rate local Moran analyzes.'
+      },
+      {
+        name: 'permutation',
+        type: '{parameters, maximumPermutations, ...} | undefined',
+        description: 'Permutation inference that gates the colors.'
+      },
+      {
+        name: 'palette',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Packed rgba8 palette for the quadrant colors.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'smoothedRates',
+        type: 'GraphDataView<"float32">',
+        description: 'Empirical-Bayes rate per feature.'
+      },
+      {
+        name: 'zScores',
+        type: 'GraphDataView<"float32">',
+        description: 'Local Moran z-score per feature.'
+      },
+      {
+        name: 'quadrants',
+        type: 'GraphDataView<"uint32">',
+        description: '1 HH, 2 LH, 3 LL, 4 HL; 0 not significant.'
+      },
+      {name: 'colors', type: 'GraphDataView<"uint32">', description: 'Packed rgba8 per feature.'}
+    ],
+    example: `import {addRateClusterMapRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; polygons use the GeoArrow four-level layout
+const clusterMap = addRateClusterMapRecipe(graph, {
+  events, populations,
+  polygons: {kind: 'polygons', featureOffsets, polygonOffsets, ringOffsets, positions},
+  criterion: 'queen',
+  neighborCapacity: 8 * featureCount,
+  parameters: autocorrelationParameters, // GPUParameterBuffer<'float32'>
+  permutation: {parameters: permutationParameters, maximumPermutations: 999},
+  palette,
+  outputs: {quadrants, colors}
+});
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'hotspots', caption: 'Smoothed rates, clustered by quadrant.', seed: 103},
+    related: [
+      'empirical-bayes-rates',
+      'local-morans-i',
+      'excess-risk-recipe',
+      'spatial-rate-recipe'
+    ],
+    lensScenario: 'gpu-spatial-analysis.rate-cluster-map-recipe',
+    reference: RECIPES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'excess-risk-recipe',
+    symbol: 'addExcessRiskRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Excess risk',
+    summary:
+      'Computes observed over expected counts per feature: relative risk against the overall rate.',
+    explanation:
+      'Use it to flag areas with more events than their population predicts; 1 means as expected. Expected counts are population times the overall rate, so the result is dimensionless.',
+    dataTypes: {input: ['table'], output: ['table']},
+    useCases: ['find-patterns', 'summarize'],
+    domains: ['demographics', 'spatial-statistics'],
+    params: [
+      idParameter,
+      eventsParameter,
+      populationsParameter,
+      {
+        name: 'mask',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Nonzero rows take part, as focus and neighbor.'
+      },
+      {
+        name: 'output',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Caller-owned output; otherwise graph-owned.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.excessRisk',
+        type: 'GraphDataView<"float32">',
+        description: 'E_i / (P_i * sum(E) / sum(P)); NaN when expected is not positive.'
+      }
+    ],
+    example: `import {addExcessRiskRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; events and populations are float32 or uint32 graph views
+const risk = addExcessRiskRecipe(graph, {events, populations});
+${COMPILE_AND_ENCODE}
+// risk.outputs.excessRisk > 1 where events exceed the population-expected count`,
+    preview: {kind: 'classification', caption: 'Relative risk per area, 1 is expected.', seed: 104},
+    related: ['spatial-rate-recipe', 'empirical-bayes-rates', 'rate-cluster-map-recipe'],
+    lensScenario: 'gpu-spatial-analysis.excess-risk-recipe',
+    reference: 'api/gpu-spatial-analysis/rate-mapping',
+    maturity: 'stable'
+  },
+  {
+    id: 'spatial-rate-recipe',
+    symbol: 'addSpatialRateRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Spatial rate',
+    summary:
+      'Computes pooled neighborhood rates: the focus plus its neighbors, never an average of rates.',
+    explanation:
+      'Use it to stabilize small-area rates by borrowing strength from neighbors. It sums events and populations over the focus and its neighbors, then divides, as GeoDa does. Islands are undefined unless you choose `own-rate`.',
+    dataTypes: {input: ['table', 'spatial-weights'], output: ['table']},
+    useCases: ['summarize', 'find-patterns'],
+    domains: ['demographics', 'spatial-statistics'],
+    params: [
+      eventsParameter,
+      populationsParameter,
+      {
+        name: 'weights',
+        type: 'GPUSpatialWeights | GPUChunkedSpatialWeights',
+        required: true,
+        description: 'Binary neighbor structure; numeric weights are ignored.'
+      },
+      {
+        name: 'mask',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Nonzero rows count as focus and neighbor.'
+      },
+      {
+        name: 'scale',
+        type: 'number | undefined',
+        default: '1',
+        description: 'Compile-time rate multiplier, for example 100000.'
+      },
+      {
+        name: 'islandPolicy',
+        type: '"undefined" | "own-rate" | undefined',
+        default: "'undefined'",
+        description: 'Rows without neighbors: NaN, or their own rate.'
+      },
+      {
+        name: 'output',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Caller-owned output; otherwise graph-owned.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.spatialRates',
+        type: 'GraphDataView<"float32">',
+        description: 'scale * (E_i + sum E_neighbors) / (P_i + sum P_neighbors).'
+      }
+    ],
+    example: `import {addSpatialRateRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; weights are queen or KNN CSR from a weights contributor
+const smoothed = addSpatialRateRecipe(graph, {
+  events, populations, weights,
+  scale: 100000,
+  islandPolicy: 'own-rate'
+});
+${COMPILE_AND_ENCODE}
+// smoothed.outputs.spatialRates: events per 100,000 people`,
+    preview: {kind: 'classification', caption: 'Noisy rates pooled across neighbors.', seed: 105},
+    related: ['excess-risk-recipe', 'spatial-empirical-bayes-rates', 'rate-cluster-map-recipe'],
+    lensScenario: 'gpu-spatial-analysis.spatial-rate-recipe',
+    reference: 'api/gpu-spatial-analysis/rate-mapping',
+    maturity: 'stable'
+  },
+  {
+    id: 'local-variability-recipe',
+    symbol: 'addLocalVariabilityRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Local variability',
+    summary:
+      'Compares local association (Moran) with local dispersion (LOSH) on the same graph and mask.',
+    explanation:
+      'Use it to tell places whose neighbors agree on average from places whose neighbors are erratic. Both statistics share one weights graph, values and mask. Corrections apply to the Moran family only; LOSH stays descriptive.',
+    dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
+    useCases: ['find-patterns'],
+    domains: ['spatial-statistics'],
+    params: [
+      {
+        name: 'weights',
+        type: 'GPUSpatialWeights',
+        required: true,
+        description: 'Square CSR neighbor structure.'
+      },
+      {
+        name: 'values',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'One value per row.'
+      },
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Spatial-autocorrelation parameter view.'
+      },
+      {
+        name: 'mask',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Nonzero rows take part.'
+      },
+      {
+        name: 'residualPower',
+        type: '2 | 1 | undefined',
+        description: 'Power of the LOSH residuals.'
+      },
+      {
+        name: 'minimumNeighbors',
+        type: 'number | undefined',
+        description: 'Rows with fewer neighbors are not scored.'
+      },
+      {
+        name: 'multipleTesting',
+        type: 'GPUMultipleTestingMethod | undefined',
+        description: 'Correction for the Moran p-values only.'
+      },
+      outputsOverrideParameter
+    ],
+    outputs: [
+      {
+        name: 'outputs.losh',
+        type: 'GraphDataView<"float32">',
+        description: 'Local spatial heteroscedasticity.'
+      },
+      {name: 'outputs.localI', type: 'GraphDataView<"float32">', description: "Local Moran's I."},
+      {
+        name: 'outputs.zScores',
+        type: 'GraphDataView<"float32">',
+        description: 'Analytic Moran z-score.'
+      },
+      {
+        name: 'outputs.quadrants',
+        type: 'GraphDataView<"uint32">',
+        description: 'Moran quadrant, 0 if not significant.'
+      }
+    ],
+    example: `import {addLocalVariabilityRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; weights, values, mask and parameters are graph views
+const variability = addLocalVariabilityRecipe(graph, {
+  weights, values, mask,
+  parameters: autocorrelationParameters.importToGraph(graph),
+  multipleTesting: 'benjamini-hochberg'
+});
+${COMPILE_AND_ENCODE}
+// variability.outputs.losh next to variability.outputs.quadrants`,
+    preview: {kind: 'hotspots', caption: 'Calm clusters versus erratic neighborhoods.', seed: 106},
+    related: ['local-spatial-heteroscedasticity', 'local-morans-i', 'local-permutation-test'],
+    lensScenario: 'gpu-spatial-analysis.local-variability-recipe',
+    reference: EXPANSION_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'quantile-lisa',
+    symbol: 'GPUQuantileLISA',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Quantile LISA',
+    summary: 'Finds clusters of one chosen quantile class with conditional local join counts.',
+    explanation:
+      'Use it to ask where, say, the top quintile sits beside itself. It cuts values into k quantile classes on the GPU, then permutation-tests join counts for class q. Follows libgeoda, including its tie rule.',
+    dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
+    useCases: ['find-patterns', 'model'],
+    domains: ['spatial-statistics'],
+    params: [
+      {
+        name: 'values',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'One value per row.'
+      },
+      {
+        name: 'weights',
+        type: 'GPUSpatialWeights | GPUChunkedSpatialWeights',
+        required: true,
+        description: 'Square CSR neighbor structure.'
+      },
+      {
+        name: 'quantileParameters',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Resident [k, q]: class count and selected class, 1-based.'
+      },
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Permutation parameters from getGPUPermutationParameterValues.'
+      },
+      {
+        name: 'maximumPermutations',
+        type: 'number',
+        required: true,
+        description: 'Compile-time cap on permutations.'
+      },
+      {
+        name: 'maximumNeighbors',
+        type: 'number | undefined',
+        default: '32',
+        description: 'Neighbors considered per row, at most 64.'
+      },
+      {
+        name: 'mask',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Nonzero rows take part.'
+      },
+      {
+        name: 'output',
+        type: 'GPUQuantileLISAOutput',
+        required: true,
+        description: 'Caller-owned result views.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'membership',
+        type: 'GraphDataView<"uint32">',
+        description: '1 where the row is in the selected class.'
+      },
+      {
+        name: 'pseudoPValues',
+        type: 'GraphDataView<"float32">',
+        description: 'Permutation p-value per row.'
+      },
+      {
+        name: 'boundaries',
+        type: 'GraphDataView<"float32">',
+        description: 'Quantile class boundaries.'
+      },
+      {name: 'classes', type: 'GraphDataView<"uint32">', description: 'Cluster class per row.'}
+    ],
+    example: `import {GPUQuantileLISA} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; quantileParameters holds [k, q] as uint32
+graph.add(new GPUQuantileLISA({
+  values, weights,
+  quantileParameters,
+  parameters: permutationParameters.importToGraph(graph),
+  maximumPermutations: 499,
+  output: {membership, exceedances, pseudoPValues, boundaries, validCount, classes, invalidQuantile}
+}));
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'hotspots', caption: 'Top-quintile cells that cluster together.', seed: 107},
+    related: ['local-morans-i', 'local-permutation-test', 'rate-cluster-map-recipe'],
+    lensScenario: 'gpu-spatial-analysis.quantile-lisa',
+    reference: 'api/gpu-spatial-analysis/quantile-lisa',
+    maturity: 'stable'
+  },
+  {
+    id: 'spatial-regression-recipe',
+    symbol: 'addSpatialRegressionRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Spatial regression',
+    summary:
+      'OLS, residual dependence tests and a lag-or-error decision, with residual local Moran.',
+    explanation:
+      "Use it to fit a model and learn whether space still matters in its residuals. It runs OLS, spatial diagnostics, Anselin's decision rule and a residual local Moran; local fits (GWR) are optional. Change `settings` per frame without rebuilding.",
+    dataTypes: {input: ['table', 'spatial-weights'], output: ['table']},
+    useCases: ['model'],
+    domains: ['spatial-statistics', 'demographics'],
+    params: [
+      {
+        name: 'predictors',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Row-major row * predictorCount + column, no intercept.'
+      },
+      {
+        name: 'response',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Response, one per row.'
+      },
+      {
+        name: 'predictorCount',
+        type: 'number',
+        required: true,
+        description: 'Number of predictor columns.'
+      },
+      {
+        name: 'weights',
+        type: 'GPUSpatialWeights',
+        required: true,
+        description: 'Square weights for diagnostics and residual Moran.'
+      },
+      {
+        name: 'parameters',
+        type: 'GPUParameterBuffer<"float32">',
+        required: true,
+        description: 'Autocorrelation parameter buffer the recipe fills.'
+      },
+      {
+        name: 'settings',
+        type: 'GPUSpatialAutocorrelationSettings | undefined',
+        default: '{significanceLevel: 0.05}',
+        description: 'Per-frame inference settings.'
+      },
+      {
+        name: 'mask',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Zero excludes a row from the fit.'
+      },
+      {
+        name: 'localFits',
+        type: 'GPUSpatialRegressionLocalFitOptions | undefined',
+        description: 'Geographically weighted local fits; skipped when absent.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'ols.coefficients',
+        type: 'GraphDataView<"float32">',
+        description: 'Fitted coefficients.'
+      },
+      {name: 'ols.residuals', type: 'GraphDataView<"float32">', description: 'Residual per row.'},
+      {
+        name: 'diagnostics.tests',
+        type: 'GraphDataView<"float32">',
+        description: 'LM lag, error and robust tests.'
+      },
+      {
+        name: 'specification.decision',
+        type: 'GraphDataView<"uint32">',
+        description: '0 OLS, 1 lag, 2 error, 3 both, 4 unclear.'
+      },
+      {
+        name: 'residualMoran.quadrants',
+        type: 'GraphDataView<"uint32">',
+        description: 'Residual cluster quadrant.'
+      }
+    ],
+    example: `import {addSpatialRegressionRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; predictors are row-major, weights are square CSR
+const regression = addSpatialRegressionRecipe(graph, {
+  predictors, response, predictorCount: 3,
+  weights,
+  parameters: autocorrelationParameters, // GPUParameterBuffer, filled from settings
+  settings: {significanceLevel: 0.05}
+});
+${COMPILE_AND_ENCODE}
+// regression.specification.decision: which model the diagnostics point to`,
+    preview: {kind: 'regression', caption: 'Fit, then check the residuals for pattern.', seed: 108},
+    related: [
+      'ordinary-least-squares',
+      'spatial-regression-diagnostics',
+      'geographically-weighted-regression',
+      'local-morans-i'
+    ],
+    lensScenario: 'gpu-spatial-analysis.spatial-regression-recipe',
+    reference: RECIPES_REFERENCE,
+    maturity: 'stable'
+  },
+  // ------------------------------------------------------------ clustering, choropleth, change
+  {
+    id: 'cluster-and-outline-recipe',
+    symbol: 'addClusterAndOutlineRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Cluster and outline',
+    summary: 'DBSCAN clusters with per-cluster counts, hulls, area, perimeter and centroid.',
+    explanation:
+      'Use it to turn raw points into labeled blobs you can draw and measure. DBSCAN assigns labels, then each cluster gets a convex hull, or an alpha-shape outline that keeps holes. Planar only: project longitude and latitude first.',
+    dataTypes: {input: ['points'], output: ['points', 'polygons', 'table']},
+    useCases: ['find-patterns', 'measure'],
+    domains: ['spatial-statistics', 'cartography'],
+    params: [
+      {
+        name: 'points',
+        type: 'GPUPointGeometryPort',
+        required: true,
+        description: 'Points in the coordinates of spatialContext.'
+      },
+      {
+        name: 'clusteringParameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Bounds, epsilon and minimum points (getGPUSpatialClusteringParameterValues).'
+      },
+      {
+        name: 'gridSize',
+        type: 'readonly [number, number]',
+        required: true,
+        description: 'Maximum neighbor-search lattice.'
+      },
+      {
+        name: 'geometryParameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Parameters for the per-cluster geometry stage.'
+      },
+      {
+        name: 'maximumClusterCount',
+        type: 'number',
+        required: true,
+        description: 'Cluster capacity; labels at or above it are dropped.'
+      },
+      {
+        name: 'maximumVerticesPerHull',
+        type: 'number',
+        required: true,
+        description: 'Largest hull per cluster, at least 3.'
+      },
+      {
+        name: 'hullCapacity',
+        type: 'number',
+        required: true,
+        description: 'Capacity of the shared hull vertex list.'
+      },
+      {
+        name: 'outline',
+        type: '{kind: "convex"} | {kind: "alpha", maximumCircumradius}',
+        default: "{kind: 'convex'}",
+        description: 'Convex hull, or alpha shape that preserves holes.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'labels',
+        type: 'GraphDataView<"uint32">',
+        description: 'Cluster id per point, 0xffffffff for noise.'
+      },
+      {name: 'counts', type: 'GraphDataView<"uint32">', description: 'Points per cluster.'},
+      {
+        name: 'hullPositions',
+        type: 'GraphDataView<"float32x2">',
+        description: 'Hull vertices, with hullOffsets.'
+      },
+      {name: 'areas', type: 'GraphDataView<"float32">', description: 'Hull area per cluster.'},
+      {
+        name: 'centroids',
+        type: 'GraphDataView<"float32x2">',
+        description: 'Hull centroid per cluster.'
+      }
+    ],
+    example: `import {addClusterAndOutlineRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; points is a GPUPointGeometryPort in planar coordinates
+const clusters = addClusterAndOutlineRecipe(graph, {
+  points,
+  clusteringParameters, // getGPUSpatialClusteringParameterValues({...})
+  gridSize: [256, 256],
+  geometryParameters,   // getGPUGeographicDistributionParameterValues({...})
+  maximumClusterCount: 64,
+  maximumVerticesPerHull: 128,
+  hullCapacity: 64 * 128,
+  outline: {kind: 'convex'}
+});
+${COMPILE_AND_ENCODE}
+// clusters.labels, clusters.hullPositions, clusters.areas`,
+    preview: {kind: 'point-clusters', caption: 'Dense groups found, then outlined.', seed: 109},
+    related: ['dbscan-clustering', 'group-convex-hull', 'concave-hull', 'geometry-measures'],
+    lensScenario: 'gpu-spatial-analysis.cluster-and-outline-recipe',
+    reference: 'api/gpu-spatial-analysis',
+    maturity: 'stable'
+  },
+  {
+    id: 'points-in-polygons-choropleth-recipe',
+    symbol: 'addPointsInPolygonsChoroplethRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Points-in-polygons choropleth',
+    summary:
+      'Counts or averages points per polygon, classifies the result and colors each polygon.',
+    explanation:
+      'Use it for the classic choropleth: points to a statistic per polygon, class breaks, colors. The zonal back-end is the default; the group back-end keeps a row for empty polygons.',
+    dataTypes: {input: ['points', 'polygons'], output: ['polygons', 'table']},
+    useCases: ['summarize', 'classify'],
+    domains: ['cartography', 'data-engineering'],
+    params: [
+      {
+        name: 'points',
+        type: 'GPUPointGeometryPort',
+        required: true,
+        description: 'Points in spatialContext coordinates.'
+      },
+      {
+        name: 'polygons',
+        type: 'GPUChoroplethPolygons',
+        required: true,
+        description: 'Polygon features.'
+      },
+      {
+        name: 'values',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Per-point values for non-count statistics.'
+      },
+      {
+        name: 'statistic',
+        type: 'GPUChoroplethStatistic | undefined',
+        description: 'Statistic to map; count by default.'
+      },
+      {
+        name: 'backend',
+        type: '"zonal" | "group" | undefined',
+        description: 'Aggregation back-end.'
+      },
+      {
+        name: 'color',
+        type: 'GPUChoroplethColorOptions | undefined',
+        description: 'Class breaks and colors; skipped when absent.'
+      },
+      {
+        name: 'prepare',
+        type: 'boolean | undefined',
+        description: 'Prepare longitude/latitude polygons on the GPU first.'
+      },
+      spatialContextParameter
+    ],
+    outputs: [
+      {name: 'counts', type: 'GraphDataView<"uint32">', description: 'Points per polygon.'},
+      {
+        name: 'featureValues',
+        type: 'GraphDataView<"float32"> | GraphDataView<"uint32">',
+        description: 'Mapped statistic per polygon.'
+      },
+      {
+        name: 'color.classIndices',
+        type: 'GraphDataView<"uint32">',
+        description: 'Class index per polygon.'
+      },
+      {
+        name: 'color.colors',
+        type: 'GraphDataView<"uint32">',
+        description: 'Packed rgba8 per polygon.'
+      }
+    ],
+    example: `import {addPointsInPolygonsChoroplethRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; polygons use the GeoArrow four-level layout
+const choropleth = addPointsInPolygonsChoroplethRecipe(graph, {
+  points,
+  polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets,
+    candidateCapacity: 65536},
+  statistic: 'count',
+  color: {classBreaksParameters, maximumClassCount: 5, colorScaleParameters, palette,
+    maximumPaletteCount: 5}
+});
+${COMPILE_AND_ENCODE}
+// choropleth.color.colors: one packed rgba8 per polygon, ready to draw`,
+    preview: {
+      kind: 'classification',
+      caption: 'Points counted per polygon, colored by class.',
+      seed: 110
+    },
+    related: ['point-in-polygon-join', 'zonal-distribution-recipe', 'cell-aggregation'],
+    lensScenario: 'gpu-spatial-analysis.points-in-polygons-choropleth-recipe',
+    reference: RECIPES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'period-comparison-recipe',
+    symbol: 'addPeriodComparisonRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Period comparison',
+    summary:
+      'Compares two periods of events on grid cells and returns a classified, colored change map.',
+    explanation:
+      'Use it to show where activity rose or fell between two periods. Both periods are aggregated to the same cells, differenced, classified with your breaks and colored with a diverging ramp.',
+    dataTypes: {input: ['points', 'cells'], output: ['cells', 'table']},
+    useCases: ['detect-change', 'classify'],
+    domains: ['urban', 'spatial-statistics'],
+    params: [
+      {
+        name: 'family',
+        type: 'GPUCellFamily',
+        required: true,
+        description: 'Cell family shared by both periods.'
+      },
+      {
+        name: 'resolution',
+        type: 'number',
+        required: true,
+        description: 'Cell resolution shared by both periods.'
+      },
+      {
+        name: 'tableCapacity',
+        type: 'number',
+        required: true,
+        description: 'Rows of each period cell table.'
+      },
+      {name: 'before', type: 'GPUPeriodRows', required: true, description: 'Earlier period rows.'},
+      {name: 'after', type: 'GPUPeriodRows', required: true, description: 'Later period rows.'},
+      {
+        name: 'measure',
+        type: 'GPUCellTableCompareMeasure | undefined',
+        description: 'Compared column.'
+      },
+      {
+        name: 'classBreaksParameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Class break settings view.'
+      },
+      {
+        name: 'palette',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Packed rgba8 palette, usually diverging.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'comparison',
+        type: 'GPUCellTableCompareOutput',
+        description: 'Per-cell change in the union of cells.'
+      },
+      {
+        name: 'classIndices',
+        type: 'GraphDataView<"uint32">',
+        description: 'Change class per cell.'
+      },
+      {name: 'colors', type: 'GraphDataView<"uint32">', description: 'Packed rgba8 per cell.'},
+      {name: 'breaks', type: 'GraphDataView<"float32">', description: 'Class break values.'}
+    ],
+    example: `import {addPeriodComparisonRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; each period is point positions to be aggregated to cells
+const change = addPeriodComparisonRecipe(graph, {
+  family: 'h3', resolution: 8, tableCapacity: 8192,
+  before: {positions: positionsBefore},
+  after: {positions: positionsAfter},
+  classBreaksParameters, maximumClassCount: 5,
+  palette, colorScaleParameters, maximumPaletteCount: 5
+});
+${COMPILE_AND_ENCODE}
+// change.colors: diverging color per cell present in either period`,
+    preview: {kind: 'cells', caption: 'Cells that gained or lost between periods.', seed: 111},
+    related: ['cell-table-compare', 'cell-aggregation', 'hot-spot-analysis-recipe'],
+    lensScenario: 'gpu-spatial-analysis.period-comparison-recipe',
+    reference: RECIPES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'cell-flow-topology-recipe',
+    symbol: 'addCellFlowTopologyRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Cell flow topology',
+    summary:
+      'Splits origin-destination flows into cell totals and flows between neighboring H3 cells.',
+    explanation:
+      'Use it to see which flows travel across shared cell borders. Totals use every pair; only actual neighbors become edges, with their shared boundary geometry. The original pair table is kept as is.',
+    dataTypes: {input: ['cells', 'table'], output: ['network', 'cells']},
+    useCases: ['summarize', 'relate'],
+    domains: ['urban', 'transport'],
+    params: [
+      {
+        name: 'cells',
+        type: 'GraphDataView<"uint32x2">',
+        required: true,
+        description: 'Distinct H3 cells (little-endian) at one resolution.'
+      },
+      {
+        name: 'origins',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Origin row into cells, per pair.'
+      },
+      {
+        name: 'destinations',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Destination row into cells, per pair.'
+      },
+      {
+        name: 'values',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Nonnegative finite flow per pair.'
+      },
+      idParameter,
+      {
+        name: 'outputs',
+        type: 'Partial<GPUCellFlowTopologyOutput> | undefined',
+        description: 'Caller-owned views to keep.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.outgoingTotals',
+        type: 'GraphDataView<"float32">',
+        description: 'Total flow leaving each cell.'
+      },
+      {
+        name: 'outputs.incomingTotals',
+        type: 'GraphDataView<"float32">',
+        description: 'Total flow entering each cell.'
+      },
+      {
+        name: 'outputs.neighboringCells',
+        type: 'GraphDataView<"uint32x2">',
+        description: 'Canonical neighbor cell pairs.'
+      },
+      {
+        name: 'outputs.edgeFlows',
+        type: 'GraphDataView<"float32">',
+        description: 'Flow across each neighbor edge.'
+      },
+      {
+        name: 'outputs.boundaries',
+        type: 'GraphDataView<"float32x2">',
+        description: 'Shared boundary vertices.'
+      }
+    ],
+    example: `import {addCellFlowTopologyRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; cells are H3 indices as uint32x2 words
+const topology = addCellFlowTopologyRecipe(graph, {
+  cells,
+  origins, destinations, // pair rows into cells
+  values                 // flow per pair
+});
+${COMPILE_AND_ENCODE}
+// topology.outputs.edgeFlows only counts pairs of neighboring cells`,
+    preview: {kind: 'flows', caption: 'Flows between neighboring cells.', seed: 112},
+    related: ['cell-topology', 'cell-aggregation', 'period-comparison-recipe'],
+    lensScenario: 'gpu-spatial-analysis.cell-flow-topology-recipe',
+    reference: EXPANSION_REFERENCE,
+    maturity: 'stable'
+  },
+  // ------------------------------------------------------------ zones, support and rasters
+  {
+    id: 'change-of-support-recipe',
+    symbol: 'addChangeOfSupportRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Change of support',
+    summary: 'Transfers values between two polygon zone systems by area overlap.',
+    explanation:
+      'Use it to move counts or rates from, say, tracts to school districts. Both systems are rasterized on a common grid, overlap areas drive areal interpolation, and a conservation check is returned. An optional `cellWeights` raster makes it dasymetric.',
+    dataTypes: {input: ['polygons', 'raster'], output: ['polygons', 'table']},
+    useCases: ['relate', 'summarize'],
+    domains: ['demographics', 'urban'],
+    params: [
+      gridParameter,
+      {
+        name: 'source',
+        type: 'GPUChangeOfSupportZones',
+        required: true,
+        description: 'Source zone system.'
+      },
+      {
+        name: 'target',
+        type: 'GPUChangeOfSupportZones',
+        required: true,
+        description: 'Target zone system.'
+      },
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Rasterization parameters from getGPUPolygonRasterizationParameterValues.'
+      },
+      {
+        name: 'pairCapacity',
+        type: 'number',
+        required: true,
+        description: 'Capacity of the overlap pair list.'
+      },
+      {
+        name: 'sourceValues',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Source values, sourceZoneCount * columnCount, row-major.'
+      },
+      {
+        name: 'cellWeights',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Dasymetric raster; area becomes weighted area.'
+      },
+      {
+        name: 'categories',
+        type: 'GPUArealCategories | undefined',
+        description: 'Categorical shares of the sources per target.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'extensiveValues',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Totals (counts) per target zone.'
+      },
+      {
+        name: 'intensiveValues',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Densities and rates per target zone.'
+      },
+      {
+        name: 'areas',
+        type: 'GraphDataView<"float32">',
+        description: 'Overlap areas of the pair list.'
+      },
+      {
+        name: 'sourceTransferredFractions',
+        type: 'GraphDataView<"float32">',
+        description: 'Share of each source that landed.'
+      },
+      {name: 'status', type: 'object', description: 'Overflow, required count and invalid count.'}
+    ],
+    example: `import {addChangeOfSupportRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; zones are polygon layouts, grid is the shared raster grid
+const transfer = addChangeOfSupportRecipe(graph, {
+  grid,
+  parameters: rasterizationParameters, // getGPUPolygonRasterizationParameterValues(grid)
+  source: tracts,
+  target: districts,
+  pairCapacity: 1 << 18,
+  sourceValues: tractPopulation,
+  columnCount: 1
+});
+${COMPILE_AND_ENCODE}
+// transfer.extensiveValues: population per district; transfer.status.overflow`,
+    preview: {
+      kind: 'polygon-overlay',
+      caption: 'Values flow from one zoning to another.',
+      seed: 113
+    },
+    related: ['dasymetric-redistribution-recipe', 'zonal-distribution-recipe', 'polygon-overlay'],
+    lensScenario: 'gpu-spatial-analysis.change-of-support-recipe',
+    reference: RECIPES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'dasymetric-redistribution-recipe',
+    symbol: 'addDasymetricRedistributionRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Dasymetric redistribution',
+    summary:
+      'Redistributes source totals to target zones using an ancillary raster, with a mass ledger.',
+    explanation:
+      'Use it when a total must follow where people actually are, such as population following built-up land. Eligible cells receive weight from the ancillary band, each source total is spread over its cells, and the ledger shows what was left unallocated.',
+    dataTypes: {input: ['polygons', 'raster'], output: ['polygons', 'table']},
+    useCases: ['relate', 'summarize'],
+    domains: ['demographics', 'urban'],
+    params: [
+      gridParameter,
+      {
+        name: 'source',
+        type: '{kind: "polygons", zones, ...}',
+        required: true,
+        description: 'Source polygons with their rasterization.'
+      },
+      {
+        name: 'sourceTotals',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Nonnegative extensive total per source feature.'
+      },
+      {
+        name: 'targetZones',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Owner target zone per whole cell.'
+      },
+      {
+        name: 'targetZoneCount',
+        type: 'number',
+        required: true,
+        description: 'Number of target zones.'
+      },
+      {
+        name: 'ancillary',
+        type: 'GPURasterBufferBand',
+        required: true,
+        description: 'Calibrated nonnegative density or weight.'
+      },
+      {
+        name: 'mask',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Optional eligibility mask.'
+      },
+      {
+        name: 'pairCapacity',
+        type: 'number',
+        required: true,
+        description: 'Capacity of the overlap pair list.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.targetTotals',
+        type: 'GraphDataView<"float32">',
+        description: 'Redistributed total per target zone.'
+      },
+      {
+        name: 'outputs.sourceAllocatedTotals',
+        type: 'GraphDataView<"float32">',
+        description: 'Mass placed from each source.'
+      },
+      {
+        name: 'outputs.sourceUnallocatedTotals',
+        type: 'GraphDataView<"float32">',
+        description: 'Mass that found no eligible cell.'
+      },
+      {
+        name: 'outputs.sourceValidity',
+        type: 'GraphDataView<"uint32">',
+        description: 'Validity flag per source feature.'
+      }
+    ],
+    example: `import {addDasymetricRedistributionRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; ancillary is a calibrated raster band, e.g. built-up density
+const redistribution = addDasymetricRedistributionRecipe(graph, {
+  grid,
+  source: {kind: 'polygons', zones: tractPolygons, ...tractRasterization},
+  sourceTotals: tractPopulation,
+  targetZones: districtPerCell,
+  targetZoneCount: districtCount,
+  ancillary: builtUpDensity,
+  pairCapacity: 1 << 18
+});
+${COMPILE_AND_ENCODE}
+// redistribution.outputs.targetTotals, and the unallocated ledger beside it`,
+    preview: {kind: 'density-surface', caption: 'Totals follow the ancillary surface.', seed: 114},
+    related: ['change-of-support-recipe', 'zonal-distribution-recipe', 'exposure-by-zone-recipe'],
+    lensScenario: 'gpu-spatial-analysis.dasymetric-redistribution-recipe',
+    reference: 'api/gpu-spatial-analysis/dasymetric-redistribution',
+    maturity: 'stable'
+  },
+  {
+    id: 'zonal-distribution-recipe',
+    symbol: 'addZonalDistributionRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Zonal distribution',
+    summary:
+      'Gives each zone its median, mode, unique count and quantiles, from zone IDs or points in polygons.',
+    explanation:
+      'Use it to describe the whole distribution of values inside each zone, not just the mean. Points are assigned to one owning feature; empty zones stay in the output with zero counts and NaN order statistics.',
+    dataTypes: {input: ['points', 'polygons', 'table'], output: ['table']},
+    useCases: ['summarize'],
+    domains: ['data-engineering', 'remote-sensing'],
+    params: [
+      {
+        name: 'source',
+        type: 'GPUZonalDistributionSource',
+        required: true,
+        description: 'Dense zone IDs, or points joined to polygons.'
+      },
+      {
+        name: 'values',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Calibrated values aligned with zone rows or points.'
+      },
+      {
+        name: 'probabilities',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Per-frame quantile probabilities in [0, 1].'
+      },
+      outputsOverrideParameter
+    ],
+    outputs: [
+      {
+        name: 'outputs.zoneIds',
+        type: 'GraphDataView<"uint32">',
+        description: 'Zone ID per output row.'
+      },
+      {name: 'outputs.medians', type: 'GraphDataView<"float32">', description: 'Median per zone.'},
+      {
+        name: 'outputs.modes',
+        type: 'GraphDataView<"float32">',
+        description: 'Mode per zone; ties go to the lowest.'
+      },
+      {
+        name: 'outputs.uniqueCounts',
+        type: 'GraphDataView<"uint32">',
+        description: 'Distinct values per zone.'
+      },
+      {
+        name: 'outputs.quantiles',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'One column per probability.'
+      }
+    ],
+    example: `import {addZonalDistributionRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; zoneIds and values are aligned graph views
+const distribution = addZonalDistributionRecipe(graph, {
+  source: {kind: 'zones', zones: zoneIds, zoneCount: 40},
+  values,
+  probabilities, // e.g. [0.1, 0.5, 0.9]
+  outputs: {medians, quantiles}
+});
+${COMPILE_AND_ENCODE}
+// distribution.status.stages keeps grouping overflow and join status`,
+    preview: {kind: 'histogram', caption: 'A distribution per zone, not a mean.', seed: 115},
+    related: [
+      'raster-zonal-distribution-recipe',
+      'points-in-polygons-choropleth-recipe',
+      'point-in-polygon-join'
+    ],
+    lensScenario: 'gpu-spatial-analysis.zonal-distribution-recipe',
+    reference: EXPANSION_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'raster-zonal-distribution-recipe',
+    symbol: 'addRasterZonalDistributionRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Raster zonal distribution',
+    summary:
+      'Gives each zone the median, mode and quantiles of a raster band, after nodata and calibration.',
+    explanation:
+      'Use it for elevation, canopy or temperature statistics per district. Native nodata and validity are resolved first, then scale and offset. Whole-cell and unweighted: fractional coverage does not weight the quantiles.',
+    dataTypes: {input: ['raster', 'polygons'], output: ['table']},
+    useCases: ['summarize'],
+    domains: ['remote-sensing', 'ecology'],
+    params: [
+      gridParameter,
+      {
+        name: 'input',
+        type: 'GPURasterBufferBand',
+        required: true,
+        description: 'Raster band with native validity.'
+      },
+      {
+        name: 'zones',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Whole-cell zone ID per cell.'
+      },
+      {name: 'zoneCount', type: 'number', required: true, description: 'Number of zones.'},
+      {
+        name: 'probabilities',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Per-frame quantile probabilities in [0, 1].'
+      },
+      outputsOverrideParameter
+    ],
+    outputs: [
+      {name: 'outputs.medians', type: 'GraphDataView<"float32">', description: 'Median per zone.'},
+      {name: 'outputs.modes', type: 'GraphDataView<"float32">', description: 'Mode per zone.'},
+      {
+        name: 'outputs.validCounts',
+        type: 'GraphDataView<"uint32">',
+        description: 'Finite cells per zone.'
+      },
+      {
+        name: 'outputs.quantiles',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'One column per probability.'
+      }
+    ],
+    example: `import {addRasterZonalDistributionRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; elevationBand is a buffer-backed raster band
+const distributions = addRasterZonalDistributionRecipe(graph, {
+  grid,
+  input: elevationBand,
+  zones: zoneIds,
+  zoneCount: administrativeAreaCount,
+  probabilities: quantileProbabilities, // [0.1, 0.5, 0.9]
+  outputs: {medians, quantiles}
+});
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'histogram', caption: 'Elevation spread inside each zone.', seed: 116},
+    related: [
+      'zonal-distribution-recipe',
+      'exposure-by-zone-recipe',
+      'regional-raster-change-recipe'
+    ],
+    lensScenario: 'gpu-spatial-analysis.raster-zonal-distribution-recipe',
+    reference: 'api/gpu-spatial-analysis/expansion-recipes',
+    maturity: 'stable'
+  },
+  {
+    id: 'exposure-by-zone-recipe',
+    symbol: 'addExposureByZoneRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Exposure by zone',
+    summary:
+      'Sums the population at or above a hazard threshold per zone, with observed coverage kept apart.',
+    explanation:
+      'Use it for flood, heat or smoke exposure by district. Missing hazard cells stay in the denominator and are reported as coverage, never as safe. The threshold is a live one-row view, so you can scrub it.',
+    dataTypes: {input: ['raster'], output: ['table']},
+    useCases: ['summarize', 'measure'],
+    domains: ['demographics', 'remote-sensing'],
+    params: [
+      gridParameter,
+      {
+        name: 'hazard',
+        type: 'GPURasterBufferBand',
+        required: true,
+        description: 'Hazard band; missing cells are unknown.'
+      },
+      {
+        name: 'population',
+        type: 'GPURasterBufferBand',
+        required: true,
+        description: 'Population count or density band.'
+      },
+      {
+        name: 'weightMeaning',
+        type: '"count" | "density"',
+        required: true,
+        description: 'Whether population is per cell or per area.'
+      },
+      {
+        name: 'cellAreas',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Required for density populations.'
+      },
+      {
+        name: 'zones',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Whole-cell zone ID per cell.'
+      },
+      {name: 'zoneCount', type: 'number', required: true, description: 'Number of zones.'},
+      {
+        name: 'threshold',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'One-row hazard cutoff; values >= it are exposed.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.totalPopulation',
+        type: 'GraphDataView<"float32">',
+        description: 'Known population per zone.'
+      },
+      {
+        name: 'outputs.exposedPopulation',
+        type: 'GraphDataView<"float32">',
+        description: 'Population at or above the cutoff.'
+      },
+      {
+        name: 'outputs.coverage',
+        type: 'GraphDataView<"float32">',
+        description: 'Share of population with an observed hazard.'
+      },
+      {
+        name: 'outputs.exposedShare',
+        type: 'GraphDataView<"float32">',
+        description: 'Exposed share among observed population.'
+      }
+    ],
+    example: `import {addExposureByZoneRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; hazard and population are aligned buffer bands
+const exposure = addExposureByZoneRecipe(graph, {
+  grid,
+  hazard: floodDepthBand,
+  population: populationBand,
+  weightMeaning: 'count',
+  zones: districtPerCell,
+  zoneCount: districtCount,
+  threshold: thresholdView // one float32 row, rewritten per frame
+});
+${COMPILE_AND_ENCODE}
+// exposure.outputs.exposedShare beside exposure.outputs.coverage`,
+    preview: {kind: 'raster', caption: 'Hazard cells above the cutoff, by zone.', seed: 117},
+    related: [
+      'raster-zonal-distribution-recipe',
+      'regional-raster-change-recipe',
+      'dasymetric-redistribution-recipe'
+    ],
+    lensScenario: 'gpu-spatial-analysis.exposure-by-zone-recipe',
+    reference: EXPANSION_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'regional-raster-change-recipe',
+    symbol: 'addRegionalRasterChangeRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Regional raster change',
+    summary: 'Differences two raster periods over common support and summarizes change per zone.',
+    explanation:
+      'Use it for greening, burn or land-cover change by district. The difference is after minus before on cells valid in both; changed area uses a live threshold, and coverage is reported separately.',
+    dataTypes: {input: ['raster'], output: ['raster', 'table']},
+    useCases: ['detect-change', 'summarize'],
+    domains: ['remote-sensing', 'ecology'],
+    params: [
+      gridParameter,
+      {
+        name: 'change',
+        type: 'Omit<GPUChangeDetectionProps, ...>',
+        required: true,
+        description: 'Aligned, calibrated slices; missing samples are NaN.'
+      },
+      {
+        name: 'zones',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Whole-cell zone ID per cell.'
+      },
+      {name: 'zoneCount', type: 'number', required: true, description: 'Number of zones.'},
+      {
+        name: 'cellAreas',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Positive finite area per cell.'
+      },
+      {
+        name: 'threshold',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'One-row absolute change threshold.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.difference',
+        type: 'GraphDataView<"float32">',
+        description: 'After minus before, per cell.'
+      },
+      {
+        name: 'outputs.meanChanges',
+        type: 'GraphDataView<"float32">',
+        description: 'Unweighted mean difference per zone.'
+      },
+      {
+        name: 'outputs.validCounts',
+        type: 'GraphDataView<"uint32">',
+        description: 'Finite comparisons per zone.'
+      },
+      {
+        name: 'outputs.coverage',
+        type: 'GraphDataView<"float32">',
+        description: 'Share of zone area compared.'
+      }
+    ],
+    example: `import {addRegionalRasterChangeRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; before/after slices are aligned, calibrated, NaN for missing
+const change = addRegionalRasterChangeRecipe(graph, {
+  grid,
+  change: {slices: ndviStack, mask: cellMask, parameters: changeParameters},
+  zones: districtPerCell,
+  zoneCount: districtCount,
+  cellAreas,
+  threshold: thresholdView // absolute change, one float32 row
+});
+${COMPILE_AND_ENCODE}
+// change.outputs.meanChanges per zone, change.outputs.coverage beside it`,
+    preview: {kind: 'raster', caption: 'Per-cell difference, summed by region.', seed: 118},
+    related: [
+      'exposure-by-zone-recipe',
+      'raster-zonal-distribution-recipe',
+      'surface-preparation-recipe'
+    ],
+    lensScenario: 'gpu-spatial-analysis.regional-raster-change-recipe',
+    reference: EXPANSION_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'surface-preparation-recipe',
+    symbol: 'addSurfacePreparationRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Surface preparation',
+    summary:
+      'Fills nodata gaps in a continuous surface and optionally rank-filters it, keeping provenance.',
+    explanation:
+      'Use it to repair a DEM or temperature grid before slope, flow or interpolation. Fill takes the nearest donor or inverse-distance weighting within `maximumDistance` pixels, and original values are never overwritten. Masks say what was filled and filtered.',
+    dataTypes: {input: ['raster', 'terrain'], output: ['raster', 'terrain']},
+    useCases: ['transform'],
+    domains: ['remote-sensing', 'hydrology'],
+    params: [
+      gridParameter,
+      {
+        name: 'input',
+        type: 'GPURasterBufferBand',
+        required: true,
+        description: 'Continuous band with nodata gaps.'
+      },
+      {
+        name: 'maximumDistance',
+        type: 'number',
+        required: true,
+        description: 'Fill search distance in pixels, a positive integer.'
+      },
+      {
+        name: 'method',
+        type: '"nearest" | "inverse-distance" | "gdal-four-quadrant" | undefined',
+        description: 'Donor selection for the fill.'
+      },
+      {
+        name: 'filter',
+        type: 'Pick<GPURasterRankFilterProps, "quantile" | "radius" | ...>',
+        description: 'Optional rank filter after the fill.'
+      },
+      outputsOverrideParameter
+    ],
+    outputs: [
+      {name: 'outputs.values', type: 'GraphDataView<"float32">', description: 'Repaired surface.'},
+      {
+        name: 'outputs.originalValidity',
+        type: 'GraphDataView<"uint32">',
+        description: 'Which cells were valid at the start.'
+      },
+      {
+        name: 'outputs.filled',
+        type: 'GraphDataView<"uint32">',
+        description: 'Cells whose value was interpolated.'
+      },
+      {
+        name: 'outputs.unresolvedCount',
+        type: 'GraphDataView<"uint32">',
+        description: 'Gaps left after fill and filter.'
+      }
+    ],
+    example: `import {addSurfacePreparationRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; demBand is a buffer-backed float band with nodata
+const prepared = addSurfacePreparationRecipe(graph, {
+  grid,
+  input: demBand,
+  maximumDistance: 8,
+  method: 'inverse-distance',
+  filter: {quantile: 0.5, radius: 1} // 3 x 3 median
+});
+${COMPILE_AND_ENCODE}
+// prepared.outputs.values, prepared.outputs.filled`,
+    preview: {kind: 'terrain', caption: 'Gaps filled, original cells untouched.', seed: 119},
+    related: [
+      'drainage-network-recipe',
+      'interpolation-diagnostics-recipe',
+      'regional-raster-change-recipe'
+    ],
+    lensScenario: 'gpu-spatial-analysis.surface-preparation-recipe',
+    reference: EXPANSION_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'interpolation-diagnostics-recipe',
+    symbol: 'addInterpolationDiagnosticsRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Interpolation diagnostics',
+    summary:
+      'Ordinary kriging plus leave-one-out error: bias, MAE, RMSE and standardized residuals.',
+    explanation:
+      'Use it to see not just a kriged surface but how far to trust it. Each sample is predicted from the others, residuals are summarized, and masked samples are excluded. You supply the variogram; nothing is fitted behind your back.',
+    dataTypes: {input: ['points'], output: ['raster', 'table']},
+    useCases: ['interpolate', 'model'],
+    domains: ['spatial-statistics', 'remote-sensing'],
+    params: [
+      {
+        name: 'kriging',
+        type: 'Omit<GPUKrigingProps, "id" | "output">',
+        required: true,
+        description: 'Samples, values, variogram, neighborhood and target grid.'
+      },
+      idParameter,
+      outputsOverrideParameter
+    ],
+    outputs: [
+      {name: 'outputs.values', type: 'GraphDataView<"float32">', description: 'Predicted surface.'},
+      {
+        name: 'outputs.variance',
+        type: 'GraphDataView<"float32">',
+        description: 'Kriging variance of the surface.'
+      },
+      {
+        name: 'outputs.residuals',
+        type: 'GraphDataView<"float32">',
+        description: 'Leave-one-out residual per sample.'
+      },
+      {
+        name: 'outputs.standardizedResiduals',
+        type: 'GraphDataView<"float32">',
+        description: 'Residual over kriging deviation.'
+      },
+      {
+        name: 'outputs.rootMeanSquaredError',
+        type: 'GraphDataView<"float32">',
+        description: 'RMSE of the held-out predictions.'
+      }
+    ],
+    example: `import {addInterpolationDiagnosticsRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; kriging takes the same inputs as GPUKriging; the variogram is packed in parameters
+const interpolation = addInterpolationDiagnosticsRecipe(graph, {
+  kriging: {positions: samplePositions, values: sampleValues, parameters: variogramParameters, grid, indexGridSize, indexBounds}
+});
+${COMPILE_AND_ENCODE}
+// interpolation.outputs.values (surface), .bias and .rootMeanSquaredError (trust)`,
+    preview: {kind: 'interpolation', caption: 'A kriged surface and its error budget.', seed: 120},
+    related: [
+      'surface-preparation-recipe',
+      'spatial-cross-validation',
+      'nested-interpolation-validation'
+    ],
+    lensScenario: 'gpu-spatial-analysis.interpolation-diagnostics-recipe',
+    reference: EXPANSION_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'drainage-network-recipe',
+    symbol: 'addDrainageNetworkRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Drainage network',
+    summary:
+      'D8 flow, streams, stream order, watersheds and a stream-reach network from one terrain.',
+    explanation:
+      'Use it to go from a DEM to catchments and a drawable river network in one graph. Depression filling and flat resolution stay explicit flow options, and a live parameter sets the stream threshold. Add pour points to key catchments by outlet.',
+    dataTypes: {input: ['terrain'], output: ['lines', 'raster', 'network']},
+    useCases: ['simulate'],
+    domains: ['hydrology'],
+    params: [
+      {
+        name: 'flow',
+        type: 'Omit<GPUTerrainFlowProps, "id" | "output" | "flowRouting">',
+        required: true,
+        description: 'Terrain flow inputs: grid, elevations, stream threshold.'
+      },
+      {
+        name: 'pourPoints',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Outlet cell IDs; catchments are keyed by pour point.'
+      },
+      {
+        name: 'maximumSteps',
+        type: 'number | undefined',
+        description: 'Bound on downstream tracing.'
+      },
+      {
+        name: 'reachCapacity',
+        type: 'number | undefined',
+        default: 'cellCount',
+        description: 'Capacity of the stream reach list.'
+      },
+      {
+        name: 'vertexCapacity',
+        type: 'number | undefined',
+        default: '2 * cellCount',
+        description: 'Capacity of the reach vertex list.'
+      },
+      idParameter
+    ],
+    outputs: [
+      {
+        name: 'outputs.flowDirections',
+        type: 'GraphDataView<"uint32">',
+        description: 'D8 direction per cell.'
+      },
+      {
+        name: 'outputs.accumulation',
+        type: 'GraphDataView<"float32">',
+        description: 'Upstream cell count per cell.'
+      },
+      {
+        name: 'outputs.streamOrder',
+        type: 'GraphDataView<"uint32">',
+        description: 'Strahler order of stream cells.'
+      },
+      {
+        name: 'outputs.catchments',
+        type: 'GraphDataView<"uint32">',
+        description: 'Watershed label per cell.'
+      },
+      {
+        name: 'outputs.network',
+        type: 'object',
+        description: 'Reaches: source/target cells, vertices, lengths.'
+      }
+    ],
+    example: `import {addDrainageNetworkRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; flow takes the GPUTerrainFlow inputs
+const drainage = addDrainageNetworkRecipe(graph, {
+  flow: {grid, elevation: filledDem, fill: {iterations: 64}, parameters: flowParameters},
+  pourPoints: outletCells
+});
+${COMPILE_AND_ENCODE}
+// drainage.outputs.network: reach polylines you can draw directly
+// drainage.outputs.catchments: watershed id per cell`,
+    preview: {kind: 'flow-accumulation', caption: 'Water finds a river network.', seed: 121},
+    related: ['surface-preparation-recipe', 'straight-line-catchments-recipe'],
+    lensScenario: 'gpu-spatial-analysis.drainage-network-recipe',
+    reference: EXPANSION_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'straight-line-catchments-recipe',
+    symbol: 'addStraightLineCatchmentsRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Straight-line catchments',
+    summary:
+      'Gives every raster cell its nearest facility, then summarizes a value raster per catchment.',
+    explanation:
+      'Use it for fast service areas when routing is overkill: Voronoi-like zones on a raster, plus population or demand per zone. Distance is Euclidean and planar, so project first.',
+    dataTypes: {input: ['points', 'raster'], output: ['raster', 'table']},
+    useCases: ['route', 'summarize'],
+    domains: ['urban', 'transport'],
+    params: [
+      gridParameter,
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Origin and cell size (getGPUDistanceFieldParameterValues).'
+      },
+      {
+        name: 'facilities',
+        type: 'GPUPointGeometryPort',
+        required: true,
+        description: 'Facility points; sourceIds are the zone IDs.'
+      },
+      {
+        name: 'facilityCount',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Optional one-row active facility count.'
+      },
+      {
+        name: 'values',
+        type: 'GraphDataView<"float32"> | GPURasterBand',
+        required: true,
+        description: 'Value raster summarized per catchment.'
+      },
+      {
+        name: 'mode',
+        type: 'GPUDistanceFieldMode | undefined',
+        description: 'Distance-field algorithm.'
+      },
+      {
+        name: 'sumOrder',
+        type: 'GPURasterZonalStatisticsSumOrder | undefined',
+        description: 'Zonal sum accumulation order.'
+      },
+      spatialContextParameter
+    ],
+    outputs: [
+      {
+        name: 'allocation',
+        type: 'GraphDataView<"uint32">',
+        description: 'Nearest facility zone per cell.'
+      },
+      {
+        name: 'distances',
+        type: 'GraphDataView<"float32">',
+        description: 'Distance to that facility, in meters.'
+      },
+      {
+        name: 'statistics',
+        type: 'GPURasterZonalStatisticsOutput',
+        description: 'Sum, mean and count per catchment.'
+      }
+    ],
+    example: `import {addStraightLineCatchmentsRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; facilities is a GPUPointGeometryPort with sourceIds as zone IDs
+const catchments = addStraightLineCatchmentsRecipe(graph, {
+  grid,
+  parameters: distanceFieldParameters, // getGPUDistanceFieldParameterValues({...})
+  facilities,
+  values: populationRaster
+});
+${COMPILE_AND_ENCODE}
+// catchments.allocation: nearest facility per cell
+// catchments.statistics: population per catchment`,
+    preview: {kind: 'isochrones', caption: 'Each cell joins its nearest facility.', seed: 122},
+    related: ['drainage-network-recipe', 'zonal-distribution-recipe', 'voronoi-diagram'],
+    lensScenario: 'gpu-spatial-analysis.straight-line-catchments-recipe',
+    reference: RECIPES_REFERENCE,
+    maturity: 'stable'
+  },
+  // ------------------------------------------------------------ landscape ecology and equity
+  {
+    id: 'landscape-metrics-recipe',
+    symbol: 'addLandscapeMetricsRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Landscape metrics',
+    summary:
+      'Patch, class and landscape metrics from a labeled land-cover raster: area, perimeter, contagion.',
+    explanation:
+      'Use it to quantify habitat fragmentation as landscapemetrics does. Give it patch IDs and a class per patch; it returns area, perimeter, effective mesh size, cohesion, aggregation and contagion. Perimeter and background rules are explicit options.',
+    dataTypes: {input: ['raster'], output: ['table']},
+    useCases: ['measure', 'summarize'],
+    domains: ['ecology'],
+    params: [
+      patchesParameter,
+      patchClassesParameter,
+      {name: 'width', type: 'number', required: true, description: 'Raster width in cells.'},
+      {name: 'height', type: 'number', required: true, description: 'Raster height in cells.'},
+      {
+        name: 'classCount',
+        type: 'number',
+        required: true,
+        description: 'Number of land-cover classes.'
+      },
+      cellSizeParameter,
+      {
+        name: 'connectivity',
+        type: '4 | 8',
+        required: true,
+        description: 'Connectivity used to label patches; kept as provenance.'
+      },
+      {
+        name: 'contagionWeighting',
+        type: '"area" | "adjacency" | undefined',
+        default: "'area'",
+        description: 'Area-weighted, or landscapemetrics 2.2.1 joint adjacency.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.patchMetrics',
+        type: 'GraphDataView<"float32">',
+        description: '[area, perimeter, cellCount, sameClassSides] per patch.'
+      },
+      {
+        name: 'outputs.classMetrics',
+        type: 'GraphDataView<"float32">',
+        description: '[area, perimeter sum, mesh size, cohesion] per class.'
+      },
+      {
+        name: 'outputs.classAdjacency',
+        type: 'GraphDataView<"uint32">',
+        description: 'Class by class side counts.'
+      },
+      {
+        name: 'outputs.landscape',
+        type: 'GraphDataView<"float32">',
+        description: '[contagion %, mesh size, valid area, class count].'
+      }
+    ],
+    example: `import {addLandscapeMetricsRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; patches are connected-component labels over the whole raster
+const metrics = addLandscapeMetricsRecipe(graph, {
+  patches, patchClasses,
+  width: 512, height: 512,
+  classCount: 6,
+  cellSize: [30, 30],
+  connectivity: 8,
+  countBoundary: false
+});
+${COMPILE_AND_ENCODE}
+// metrics.outputs.landscape: contagion, mesh size, valid area, class count`,
+    preview: {kind: 'raster', caption: 'Patches of land cover, measured.', seed: 123},
+    related: ['patch-proximity-recipe', 'resistance-connectivity-recipe', 'shape-descriptors'],
+    lensScenario: 'gpu-spatial-analysis.landscape-metrics-recipe',
+    reference: ECOLOGY_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'patch-proximity-recipe',
+    symbol: 'addPatchProximityRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Patch proximity',
+    summary:
+      'Core area, nearest same-class patch distance and a proximity index per habitat patch.',
+    explanation:
+      'Use it to judge how isolated patches are and how much is interior habitat. Distances are exact between cell rectangles, and edge depth is physical. Background counts as a core barrier.',
+    dataTypes: {input: ['raster'], output: ['table', 'raster']},
+    useCases: ['measure'],
+    domains: ['ecology'],
+    params: [
+      patchesParameter,
+      patchClassesParameter,
+      {name: 'width', type: 'number', required: true, description: 'Raster width in cells.'},
+      {name: 'height', type: 'number', required: true, description: 'Raster height in cells.'},
+      cellSizeParameter,
+      {
+        name: 'edgeDepth',
+        type: 'number',
+        required: true,
+        description: 'Core cells lie deeper than this from the patch edge.'
+      },
+      {
+        name: 'searchRadius',
+        type: 'number',
+        required: true,
+        description: 'Radius for proximity neighbors, in cell units.'
+      },
+      {
+        name: 'distanceModel',
+        type: '"cell-boundary" | "cell-center" | undefined',
+        default: "'cell-boundary'",
+        description: 'Rectangle separation, or landscapemetrics center ENN.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.core',
+        type: 'GraphDataView<"uint32">',
+        description: 'Core-cell mask per cell.'
+      },
+      {
+        name: 'outputs.distances',
+        type: 'GraphDataView<"float32">',
+        description: 'Pairwise patch boundary distances.'
+      },
+      {
+        name: 'outputs.metrics',
+        type: 'GraphDataView<"float32">',
+        description: '[area, core area, nearest distance, proximity].'
+      }
+    ],
+    example: `import {addPatchProximityRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; patch labels cover the complete raster
+const proximity = addPatchProximityRecipe(graph, {
+  patches, patchClasses,
+  width: 512, height: 512,
+  cellSize: [30, 30],
+  edgeDepth: 60,
+  searchRadius: 500
+});
+${COMPILE_AND_ENCODE}
+// proximity.outputs.metrics: one [area, coreArea, nearest, proximity] row per patch`,
+    preview: {kind: 'raster', caption: 'Core habitat and nearest neighbors.', seed: 124},
+    related: ['landscape-metrics-recipe', 'resistance-connectivity-recipe'],
+    lensScenario: 'gpu-spatial-analysis.patch-proximity-recipe',
+    reference: ECOLOGY_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'resistance-connectivity-recipe',
+    symbol: 'addResistanceConnectivityRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Resistance connectivity',
+    summary:
+      'Circuit-theory effective resistance and current flow between two nodes of a small network.',
+    explanation:
+      'Use it to measure how connected two habitat patches are through many paths, not just the best one. It solves a grounded Laplacian with conjugate gradients, then recomputes the true residual before reporting. Limited to 256 vertices.',
+    dataTypes: {input: ['network'], output: ['network', 'table']},
+    useCases: ['route', 'model'],
+    domains: ['ecology'],
+    params: [
+      {
+        name: 'edges',
+        type: 'GraphDataView<"uint32x2">',
+        required: true,
+        description: 'Undirected edges, each listed once.'
+      },
+      {
+        name: 'conductances',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Conductance per edge, 1 / resistance.'
+      },
+      {
+        name: 'vertexCount',
+        type: 'number',
+        required: true,
+        description: 'Number of vertices, at most 256.'
+      },
+      {
+        name: 'source',
+        type: 'number',
+        required: true,
+        description: 'Vertex that injects unit current.'
+      },
+      {
+        name: 'sink',
+        type: 'number',
+        required: true,
+        description: 'Grounded vertex that extracts it.'
+      },
+      {
+        name: 'maximumIterations',
+        type: 'number | undefined',
+        description: 'Conjugate gradient iteration budget.'
+      },
+      {
+        name: 'tolerance',
+        type: 'number | undefined',
+        description: 'Maximum current-conservation residual.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.potentials',
+        type: 'GraphDataView<"float32">',
+        description: 'Voltage per vertex.'
+      },
+      {
+        name: 'outputs.currents',
+        type: 'GraphDataView<"float32">',
+        description: 'Signed current per edge; NaN unless converged.'
+      },
+      {
+        name: 'outputs.diagnostics',
+        type: 'GraphDataView<"float32">',
+        description: '[effective resistance, residual, energy, norm].'
+      }
+    ],
+    example: `import {addResistanceConnectivityRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; conductance = 1 / resistance, each undirected edge once
+const connectivity = addResistanceConnectivityRecipe(graph, {
+  edges, conductances,
+  vertexCount: 64,
+  source: 0,
+  sink: 63,
+  maximumIterations: 200,
+  tolerance: 1e-4
+});
+${COMPILE_AND_ENCODE}
+// connectivity.outputs.diagnostics[0]: effective resistance, valid only if converged`,
+    preview: {kind: 'network', caption: 'Current spreads over every path.', seed: 125},
+    related: ['landscape-metrics-recipe', 'patch-proximity-recipe'],
+    lensScenario: 'gpu-spatial-analysis.resistance-connectivity-recipe',
+    reference: ECOLOGY_REFERENCE,
+    maturity: 'partial'
+  },
+  {
+    id: 'segregation-decomposition-recipe',
+    symbol: 'addSegregationDecompositionRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Segregation decomposition',
+    summary:
+      'Splits the change in the dissimilarity index into composition and spatial parts (Shapley).',
+    explanation:
+      'Use it to ask whether segregation changed because the population mix changed or because people moved. Supply four common-support tables: baseline, composition-only, spatial-only and final. Each row holds a focal and a complement count.',
+    dataTypes: {input: ['table'], output: ['table']},
+    useCases: ['model', 'detect-change'],
+    domains: ['demographics', 'urban'],
+    params: [
+      {
+        name: 'populations',
+        type: 'readonly [GraphDataView<"float32x2">, ...]',
+        required: true,
+        description: 'Four tables: baseline, composition-only, spatial-only, final.'
+      },
+      {
+        name: 'supportId',
+        type: 'string',
+        required: true,
+        description: 'Names the shared boundary support.'
+      },
+      {
+        name: 'counterfactualMethod',
+        type: 'string',
+        required: true,
+        description: 'Records how the counterfactuals were made.'
+      },
+      {
+        name: 'randomization',
+        type: '{replicates, seed, swaps?} | undefined',
+        description: 'Paired label-exchange inference.'
+      },
+      idParameter
+    ],
+    outputs: [
+      {
+        name: 'outputs.indices',
+        type: 'GraphDataView<"float32">',
+        description: 'Dissimilarity of each of the four tables.'
+      },
+      {
+        name: 'outputs.decomposition',
+        type: 'GraphDataView<"float32">',
+        description: 'Composition and spatial shares of the change.'
+      },
+      {
+        name: 'outputs.validity',
+        type: 'GraphDataView<"uint32">',
+        description: 'Validity flags per input.'
+      }
+    ],
+    example: `import {addSegregationDecompositionRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; each table is float32x2 [focal, complement] per unit
+const decomposition = addSegregationDecompositionRecipe(graph, {
+  populations: [baseline, compositionOnly, spatialOnly, final],
+  supportId: 'tracts-2010',
+  counterfactualMethod: 'composition'
+});
+${COMPILE_AND_ENCODE}
+// decomposition.outputs.decomposition: how much of the change is mix versus place`,
+    preview: {kind: 'histogram', caption: 'A change in segregation, split in two.', seed: 126},
+    related: [
+      'segregation-counterfactual-recipe',
+      'segregation-indices',
+      'population-support-alignment-recipe'
+    ],
+    lensScenario: 'gpu-spatial-analysis.segregation-decomposition-recipe',
+    reference: ECOLOGY_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'segregation-counterfactual-recipe',
+    symbol: 'addSegregationCounterfactualRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Segregation counterfactual',
+    summary:
+      'Builds the composition-only and spatial-only counterfactual populations between two periods.',
+    explanation:
+      'Use it to prepare the inputs of a decomposition without leaving the GPU. It replaces one factor at a time with PySAL empirical-CDF conventions, average-percentile ties included. At most 2048 units.',
+    dataTypes: {input: ['table'], output: ['table']},
+    useCases: ['model', 'detect-change'],
+    domains: ['demographics', 'urban'],
+    params: [
+      {
+        name: 'baseline',
+        type: 'GraphDataView<"float32x2">',
+        required: true,
+        description: 'Earlier [focal, complement] per unit.'
+      },
+      {
+        name: 'final',
+        type: 'GraphDataView<"float32x2">',
+        required: true,
+        description: 'Later [focal, complement] per unit.'
+      },
+      {
+        name: 'supportId',
+        type: 'string',
+        required: true,
+        description: 'Names the shared boundary support.'
+      },
+      {
+        name: 'method',
+        type: '"composition" | "dual-composition" | "share"',
+        required: true,
+        description: 'Counterfactual convention, as in PySAL.'
+      },
+      idParameter
+    ],
+    outputs: [
+      {
+        name: 'outputs.populations',
+        type: 'GraphDataView<"float32x2">',
+        description: 'Counterfactual tables for both orders.'
+      },
+      {
+        name: 'counterfactuals',
+        type: '{compositionOnly, spatialOnly}',
+        description: 'The two tables a decomposition needs.'
+      },
+      {name: 'outputs.validity', type: 'GraphDataView<"uint32">', description: 'Validity flags.'}
+    ],
+    example: `import {addSegregationCounterfactualRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; baseline and final are float32x2 [focal, complement] per unit
+const counterfactual = addSegregationCounterfactualRecipe(graph, {
+  baseline, final,
+  supportId: 'tracts-2010',
+  method: 'composition'
+});
+// feed counterfactual.counterfactuals into addSegregationDecompositionRecipe
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'histogram', caption: 'Two what-if populations from two periods.', seed: 127},
+    related: [
+      'segregation-decomposition-recipe',
+      'segregation-indices',
+      'population-support-alignment-recipe'
+    ],
+    lensScenario: 'gpu-spatial-analysis.segregation-counterfactual-recipe',
+    reference: ECOLOGY_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'population-support-alignment-recipe',
+    symbol: 'addPopulationSupportAlignmentRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Population support alignment',
+    summary:
+      'Joins population tables to a common set of units by explicit ID; missing or duplicate IDs are errors.',
+    explanation:
+      'Use it before comparing censuses whose rows are in different orders. Rows are gathered by ID, never aggregated or interpolated, so a mismatch fails loudly instead of skewing a result.',
+    dataTypes: {input: ['table'], output: ['table']},
+    useCases: ['relate'],
+    domains: ['demographics', 'data-engineering'],
+    params: [
+      {
+        name: 'populations',
+        type: 'GraphDataView<"float32x2">',
+        required: true,
+        description: 'Source [focal, complement] rows.'
+      },
+      {
+        name: 'sourceIds',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Stable ID of each source row.'
+      },
+      {
+        name: 'targetIds',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'IDs in the order the output should have.'
+      },
+      idParameter
+    ],
+    outputs: [
+      {
+        name: 'outputs.populations',
+        type: 'GraphDataView<"float32x2">',
+        description: 'Rows reordered to the target IDs.'
+      },
+      {
+        name: 'outputs.validity',
+        type: 'GraphDataView<"uint32">',
+        description: 'Nonzero where the ID join failed.'
+      }
+    ],
+    example: `import {addPopulationSupportAlignmentRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; ids are stable feature IDs, one per row
+const aligned = addPopulationSupportAlignmentRecipe(graph, {
+  populations: censusRows,
+  sourceIds: censusIds,
+  targetIds: boundaryIds
+});
+${COMPILE_AND_ENCODE}
+// aligned.outputs.populations now follows boundaryIds row for row`,
+    preview: {kind: 'polygons', caption: 'Rows matched to units by ID.', seed: 128},
+    related: [
+      'segregation-counterfactual-recipe',
+      'segregation-decomposition-recipe',
+      'pair-gather'
+    ],
+    lensScenario: 'gpu-spatial-analysis.population-support-alignment-recipe',
+    reference: ECOLOGY_REFERENCE,
+    maturity: 'stable'
+  },
+  // ------------------------------------------------------------ trajectories
+  {
+    id: 'trajectory-resample',
+    symbol: 'GPUTrajectoryResample',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Trajectory resample',
+    summary: 'Resamples every track to a fixed number of evenly spaced samples.',
+    explanation:
+      'Use it to make tracks comparable: the dense input for similarity, k-means or smooth fixed-vertex trails. Samples are spaced uniformly by time, arc length or a shared clock.',
+    dataTypes: {input: ['trajectories'], output: ['trajectories', 'lines']},
+    useCases: ['transform'],
+    domains: ['transport', 'urban'],
+    params: [
+      positionsParameter,
+      trackOffsetsParameter,
+      {
+        name: 'sampleCount',
+        type: 'number',
+        required: true,
+        description: 'Samples per track, at least 1.'
+      },
+      {
+        name: 'spacing',
+        type: 'GPUTrajectoryResampleSpacing | undefined',
+        default: "'time'",
+        description: "'time', 'arc-length' or 'clock'."
+      },
+      {
+        name: 'timestamps',
+        type: 'GraphDataView<"float32"> | GraphDataView<"uint32x2"> | undefined',
+        description: 'Sample times, needed for time and clock spacing.'
+      },
+      {
+        name: 'clock',
+        type: 'GraphDataView<"uint32"> | GraphDataView<"float32"> | undefined',
+        description: "Per-frame shared clock for spacing 'clock'."
+      },
+      spatialContextParameter,
+      {
+        name: 'output',
+        type: 'GPUTrajectoryResampleOutput',
+        required: true,
+        description: 'Caller-owned output views.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'samples',
+        type: 'GraphDataView<"float32x2">',
+        description: 'trackCount * sampleCount positions.'
+      },
+      {
+        name: 'sampleTimes',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Time of each sample.'
+      },
+      {
+        name: 'sampleElevations',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Interpolated z per sample.'
+      }
+    ],
+    example: `import {GPUTrajectoryResample} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; tracks are packed positions with a terminal-entry offsets view
+graph.add(new GPUTrajectoryResample({
+  positions, timestamps, trackOffsets,
+  sampleCount: 32,
+  spacing: 'arc-length',
+  output: {samples, sampleTimes}
+}));
+${COMPILE_AND_ENCODE}
+// samples: trackCount * 32 positions, row t * 32 + k`,
+    preview: {kind: 'trajectories', caption: 'Uneven GPS fixes become even samples.', seed: 131},
+    related: ['track-similarity', 'clock-encounters', 'trajectory-playhead', 'line-segmentize'],
+    lensScenario: 'gpu-spatial-analysis.trajectory-resample',
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'trajectory-playhead',
+    symbol: 'GPUTrajectoryPlayhead',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Trajectory playhead',
+    summary: 'Interpolates every track at the current time: the live positions of a trips map.',
+    explanation:
+      'Use it to animate thousands of vehicles from raw fixes with one scrub value. Each track is interpolated between its bracketing samples, with heading, speed and a status for gaps; inactive tracks can be compacted away.',
+    dataTypes: {input: ['trajectories'], output: ['points']},
+    useCases: ['interpolate', 'simulate'],
+    domains: ['transport', 'urban'],
+    params: [
+      positionsParameter,
+      timestampsParameter,
+      trackOffsetsParameter,
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"uint32"> | GraphDataView<"float32">',
+        required: true,
+        description: 'Per-frame [playhead, maximumGap] from the parameter helper.'
+      },
+      {
+        name: 'elevations',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Optional z per sample.'
+      },
+      spatialContextParameter,
+      {
+        name: 'output',
+        type: 'GPUTrajectoryPlayheadOutput',
+        required: true,
+        description: 'Caller-owned output views.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'currentPositions',
+        type: 'GraphDataView<"float32x2">',
+        description: 'Interpolated position per track.'
+      },
+      {
+        name: 'headings',
+        type: 'GraphDataView<"float32">',
+        description: 'Direction of travel per track.'
+      },
+      {name: 'speeds', type: 'GraphDataView<"float32">', description: 'Speed per track.'},
+      {
+        name: 'trackStatus',
+        type: 'GraphDataView<"uint32">',
+        description: 'Active, before, after or gap.'
+      },
+      {
+        name: 'activeTracks',
+        type: 'GPUCompactOutput',
+        description: 'Compacted IDs of tracks active now.'
+      }
+    ],
+    example: `import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues}
+  from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; playheadParameters is a GPUParameterBuffer of 4 float32
+graph.add(new GPUTrajectoryPlayhead({
+  positions, timestamps, trackOffsets,
+  parameters: playheadParameters.importToGraph(graph),
+  output: {currentPositions, headings, speeds, trackStatus}
+}));
+${COMPILE_AND_ENCODE.split('\n')[0]}
+// every frame
+playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead: 125.5, maximumGap: 60}));
+compiled.encode(device.commandEncoder, {parameters: undefined});`,
+    preview: {kind: 'trajectories', caption: 'One scrub value moves every vehicle.', seed: 132},
+    related: ['trajectory-resample', 'trajectory-metrics', 'line-locate'],
+    lensScenario: 'gpu-spatial-analysis.trajectory-playhead',
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'trajectory-metrics',
+    symbol: 'GPUTrajectoryMetrics',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Trajectory metrics',
+    summary: 'Per-track length, duration, speed and acceleration, plus stop (dwell) detection.',
+    explanation:
+      'Use it to profile GPS tracks: how far, how fast, where they stopped and for how long. A stop is a run slower than a speed threshold for at least a minimum duration; both are live parameters.',
+    dataTypes: {input: ['trajectories'], output: ['table', 'points']},
+    useCases: ['measure', 'summarize'],
+    domains: ['transport', 'urban'],
+    params: [
+      positionsParameter,
+      timestampsParameter,
+      trackOffsetsParameter,
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: '[stopSpeedThreshold, stopMinimumDuration, 0, 0], per frame.'
+      },
+      spatialContextParameter,
+      {
+        name: 'timestampsLow',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Optional low parts for double-single timestamps.'
+      },
+      {
+        name: 'output',
+        type: 'GPUTrajectoryMetricsOutput',
+        required: true,
+        description: 'Caller-owned output views.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'trackLengths',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Path length per track.'
+      },
+      {
+        name: 'averageSpeeds',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Mean speed per track.'
+      },
+      {
+        name: 'trackStopCounts',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Stops per track.'
+      },
+      {
+        name: 'stops',
+        type: 'GPUTrajectoryStopOutput | undefined',
+        description: 'Stop list: centroids, durations, rows.'
+      }
+    ],
+    example: `import {GPUTrajectoryMetrics, getGPUTrajectoryMetricsParameterValues}
+  from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; stopParameters is a GPUParameterBuffer of 4 float32
+graph.add(new GPUTrajectoryMetrics({
+  positions, timestamps, trackOffsets,
+  parameters: stopParameters.importToGraph(graph),
+  output: {
+    trackLengths, averageSpeeds, maximumSpeeds, trackStopCounts,
+    stops: {ids: stopTracks, status: {count, overflow}, startRows, endRows, centroids, durations}
+  }
+}));
+stopParameters.write(getGPUTrajectoryMetricsParameterValues({stopSpeedThreshold: 0.5, stopMinimumDuration: 300}));
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'trajectories', caption: 'Tracks measured, stops flagged.', seed: 133},
+    related: ['fleet-dwell-recipe', 'zone-events', 'trajectory-kalman'],
+    lensScenario: 'gpu-spatial-analysis.trajectory-metrics',
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'trajectory-kalman',
+    symbol: 'GPUTrajectoryKalman',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Trajectory Kalman filter',
+    summary:
+      'Smooths noisy GPS tracks with a constant-velocity Kalman filter and optional RTS smoother.',
+    explanation:
+      'Use it to denoise positions and estimate velocity while keeping the raw fixes. Tracks run in parallel; within a track the filter is sequential. Gaps give prediction-only steps, and status bits flag resets and invalid input.',
+    dataTypes: {input: ['trajectories'], output: ['trajectories']},
+    useCases: ['interpolate', 'model'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'positions',
+        type: 'GraphDataView<"float32x2">',
+        required: true,
+        description: 'Projected planar observations.'
+      },
+      {
+        name: 'times',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Relative seconds, nondecreasing per track.'
+      },
+      {
+        name: 'offsets',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Track offsets with one terminal entry.'
+      },
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Acceleration density, measurement variance, velocity variance, maximum gap.'
+      },
+      {
+        name: 'covarianceMode',
+        type: '"full" | "isotropic" | undefined',
+        description: 'Isotropic by default; full takes a correlated covariance.'
+      },
+      {
+        name: 'output',
+        type: '{filteredState, filteredCovariance, status, smoothedState?, ...}',
+        required: true,
+        description: 'Caller-owned output views.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'filteredState',
+        type: 'GraphDataView<"float32x4">',
+        description: '[x, y, vx, vy] forward estimate.'
+      },
+      {
+        name: 'smoothedState',
+        type: 'GraphDataView<"float32x4"> | undefined',
+        description: 'RTS smoothed [x, y, vx, vy].'
+      },
+      {
+        name: 'filteredCovariance',
+        type: 'GraphDataView<"float32x4">',
+        description: 'Position and velocity variances.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'Bits: 1 reset, 2 predicted, 4 invalid, 8 singular.'
+      }
+    ],
+    example: `import {GPUTrajectoryKalman} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; times are relative seconds (subtract a nearby epoch first)
+graph.add(new GPUTrajectoryKalman({
+  positions, times, offsets,
+  parameters: kalmanParameters, // [accelerationDensity, measurementVariance, velocityVariance, maxGap]
+  output: {filteredState, filteredCovariance, status, smoothedState, smoothedCovariance}
+}));
+${COMPILE_AND_ENCODE}
+// smoothedState: [x, y, vx, vy] per observation`,
+    preview: {kind: 'trajectories', caption: 'Jittery fixes, smoothed path.', seed: 134},
+    related: ['trajectory-resample', 'trajectory-metrics', 'trajectory-restriction'],
+    lensScenario: 'gpu-spatial-analysis.trajectory-kalman',
+    reference: MOVEMENT_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'trajectory-restriction',
+    symbol: 'GPUTrajectoryRestriction',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Trajectory restriction',
+    summary:
+      'Clips tracks to a time window and a rectangle or polygon, returning exact inside intervals.',
+    explanation:
+      'Use it to ask when each track was inside an area during a period (MobilityDB atTime and atGeometry). Movement is linearly interpolated, endpoint rules are explicit, and pairwise mode gives within-distance intervals for chosen track pairs.',
+    dataTypes: {input: ['trajectories', 'polygons'], output: ['trajectories', 'table']},
+    useCases: ['relate', 'transform'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'positions',
+        type: 'GraphDataView<"float32x2">',
+        required: true,
+        description: 'Planar observations.'
+      },
+      {
+        name: 'times',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Finite relative timestamps.'
+      },
+      {
+        name: 'offsets',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Track offsets with one terminal entry.'
+      },
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: '[minTime, maxTime, minX, minY, maxX, maxY, maxGap, ...ring].'
+      },
+      {
+        name: 'timeBoundary',
+        type: '"closed" | "open" | "left-closed" | "right-closed" | undefined',
+        description: 'Whether window endpoints are included.'
+      },
+      {
+        name: 'polygonRingVertexCounts',
+        type: 'readonly number[] | undefined',
+        description: 'Ring sizes for polygon restriction; at most 128 vertices.'
+      },
+      {
+        name: 'pairwiseTracks',
+        type: 'readonly (readonly [number, number])[] | undefined',
+        description: 'Track pairs for within-distance intervals.'
+      },
+      {
+        name: 'mergeIntervals',
+        type: 'boolean | undefined',
+        description: 'Merge touching intervals.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'intervals',
+        type: 'GraphDataView<"float32x2">',
+        description: '[start, end] slots; NaN where absent.'
+      },
+      {
+        name: 'positions',
+        type: 'GraphDataView<"float32x4">',
+        description: 'Start and end point of each interval.'
+      },
+      {
+        name: 'relationships',
+        type: 'GraphDataView<"uint32x4">',
+        description: 'Per track [ever, always, support, unknown].'
+      },
+      {
+        name: 'compactIntervals',
+        type: 'GraphDataView<"float32x2"> | undefined',
+        description: 'Written intervals only.'
+      }
+    ],
+    example: `import {GPUTrajectoryRestriction} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; parameters = [minTime, maxTime, minX, minY, maxX, maxY, maxGap]
+graph.add(new GPUTrajectoryRestriction({
+  positions, times, offsets,
+  parameters: windowParameters,
+  timeBoundary: 'left-closed',
+  geometryBoundary: 'closed',
+  mergeIntervals: true,
+  output: {intervals, positions: intervalPositions, status, relationships}
+}));
+${COMPILE_AND_ENCODE}
+// relationships: per track [ever inside, always inside, support rows, unknown rows]`,
+    preview: {kind: 'trajectories', caption: 'Only the part inside the box and window.', seed: 135},
+    related: ['zone-events', 'trajectory-kalman', 'line-clip-by-polygon'],
+    lensScenario: 'gpu-spatial-analysis.trajectory-restriction',
+    reference: MOVEMENT_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'zone-events',
+    symbol: 'GPUZoneEvents',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Zone events',
+    summary:
+      'Detects when trajectories enter and leave polygon zones, with interpolated event times.',
+    explanation:
+      'Use it for geofencing and visit logs: which vehicle crossed which boundary and when. Segment edges are matched through a BVH, so times are exact crossings, not nearest fixes. Dwell time and visit counts per track come out too.',
+    dataTypes: {input: ['trajectories', 'polygons'], output: ['table']},
+    useCases: ['relate', 'summarize'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'tracks',
+        type: 'GPUPackedGeometryPort<GPUTrajectoryGeometryPort>',
+        required: true,
+        description: 'Trajectories: positions, timestamps, trackOffsets.'
+      },
+      {
+        name: 'zones',
+        type: 'GPUPolygonGeometryPort',
+        required: true,
+        description: 'Zone polygons in the four-level layout.'
+      },
+      {
+        name: 'candidateCapacity',
+        type: 'number',
+        required: true,
+        description: 'Maximum segment-edge bounding-box candidates.'
+      },
+      {
+        name: 'trackEventCapacity',
+        type: 'number',
+        required: true,
+        description: 'Events kept per track, at least 1.'
+      },
+      {
+        name: 'leafCapacity',
+        type: 'number | undefined',
+        description: 'Power-of-two BVH leaf slots.'
+      },
+      {
+        name: 'spatialSort',
+        type: 'boolean | undefined',
+        description: 'Morton-sort edges before the BVH build.'
+      },
+      spatialContextParameter,
+      {
+        name: 'output',
+        type: 'GPUZoneEventsOutput',
+        required: true,
+        description: 'Caller-owned output views.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'events.ids',
+        type: 'GPUCompactOutput',
+        description: 'Compacted event list with count and overflow.'
+      },
+      {
+        name: 'events.eventTimes',
+        type: 'GraphDataView<"float32">',
+        description: 'Interpolated crossing time.'
+      },
+      {name: 'events.eventTypes', type: 'GraphDataView<"uint32">', description: 'Enter or exit.'},
+      {
+        name: 'dwellTimes',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Time spent inside, per track and zone.'
+      }
+    ],
+    example: `import {GPUZoneEvents} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; zones use the GeoArrow four-level polygon layout
+graph.add(new GPUZoneEvents({
+  tracks: {kind: 'trajectories', positions, timestamps, trackOffsets},
+  zones: {kind: 'polygons', positions: zonePositions, featureOffsets, polygonOffsets, ringOffsets},
+  candidateCapacity: 65536,
+  trackEventCapacity: 16,
+  output: {
+    events: {ids, status: {count, overflow}, eventZones, eventTypes, eventTimes},
+    dwellTimes, visitCounts
+  }
+}));
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'trajectories', caption: 'Enter and exit moments on zone borders.', seed: 136},
+    related: ['fleet-dwell-zone-events-recipe', 'trajectory-restriction', 'point-in-polygon-join'],
+    lensScenario: 'gpu-spatial-analysis.zone-events',
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'fleet-dwell-recipe',
+    symbol: 'addFleetDwellRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Fleet dwell by zone',
+    summary: 'Finds where vehicles stop and for how long, rolled up per zone.',
+    explanation:
+      'Use it to find depots, curbs and hot stops. Stops are detected from speed and duration, joined to zone polygons, then summed into one dense row per zone. Planar only: project longitude and latitude first.',
+    dataTypes: {input: ['trajectories', 'polygons'], output: ['table', 'points']},
+    useCases: ['summarize', 'find-patterns'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'trajectories',
+        type: 'GPUFleetDwellTrajectories',
+        required: true,
+        description: 'Planar tracks.'
+      },
+      {
+        name: 'parameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Stop speed threshold and minimum duration.'
+      },
+      {
+        name: 'stopCapacity',
+        type: 'number',
+        required: true,
+        description: 'Capacity of the bounded stop list.'
+      },
+      {
+        name: 'zones',
+        type: 'GPUFleetDwellPolygonZones',
+        required: true,
+        description: 'Zones joined to stop centroids.'
+      },
+      {
+        name: 'zoneCapacity',
+        type: 'number | undefined',
+        default: 'zone count',
+        description: 'Rows of the per-zone table.'
+      },
+      spatialContextParameter,
+      outputsOverrideParameter
+    ],
+    outputs: [
+      {
+        name: 'stops.centroids',
+        type: 'GraphDataView<"float32x2">',
+        description: 'Where each stop happened.'
+      },
+      {name: 'stops.durations', type: 'GraphDataView<"float32">', description: 'Stop duration.'},
+      {name: 'stopZones', type: 'GraphDataView<"uint32">', description: 'Zone of each stop.'},
+      {
+        name: 'table',
+        type: 'GPUFleetDwellZoneTableViews',
+        description: 'Per-zone stop count and dwell totals.'
+      }
+    ],
+    example: `import {addFleetDwellRecipe, getGPUTrajectoryMetricsParameterValues}
+  from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; zones are polygons whose sourceIds are stable zone IDs
+const dwell = addFleetDwellRecipe(graph, {
+  trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},
+  parameters: stopParameters.importToGraph(graph), // speed threshold, minimum duration
+  stopCapacity: 4096,
+  zones
+});
+${COMPILE_AND_ENCODE}
+// dwell.table: dwell per zone; dwell.stops: every stop with its zone`,
+    preview: {kind: 'trajectories', caption: 'Stops gather in a few zones.', seed: 137},
+    related: ['fleet-dwell-zone-events-recipe', 'trajectory-metrics', 'point-in-polygon-join'],
+    lensScenario: 'gpu-spatial-analysis.fleet-dwell-recipe',
+    reference: RECIPES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'fleet-dwell-zone-events-recipe',
+    symbol: 'addFleetDwellZoneEventsRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Fleet dwell from zone events',
+    summary: 'Enter and exit events per zone, dwell per track and zone, and a per-zone roll-up.',
+    explanation:
+      'Use it when dwell should mean time inside a zone, not time stopped. It runs zone-event detection, then sums dwell into one dense row per zone. Planar only.',
+    dataTypes: {input: ['trajectories', 'polygons'], output: ['table']},
+    useCases: ['summarize', 'relate'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'trajectories',
+        type: 'GPUFleetDwellTrajectories',
+        required: true,
+        description: 'Planar tracks.'
+      },
+      {
+        name: 'zones',
+        type: 'GPUPolygonGeometryPort & {...}',
+        required: true,
+        description: 'Zone polygons in the four-level layout.'
+      },
+      {
+        name: 'candidateCapacity',
+        type: 'number',
+        required: true,
+        description: 'Segment-edge candidate scratch rows.'
+      },
+      {
+        name: 'trackEventCapacity',
+        type: 'number',
+        required: true,
+        description: 'Events kept per track.'
+      },
+      {name: 'eventCapacity', type: 'number | undefined', description: 'Rows of the event list.'},
+      spatialContextParameter,
+      outputsOverrideParameter,
+      idParameter
+    ],
+    outputs: [
+      {
+        name: 'events.times',
+        type: 'GraphDataView<"float32">',
+        description: 'Crossing time of each event.'
+      },
+      {name: 'events.types', type: 'GraphDataView<"uint32">', description: 'Enter or exit.'},
+      {
+        name: 'dwellTimes',
+        type: 'GraphDataView<"float32">',
+        description: 'Time inside, per track and zone.'
+      },
+      {
+        name: 'table',
+        type: 'GPUFleetDwellZoneTableViews',
+        description: 'Per-zone visits and dwell totals.'
+      }
+    ],
+    example: `import {addFleetDwellZoneEventsRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; same trajectories and zones as the stops variant
+const dwell = addFleetDwellZoneEventsRecipe(graph, {
+  trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},
+  zones,
+  candidateCapacity: 65536,
+  trackEventCapacity: 16
+});
+${COMPILE_AND_ENCODE}
+// dwell.table: visits and dwell per zone; dwell.events: each enter and exit`,
+    preview: {kind: 'trajectories', caption: 'Time inside each zone, from crossings.', seed: 138},
+    related: ['fleet-dwell-recipe', 'zone-events', 'trajectory-metrics'],
+    lensScenario: 'gpu-spatial-analysis.fleet-dwell-zone-events-recipe',
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'trajectory-encounters',
+    symbol: 'GPUTrajectoryEncounters',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Trajectory encounters',
+    summary: 'Finds pairs of tracks within a distance of each other in the same time bucket.',
+    explanation:
+      'Use it for contact tracing, convoys and near-misses on tracks already resampled to one clock. A grid hashes each bucket, so cost scales with hits, not with all pairs. The pair list is bounded and reports overflow.',
+    dataTypes: {input: ['trajectories'], output: ['table']},
+    useCases: ['relate', 'find-patterns'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'samples',
+        type: 'GraphDataView<"float32x2">',
+        required: true,
+        description: 'Dense trackCount * bucketCount positions.'
+      },
+      {name: 'trackCount', type: 'number', required: true, description: 'Number of tracks.'},
+      {name: 'bucketCount', type: 'number', required: true, description: 'Time buckets per track.'},
+      {
+        name: 'distance',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Per-frame encounter distance, one row.'
+      },
+      {
+        name: 'cellSize',
+        type: 'number',
+        required: true,
+        description: 'Compile-time grid cell width.'
+      },
+      {
+        name: 'bounds',
+        type: 'readonly [number, number, number, number]',
+        required: true,
+        description: 'Domain [minX, minY, maxX, maxY].'
+      },
+      {
+        name: 'hitCapacity',
+        type: 'number',
+        required: true,
+        description: 'Maximum (track, partner, bucket) hits.'
+      },
+      {
+        name: 'output',
+        type: 'GPUTrajectoryEncounterOutput',
+        required: true,
+        description: 'Caller-owned pair list and status.'
+      }
+    ],
+    outputs: [
+      pairListOutput('Compacted pair list with count and overflow.'),
+      {
+        name: 'output.pairs.partners',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Partner track of each pair.'
+      },
+      {
+        name: 'output.pairs.minimumDistances',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Closest distance in the encounter.'
+      },
+      {
+        name: 'output.pairs.firstBuckets',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Bucket of first contact.'
+      }
+    ],
+    example: `import {GPUTrajectoryEncounters} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; samples come from GPUTrajectoryResample on a shared clock
+graph.add(new GPUTrajectoryEncounters({
+  samples, trackCount: 1000, bucketCount: 96,
+  distance, cellSize: 50, bounds: [0, 0, 1000, 1000],
+  hitCapacity: 1 << 16,
+  output: {
+    pairs: {ids, status: {count, overflow}, partners, firstBuckets, minimumDistances},
+    status: {candidateOverflow}
+  }
+}));
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'trajectories', caption: 'Tracks that came close together.', seed: 139},
+    related: [
+      'clock-encounters',
+      'trajectory-closest-approach',
+      'track-similarity',
+      'trajectory-resample'
+    ],
+    lensScenario: 'gpu-spatial-analysis.trajectory-encounters',
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'clock-encounters',
+    symbol: 'addClockEncounters',
+    kind: 'function',
+    importPath: IMPORT_PATH,
+    title: 'Clock encounters',
+    summary: 'Resamples all tracks onto one shared clock and finds encounters on it, in one call.',
+    explanation:
+      'Use it when raw tracks have different timestamps and you want who met whom. It chains `GPUTrajectoryResample` on a clock and `GPUTrajectoryEncounters`. Clock start and step are per-frame values.',
+    dataTypes: {input: ['trajectories'], output: ['table']},
+    useCases: ['relate', 'find-patterns'],
+    domains: ['transport', 'urban'],
+    params: [
+      positionsParameter,
+      timestampsParameter,
+      trackOffsetsParameter,
+      {
+        name: 'clock',
+        type: 'GraphDataView<"uint32"> | GraphDataView<"float32">',
+        required: true,
+        description: 'Per-frame [start, step] of the shared clock.'
+      },
+      {
+        name: 'bucketCount',
+        type: 'number',
+        required: true,
+        description: 'Clock buckets: the dense table width.'
+      },
+      {
+        name: 'distance',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Per-frame encounter distance, one row.'
+      },
+      {
+        name: 'cellSize',
+        type: 'number',
+        required: true,
+        description: 'Compile-time grid cell width.'
+      },
+      {
+        name: 'hitCapacity',
+        type: 'number',
+        required: true,
+        description: 'Maximum (track, partner, bucket) hits.'
+      }
+    ],
+    outputs: [
+      pairListOutput('Compacted pair list with count and overflow.'),
+      {
+        name: 'samples',
+        type: 'GraphDataView<"float32x2">',
+        description: 'Dense shared-clock positions the encounters read.'
+      },
+      {
+        name: 'bucketTimes',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Time of each bucket from the clock start.'
+      }
+    ],
+    example: `import {addClockEncounters, getGPUTrajectoryClockParameterValues} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; clockParameters is a GPUParameterBuffer of 4 float32
+const encounters = addClockEncounters(graph, {
+  positions, timestamps, trackOffsets,
+  clock: clockParameters.importToGraph(graph),
+  bucketCount: 96,
+  distance, cellSize: 50, bounds: [0, 0, 1000, 1000],
+  hitCapacity: 1 << 16,
+  output: {pairs: {ids, status: {count, overflow}, partners, firstTimes}, status: {candidateOverflow}}
+});
+clockParameters.write(getGPUTrajectoryClockParameterValues({start: 0, step: 60}));
+${COMPILE_AND_ENCODE}
+// encounters.samples: the shared-clock table, handy to draw`,
+    preview: {kind: 'trajectories', caption: 'Mixed timestamps, one clock, who met.', seed: 140},
+    related: ['trajectory-encounters', 'trajectory-resample', 'trajectory-closest-approach'],
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'trajectory-closest-approach',
+    symbol: 'GPUTrajectoryClosestApproach',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Trajectory closest approach',
+    summary: 'Exact encounters between raw tracks: when and how close they came, with durations.',
+    explanation:
+      'Use it when resampling would miss a brief pass. Tracks move linearly between fixes, a space-time grid prunes pairs, and each hit gets its closest time, minimum distance and duration within range. Same question as MobilityDB tdwithin and nearestApproachDistance.',
+    dataTypes: {input: ['trajectories'], output: ['table']},
+    useCases: ['relate', 'measure'],
+    domains: ['transport', 'urban'],
+    params: [
+      positionsParameter,
+      timestampsParameter,
+      trackOffsetsParameter,
+      {
+        name: 'distance',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Per-frame distance in position units.'
+      },
+      {
+        name: 'cellSize',
+        type: 'number',
+        required: true,
+        description: 'Spatial cell width of the space-time grid.'
+      },
+      {
+        name: 'timeCellSize',
+        type: 'number',
+        required: true,
+        description: 'Time cell length, in seconds.'
+      },
+      {
+        name: 'entryCapacity',
+        type: 'number',
+        required: true,
+        description: 'Maximum (cell, segment) entries.'
+      },
+      {
+        name: 'hitCapacity',
+        type: 'number',
+        required: true,
+        description: 'Maximum (segment, segment) hits.'
+      }
+    ],
+    outputs: [
+      pairListOutput('Compacted pair list with count and overflow.'),
+      {
+        name: 'output.pairs.closestTimes',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Time of closest approach.'
+      },
+      {
+        name: 'output.pairs.minimumDistances',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Distance at closest approach.'
+      },
+      {
+        name: 'output.pairs.durations',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Total time within distance.'
+      }
+    ],
+    example: `import {GPUTrajectoryClosestApproach} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; raw tracks, no resampling needed
+graph.add(new GPUTrajectoryClosestApproach({
+  positions, timestamps, trackOffsets, distance,
+  cellSize: 50, timeCellSize: 60,
+  entryCapacity: 1 << 20, hitCapacity: 1 << 18,
+  output: {
+    pairs: {ids, status: {count, overflow}, partners, minimumDistances, closestTimes, firstTimes, durations},
+    status: {entryOverflow, hitOverflow}
+  }
+}));
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'trajectories', caption: 'Two paths, their closest moment.', seed: 141},
+    related: ['trajectory-encounters', 'clock-encounters', 'track-similarity'],
+    lensScenario: 'gpu-spatial-analysis.trajectory-closest-approach',
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'track-similarity',
+    symbol: 'GPUTrackSimilarity',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Track similarity',
+    summary:
+      'Hausdorff, Frechet, DTW, LCSS and maximum vertex distance between pairs of lines or boundaries.',
+    explanation:
+      'Use it to compare routes: do these two trips follow the same path? You name the pairs (often from an encounter list) and pick the metrics through `output`. Dynamic programs are bounded by explicit vertex caps.',
+    dataTypes: {input: ['lines', 'trajectories'], output: ['table']},
+    useCases: ['measure', 'relate'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'linesA',
+        type: 'GPULineGeometryPort',
+        required: true,
+        description: 'First set of tracks: positions and lineOffsets.'
+      },
+      {
+        name: 'linesB',
+        type: 'GPULineGeometryPort | undefined',
+        description: 'Second set; linesA when omitted.'
+      },
+      {
+        name: 'pairA',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Track in the first set, per pair.'
+      },
+      {
+        name: 'pairB',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Track in the second set, per pair.'
+      },
+      {
+        name: 'densify',
+        type: 'number | undefined',
+        description: 'Densify fraction, as Shapely hausdorff_distance.'
+      },
+      {
+        name: 'maximumFrechetVertexCount',
+        type: 'number | undefined',
+        description: 'Cap on the shorter track in the Frechet program.'
+      },
+      {
+        name: 'dynamicTimeWarpingBandRadius',
+        type: 'number | undefined',
+        description: 'Sakoe-Chiba band radius for DTW.'
+      },
+      {
+        name: 'output',
+        type: 'GPUTrackSimilarityOutput',
+        required: true,
+        description: 'Caller-owned per-pair output views.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'hausdorff',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Hausdorff distance per pair.'
+      },
+      {
+        name: 'frechet',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Discrete Frechet distance per pair.'
+      },
+      {
+        name: 'dynamicTimeWarping',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'DTW cost per pair.'
+      },
+      {
+        name: 'pairStatus',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Failure evidence per pair.'
+      }
+    ],
+    example: `import {GPUTrackSimilarity} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; pairs come from an encounter list or any explicit index
+graph.add(new GPUTrackSimilarity({
+  linesA: {kind: 'lines', positions, lineOffsets},
+  pairA: pairs.ids, pairB: pairs.partners,
+  activePairCount: pairs.status.count,
+  maximumFrechetVertexCount: 256,
+  densify: 0.25,
+  output: {hausdorff, frechet, maximumDistance, pairStatus}
+}));
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'lines', caption: 'How alike are two routes?', seed: 142},
+    related: ['track-similarity-search', 'trajectory-resample', 'trajectory-encounters'],
+    lensScenario: 'gpu-spatial-analysis.track-similarity',
+    reference: LINES_REFERENCE,
+    maturity: 'stable'
+  },
+  {
+    id: 'track-similarity-search',
+    symbol: 'GPUTrackSimilaritySearch',
+    kind: 'class',
+    importPath: IMPORT_PATH,
+    title: 'Track similarity search',
+    summary:
+      'Finds the pairs within a distance threshold, pruning with lower bounds and returning the top k.',
+    explanation:
+      'Use it to search many candidate pairs for near-duplicate routes. Cheap endpoint bounds discard pairs first, survivors are compacted and only they run the dynamic program. Top-k is exact among the supplied candidates.',
+    dataTypes: {input: ['lines', 'trajectories'], output: ['table']},
+    useCases: ['index', 'relate'],
+    domains: ['transport', 'urban'],
+    params: [
+      {
+        name: 'linesA',
+        type: 'GPULineGeometryPort',
+        required: true,
+        description: 'First set of tracks.'
+      },
+      {
+        name: 'pairA',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Candidate track in the first set.'
+      },
+      {
+        name: 'pairB',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Candidate track in the second set.'
+      },
+      {
+        name: 'metric',
+        type: '"dynamic-time-warping" | "frechet" | "longest-common-subsequence"',
+        required: true,
+        description: 'Distance measure.'
+      },
+      {
+        name: 'threshold',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Maximum distance, or minimum LCSS similarity.'
+      },
+      {
+        name: 'survivorCapacity',
+        type: 'number | undefined',
+        description: 'Bounds dynamic-program scratch after pruning.'
+      },
+      {name: 'topK', type: 'number | undefined', description: 'Keep the k best matches per query.'},
+      {
+        name: 'output',
+        type: '{distance?, lowerBound?, matched, status, ...}',
+        required: true,
+        description: 'Caller-owned output views.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'distance',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Distance per pair; NaN if pruned.'
+      },
+      {
+        name: 'lowerBound',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Endpoint lower bound per pair.'
+      },
+      {
+        name: 'matched',
+        type: 'GraphDataView<"uint32">',
+        description: '1 where the pair meets the threshold.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: '0 evaluated, 1 pruned, 2 invalid, 4 or 8 capacity.'
+      }
+    ],
+    example: `import {GPUTrackSimilaritySearch} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; candidate pairs are an explicit batch
+graph.add(new GPUTrackSimilaritySearch({
+  linesA: {kind: 'lines', positions, lineOffsets},
+  pairA, pairB,
+  metric: 'frechet',
+  threshold,        // one float32 row, inclusive maximum distance
+  survivorCapacity: 4096,
+  topK: 5,
+  output: {distance, lowerBound, matched, status}
+}));
+${COMPILE_AND_ENCODE}`,
+    preview: {kind: 'lines', caption: 'Near-duplicate routes survive the cut.', seed: 143},
+    related: ['track-similarity', 'trajectory-encounters', 'neighbor-search'],
+    lensScenario: 'gpu-spatial-analysis.track-similarity-search',
+    reference: MOVEMENT_REFERENCE,
+    maturity: 'stable'
+  }
+];

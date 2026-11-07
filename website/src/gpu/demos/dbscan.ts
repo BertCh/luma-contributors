@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Demo: GPUSpatialClustering (DBSCAN). Blobs, two moons and scattered noise; epsilon sweeps and
+// the clusters merge and split as the GPU relabels every point each frame.
+
+import {
+  getGPUSpatialClusteringParameterValues,
+  GPUSpatialClustering,
+  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GpuScene} from '../types';
+import {
+  assertWebGPU,
+  createEmptyStorageBuffer,
+  createStorageBuffer,
+  DotLayer,
+  drawGaussianCluster,
+  drawLayers,
+  getDemoTheme,
+  GraphRunner,
+  importBufferView,
+  makeRandom,
+  type DemoView
+} from './kit';
+
+const MINIMUM_POINTS = 6;
+
+const scene: GpuScene = async context => {
+  const {device} = context;
+  assertWebGPU(device);
+  const theme = getDemoTheme(context.theme);
+  const worldWidth = context.width / context.height;
+  const view: DemoView = {worldWidth, worldHeight: 1, width: context.width, height: context.height};
+  const random = makeRandom(context.seed);
+  const bounds = [0, 0, worldWidth, 1] as const;
+
+  const positions: number[] = [];
+  const addBlob = (centerX: number, centerY: number, spread: number, count: number) => {
+    for (let index = 0; index < count; index++) {
+      positions.push(...drawGaussianCluster(random, centerX * worldWidth, centerY, spread));
+    }
+  };
+  const addMoon = (
+    centerX: number,
+    centerY: number,
+    radius: number,
+    flip: number,
+    count: number
+  ) => {
+    for (let index = 0; index < count; index++) {
+      const angle = Math.PI * random();
+      const [x, y] = drawGaussianCluster(
+        random,
+        centerX * worldWidth + Math.cos(angle) * radius,
+        centerY + flip * Math.sin(angle) * radius,
+        0.008
+      );
+      positions.push(x, y);
+    }
+  };
+  addBlob(0.17, 0.3, 0.035, 150);
+  addBlob(0.2, 0.78, 0.03, 120);
+  addMoon(0.55, 0.45, 0.2, 1, 220);
+  addMoon(0.67, 0.55, 0.2, -1, 220);
+  addBlob(0.9, 0.3, 0.04, 110);
+  for (let index = 0; index < 70; index++) {
+    positions.push(random() * worldWidth, random());
+  }
+  const pointCount = positions.length / 2;
+
+  const positionBuffer = createStorageBuffer(device, Float32Array.from(positions));
+  const parameterBuffer = createEmptyStorageBuffer(device, GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH);
+  const labels = createEmptyStorageBuffer(device, pointCount);
+  const clusterCount = createEmptyStorageBuffer(device, 1);
+
+  const runner = await GraphRunner.create(device, 'demo-dbscan', graph => {
+    graph.add(
+      new GPUSpatialClustering({
+        positions: importBufferView(graph, 'positions', positionBuffer, 'float32x2', pointCount),
+        parameters: importBufferView(
+          graph,
+          'parameters',
+          parameterBuffer,
+          'float32',
+          GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+        ),
+        gridSize: [64, 36],
+        output: {
+          labels: importBufferView(graph, 'labels', labels, 'uint32', pointCount),
+          clusterCount: importBufferView(graph, 'cluster-count', clusterCount, 'uint32', 1)
+        }
+      })
+    );
+  });
+
+  const dots = new DotLayer(device, positionBuffer, labels, pointCount, 'uint32');
+  let lastEpsilon = 0;
+
+  return {
+    render(timeMilliseconds) {
+      const phase = context.reducedMotion ? 0.55 : 0.5 + 0.5 * Math.sin(timeMilliseconds / 2400);
+      const epsilon = 0.011 + 0.03 * phase;
+      if (Math.abs(epsilon - lastEpsilon) > 2e-4) {
+        lastEpsilon = epsilon;
+        parameterBuffer.write(
+          getGPUSpatialClusteringParameterValues({bounds, epsilon, minimumPoints: MINIMUM_POINTS})
+        );
+        runner.run();
+      }
+      dots.update(view, theme, {
+        mode: 2,
+        radius: 4.2,
+        solid: [...theme.muted, 0.55],
+        hillshade: 0.4
+      });
+      drawLayers(device, theme, [dots]);
+    },
+    resize(width, height) {
+      view.width = width;
+      view.height = height;
+    },
+    destroy() {
+      dots.destroy();
+      runner.destroy();
+      for (const buffer of [positionBuffer, parameterBuffer, labels, clusterCount]) {
+        buffer.destroy();
+      }
+    }
+  };
+};
+
+export default scene;
