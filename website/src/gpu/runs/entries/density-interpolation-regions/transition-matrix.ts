@@ -11,6 +11,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {parameters} from './transition-matrix.parameters';
+import {addSlice} from './support/gather';
 import {
   createBreaks,
   createDynamics,
@@ -41,6 +42,7 @@ export default defineOperationRun({
     );
     const probabilities = builder.allocate('probabilities', 'float32', classCount * classCount);
     const steadyStates = builder.allocate('steady-states', 'float32', classCount);
+    const stateSparsity = builder.allocate('state-sparsity', 'uint32', 2);
     builder.graph.add(
       new GPUTransitionMatrix({
         classes: classes.view,
@@ -52,7 +54,8 @@ export default defineOperationRun({
           counts: builder.allocate('counts', 'uint32', classCount * classCount).view,
           probabilities: probabilities.view,
           rowTotals: builder.allocate('row-totals', 'uint32', classCount).view,
-          steadyStates: steadyStates.view
+          steadyStates: steadyStates.view,
+          stateSparsity: stateSparsity.view
         }
       })
     );
@@ -69,6 +72,7 @@ export default defineOperationRun({
         classes,
         probabilities,
         steadyStates,
+        sparsity: addSlice(builder, stateSparsity, 0, 2, 'sparsity-float'),
         matrixMesh: uploadMatrixMesh(builder, matrix, 'matrix'),
         matrixOutline: builder.upload('matrix-outline', 'float32x4', matrix.outline),
         matrixOutlineCount: matrix.outlineCount,
@@ -76,7 +80,7 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({inputs, outputs, values, world}) => [
+  draw: ({inputs, outputs, values}) => [
     {
       layer: 'polygons',
       positions: outputs.vertices,
@@ -108,7 +112,16 @@ export default defineOperationRun({
       kind: 'bars',
       values: outputs.steadyStates,
       range: [0, 0.6],
-      rectangle: [(world.width * 0.56) / world.width, 0.05, 0.97, 0.22],
+      rectangle: [0.56, 0.05, 0.84, 0.22],
+      ramp: 'sequential'
+    },
+    {
+      // Sparse and empty states (fewer than minimumTransitions moves).
+      layer: 'chart',
+      kind: 'bars',
+      values: outputs.sparsity,
+      range: [0, values.classCount],
+      rectangle: [0.87, 0.05, 0.97, 0.22],
       ramp: 'sequential'
     }
   ]

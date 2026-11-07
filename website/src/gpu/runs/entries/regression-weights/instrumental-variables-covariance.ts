@@ -84,11 +84,19 @@ export default defineOperationRun({
     return {
       outputs: {mesh: uploadRegressionMap(builder, inputs), residuals, covariance},
       update: current => {
-        const errors = Float32Array.from(
-          inputs.normals,
-          (value, tract) =>
-            value * 0.4 * (1 + current.heteroskedasticity * inputs.predictors[tract * 2])
-        );
+        // Errors are shared with the neighbors, so only `HAC` accounts for their covariance.
+        const errors = Float32Array.from(inputs.normals, (value, tract) => {
+          let shared = value;
+          const first = neighbors.offsets[tract];
+          const last = neighbors.offsets[tract + 1];
+          for (let slot = first; slot < last; slot++)
+            shared += inputs.normals[neighbors.neighbors[slot]];
+          return (
+            (shared / Math.sqrt(1 + last - first)) *
+            0.4 *
+            (1 + current.heteroskedasticity * inputs.predictors[tract * 2])
+          );
+        });
         const signal = createResponse(inputs, {noise: 0});
         response.write(signal.map((value, tract) => value + errors[tract]));
         kernel.weights.write(createKernelCsr(neighbors, current.kernelWeight).weights);
@@ -103,21 +111,29 @@ export default defineOperationRun({
       kind: 'bars',
       values: outputs.covariance,
       ramp: 'diverging',
+      // Fixed range: the methods differ in scale, which an automatic range would hide.
+      range: [-0.6, 0.6],
       rectangle: [MAP_SHARE + 0.08, 0.14, 0.97, 0.86]
     }
   ]
 });
 
-/** The neighbors CSR with a unit self slot in every row and `weight` on the neighbor slots. */
+/** The symmetric neighbors CSR (the kernel must be) with a unit self slot and `weight` on links. */
 function createKernelCsr(neighbors: ReturnType<typeof createKnnWeights>, weight: number) {
+  const linked = Array.from({length: neighbors.rowCount}, () => new Set<number>());
+  for (let row = 0; row < neighbors.rowCount; row++) {
+    for (let slot = neighbors.offsets[row]; slot < neighbors.offsets[row + 1]; slot++) {
+      const column = neighbors.neighbors[slot];
+      if (column === row) continue;
+      linked[row].add(column);
+      linked[column].add(row);
+    }
+  }
   const offsets = new Uint32Array(neighbors.rowCount + 1);
   const columns: number[] = [];
   const weights: number[] = [];
   for (let row = 0; row < neighbors.rowCount; row++) {
-    const rowNeighbors = Array.from(
-      neighbors.neighbors.slice(neighbors.offsets[row], neighbors.offsets[row + 1])
-    );
-    for (const column of [...rowNeighbors, row].sort((first, second) => first - second)) {
+    for (const column of [...linked[row], row].sort((first, second) => first - second)) {
       columns.push(column);
       weights.push(column === row ? 1 : weight);
     }

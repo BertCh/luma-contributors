@@ -20,7 +20,27 @@ import {
   toSprites,
   type EntryPreview
 } from '../helpers.ts';
-import type {GpuSceneParameter} from '../../types.ts';
+import {
+  clipRingByHalfPlane,
+  closeRing,
+  createRectangleRing,
+  getConvexHull,
+  getNearestOnSegment,
+  getRingBounds,
+  getSignedArea,
+  intersectSegments,
+  isInsideRing
+} from '../geometry.ts';
+import {
+  createChoice,
+  createDot,
+  createFillLayer,
+  createPath,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer
+} from '../layers.ts';
+import {projectGlobe, slerpVectors, toLonLat, toVector} from '../globe.ts';
 import {
   SCENE_HEIGHT,
   SCENE_WIDTH,
@@ -37,82 +57,52 @@ import {
 } from '../types.ts';
 
 // ---------------------------------------------------------------------------------------------
-// Local layer shorthands
+// Layer shorthands with this file's default styling
 
-const slider = (
-  id: string,
-  label: string,
-  min: number,
-  max: number,
-  step: number,
-  defaultValue: number,
-  unit?: string
-): GpuSceneParameter => ({id, label, min, max, step, default: defaultValue, unit});
-
-const choice = (
-  id: string,
-  label: string,
-  options: readonly string[],
-  defaultValue: number
-): GpuSceneParameter => ({
-  id,
-  label,
-  min: 0,
-  max: options.length - 1,
-  step: 1,
-  default: defaultValue,
-  options
-});
-
-function strokes(
+function createStrokes(
   items: PathItem[],
   animation: StrokeLayer['animation'] = 'static',
   speed = 0.3,
   trail?: number
 ): StrokeLayer {
-  return {type: 'strokes', items, animation, speed, trail, blend: 'add'};
+  return createStrokeLayer(items, {animation, speed, trail, blend: 'add'});
 }
 
-function fills(items: PolygonItem[], animation: FillLayer['animation'] = 'static'): FillLayer {
-  return {type: 'fills', items, animation, blend: 'add'};
+function createFills(
+  items: PolygonItem[],
+  animation: FillLayer['animation'] = 'static'
+): FillLayer {
+  return createFillLayer(items, {animation, blend: 'add'});
 }
 
-function sprites(items: SpriteItem[], pulse = 0.3): SpriteLayer {
-  return {type: 'sprites', items, pulse};
+function createSprites(items: SpriteItem[], pulse = 0.3): SpriteLayer {
+  return createSpriteLayer(items, {pulse});
 }
 
-function line(points: Point[], role: Role, width = 0.9, alpha = 0.9, phase = 0): PathItem {
-  return {points, role, width, alpha, phase};
+function createLine(points: Point[], role: Role, width = 0.9, alpha = 0.9, phase = 0): PathItem {
+  return createPath(points, role, width, alpha, phase);
 }
 
-function loop(ring: Point[], role: Role, width = 0.9, alpha = 0.9, phase = 0): PathItem {
-  return line(closeRing(ring), role, width, alpha, phase);
+function createLoop(ring: Point[], role: Role, width = 0.9, alpha = 0.9, phase = 0): PathItem {
+  return createPath(closeRing(ring), role, width, alpha, phase);
 }
 
-function area(ring: Point[], role: Role, alpha = 0.2, phase = 0): PolygonItem {
+function createArea(ring: Point[], role: Role, alpha = 0.2, phase = 0): PolygonItem {
   return {ring, role, alpha, phase};
 }
 
-function dot(point: Point, role: Role, radius = 1.6, alpha = 0.95, phase = 0): SpriteItem {
-  return {x: point[0], y: point[1], radius, role, alpha, phase};
+function createGlowDot(
+  point: Point,
+  role: Role,
+  radius = 1.6,
+  alpha = 0.95,
+  phase = 0
+): SpriteItem {
+  return createDot(point, role, radius, alpha, phase);
 }
 
 // ---------------------------------------------------------------------------------------------
-// Local geometry helpers
-
-function closeRing(ring: Point[]): Point[] {
-  return [...ring, ring[0]];
-}
-
-function getSignedArea(ring: Point[]): number {
-  let sum = 0;
-  for (let index = 0; index < ring.length; index++) {
-    const [ax, ay] = ring[index];
-    const [bx, by] = ring[(index + 1) % ring.length];
-    sum += ax * by - bx * ay;
-  }
-  return sum / 2;
-}
+// Geometry helpers
 
 function getRingPerimeter(ring: Point[]): number {
   let sum = 0;
@@ -137,49 +127,10 @@ function getRingCentroid(ring: Point[]): Point {
   return twiceArea === 0 ? ring[0] : [x / (3 * twiceArea), y / (3 * twiceArea)];
 }
 
-function getBounds(points: Point[]) {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const [x, y] of points) {
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-  return {minX, minY, maxX, maxY};
-}
-
-function getBoundsRing(points: Point[]): Point[] {
-  const {minX, minY, maxX, maxY} = getBounds(points);
-  return [
-    [minX, minY],
-    [maxX, minY],
-    [maxX, maxY],
-    [minX, maxY]
-  ];
-}
-
-function isPointInRing(point: Point, ring: Point[]): boolean {
-  let inside = false;
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
-    const [ax, ay] = ring[index];
-    const [bx, by] = ring[previous];
-    if (
-      ay > point[1] !== by > point[1] &&
-      point[0] < ((bx - ax) * (point[1] - ay)) / (by - ay) + ax
-    ) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
 /** Even-odd containment across several rings, so holes work. */
 function isPointInRings(point: Point, rings: Point[][]): boolean {
   let inside = false;
-  for (const ring of rings) if (isPointInRing(point, ring)) inside = !inside;
+  for (const ring of rings) if (isInsideRing(point, ring)) inside = !inside;
   return inside;
 }
 
@@ -191,70 +142,51 @@ function getRingDistance(point: Point, ring: Point[]): number {
   return best;
 }
 
-function getNearestOnSegment(point: Point, start: Point, end: Point): Point {
-  const dx = end[0] - start[0];
-  const dy = end[1] - start[1];
-  const amount = clamp(
-    ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (dx * dx + dy * dy || 1),
-    0,
-    1
-  );
-  return [start[0] + dx * amount, start[1] + dy * amount];
-}
-
 function rotatePoint(point: Point, center: Point, angle: number): Point {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
   const dx = point[0] - center[0];
   const dy = point[1] - center[1];
-  return [center[0] + dx * cos - dy * sin, center[1] + dx * sin + dy * cos];
+  return [center[0] + dx * cosine - dy * sine, center[1] + dx * sine + dy * cosine];
 }
 
-function intersectSegments(
-  a: Point,
-  b: Point,
-  c: Point,
-  d: Point
-): {t: number; u: number; point: Point} | null {
-  const rx = b[0] - a[0];
-  const ry = b[1] - a[1];
-  const sx = d[0] - c[0];
-  const sy = d[1] - c[1];
-  const denominator = rx * sy - ry * sx;
+/** Like intersectSegments, but also returns the position along each segment (0..1). */
+function intersectSegmentsWithParameters(
+  firstStart: Point,
+  firstEnd: Point,
+  secondStart: Point,
+  secondEnd: Point
+): {firstAmount: number; secondAmount: number; point: Point} | null {
+  const firstDx = firstEnd[0] - firstStart[0];
+  const firstDy = firstEnd[1] - firstStart[1];
+  const secondDx = secondEnd[0] - secondStart[0];
+  const secondDy = secondEnd[1] - secondStart[1];
+  const denominator = firstDx * secondDy - firstDy * secondDx;
   if (Math.abs(denominator) < 1e-9) return null;
-  const t = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / denominator;
-  const u = ((c[0] - a[0]) * ry - (c[1] - a[1]) * rx) / denominator;
-  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
-  return {t, u, point: [a[0] + rx * t, a[1] + ry * t]};
+  const offsetX = secondStart[0] - firstStart[0];
+  const offsetY = secondStart[1] - firstStart[1];
+  const firstAmount = (offsetX * secondDy - offsetY * secondDx) / denominator;
+  const secondAmount = (offsetX * firstDy - offsetY * firstDx) / denominator;
+  if (firstAmount < 0 || firstAmount > 1 || secondAmount < 0 || secondAmount > 1) return null;
+  return {
+    firstAmount,
+    secondAmount,
+    point: [firstStart[0] + firstDx * firstAmount, firstStart[1] + firstDy * firstAmount]
+  };
 }
 
-/** Keeps the part of a ring where `axisX * x + axisY * y <= limit` (Sutherland-Hodgman). */
-function clipRingHalfPlane(ring: Point[], axisX: number, axisY: number, limit: number): Point[] {
-  const output: Point[] = [];
-  for (let index = 0; index < ring.length; index++) {
-    const current = ring[index];
-    const next = ring[(index + 1) % ring.length];
-    const currentValue = axisX * current[0] + axisY * current[1] - limit;
-    const nextValue = axisX * next[0] + axisY * next[1] - limit;
-    if (currentValue <= 0) output.push(current);
-    if (currentValue <= 0 !== nextValue <= 0) {
-      const amount = currentValue / (currentValue - nextValue);
-      output.push([
-        current[0] + (next[0] - current[0]) * amount,
-        current[1] + (next[1] - current[1]) * amount
-      ]);
-    }
-  }
-  return output;
+/** Keeps the part of a ring where `axisX * x + axisY * y <= limit`, for a unit axis. */
+function clipRingBelowLimit(ring: Point[], axisX: number, axisY: number, limit: number): Point[] {
+  return clipRingByHalfPlane(ring, [axisX * limit, axisY * limit], [-axisX, -axisY]);
 }
 
-type Box = {minX: number; minY: number; maxX: number; maxY: number};
+type Box = {minimumX: number; minimumY: number; maximumX: number; maximumY: number};
 
 function clipRingToBox(ring: Point[], box: Box): Point[] {
-  let current = clipRingHalfPlane(ring, 1, 0, box.maxX);
-  if (current.length) current = clipRingHalfPlane(current, -1, 0, -box.minX);
-  if (current.length) current = clipRingHalfPlane(current, 0, 1, box.maxY);
-  if (current.length) current = clipRingHalfPlane(current, 0, -1, -box.minY);
+  let current = clipRingBelowLimit(ring, 1, 0, box.maximumX);
+  if (current.length) current = clipRingBelowLimit(current, -1, 0, -box.minimumX);
+  if (current.length) current = clipRingBelowLimit(current, 0, 1, box.maximumY);
+  if (current.length) current = clipRingBelowLimit(current, 0, -1, -box.minimumY);
   return current;
 }
 
@@ -265,10 +197,10 @@ function clipSegmentToBox(start: Point, end: Point, box: Box): [Point, Point] | 
   const dx = end[0] - start[0];
   const dy = end[1] - start[1];
   const tests: [number, number][] = [
-    [-dx, start[0] - box.minX],
-    [dx, box.maxX - start[0]],
-    [-dy, start[1] - box.minY],
-    [dy, box.maxY - start[1]]
+    [-dx, start[0] - box.minimumX],
+    [dx, box.maximumX - start[0]],
+    [-dy, start[1] - box.minimumY],
+    [dy, box.maximumY - start[1]]
   ];
   for (const [direction, distance] of tests) {
     if (direction === 0) {
@@ -286,46 +218,14 @@ function clipSegmentToBox(start: Point, end: Point, box: Box): [Point, Point] | 
   ];
 }
 
-function getConvexHull(points: Point[]): Point[] {
-  const sorted = [...points].sort((first, second) => first[0] - second[0] || first[1] - second[1]);
-  const cross = (o: Point, a: Point, b: Point) =>
-    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  const lower: Point[] = [];
-  for (const point of sorted) {
-    while (
-      lower.length >= 2 &&
-      cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0
-    ) {
-      lower.pop();
-    }
-    lower.push(point);
-  }
-  const upper: Point[] = [];
-  for (const point of [...sorted].reverse()) {
-    while (
-      upper.length >= 2 &&
-      cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0
-    ) {
-      upper.pop();
-    }
-    upper.push(point);
-  }
-  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
-}
-
 function getRectangleAtAngle(points: Point[], angle: number) {
   const origin: Point = [0, 0];
   const rotated = points.map(point => rotatePoint(point, origin, -angle));
-  const bounds = getBounds(rotated);
-  const corners = (
-    [
-      [bounds.minX, bounds.minY],
-      [bounds.maxX, bounds.minY],
-      [bounds.maxX, bounds.maxY],
-      [bounds.minX, bounds.maxY]
-    ] as Point[]
-  ).map(corner => rotatePoint(corner, origin, angle));
-  return {corners, area: (bounds.maxX - bounds.minX) * (bounds.maxY - bounds.minY)};
+  const [minimumX, minimumY, maximumX, maximumY] = getRingBounds(rotated);
+  const corners = createRectangleRing(minimumX, minimumY, maximumX, maximumY).map(corner =>
+    rotatePoint(corner, origin, angle)
+  );
+  return {corners, area: (maximumX - minimumX) * (maximumY - minimumY)};
 }
 
 function getMinimumRectangle(points: Point[]) {
@@ -360,17 +260,23 @@ function splitPolylines(
   for (let first = 0; first < lines.length; first++) {
     for (let second = first; second < lines.length; second++) {
       if (!allow(first, second)) continue;
-      for (let i = 0; i + 1 < lines[first].length; i++) {
-        for (let j = first === second ? i + 2 : 0; j + 1 < lines[second].length; j++) {
-          const hit = intersectSegments(
-            lines[first][i],
-            lines[first][i + 1],
-            lines[second][j],
-            lines[second][j + 1]
+      const firstLine = lines[first];
+      const secondLine = lines[second];
+      for (let firstIndex = 0; firstIndex + 1 < firstLine.length; firstIndex++) {
+        for (
+          let secondIndex = first === second ? firstIndex + 2 : 0;
+          secondIndex + 1 < secondLine.length;
+          secondIndex++
+        ) {
+          const hit = intersectSegmentsWithParameters(
+            firstLine[firstIndex],
+            firstLine[firstIndex + 1],
+            secondLine[secondIndex],
+            secondLine[secondIndex + 1]
           );
           if (!hit) continue;
-          cuts[first].push(i + hit.t);
-          cuts[second].push(j + hit.u);
+          cuts[first].push(firstIndex + hit.firstAmount);
+          cuts[second].push(secondIndex + hit.secondAmount);
           nodes.push(hit.point);
         }
       }
@@ -436,8 +342,8 @@ function getPolylineTicks(path: Point[], spacing: number, half: number): Point[]
 }
 
 function createStar(
-  cx: number,
-  cy: number,
+  centerX: number,
+  centerY: number,
   outer: number,
   inner: number,
   count: number,
@@ -446,18 +352,24 @@ function createStar(
   return Array.from({length: count * 2}, (_, index): Point => {
     const radius = index % 2 === 0 ? outer : inner;
     const angle = rotation + (index / (count * 2)) * Math.PI * 2;
-    return [cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius];
+    return [centerX + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius];
   });
 }
 
-function createRectangle(cx: number, cy: number, length: number, width: number, angle: number) {
+function createRectangle(
+  centerX: number,
+  centerY: number,
+  length: number,
+  width: number,
+  angle: number
+) {
   const corners: Point[] = [
-    [cx - length / 2, cy - width / 2],
-    [cx + length / 2, cy - width / 2],
-    [cx + length / 2, cy + width / 2],
-    [cx - length / 2, cy + width / 2]
+    [centerX - length / 2, centerY - width / 2],
+    [centerX + length / 2, centerY - width / 2],
+    [centerX + length / 2, centerY + width / 2],
+    [centerX - length / 2, centerY + width / 2]
   ];
-  return corners.map(corner => rotatePoint(corner, [cx, cy], angle));
+  return corners.map(corner => rotatePoint(corner, [centerX, centerY], angle));
 }
 
 function orientRing(ring: Point[], wantPositive: boolean): Point[] {
@@ -547,7 +459,13 @@ function createSkeletonField(
   return {values, ridge, maxDepth};
 }
 
-function createCrescent(cx: number, cy: number, radius: number, thickness: number, span: number) {
+function createCrescent(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  thickness: number,
+  span: number
+) {
   const steps = 18;
   const outer: Point[] = [];
   const inner: Point[] = [];
@@ -555,64 +473,50 @@ function createCrescent(cx: number, cy: number, radius: number, thickness: numbe
     const amount = index / steps;
     const angle = -span + amount * span * 2;
     const taper = thickness * (0.35 + 0.65 * Math.sin(Math.PI * amount));
-    outer.push([cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius]);
-    inner.push([cx + Math.cos(angle) * (radius - taper), cy + Math.sin(angle) * (radius - taper)]);
+    outer.push([centerX + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius]);
+    inner.push([
+      centerX + Math.cos(angle) * (radius - taper),
+      centerY + Math.sin(angle) * (radius - taper)
+    ]);
   }
   return [...outer, ...inner.reverse()];
 }
 
 // Globe helpers (orthographic) -------------------------------------------------------------
 
-type Vector3 = [number, number, number];
 const GLOBE_CENTER: Point = [80, 50];
 const GLOBE_RADIUS = 42;
 
-function toVector(longitude: number, latitude: number): Vector3 {
-  const lon = (longitude * Math.PI) / 180;
-  const lat = (latitude * Math.PI) / 180;
-  return [Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)];
-}
-
-function fromVector([x, y, z]: Vector3): [number, number] {
-  return [(Math.atan2(y, x) * 180) / Math.PI, (Math.asin(clamp(z, -1, 1)) * 180) / Math.PI];
-}
-
-function slerpVectors(first: Vector3, second: Vector3, amount: number): Vector3 {
-  const dotProduct = clamp(
-    first[0] * second[0] + first[1] * second[1] + first[2] * second[2],
-    -1,
-    1
+function projectGlobePoint(
+  longitude: number,
+  latitude: number,
+  centerLongitude: number,
+  centerLatitude: number
+) {
+  const {point, depth} = projectGlobe(
+    {
+      centerX: GLOBE_CENTER[0],
+      centerY: GLOBE_CENTER[1],
+      radius: GLOBE_RADIUS,
+      longitude: centerLongitude,
+      latitude: centerLatitude
+    },
+    longitude,
+    latitude
   );
-  const angle = Math.acos(dotProduct);
-  if (angle < 1e-6) return first;
-  const a = Math.sin((1 - amount) * angle) / Math.sin(angle);
-  const b = Math.sin(amount * angle) / Math.sin(angle);
-  return [first[0] * a + second[0] * b, first[1] * a + second[1] * b, first[2] * a + second[2] * b];
-}
-
-function projectGlobe(longitude: number, latitude: number, centerLon: number, centerLat: number) {
-  const lambda = ((longitude - centerLon) * Math.PI) / 180;
-  const phi = (latitude * Math.PI) / 180;
-  const phi0 = (centerLat * Math.PI) / 180;
-  const x = Math.cos(phi) * Math.sin(lambda);
-  const y = Math.cos(phi0) * Math.sin(phi) - Math.sin(phi0) * Math.cos(phi) * Math.cos(lambda);
-  const z = Math.sin(phi0) * Math.sin(phi) + Math.cos(phi0) * Math.cos(phi) * Math.cos(lambda);
-  return {
-    point: [GLOBE_CENTER[0] + GLOBE_RADIUS * x, GLOBE_CENTER[1] - GLOBE_RADIUS * y] as Point,
-    visible: z > 0
-  };
+  return {point, visible: depth > 0};
 }
 
 /** Projects a lon/lat path, splitting it where it turns behind the globe. */
 function projectGlobePath(
   path: [number, number][],
-  centerLon: number,
-  centerLat: number
+  centerLongitude: number,
+  centerLatitude: number
 ): Point[][] {
   const pieces: Point[][] = [];
   let current: Point[] = [];
   for (const [longitude, latitude] of path) {
-    const projected = projectGlobe(longitude, latitude, centerLon, centerLat);
+    const projected = projectGlobePoint(longitude, latitude, centerLongitude, centerLatitude);
     if (projected.visible) current.push(projected.point);
     else if (current.length) {
       pieces.push(current);
@@ -623,28 +527,30 @@ function projectGlobePath(
   return pieces.filter(piece => piece.length > 1);
 }
 
-function createGlobeBase(centerLon: number, centerLat: number): PreviewLayer[] {
+function createGlobeBase(centerLongitude: number, centerLatitude: number): PreviewLayer[] {
   const graticule: PathItem[] = [];
   for (let longitude = -180; longitude < 180; longitude += 30) {
     const meridian: [number, number][] = [];
     for (let latitude = -90; latitude <= 90; latitude += 6) meridian.push([longitude, latitude]);
-    for (const piece of projectGlobePath(meridian, centerLon, centerLat)) {
-      graticule.push(line(piece, 'dim', 0.25, 0.28));
+    for (const piece of projectGlobePath(meridian, centerLongitude, centerLatitude)) {
+      graticule.push(createLine(piece, 'dim', 0.25, 0.28));
     }
   }
   for (let latitude = -60; latitude <= 60; latitude += 30) {
     const parallel: [number, number][] = [];
     for (let longitude = -180; longitude <= 180; longitude += 6)
       parallel.push([longitude, latitude]);
-    for (const piece of projectGlobePath(parallel, centerLon, centerLat)) {
-      graticule.push(line(piece, 'dim', 0.25, 0.28));
+    for (const piece of projectGlobePath(parallel, centerLongitude, centerLatitude)) {
+      graticule.push(createLine(piece, 'dim', 0.25, 0.28));
     }
   }
   return [
-    fills([area(createCircle(GLOBE_CENTER[0], GLOBE_CENTER[1], GLOBE_RADIUS, 48), 'cool', 0.05)]),
-    strokes(graticule),
-    strokes([
-      line(
+    createFills([
+      createArea(createCircle(GLOBE_CENTER[0], GLOBE_CENTER[1], GLOBE_RADIUS, 48), 'cool', 0.05)
+    ]),
+    createStrokes(graticule),
+    createStrokes([
+      createLine(
         closeRing(createCircle(GLOBE_CENTER[0], GLOBE_CENTER[1], GLOBE_RADIUS, 64)),
         'cool',
         0.6,
@@ -662,7 +568,7 @@ function getGreatCircle(
   const start = toVector(from[0], from[1]);
   const end = toVector(to[0], to[1]);
   return Array.from({length: steps + 1}, (_, index) =>
-    fromVector(slerpVectors(start, end, index / steps))
+    toLonLat(slerpVectors(start, end, index / steps))
   );
 }
 
@@ -734,7 +640,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   // Measures and descriptors ---------------------------------------------------------------
 
   'geometry-measures': {
-    parameters: [slider('vertices', 'Vertices', 6, 24, 1, 12)],
+    parameters: [createSlider('vertices', 'Vertices', 6, 24, 1, 12)],
     pointer: 'none',
     build: ({fork, p}) => {
       const ring = createBlob(fork('polygon'), 44, 50, 27, Math.round(p.vertices), 0.3, 0.9);
@@ -747,20 +653,24 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       );
       const ticks = getPolylineTicks(path, 7, 2.2);
       return [
-        fills([area(ring, 'primary', 0.17)], 'pulse'),
-        strokes([loop(ring, 'primary', 0.7, 0.55)]),
-        strokes([loop(getBoundsRing(ring), 'dim', 0.5, 0.8)], 'pulse', 0.2),
-        strokes([loop(ring, 'warm', 1.3, 0.95)], 'flow', 0.22, 1.2),
-        strokes([line(path, 'dim', 0.7, 0.6)]),
-        strokes([line(path, 'cool', 1.4, 0.95)], 'flow', 0.3, 1.4),
-        strokes(ticks.map(tick => line(tick, 'warm', 0.7, 0.85))),
-        sprites([dot(centroid, 'hot', 2.8), ...toSprites(ring, 'warm', 0.8)], 0.35)
+        createFills([createArea(ring, 'primary', 0.17)], 'pulse'),
+        createStrokes([createLoop(ring, 'primary', 0.7, 0.55)]),
+        createStrokes(
+          [createLoop(createRectangleRing(...getRingBounds(ring)), 'dim', 0.5, 0.8)],
+          'pulse',
+          0.2
+        ),
+        createStrokes([createLoop(ring, 'warm', 1.3, 0.95)], 'flow', 0.22, 1.2),
+        createStrokes([createLine(path, 'dim', 0.7, 0.6)]),
+        createStrokes([createLine(path, 'cool', 1.4, 0.95)], 'flow', 0.3, 1.4),
+        createStrokes(ticks.map(tick => createLine(tick, 'warm', 0.7, 0.85))),
+        createSprites([createGlowDot(centroid, 'hot', 2.8), ...toSprites(ring, 'warm', 0.8)], 0.35)
       ];
     }
   },
 
   'shape-descriptors': {
-    parameters: [slider('width', 'Sliver width', 2, 14, 0.5, 4.5)],
+    parameters: [createSlider('width', 'Sliver width', 2, 14, 0.5, 4.5)],
     pointer: 'none',
     build: ({p}) => {
       const circle = createCircle(28, 46, 17, 36);
@@ -784,7 +694,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         const roles: Role[] = ['cool', 'primary', 'warm'];
         scores.forEach((score, scoreIndex) => {
           meters.push(
-            dot(
+            createGlowDot(
               [center[0] - 9 + scoreIndex * 9, 86],
               roles[scoreIndex],
               1.2 + score * 2,
@@ -800,24 +710,24 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         rotatePoint([160, 46], [130, 46], -0.5)
       ];
       return [
-        fills(
-          shapes.map((shape, index) => area(shape.ring, shape.role, 0.2, index * 0.3)),
+        createFills(
+          shapes.map((shape, index) => createArea(shape.ring, shape.role, 0.2, index * 0.3)),
           'pulse'
         ),
-        strokes(
-          shapes.map(shape => loop(shape.ring, shape.role, 1, 0.9)),
+        createStrokes(
+          shapes.map(shape => createLoop(shape.ring, shape.role, 1, 0.9)),
           'pulse',
           0.25
         ),
-        strokes([loop(hull, 'dim', 0.6, 0.9)], 'pulse', 0.2),
-        strokes([line(axis, 'warm', 0.9, 0.9)], 'flow', 0.3, 1.4),
-        sprites(meters, 0.15)
+        createStrokes([createLoop(hull, 'dim', 0.6, 0.9)], 'pulse', 0.2),
+        createStrokes([createLine(axis, 'warm', 0.9, 0.9)], 'flow', 0.3, 1.4),
+        createSprites(meters, 0.15)
       ];
     }
   },
 
   'label-point': {
-    parameters: [slider('bend', 'Bend', 0.3, 0.95, 0.05, 0.75)],
+    parameters: [createSlider('bend', 'Bend', 0.3, 0.95, 0.05, 0.75)],
     pointer: 'none',
     build: ({p}) => {
       const ring = createCrescent(76, 50, 36, 18, Math.PI * p.bend);
@@ -836,16 +746,19 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       };
       return [
         field,
-        strokes([loop(ring, 'primary', 1, 0.85)], 'flow', 0.18, 1.5),
-        sprites([dot(centroid, 'dim', 2.4, 0.9), dot(centroid, 'hot', 0.9, 0.7)], 0.1),
-        strokes([line([centroid, depth.best], 'dim', 0.4, 0.5)], 'static'),
-        sprites([dot(depth.best, 'warm', 3.6, 1)], 0.5)
+        createStrokes([createLoop(ring, 'primary', 1, 0.85)], 'flow', 0.18, 1.5),
+        createSprites(
+          [createGlowDot(centroid, 'dim', 2.4, 0.9), createGlowDot(centroid, 'hot', 0.9, 0.7)],
+          0.1
+        ),
+        createStrokes([createLine([centroid, depth.best], 'dim', 0.4, 0.5)], 'static'),
+        createSprites([createGlowDot(depth.best, 'warm', 3.6, 1)], 0.5)
       ];
     }
   },
 
   'maximum-inscribed-circle': {
-    parameters: [slider('roughness', 'Roughness', 0.1, 0.6, 0.05, 0.35)],
+    parameters: [createSlider('roughness', 'Roughness', 0.1, 0.6, 0.05, 0.35)],
     pointer: 'none',
     build: ({fork, p}) => {
       const ring = createBlob(fork('shape'), 80, 50, 34, 22, p.roughness, 0.85);
@@ -854,7 +767,11 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const radius = getRingDistance(center, ring);
       const contacts: Point[] = [];
       for (let index = 0; index < ring.length; index++) {
-        const nearest = getNearestOnSegment(center, ring[index], ring[(index + 1) % ring.length]);
+        const nearest = getNearestOnSegment(
+          center,
+          ring[index],
+          ring[(index + 1) % ring.length]
+        ).point;
         if (getDistance(nearest, center) < radius * 1.04) contacts.push(nearest);
       }
       // Quadtree cells that a best-first search would have refined around the answer.
@@ -864,7 +781,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         const x = Math.floor(center[0] / size) * size;
         const y = Math.floor(center[1] / size) * size;
         cells.push(
-          loop(
+          createLoop(
             [
               [x, y],
               [x + size, y],
@@ -879,28 +796,37 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         );
       }
       return [
-        fills([area(ring, 'primary', 0.12)]),
-        strokes(cells, 'pulse', 0.3),
-        strokes([loop(ring, 'primary', 1, 0.9)]),
-        fills([area(createCircle(center[0], center[1], radius, 48), 'warm', 0.2)], 'pulse'),
-        strokes(
-          [loop(createCircle(center[0], center[1], radius, 48), 'warm', 1.2, 0.95)],
+        createFills([createArea(ring, 'primary', 0.12)]),
+        createStrokes(cells, 'pulse', 0.3),
+        createStrokes([createLoop(ring, 'primary', 1, 0.9)]),
+        createFills(
+          [createArea(createCircle(center[0], center[1], radius, 48), 'warm', 0.2)],
+          'pulse'
+        ),
+        createStrokes(
+          [createLoop(createCircle(center[0], center[1], radius, 48), 'warm', 1.2, 0.95)],
           'flow',
           0.25,
           1.6
         ),
-        strokes(
-          contacts.map(contact => line([center, contact], 'warm', 0.5, 0.7)),
+        createStrokes(
+          contacts.map(contact => createLine([center, contact], 'warm', 0.5, 0.7)),
           'pulse',
           0.3
         ),
-        sprites([dot(center, 'warm', 2.4), ...contacts.map(contact => dot(contact, 'hot', 2))], 0.4)
+        createSprites(
+          [
+            createGlowDot(center, 'warm', 2.4),
+            ...contacts.map(contact => createGlowDot(contact, 'hot', 2))
+          ],
+          0.4
+        )
       ];
     }
   },
 
   'minimum-bounds': {
-    parameters: [slider('rotation', 'Rotation', 0, 180, 5, 30, '°')],
+    parameters: [createSlider('rotation', 'Rotation', 0, 180, 5, 30, '°')],
     pointer: 'none',
     build: ({fork, p}) => {
       const angle = (p.rotation * Math.PI) / 180;
@@ -912,7 +838,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const candidates: PathItem[] = [];
       for (let degrees = 0; degrees < 180; degrees += 22.5) {
         const candidate = getRectangleAtAngle(hull, (degrees * Math.PI) / 180);
-        candidates.push(loop(candidate.corners, 'cool', 0.4, 0.3, degrees / 180));
+        candidates.push(createLoop(candidate.corners, 'cool', 0.4, 0.3, degrees / 180));
       }
       let longest: [Point, Point] = [hull[0], hull[0]];
       let longestLength = 0;
@@ -931,19 +857,19 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       ];
       const circleRadius = Math.max(...hull.map(point => getDistance(point, center)));
       return [
-        strokes(candidates, 'pulse', 0.35),
-        strokes([loop(getBoundsRing(ring), 'dim', 0.5, 0.9)]),
-        strokes(
-          [loop(createCircle(center[0], center[1], circleRadius, 48), 'violet', 0.5, 0.45)],
+        createStrokes(candidates, 'pulse', 0.35),
+        createStrokes([createLoop(createRectangleRing(...getRingBounds(ring)), 'dim', 0.5, 0.9)]),
+        createStrokes(
+          [createLoop(createCircle(center[0], center[1], circleRadius, 48), 'violet', 0.5, 0.45)],
           'pulse',
           0.2
         ),
-        fills([area(ring, 'primary', 0.2)], 'pulse'),
-        strokes([loop(ring, 'primary', 0.8, 0.85)]),
-        strokes([loop(best.corners, 'warm', 1.3, 0.95)], 'flow', 0.25, 1.4),
-        strokes([line(longest, 'hot', 0.8, 0.9)], 'flow', 0.3),
-        sprites(
-          best.corners.map(corner => dot(corner, 'warm', 1.5)),
+        createFills([createArea(ring, 'primary', 0.2)], 'pulse'),
+        createStrokes([createLoop(ring, 'primary', 0.8, 0.85)]),
+        createStrokes([createLoop(best.corners, 'warm', 1.3, 0.95)], 'flow', 0.25, 1.4),
+        createStrokes([createLine(longest, 'hot', 0.8, 0.9)], 'flow', 0.3),
+        createSprites(
+          best.corners.map(corner => createGlowDot(corner, 'warm', 1.5)),
           0.3
         )
       ];
@@ -951,7 +877,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'minimum-clearance': {
-    parameters: [slider('neck', 'Neck width', 3, 22, 0.5, 8)],
+    parameters: [createSlider('neck', 'Neck width', 3, 22, 0.5, 8)],
     pointer: 'none',
     build: ({p}) => {
       const half = p.neck / 2;
@@ -989,19 +915,19 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         (witness[0][1] + witness[1][1]) / 2
       ];
       return [
-        fills([area(ring, 'primary', 0.14)]),
-        strokes([loop(ring, 'primary', 1, 0.8)], 'flow', 0.15, 1.5),
-        strokes(
-          [loop(createCircle(middle[0], middle[1], best / 2, 24), 'cool', 0.6, 0.8)],
+        createFills([createArea(ring, 'primary', 0.14)]),
+        createStrokes([createLoop(ring, 'primary', 1, 0.8)], 'flow', 0.15, 1.5),
+        createStrokes(
+          [createLoop(createCircle(middle[0], middle[1], best / 2, 24), 'cool', 0.6, 0.8)],
           'pulse',
           0.4
         ),
-        strokes([line(witness, 'hot', 1.3, 1)], 'pulse', 0.5),
-        sprites(
+        createStrokes([createLine(witness, 'hot', 1.3, 1)], 'pulse', 0.5),
+        createSprites(
           [
-            dot(witness[0], 'hot', 2.4),
-            dot(witness[1], 'hot', 2.4),
-            dot([reach + lobeA, 50], 'dim', 0.01, 0)
+            createGlowDot(witness[0], 'hot', 2.4),
+            createGlowDot(witness[1], 'hot', 2.4),
+            createGlowDot([reach + lobeA, 50], 'dim', 0.01, 0)
           ],
           0.4
         )
@@ -1012,13 +938,13 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   // Predicates and validity ------------------------------------------------------------------
 
   'geometry-predicates': {
-    parameters: [slider('size', 'Query size', 6, 26, 1, 14)],
+    parameters: [createSlider('size', 'Query size', 6, 26, 1, 14)],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const shape = createBlob(fork('shape'), 58, 54, 28, 16, 0.25, 0.9);
       const center: Point = pointer ?? [86, 50];
       const radius = p.size;
-      const centerInside = isPointInRing(center, shape);
+      const centerInside = isInsideRing(center, shape);
       const edgeDistance = getRingDistance(center, shape);
       const shapeInside = shape.every(point => getDistance(point, center) <= radius);
       const intersects = centerInside || edgeDistance <= radius || shapeInside;
@@ -1038,12 +964,12 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         [!intersects, 'cool']
       ];
       return [
-        fills([area(shape, 'dim', 0.2), area(queryRing, state, 0.22)], 'pulse'),
-        strokes([loop(shape, 'dim', 1, 0.9)]),
-        strokes([loop(queryRing, state, 1.3, 1)], 'flow', 0.3, 1.2),
-        sprites(
+        createFills([createArea(shape, 'dim', 0.2), createArea(queryRing, state, 0.22)], 'pulse'),
+        createStrokes([createLoop(shape, 'dim', 1, 0.9)]),
+        createStrokes([createLoop(queryRing, state, 1.3, 1)], 'flow', 0.3, 1.2),
+        createSprites(
           lamps.map(([lit, role], index) =>
-            dot([116 + index * 11, 9], lit ? role : 'dim', lit ? 3 : 1.8, lit ? 1 : 0.35)
+            createGlowDot([116 + index * 11, 9], lit ? role : 'dim', lit ? 3 : 1.8, lit ? 1 : 0.35)
           ),
           0.3
         )
@@ -1052,7 +978,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'geometry-validity': {
-    parameters: [slider('defect', 'Defect', 0, 1, 0.05, 1)],
+    parameters: [createSlider('defect', 'Defect', 0, 1, 0.05, 1)],
     pointer: 'none',
     build: ({fork, p}) => {
       const valid = createBlob(fork('valid'), 28, 46, 19, 14, 0.2);
@@ -1084,32 +1010,44 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         for (let bit = 0; bit < 4; bit++) {
           const lit = flags[index].includes(bit);
           bits.push(
-            dot([x - 10.5 + bit * 7, 88], lit ? 'hot' : 'dim', lit ? 2.2 : 1.2, lit ? 1 : 0.35)
+            createGlowDot(
+              [x - 10.5 + bit * 7, 88],
+              lit ? 'hot' : 'dim',
+              lit ? 2.2 : 1.2,
+              lit ? 1 : 0.35
+            )
           );
         }
       });
       const markers: SpriteItem[] = [];
-      if (crossing) markers.push(dot(crossing.point, 'hot', 3.2));
-      if (holeOutside) markers.push(dot(hole[1], 'hot', 3.2));
+      if (crossing) markers.push(createGlowDot(crossing, 'hot', 3.2));
+      if (holeOutside) markers.push(createGlowDot(hole[1], 'hot', 3.2));
       return [
-        fills(
-          [area(valid, 'primary', 0.2), area(bowtie, 'hot', 0.15), area(shell, 'violet', 0.18)],
+        createFills(
+          [
+            createArea(valid, 'primary', 0.2),
+            createArea(bowtie, 'hot', 0.15),
+            createArea(shell, 'violet', 0.18)
+          ],
           'pulse'
         ),
-        strokes([loop(valid, 'primary', 1, 0.9)]),
-        strokes([loop(bowtie, crossing ? 'hot' : 'primary', 1, 0.9)], 'flow', 0.25),
-        strokes(
-          [loop(shell, 'violet', 1, 0.9), loop(hole, holeOutside ? 'hot' : 'cool', 1, 0.9)],
+        createStrokes([createLoop(valid, 'primary', 1, 0.9)]),
+        createStrokes([createLoop(bowtie, crossing ? 'hot' : 'primary', 1, 0.9)], 'flow', 0.25),
+        createStrokes(
+          [
+            createLoop(shell, 'violet', 1, 0.9),
+            createLoop(hole, holeOutside ? 'hot' : 'cool', 1, 0.9)
+          ],
           'flow',
           0.2
         ),
-        sprites([...bits, ...markers], 0.5)
+        createSprites([...bits, ...markers], 0.5)
       ];
     }
   },
 
   'make-valid': {
-    parameters: [slider('twist', 'Twist', 0, 1, 0.05, 1)],
+    parameters: [createSlider('twist', 'Twist', 0, 1, 0.05, 1)],
     pointer: 'none',
     build: ({p}) => {
       const flip = p.twist;
@@ -1128,11 +1066,11 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         ? [
             [
               [104, 28],
-              [crossing.point[0] + 90, crossing.point[1]],
+              [crossing[0] + 90, crossing[1]],
               [104, 72]
             ],
             [
-              [crossing.point[0] + 90, crossing.point[1]],
+              [crossing[0] + 90, crossing[1]],
               [144, 28 + 44 * flip],
               [144, 72 - 44 * flip]
             ]
@@ -1146,31 +1084,36 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
             ]
           ];
       return [
-        fills([area(bowtie, 'hot', 0.16)], 'pulse'),
-        strokes([loop(bowtie, 'hot', 1, 0.9)], 'flow', 0.25),
-        strokes(
-          [line(arrow, 'cool', 1.4, 0.9), line([[84, 44], arrow[1], [84, 56]], 'cool', 1, 0.9)],
+        createFills([createArea(bowtie, 'hot', 0.16)], 'pulse'),
+        createStrokes([createLoop(bowtie, 'hot', 1, 0.9)], 'flow', 0.25),
+        createStrokes(
+          [
+            createLine(arrow, 'cool', 1.4, 0.9),
+            createLine([[84, 44], arrow[1], [84, 56]], 'cool', 1, 0.9)
+          ],
           'flow',
           0.4,
           1.4
         ),
-        fills(
+        createFills(
           output.map((ring, index) =>
-            area(ring, index === 0 ? 'primary' : 'warm', 0.25, index * 0.5)
+            createArea(ring, index === 0 ? 'primary' : 'warm', 0.25, index * 0.5)
           ),
           'pulse'
         ),
-        strokes(
-          output.map((ring, index) => loop(ring, index === 0 ? 'primary' : 'warm', 1.2, 0.95)),
+        createStrokes(
+          output.map((ring, index) =>
+            createLoop(ring, index === 0 ? 'primary' : 'warm', 1.2, 0.95)
+          ),
           'flow',
           0.2
         ),
-        sprites(
+        createSprites(
           [
             ...(crossing
               ? [
-                  dot(crossing.point, 'hot', 3),
-                  dot([crossing.point[0] + 90, crossing.point[1]], 'violet', 3)
+                  createGlowDot(crossing, 'hot', 3),
+                  createGlowDot([crossing[0] + 90, crossing[1]], 'violet', 3)
                 ]
               : [])
           ],
@@ -1183,7 +1126,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   // Linework: polygonize, noding, intersection -------------------------------------------------
 
   polygonize: {
-    parameters: [slider('lines', 'Lines each way', 2, 5, 1, 4)],
+    parameters: [createSlider('lines', 'Lines each way', 2, 5, 1, 4)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('lines');
@@ -1208,7 +1151,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       for (let row = 0; row + 1 < count; row++) {
         for (let column = 0; column + 1 < count; column++) {
           faces.push(
-            area(
+            createArea(
               [
                 corners[row][column],
                 corners[row][column + 1],
@@ -1223,22 +1166,22 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       const linework: PathItem[] = [
-        ...horizontals.map(h =>
-          line(
+        ...horizontals.map(horizontal =>
+          createLine(
             [
-              [6, h.y + h.slope * -74],
-              [154, h.y + h.slope * 74]
+              [6, horizontal.y + horizontal.slope * -74],
+              [154, horizontal.y + horizontal.slope * 74]
             ],
             'cool',
             0.8,
             0.9
           )
         ),
-        ...verticals.map(v =>
-          line(
+        ...verticals.map(vertical =>
+          createLine(
             [
-              [v.x + v.slope * -48, 2],
-              [v.x + v.slope * 48, 98]
+              [vertical.x + vertical.slope * -48, 2],
+              [vertical.x + vertical.slope * 48, 98]
             ],
             'warm',
             0.8,
@@ -1247,10 +1190,10 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         )
       ];
       return [
-        fills(faces, 'pulse'),
-        strokes(linework, 'flow', 0.22, 1.3),
-        sprites(
-          faces.map(face => dot(getRingCentroid(face.ring), 'hot', 1.2, 0.9, face.phase)),
+        createFills(faces, 'pulse'),
+        createStrokes(linework, 'flow', 0.22, 1.3),
+        createSprites(
+          faces.map(face => createGlowDot(getRingCentroid(face.ring), 'hot', 1.2, 0.9, face.phase)),
           0.5
         )
       ];
@@ -1258,7 +1201,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'line-noding': {
-    parameters: [slider('lines', 'Lines', 3, 8, 1, 5)],
+    parameters: [createSlider('lines', 'Lines', 3, 8, 1, 5)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('lines');
@@ -1276,16 +1219,22 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const {pieces, nodes} = splitPolylines(lines);
       const roles: Role[] = ['primary', 'warm', 'cool', 'violet'];
       return [
-        strokes(lines.map(points => line(points, 'dim', 0.4, 0.5))),
-        strokes(
+        createStrokes(lines.map(points => createLine(points, 'dim', 0.4, 0.5))),
+        createStrokes(
           pieces.map((piece, index) =>
-            line(trimPath(piece, 1.2), roles[index % roles.length], 1.1, 0.95, (index * 0.37) % 1)
+            createLine(
+              trimPath(piece, 1.2),
+              roles[index % roles.length],
+              1.1,
+              0.95,
+              (index * 0.37) % 1
+            )
           ),
           'pulse',
           0.3
         ),
-        sprites(
-          nodes.map(node => dot(node, 'hot', 2.2)),
+        createSprites(
+          nodes.map(node => createGlowDot(node, 'hot', 2.2)),
           0.5
         )
       ];
@@ -1293,7 +1242,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'segment-intersection': {
-    parameters: [slider('lines', 'Lines per set', 2, 6, 1, 4)],
+    parameters: [createSlider('lines', 'Lines per set', 2, 6, 1, 4)],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const random = fork('lines');
@@ -1324,29 +1273,34 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const crossings: Point[] = [];
       for (const first of setA) {
         for (const second of setB) {
-          for (let i = 0; i + 1 < first.length; i++) {
-            for (let j = 0; j + 1 < second.length; j++) {
-              const hit = intersectSegments(first[i], first[i + 1], second[j], second[j + 1]);
-              if (hit) crossings.push(hit.point);
+          for (let firstIndex = 0; firstIndex + 1 < first.length; firstIndex++) {
+            for (let secondIndex = 0; secondIndex + 1 < second.length; secondIndex++) {
+              const hit = intersectSegments(
+                first[firstIndex],
+                first[firstIndex + 1],
+                second[secondIndex],
+                second[secondIndex + 1]
+              );
+              if (hit) crossings.push(hit);
             }
           }
         }
       }
       return [
-        strokes(
-          setA.map(points => line(points, 'cool', 1, 0.9)),
+        createStrokes(
+          setA.map(points => createLine(points, 'cool', 1, 0.9)),
           'flow',
           0.25,
           1.3
         ),
-        strokes(
-          setB.map(points => line(points, 'warm', 1, 0.9)),
+        createStrokes(
+          setB.map(points => createLine(points, 'warm', 1, 0.9)),
           'flow',
           0.3,
           1.3
         ),
-        sprites(
-          crossings.map((point, index) => dot(point, 'hot', 2.4, 1, (index % 5) / 5)),
+        createSprites(
+          crossings.map((point, index) => createGlowDot(point, 'hot', 2.4, 1, (index % 5) / 5)),
           0.55
         )
       ];
@@ -1357,8 +1311,8 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
 
   'bounds-filter': {
     parameters: [
-      slider('window', 'Window width', 30, 90, 2, 56),
-      choice('mode', 'Predicate', ['intersects', 'within', 'contains'], 0)
+      createSlider('window', 'Window width', 30, 90, 2, 56),
+      createChoice('mode', 'Predicate', ['intersects', 'within', 'contains'], 0)
     ],
     pointer: 'sticky',
     build: ({fork, p, pointer}) => {
@@ -1367,10 +1321,10 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const width = p.window;
       const height = width * 0.62;
       const box: Box = {
-        minX: center[0] - width / 2,
-        maxX: center[0] + width / 2,
-        minY: center[1] - height / 2,
-        maxY: center[1] + height / 2
+        minimumX: center[0] - width / 2,
+        maximumX: center[0] + width / 2,
+        minimumY: center[1] - height / 2,
+        maximumY: center[1] + height / 2
       };
       const small = Array.from({length: 40}, (): Point[] => {
         const x = random.range(10, 150);
@@ -1391,74 +1345,76 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           : [];
       const features = [...small, ...large];
       const selected = (points: Point[]) => {
-        const bounds = getBounds(points);
+        const [minimumX, minimumY, maximumX, maximumY] = getRingBounds(points);
         if (p.mode === 1) {
           return (
-            bounds.minX >= box.minX &&
-            bounds.maxX <= box.maxX &&
-            bounds.minY >= box.minY &&
-            bounds.maxY <= box.maxY
+            minimumX >= box.minimumX &&
+            maximumX <= box.maximumX &&
+            minimumY >= box.minimumY &&
+            maximumY <= box.maximumY
           );
         }
         if (p.mode === 2) {
           return (
-            bounds.minX <= box.minX &&
-            bounds.maxX >= box.maxX &&
-            bounds.minY <= box.minY &&
-            bounds.maxY >= box.maxY
+            minimumX <= box.minimumX &&
+            maximumX >= box.maximumX &&
+            minimumY <= box.minimumY &&
+            maximumY >= box.maximumY
           );
         }
         return (
-          bounds.minX <= box.maxX &&
-          bounds.maxX >= box.minX &&
-          bounds.minY <= box.maxY &&
-          bounds.maxY >= box.minY
+          minimumX <= box.maximumX &&
+          maximumX >= box.minimumX &&
+          minimumY <= box.maximumY &&
+          maximumY >= box.minimumY
         );
       };
       const kept = features.filter(selected);
       const dropped = features.filter(points => !selected(points));
-      const frame = loop(
+      const frame = createLoop(
         [
-          [box.minX, box.minY],
-          [box.maxX, box.minY],
-          [box.maxX, box.maxY],
-          [box.minX, box.maxY]
+          [box.minimumX, box.minimumY],
+          [box.maximumX, box.minimumY],
+          [box.maximumX, box.maximumY],
+          [box.minimumX, box.maximumY]
         ],
         'primary',
         1.2,
         0.95
       );
       return [
-        fills([area(frame.points.slice(0, 4), 'primary', 0.07)]),
-        strokes(dropped.map(points => line(points, 'dim', 0.6, 0.55))),
-        strokes(
-          kept.map(points => loop(getBoundsRing(points), 'warm', 0.4, 0.45)),
+        createFills([createArea(frame.points.slice(0, 4), 'primary', 0.07)]),
+        createStrokes(dropped.map(points => createLine(points, 'dim', 0.6, 0.55))),
+        createStrokes(
+          kept.map(points =>
+            createLoop(createRectangleRing(...getRingBounds(points)), 'warm', 0.4, 0.45)
+          ),
           'pulse',
           0.3
         ),
-        strokes(
-          kept.map(points => line(points, 'warm', 1.2, 1)),
+        createStrokes(
+          kept.map(points => createLine(points, 'warm', 1.2, 1)),
           'flow',
           0.3,
           1.5
         ),
-        strokes([frame], 'flow', 0.2, 1.4)
+        createStrokes([frame], 'flow', 0.2, 1.4)
       ];
     }
   },
 
   'rectangle-clip': {
-    parameters: [slider('window', 'Window width', 30, 100, 2, 80)],
+    parameters: [createSlider('window', 'Window width', 30, 100, 2, 80)],
     pointer: 'sticky',
     build: ({fork, p, pointer}) => {
       const center: Point = pointer ?? [80, 50];
       const width = p.window;
       const height = width * 0.62;
       const box: Box = {
-        minX: center[0] - width / 2,
-        maxX: center[0] + width / 2,
-        minY: center[1] - height / 2,
-        maxY: center[1] + height / 2
+        minimumX: center[0] - width / 2,
+        maximumX: center[0] + width / 2,
+        minimumY: center[1] - height / 2,
+        maximumY: center[1] + height / 2
       };
       const polygons = [
         createBlob(fork('a'), 46, 42, 26, 14, 0.3),
@@ -1504,28 +1460,28 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         if (current.length) clippedPieces.push(current);
       }
       const frame: Point[] = [
-        [box.minX, box.minY],
-        [box.maxX, box.minY],
-        [box.maxX, box.maxY],
-        [box.minX, box.maxY]
+        [box.minimumX, box.minimumY],
+        [box.maximumX, box.minimumY],
+        [box.maximumX, box.maximumY],
+        [box.minimumX, box.maximumY]
       ];
       return [
-        strokes([
-          ...polygons.map(ring => loop(ring, 'dim', 0.7, 0.55)),
-          ...paths.map(path => line(path, 'dim', 0.7, 0.55))
+        createStrokes([
+          ...polygons.map(ring => createLoop(ring, 'dim', 0.7, 0.55)),
+          ...paths.map(path => createLine(path, 'dim', 0.7, 0.55))
         ]),
-        fills(
-          clippedRings.map((ring, index) => area(ring, 'primary', 0.3, index * 0.3)),
+        createFills(
+          clippedRings.map((ring, index) => createArea(ring, 'primary', 0.3, index * 0.3)),
           'pulse'
         ),
-        strokes(clippedRings.map(ring => loop(ring, 'primary', 1, 0.9))),
-        strokes(
-          clippedPieces.map(piece => line(piece, 'warm', 1.4, 1)),
+        createStrokes(clippedRings.map(ring => createLoop(ring, 'primary', 1, 0.9))),
+        createStrokes(
+          clippedPieces.map(piece => createLine(piece, 'warm', 1.4, 1)),
           'flow',
           0.3,
           1.5
         ),
-        strokes([loop(frame, 'cool', 1.1, 0.95)], 'flow', 0.2, 1.4)
+        createStrokes([createLoop(frame, 'cool', 1.1, 0.95)], 'flow', 0.2, 1.4)
       ];
     }
   },
@@ -1534,9 +1490,9 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
 
   'affine-transform': {
     parameters: [
-      slider('rotation', 'Rotation', -90, 90, 5, 30, '°'),
-      slider('scale', 'Scale', 0.5, 1.5, 0.05, 1.1),
-      slider('shear', 'Shear', -0.8, 0.8, 0.05, 0.3)
+      createSlider('rotation', 'Rotation', -90, 90, 5, 30, '°'),
+      createSlider('scale', 'Scale', 0.5, 1.5, 0.05, 1.1),
+      createSlider('shear', 'Shear', -0.8, 0.8, 0.05, 0.3)
     ],
     pointer: 'none',
     build: ({p}) => {
@@ -1575,7 +1531,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         const items: PathItem[] = [];
         for (let step = -1.5; step <= 1.5; step += 0.75) {
           items.push(
-            line(
+            createLine(
               [transform([step, -1.5], origin, unit), transform([step, 1.5], origin, unit)],
               'dim',
               0.35,
@@ -1583,7 +1539,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
             )
           );
           items.push(
-            line(
+            createLine(
               [transform([-1.5, step], origin, unit), transform([1.5, step], origin, unit)],
               'dim',
               0.35,
@@ -1596,39 +1552,48 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const source = glyph.map(point => identity(point, origins[0], unit));
       const target = glyph.map(point => apply(point, origins[1], unit));
       const links = source.map((point, index) =>
-        line(createArc(point, target[index], 0.12, 14), 'cool', 0.45, 0.55, index / source.length)
+        createLine(
+          createArc(point, target[index], 0.12, 14),
+          'cool',
+          0.45,
+          0.55,
+          index / source.length
+        )
       );
       return [
-        strokes(lattice(identity, origins[0])),
-        strokes(lattice(apply, origins[1])),
-        strokes(links, 'flow', 0.3, 0.9),
-        fills([area(source, 'cool', 0.2), area(target, 'warm', 0.28)], 'pulse'),
-        strokes([loop(source, 'cool', 1.1, 0.9)]),
-        strokes([loop(target, 'warm', 1.3, 1)], 'flow', 0.22, 1.4),
-        sprites([...toSprites(source, 'cool', 1), ...toSprites(target, 'warm', 1.2)], 0.3)
+        createStrokes(lattice(identity, origins[0])),
+        createStrokes(lattice(apply, origins[1])),
+        createStrokes(links, 'flow', 0.3, 0.9),
+        createFills([createArea(source, 'cool', 0.2), createArea(target, 'warm', 0.28)], 'pulse'),
+        createStrokes([createLoop(source, 'cool', 1.1, 0.9)]),
+        createStrokes([createLoop(target, 'warm', 1.3, 1)], 'flow', 0.22, 1.4),
+        createSprites([...toSprites(source, 'cool', 1), ...toSprites(target, 'warm', 1.2)], 0.3)
       ];
     }
   },
 
   'geometry-orientation': {
-    parameters: [choice('convention', 'Convention', ['GeoJSON', 'Shapefile'], 0)],
+    parameters: [createChoice('convention', 'Convention', ['GeoJSON', 'Shapefile'], 0)],
     pointer: 'none',
     build: ({p}) => {
       const geoJson = p.convention === 0;
-      const makeRings = (cx: number, outerPositive: boolean, holePositive: boolean) => ({
-        outer: orientRing(createRegularPolygon(cx, 50, 28, 8, 0.4), outerPositive),
-        hole: orientRing(createRegularPolygon(cx, 50, 11, 6, 0.2), holePositive)
+      const makeRings = (centerX: number, outerPositive: boolean, holePositive: boolean) => ({
+        outer: orientRing(createRegularPolygon(centerX, 50, 28, 8, 0.4), outerPositive),
+        hole: orientRing(createRegularPolygon(centerX, 50, 11, 6, 0.2), holePositive)
       });
       const input = makeRings(38, true, true);
       const output = makeRings(122, !geoJson, geoJson);
       const outerChanged = geoJson;
       const holeChanged = !geoJson;
-      const asFlow = (ring: Point[], role: Role) => loop(ring, role, 1.4, 0.95);
+      const asFlow = (ring: Point[], role: Role) => createLoop(ring, role, 1.4, 0.95);
       return [
-        fills([area(input.outer, 'cool', 0.1), area(output.outer, 'primary', 0.1)]),
-        strokes(
+        createFills([
+          createArea(input.outer, 'cool', 0.1),
+          createArea(output.outer, 'primary', 0.1)
+        ]),
+        createStrokes(
           [
-            line(
+            createLine(
               [
                 [68, 50],
                 [92, 50]
@@ -1637,7 +1602,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
               0.8,
               0.9
             ),
-            line(
+            createLine(
               [
                 [86, 44],
                 [92, 50],
@@ -1652,8 +1617,8 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           0.3,
           1.3
         ),
-        strokes([asFlow(input.outer, 'cool'), asFlow(input.hole, 'cool')], 'flow', 0.22, 1.1),
-        strokes(
+        createStrokes([asFlow(input.outer, 'cool'), asFlow(input.hole, 'cool')], 'flow', 0.22, 1.1),
+        createStrokes(
           [
             asFlow(output.outer, outerChanged ? 'warm' : 'primary'),
             asFlow(output.hole, holeChanged ? 'warm' : 'primary')
@@ -1662,12 +1627,12 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           0.22,
           1.1
         ),
-        sprites(
+        createSprites(
           [
-            dot(input.outer[0], 'hot', 2),
-            dot(input.hole[0], 'hot', 2),
-            dot(output.outer[0], 'hot', 2),
-            dot(output.hole[0], 'hot', 2)
+            createGlowDot(input.outer[0], 'hot', 2),
+            createGlowDot(input.hole[0], 'hot', 2),
+            createGlowDot(output.outer[0], 'hot', 2),
+            createGlowDot(output.hole[0], 'hot', 2)
           ],
           0.4
         )
@@ -1678,7 +1643,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   // Snapping and precision ----------------------------------------------------------------------
 
   'geometry-cleanup': {
-    parameters: [slider('grid', 'Grid size', 4, 14, 1, 7)],
+    parameters: [createSlider('grid', 'Grid size', 4, 14, 1, 7)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('path');
@@ -1709,16 +1674,16 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       }
       const nodes = [...lattice].map(key => key.split(',').map(Number) as Point);
       return [
-        sprites(
-          nodes.map(node => dot(node, 'dim', 0.6, 0.55)),
+        createSprites(
+          nodes.map(node => createGlowDot(node, 'dim', 0.6, 0.55)),
           0
         ),
-        strokes([line(raw, 'cool', 0.6, 0.45)]),
-        strokes([line(kept, 'warm', 1.3, 1)], 'flow', 0.25, 1.4),
-        sprites(
+        createStrokes([createLine(raw, 'cool', 0.6, 0.45)]),
+        createStrokes([createLine(kept, 'warm', 1.3, 1)], 'flow', 0.25, 1.4),
+        createSprites(
           [
-            ...kept.map(point => dot(point, 'warm', 1.5)),
-            ...dropped.map(point => dot(point, 'hot', 1.1, 0.8))
+            ...kept.map(point => createGlowDot(point, 'warm', 1.5)),
+            ...dropped.map(point => createGlowDot(point, 'hot', 1.1, 0.8))
           ],
           0.35
         )
@@ -1727,7 +1692,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'vertex-snap': {
-    parameters: [slider('tolerance', 'Tolerance', 1, 9, 0.5, 5)],
+    parameters: [createSlider('tolerance', 'Tolerance', 1, 9, 0.5, 5)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('noise');
@@ -1763,27 +1728,30 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       });
       const moved = park.filter((point, index) => point !== snapped[index]);
       return [
-        fills([area(reference, 'cool', 0.1), area(snapped, 'warm', 0.16)], 'pulse'),
-        strokes(
+        createFills(
+          [createArea(reference, 'cool', 0.1), createArea(snapped, 'warm', 0.16)],
+          'pulse'
+        ),
+        createStrokes(
           reference.map(point =>
-            loop(createCircle(point[0], point[1], p.tolerance, 24), 'dim', 0.45, 0.6)
+            createLoop(createCircle(point[0], point[1], p.tolerance, 24), 'dim', 0.45, 0.6)
           ),
           'pulse',
           0.3
         ),
-        strokes([loop(reference, 'cool', 1, 0.9)]),
-        strokes([loop(park, 'dim', 0.8, 0.7)]),
-        strokes([loop(snapped, 'warm', 1.3, 1)], 'flow', 0.22, 1.3),
-        strokes(
-          park.map((point, index) => line([point, snapped[index]], 'hot', 0.7, 0.9)),
+        createStrokes([createLoop(reference, 'cool', 1, 0.9)]),
+        createStrokes([createLoop(park, 'dim', 0.8, 0.7)]),
+        createStrokes([createLoop(snapped, 'warm', 1.3, 1)], 'flow', 0.22, 1.3),
+        createStrokes(
+          park.map((point, index) => createLine([point, snapped[index]], 'hot', 0.7, 0.9)),
           'flow',
           0.5,
           0.8
         ),
-        sprites(
+        createSprites(
           [
             ...toSprites(reference, 'cool', 1.7),
-            ...moved.map(point => dot(point, 'hot', 1.5, 0.7))
+            ...moved.map(point => createGlowDot(point, 'hot', 1.5, 0.7))
           ],
           0.3
         )
@@ -1792,7 +1760,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'segment-snap': {
-    parameters: [slider('tolerance', 'Tolerance', 2, 11, 0.5, 6)],
+    parameters: [createSlider('tolerance', 'Tolerance', 2, 11, 0.5, 6)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('nodes');
@@ -1832,15 +1800,15 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       }
       output.push(nodes[1]);
       return [
-        strokes([line(original, 'cool', p.tolerance * 2, 0.07)]),
-        strokes([line(original, 'dim', 0.7, 0.6)]),
-        strokes([line(output, 'warm', 1.4, 1)], 'flow', 0.25, 1.4),
-        sprites(
+        createStrokes([createLine(original, 'cool', p.tolerance * 2, 0.07)]),
+        createStrokes([createLine(original, 'dim', 0.7, 0.6)]),
+        createStrokes([createLine(output, 'warm', 1.4, 1)], 'flow', 0.25, 1.4),
+        createSprites(
           [
-            ...nodes.map(node => dot(node, 'cool', 1.6, 0.75)),
-            ...inserted.map(node => dot(node, 'hot', 2.4)),
-            dot(nodes[0], 'hot', 2.4),
-            dot(nodes[1], 'hot', 2.4)
+            ...nodes.map(node => createGlowDot(node, 'cool', 1.6, 0.75)),
+            ...inserted.map(node => createGlowDot(node, 'hot', 2.4)),
+            createGlowDot(nodes[0], 'hot', 2.4),
+            createGlowDot(nodes[1], 'hot', 2.4)
           ],
           0.4
         )
@@ -1850,8 +1818,8 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
 
   'line-precision-reduction': {
     parameters: [
-      slider('grid', 'Grid size', 4, 16, 1, 9),
-      choice('policy', 'Policy', ['valid-output', 'keep-collapsed'], 1)
+      createSlider('grid', 'Grid size', 4, 16, 1, 9),
+      createChoice('policenterY', 'PolicenterY', ['valid-output', 'keep-collapsed'], 1)
     ],
     pointer: 'none',
     build: ({fork, p}) => {
@@ -1891,25 +1859,34 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const lattice: SpriteItem[] = [];
       for (let column = 0; column <= columns; column++) {
         for (let row = 0; row <= rows; row++)
-          lattice.push(dot([column * stepX, row * stepY], 'dim', 0.45, 0.45));
+          lattice.push(createGlowDot([column * stepX, row * stepY], 'dim', 0.45, 0.45));
       }
       const collapsed = result.filter(item => item.collapsed);
       return [
-        sprites(lattice, 0),
-        strokes([...longLines, ...shortLines].map(points => line(points, 'cool', 0.6, 0.45))),
-        strokes(
-          result.filter(item => !item.collapsed).map(item => line(item.points, 'warm', 1.3, 1)),
+        createSprites(lattice, 0),
+        createStrokes(
+          [...longLines, ...shortLines].map(points => createLine(points, 'cool', 0.6, 0.45))
+        ),
+        createStrokes(
+          result
+            .filter(item => !item.collapsed)
+            .map(item => createLine(item.points, 'warm', 1.3, 1)),
           'flow',
           0.25,
           1.4
         ),
-        sprites(p.policy === 1 ? collapsed.map(item => dot(item.points[0], 'hot', 2.6)) : [], 0.6)
+        createSprites(
+          p.policenterY === 1
+            ? collapsed.map(item => createGlowDot(item.points[0], 'hot', 2.6))
+            : [],
+          0.6
+        )
       ];
     }
   },
 
   'polygon-precision-reduction': {
-    parameters: [slider('grid', 'Grid size', 6, 20, 1, 10)],
+    parameters: [createSlider('grid', 'Grid size', 6, 20, 1, 10)],
     pointer: 'none',
     build: ({fork, p}) => {
       const columns = Math.round(SCENE_WIDTH / p.grid);
@@ -1936,7 +1913,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       for (let row = 0; row < rows; row++) {
         for (let column = 0; column < columns; column++) {
           const point: Point = [(column + 0.5) * stepX, (row + 0.5) * stepY];
-          if (snapped.some(ring => ring && isPointInRing(point, ring)))
+          if (snapped.some(ring => ring && isInsideRing(point, ring)))
             values[row * columns + column] = 0.36;
         }
       }
@@ -1954,15 +1931,17 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       };
       return [
         field,
-        strokes(originals.map(ring => loop(ring, 'cool', 0.7, 0.55))),
-        strokes(
-          snapped.filter((ring): ring is Point[] => !!ring).map(ring => loop(ring, 'warm', 1.3, 1)),
+        createStrokes(originals.map(ring => createLoop(ring, 'cool', 0.7, 0.55))),
+        createStrokes(
+          snapped
+            .filter((ring): ring is Point[] => !!ring)
+            .map(ring => createLoop(ring, 'warm', 1.3, 1)),
           'flow',
           0.22,
           1.2
         ),
-        sprites(
-          collapsed.map(ring => dot(getRingCentroid(ring), 'hot', 2.8)),
+        createSprites(
+          collapsed.map(ring => createGlowDot(getRingCentroid(ring), 'hot', 2.8)),
           0.6
         )
       ];
@@ -1972,7 +1951,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   // Cutting loops and offsets ------------------------------------------------------------------
 
   'line-loop-removal': {
-    parameters: [slider('curl', 'Curl', 0.4, 2.2, 0.05, 1.7)],
+    parameters: [createSlider('curl', 'Curl', 0.4, 2.2, 0.05, 1.7)],
     pointer: 'none',
     build: ({p}) => {
       const samples = 90;
@@ -1993,9 +1972,9 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         for (let later = index + 2; later < path.length - 1; later++) {
           const hit = intersectSegments(path[index], path[index + 1], path[later], path[later + 1]);
           if (hit) {
-            kept.push(path[index], hit.point);
-            loops.push([hit.point, ...path.slice(index + 1, later + 1), hit.point]);
-            crossings.push(hit.point);
+            kept.push(path[index], hit);
+            loops.push([hit, ...path.slice(index + 1, later + 1), hit]);
+            crossings.push(hit);
             index = later + 1;
             found = true;
             break;
@@ -2008,24 +1987,27 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       }
       kept.push(path[path.length - 1]);
       return [
-        strokes([line(path, 'dim', 0.7, 0.55)]),
-        strokes(
-          loops.map(points => line(points, 'hot', 1.2, 0.95)),
+        createStrokes([createLine(path, 'dim', 0.7, 0.55)]),
+        createStrokes(
+          loops.map(points => createLine(points, 'hot', 1.2, 0.95)),
           'pulse',
           0.45
         ),
-        strokes([line(kept, 'warm', 1.5, 1)], 'flow', 0.2, 1.8),
-        sprites(
-          crossings.map(point => dot(point, 'hot', 2.4)),
+        createStrokes([createLine(kept, 'warm', 1.5, 1)], 'flow', 0.2, 1.8),
+        createSprites(
+          crossings.map(point => createGlowDot(point, 'hot', 2.4)),
           0.5
         ),
-        sprites([dot(path[0], 'cool', 2), dot(path[path.length - 1], 'cool', 2)], 0.2)
+        createSprites(
+          [createGlowDot(path[0], 'cool', 2), createGlowDot(path[path.length - 1], 'cool', 2)],
+          0.2
+        )
       ];
     }
   },
 
   'offset-curve-components': {
-    parameters: [slider('distance', 'Distance', 3, 14, 0.5, 8)],
+    parameters: [createSlider('distance', 'Distance', 3, 14, 0.5, 8)],
     pointer: 'none',
     build: ({p}) => {
       const source: Point[] = [
@@ -2047,15 +2029,15 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         raw.push([ax + nx, ay + ny], [bx + nx, by + ny]);
         // Round join around outer corners, so the raw curve stays at the offset distance.
         if (index + 2 < source.length) {
-          const [cx, cy] = source[index + 2];
-          const nextLength = Math.hypot(cx - bx, cy - by);
+          const [nextX, nextY] = source[index + 2];
+          const nextLength = Math.hypot(nextX - bx, nextY - by);
           const turnsAway =
-            ((cx - bx) / nextLength) * (nx / p.distance) +
-              ((cy - by) / nextLength) * (ny / p.distance) <
+            ((nextX - bx) / nextLength) * (nx / p.distance) +
+              ((nextY - by) / nextLength) * (ny / p.distance) <
             0;
           if (turnsAway) {
             const from = Math.atan2(ny, nx);
-            const to = Math.atan2(-(cx - bx), cy - by);
+            const to = Math.atan2(-(nextX - bx), nextY - by);
             let sweep = to - from;
             while (sweep > Math.PI) sweep -= Math.PI * 2;
             while (sweep < -Math.PI) sweep += Math.PI * 2;
@@ -2084,16 +2066,16 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         else discarded.push(piece);
       }
       return [
-        strokes([line(source, 'cool', 6, 0.1)]),
-        strokes([line(source, 'cool', 1.2, 0.9)]),
-        strokes([line(raw, 'dim', 0.6, 0.55)]),
-        strokes(
-          discarded.map(piece => line(piece, 'hot', 1, 0.7)),
+        createStrokes([createLine(source, 'cool', 6, 0.1)]),
+        createStrokes([createLine(source, 'cool', 1.2, 0.9)]),
+        createStrokes([createLine(raw, 'dim', 0.6, 0.55)]),
+        createStrokes(
+          discarded.map(piece => createLine(piece, 'hot', 1, 0.7)),
           'pulse',
           0.4
         ),
-        strokes(
-          keptPieces.map(piece => line(piece, 'warm', 1.5, 1)),
+        createStrokes(
+          keptPieces.map(piece => createLine(piece, 'warm', 1.5, 1)),
           'flow',
           0.25,
           1.5
@@ -2105,12 +2087,12 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   // Normalization and equality ------------------------------------------------------------------
 
   'normalize-polygons': {
-    parameters: [slider('vertices', 'Vertices', 5, 12, 1, 8)],
+    parameters: [createSlider('vertices', 'Vertices', 5, 12, 1, 8)],
     pointer: 'none',
     build: ({fork, p}) => {
       const unit = createBlob(fork('shape'), 0, 0, 1, Math.round(p.vertices), 0.32);
-      const place = (ring: Point[], cx: number, cy: number, scale: number) =>
-        ring.map(([x, y]): Point => [cx + x * scale, cy + y * scale]);
+      const place = (ring: Point[], centerX: number, centerY: number, scale: number) =>
+        ring.map(([x, y]): Point => [centerX + x * scale, centerY + y * scale]);
       const count = unit.length;
       const startA = 3 % count;
       const startB = (count - 2) % count;
@@ -2130,23 +2112,36 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       );
       const output = rotateTo(place(unit, 118, 50, 27), canonical);
       return [
-        strokes(
+        createStrokes(
           [
-            line(createArc([62, 30], [88, 46], 0.18, 14), 'dim', 0.7, 0.7),
-            line(createArc([62, 72], [88, 54], -0.18, 14), 'dim', 0.7, 0.7)
+            createLine(createArc([62, 30], [88, 46], 0.18, 14), 'dim', 0.7, 0.7),
+            createLine(createArc([62, 72], [88, 54], -0.18, 14), 'dim', 0.7, 0.7)
           ],
           'flow',
           0.3,
           1.2
         ),
-        fills(
-          [area(inputA, 'cool', 0.12), area(inputB, 'violet', 0.12), area(output, 'primary', 0.2)],
+        createFills(
+          [
+            createArea(inputA, 'cool', 0.12),
+            createArea(inputB, 'violet', 0.12),
+            createArea(output, 'primary', 0.2)
+          ],
           'pulse'
         ),
-        strokes([loop(inputA, 'cool', 1.1, 0.9), loop(inputB, 'violet', 1.1, 0.9)], 'flow', 0.2, 1),
-        strokes([loop(output, 'primary', 1.4, 1)], 'flow', 0.2, 1.1),
-        sprites(
-          [dot(inputA[0], 'hot', 2.6), dot(inputB[0], 'hot', 2.6), dot(output[0], 'warm', 3.4)],
+        createStrokes(
+          [createLoop(inputA, 'cool', 1.1, 0.9), createLoop(inputB, 'violet', 1.1, 0.9)],
+          'flow',
+          0.2,
+          1
+        ),
+        createStrokes([createLoop(output, 'primary', 1.4, 1)], 'flow', 0.2, 1.1),
+        createSprites(
+          [
+            createGlowDot(inputA[0], 'hot', 2.6),
+            createGlowDot(inputB[0], 'hot', 2.6),
+            createGlowDot(output[0], 'warm', 3.4)
+          ],
           0.5
         )
       ];
@@ -2154,7 +2149,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'canonical-polygon-equality': {
-    parameters: [slider('tolerance', 'Tolerance', 0, 2, 0.1, 0.8)],
+    parameters: [createSlider('tolerance', 'Tolerance', 0, 2, 0.1, 0.8)],
     pointer: 'none',
     build: ({fork, p}) => {
       const rows = [20, 50, 80];
@@ -2162,9 +2157,10 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const outlines: PathItem[] = [];
       const fillItems: PolygonItem[] = [];
       const lamps: SpriteItem[] = [];
-      rows.forEach((cy, index) => {
+      rows.forEach((centerY, index) => {
         const unit = createBlob(fork(`row-${index}`), 0, 0, 1, 7, 0.28);
-        const shape = (cx: number) => unit.map(([x, y]): Point => [cx + x * 12, cy + y * 9]);
+        const shape = (centerX: number) =>
+          unit.map(([x, y]): Point => [centerX + x * 12, centerY + y * 9]);
         const left = shape(24);
         const right = shape(96).map(
           ([x, y], vertex): Point => (vertex === 2 ? [x + jitterMagnitude[index], y] : [x, y])
@@ -2173,26 +2169,26 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         const overlayA = shape(132);
         const overlayB = right.map(([x, y]): Point => [x + 36, y]);
         fillItems.push(
-          area(left, 'cool', 0.14, index * 0.3),
-          area(right, 'warm', 0.14, index * 0.3)
+          createArea(left, 'cool', 0.14, index * 0.3),
+          createArea(right, 'warm', 0.14, index * 0.3)
         );
-        outlines.push(loop(left, 'cool', 1, 0.9), loop(right, 'warm', 1, 0.9));
-        outlines.push(loop(overlayA, 'cool', 1, 0.9), loop(overlayB, 'warm', 1, 0.9));
+        outlines.push(createLoop(left, 'cool', 1, 0.9), createLoop(right, 'warm', 1, 0.9));
+        outlines.push(createLoop(overlayA, 'cool', 1, 0.9), createLoop(overlayB, 'warm', 1, 0.9));
         lamps.push(
-          dot([56, cy], equal ? 'primary' : 'hot', 2.6),
-          dot([70, cy], equal ? 'primary' : 'hot', 0.01, 0)
+          createGlowDot([56, centerY], equal ? 'primary' : 'hot', 2.6),
+          createGlowDot([70, centerY], equal ? 'primary' : 'hot', 0.01, 0)
         );
-        lamps.push(dot([156, cy], equal ? 'primary' : 'hot', 2.4));
+        lamps.push(createGlowDot([156, centerY], equal ? 'primary' : 'hot', 2.4));
       });
       return [
-        fills(fillItems, 'pulse'),
-        strokes(outlines, 'pulse', 0.25),
-        strokes(
-          rows.map(cy =>
-            line(
+        createFills(fillItems, 'pulse'),
+        createStrokes(outlines, 'pulse', 0.25),
+        createStrokes(
+          rows.map(centerY =>
+            createLine(
               [
-                [40, cy],
-                [76, cy]
+                [40, centerY],
+                [76, centerY]
               ],
               'dim',
               0.5,
@@ -2203,13 +2199,13 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           0.3,
           0.8
         ),
-        sprites(lamps, 0.5)
+        createSprites(lamps, 0.5)
       ];
     }
   },
 
   'normalize-geometry': {
-    parameters: [slider('nesting', 'Nesting', 1, 3, 1, 2)],
+    parameters: [createSlider('nesting', 'Nesting', 1, 3, 1, 2)],
     pointer: 'none',
     build: ({p}) => {
       const leaf = (kind: TreeKind): TreeNode => ({kind});
@@ -2244,10 +2240,10 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const glyphDots: SpriteItem[] = [];
       leaves.forEach(node => {
         const [, y] = node.point;
-        if (node.kind === 'point') glyphDots.push(dot([136, y], 'cool', 2.4));
+        if (node.kind === 'point') glyphDots.push(createGlowDot([136, y], 'cool', 2.4));
         else if (node.kind === 'line')
           glyphLines.push(
-            line(
+            createLine(
               [
                 [126, y + 2],
                 [136, y - 2],
@@ -2259,30 +2255,30 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
             )
           );
         else if (node.kind === 'polygon')
-          glyphFills.push(area(createRegularPolygon(136, y, 4.6, 5, 0.3), 'primary', 0.45));
-        else glyphDots.push(dot([136, y], 'dim', 1.5, 0.6));
+          glyphFills.push(createArea(createRegularPolygon(136, y, 4.6, 5, 0.3), 'primary', 0.45));
+        else glyphDots.push(createGlowDot([136, y], 'dim', 1.5, 0.6));
       });
       glyphs.push(
-        fills(glyphFills, 'pulse'),
-        strokes(glyphLines, 'pulse', 0.3),
-        sprites(glyphDots, 0.4)
+        createFills(glyphFills, 'pulse'),
+        createStrokes(glyphLines, 'pulse', 0.3),
+        createSprites(glyphDots, 0.4)
       );
       return [
-        strokes(
-          tree.links.map(link => line(link, 'violet', 0.8, 0.7)),
+        createStrokes(
+          tree.links.map(link => createLine(link, 'violet', 0.8, 0.7)),
           'flow',
           0.3,
           1.1
         ),
-        strokes(
-          leaves.map(node => line([node.point, [124, node.point[1]]], 'dim', 0.4, 0.5)),
+        createStrokes(
+          leaves.map(node => createLine([node.point, [124, node.point[1]]], 'dim', 0.4, 0.5)),
           'flow',
           0.35,
           0.8
         ),
-        sprites(
+        createSprites(
           tree.nodes.map((node, index) =>
-            dot(
+            createGlowDot(
               node.point,
               node.depth === 0 ? 'hot' : TREE_ROLES[node.kind],
               node.leaf ? 2.2 : 2.8,
@@ -2298,7 +2294,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'canonical-geometry-equality': {
-    parameters: [choice('verdict', 'Trees', ['equal', 'different'], 1)],
+    parameters: [createChoice('verdict', 'Trees', ['equal', 'different'], 1)],
     pointer: 'none',
     build: ({p}) => {
       const leaf = (kind: TreeKind): TreeNode => ({kind});
@@ -2319,7 +2315,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         const other = treeB.nodes[index];
         const matches = node.kind === other.kind;
         links.push(
-          line(
+          createLine(
             [node.point, other.point],
             matches ? 'cool' : 'hot',
             matches ? 0.4 : 0.9,
@@ -2328,7 +2324,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           )
         );
         markers.push(
-          dot(
+          createGlowDot(
             node.point,
             node.depth === 0 ? 'hot' : TREE_ROLES[node.kind],
             node.leaf ? 2.2 : 2.8,
@@ -2337,7 +2333,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           )
         );
         markers.push(
-          dot(
+          createGlowDot(
             other.point,
             node.depth === 0 ? 'hot' : TREE_ROLES[other.kind],
             other.leaf ? 2.2 : 2.8,
@@ -2348,10 +2344,15 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       });
       const verdict: Role = different ? 'hot' : 'primary';
       return [
-        strokes(links, 'flow', 0.35, 0.9),
-        strokes([...treeA.links, ...treeB.links].map(link => line(link, 'violet', 0.8, 0.6))),
-        sprites(markers, 0.3),
-        sprites([dot([80, 50], verdict, 6, 0.4), dot([80, 50], verdict, 3.4, 1)], 0.5)
+        createStrokes(links, 'flow', 0.35, 0.9),
+        createStrokes(
+          [...treeA.links, ...treeB.links].map(link => createLine(link, 'violet', 0.8, 0.6))
+        ),
+        createSprites(markers, 0.3),
+        createSprites(
+          [createGlowDot([80, 50], verdict, 6, 0.4), createGlowDot([80, 50], verdict, 3.4, 1)],
+          0.5
+        )
       ];
     }
   },
@@ -2359,7 +2360,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   // Subdivision, hulls, skeletons -------------------------------------------------------------
 
   'subdivide-polygons': {
-    parameters: [slider('depth', 'Splits', 1, 5, 1, 3)],
+    parameters: [createSlider('depth', 'Splits', 1, 5, 1, 3)],
     pointer: 'none',
     build: ({fork, p}) => {
       const coast = createBlob(fork('coast'), 80, 50, 40, 44, 0.55, 0.78);
@@ -2367,15 +2368,15 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       for (let level = 0; level < Math.round(p.depth); level++) {
         const next: Point[][] = [];
         for (const piece of pieces) {
-          const bounds = getBounds(piece);
-          const vertical = bounds.maxX - bounds.minX > bounds.maxY - bounds.minY;
-          const mid = vertical ? (bounds.minX + bounds.maxX) / 2 : (bounds.minY + bounds.maxY) / 2;
+          const [minimumX, minimumY, maximumX, maximumY] = getRingBounds(piece);
+          const vertical = maximumX - minimumX > maximumY - minimumY;
+          const middle = vertical ? (minimumX + maximumX) / 2 : (minimumY + maximumY) / 2;
           const first = vertical
-            ? clipRingHalfPlane(piece, 1, 0, mid)
-            : clipRingHalfPlane(piece, 0, 1, mid);
+            ? clipRingBelowLimit(piece, 1, 0, middle)
+            : clipRingBelowLimit(piece, 0, 1, middle);
           const second = vertical
-            ? clipRingHalfPlane(piece, -1, 0, -mid)
-            : clipRingHalfPlane(piece, 0, -1, -mid);
+            ? clipRingBelowLimit(piece, -1, 0, -middle)
+            : clipRingBelowLimit(piece, 0, -1, -middle);
           for (const half of [first, second]) if (half.length > 2) next.push(half);
         }
         pieces = next;
@@ -2388,13 +2389,17 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         );
       });
       return [
-        strokes([loop(coast, 'dim', 0.7, 0.55)]),
-        fills(
-          shrunk.map((piece, index) => area(piece, roles[index % 4], 0.3, (index * 0.17) % 1)),
+        createStrokes([createLoop(coast, 'dim', 0.7, 0.55)]),
+        createFills(
+          shrunk.map((piece, index) =>
+            createArea(piece, roles[index % 4], 0.3, (index * 0.17) % 1)
+          ),
           'pulse'
         ),
-        strokes(
-          shrunk.map((piece, index) => loop(piece, roles[index % 4], 0.8, 0.9, (index * 0.17) % 1)),
+        createStrokes(
+          shrunk.map((piece, index) =>
+            createLoop(piece, roles[index % 4], 0.8, 0.9, (index * 0.17) % 1)
+          ),
           'pulse',
           0.25
         )
@@ -2403,7 +2408,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'ratio-concave-hull': {
-    parameters: [slider('ratio', 'Ratio', 0.05, 1, 0.05, 0.22)],
+    parameters: [createSlider('ratio', 'Ratio', 0.05, 1, 0.05, 0.22)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('points');
@@ -2442,12 +2447,12 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           let crosses = false;
           for (let index = 0; index < boundary.length && !crosses; index++) {
             if (index === widest) continue;
-            const a = boundary[index];
-            const b = boundary[(index + 1) % boundary.length];
-            if (a !== from && a !== to && b !== from && b !== to) {
+            const start = boundary[index];
+            const end = boundary[(index + 1) % boundary.length];
+            if (start !== from && start !== to && end !== from && end !== to) {
               if (
-                intersectSegments(from, candidate, a, b) ||
-                intersectSegments(candidate, to, a, b)
+                intersectSegments(from, candidate, start, end) ||
+                intersectSegments(candidate, to, start, end)
               )
                 crosses = true;
             }
@@ -2467,16 +2472,19 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         boundary.splice(widest + 1, 0, choice);
       }
       return [
-        strokes([loop(hull, 'dim', 0.8, 0.8)], 'pulse', 0.2),
-        fills([area(boundary, 'violet', 0.2)], 'pulse'),
-        strokes([loop(boundary, 'warm', 1.4, 1)], 'flow', 0.22, 1.5),
-        sprites([...toSprites(points, 'primary', 1.1), ...toSprites(boundary, 'warm', 1.3)], 0.3)
+        createStrokes([createLoop(hull, 'dim', 0.8, 0.8)], 'pulse', 0.2),
+        createFills([createArea(boundary, 'violet', 0.2)], 'pulse'),
+        createStrokes([createLoop(boundary, 'warm', 1.4, 1)], 'flow', 0.22, 1.5),
+        createSprites(
+          [...toSprites(points, 'primary', 1.1), ...toSprites(boundary, 'warm', 1.3)],
+          0.3
+        )
       ];
     }
   },
 
   'vector-straight-skeleton': {
-    parameters: [slider('offsets', 'Offsets', 2, 12, 1, 6)],
+    parameters: [createSlider('offsets', 'Offsets', 2, 12, 1, 6)],
     pointer: 'none',
     build: ({p}) => {
       const outer: Point[] = [
@@ -2508,9 +2516,9 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           if (!isPointInRings([x, y], rings)) return {depth: 0, id: -1};
           let best = Infinity;
           let id = -1;
-          segments.forEach(([a, b], index) => {
-            const dx = Math.max(Math.min(a[0], b[0]) - x, 0, x - Math.max(a[0], b[0]));
-            const dy = Math.max(Math.min(a[1], b[1]) - y, 0, y - Math.max(a[1], b[1]));
+          segments.forEach(([start, end], index) => {
+            const dx = Math.max(Math.min(start[0], end[0]) - x, 0, x - Math.max(start[0], end[0]));
+            const dy = Math.max(Math.min(start[1], end[1]) - y, 0, y - Math.max(start[1], end[1]));
             const distance = Math.max(dx, dy);
             if (distance < best) {
               best = distance;
@@ -2533,14 +2541,16 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       };
       return [
         field,
-        strokes(
-          [loop(outer, 'primary', 1.2, 0.95), loop(hole, 'primary', 1.2, 0.95)],
+        createStrokes(
+          [createLoop(outer, 'primary', 1.2, 0.95), createLoop(hole, 'primary', 1.2, 0.95)],
           'flow',
           0.2,
           1.4
         ),
-        sprites(
-          result.ridge.map((point, index) => dot(point, 'warm', 0.9, 0.85, (index % 40) / 40)),
+        createSprites(
+          result.ridge.map((point, index) =>
+            createGlowDot(point, 'warm', 0.9, 0.85, (index % 40) / 40)
+          ),
           0.35
         )
       ];
@@ -2548,7 +2558,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'convex-straight-skeleton': {
-    parameters: [slider('inset', 'Inset', 5, 95, 5, 45, '%')],
+    parameters: [createSlider('inset', 'Inset', 5, 95, 5, 45, '%')],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('lot');
@@ -2557,10 +2567,14 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         return [80 + Math.cos(angle) * 58, 50 + Math.sin(angle) * 36];
       });
       const sign = getSignedArea(ring) > 0 ? 1 : -1;
-      const planes = ring.map((a, index) => {
-        const b = ring[(index + 1) % ring.length];
-        const length = getDistance(a, b);
-        return {a, nx: (-(b[1] - a[1]) / length) * sign, ny: ((b[0] - a[0]) / length) * sign};
+      const planes = ring.map((start, index) => {
+        const end = ring[(index + 1) % ring.length];
+        const length = getDistance(start, end);
+        return {
+          start,
+          nx: (-(end[1] - start[1]) / length) * sign,
+          ny: ((end[0] - start[0]) / length) * sign
+        };
       });
       const columns = 80;
       const rowsCount = 50;
@@ -2571,7 +2585,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           let best = Infinity;
           let id = -1;
           planes.forEach((plane, index) => {
-            const depth = (x - plane.a[0]) * plane.nx + (y - plane.a[1]) * plane.ny;
+            const depth = (x - plane.start[0]) * plane.nx + (y - plane.start[1]) * plane.ny;
             if (depth < best) {
               best = depth;
               id = index;
@@ -2585,11 +2599,11 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       let inset = ring;
       for (const plane of planes) {
         if (inset.length < 3) break;
-        inset = clipRingHalfPlane(
+        inset = clipRingBelowLimit(
           inset,
           -plane.nx,
           -plane.ny,
-          -(plane.nx * plane.a[0] + plane.ny * plane.a[1]) - distance
+          -(plane.nx * plane.start[0] + plane.ny * plane.start[1]) - distance
         );
       }
       const field: FieldLayer = {
@@ -2605,12 +2619,14 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       };
       return [
         field,
-        strokes([loop(ring, 'primary', 1.2, 0.95)], 'flow', 0.2, 1.4),
-        sprites(
-          result.ridge.map((point, index) => dot(point, 'warm', 0.9, 0.85, (index % 40) / 40)),
+        createStrokes([createLoop(ring, 'primary', 1.2, 0.95)], 'flow', 0.2, 1.4),
+        createSprites(
+          result.ridge.map((point, index) =>
+            createGlowDot(point, 'warm', 0.9, 0.85, (index % 40) / 40)
+          ),
           0.35
         ),
-        strokes(inset.length > 2 ? [loop(inset, 'hot', 1.2, 1)] : [], 'pulse', 0.4)
+        createStrokes(inset.length > 2 ? [createLoop(inset, 'hot', 1.2, 1)] : [], 'pulse', 0.4)
       ];
     }
   },
@@ -2618,11 +2634,11 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   // Geodesy and projection -----------------------------------------------------------------
 
   'geodesic-pairs': {
-    parameters: [slider('pairs', 'Pairs', 2, 8, 1, 5)],
+    parameters: [createSlider('pairs', 'Pairs', 2, 8, 1, 5)],
     pointer: 'hover',
     build: ({p, pointer}) => {
-      const centerLon = pointer ? (pointer[0] / SCENE_WIDTH) * 240 - 100 : 20;
-      const centerLat = 25;
+      const centerLongitude = pointer ? (pointer[0] / SCENE_WIDTH) * 240 - 100 : 20;
+      const centerLatitude = 25;
       const cities: [number, number][] = [
         [-74, 40],
         [-0.1, 51.5],
@@ -2642,40 +2658,44 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       for (let index = 0; index < Math.round(p.pairs); index++) {
         const from = cities[index];
         const to = cities[(index + 3 + (index % 3)) % cities.length];
-        for (const piece of projectGlobePath(getGreatCircle(from, to), centerLon, centerLat)) {
-          arcs.push(line(piece, 'cool', 1.1, 0.95, index / 8));
+        for (const piece of projectGlobePath(
+          getGreatCircle(from, to),
+          centerLongitude,
+          centerLatitude
+        )) {
+          arcs.push(createLine(piece, 'cool', 1.1, 0.95, index / 8));
         }
-        const middle = fromVector(
+        const middle = toLonLat(
           slerpVectors(toVector(from[0], from[1]), toVector(to[0], to[1]), 0.5)
         );
         const projections = [from, to, middle].map(point =>
-          projectGlobe(point[0], point[1], centerLon, centerLat)
+          projectGlobePoint(point[0], point[1], centerLongitude, centerLatitude)
         );
-        if (projections[0].visible) origins.push(dot(projections[0].point, 'cool', 2));
-        if (projections[1].visible) targets.push(dot(projections[1].point, 'warm', 2));
+        if (projections[0].visible) origins.push(createGlowDot(projections[0].point, 'cool', 2));
+        if (projections[1].visible) targets.push(createGlowDot(projections[1].point, 'warm', 2));
         if (projections[2].visible)
-          midpoints.push(dot(projections[2].point, 'hot', 1.6, 0.9, index / 8));
+          midpoints.push(createGlowDot(projections[2].point, 'hot', 1.6, 0.9, index / 8));
       }
       return [
-        ...createGlobeBase(centerLon, centerLat),
-        strokes(arcs, 'flow', 0.22, 1.2),
-        sprites([...origins, ...targets, ...midpoints], 0.4)
+        ...createGlobeBase(centerLongitude, centerLatitude),
+        createStrokes(arcs, 'flow', 0.22, 1.2),
+        createSprites([...origins, ...targets, ...midpoints], 0.4)
       ];
     }
   },
 
   'geodesic-destination': {
     parameters: [
-      slider('distance', 'Distance', 10, 70, 1, 35, '°'),
-      slider('bearings', 'Bearings', 4, 24, 1, 12)
+      createSlider('distance', 'Distance', 10, 70, 1, 35, '°'),
+      createSlider('bearings', 'Bearings', 4, 24, 1, 12)
     ],
     pointer: 'hover',
     build: ({p, pointer}) => {
       const origin: [number, number] = pointer
         ? [-50 + (pointer[0] / SCENE_WIDTH) * 130, 60 - (pointer[1] / SCENE_HEIGHT) * 60]
         : [10, 25];
-      const centerLon = origin[0];
-      const centerLat = 30;
+      const centerLongitude = origin[0];
+      const centerLatitude = 30;
       const rays: PathItem[] = [];
       const ends: SpriteItem[] = [];
       const count = Math.round(p.bearings);
@@ -2684,14 +2704,16 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         const end = getDestination(origin, bearing, p.distance);
         for (const piece of projectGlobePath(
           getGreatCircle(origin, end, 16),
-          centerLon,
-          centerLat
+          centerLongitude,
+          centerLatitude
         )) {
-          rays.push(line(piece, index === 0 ? 'hot' : 'warm', 0.9, 0.9, index / count));
+          rays.push(createLine(piece, index === 0 ? 'hot' : 'warm', 0.9, 0.9, index / count));
         }
-        const projected = projectGlobe(end[0], end[1], centerLon, centerLat);
+        const projected = projectGlobePoint(end[0], end[1], centerLongitude, centerLatitude);
         if (projected.visible)
-          ends.push(dot(projected.point, index === 0 ? 'hot' : 'warm', 1.8, 1, index / count));
+          ends.push(
+            createGlowDot(projected.point, index === 0 ? 'hot' : 'warm', 1.8, 1, index / count)
+          );
       }
       const ring: [number, number][] = [];
       const sector: [number, number][] = [origin];
@@ -2702,26 +2724,38 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       }
       sector.push(origin);
       const sectorPoints = sector
-        .map(([longitude, latitude]) => projectGlobe(longitude, latitude, centerLon, centerLat))
+        .map(([longitude, latitude]) =>
+          projectGlobePoint(longitude, latitude, centerLongitude, centerLatitude)
+        )
         .filter(item => item.visible)
         .map(item => item.point);
-      const origin2d = projectGlobe(origin[0], origin[1], centerLon, centerLat).point;
+      const origin2d = projectGlobePoint(
+        origin[0],
+        origin[1],
+        centerLongitude,
+        centerLatitude
+      ).point;
       return [
-        ...createGlobeBase(centerLon, centerLat),
-        fills(sectorPoints.length > 2 ? [area(sectorPoints, 'primary', 0.2)] : [], 'pulse'),
-        strokes(
-          projectGlobePath(ring, centerLon, centerLat).map(piece => line(piece, 'cool', 1, 0.9)),
+        ...createGlobeBase(centerLongitude, centerLatitude),
+        createFills(
+          sectorPoints.length > 2 ? [createArea(sectorPoints, 'primary', 0.2)] : [],
+          'pulse'
+        ),
+        createStrokes(
+          projectGlobePath(ring, centerLongitude, centerLatitude).map(piece =>
+            createLine(piece, 'cool', 1, 0.9)
+          ),
           'pulse',
           0.3
         ),
-        strokes(rays, 'flow', 0.3, 1),
-        sprites([dot(origin2d, 'hot', 3), ...ends], 0.4)
+        createStrokes(rays, 'flow', 0.3, 1),
+        createSprites([createGlowDot(origin2d, 'hot', 3), ...ends], 0.4)
       ];
     }
   },
 
   'local-frame-projection': {
-    parameters: [slider('count', 'Points', 8, 60, 2, 28)],
+    parameters: [createSlider('count', 'Points', 8, 60, 2, 28)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('points');
@@ -2739,32 +2773,32 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const meridians: PathItem[] = [];
       for (let step = 0; step <= 4; step++) {
         const u = step / 4;
-        meridians.push(line([toDegrees([u, 0]), toDegrees([u, 1])], 'dim', 0.4, 0.6));
-        meridians.push(line([toDegrees([0, u]), toDegrees([1, u])], 'dim', 0.4, 0.6));
-        meridians.push(line([toMeters([u, 0]), toMeters([u, 1])], 'cool', 0.4, 0.5));
-        meridians.push(line([toMeters([0, u]), toMeters([1, u])], 'cool', 0.4, 0.5));
+        meridians.push(createLine([toDegrees([u, 0]), toDegrees([u, 1])], 'dim', 0.4, 0.6));
+        meridians.push(createLine([toDegrees([0, u]), toDegrees([1, u])], 'dim', 0.4, 0.6));
+        meridians.push(createLine([toMeters([u, 0]), toMeters([u, 1])], 'cool', 0.4, 0.5));
+        meridians.push(createLine([toMeters([0, u]), toMeters([1, u])], 'cool', 0.4, 0.5));
       }
       const flows = unitPoints.map((point, index) =>
-        line([toDegrees(point), [80, 50], toMeters(point)], 'warm', 0.3, 0.22, index / count)
+        createLine([toDegrees(point), [80, 50], toMeters(point)], 'warm', 0.3, 0.22, index / count)
       );
       return [
-        strokes(meridians),
-        strokes(
+        createStrokes(meridians),
+        createStrokes(
           flows.map(flow => ({...flow, points: [flow.points[0], flow.points[2]]})),
           'flow',
           0.35,
           0.8
         ),
-        sprites(
+        createSprites(
           [
             ...unitPoints.map((point, index) =>
-              dot(toDegrees(point), 'dim', 1.3, 0.9, index / count)
+              createGlowDot(toDegrees(point), 'dim', 1.3, 0.9, index / count)
             ),
             ...unitPoints.map((point, index) =>
-              dot(toMeters(point), 'warm', 1.3, 0.95, index / count)
+              createGlowDot(toMeters(point), 'warm', 1.3, 0.95, index / count)
             ),
-            dot(toDegrees([0.5, 0.5]), 'hot', 2.6),
-            dot(toMeters([0.5, 0.5]), 'hot', 2.6)
+            createGlowDot(toDegrees([0.5, 0.5]), 'hot', 2.6),
+            createGlowDot(toMeters([0.5, 0.5]), 'hot', 2.6)
           ],
           0.35
         )
@@ -2773,31 +2807,33 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
   },
 
   'lon-lat-polygon-preparation': {
-    parameters: [slider('spacing', 'Densify step', 4, 14, 1, 7, '°')],
+    parameters: [createSlider('spacing', 'Densify step', 4, 14, 1, 7, '°')],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const left = 14;
       const width = 132;
       const toX = (longitude: number) => left + ((longitude + 180) / 360) * width;
       const toY = (latitude: number) => 50 - latitude * 0.68;
-      const centerLon = pointer ? clamp(((pointer[0] - left) / width) * 360 - 180, -180, 180) : 172;
-      const unwrapped = createBlob(fork('shape'), centerLon, 6, 32, 14, 0.28, 0.95);
+      const centerLongitude = pointer
+        ? clamp(((pointer[0] - left) / width) * 360 - 180, -180, 180)
+        : 172;
+      const unwrapped = createBlob(fork('shape'), centerLongitude, 6, 32, 14, 0.28, 0.95);
       const wrap = (longitude: number) =>
         longitude > 180 ? longitude - 360 : longitude < -180 ? longitude + 360 : longitude;
       const naive = unwrapped.map(
         ([longitude, latitude]): Point => [toX(wrap(longitude)), toY(latitude)]
       );
       let pieces: Point[][] = [unwrapped];
-      const bounds = getBounds(unwrapped);
-      if (bounds.maxX > 180) {
+      const [minimumX, , maximumX] = getRingBounds(unwrapped);
+      if (maximumX > 180) {
         pieces = [
-          clipRingHalfPlane(unwrapped, 1, 0, 180),
-          clipRingHalfPlane(unwrapped, -1, 0, -180).map(([x, y]): Point => [x - 360, y])
+          clipRingBelowLimit(unwrapped, 1, 0, 180),
+          clipRingBelowLimit(unwrapped, -1, 0, -180).map(([x, y]): Point => [x - 360, y])
         ];
-      } else if (bounds.minX < -180) {
+      } else if (minimumX < -180) {
         pieces = [
-          clipRingHalfPlane(unwrapped, -1, 0, 180),
-          clipRingHalfPlane(unwrapped, 1, 0, -180).map(([x, y]): Point => [x + 360, y])
+          clipRingBelowLimit(unwrapped, -1, 0, 180),
+          clipRingBelowLimit(unwrapped, 1, 0, -180).map(([x, y]): Point => [x + 360, y])
         ];
       }
       pieces = pieces.filter(piece => piece.length > 2);
@@ -2806,15 +2842,18 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const densified: SpriteItem[] = [];
       for (const piece of pieces) {
         for (let index = 0; index < piece.length; index++) {
-          const a = piece[index];
-          const b = piece[(index + 1) % piece.length];
-          const length = getDistance(a, b);
+          const start = piece[index];
+          const end = piece[(index + 1) % piece.length];
+          const length = getDistance(start, end);
           const inserts = Math.floor(length / p.spacing);
           for (let step = 1; step <= inserts; step++) {
             const amount = step / (inserts + 1);
             densified.push(
-              dot(
-                [toX(mixNumbers(a[0], b[0], amount)), toY(mixNumbers(a[1], b[1], amount))],
+              createGlowDot(
+                [
+                  toX(mixNumbers(start[0], end[0], amount)),
+                  toY(mixNumbers(start[1], end[1], amount))
+                ],
                 'primary',
                 0.7,
                 0.7,
@@ -2833,7 +2872,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       const meridians: PathItem[] = [];
       for (let longitude = -120; longitude <= 120; longitude += 60)
         meridians.push(
-          line(
+          createLine(
             [
               [toX(longitude), 16],
               [toX(longitude), 84]
@@ -2845,7 +2884,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         );
       for (let latitude = -30; latitude <= 30; latitude += 30)
         meridians.push(
-          line(
+          createLine(
             [
               [left, toY(latitude)],
               [left + width, toY(latitude)]
@@ -2856,14 +2895,14 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           )
         );
       return [
-        strokes(meridians),
-        fills([area(naive, 'hot', 0.07)]),
-        strokes([loop(naive, 'hot', 0.6, 0.35)]),
-        strokes([loop(frame, 'cool', 0.6, 0.6)]),
-        strokes(
+        createStrokes(meridians),
+        createFills([createArea(naive, 'hot', 0.07)]),
+        createStrokes([createLoop(naive, 'hot', 0.6, 0.35)]),
+        createStrokes([createLoop(frame, 'cool', 0.6, 0.6)]),
+        createStrokes(
           split
             ? [
-                line(
+                createLine(
                   [
                     [left, 16],
                     [left, 84]
@@ -2872,7 +2911,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
                   1.6,
                   0.95
                 ),
-                line(
+                createLine(
                   [
                     [left + width, 16],
                     [left + width, 84]
@@ -2886,25 +2925,27 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           'pulse',
           0.5
         ),
-        fills(
+        createFills(
           screenPieces.map((piece, index) =>
-            area(piece, index === 0 ? 'primary' : 'warm', 0.3, index * 0.5)
+            createArea(piece, index === 0 ? 'primary' : 'warm', 0.3, index * 0.5)
           ),
           'pulse'
         ),
-        strokes(
-          screenPieces.map((piece, index) => loop(piece, index === 0 ? 'primary' : 'warm', 1.3, 1)),
+        createStrokes(
+          screenPieces.map((piece, index) =>
+            createLoop(piece, index === 0 ? 'primary' : 'warm', 1.3, 1)
+          ),
           'flow',
           0.2,
           1.3
         ),
-        sprites(densified, 0.3)
+        createSprites(densified, 0.3)
       ];
     }
   },
 
   'study-window-preparation': {
-    parameters: [slider('cells', 'Mask cells', 12, 64, 4, 32)],
+    parameters: [createSlider('cells', 'Mask cells', 12, 64, 4, 32)],
     pointer: 'none',
     build: ({fork, p}) => {
       const ring = createBlob(fork('window'), 80, 50, 32, 18, 0.32, 0.85);
@@ -2915,7 +2956,7 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
       for (let row = 0; row < rows; row++) {
         for (let column = 0; column < columns; column++) {
           if (
-            isPointInRing(
+            isInsideRing(
               [((column + 0.5) / columns) * SCENE_WIDTH, ((row + 0.5) / rows) * SCENE_HEIGHT],
               ring
             )
@@ -2936,13 +2977,13 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
         speed: 0.3
       };
       // Interior-on-the-left markers just inside every edge midpoint.
-      const markers: SpriteItem[] = ring.map((a, index) => {
-        const b = ring[(index + 1) % ring.length];
-        const length = getDistance(a, b) || 1;
-        return dot(
+      const markers: SpriteItem[] = ring.map((start, index) => {
+        const end = ring[(index + 1) % ring.length];
+        const length = getDistance(start, end) || 1;
+        return createGlowDot(
           [
-            (a[0] + b[0]) / 2 - ((b[1] - a[1]) / length) * 3 * sign,
-            (a[1] + b[1]) / 2 + ((b[0] - a[0]) / length) * 3 * sign
+            (start[0] + end[0]) / 2 - ((end[1] - start[1]) / length) * 3 * sign,
+            (start[1] + end[1]) / 2 + ((end[0] - start[0]) / length) * 3 * sign
           ],
           'warm',
           0.9,
@@ -2950,12 +2991,15 @@ export const GEOMETRY_PROCESSING_PREVIEWS: Record<string, EntryPreview> = {
           index / ring.length
         );
       });
-      const bounds = getBoundsRing(ring);
+      const bounds = createRectangleRing(...getRingBounds(ring));
       return [
         field,
-        strokes([loop(bounds, 'dim', 0.5, 0.7)], 'pulse', 0.2),
-        strokes([loop(ring, 'primary', 1.4, 1)], 'flow', 0.25, 1.4),
-        sprites([...markers, ...bounds.map(corner => dot(corner, 'cool', 1.2, 0.8))], 0.4)
+        createStrokes([createLoop(bounds, 'dim', 0.5, 0.7)], 'pulse', 0.2),
+        createStrokes([createLoop(ring, 'primary', 1.4, 1)], 'flow', 0.25, 1.4),
+        createSprites(
+          [...markers, ...bounds.map(corner => createGlowDot(corner, 'cool', 1.2, 0.8))],
+          0.4
+        )
       ];
     }
   }

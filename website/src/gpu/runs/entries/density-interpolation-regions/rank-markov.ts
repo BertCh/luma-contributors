@@ -31,7 +31,6 @@ export default defineOperationRun({
         values: builder.upload('values', 'float32', kept).view,
         periodCount: PERIOD_COUNT,
         mode: current.mode === 0 ? 'full-rank' : 'geographic-rank',
-        tieOrder: current.tieOrder === 0 ? 'giddy' : 'row-id',
         output: {
           ranks: ranks.view,
           mobility: mobility.view,

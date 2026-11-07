@@ -26,6 +26,20 @@ import {
   type EntryPreview
 } from '../helpers.ts';
 import {
+  closeRing,
+  createRectangleRing,
+  getRingBounds,
+  getVertexMean,
+  isInsideRing
+} from '../geometry.ts';
+import {
+  createChoice,
+  createFillLayer,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer
+} from '../layers.ts';
+import {
   SCENE_HEIGHT,
   SCENE_WIDTH,
   type PathItem,
@@ -39,49 +53,8 @@ import {
 const WIDTH = SCENE_WIDTH;
 const HEIGHT = SCENE_HEIGHT;
 
-// ---------------------------------------------------------------------------------------------
-// Local helpers
-
 function getValueRole(value: number): Role {
   return getClassRole(Math.round(clamp(value, 0, 1) * 4), 5);
-}
-
-function createRectRing(x0: number, y0: number, x1: number, y1: number): Point[] {
-  return [
-    [x0, y0],
-    [x1, y0],
-    [x1, y1],
-    [x0, y1]
-  ];
-}
-
-function isInsideRing([x, y]: Point, ring: Point[]): boolean {
-  let inside = false;
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
-    const [ax, ay] = ring[index];
-    const [bx, by] = ring[previous];
-    if (ay > y !== by > y && x < ((bx - ax) * (y - ay)) / (by - ay) + ax) inside = !inside;
-  }
-  return inside;
-}
-
-function getRingBounds(ring: Point[]): [number, number, number, number] {
-  let x0 = Infinity;
-  let y0 = Infinity;
-  let x1 = -Infinity;
-  let y1 = -Infinity;
-  for (const [x, y] of ring) {
-    x0 = Math.min(x0, x);
-    y0 = Math.min(y0, y);
-    x1 = Math.max(x1, x);
-    y1 = Math.max(y1, y);
-  }
-  return [x0, y0, x1, y1];
-}
-
-function getRingCenter(ring: Point[]): Point {
-  const total = ring.reduce<Point>((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0]);
-  return [total[0] / ring.length, total[1] / ring.length];
 }
 
 function getStaticField(
@@ -246,7 +219,7 @@ function createTracts(random: Random, columns: number, rows: number, jitter = 0.
     rows,
     corners,
     rings,
-    centers: rings.map(getRingCenter),
+    centers: rings.map(getVertexMean),
     values: Array.from(field),
     neighbors
   };
@@ -276,9 +249,8 @@ function buildRegionLayers(
 ): PreviewLayer[] {
   const {alpha = 0.5, animation = 'static'} = options;
   return [
-    {
-      type: 'fills',
-      items: tracts.rings.map(
+    createFillLayer(
+      tracts.rings.map(
         (ring, index): PolygonItem => ({
           ring,
           role: getRoleCycle(assignment[index]),
@@ -286,24 +258,20 @@ function buildRegionLayers(
           phase: (index % 7) / 7
         })
       ),
-      animation,
-      blend: 'add'
-    },
-    {
-      type: 'strokes',
-      items: toPaths(
+      {animation, blend: 'add'}
+    ),
+    createStrokeLayer(
+      toPaths(
         tracts.rings.map(ring => [...ring, ring[0]]),
         'dim',
         0.3,
         0.3
       )
-    },
-    {
-      type: 'strokes',
-      items: toPaths(getBorderEdges(tracts, assignment), 'ink', 1.1, 0.9),
+    ),
+    createStrokeLayer(toPaths(getBorderEdges(tracts, assignment), 'ink', 1.1, 0.9), {
       animation: 'static',
       blend: 'add'
-    }
+    })
   ];
 }
 
@@ -367,8 +335,8 @@ function evaluateSceneField(
   rows: number,
   evaluate: (x: number, y: number, column: number, row: number) => number
 ): Float32Array {
-  return evaluateField(columns, rows, (u, v, column, row) =>
-    evaluate(u * WIDTH, v * HEIGHT, column, row)
+  return evaluateField(columns, rows, (unitX, unitY, column, row) =>
+    evaluate(unitX * WIDTH, unitY * HEIGHT, column, row)
   );
 }
 
@@ -376,16 +344,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
   // ------------------------------------------------------------------------- density surfaces
   'point-density': {
     parameters: [
-      {id: 'cell', label: 'Cell size', min: 8, max: 24, step: 1, default: 12, unit: 'px'},
-      {
-        id: 'binning',
-        label: 'Binning',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 0,
-        options: ['grid', 'hexagon']
-      }
+      createSlider('cell', 'Cell size', 8, 24, 1, 12, 'px'),
+      createChoice('binning', 'Binning', ['grid', 'hexagon'])
     ],
     build: ({fork, p}) => {
       const random = fork('points');
@@ -436,7 +396,7 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
                   (y - center[1]) * Math.cos(Math.PI / 6)
               ]
             )
-          : createRectRing(
+          : createRectangleRing(
               center[0] - cell / 2 + 0.4,
               center[1] - cell / 2 + 0.4,
               center[0] + cell / 2 - 0.4,
@@ -450,25 +410,17 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         };
       });
       return [
-        {type: 'fills', items, animation: 'pulse', blend: 'add'},
-        {type: 'sprites', items: toSprites(points, 'ink', 0.6, random, 0.55)}
+        createFillLayer(items, {animation: 'pulse', blend: 'add'}),
+        createSpriteLayer(toSprites(points, 'ink', 0.6, random, 0.55))
       ];
     }
   },
 
   'kernel-density': {
     parameters: [
-      {id: 'bandwidth', label: 'Bandwidth', min: 3, max: 22, step: 0.5, default: 10, unit: 'px'},
-      {
-        id: 'kernel',
-        label: 'Kernel',
-        min: 0,
-        max: 2,
-        step: 1,
-        default: 0,
-        options: ['gaussian', 'quartic', 'epanechnikov']
-      },
-      {id: 'events', label: 'Events', min: 8, max: 70, step: 2, default: 34}
+      createSlider('bandwidth', 'Bandwidth', 3, 22, 0.5, 10, 'px'),
+      createChoice('kernel', 'Kernel', ['gaussian', 'quartic', 'epanechnikov']),
+      createSlider('events', 'Events', 8, 70, 2, 34)
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -483,13 +435,15 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const support = bandwidth * 2.5;
       const weigh = (distance: number): number => {
         if (kernel === 0) return Math.exp(-(distance * distance) / (2 * bandwidth * bandwidth));
-        const u = distance / support;
-        if (u >= 1) return 0;
-        return kernel === 1 ? (1 - u * u) ** 2 : 1 - u * u;
+        const scaledDistance = distance / support;
+        if (scaledDistance >= 1) return 0;
+        return kernel === 1
+          ? (1 - scaledDistance * scaledDistance) ** 2
+          : 1 - scaledDistance * scaledDistance;
       };
       const values = evaluateSceneField(FIELD_COLUMNS_LOW, FIELD_ROWS_LOW, (x, y) => {
         let sum = 0;
-        for (const [ex, ey] of events) sum += weigh(Math.hypot(ex - x, ey - y));
+        for (const [eventX, eventY] of events) sum += weigh(Math.hypot(eventX - x, eventY - y));
         return sum;
       });
       let maximum = 1e-6;
@@ -503,17 +457,13 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       });
       return [
         getStaticField(FIELD_COLUMNS_LOW, FIELD_ROWS_LOW, values, 'heat', {strength: 0.07}),
-        {type: 'sprites', items: toSprites(events, 'ink', 0.7, random, 0.45)},
-        {
-          type: 'strokes',
-          items: toPaths([createCircle(probe[0], probe[1], support, 48)], 'warm', 0.6, 0.75),
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+        createSpriteLayer(toSprites(events, 'ink', 0.7, random, 0.45)),
+        createStrokeLayer(
+          toPaths([createCircle(probe[0], probe[1], support, 48)], 'warm', 0.6, 0.75),
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        ),
+        createStrokeLayer(
+          [
             ...toPaths(
               [
                 [
@@ -527,23 +477,19 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             ),
             ...toPaths([profile], 'warm', 1.1, 0.95)
           ],
-          animation: 'flow',
-          speed: 0.35,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{x: probe[0], y: probe[1], radius: 2.4, role: 'warm', alpha: 1}],
+          {animation: 'flow', speed: 0.35, blend: 'add'}
+        ),
+        createSpriteLayer([{x: probe[0], y: probe[1], radius: 2.4, role: 'warm', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
 
   'line-density': {
     parameters: [
-      {id: 'lines', label: 'Lines', min: 3, max: 14, step: 1, default: 9},
-      {id: 'radius', label: 'Search radius', min: 4, max: 14, step: 1, default: 8, unit: 'px'}
+      createSlider('lines', 'Lines', 3, 14, 1, 9),
+      createSlider('radius', 'Search radius', 4, 14, 1, 8, 'px')
     ],
     build: ({fork, p}) => {
       const random = fork('roads');
@@ -569,17 +515,17 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       // Each line is sampled every unit; every sample splats a smooth kernel inside the radius.
       for (const road of roads) {
         for (let index = 0; index + 1 < road.length; index++) {
-          const [ax, ay] = road[index];
-          const [bx, by] = road[index + 1];
-          const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 1.5));
+          const [startX, startY] = road[index];
+          const [endX, endY] = road[index + 1];
+          const steps = Math.max(1, Math.ceil(Math.hypot(endX - startX, endY - startY) / 1.5));
           for (let step = 0; step < steps; step++) {
-            const x = ax + ((bx - ax) * (step + 0.5)) / steps;
-            const y = ay + ((by - ay) * (step + 0.5)) / steps;
+            const x = startX + ((endX - startX) * (step + 0.5)) / steps;
+            const y = startY + ((endY - startY) * (step + 0.5)) / steps;
             const column0 = Math.max(0, Math.floor((x - radius) / cellWidth));
             const column1 = Math.min(columns - 1, Math.ceil((x + radius) / cellWidth));
-            const row0 = Math.max(0, Math.floor((y - radius) / cellHeight));
-            const row1 = Math.min(rows - 1, Math.ceil((y + radius) / cellHeight));
-            for (let row = row0; row <= row1; row++) {
+            const firstRow = Math.max(0, Math.floor((y - radius) / cellHeight));
+            const lastRow = Math.min(rows - 1, Math.ceil((y + radius) / cellHeight));
+            for (let row = firstRow; row <= lastRow; row++) {
               for (let column = column0; column <= column1; column++) {
                 const distance = Math.hypot(
                   (column + 0.5) * cellWidth - x,
@@ -613,24 +559,22 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       }
       return [
         getStaticField(columns, rows, normalized, 'heat', {strength: 0.1}),
-        {
-          type: 'strokes',
-          items: toPaths(roads, 'cool', 0.8, 0.9),
+        createStrokeLayer(toPaths(roads, 'cool', 0.8, 0.9), {
           animation: 'flow',
           speed: 0.25,
           trail: 1.5,
           blend: 'add'
-        },
-        {type: 'strokes', items: discs, animation: 'pulse', speed: 0.35, blend: 'add'},
-        {type: 'sprites', items: centers, pulse: 0.6}
+        }),
+        createStrokeLayer(discs, {animation: 'pulse', speed: 0.35, blend: 'add'}),
+        createSpriteLayer(centers, {pulse: 0.6})
       ];
     }
   },
 
   'line-length-per-polygon': {
     parameters: [
-      {id: 'size', label: 'Polygon size', min: 10, max: 26, step: 1, default: 18, unit: 'px'},
-      {id: 'lines', label: 'Lines', min: 3, max: 14, step: 1, default: 8}
+      createSlider('size', 'Polygon size', 10, 26, 1, 18, 'px'),
+      createSlider('lines', 'Lines', 3, 14, 1, 8)
     ],
     build: ({fork, p}) => {
       const random = fork('polygons');
@@ -662,12 +606,12 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       for (const road of roads) {
         const dense: Point[] = [];
         for (let index = 0; index + 1 < road.length; index++) {
-          const [ax, ay] = road[index];
-          const [bx, by] = road[index + 1];
-          const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 1.2));
+          const [startX, startY] = road[index];
+          const [endX, endY] = road[index + 1];
+          const steps = Math.max(1, Math.ceil(Math.hypot(endX - startX, endY - startY) / 1.2));
           for (let step = 0; step < steps; step++) {
-            const t = step / steps;
-            dense.push([ax + (bx - ax) * t, ay + (by - ay) * t]);
+            const amount = step / steps;
+            dense.push([startX + (endX - startX) * amount, startY + (endY - startY) * amount]);
           }
         }
         let current: Point[] = [];
@@ -690,9 +634,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       }
       const maximum = Math.max(1, ...lengths);
       return [
-        {
-          type: 'fills',
-          items: polygons.map(
+        createFillLayer(
+          polygons.map(
             (ring, index): PolygonItem => ({
               ring,
               role: getValueRole(lengths[index] / maximum),
@@ -700,34 +643,30 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / 5
             })
           ),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             polygons.map(ring => [...ring, ring[0]]),
             'dim',
             0.6,
             0.7
           )
-        },
-        {type: 'strokes', items: toPaths(outside, 'dim', 0.7, 0.55)},
-        {
-          type: 'strokes',
-          items: toPaths(inside, 'warm', 1.3, 0.95),
+        ),
+        createStrokeLayer(toPaths(outside, 'dim', 0.7, 0.55)),
+        createStrokeLayer(toPaths(inside, 'warm', 1.3, 0.95), {
           animation: 'flow',
           speed: 0.3,
           blend: 'add'
-        }
+        })
       ];
     }
   },
 
   'dot-density': {
     parameters: [
-      {id: 'dots', label: 'Dots', min: 60, max: 420, step: 10, default: 220},
-      {id: 'mixture', label: 'Category mix', min: 0, max: 1, step: 0.05, default: 0.6}
+      createSlider('dots', 'Dots', 60, 420, 10, 220),
+      createSlider('mixture', 'Category mix', 0, 1, 0.05, 0.6)
     ],
     build: ({fork, p}) => {
       const tractRandom = fork('tracts');
@@ -739,13 +678,13 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const roles: Role[] = ['cool', 'warm', 'violet'];
       tracts.rings.forEach((ring, index) => {
         const count = Math.round((p.dots * (0.2 + tracts.values[index])) / total);
-        const [x0, y0, x1, y1] = getRingBounds(ring);
+        const [minX, minY, maxX, maxY] = getRingBounds(ring);
         const lean = (mixField[index] - 0.5) * p.mixture * 2;
         const shares = [0.34 - lean * 0.4, 0.33, 0.33 + lean * 0.4];
         for (let dot = 0; dot < count; dot++) {
           let placed: Point | null = null;
           for (let attempt = 0; attempt < 30 && !placed; attempt++) {
-            const candidate: Point = [dotRandom.range(x0, x1), dotRandom.range(y0, y1)];
+            const candidate: Point = [dotRandom.range(minX, maxX), dotRandom.range(minY, maxY)];
             if (isInsideRing(candidate, ring)) placed = candidate;
           }
           if (!placed) continue;
@@ -762,32 +701,23 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         }
       });
       return [
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             tracts.rings.map(ring => [...ring, ring[0]]),
             'dim',
             0.4,
             0.45
           )
-        },
-        ...categories.map((items): PreviewLayer => ({type: 'sprites', items, pulse: 0.3}))
+        ),
+        ...categories.map((items): PreviewLayer => createSpriteLayer(items, {pulse: 0.3}))
       ];
     }
   },
 
   'random-points-in-polygon': {
     parameters: [
-      {id: 'count', label: 'Points per polygon', min: 4, max: 60, step: 2, default: 24},
-      {
-        id: 'rejected',
-        label: 'Show rejected',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 1,
-        options: ['hide', 'show']
-      }
+      createSlider('count', 'Points per polygon', 4, 60, 2, 24),
+      createChoice('rejected', 'Show rejected', ['hide', 'show'], 1)
     ],
     build: ({fork, p}) => {
       const random = fork('shapes');
@@ -800,10 +730,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const accepted: Point[] = [];
       const rejected: Point[] = [];
       for (const ring of shapes) {
-        const [x0, y0, x1, y1] = getRingBounds(ring);
+        const [minX, minY, maxX, maxY] = getRingBounds(ring);
         let found = 0;
         for (let attempt = 0; found < p.count && attempt < p.count * 6; attempt++) {
-          const candidate: Point = [sampler.range(x0, x1), sampler.range(y0, y1)];
+          const candidate: Point = [sampler.range(minX, maxX), sampler.range(minY, maxY)];
           if (isInsideRing(candidate, ring)) {
             accepted.push(candidate);
             found += 1;
@@ -811,58 +741,42 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         }
       }
       const layers: PreviewLayer[] = [
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             shapes.map(ring => {
-              const [x0, y0, x1, y1] = getRingBounds(ring);
-              return [
-                [x0, y0],
-                [x1, y0],
-                [x1, y1],
-                [x0, y1],
-                [x0, y0]
-              ] as Point[];
+              const [minX, minY, maxX, maxY] = getRingBounds(ring);
+              return closeRing(createRectangleRing(minX, minY, maxX, maxY)) as Point[];
             }),
             'dim',
             0.3,
             0.35
           )
-        },
-        {
-          type: 'fills',
-          items: shapes.map((ring): PolygonItem => ({ring, role: 'primary', alpha: 0.1})),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+        ),
+        createFillLayer(
+          shapes.map((ring): PolygonItem => ({ring, role: 'primary', alpha: 0.1})),
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             shapes.map(ring => [...ring, ring[0]]),
             'primary',
             0.8,
             0.85
           ),
-          animation: 'pulse',
-          speed: 0.3,
-          blend: 'add'
-        }
+          {animation: 'pulse', speed: 0.3, blend: 'add'}
+        )
       ];
       if (p.rejected >= 1)
-        layers.push({type: 'sprites', items: toSprites(rejected, 'ink', 0.8, sampler, 0.45)});
-      layers.push({
-        type: 'sprites',
-        items: toSprites(accepted, 'warm', 1.3, sampler, 1),
-        pulse: 0.4
-      });
+        layers.push(createSpriteLayer(toSprites(rejected, 'ink', 0.8, sampler, 0.45)));
+      layers.push(createSpriteLayer(toSprites(accepted, 'warm', 1.3, sampler, 1), {pulse: 0.4}));
       return layers;
     }
   },
 
   'random-points-on-line': {
     parameters: [
-      {id: 'count', label: 'Points per line', min: 2, max: 30, step: 1, default: 10},
-      {id: 'lines', label: 'Lines', min: 1, max: 5, step: 1, default: 4}
+      createSlider('count', 'Points per line', 2, 30, 1, 10),
+      createSlider('lines', 'Lines', 1, 5, 1, 4)
     ],
     build: ({fork, p}) => {
       const random = fork('lines');
@@ -886,21 +800,21 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const ticks: PathItem[] = [];
       roads.forEach((road, index) => {
         const cumulative = [0];
-        for (let i = 1; i < road.length; i++)
-          cumulative.push(cumulative[i - 1] + getDistance(road[i - 1], road[i]));
+        for (let index = 1; index < road.length; index++)
+          cumulative.push(cumulative[index - 1] + getDistance(road[index - 1], road[index]));
         const length = cumulative[cumulative.length - 1];
         const targets = Array.from({length: p.count}, () => sampler.next() * length);
         for (const target of targets) {
           let segment = 1;
           while (segment < cumulative.length - 1 && cumulative[segment] < target) segment++;
-          const t =
+          const amount =
             (target - cumulative[segment - 1]) /
             (cumulative[segment] - cumulative[segment - 1] || 1);
-          const [ax, ay] = road[segment - 1];
-          const [bx, by] = road[segment];
-          const x = ax + (bx - ax) * t;
-          const y = ay + (by - ay) * t;
-          const normal: Point = [-(by - ay), bx - ax];
+          const [startX, startY] = road[segment - 1];
+          const [endX, endY] = road[segment];
+          const x = startX + (endX - startX) * amount;
+          const y = startY + (endY - startY) * amount;
+          const normal: Point = [-(endY - startY), endX - startX];
           const size = Math.hypot(normal[0], normal[1]) || 1;
           ticks.push({
             points: [
@@ -922,15 +836,13 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         }
       });
       return [
-        {
-          type: 'strokes',
-          items: toPaths(roads, 'cool', 1, 0.7),
+        createStrokeLayer(toPaths(roads, 'cool', 1, 0.7), {
           animation: 'flow',
           speed: 0.18,
           blend: 'add'
-        },
-        {type: 'strokes', items: ticks, animation: 'static', blend: 'add'},
-        {type: 'sprites', items: sprites, pulse: 0.4}
+        }),
+        createStrokeLayer(ticks, {animation: 'static', blend: 'add'}),
+        createSpriteLayer(sprites, {pulse: 0.4})
       ];
     }
   },
@@ -938,8 +850,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
   // ------------------------------------------------------------------------- interpolation
   'inverse-distance-weighting': {
     parameters: [
-      {id: 'power', label: 'Power', min: 1, max: 6, step: 0.1, default: 2.5},
-      {id: 'samples', label: 'Samples', min: 5, max: 22, step: 1, default: 12}
+      createSlider('power', 'Power', 1, 6, 0.1, 2.5),
+      createSlider('samples', 'Samples', 5, 22, 1, 12)
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -975,21 +887,19 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             strength: 0.04
           })
         },
-        {type: 'strokes', items: spokes, animation: 'flow', speed: 0.3, blend: 'add'},
-        {type: 'sprites', items: createSampleSprites(samples, 2.2), pulse: 0.2},
-        {
-          type: 'sprites',
-          items: [{x: probe[0], y: probe[1], radius: 2.6, role: 'ink', alpha: 1}],
+        createStrokeLayer(spokes, {animation: 'flow', speed: 0.3, blend: 'add'}),
+        createSpriteLayer(createSampleSprites(samples, 2.2), {pulse: 0.2}),
+        createSpriteLayer([{x: probe[0], y: probe[1], radius: 2.6, role: 'ink', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
 
   kriging: {
     parameters: [
-      {id: 'range', label: 'Variogram range', min: 12, max: 90, step: 2, default: 40, unit: 'px'},
-      {id: 'samples', label: 'Samples', min: 6, max: 20, step: 1, default: 12}
+      createSlider('range', 'Variogram range', 12, 90, 2, 40, 'px'),
+      createSlider('samples', 'Samples', 6, 20, 1, 12)
     ],
     build: ({fork, p}) => {
       const samples = createSamples(fork('samples'), p.samples);
@@ -1023,19 +933,18 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       }
       return [
         getStaticField(FIELD_COLUMNS_LOW, FIELD_ROWS_LOW, values, 'heat', {strength: 0.05}),
-        {type: 'sprites', items: variance, pulse: 0.55},
-        {
-          type: 'sprites',
-          items: createSampleSprites(samples, 2.2).map(item => ({...item, role: 'ink' as const}))
-        }
+        createSpriteLayer(variance, {pulse: 0.55}),
+        createSpriteLayer(
+          createSampleSprites(samples, 2.2).map(item => ({...item, role: 'ink' as const}))
+        )
       ];
     }
   },
 
   'local-kriging': {
     parameters: [
-      {id: 'neighbors', label: 'Neighbors', min: 3, max: 10, step: 1, default: 6},
-      {id: 'range', label: 'Variogram range', min: 12, max: 90, step: 2, default: 40, unit: 'px'}
+      createSlider('neighbors', 'Neighbors', 3, 10, 1, 6),
+      createSlider('range', 'Variogram range', 12, 90, 2, 40, 'px')
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -1097,7 +1006,7 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         });
         if (block)
           blocks.push({
-            ring: createRectRing(center[0] - 6, center[1] - 6, center[0] + 6, center[1] + 6),
+            ring: createRectangleRing(center[0] - 6, center[1] - 6, center[0] + 6, center[1] + 6),
             role: 'warm',
             alpha: 0.2
           });
@@ -1109,18 +1018,11 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         alpha: 0.45
       }));
       return [
-        {type: 'strokes', items: neighborhoods, animation: 'static'},
-        {type: 'fills', items: blocks, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: [...strokes, ...negative],
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: samples.map(
+        createStrokeLayer(neighborhoods, {animation: 'static'}),
+        createFillLayer(blocks, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer([...strokes, ...negative], {animation: 'flow', speed: 0.3, blend: 'add'}),
+        createSpriteLayer(
+          samples.map(
             (sample): SpriteItem => ({
               x: sample.x,
               y: sample.y,
@@ -1129,16 +1031,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.6
             })
           )
-        },
-        {type: 'sprites', items: predictions, pulse: 0.3}
+        ),
+        createSpriteLayer(predictions, {pulse: 0.3})
       ];
     }
   },
 
   'conditional-gaussian-simulation': {
     parameters: [
-      {id: 'realization', label: 'Realization', min: 1, max: 8, step: 1, default: 1},
-      {id: 'samples', label: 'Samples', min: 5, max: 16, step: 1, default: 10}
+      createSlider('realization', 'Realization', 1, 8, 1, 1),
+      createSlider('samples', 'Samples', 5, 16, 1, 10)
     ],
     build: ({fork, p}) => {
       const samples = createSamples(fork('samples'), p.samples);
@@ -1169,38 +1071,34 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       });
       return [
         getStaticField(FIELD_COLUMNS_LOW, FIELD_ROWS_LOW, values, 'spectral', {strength: 0.06}),
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             samples.map(sample => createCircle(sample.x, sample.y, 4.5, 20)),
             'ink',
             0.5,
             0.8
           ),
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: createSampleSprites(samples, 1.6).map(item => ({...item, role: 'ink' as const}))
-        }
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        ),
+        createSpriteLayer(
+          createSampleSprites(samples, 1.6).map(item => ({...item, role: 'ink' as const}))
+        )
       ];
     }
   },
 
   'local-rbf': {
     parameters: [
-      {id: 'support', label: 'Support radius', min: 14, max: 56, step: 1, default: 30, unit: 'px'},
-      {id: 'samples', label: 'Samples', min: 6, max: 22, step: 1, default: 14}
+      createSlider('support', 'Support radius', 14, 56, 1, 30, 'px'),
+      createSlider('samples', 'Samples', 6, 22, 1, 14)
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const samples = createSamples(fork('samples'), p.samples);
       const support = p.support;
       const weigh = (distance: number) => {
-        const u = distance / support;
-        return u >= 1 ? 0 : (1 - u) ** 4 * (4 * u + 1);
+        const scaledDistance = distance / support;
+        return scaledDistance >= 1 ? 0 : (1 - scaledDistance) ** 4 * (4 * scaledDistance + 1);
       };
       const values = evaluateSceneField(FIELD_COLUMNS_LOW, FIELD_ROWS_LOW, (x, y) => {
         let sum = 0;
@@ -1218,18 +1116,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       );
       return [
         getStaticField(FIELD_COLUMNS_LOW, FIELD_ROWS_LOW, values, 'ice', {strength: 0.06}),
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             samples.map(sample => createCircle(sample.x, sample.y, support, 36)),
             'dim',
             0.3,
             0.35
           )
-        },
-        {
-          type: 'strokes',
-          items: covering.map(
+        ),
+        createStrokeLayer(
+          covering.map(
             (sample): PathItem => ({
               points: [probe, [sample.x, sample.y]],
               role: 'warm',
@@ -1237,29 +1133,24 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.9
             })
           ),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: createSampleSprites(samples, 1.9).map(item => ({
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer(
+          createSampleSprites(samples, 1.9).map(item => ({
             ...item,
             role: 'ink' as const,
             alpha: 0.9
           }))
-        },
-        {
-          type: 'sprites',
-          items: [{x: probe[0], y: probe[1], radius: 2.8, role: 'warm', alpha: 1}],
+        ),
+        createSpriteLayer([{x: probe[0], y: probe[1], radius: 2.8, role: 'warm', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
 
   'natural-neighbor': {
-    parameters: [{id: 'samples', label: 'Samples', min: 5, max: 16, step: 1, default: 9}],
+    parameters: [createSlider('samples', 'Samples', 5, 16, 1, 9)],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const samples = createSamples(fork('samples'), p.samples, 12);
@@ -1298,9 +1189,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       );
       return [
         getStaticField(columns, rows, values, 'ice', {filter: 'nearest', strength: 0.03}),
-        {
-          type: 'strokes',
-          items: samples.flatMap((sample, index): PathItem[] =>
+        createStrokeLayer(
+          samples.flatMap((sample, index): PathItem[] =>
             stolen[index] > 0
               ? [
                   {
@@ -1312,19 +1202,15 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
                 ]
               : []
           ),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: createSampleSprites(samples, 2).map(item => ({...item, role: 'ink' as const}))
-        },
-        {
-          type: 'sprites',
-          items: [{x: query[0], y: query[1], radius: 3, role: getValueRole(predicted), alpha: 1}],
-          pulse: 0.35
-        }
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer(
+          createSampleSprites(samples, 2).map(item => ({...item, role: 'ink' as const}))
+        ),
+        createSpriteLayer(
+          [{x: query[0], y: query[1], radius: 3, role: getValueRole(predicted), alpha: 1}],
+          {pulse: 0.35}
+        )
       ];
     }
   },
@@ -1332,16 +1218,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
   // -------------------------------------------------------------------------- rasters and zones
   'focal-statistics': {
     parameters: [
-      {id: 'radius', label: 'Window radius', min: 1, max: 5, step: 1, default: 2, unit: 'cells'},
-      {
-        id: 'statistic',
-        label: 'Statistic',
-        min: 0,
-        max: 2,
-        step: 1,
-        default: 0,
-        options: ['mean', 'max', 'range']
-      }
+      createSlider('radius', 'Window radius', 1, 5, 1, 2, 'cells'),
+      createChoice('statistic', 'Statistic', ['mean', 'max', 'range'])
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -1384,9 +1262,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const center: Point = [(windowColumn + 0.5) * cellWidth, (windowRow + 0.5) * cellHeight];
       return [
         getStaticField(columns, rows, values, 'ice', {filter: 'nearest', strength: 0.04}),
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             [
               [
                 [(windowColumn + 0.5) * cellWidth, 0],
@@ -1397,53 +1274,38 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.4,
             0.55
           ),
-          animation: 'flow',
-          speed: 0.25,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'flow', speed: 0.25, blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             [createCircle(center[0], center[1], (radius + 0.5) * cellWidth, 40)],
             'warm',
             1,
             1
           ),
-          animation: 'pulse',
-          speed: 0.6,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{x: center[0], y: center[1], radius: 2, role: 'warm', alpha: 1}],
+          {animation: 'pulse', speed: 0.6, blend: 'add'}
+        ),
+        createSpriteLayer([{x: center[0], y: center[1], radius: 2, role: 'warm', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
 
   'areal-interpolation': {
     parameters: [
-      {id: 'shift', label: 'Zone offset', min: 0, max: 30, step: 1, default: 14, unit: 'px'},
-      {
-        id: 'mode',
-        label: 'Variable',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 0,
-        options: ['extensive', 'intensive']
-      }
+      createSlider('shift', 'Zone offset', 0, 30, 1, 14, 'px'),
+      createChoice('mode', 'Variable', ['extensive', 'intensive'])
     ],
     build: ({fork, p}) => {
       const random = fork('zones');
       const sourceSplitX = 64 + random.range(-6, 6);
       const sourceSplitY = 50 + random.range(-6, 6);
       const sources = [
-        createRectRing(8, 6, sourceSplitX, sourceSplitY),
-        createRectRing(sourceSplitX, 6, 152, sourceSplitY),
-        createRectRing(8, sourceSplitY, sourceSplitX, 94),
-        createRectRing(sourceSplitX, sourceSplitY, 152, 94)
+        createRectangleRing(8, 6, sourceSplitX, sourceSplitY),
+        createRectangleRing(sourceSplitX, 6, 152, sourceSplitY),
+        createRectangleRing(8, sourceSplitY, sourceSplitX, 94),
+        createRectangleRing(sourceSplitX, sourceSplitY, 152, 94)
       ];
       const sourceValues = [0.25, 0.9, 0.6, 0.35].map(value =>
         clamp(value + random.range(-0.1, 0.1), 0.05, 1)
@@ -1455,16 +1317,21 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       for (let row = 0; row < 2; row++) {
         for (let column = 0; column < 3; column++) {
           targets.push(
-            createRectRing(xSplits[column], ySplits[row], xSplits[column + 1], ySplits[row + 1])
+            createRectangleRing(
+              xSplits[column],
+              ySplits[row],
+              xSplits[column + 1],
+              ySplits[row + 1]
+            )
           );
         }
       }
       const overlap = targets.map(() => new Array<number>(sources.length).fill(0));
       const sourceArea = new Array<number>(sources.length).fill(0);
       const targetArea = new Array<number>(targets.length).fill(0);
-      for (let sy = 0; sy < 44; sy++) {
-        for (let sx = 0; sx < 72; sx++) {
-          const point: Point = [8 + (sx + 0.5) * 2, 6 + (sy + 0.5) * 2];
+      for (let sampleRow = 0; sampleRow < 44; sampleRow++) {
+        for (let sampleColumn = 0; sampleColumn < 72; sampleColumn++) {
+          const point: Point = [8 + (sampleColumn + 0.5) * 2, 6 + (sampleRow + 0.5) * 2];
           const source = sources.findIndex(ring => isInsideRing(point, ring));
           const target = targets.findIndex(ring => isInsideRing(point, ring));
           if (source < 0 || target < 0) continue;
@@ -1489,23 +1356,23 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const links: PathItem[] = [];
       const pieceCenters: SpriteItem[] = [];
       targets.forEach((targetRing, target) => {
-        const [tx0, ty0, tx1, ty1] = getRingBounds(targetRing);
-        const targetCenter = getRingCenter(targetRing);
+        const [targetMinX, targetMinY, targetMaxX, targetMaxY] = getRingBounds(targetRing);
+        const targetCenter = getVertexMean(targetRing);
         sources.forEach((sourceRing, source) => {
-          const [sx0, sy0, sx1, sy1] = getRingBounds(sourceRing);
-          const x0 = Math.max(tx0, sx0);
-          const y0 = Math.max(ty0, sy0);
-          const x1 = Math.min(tx1, sx1);
-          const y1 = Math.min(ty1, sy1);
-          if (x1 - x0 < 1 || y1 - y0 < 1) return;
+          const [sourceMinX, sourceMinY, sourceMaxX, sourceMaxY] = getRingBounds(sourceRing);
+          const minX = Math.max(targetMinX, sourceMinX);
+          const minY = Math.max(targetMinY, sourceMinY);
+          const maxX = Math.min(targetMaxX, sourceMaxX);
+          const maxY = Math.min(targetMaxY, sourceMaxY);
+          if (maxX - minX < 1 || maxY - minY < 1) return;
           const inset = 1.1;
           pieces.push({
-            ring: createRectRing(x0 + inset, y0 + inset, x1 - inset, y1 - inset),
+            ring: createRectangleRing(minX + inset, minY + inset, maxX - inset, maxY - inset),
             role: getValueRole(sourceValues[source]),
             alpha: 0.7,
             phase: (target + source * 0.25) / 6
           });
-          const center: Point = [(x0 + x1) / 2, (y0 + y1) / 2];
+          const center: Point = [(minX + maxX) / 2, (minY + maxY) / 2];
           pieceCenters.push({
             x: center[0],
             y: center[1],
@@ -1518,48 +1385,40 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         });
       });
       return [
-        {
-          type: 'fills',
-          items: sources.map(
+        createFillLayer(
+          sources.map(
             (ring, index): PolygonItem => ({
               ring,
               role: getValueRole(sourceValues[index]),
               alpha: 0.16
             })
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {type: 'fills', items: pieces, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'static', blend: 'add'}
+        ),
+        createFillLayer(pieces, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(
+          toPaths(
             targets.map(ring => [...ring, ring[0]]),
             'cool',
             0.9,
             0.9
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             sources.map(ring => [...ring, ring[0]]),
             'violet',
             1.4,
             0.95
           ),
-          animation: 'pulse',
-          speed: 0.2,
-          blend: 'add'
-        },
-        {type: 'strokes', items: links, animation: 'flow', speed: 0.3, blend: 'add'},
-        {type: 'sprites', items: pieceCenters, pulse: 0.3},
-        {
-          type: 'sprites',
-          items: targets.map((ring, index): SpriteItem => {
-            const [x, y] = getRingCenter(ring);
+          {animation: 'pulse', speed: 0.2, blend: 'add'}
+        ),
+        createStrokeLayer(links, {animation: 'flow', speed: 0.3, blend: 'add'}),
+        createSpriteLayer(pieceCenters, {pulse: 0.3}),
+        createSpriteLayer(
+          targets.map((ring, index): SpriteItem => {
+            const [x, y] = getVertexMean(ring);
             const value = targetValues[index] / maximum;
             return {
               x,
@@ -1570,16 +1429,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / 6
             };
           }),
-          pulse: 0.35
-        }
+          {pulse: 0.35}
+        )
       ];
     }
   },
 
   pycnophylactic: {
     parameters: [
-      {id: 'smoothing', label: 'Iterations', min: 0, max: 40, step: 1, default: 14},
-      {id: 'contrast', label: 'Zone contrast', min: 0.3, max: 1, step: 0.05, default: 0.8}
+      createSlider('smoothing', 'Iterations', 0, 40, 1, 14),
+      createSlider('contrast', 'Zone contrast', 0.3, 1, 0.05, 0.8)
     ],
     build: ({fork, p}) => {
       const tracts = createTracts(fork('zones'), 3, 2, 0.25);
@@ -1600,14 +1459,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         const next = new Float32Array(values.length);
         for (let row = 0; row < rows; row++) {
           for (let column = 0; column < columns; column++) {
-            const at = (c: number, r: number) =>
-              values[clamp(r, 0, rows - 1) * columns + clamp(c, 0, columns - 1)];
+            const getClamped = (clampedColumn: number, clampedRow: number) =>
+              values[
+                clamp(clampedRow, 0, rows - 1) * columns + clamp(clampedColumn, 0, columns - 1)
+              ];
             next[row * columns + column] =
-              (at(column, row) * 2 +
-                at(column - 1, row) +
-                at(column + 1, row) +
-                at(column, row - 1) +
-                at(column, row + 1)) /
+              (getClamped(column, row) * 2 +
+                getClamped(column - 1, row) +
+                getClamped(column + 1, row) +
+                getClamped(column, row - 1) +
+                getClamped(column, row + 1)) /
               6;
           }
         }
@@ -1628,21 +1489,17 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       }
       return [
         getStaticField(columns, rows, values, 'heat', {style: 'ramp', strength: 0.04}),
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             tracts.rings.map(ring => [...ring, ring[0]]),
             'ink',
             0.8,
             0.8
           ),
-          animation: 'pulse',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: tracts.centers.map(
+          {animation: 'pulse', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer(
+          tracts.centers.map(
             (center, index): SpriteItem => ({
               x: center[0],
               y: center[1],
@@ -1652,8 +1509,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / 6
             })
           ),
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
@@ -1661,8 +1518,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
   // ------------------------------------------------------------------------- point patterns
   'inhomogeneous-point-pattern': {
     parameters: [
-      {id: 'radius', label: 'Distance r', min: 6, max: 30, step: 1, default: 14, unit: 'px'},
-      {id: 'events', label: 'Events', min: 40, max: 200, step: 10, default: 110}
+      createSlider('radius', 'Distance r', 6, 30, 1, 14, 'px'),
+      createSlider('events', 'Events', 40, 200, 10, 110)
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -1701,50 +1558,41 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
           levels: 8,
           strength: 0.03
         }),
-        {
-          type: 'sprites',
-          items: toSprites(
+        createSpriteLayer(
+          toSprites(
             points.filter(point => !near.includes(point)),
             'primary',
             1,
             random,
             0.75
           ),
-          pulse: 0.2
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {pulse: 0.2}
+        ),
+        createStrokeLayer(
+          toPaths(
             near.map(point => [focus, point]),
             'warm',
             0.6,
             0.85
           ),
-          animation: 'flow',
-          speed: 0.35,
-          blend: 'add'
-        },
-        {type: 'sprites', items: toSprites(near, 'warm', 1.5, random, 1), pulse: 0.3},
-        {
-          type: 'strokes',
-          items: toPaths([createCircle(focus[0], focus[1], p.radius, 48)], 'warm', 0.7, 0.9),
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{x: focus[0], y: focus[1], radius: 2.4, role: 'hot', alpha: 1}],
+          {animation: 'flow', speed: 0.35, blend: 'add'}
+        ),
+        createSpriteLayer(toSprites(near, 'warm', 1.5, random, 1), {pulse: 0.3}),
+        createStrokeLayer(
+          toPaths([createCircle(focus[0], focus[1], p.radius, 48)], 'warm', 0.7, 0.9),
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        ),
+        createSpriteLayer([{x: focus[0], y: focus[1], radius: 2.4, role: 'hot', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
 
   'point-pattern-envelope': {
     parameters: [
-      {id: 'simulations', label: 'Simulations', min: 9, max: 99, step: 5, default: 39},
-      {id: 'clustering', label: 'Clustering', min: 0, max: 1, step: 0.05, default: 0.75}
+      createSlider('simulations', 'Simulations', 9, 99, 5, 39),
+      createSlider('clustering', 'Clustering', 0, 1, 0.05, 0.75)
     ],
     build: ({fork, p}) => {
       const steps = 40;
@@ -1768,10 +1616,13 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       let wobble = 0;
       const observed = Array.from({length: steps}, (_, index) => {
         wobble = wobble * 0.7 + observedRandom.gaussian() * 0.03;
-        const t = index / (steps - 1);
+        const amount = index / (steps - 1);
         return (
-          p.clustering * 1.05 * Math.sin(Math.PI * Math.min(1, t * 1.25)) * (1 - 0.25 * t) +
-          wobble * (t + 0.2)
+          p.clustering *
+            1.05 *
+            Math.sin(Math.PI * Math.min(1, amount * 1.25)) *
+            (1 - 0.25 * amount) +
+          wobble * (amount + 0.2)
         );
       });
       const band: Point[] = [
@@ -1784,9 +1635,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
           : []
       );
       return [
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: [
                 [14, 24],
@@ -1806,17 +1656,14 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.5
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'fills',
-          items: [{ring: band, role: 'cool', alpha: 0.28}],
+          {animation: 'static'}
+        ),
+        createFillLayer([{ring: band, role: 'cool', alpha: 0.28}], {
           animation: 'static',
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: simulated.slice(0, 40).map(
+        }),
+        createStrokeLayer(
+          simulated.slice(0, 40).map(
             (curve): PathItem => ({
               points: curve.map((value, index): Point => [x(index), y(value)]),
               role: 'cool',
@@ -1824,29 +1671,20 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.28
             })
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
-            [observed.map((value, index): Point => [x(index), y(value)])],
-            'warm',
-            1.6,
-            1
-          ),
-          animation: 'draw',
-          speed: 0.25,
-          blend: 'add'
-        },
-        {type: 'sprites', items: outside, pulse: 0.5}
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths([observed.map((value, index): Point => [x(index), y(value)])], 'warm', 1.6, 1),
+          {animation: 'draw', speed: 0.25, blend: 'add'}
+        ),
+        createSpriteLayer(outside, {pulse: 0.5})
       ];
     }
   },
 
   // -------------------------------------------------------------------------------- sampling
   'continuous-spatial-sample': {
-    parameters: [{id: 'count', label: 'Sites', min: 4, max: 40, step: 1, default: 16}],
+    parameters: [createSlider('count', 'Sites', 4, 40, 1, 16)],
     build: ({fork, p}) => {
       const order = 3;
       const size = 1 << order;
@@ -1855,20 +1693,20 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const getCurvePoint = (distance: number): [number, number] => {
         let x = 0;
         let y = 0;
-        let t = distance;
+        let remaining = distance;
         for (let scale = 1; scale < size; scale *= 2) {
-          const rx = 1 & (t / 2);
-          const ry = 1 & (t ^ rx);
-          if (ry === 0) {
-            if (rx === 1) {
+          const flipX = 1 & (remaining / 2);
+          const flipY = 1 & (remaining ^ flipX);
+          if (flipY === 0) {
+            if (flipX === 1) {
               x = scale - 1 - x;
               y = scale - 1 - y;
             }
             [x, y] = [y, x];
           }
-          x += scale * rx;
-          y += scale * ry;
-          t = Math.floor(t / 4);
+          x += scale * flipX;
+          y += scale * flipY;
+          remaining = Math.floor(remaining / 4);
         }
         return [x, y];
       };
@@ -1889,17 +1727,14 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         ];
       });
       return [
-        {
-          type: 'strokes',
-          items: toPaths([cells], 'cool', 0.6, 0.55),
+        createStrokeLayer(toPaths([cells], 'cool', 0.6, 0.55), {
           animation: 'flow',
           speed: 0.12,
           trail: 2,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: sites.map(
+        }),
+        createSpriteLayer(
+          sites.map(
             (site, index): SpriteItem => ({
               x: site[0],
               y: site[1],
@@ -1909,15 +1744,15 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / sites.length
             })
           ),
-          pulse: 0.5
-        },
-        {type: 'sprites', items: toSprites(sites, 'warm', 1.7, random, 1), pulse: 0.3}
+          {pulse: 0.5}
+        ),
+        createSpriteLayer(toSprites(sites, 'warm', 1.7, random, 1), {pulse: 0.3})
       ];
     }
   },
 
   'spatial-balanced-sample': {
-    parameters: [{id: 'count', label: 'Sample size', min: 4, max: 32, step: 2, default: 14}],
+    parameters: [createSlider('count', 'Sample size', 4, 32, 2, 14)],
     build: ({fork, p}) => {
       const random = fork('frame');
       const frame: Point[] = [
@@ -1971,28 +1806,20 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         .filter(leaf => leaf.points.length > 0)
         .map(leaf => leaf.points[chooser.integer(leaf.points.length)]);
       return [
-        {
-          type: 'strokes',
-          items: leaves.map((leaf): PathItem => {
-            const [x0, y0, x1, y1] = leaf.bounds;
+        createStrokeLayer(
+          leaves.map((leaf): PathItem => {
+            const [minX, minY, maxX, maxY] = leaf.bounds;
             return {
-              points: [
-                [x0, y0],
-                [x1, y0],
-                [x1, y1],
-                [x0, y1],
-                [x0, y0]
-              ],
+              points: closeRing(createRectangleRing(minX, minY, maxX, maxY)),
               role: 'dim',
               width: 0.35,
               alpha: 0.5
             };
           }),
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          toPaths(
             [
               [
                 [80, 0],
@@ -2003,33 +1830,28 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.9,
             0.8
           ),
-          animation: 'pulse',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: toSprites(
+          {animation: 'pulse', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer(
+          toSprites(
             frame.filter(point => point[0] < 80),
             'cool',
             0.8,
             random,
             0.5
           )
-        },
-        {
-          type: 'sprites',
-          items: toSprites(
+        ),
+        createSpriteLayer(
+          toSprites(
             frame.filter(point => point[0] >= 80),
             'primary',
             0.8,
             random,
             0.5
           )
-        },
-        {
-          type: 'sprites',
-          items: selected.map(
+        ),
+        createSpriteLayer(
+          selected.map(
             (point, index): SpriteItem => ({
               x: point[0],
               y: point[1],
@@ -2039,17 +1861,17 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / selected.length
             })
           ),
-          pulse: 0.5
-        },
-        {type: 'sprites', items: toSprites(selected, 'warm', 1.8, chooser, 1), pulse: 0.3}
+          {pulse: 0.5}
+        ),
+        createSpriteLayer(toSprites(selected, 'warm', 1.8, chooser, 1), {pulse: 0.3})
       ];
     }
   },
 
   'geographic-distribution': {
     parameters: [
-      {id: 'angle', label: 'Orientation', min: 0, max: 180, step: 5, default: 30, unit: '°'},
-      {id: 'elongation', label: 'Elongation', min: 1, max: 4, step: 0.1, default: 2.6}
+      createSlider('angle', 'Orientation', 0, 180, 5, 30, '°'),
+      createSlider('elongation', 'Elongation', 1, 4, 0.1, 2.6)
     ],
     build: ({fork, p}) => {
       const layers: PreviewLayer[] = [];
@@ -2075,53 +1897,50 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         const sortedX = points.map(point => point[0]).sort((first, second) => first - second);
         const sortedY = points.map(point => point[1]).sort((first, second) => first - second);
         const median: Point = [sortedX[count >> 1], sortedY[count >> 1]];
-        let sxx = 0;
-        let syy = 0;
-        let sxy = 0;
+        let varianceX = 0;
+        let varianceY = 0;
+        let covariance = 0;
         for (const point of points) {
-          sxx += (point[0] - mean[0]) ** 2 / count;
-          syy += (point[1] - mean[1]) ** 2 / count;
-          sxy += ((point[0] - mean[0]) * (point[1] - mean[1])) / count;
+          varianceX += (point[0] - mean[0]) ** 2 / count;
+          varianceY += (point[1] - mean[1]) ** 2 / count;
+          covariance += ((point[0] - mean[0]) * (point[1] - mean[1])) / count;
         }
-        const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
-        const trace = sxx + syy;
-        const determinant = Math.sqrt(Math.max(0, ((sxx - syy) / 2) ** 2 + sxy * sxy));
+        const theta = 0.5 * Math.atan2(2 * covariance, varianceX - varianceY);
+        const trace = varianceX + varianceY;
+        const determinant = Math.sqrt(
+          Math.max(0, ((varianceX - varianceY) / 2) ** 2 + covariance * covariance)
+        );
         const major = Math.sqrt(trace / 2 + determinant) * 1.6;
         const minor = Math.sqrt(Math.max(0.01, trace / 2 - determinant)) * 1.6;
         const ellipse: Point[] = Array.from({length: 49}, (_, index) => {
-          const t = (index / 48) * Math.PI * 2;
+          const angle = (index / 48) * Math.PI * 2;
           return [
-            mean[0] + Math.cos(theta) * major * Math.cos(t) - Math.sin(theta) * minor * Math.sin(t),
-            mean[1] + Math.sin(theta) * major * Math.cos(t) + Math.cos(theta) * minor * Math.sin(t)
+            mean[0] +
+              Math.cos(theta) * major * Math.cos(angle) -
+              Math.sin(theta) * minor * Math.sin(angle),
+            mean[1] +
+              Math.sin(theta) * major * Math.cos(angle) +
+              Math.cos(theta) * minor * Math.sin(angle)
           ];
         });
         layers.push(
-          {type: 'sprites', items: toSprites(points, role, 1, random, 0.7), pulse: 0.2},
-          {
-            type: 'strokes',
-            items: toPaths(
-              [createCircle(mean[0], mean[1], Math.sqrt(trace) * 1.4, 44)],
-              'dim',
-              0.6,
-              0.7
-            ),
-            animation: 'static'
-          },
-          {
-            type: 'strokes',
-            items: toPaths([ellipse], role === 'primary' ? 'warm' : 'hot', 1.2, 1),
+          createSpriteLayer(toSprites(points, role, 1, random, 0.7), {pulse: 0.2}),
+          createStrokeLayer(
+            toPaths([createCircle(mean[0], mean[1], Math.sqrt(trace) * 1.4, 44)], 'dim', 0.6, 0.7),
+            {animation: 'static'}
+          ),
+          createStrokeLayer(toPaths([ellipse], role === 'primary' ? 'warm' : 'hot', 1.2, 1), {
             animation: 'flow',
             speed: 0.25,
             blend: 'add'
-          },
-          {
-            type: 'sprites',
-            items: [
+          }),
+          createSpriteLayer(
+            [
               {x: mean[0], y: mean[1], radius: 2.8, role: 'ink', alpha: 1},
               {x: median[0], y: median[1], radius: 1.7, role: 'warm', alpha: 1}
             ],
-            pulse: 0.3
-          }
+            {pulse: 0.3}
+          )
         );
       });
       return layers;
@@ -2130,16 +1949,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
 
   'rose-statistic': {
     parameters: [
-      {
-        id: 'orientation',
-        label: 'Grid orientation',
-        min: 0,
-        max: 90,
-        step: 5,
-        default: 25,
-        unit: '°'
-      },
-      {id: 'bins', label: 'Bins', min: 8, max: 36, step: 2, default: 18}
+      createSlider('orientation', 'Grid orientation', 0, 90, 5, 25, '°'),
+      createSlider('bins', 'Bins', 8, 36, 2, 18)
     ],
     build: ({fork, p}) => {
       const random = fork('segments');
@@ -2202,10 +2013,9 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         };
       });
       return [
-        {type: 'strokes', items: streets, animation: 'pulse', speed: 0.2, blend: 'add'},
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(streets, {animation: 'pulse', speed: 0.2, blend: 'add'}),
+        createStrokeLayer(
+          toPaths(
             [
               createCircle(center[0], center[1], radius, 48),
               createCircle(center[0], center[1], radius / 2, 36)
@@ -2214,20 +2024,17 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.4,
             0.5
           )
-        },
-        {type: 'fills', items: petals, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: toPaths(
+        ),
+        createFillLayer(petals, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(
+          toPaths(
             [[toPoint(meanDirection, -radius - 3), toPoint(meanDirection, radius + 3)]],
             'warm',
             1.2,
             1
           ),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        )
       ];
     }
   },
@@ -2235,8 +2042,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
   // ------------------------------------------------------------------------- classification
   'class-assignment': {
     parameters: [
-      {id: 'classes', label: 'Classes', min: 3, max: 7, step: 1, default: 5},
-      {id: 'drift', label: 'Drift per period', min: 0, max: 0.3, step: 0.01, default: 0.14}
+      createSlider('classes', 'Classes', 3, 7, 1, 5),
+      createSlider('drift', 'Drift per period', 0, 0.3, 0.01, 0.14)
     ],
     build: ({fork, p}) => {
       const random = fork('values');
@@ -2256,7 +2063,7 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const edges = [0, ...breaks, 1];
       const bands = edges.slice(0, -1).map(
         (start, index): PolygonItem => ({
-          ring: createRectRing(10 + start * 140, 6, 10 + edges[index + 1] * 140, 94),
+          ring: createRectangleRing(10 + start * 140, 6, 10 + edges[index + 1] * 140, 94),
           role: getClassRole(index, classes),
           alpha: 0.09
         })
@@ -2274,10 +2081,9 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         )
       );
       return [
-        {type: 'fills', items: bands, animation: 'static', blend: 'add'},
-        {
-          type: 'strokes',
-          items: toPaths(
+        createFillLayer(bands, {animation: 'static', blend: 'add'}),
+        createStrokeLayer(
+          toPaths(
             breaks.map(
               boundary =>
                 [
@@ -2289,13 +2095,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.7,
             0.85
           ),
-          animation: 'pulse',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'pulse', speed: 0.3, blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             rows.map(
               y =>
                 [
@@ -2307,16 +2110,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.25,
             0.35
           )
-        },
-        {type: 'sprites', items: dots, pulse: 0.3}
+        ),
+        createSpriteLayer(dots, {pulse: 0.3})
       ];
     }
   },
 
   'classification-fit': {
     parameters: [
-      {id: 'classes', label: 'Classes', min: 2, max: 8, step: 1, default: 5},
-      {id: 'skew', label: 'Skew', min: 0.2, max: 1.2, step: 0.05, default: 0.7}
+      createSlider('classes', 'Classes', 2, 8, 1, 5),
+      createSlider('skew', 'Skew', 0.2, 1.2, 0.05, 0.7)
     ],
     build: ({fork, p}) => {
       const random = fork('values');
@@ -2341,14 +2144,13 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         (sum, value) => sum + Math.abs(value - classMedians[getClass(value)]),
         0
       );
-      const gadf = clamp(1 - residual / baseline, 0, 1);
+      const goodnessOfFit = clamp(1 - residual / baseline, 0, 1);
       const barWidth = 140 / bars;
       return [
-        {
-          type: 'fills',
-          items: counts.map(
+        createFillLayer(
+          counts.map(
             (count, index): PolygonItem => ({
-              ring: createRectRing(
+              ring: createRectangleRing(
                 10 + index * barWidth + 0.5,
                 66 - (count / maximum) * 50,
                 10 + (index + 1) * barWidth - 0.5,
@@ -2359,12 +2161,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / bars
             })
           ),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: classMedians.map(
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          classMedians.map(
             (value, index): PathItem => ({
               points: [
                 [10 + value * 140, 10],
@@ -2375,14 +2175,11 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.9
             })
           ),
-          animation: 'flow',
-          speed: 0.25,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: classMedians.map(
-            (value, index): PathItem => ({
+          {animation: 'flow', speed: 0.25, blend: 'add'}
+        ),
+        createStrokeLayer(
+          classMedians.map(
+            (_value, index): PathItem => ({
               points: [
                 [10 + (index / classes) * 140, 77],
                 [10 + ((index + 1) / classes) * 140, 77]
@@ -2392,12 +2189,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.85
             })
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: classMedians.map(
+          {animation: 'static', blend: 'add'}
+        ),
+        createSpriteLayer(
+          classMedians.map(
             (value, index): SpriteItem => ({
               x: 10 + value * 140,
               y: 77,
@@ -2407,11 +2202,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / classes
             })
           ),
-          pulse: 0.3
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {pulse: 0.3}
+        ),
+        createStrokeLayer(
+          toPaths(
             [
               [
                 [10, 90],
@@ -2422,24 +2216,21 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             2.4,
             0.4
           )
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+        ),
+        createStrokeLayer(
+          toPaths(
             [
               [
                 [10, 90],
-                [10 + gadf * 140, 90]
+                [10 + goodnessOfFit * 140, 90]
               ]
             ],
-            gadf > 0.5 ? 'warm' : 'cool',
+            goodnessOfFit > 0.5 ? 'warm' : 'cool',
             2.4,
             1
           ),
-          animation: 'draw',
-          speed: 0.2,
-          blend: 'add'
-        }
+          {animation: 'draw', speed: 0.2, blend: 'add'}
+        )
       ];
     }
   },
@@ -2447,8 +2238,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
   // ------------------------------------------------------------------------- Markov dynamics
   'transition-matrix': {
     parameters: [
-      {id: 'persistence', label: 'Persistence', min: 0.3, max: 0.9, step: 0.05, default: 0.6},
-      {id: 'classes', label: 'Classes', min: 3, max: 5, step: 1, default: 4}
+      createSlider('persistence', 'Persistence', 0.3, 0.9, 0.05, 0.6),
+      createSlider('classes', 'Classes', 3, 5, 1, 4)
     ],
     build: ({p}) => {
       const classes = Math.round(p.classes);
@@ -2460,9 +2251,9 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         probabilities.forEach((probability, to) => {
           if (probability < 0.04) return;
           const points: Point[] = Array.from({length: 14}, (_, step) => {
-            const t = step / 13;
-            const eased = t * t * (3 - 2 * t);
-            return [38 + t * 84, row(from) + (row(to) - row(from)) * eased];
+            const amount = step / 13;
+            const eased = amount * amount * (3 - 2 * amount);
+            return [38 + amount * 84, row(from) + (row(to) - row(from)) * eased];
           });
           strokes.push({
             points,
@@ -2486,16 +2277,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         )
       );
       return [
-        {type: 'strokes', items: strokes, animation: 'flow', speed: 0.25, trail: 1.5, blend: 'add'},
-        {type: 'sprites', items: nodes, pulse: 0.25}
+        createStrokeLayer(strokes, {animation: 'flow', speed: 0.25, trail: 1.5, blend: 'add'}),
+        createSpriteLayer(nodes, {pulse: 0.25})
       ];
     }
   },
 
   'spatial-markov': {
     parameters: [
-      {id: 'persistence', label: 'Persistence', min: 0.3, max: 0.85, step: 0.05, default: 0.5},
-      {id: 'dependence', label: 'Spatial dependence', min: 0, max: 0.4, step: 0.02, default: 0.24}
+      createSlider('persistence', 'Persistence', 0.3, 0.85, 0.05, 0.5),
+      createSlider('dependence', 'Spatial dependence', 0, 0.4, 0.02, 0.24)
     ],
     build: ({fork, p}) => {
       const random = fork('neighbors');
@@ -2509,7 +2300,7 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         matrix.forEach((probabilities, row) => {
           probabilities.forEach((probability, column) => {
             items.push({
-              ring: createRectRing(
+              ring: createRectangleRing(
                 left + column * 11 + 0.5,
                 28 + row * 11 + 0.5,
                 left + column * 11 + 10.5,
@@ -2545,24 +2336,24 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         }
       });
       return [
-        {type: 'fills', items, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: lines, animation: 'pulse', speed: 0.3, blend: 'add'},
-        {type: 'sprites', items: neighbors, pulse: 0.3}
+        createFillLayer(items, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(lines, {animation: 'pulse', speed: 0.3, blend: 'add'}),
+        createSpriteLayer(neighbors, {pulse: 0.3})
       ];
     }
   },
 
   'lisa-markov': {
     parameters: [
-      {id: 'persistence', label: 'Persistence', min: 0.2, max: 1, step: 0.05, default: 0.6},
-      {id: 'autocorrelation', label: 'Moran slope', min: 0.1, max: 0.9, step: 0.05, default: 0.55}
+      createSlider('persistence', 'Persistence', 0.2, 1, 0.05, 0.6),
+      createSlider('autocorrelation', 'Moran slope', 0.1, 0.9, 0.05, 0.55)
     ],
     build: ({fork, p}) => {
       const random = fork('places');
-      const quadrantRole = (z: number, lag: number): Role =>
-        z >= 0 ? (lag >= 0 ? 'hot' : 'warm') : lag >= 0 ? 'violet' : 'cool';
-      const toScene = (z: number, lag: number): Point => [
-        80 + clamp(z, -1.2, 1.2) * 62,
+      const quadrantRole = (zScore: number, lag: number): Role =>
+        zScore >= 0 ? (lag >= 0 ? 'hot' : 'warm') : lag >= 0 ? 'violet' : 'cool';
+      const toScene = (zScore: number, lag: number): Point => [
+        80 + clamp(zScore, -1.2, 1.2) * 62,
         50 - clamp(lag, -1.2, 1.2) * 40
       ];
       const start: SpriteItem[] = [];
@@ -2570,13 +2361,19 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const moves: PathItem[] = [];
       const changed: PathItem[] = [];
       for (let index = 0; index < 40; index++) {
-        const z = random.gaussian() * 0.5;
-        const lag = z * p.autocorrelation + random.gaussian() * 0.3;
-        const nextZ = z * p.persistence + random.gaussian() * 0.32 * (1.15 - p.persistence);
+        const zScore = random.gaussian() * 0.5;
+        const lag = zScore * p.autocorrelation + random.gaussian() * 0.3;
+        const nextZ = zScore * p.persistence + random.gaussian() * 0.32 * (1.15 - p.persistence);
         const nextLag = nextZ * p.autocorrelation + lag * 0.4 + random.gaussian() * 0.2;
-        const from = toScene(z, lag);
+        const from = toScene(zScore, lag);
         const to = toScene(nextZ, nextLag);
-        start.push({x: from[0], y: from[1], radius: 1.1, role: quadrantRole(z, lag), alpha: 0.4});
+        start.push({
+          x: from[0],
+          y: from[1],
+          radius: 1.1,
+          role: quadrantRole(zScore, lag),
+          alpha: 0.4
+        });
         end.push({
           x: to[0],
           y: to[1],
@@ -2585,7 +2382,7 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
           alpha: 1,
           phase: random.next()
         });
-        const switched = quadrantRole(z, lag) !== quadrantRole(nextZ, nextLag);
+        const switched = quadrantRole(zScore, lag) !== quadrantRole(nextZ, nextLag);
         (switched ? changed : moves).push({
           points: [from, to],
           role: quadrantRole(nextZ, nextLag),
@@ -2594,9 +2391,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         });
       }
       return [
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: [
                 [10, 50],
@@ -2616,20 +2412,20 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.7
             }
           ],
-          animation: 'static'
-        },
-        {type: 'strokes', items: moves, animation: 'static', blend: 'add'},
-        {type: 'strokes', items: changed, animation: 'flow', speed: 0.3, trail: 1.4, blend: 'add'},
-        {type: 'sprites', items: start},
-        {type: 'sprites', items: end, pulse: 0.3}
+          {animation: 'static'}
+        ),
+        createStrokeLayer(moves, {animation: 'static', blend: 'add'}),
+        createStrokeLayer(changed, {animation: 'flow', speed: 0.3, trail: 1.4, blend: 'add'}),
+        createSpriteLayer(start),
+        createSpriteLayer(end, {pulse: 0.3})
       ];
     }
   },
 
   'rank-markov': {
     parameters: [
-      {id: 'volatility', label: 'Mobility', min: 0.05, max: 1.2, step: 0.05, default: 0.45},
-      {id: 'units', label: 'Places', min: 5, max: 14, step: 1, default: 10}
+      createSlider('volatility', 'Mobility', 0.05, 1.2, 0.05, 0.45),
+      createSlider('units', 'Places', 5, 14, 1, 10)
     ],
     build: ({fork, p}) => {
       const random = fork('scores');
@@ -2657,9 +2453,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const highlighted = [0, 1];
       const roles: Role[] = ['hot', 'cool'];
       return [
-        {
-          type: 'strokes',
-          items: Array.from(
+        createStrokeLayer(
+          Array.from(
             {length: periods},
             (_, period): PathItem => ({
               points: [
@@ -2671,19 +2466,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.35
             })
           ),
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: tracks
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          tracks
             .filter((_, unit) => !highlighted.includes(unit))
             .map((track): PathItem => ({points: track, role: 'primary', width: 0.7, alpha: 0.45})),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: highlighted.map(
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(
+          highlighted.map(
             (unit, index): PathItem => ({
               points: tracks[unit],
               role: roles[index],
@@ -2692,14 +2484,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index * 0.5
             })
           ),
-          animation: 'flow',
-          speed: 0.25,
-          trail: 1.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: ranks.flatMap((rankOf, period) =>
+          {animation: 'flow', speed: 0.25, trail: 1.5, blend: 'add'}
+        ),
+        createSpriteLayer(
+          ranks.flatMap((rankOf, period) =>
             rankOf.map(
               (rank, unit): SpriteItem => ({
                 x: x(period),
@@ -2711,16 +2499,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               })
             )
           ),
-          pulse: 0.25
-        }
+          {pulse: 0.25}
+        )
       ];
     }
   },
 
   'transition-diagnostics': {
     parameters: [
-      {id: 'persistence', label: 'Persistence', min: 0.3, max: 0.9, step: 0.05, default: 0.6},
-      {id: 'states', label: 'States', min: 3, max: 5, step: 1, default: 4}
+      createSlider('persistence', 'Persistence', 0.3, 0.9, 0.05, 0.6),
+      createSlider('states', 'States', 3, 5, 1, 4)
     ],
     build: ({p}) => {
       const states = Math.round(p.states);
@@ -2771,11 +2559,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
         });
       }
       return [
-        {type: 'fills', items: bands, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: edges, animation: 'flow', speed: 0.25, blend: 'add'},
-        {
-          type: 'strokes',
-          items: toPaths(
+        createFillLayer(bands, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(edges, {animation: 'flow', speed: 0.25, blend: 'add'}),
+        createStrokeLayer(
+          toPaths(
             [
               [
                 [112, 8],
@@ -2786,7 +2573,7 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.4,
             0.6
           )
-        }
+        )
       ];
     }
   },
@@ -2794,16 +2581,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
   // ------------------------------------------------------------------------ region statistics
   'region-statistics': {
     parameters: [
-      {id: 'radius', label: 'Region size', min: 8, max: 36, step: 1, default: 20, unit: 'px'},
-      {
-        id: 'shape',
-        label: 'Shape',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 0,
-        options: ['radius', 'rectangle']
-      }
+      createSlider('radius', 'Region size', 8, 36, 1, 20, 'px'),
+      createChoice('shape', 'Shape', ['radius', 'rectangle'])
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -2848,9 +2627,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
           ] as Point[])
         : createCircle(center[0], center[1], p.radius, 48);
       return [
-        {
-          type: 'sprites',
-          items: outside.map(
+        createSpriteLayer(
+          outside.map(
             (point): SpriteItem => ({
               x: point[0],
               y: point[1],
@@ -2859,17 +2637,14 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.6
             })
           )
-        },
-        {
-          type: 'strokes',
-          items: toPaths([outline], 'warm', 0.9, 0.9),
+        ),
+        createStrokeLayer(toPaths([outline], 'warm', 0.9, 0.9), {
           animation: 'pulse',
           speed: 0.5,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: inside.map(
+        }),
+        createSpriteLayer(
+          inside.map(
             (point, index): SpriteItem => ({
               x: point[0],
               y: point[1],
@@ -2879,18 +2654,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: insideValues[index]
             })
           ),
-          pulse: 0.3
-        },
-        {
-          type: 'sprites',
-          items: extremes.map(
+          {pulse: 0.3}
+        ),
+        createSpriteLayer(
+          extremes.map(
             (point): SpriteItem => ({x: point[0], y: point[1], radius: 4, role: 'ink', alpha: 0.35})
           ),
-          pulse: 0.4
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {pulse: 0.4}
+        ),
+        createStrokeLayer(
+          toPaths(
             [
               [
                 [10, 92],
@@ -2901,12 +2674,11 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.4,
             0.6
           )
-        },
-        {
-          type: 'fills',
-          items: counts.map(
+        ),
+        createFillLayer(
+          counts.map(
             (count, index): PolygonItem => ({
-              ring: createRectRing(
+              ring: createRectangleRing(
                 10 + index * 10 + 0.8,
                 92 - (count / maximum) * 20,
                 10 + (index + 1) * 10 - 0.8,
@@ -2917,12 +2689,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / bins
             })
           ),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             [
               [
                 [10 + mean * 140, 66],
@@ -2933,23 +2703,21 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.9,
             0.9
           ),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        )
       ];
     }
   },
 
   'region-statistics-readback': {
     parameters: [
-      {id: 'slots', label: 'Ring slots', min: 2, max: 6, step: 1, default: 4},
-      {id: 'speed', label: 'Speed', min: 0.1, max: 1, step: 0.05, default: 0.35}
+      createSlider('slots', 'Ring slots', 2, 6, 1, 4),
+      createSlider('speed', 'Speed', 0.1, 1, 0.05, 0.35)
     ],
     build: ({fork, p}) => {
       const random = fork('points');
       const slots = Math.round(p.slots);
-      const gpu = createRectRing(8, 22, 54, 78);
+      const gpu = createRectangleRing(8, 22, 54, 78);
       const points = Array.from(
         {length: 40},
         (): Point => [random.range(12, 50), random.range(26, 74)]
@@ -2960,7 +2728,7 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const ringWidth = slots * slotWidth + (slots - 1) * slotGap;
       const ringLeft = 80 - ringWidth / 2;
       const slotRings = Array.from({length: slots}, (_, index) =>
-        createRectRing(
+        createRectangleRing(
           ringLeft + index * (slotWidth + slotGap),
           43,
           ringLeft + index * (slotWidth + slotGap) + slotWidth,
@@ -2969,47 +2737,34 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       );
       const inside = points.filter(point => getDistance(point, regionCenter) < 13);
       return [
-        {
-          type: 'fills',
-          items: [{ring: gpu, role: 'primary', alpha: 0.08}],
+        createFillLayer([{ring: gpu, role: 'primary', alpha: 0.08}], {
           animation: 'static',
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
-            [[...gpu, gpu[0]], [...createRectRing(122, 30, 152, 70), [122, 30]] as Point[]],
+        }),
+        createStrokeLayer(
+          toPaths(
+            [[...gpu, gpu[0]], [...createRectangleRing(122, 30, 152, 70), [122, 30]] as Point[]],
             'dim',
             0.7,
             0.7
           )
-        },
-        {
-          type: 'sprites',
-          items: toSprites(
+        ),
+        createSpriteLayer(
+          toSprites(
             points.filter(point => !inside.includes(point)),
             'dim',
             1,
             random,
             0.6
           )
-        },
-        {type: 'sprites', items: toSprites(inside, 'warm', 1.4, random, 1), pulse: 0.3},
-        {
-          type: 'strokes',
-          items: toPaths(
-            [createCircle(regionCenter[0], regionCenter[1], 13, 36)],
-            'warm',
-            0.8,
-            0.9
-          ),
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'fills',
-          items: slotRings.map(
+        ),
+        createSpriteLayer(toSprites(inside, 'warm', 1.4, random, 1), {pulse: 0.3}),
+        createStrokeLayer(
+          toPaths([createCircle(regionCenter[0], regionCenter[1], 13, 36)], 'warm', 0.8, 0.9),
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        ),
+        createFillLayer(
+          slotRings.map(
             (ring, index): PolygonItem => ({
               ring,
               role: index === 0 ? 'hot' : index === slots - 1 ? 'cool' : 'primary',
@@ -3017,21 +2772,18 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / slots
             })
           ),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             slotRings.map(ring => [...ring, ring[0]]),
             'ink',
             0.5,
             0.7
           )
-        },
-        {
-          type: 'strokes',
-          items: [
+        ),
+        createStrokeLayer(
+          [
             {
               points: [
                 [56, 50],
@@ -3051,16 +2803,13 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.9
             }
           ],
-          animation: 'flow',
-          speed: p.speed,
-          blend: 'add'
-        },
-        {
-          type: 'fills',
-          items: Array.from(
+          {animation: 'flow', speed: p.speed, blend: 'add'}
+        ),
+        createFillLayer(
+          Array.from(
             {length: 5},
             (_, index): PolygonItem => ({
-              ring: createRectRing(
+              ring: createRectangleRing(
                 126 + index * 5,
                 66 - (index === 2 ? 28 : 12 + index * 3),
                 129.5 + index * 5,
@@ -3071,17 +2820,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / 5
             })
           ),
-          animation: 'pulse',
-          blend: 'add'
-        }
+          {animation: 'pulse', blend: 'add'}
+        )
       ];
     }
   },
 
   'region-mask': {
     parameters: [
-      {id: 'size', label: 'Shape size', min: 12, max: 36, step: 1, default: 24, unit: 'px'},
-      {id: 'roughness', label: 'Roughness', min: 0, max: 0.6, step: 0.05, default: 0.3}
+      createSlider('size', 'Shape size', 12, 36, 1, 24, 'px'),
+      createSlider('roughness', 'Roughness', 0, 0.6, 0.05, 0.3)
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -3095,22 +2843,17 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const mask = points.map(point => isInsideRing(point, shape));
       const cell = 140 / points.length;
       return [
-        {
-          type: 'fills',
-          items: [{ring: shape, role: 'warm', alpha: 0.12}],
+        createFillLayer([{ring: shape, role: 'warm', alpha: 0.12}], {
           animation: 'pulse',
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths([[...shape, shape[0]]], 'warm', 0.9, 0.9),
+        }),
+        createStrokeLayer(toPaths([[...shape, shape[0]]], 'warm', 0.9, 0.9), {
           animation: 'pulse',
           speed: 0.5,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: points.map(
+        }),
+        createSpriteLayer(
+          points.map(
             (point, index): SpriteItem => ({
               x: point[0],
               y: point[1],
@@ -3120,13 +2863,12 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / points.length
             })
           ),
-          pulse: 0.3
-        },
-        {
-          type: 'fills',
-          items: mask.map(
+          {pulse: 0.3}
+        ),
+        createFillLayer(
+          mask.map(
             (on, index): PolygonItem => ({
-              ring: createRectRing(
+              ring: createRectangleRing(
                 10 + index * cell + 0.3,
                 on ? 78 : 84,
                 10 + (index + 1) * cell - 0.3,
@@ -3137,12 +2879,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / mask.length
             })
           ),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: mask.flatMap((on, index): PathItem[] =>
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          mask.flatMap((on, index): PathItem[] =>
             on
               ? [
                   {
@@ -3154,15 +2894,14 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
                 ]
               : []
           ),
-          animation: 'static',
-          blend: 'add'
-        }
+          {animation: 'static', blend: 'add'}
+        )
       ];
     }
   },
 
   'pick-region-mask': {
-    parameters: [{id: 'objects', label: 'Objects', min: 4, max: 14, step: 1, default: 9}],
+    parameters: [createSlider('objects', 'Objects', 4, 14, 1, 9)],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const random = fork('objects');
@@ -3175,17 +2914,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       );
       const anchor: Point = [30, 14];
       const corner: Point = pointer ? [pointer[0], clamp(pointer[1], 8, 70)] : [98, 52];
-      const [x0, x1] = [Math.min(anchor[0], corner[0]), Math.max(anchor[0], corner[0])];
-      const [y0, y1] = [Math.min(anchor[1], corner[1]), Math.max(anchor[1], corner[1])];
+      const [minX, maxX] = [Math.min(anchor[0], corner[0]), Math.max(anchor[0], corner[0])];
+      const [minY, maxY] = [Math.min(anchor[1], corner[1]), Math.max(anchor[1], corner[1])];
       const picked = objects.map(ring => {
-        const [bx0, by0, bx1, by1] = getRingBounds(ring);
-        return bx1 >= x0 && bx0 <= x1 && by1 >= y0 && by0 <= y1;
+        const [ringMinX, ringMinY, ringMaxX, ringMaxY] = getRingBounds(ring);
+        return ringMaxX >= minX && ringMinX <= maxX && ringMaxY >= minY && ringMinY <= maxY;
       });
       const cell = Math.min(10, 140 / count);
       return [
-        {
-          type: 'fills',
-          items: objects.map(
+        createFillLayer(
+          objects.map(
             (ring, index): PolygonItem => ({
               ring,
               role: picked[index] ? 'warm' : 'primary',
@@ -3193,50 +2931,31 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: index / count
             })
           ),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             objects.map(ring => [...ring, ring[0]]),
             'primary',
             0.5,
             0.6
           )
-        },
-        {
-          type: 'fills',
-          items: [{ring: createRectRing(x0, y0, x1, y1), role: 'warm', alpha: 0.07}],
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
-            [
-              [
-                [x0, y0],
-                [x1, y0],
-                [x1, y1],
-                [x0, y1],
-                [x0, y0]
-              ]
-            ],
-            'warm',
-            1,
-            1
-          ),
-          animation: 'flow',
-          speed: 0.4,
-          trail: 3,
-          blend: 'add'
-        },
-        {
-          type: 'fills',
-          items: picked.map(
+        ),
+        createFillLayer(
+          [{ring: createRectangleRing(minX, minY, maxX, maxY), role: 'warm', alpha: 0.07}],
+          {
+            animation: 'static',
+            blend: 'add'
+          }
+        ),
+        createStrokeLayer(
+          toPaths([closeRing(createRectangleRing(minX, minY, maxX, maxY))], 'warm', 1, 1),
+          {animation: 'flow', speed: 0.4, trail: 3, blend: 'add'}
+        ),
+        createFillLayer(
+          picked.map(
             (on, index): PolygonItem => ({
-              ring: createRectRing(
+              ring: createRectangleRing(
                 80 - (count * cell) / 2 + index * cell + 0.6,
                 on ? 80 : 86,
                 80 - (count * cell) / 2 + (index + 1) * cell - 0.6,
@@ -3246,20 +2965,17 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: on ? 0.9 : 0.35
             })
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{x: corner[0], y: corner[1], radius: 2, role: 'ink', alpha: 1}],
+          {animation: 'static', blend: 'add'}
+        ),
+        createSpriteLayer([{x: corner[0], y: corner[1], radius: 2, role: 'ink', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
 
   'zonal-statistics': {
-    parameters: [{id: 'resolution', label: 'Cells across', min: 16, max: 48, step: 8, default: 32}],
+    parameters: [createSlider('resolution', 'Cells across', 16, 48, 8, 32)],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const tracts = createTracts(fork('zones'), 4, 3, 0.22);
@@ -3290,28 +3006,22 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       );
       return [
         getStaticField(columns, rows, values, 'ice', {filter: 'nearest', strength: 0.03}),
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             tracts.rings.map(ring => [...ring, ring[0]]),
             'dim',
             0.7,
             0.7
           )
-        },
-        {
-          type: 'strokes',
-          items:
-            active >= 0
-              ? toPaths([[...tracts.rings[active], tracts.rings[active][0]]], 'warm', 1.3, 1)
-              : [],
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: tracts.centers.map((center, index): SpriteItem => {
+        ),
+        createStrokeLayer(
+          active >= 0
+            ? toPaths([[...tracts.rings[active], tracts.rings[active][0]]], 'warm', 1.3, 1)
+            : [],
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        ),
+        createSpriteLayer(
+          tracts.centers.map((center, index): SpriteItem => {
             const mean = counts[index] ? sums[index] / counts[index] : 0;
             return {
               x: center[0],
@@ -3322,8 +3032,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: mean
             };
           }),
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
@@ -3331,16 +3041,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
   // -------------------------------------------------------------------------- regionalization
   'spatial-weights-minimum-spanning-tree': {
     parameters: [
-      {id: 'noise', label: 'Attribute noise', min: 0, max: 1, step: 0.05, default: 0.25},
-      {
-        id: 'queen',
-        label: 'Contiguity',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 1,
-        options: ['rook', 'queen']
-      }
+      createSlider('noise', 'Attribute noise', 0, 1, 0.05, 0.25),
+      createChoice('queen', 'Contiguity', ['rook', 'queen'], 1)
     ],
     build: ({fork, p}) => {
       const tracts = createTracts(fork('tracts'), 8, 5, 0.12);
@@ -3350,40 +3052,34 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       );
       const edges = createContiguityEdges(tracts, p.queen >= 1);
       const tree = buildSpanningTree(tracts.centers.length, edges);
-      const inTree = new Set(tree.map(edge => `${edge.a}-${edge.b}`));
+      const inTree = new Set(tree.map(edge => `${edge.source}-${edge.target}`));
       return [
-        {
-          type: 'strokes',
-          items: edges
-            .filter(edge => !inTree.has(`${edge.a}-${edge.b}`))
+        createStrokeLayer(
+          edges
+            .filter(edge => !inTree.has(`${edge.source}-${edge.target}`))
             .map(
               (edge): PathItem => ({
-                points: [tracts.centers[edge.a], tracts.centers[edge.b]],
+                points: [tracts.centers[edge.source], tracts.centers[edge.target]],
                 role: 'dim',
                 width: 0.4,
                 alpha: 0.5
               })
             ),
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: tree.map(
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          tree.map(
             (edge): PathItem => ({
-              points: [tracts.centers[edge.a], tracts.centers[edge.b]],
+              points: [tracts.centers[edge.source], tracts.centers[edge.target]],
               role: 'warm',
               width: 1.4,
               alpha: 0.95
             })
           ),
-          animation: 'flow',
-          speed: 0.3,
-          trail: 1.2,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: tracts.centers.map(
+          {animation: 'flow', speed: 0.3, trail: 1.2, blend: 'add'}
+        ),
+        createSpriteLayer(
+          tracts.centers.map(
             (center, index): SpriteItem => ({
               x: center[0],
               y: center[1],
@@ -3393,14 +3089,14 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: tracts.values[index]
             })
           ),
-          pulse: 0.25
-        }
+          {pulse: 0.25}
+        )
       ];
     }
   },
 
   'skater-regions': {
-    parameters: [{id: 'regions', label: 'Regions', min: 2, max: 10, step: 1, default: 5}],
+    parameters: [createSlider('regions', 'Regions', 2, 10, 1, 5)],
     build: ({fork, p}) => {
       const tracts = createTracts(fork('tracts'), 8, 5, 0.12);
       const tree = buildSpanningTree(tracts.centers.length, createContiguityEdges(tracts, false));
@@ -3419,8 +3115,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
           const sizes = getRegionSums(tracts.values, trial, count).sizes;
           if (
             Math.min(
-              trial[edge.a] === trial[edge.b] ? 99 : sizes[trial[edge.a]],
-              sizes[trial[edge.b]]
+              trial[edge.source] === trial[edge.target] ? 99 : sizes[trial[edge.source]],
+              sizes[trial[edge.target]]
             ) < 3
           )
             return;
@@ -3437,37 +3133,30 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       }
       return [
         ...buildRegionLayers(tracts, assignment, {alpha: 0.42}),
-        {
-          type: 'strokes',
-          items: remaining.map(
+        createStrokeLayer(
+          remaining.map(
             (edge): PathItem => ({
-              points: [tracts.centers[edge.a], tracts.centers[edge.b]],
+              points: [tracts.centers[edge.source], tracts.centers[edge.target]],
               role: 'ink',
               width: 0.6,
               alpha: 0.65
             })
           ),
-          animation: 'flow',
-          speed: 0.2,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: cuts.map(
+          {animation: 'flow', speed: 0.2, blend: 'add'}
+        ),
+        createStrokeLayer(
+          cuts.map(
             (edge): PathItem => ({
-              points: [tracts.centers[edge.a], tracts.centers[edge.b]],
+              points: [tracts.centers[edge.source], tracts.centers[edge.target]],
               role: 'hot',
               width: 1.8,
               alpha: 1
             })
           ),
-          animation: 'pulse',
-          speed: 0.7,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: tracts.centers.map(
+          {animation: 'pulse', speed: 0.7, blend: 'add'}
+        ),
+        createSpriteLayer(
+          tracts.centers.map(
             (center): SpriteItem => ({
               x: center[0],
               y: center[1],
@@ -3476,24 +3165,25 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.7
             })
           )
-        }
+        )
       ];
     }
   },
 
   'ward-regions': {
-    parameters: [{id: 'regions', label: 'Regions', min: 2, max: 14, step: 1, default: 7}],
+    parameters: [createSlider('regions', 'Regions', 2, 14, 1, 7)],
     build: ({fork, p}) => {
       const tracts = createTracts(fork('tracts'), 8, 5, 0.12);
       const count = tracts.centers.length;
       const assignment = Array.from({length: count}, (_, index) => index);
       const pairCost = (first: number, second: number) => {
-        const a = getRegionSums(tracts.values, assignment, count);
-        const meanA = a.sums[first] / a.sizes[first];
-        const meanB = a.sums[second] / a.sizes[second];
+        const regionSums = getRegionSums(tracts.values, assignment, count);
+        const firstMean = regionSums.sums[first] / regionSums.sizes[first];
+        const secondMean = regionSums.sums[second] / regionSums.sizes[second];
         return (
-          ((a.sizes[first] * a.sizes[second]) / (a.sizes[first] + a.sizes[second])) *
-          (meanA - meanB) ** 2
+          ((regionSums.sizes[first] * regionSums.sizes[second]) /
+            (regionSums.sizes[first] + regionSums.sizes[second])) *
+          (firstMean - secondMean) ** 2
         );
       };
       const findNextMerge = (): [number, number] => {
@@ -3534,9 +3224,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const remapped = assignment.map(region => rolesByRegion.get(region) ?? 0);
       return [
         ...buildRegionLayers(tracts, remapped, {alpha: 0.45}),
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: [centroid(first), centroid(second)] as Point[],
               role: 'ink' as const,
@@ -3544,13 +3233,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 1
             }
           ],
-          animation: 'pulse',
-          speed: 0.7,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: regionIds.map((region): SpriteItem => {
+          {animation: 'pulse', speed: 0.7, blend: 'add'}
+        ),
+        createSpriteLayer(
+          regionIds.map((region): SpriteItem => {
             const [x, y] = centroid(region);
             return {
               x,
@@ -3561,14 +3247,14 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: region / count
             };
           }),
-          pulse: 0.25
-        }
+          {pulse: 0.25}
+        )
       ];
     }
   },
 
   'azp-regions': {
-    parameters: [{id: 'moves', label: 'Moves applied', min: 0, max: 14, step: 1, default: 5}],
+    parameters: [createSlider('moves', 'Moves applied', 0, 14, 1, 5)],
     build: ({fork, p}) => {
       const tracts = createTracts(fork('tracts'), 8, 5, 0.12);
       const regionCount = 4;
@@ -3612,9 +3298,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const pending = findMoves().slice(0, 6);
       return [
         ...buildRegionLayers(tracts, assignment, {alpha: 0.45}),
-        {
-          type: 'strokes',
-          items: pending.map(
+        createStrokeLayer(
+          pending.map(
             (move): PathItem => ({
               points: [tracts.centers[move.tract], tracts.centers[move.target]],
               role: 'ink',
@@ -3622,14 +3307,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 1
             })
           ),
-          animation: 'flow',
-          speed: 0.5,
-          trail: 1.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: pending.map(
+          {animation: 'flow', speed: 0.5, trail: 1.5, blend: 'add'}
+        ),
+        createSpriteLayer(
+          pending.map(
             (move): SpriteItem => ({
               x: tracts.centers[move.tract][0],
               y: tracts.centers[move.tract][1],
@@ -3638,16 +3319,14 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.9
             })
           ),
-          pulse: 0.5
-        }
+          {pulse: 0.5}
+        )
       ].concat([]) as PreviewLayer[];
     }
   },
 
   'max-p-regions': {
-    parameters: [
-      {id: 'threshold', label: 'Minimum total', min: 40, max: 220, step: 10, default: 90}
-    ],
+    parameters: [createSlider('threshold', 'Minimum total', 40, 220, 10, 90)],
     build: ({fork, p}) => {
       const tracts = createTracts(fork('tracts'), 8, 5, 0.12);
       const count = tracts.centers.length;
@@ -3703,9 +3382,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       const ringRadius = 4.5;
       return [
         ...buildRegionLayers(tracts, assignment, {alpha: 0.42}),
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             centers.map((center, region) =>
               createCircle(center[0] / sizes[region], center[1] / sizes[region], ringRadius, 24)
             ),
@@ -3713,10 +3391,9 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.5,
             0.7
           )
-        },
-        {
-          type: 'sprites',
-          items: centers.map(
+        ),
+        createSpriteLayer(
+          centers.map(
             (center, region): SpriteItem => ({
               x: center[0] / sizes[region],
               y: center[1] / sizes[region],
@@ -3726,16 +3403,16 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: region / regions
             })
           ),
-          pulse: 0.35
-        }
+          {pulse: 0.35}
+        )
       ];
     }
   },
 
   'region-partition-evaluation': {
     parameters: [
-      {id: 'noise', label: 'Scramble', min: 0, max: 0.4, step: 0.02, default: 0.12},
-      {id: 'regions', label: 'Regions', min: 3, max: 6, step: 1, default: 4}
+      createSlider('noise', 'Scramble', 0, 0.4, 0.02, 0.12),
+      createSlider('regions', 'Regions', 3, 6, 1, 4)
     ],
     build: ({fork, p}) => {
       const tracts = createTracts(fork('tracts'), 8, 5, 0.12);
@@ -3775,9 +3452,8 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
       );
       return [
         ...buildRegionLayers(small, assignment, {alpha: 0.5}),
-        {
-          type: 'strokes',
-          items: toPaths(
+        createStrokeLayer(
+          toPaths(
             [
               [
                 [88, 82],
@@ -3788,12 +3464,11 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
             0.5,
             0.7
           )
-        },
-        {
-          type: 'fills',
-          items: sizes.map(
+        ),
+        createFillLayer(
+          sizes.map(
             (size, region): PolygonItem => ({
-              ring: createRectRing(
+              ring: createRectangleRing(
                 90 + region * slot,
                 82 - (size / maximumSize) * 52,
                 90 + region * slot + slot * 0.5,
@@ -3804,14 +3479,12 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: region / regionCount
             })
           ),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'fills',
-          items: deviation.map(
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createFillLayer(
+          deviation.map(
             (value, region): PolygonItem => ({
-              ring: createRectRing(
+              ring: createRectangleRing(
                 90 + region * slot + slot * 0.55,
                 82 - (value / maximumDeviation) * 30,
                 90 + region * slot + slot * 0.85,
@@ -3821,12 +3494,10 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               alpha: 0.5
             })
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: connected.map(
+          {animation: 'static', blend: 'add'}
+        ),
+        createSpriteLayer(
+          connected.map(
             (ok, region): SpriteItem => ({
               x: 90 + region * slot + slot * 0.4,
               y: 90,
@@ -3836,31 +3507,28 @@ export const DENSITY_INTERPOLATION_REGIONS_PREVIEWS: Record<string, EntryPreview
               phase: region / regionCount
             })
           ),
-          pulse: 0.5
-        }
+          {pulse: 0.5}
+        )
       ];
     }
   }
 };
 
-// ---------------------------------------------------------------------------------------------
-// Regionalization helpers
-
-type TreeEdge = {a: number; b: number; weight: number};
+type TreeEdge = {source: number; target: number; weight: number};
 
 function createContiguityEdges(tracts: Tracts, queen: boolean): TreeEdge[] {
   const edges: TreeEdge[] = [];
   const {columns, rows, values} = tracts;
-  const add = (a: number, b: number) =>
-    edges.push({a, b, weight: Math.abs(values[a] - values[b]) + 0.001});
+  const addEdge = (source: number, target: number) =>
+    edges.push({source, target, weight: Math.abs(values[source] - values[target]) + 0.001});
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
       const index = row * columns + column;
-      if (column + 1 < columns) add(index, index + 1);
-      if (row + 1 < rows) add(index, index + columns);
+      if (column + 1 < columns) addEdge(index, index + 1);
+      if (row + 1 < rows) addEdge(index, index + columns);
       if (queen && row + 1 < rows) {
-        if (column + 1 < columns) add(index, index + columns + 1);
-        if (column > 0) add(index, index + columns - 1);
+        if (column + 1 < columns) addEdge(index, index + columns + 1);
+        if (column > 0) addEdge(index, index + columns - 1);
       }
     }
   }
@@ -3875,23 +3543,23 @@ function buildSpanningTree(count: number, edges: TreeEdge[]): TreeEdge[] {
   };
   const tree: TreeEdge[] = [];
   for (const edge of [...edges].sort((first, second) => first.weight - second.weight)) {
-    const rootA = find(edge.a);
-    const rootB = find(edge.b);
-    if (rootA === rootB) continue;
-    parent[rootA] = rootB;
+    const sourceRoot = find(edge.source);
+    const targetRoot = find(edge.target);
+    if (sourceRoot === targetRoot) continue;
+    parent[sourceRoot] = targetRoot;
     tree.push(edge);
   }
   return tree;
 }
 
-/** Component index per node of a forest. */
+/** Component index per node of source forest. */
 function getForestComponents(count: number, edges: TreeEdge[]): number[] {
   const parent = Array.from({length: count}, (_, index) => index);
   const find = (node: number): number => {
     if (parent[node] !== node) parent[node] = find(parent[node]);
     return parent[node];
   };
-  for (const edge of edges) parent[find(edge.a)] = find(edge.b);
+  for (const edge of edges) parent[find(edge.source)] = find(edge.target);
   const labels = new Map<number, number>();
   return parent.map((_, node) => {
     const root = find(node);

@@ -39,7 +39,6 @@ export default defineOperationRun({
         positions: builder.upload('positions', 'float32x2', points.positions.slice(0, count * 2))
           .view,
         values: builder.upload('values', 'float32', points.values.slice(0, count)).view,
-        sumOrder: current.sumOrder === 0 ? 'atomic' : 'sorted',
         output: {
           counts: statistics.counts.view,
           means: statistics.means.view,

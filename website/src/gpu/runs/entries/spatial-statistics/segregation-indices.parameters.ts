@@ -16,14 +16,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 1,
     options: ['aspatial', 'queen contiguity']
   },
-  {
-    id: 'spatialForm',
-    label: 'spatialForm',
-    min: 0,
-    max: 1,
-    step: 1,
-    default: 0,
-    options: ['environment', 'smoothed-population']
-  },
   {id: 'separation', label: 'Data: separation', min: 0, max: 1, step: 0.05, default: 0.35}
 ];

@@ -3,7 +3,6 @@
 
 // Function-specific previews for the catalog group src/catalog/entries/regression-weights.ts, keyed by entry id.
 
-import type {GpuSceneParameter} from '../../types.ts';
 import {
   clamp,
   createCircle,
@@ -16,7 +15,16 @@ import {
   mixNumbers,
   type Random
 } from '../data.ts';
+import {closeRing} from '../geometry.ts';
 import {findNearestIndex, getClassRole, toPaths, toSprites, type EntryPreview} from '../helpers.ts';
+import {
+  createChoice,
+  createFillLayer,
+  createPath,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer
+} from '../layers.ts';
 import type {
   FillLayer,
   PathItem,
@@ -25,6 +33,7 @@ import type {
   PreviewLayer,
   Role,
   SpriteItem,
+  SpriteLayer,
   StrokeLayer
 } from '../types.ts';
 
@@ -33,58 +42,26 @@ import type {
 
 type Edge = [number, number];
 
-function slider(
-  id: string,
-  label: string,
-  min: number,
-  max: number,
-  step: number,
-  defaultValue: number,
-  unit?: string
-): GpuSceneParameter {
-  return {id, label, min, max, step, default: defaultValue, unit};
-}
-
-function choice(id: string, label: string, options: string[], defaultValue = 0): GpuSceneParameter {
-  return {
-    id,
-    label,
-    min: 0,
-    max: options.length - 1,
-    step: 1,
-    default: defaultValue,
-    options
-  };
-}
-
-function path(points: Point[], role: Role, width: number, alpha = 0.9, phase = 0): PathItem {
-  return {points, role, width, alpha, phase};
-}
-
-function strokes(
+function createStrokes(
   items: PathItem[],
   animation: StrokeLayer['animation'] = 'static',
   speed = 0.3,
   blend: 'add' | 'alpha' = 'add',
   trail = 1
 ): StrokeLayer {
-  return {type: 'strokes', items, animation, speed, blend, trail};
+  return createStrokeLayer(items, {animation, speed, blend, trail});
 }
 
-function fills(
+function createFills(
   items: PolygonItem[],
   animation: FillLayer['animation'] = 'static',
   blend: 'add' | 'alpha' = 'add'
 ): FillLayer {
-  return {type: 'fills', items, animation, blend};
+  return createFillLayer(items, {animation, blend});
 }
 
-function dots(items: SpriteItem[], pulse = 0.25): PreviewLayer {
-  return {type: 'sprites', items, pulse};
-}
-
-function closeRing(ring: Point[]): Point[] {
-  return [...ring, ring[0]];
+function createPulsingSprites(items: SpriteItem[], pulse = 0.25): SpriteLayer {
+  return createSpriteLayer(items, {pulse});
 }
 
 function arrowHead(from: Point, to: Point, size = 2.6): Point[] {
@@ -97,7 +74,12 @@ function arrowHead(from: Point, to: Point, size = 2.6): Point[] {
 }
 
 /** Segment from a to b, pulled back from both ends so arrows stop before the node glow. */
-function shorten(from: Point, to: Point, startMargin: number, endMargin: number): [Point, Point] {
+function shortenSegment(
+  from: Point,
+  to: Point,
+  startMargin: number,
+  endMargin: number
+): [Point, Point] {
   const length = getDistance(from, to) || 1;
   const dx = (to[0] - from[0]) / length;
   const dy = (to[1] - from[1]) / length;
@@ -233,8 +215,8 @@ function createAxes(
   top = PLOT_TOP,
   bottom = PLOT_BOTTOM
 ): StrokeLayer {
-  return strokes([
-    path(
+  return createStrokes([
+    createPath(
       [
         [left, top],
         [left, bottom],
@@ -304,7 +286,7 @@ function createCellMap(random: Random, columns: number, rows: number, jitter: nu
 // Weights built from geometry
 
 const contiguityWeights: EntryPreview = {
-  parameters: [choice('rule', 'Rule', ['Queen', 'Rook'])],
+  parameters: [createChoice('rule', 'Rule', ['Queen', 'Rook'])],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const columns = 6;
@@ -322,29 +304,31 @@ const contiguityWeights: EntryPreview = {
     const sharedEdges: Point[][] = [];
     const sharedVertices: Point[] = [];
     map.cells.forEach((cell, index) => {
-      const dc = cell.column - focusCell.column;
-      const dr = cell.row - focusCell.row;
-      if (index === focus || Math.abs(dc) > 1 || Math.abs(dr) > 1) return;
+      const columnOffset = cell.column - focusCell.column;
+      const rowOffset = cell.row - focusCell.row;
+      if (index === focus || Math.abs(columnOffset) > 1 || Math.abs(rowOffset) > 1) return;
       const {column, row} = focusCell;
-      if (Math.abs(dc) + Math.abs(dr) === 1) {
+      if (Math.abs(columnOffset) + Math.abs(rowOffset) === 1) {
         edgeNeighbors.push(index);
-        const a: Point =
-          dc === 0
-            ? map.vertices[row + (dr === 1 ? 1 : 0)][column]
-            : map.vertices[row][column + (dc === 1 ? 1 : 0)];
-        const b: Point =
-          dc === 0
-            ? map.vertices[row + (dr === 1 ? 1 : 0)][column + 1]
-            : map.vertices[row + 1][column + (dc === 1 ? 1 : 0)];
-        sharedEdges.push([a, b]);
+        const edgeStart: Point =
+          columnOffset === 0
+            ? map.vertices[row + (rowOffset === 1 ? 1 : 0)][column]
+            : map.vertices[row][column + (columnOffset === 1 ? 1 : 0)];
+        const edgeEnd: Point =
+          columnOffset === 0
+            ? map.vertices[row + (rowOffset === 1 ? 1 : 0)][column + 1]
+            : map.vertices[row + 1][column + (columnOffset === 1 ? 1 : 0)];
+        sharedEdges.push([edgeStart, edgeEnd]);
       } else if (!rook) {
         cornerNeighbors.push(index);
-        sharedVertices.push(map.vertices[row + (dr === 1 ? 1 : 0)][column + (dc === 1 ? 1 : 0)]);
+        sharedVertices.push(
+          map.vertices[row + (rowOffset === 1 ? 1 : 0)][column + (columnOffset === 1 ? 1 : 0)]
+        );
       }
     });
     const neighborItems = [...edgeNeighbors, ...cornerNeighbors];
     return [
-      fills(
+      createFills(
         map.cells.map(cell => ({
           ring: cell.ring,
           role: 'primary' as Role,
@@ -352,7 +336,7 @@ const contiguityWeights: EntryPreview = {
         })),
         'static'
       ),
-      fills(
+      createFills(
         neighborItems.map((index, order) => ({
           ring: map.cells[index].ring,
           role: 'warm' as Role,
@@ -361,21 +345,21 @@ const contiguityWeights: EntryPreview = {
         })),
         'pulse'
       ),
-      fills([{ring: focusCell.ring, role: 'hot', alpha: 0.5}], 'pulse'),
-      strokes(map.cells.map(cell => path(closeRing(cell.ring), 'dim', 0.5, 0.75))),
-      strokes(
-        sharedEdges.map(edge => path(edge, 'warm', 1.8, 1)),
+      createFills([{ring: focusCell.ring, role: 'hot', alpha: 0.5}], 'pulse'),
+      createStrokes(map.cells.map(cell => createPath(closeRing(cell.ring), 'dim', 0.5, 0.75))),
+      createStrokes(
+        sharedEdges.map(edge => createPath(edge, 'warm', 1.8, 1)),
         'pulse',
         0.6
       ),
-      strokes(
+      createStrokes(
         neighborItems.map((index, order) =>
-          path([focusCell.center, map.cells[index].center], 'warm', 0.9, 0.9, order / 8)
+          createPath([focusCell.center, map.cells[index].center], 'warm', 0.9, 0.9, order / 8)
         ),
         'flow',
         0.5
       ),
-      dots(
+      createPulsingSprites(
         [
           ...sharedVertices.map(
             (point): SpriteItem => ({
@@ -401,7 +385,7 @@ const contiguityWeights: EntryPreview = {
 };
 
 const fuzzyContiguity: EntryPreview = {
-  parameters: [slider('tolerance', 'Tolerance', 0, 8, 0.25, 5.5, 'px')],
+  parameters: [createSlider('tolerance', 'Tolerance', 0, 8, 0.25, 5.5, 'px')],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const columns = 6;
@@ -451,7 +435,7 @@ const fuzzyContiguity: EntryPreview = {
       if (Math.hypot(dx, dy) <= p.tolerance) neighbors.push(index);
     });
     return [
-      fills(
+      createFills(
         cells.map(cell => ({
           ring: getRect(cell),
           role: 'primary' as Role,
@@ -459,7 +443,7 @@ const fuzzyContiguity: EntryPreview = {
         })),
         'static'
       ),
-      fills(
+      createFills(
         neighbors.map((index, order) => ({
           ring: getRect(cells[index]),
           role: 'warm' as Role,
@@ -468,17 +452,21 @@ const fuzzyContiguity: EntryPreview = {
         })),
         'pulse'
       ),
-      fills([{ring: getRect(focusCell), role: 'hot', alpha: 0.5}], 'pulse'),
-      strokes(cells.map(cell => path(closeRing(getRect(cell)), 'dim', 0.5, 0.8))),
-      strokes([path(closeRing(getRect(focusCell, p.tolerance)), 'cool', 1, 0.95)], 'pulse', 0.5),
-      strokes(
+      createFills([{ring: getRect(focusCell), role: 'hot', alpha: 0.5}], 'pulse'),
+      createStrokes(cells.map(cell => createPath(closeRing(getRect(cell)), 'dim', 0.5, 0.8))),
+      createStrokes(
+        [createPath(closeRing(getRect(focusCell, p.tolerance)), 'cool', 1, 0.95)],
+        'pulse',
+        0.5
+      ),
+      createStrokes(
         neighbors.map((index, order) =>
-          path([focusCell.center, cells[index].center], 'warm', 0.9, 0.9, order / 8)
+          createPath([focusCell.center, cells[index].center], 'warm', 0.9, 0.9, order / 8)
         ),
         'flow',
         0.5
       ),
-      dots([
+      createPulsingSprites([
         {
           x: focusCell.center[0],
           y: focusCell.center[1],
@@ -492,7 +480,10 @@ const fuzzyContiguity: EntryPreview = {
 };
 
 const latticeWeights: EntryPreview = {
-  parameters: [choice('rule', 'Rule', ['Queen', 'Rook']), slider('order', 'Order', 1, 3, 1, 2)],
+  parameters: [
+    createChoice('rule', 'Rule', ['Queen', 'Rook']),
+    createSlider('order', 'Order', 1, 3, 1, 2)
+  ],
   pointer: 'hover',
   build: ({p, pointer}) => {
     const columns = 14;
@@ -508,9 +499,10 @@ const latticeWeights: EntryPreview = {
     for (let row = 0; row < rows; row++) {
       for (let column = 0; column < columns; column++) {
         const [x, y] = getCenter(column, row);
-        const dc = Math.abs(column - focusColumn);
-        const dr = Math.abs(row - focusRow);
-        const distance = p.rule === 1 ? dc + dr : Math.max(dc, dr);
+        const columnOffset = Math.abs(column - focusColumn);
+        const rowOffset = Math.abs(row - focusRow);
+        const distance =
+          p.rule === 1 ? columnOffset + rowOffset : Math.max(columnOffset, rowOffset);
         const ring: Point[] = [
           [x - 4.3, y - 4.6],
           [x + 4.3, y - 4.6],
@@ -533,7 +525,7 @@ const latticeWeights: EntryPreview = {
           });
           if (distance === 1)
             links.push(
-              path(
+              createPath(
                 [getCenter(focusColumn, focusRow), [x, y]],
                 'warm',
                 0.8,
@@ -548,16 +540,16 @@ const latticeWeights: EntryPreview = {
       }
     }
     return [
-      fills(dim),
-      ...groups.map(group => fills(group, 'pulse')),
-      strokes(links, 'flow', 0.5),
-      dots(sprites, 0.15)
+      createFills(dim),
+      ...groups.map(group => createFills(group, 'pulse')),
+      createStrokes(links, 'flow', 0.5),
+      createPulsingSprites(sprites, 0.15)
     ];
   }
 };
 
 const neighborSearch: EntryPreview = {
-  parameters: [slider('neighbors', 'Neighbors (k)', 1, 8, 1, 4)],
+  parameters: [createSlider('neighbors', 'Neighbors (k)', 1, 8, 1, 4)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const points = createScatterPoints(fork('points'), 64, 8);
@@ -569,26 +561,26 @@ const neighborSearch: EntryPreview = {
     const radius = selected[selected.length - 1].distance;
     const chosen = new Set(selected.map(entry => entry.index));
     return [
-      strokes(
+      createStrokes(
         [
-          path(createCircle(origin[0], origin[1], radius * 0.5, 36), 'dim', 0.4, 0.5),
-          path(createCircle(origin[0], origin[1], radius * 0.78, 36), 'dim', 0.4, 0.4)
+          createPath(createCircle(origin[0], origin[1], radius * 0.5, 36), 'dim', 0.4, 0.5),
+          createPath(createCircle(origin[0], origin[1], radius * 0.78, 36), 'dim', 0.4, 0.4)
         ],
         'static'
       ),
-      strokes(
-        [path(createCircle(origin[0], origin[1], radius, 48), 'cool', 1, 0.95)],
+      createStrokes(
+        [createPath(createCircle(origin[0], origin[1], radius, 48), 'cool', 1, 0.95)],
         'pulse',
         0.5
       ),
-      strokes(
+      createStrokes(
         selected.map((entry, order) =>
-          path([origin, points[entry.index]], 'warm', 1, 0.9, order / 8)
+          createPath([origin, points[entry.index]], 'warm', 1, 0.9, order / 8)
         ),
         'flow',
         0.55
       ),
-      dots(
+      createPulsingSprites(
         points.map((point, index) => ({
           x: point[0],
           y: point[1],
@@ -598,13 +590,13 @@ const neighborSearch: EntryPreview = {
           phase: index / 64
         }))
       ),
-      dots([{x: origin[0], y: origin[1], radius: 4, role: 'hot', alpha: 1}], 0.3)
+      createPulsingSprites([{x: origin[0], y: origin[1], radius: 4, role: 'hot', alpha: 1}], 0.3)
     ];
   }
 };
 
 const islandAttachment: EntryPreview = {
-  parameters: [slider('islands', 'Islands', 1, 3, 1, 2)],
+  parameters: [createSlider('islands', 'Islands', 1, 3, 1, 2)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const random = fork('clusters');
@@ -626,17 +618,17 @@ const islandAttachment: EntryPreview = {
     members.forEach((point, index) => {
       members.forEach((other, otherIndex) => {
         if (otherIndex > index && getDistance(point, other) < 16)
-          links.push(path([point, other], 'primary', 0.5, 0.55));
+          links.push(createPath([point, other], 'primary', 0.5, 0.55));
       });
     });
     const attachments = islands.map((island, order) =>
-      path([island, members[findNearestIndex(members, island)]], 'warm', 1.3, 1, order / 3)
+      createPath([island, members[findNearestIndex(members, island)]], 'warm', 1.3, 1, order / 3)
     );
     return [
-      strokes(links, 'static'),
-      strokes(attachments, 'draw', 0.25),
-      dots(toSprites(members, 'primary', 1.6)),
-      dots(
+      createStrokes(links, 'static'),
+      createStrokes(attachments, 'draw', 0.25),
+      createPulsingSprites(toSprites(members, 'primary', 1.6)),
+      createPulsingSprites(
         islands.map(
           (island, order): SpriteItem => ({
             x: island[0],
@@ -649,8 +641,10 @@ const islandAttachment: EntryPreview = {
         ),
         0.4
       ),
-      strokes(
-        islands.map(island => path(createCircle(island[0], island[1], 7, 24), 'hot', 0.6, 0.6)),
+      createStrokes(
+        islands.map(island =>
+          createPath(createCircle(island[0], island[1], 7, 24), 'hot', 0.6, 0.6)
+        ),
         'pulse',
         0.5
       )
@@ -662,7 +656,7 @@ const islandAttachment: EntryPreview = {
 // Weights operations
 
 const spatialWeightsTransform: EntryPreview = {
-  parameters: [slider('standardise', 'Row standardise', 0, 1, 0.05, 1)],
+  parameters: [createSlider('standardise', 'Row standardise', 0, 1, 0.05, 1)],
   pointer: 'none',
   build: ({fork, p}) => {
     const random = fork('rows');
@@ -684,8 +678,8 @@ const spatialWeightsTransform: EntryPreview = {
           row.center[0] + Math.cos(angle) * row.radius,
           row.center[1] + Math.sin(angle) * row.radius * 0.8
         ];
-        const [start, end] = shorten(row.center, target, 4, 3);
-        links.push(path([start, end], 'warm', 0.4 + 3.2 * weight, 0.9, index / row.count));
+        const [start, end] = shortenSegment(row.center, target, 4, 3);
+        links.push(createPath([start, end], 'warm', 0.4 + 3.2 * weight, 0.9, index / row.count));
         neighborSprites.push({
           x: target[0],
           y: target[1],
@@ -697,7 +691,7 @@ const spatialWeightsTransform: EntryPreview = {
       }
       const sum = weight * row.count;
       bars.push(
-        path(
+        createPath(
           [
             [row.center[0] - 20, 88],
             [row.center[0] - 20 + sum * 40, 88]
@@ -708,7 +702,7 @@ const spatialWeightsTransform: EntryPreview = {
         )
       );
       heads.push(
-        path(
+        createPath(
           [
             [row.center[0] - 20, 82],
             [row.center[0] - 20, 94]
@@ -717,7 +711,7 @@ const spatialWeightsTransform: EntryPreview = {
           0.5,
           0.7
         ),
-        path(
+        createPath(
           [
             [row.center[0] + 20, 82],
             [row.center[0] + 20, 94]
@@ -728,11 +722,11 @@ const spatialWeightsTransform: EntryPreview = {
         )
       );
     });
-    layers.push(strokes(heads), strokes(bars, 'pulse', 0.4));
+    layers.push(createStrokes(heads), createStrokes(bars, 'pulse', 0.4));
     layers.push(
-      strokes(links, 'flow', 0.4),
-      dots(neighborSprites),
-      dots(
+      createStrokes(links, 'flow', 0.4),
+      createPulsingSprites(neighborSprites),
+      createPulsingSprites(
         rows.map(
           (row): SpriteItem => ({
             x: row.center[0],
@@ -750,7 +744,7 @@ const spatialWeightsTransform: EntryPreview = {
 };
 
 const spatialWeightsAlgebra: EntryPreview = {
-  parameters: [choice('operation', 'Operation', ['Union', 'Intersection', 'Difference'])],
+  parameters: [createChoice('operation', 'Operation', ['Union', 'Intersection', 'Difference'])],
   pointer: 'none',
   build: ({fork, p}) => {
     const points = createSpreadPoints(fork('points'), 8, 5);
@@ -775,16 +769,16 @@ const spatialWeightsAlgebra: EntryPreview = {
       return true;
     });
     return [
-      strokes(toPaths(edgesToPaths(points, edgesA), 'cool', 3, 0.5)),
-      strokes(toPaths(edgesToPaths(points, edgesB), 'violet', 3, 0.5)),
-      strokes(toPaths(edgesToPaths(points, result), 'warm', 0.9, 1), 'flow', 0.45),
-      dots(toSprites(points, 'primary', 1.5))
+      createStrokes(toPaths(edgesToPaths(points, edgesA), 'cool', 3, 0.5)),
+      createStrokes(toPaths(edgesToPaths(points, edgesB), 'violet', 3, 0.5)),
+      createStrokes(toPaths(edgesToPaths(points, result), 'warm', 0.9, 1), 'flow', 0.45),
+      createPulsingSprites(toSprites(points, 'primary', 1.5))
     ];
   }
 };
 
 const spatialWeightsTranspose: EntryPreview = {
-  parameters: [slider('neighbors', 'Neighbors (k)', 1, 3, 1, 2)],
+  parameters: [createSlider('neighbors', 'Neighbors (k)', 1, 3, 1, 2)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const base = createSpreadPoints(fork('points'), 5, 5, 8, 72, 12, 88);
@@ -803,10 +797,10 @@ const spatialWeightsTranspose: EntryPreview = {
       edges.forEach(([from, to], order) => {
         const source = shift(base[reverse ? to : from], offset);
         const target = shift(base[reverse ? from : to], offset);
-        const [start, end] = shorten(source, target, 2, 2.6);
+        const [start, end] = shortenSegment(source, target, 2, 2.6);
         const isPicked = from === focus;
         (isPicked ? picked : regular).push(
-          path(
+          createPath(
             [start, end],
             isPicked ? 'warm' : 'primary',
             isPicked ? 1.2 : 0.6,
@@ -815,18 +809,23 @@ const spatialWeightsTranspose: EntryPreview = {
           )
         );
         heads.push(
-          path(arrowHead(start, end, 2.2), isPicked ? 'warm' : 'primary', 0.6, isPicked ? 1 : 0.6)
+          createPath(
+            arrowHead(start, end, 2.2),
+            isPicked ? 'warm' : 'primary',
+            0.6,
+            isPicked ? 1 : 0.6
+          )
         );
       });
       return [
-        strokes(regular, 'flow', 0.3, 'add', 0.6),
-        strokes(picked, 'flow', 0.45),
-        strokes(heads)
+        createStrokes(regular, 'flow', 0.3, 'add', 0.6),
+        createStrokes(picked, 'flow', 0.45),
+        createStrokes(heads)
       ];
     };
     return [
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [80, 8],
             [80, 92]
@@ -838,21 +837,21 @@ const spatialWeightsTranspose: EntryPreview = {
       ]),
       ...makePanel(0, false),
       ...makePanel(80, true),
-      dots(
+      createPulsingSprites(
         toSprites(
           base.map(point => shift(point, 0)),
           'primary',
           1.6
         )
       ),
-      dots(
+      createPulsingSprites(
         toSprites(
           base.map(point => shift(point, 80)),
           'primary',
           1.6
         )
       ),
-      dots(
+      createPulsingSprites(
         [
           {
             x: base[focus][0],
@@ -876,7 +875,7 @@ const spatialWeightsTranspose: EntryPreview = {
 };
 
 const spatialWeightsSummary: EntryPreview = {
-  parameters: [slider('radius', 'Link radius', 12, 26, 0.5, 18, 'px')],
+  parameters: [createSlider('radius', 'Link radius', 12, 26, 0.5, 18, 'px')],
   pointer: 'none',
   build: ({fork, p}) => {
     const points = createSpreadPoints(fork('points'), 6, 5, 8, 76, 12, 88, 0.3);
@@ -911,8 +910,8 @@ const spatialWeightsSummary: EntryPreview = {
     });
     const meanX = 88 + (mean + 0.5) * (barWidth + 0.8);
     return [
-      strokes(toPaths(edgesToPaths(points, edges), 'dim', 0.5, 0.6)),
-      dots(
+      createStrokes(toPaths(edgesToPaths(points, edges), 'dim', 0.5, 0.6)),
+      createPulsingSprites(
         points.map((point, index) => ({
           x: point[0],
           y: point[1],
@@ -922,10 +921,10 @@ const spatialWeightsSummary: EntryPreview = {
           phase: index / points.length
         }))
       ),
-      fills(bars, 'pulse'),
-      strokes(
+      createFills(bars, 'pulse'),
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [84, 88],
               [152, 88]
@@ -934,7 +933,7 @@ const spatialWeightsSummary: EntryPreview = {
             0.5,
             0.8
           ),
-          path(
+          createPath(
             [
               [meanX, 22],
               [meanX, 90]
@@ -952,7 +951,7 @@ const spatialWeightsSummary: EntryPreview = {
 };
 
 const spatialWeightsValidation: EntryPreview = {
-  parameters: [slider('defects', 'Problems', 0, 4, 1, 3)],
+  parameters: [createSlider('defects', 'Problems', 0, 4, 1, 3)],
   pointer: 'none',
   build: ({fork, p}) => {
     const points = createSpreadPoints(fork('points'), 9, 5);
@@ -993,7 +992,7 @@ const spatialWeightsValidation: EntryPreview = {
     const extras: PathItem[] = [];
     if (selfLoop >= 0)
       extras.push(
-        path(
+        createPath(
           createCircle(points[selfLoop][0] + 3.2, points[selfLoop][1] - 3.2, 3.4, 18),
           'hot',
           0.9,
@@ -1001,22 +1000,29 @@ const spatialWeightsValidation: EntryPreview = {
         )
       );
     if (oneWay) {
-      const [start, end] = shorten(points[oneWay[0]], points[oneWay[1]], 2, 3);
+      const [start, end] = shortenSegment(points[oneWay[0]], points[oneWay[1]], 2, 3);
       extras.push(
-        path([start, end], 'violet', 1.3, 1),
-        path(arrowHead(start, end, 3), 'violet', 1, 1)
+        createPath([start, end], 'violet', 1.3, 1),
+        createPath(arrowHead(start, end, 3), 'violet', 1, 1)
       );
     }
-    if (bad) extras.push(path([points[bad[0]], points[bad[1]]], 'hot', 1.6, 1));
+    if (bad) extras.push(createPath([points[bad[0]], points[bad[1]]], 'hot', 1.6, 1));
     return [
-      strokes(toPaths(edgesToPaths(points, good), 'primary', 0.6, 0.6)),
-      strokes([path(scan, 'cool', 0.8, 0.9)], 'flow', 0.12, 'add', 1.6),
-      strokes(extras, 'pulse', 0.6),
-      dots(toSprites(points, 'primary', 1.5)),
-      dots(flagged, 0.4),
-      strokes(
+      createStrokes(toPaths(edgesToPaths(points, good), 'primary', 0.6, 0.6)),
+      createStrokes([createPath(scan, 'cool', 0.8, 0.9)], 'flow', 0.12, 'add', 1.6),
+      createStrokes(extras, 'pulse', 0.6),
+      createPulsingSprites(toSprites(points, 'primary', 1.5)),
+      createPulsingSprites(flagged, 0.4),
+      createStrokes(
         isolated >= 0
-          ? [path(createCircle(points[isolated][0], points[isolated][1], 8, 28), 'hot', 0.6, 0.7)]
+          ? [
+              createPath(
+                createCircle(points[isolated][0], points[isolated][1], 8, 28),
+                'hot',
+                0.6,
+                0.7
+              )
+            ]
           : [],
         'pulse',
         0.5
@@ -1029,7 +1035,7 @@ const spatialWeightsValidation: EntryPreview = {
 // Using weights
 
 const spatialLag: EntryPreview = {
-  parameters: [slider('neighbors', 'Neighbors (k)', 2, 7, 1, 4)],
+  parameters: [createSlider('neighbors', 'Neighbors (k)', 2, 7, 1, 4)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const random = fork('values');
@@ -1049,9 +1055,9 @@ const spatialLag: EntryPreview = {
     const lag = neighbors.reduce((sum, entry) => sum + values[entry.index], 0) / neighbors.length;
     const chosen = new Set(neighbors.map(entry => entry.index));
     return [
-      strokes(
+      createStrokes(
         neighbors.map((entry, order) =>
-          path(
+          createPath(
             [points[entry.index], points[focus]],
             getValueRole(values[entry.index]),
             1.1,
@@ -1062,7 +1068,7 @@ const spatialLag: EntryPreview = {
         'flow',
         0.5
       ),
-      dots(
+      createPulsingSprites(
         points.map((point, index) => ({
           x: point[0],
           y: point[1],
@@ -1073,7 +1079,7 @@ const spatialLag: EntryPreview = {
         })),
         0.15
       ),
-      dots([
+      createPulsingSprites([
         {
           x: points[focus][0],
           y: points[focus][1],
@@ -1082,9 +1088,14 @@ const spatialLag: EntryPreview = {
           alpha: 1
         }
       ]),
-      strokes(
+      createStrokes(
         [
-          path(createCircle(points[focus][0], points[focus][1], 7.5, 28), getValueRole(lag), 1.6, 1)
+          createPath(
+            createCircle(points[focus][0], points[focus][1], 7.5, 28),
+            getValueRole(lag),
+            1.6,
+            1
+          )
         ],
         'pulse',
         0.5
@@ -1094,7 +1105,7 @@ const spatialLag: EntryPreview = {
 };
 
 const neighborhoodSummary: EntryPreview = {
-  parameters: [slider('radius', 'Window radius', 1, 3, 1, 2, 'cells')],
+  parameters: [createSlider('radius', 'Window radius', 1, 3, 1, 2, 'cells')],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const columns = 24;
@@ -1135,7 +1146,7 @@ const neighborhoodSummary: EntryPreview = {
           alpha: 0.35
         });
         flows.push(
-          path(
+          createPath(
             [[x + cellWidth / 2, y + cellHeight / 2], center],
             'warm',
             0.5,
@@ -1159,9 +1170,9 @@ const neighborhoodSummary: EntryPreview = {
         strength: 0.04,
         speed: 0.3
       },
-      fills(windowCells, 'pulse'),
-      strokes([
-        path(
+      createFills(windowCells, 'pulse'),
+      createStrokes([
+        createPath(
           closeRing([
             [x0 - radius * cellWidth, y0 - radius * cellHeight],
             [x0 + (radius + 1) * cellWidth, y0 - radius * cellHeight],
@@ -1173,14 +1184,14 @@ const neighborhoodSummary: EntryPreview = {
           0.9
         )
       ]),
-      strokes(flows, 'flow', 0.5),
-      dots([{x: center[0], y: center[1], radius: 3.4, role: 'hot', alpha: 1}], 0.3)
+      createStrokes(flows, 'flow', 0.5),
+      createPulsingSprites([{x: center[0], y: center[1], radius: 3.4, role: 'hot', alpha: 1}], 0.3)
     ];
   }
 };
 
 const pairGather: EntryPreview = {
-  parameters: [slider('pairs', 'Pairs', 3, 10, 1, 7)],
+  parameters: [createSlider('pairs', 'Pairs', 3, 10, 1, 7)],
   pointer: 'none',
   build: ({fork, p}) => {
     const random = fork('table');
@@ -1200,22 +1211,21 @@ const pairGather: EntryPreview = {
     const arcs: PathItem[] = [];
     outputs.forEach((output, index) => {
       const source = table[lookups[index]];
-      const midX = 80;
-      const midY = (source[1] + output[1]) / 2;
       const points: Point[] = Array.from({length: 24}, (_, step) => {
-        const t = step / 23;
-        const eased = t * t * (3 - 2 * t);
+        const amount = step / 23;
+        const eased = amount * amount * (3 - 2 * amount);
         return [
-          mixNumbers(source[0], output[0], t),
-          mixNumbers(source[1], output[1], eased) +
-            Math.sin(t * Math.PI) * (midX - 80 + (midY - 50) * 0)
+          mixNumbers(source[0], output[0], amount),
+          mixNumbers(source[1], output[1], eased)
         ] as Point;
       });
-      arcs.push(path(points, getValueRole(values[lookups[index]]), 1.1, 0.9, index / pairCount));
+      arcs.push(
+        createPath(points, getValueRole(values[lookups[index]]), 1.1, 0.9, index / pairCount)
+      );
     });
     return [
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [26, 6],
             [26, 94]
@@ -1224,7 +1234,7 @@ const pairGather: EntryPreview = {
           0.4,
           0.5
         ),
-        path(
+        createPath(
           [
             [134, 6],
             [134, 94]
@@ -1234,8 +1244,8 @@ const pairGather: EntryPreview = {
           0.5
         )
       ]),
-      strokes(arcs, 'flow', 0.4),
-      dots(
+      createStrokes(arcs, 'flow', 0.4),
+      createPulsingSprites(
         table.map(
           (point, index): SpriteItem => ({
             x: point[0],
@@ -1247,7 +1257,7 @@ const pairGather: EntryPreview = {
           })
         )
       ),
-      dots(
+      createPulsingSprites(
         outputs.map(
           (point, index): SpriteItem => ({
             x: point[0],
@@ -1265,7 +1275,7 @@ const pairGather: EntryPreview = {
 };
 
 const spatialWeightsTraces: EntryPreview = {
-  parameters: [slider('powers', 'Powers of W', 1, 5, 1, 4)],
+  parameters: [createSlider('powers', 'Powers of W', 1, 5, 1, 4)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const points = createSpreadPoints(fork('points'), 7, 5, 8, 106, 12, 88);
@@ -1304,13 +1314,15 @@ const spatialWeightsTraces: EntryPreview = {
       };
     });
     return [
-      strokes(toPaths(edgesToPaths(points, edges), 'dim', 0.4, 0.45)),
-      strokes(
-        directed.map((segment, order) => path(segment, 'warm', 0.9, 0.85, order / directed.length)),
+      createStrokes(toPaths(edgesToPaths(points, edges), 'dim', 0.4, 0.45)),
+      createStrokes(
+        directed.map((segment, order) =>
+          createPath(segment, 'warm', 0.9, 0.85, order / directed.length)
+        ),
         'flow',
         0.4
       ),
-      dots(
+      createPulsingSprites(
         points.map((point, index) => ({
           x: point[0],
           y: point[1],
@@ -1320,8 +1332,8 @@ const spatialWeightsTraces: EntryPreview = {
           phase: hops[index] / 6
         }))
       ),
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [114, 88],
             [152, 88]
@@ -1331,7 +1343,7 @@ const spatialWeightsTraces: EntryPreview = {
           0.8
         )
       ]),
-      fills(bars, 'pulse')
+      createFills(bars, 'pulse')
     ];
   }
 };
@@ -1359,9 +1371,9 @@ function buildChunked(
       alpha: 0.1,
       phase: index / chunks
     }));
-    const layers: PreviewLayer[] = [fills(bands, 'pulse')];
-    const frames = bands.map(band => path(closeRing(band.ring), 'dim', 0.5, 0.6));
-    layers.push(strokes(frames));
+    const layers: PreviewLayer[] = [createFills(bands, 'pulse')];
+    const frames = bands.map(band => createPath(closeRing(band.ring), 'dim', 0.5, 0.6));
+    layers.push(createStrokes(frames));
     const directed = getNearestEdges(points, 2);
     const undirected = getUniqueEdges(directed);
     const crossing = (edge: Edge) => chunkOf(points[edge[0]]) !== chunkOf(points[edge[1]]);
@@ -1373,11 +1385,11 @@ function buildChunked(
           ) || edge[0] % 3 === 0
       );
       layers.push(
-        strokes(toPaths(edgesToPaths(points, undirected), 'cool', 3, 0.45)),
-        strokes(toPaths(edgesToPaths(points, other), 'violet', 3, 0.45))
+        createStrokes(toPaths(edgesToPaths(points, undirected), 'cool', 3, 0.45)),
+        createStrokes(toPaths(edgesToPaths(points, other), 'violet', 3, 0.45))
       );
       layers.push(
-        strokes(
+        createStrokes(
           toPaths(
             edgesToPaths(points, getUniqueEdges([...undirected, ...other])),
             'warm',
@@ -1398,22 +1410,22 @@ function buildChunked(
       );
       outgoing.forEach(([from]) => degree[from]++);
       const items = outgoing.map(([from, to]) =>
-        path(
-          shorten(points[from], points[to], 1.5, 1.5),
+        createPath(
+          shortenSegment(points[from], points[to], 1.5, 1.5),
           'warm',
           0.4 + 2.8 / degree[from],
           0.95,
           chunkOf(points[from]) / chunks
         )
       );
-      layers.push(strokes(items, 'flow', 0.35));
+      layers.push(createStrokes(items, 'flow', 0.35));
     } else if (mode === 'transpose') {
       const local = directed.filter(edge => !crossing(edge));
       const across = directed.filter(crossing);
       const reversedItems = (list: Edge[], role: Role, widthValue: number) =>
         list.map(([from, to], order) =>
-          path(
-            shorten(points[to], points[from], 1.8, 2.2),
+          createPath(
+            shortenSegment(points[to], points[from], 1.8, 2.2),
             role,
             widthValue,
             0.95,
@@ -1422,13 +1434,18 @@ function buildChunked(
         );
       const items = reversedItems(local, 'warm', 1);
       const heads = [...local, ...across].map(([from, to]) => {
-        const [start, end] = shorten(points[to], points[from], 1.8, 2.2);
-        return path(arrowHead(start, end, 2.2), crossing([from, to]) ? 'violet' : 'warm', 0.7, 1);
+        const [start, end] = shortenSegment(points[to], points[from], 1.8, 2.2);
+        return createPath(
+          arrowHead(start, end, 2.2),
+          crossing([from, to]) ? 'violet' : 'warm',
+          0.7,
+          1
+        );
       });
       layers.push(
-        strokes(items, 'flow', 0.35),
-        strokes(reversedItems(across, 'violet', 1.3), 'flow', 0.5),
-        strokes(heads)
+        createStrokes(items, 'flow', 0.35),
+        createStrokes(reversedItems(across, 'violet', 1.3), 'flow', 0.5),
+        createStrokes(heads)
       );
     } else {
       const flagged = Math.min(chunks - 1, 1);
@@ -1437,10 +1454,10 @@ function buildChunked(
         (_, index) => [4 + (index + 0.5) * width, 10] as Point
       );
       const trouble = points.findIndex(point => chunkOf(point) === flagged && point[1] > 40);
-      layers.push(strokes(toPaths(edgesToPaths(points, undirected), 'primary', 0.6, 0.55)));
-      layers.push(strokes([path(scan, 'cool', 1, 0.9)], 'flow', 0.2, 'add', 1.5));
+      layers.push(createStrokes(toPaths(edgesToPaths(points, undirected), 'primary', 0.6, 0.55)));
+      layers.push(createStrokes([createPath(scan, 'cool', 1, 0.9)], 'flow', 0.2, 'add', 1.5));
       layers.push(
-        dots(
+        createPulsingSprites(
           scan.map(
             (point, index): SpriteItem => ({
               x: point[0],
@@ -1455,27 +1472,29 @@ function buildChunked(
         )
       );
       layers.push(
-        strokes(
-          [path(createCircle(points[trouble][0], points[trouble][1], 7, 24), 'hot', 0.9, 0.9)],
+        createStrokes(
+          [
+            createPath(createCircle(points[trouble][0], points[trouble][1], 7, 24), 'hot', 0.9, 0.9)
+          ],
           'pulse',
           0.6
         )
       );
     }
-    layers.push(dots(toSprites(points, 'primary', 1.5, undefined, 0.85)));
+    layers.push(createPulsingSprites(toSprites(points, 'primary', 1.5, undefined, 0.85)));
     return layers;
   };
 }
 
-const CHUNK_PARAMETER = [slider('chunks', 'Chunks', 2, 6, 1, 3)];
+const CHUNK_PARAMETER = [createSlider('chunks', 'Chunks', 2, 6, 1, 3)];
 
 // ---------------------------------------------------------------------------------------------
 // Regression on a scatter
 
 const ordinaryLeastSquares: EntryPreview = {
   parameters: [
-    slider('slope', 'Slope', -0.6, 0.6, 0.05, 0.4),
-    slider('noise', 'Noise', 1, 20, 0.5, 7, 'px')
+    createSlider('slope', 'Slope', -0.6, 0.6, 0.05, 0.4),
+    createSlider('noise', 'Noise', 1, 20, 0.5, 7, 'px')
   ],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
@@ -1496,20 +1515,20 @@ const ordinaryLeastSquares: EntryPreview = {
     const all = [...base, ...extra];
     return [
       createAxes(),
-      strokes(
+      createStrokes(
         all.map(point =>
-          path([point, [point[0], fit.intercept + fit.slope * point[0]]], 'hot', 0.45, 0.65)
+          createPath([point, [point[0], fit.intercept + fit.slope * point[0]]], 'hot', 0.45, 0.65)
         ),
         'pulse',
         0.4
       ),
-      strokes(
+      createStrokes(
         extra.length
-          ? [path([lineAt(plain, PLOT_LEFT), lineAt(plain, PLOT_RIGHT)], 'dim', 0.8, 0.6)]
+          ? [createPath([lineAt(plain, PLOT_LEFT), lineAt(plain, PLOT_RIGHT)], 'dim', 0.8, 0.6)]
           : []
       ),
-      dots(toSprites(base, 'primary', 1.5, fork('sizes'))),
-      dots(
+      createPulsingSprites(toSprites(base, 'primary', 1.5, fork('sizes'))),
+      createPulsingSprites(
         extra.map(
           (point): SpriteItem => ({
             x: point[0],
@@ -1521,18 +1540,18 @@ const ordinaryLeastSquares: EntryPreview = {
         ),
         0.3
       ),
-      strokes(
-        [path([lineAt(fit, PLOT_LEFT), lineAt(fit, PLOT_RIGHT)], 'warm', 1.8, 1)],
+      createStrokes(
+        [createPath([lineAt(fit, PLOT_LEFT), lineAt(fit, PLOT_RIGHT)], 'warm', 1.8, 1)],
         'draw',
         0.18
       ),
-      dots([{x: fit.meanX, y: fit.meanY, radius: 2.6, role: 'cool', alpha: 1}])
+      createPulsingSprites([{x: fit.meanX, y: fit.meanY, radius: 2.6, role: 'cool', alpha: 1}])
     ];
   }
 };
 
 const spatialRegressionDiagnostics: EntryPreview = {
-  parameters: [slider('dependence', 'Spatial dependence', 0, 1, 0.05, 0.75)],
+  parameters: [createSlider('dependence', 'Spatial dependence', 0, 1, 0.05, 0.75)],
   pointer: 'none',
   build: ({fork, p}) => {
     const random = fork('noise');
@@ -1543,8 +1562,9 @@ const spatialRegressionDiagnostics: EntryPreview = {
         (1 - p.dependence) * random.gaussian() * 0.7 +
         random.gaussian() * 0.12
     );
-    const std = Math.sqrt(raw.reduce((sum, value) => sum + value * value, 0) / raw.length) || 1;
-    const residuals = raw.map(value => value / std);
+    const standardDeviation =
+      Math.sqrt(raw.reduce((sum, value) => sum + value * value, 0) / raw.length) || 1;
+    const residuals = raw.map(value => value / standardDeviation);
     const edges = getUniqueEdges(getNearestEdges(points, 3));
     const adjacency = getAdjacency(points.length, getNearestEdges(points, 3));
     const lags = residuals.map(
@@ -1558,8 +1578,8 @@ const spatialRegressionDiagnostics: EntryPreview = {
     );
     const fit = fitLine(scatter);
     return [
-      strokes(toPaths(edgesToPaths(points, edges), 'dim', 0.45, 0.5)),
-      dots(
+      createStrokes(toPaths(edgesToPaths(points, edges), 'dim', 0.45, 0.5)),
+      createPulsingSprites(
         points.map((point, index) => ({
           x: point[0],
           y: point[1],
@@ -1569,7 +1589,7 @@ const spatialRegressionDiagnostics: EntryPreview = {
           phase: index / points.length
         }))
       ),
-      fills(
+      createFills(
         [
           {
             ring: [
@@ -1594,8 +1614,8 @@ const spatialRegressionDiagnostics: EntryPreview = {
         ],
         'static'
       ),
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [88, 50],
             [152, 50]
@@ -1604,7 +1624,7 @@ const spatialRegressionDiagnostics: EntryPreview = {
           0.5,
           0.7
         ),
-        path(
+        createPath(
           [
             [120, 12],
             [120, 88]
@@ -1614,7 +1634,7 @@ const spatialRegressionDiagnostics: EntryPreview = {
           0.7
         )
       ]),
-      dots(
+      createPulsingSprites(
         scatter.map(
           (point, index): SpriteItem => ({
             x: point[0],
@@ -1627,9 +1647,9 @@ const spatialRegressionDiagnostics: EntryPreview = {
         ),
         0.2
       ),
-      strokes(
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [88, fit.intercept + fit.slope * 88],
               [152, fit.intercept + fit.slope * 152]
@@ -1647,7 +1667,7 @@ const spatialRegressionDiagnostics: EntryPreview = {
 };
 
 const probitRegression: EntryPreview = {
-  parameters: [slider('steepness', 'Steepness', 0.5, 5, 0.1, 2.4)],
+  parameters: [createSlider('steepness', 'Steepness', 0.5, 5, 0.1, 2.4)],
   pointer: 'sticky',
   build: ({fork, p, pointer}) => {
     const center = pointer ? clamp(pointer[0], 40, 126) : 83;
@@ -1676,8 +1696,8 @@ const probitRegression: EntryPreview = {
     });
     return [
       createAxes(),
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [PLOT_LEFT, toY(0.5)],
             [PLOT_RIGHT, toY(0.5)]
@@ -1686,7 +1706,7 @@ const probitRegression: EntryPreview = {
           0.4,
           0.5
         ),
-        path(
+        createPath(
           [
             [center, 12],
             [center, 90]
@@ -1696,8 +1716,8 @@ const probitRegression: EntryPreview = {
           0.5
         )
       ]),
-      strokes([path(bell, 'violet', 1, 0.8)], 'pulse', 0.4),
-      dots(
+      createStrokes([createPath(bell, 'violet', 1, 0.8)], 'pulse', 0.4),
+      createPulsingSprites(
         observed.map(
           (entry, index): SpriteItem => ({
             x: entry.x,
@@ -1709,14 +1729,14 @@ const probitRegression: EntryPreview = {
           })
         )
       ),
-      strokes([path(curve, 'warm', 1.9, 1)], 'draw', 0.2),
-      dots([{x: center, y: toY(0.5), radius: 3, role: 'warm', alpha: 1}], 0.3)
+      createStrokes([createPath(curve, 'warm', 1.9, 1)], 'draw', 0.2),
+      createPulsingSprites([{x: center, y: toY(0.5), radius: 3, role: 'warm', alpha: 1}], 0.3)
     ];
   }
 };
 
 const seeminglyUnrelatedRegression: EntryPreview = {
-  parameters: [slider('correlation', 'Error correlation', -0.95, 0.95, 0.05, 0.85)],
+  parameters: [createSlider('correlation', 'Error correlation', -0.95, 0.95, 0.05, 0.85)],
   pointer: 'none',
   build: ({fork, p}) => {
     const random = fork('errors');
@@ -1742,7 +1762,7 @@ const seeminglyUnrelatedRegression: EntryPreview = {
       first.push([x, y1]);
       second.push([x, y2]);
       matches.push(
-        path(
+        createPath(
           [
             [x, y1],
             [x, y2]
@@ -1757,8 +1777,8 @@ const seeminglyUnrelatedRegression: EntryPreview = {
     const fitFirst = fitLine(first);
     const fitSecond = fitLine(second);
     return [
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [PLOT_LEFT, 8],
             [PLOT_LEFT, 92]
@@ -1767,7 +1787,7 @@ const seeminglyUnrelatedRegression: EntryPreview = {
           0.5,
           0.7
         ),
-        path(
+        createPath(
           [
             [PLOT_LEFT, 50],
             [PLOT_RIGHT, 50]
@@ -1777,12 +1797,12 @@ const seeminglyUnrelatedRegression: EntryPreview = {
           0.5
         )
       ]),
-      strokes(matches, 'flow', 0.3),
-      dots(toSprites(first, 'cool', 1.6, undefined, 0.95)),
-      dots(toSprites(second, 'violet', 1.6, undefined, 0.95)),
-      strokes(
+      createStrokes(matches, 'flow', 0.3),
+      createPulsingSprites(toSprites(first, 'cool', 1.6, undefined, 0.95)),
+      createPulsingSprites(toSprites(second, 'violet', 1.6, undefined, 0.95)),
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [PLOT_LEFT, fitFirst.intercept + fitFirst.slope * PLOT_LEFT],
               [PLOT_RIGHT, fitFirst.intercept + fitFirst.slope * PLOT_RIGHT]
@@ -1791,7 +1811,7 @@ const seeminglyUnrelatedRegression: EntryPreview = {
             1.6,
             1
           ),
-          path(
+          createPath(
             [
               [PLOT_LEFT, fitSecond.intercept + fitSecond.slope * PLOT_LEFT],
               [PLOT_RIGHT, fitSecond.intercept + fitSecond.slope * PLOT_RIGHT]
@@ -1809,7 +1829,7 @@ const seeminglyUnrelatedRegression: EntryPreview = {
 };
 
 const instrumentalVariablesCovariance: EntryPreview = {
-  parameters: [slider('clustering', 'Error clustering', 0, 1, 0.05, 0.7)],
+  parameters: [createSlider('clustering', 'Error clustering', 0, 1, 0.05, 0.7)],
   pointer: 'none',
   build: ({fork, p}) => {
     const random = fork('clusters');
@@ -1819,7 +1839,7 @@ const instrumentalVariablesCovariance: EntryPreview = {
     centers.forEach(center => {
       const shock = random.gaussian() * 9 * p.clustering;
       const y = 52 - 0.12 * (center - 83) + shock;
-      halos.push(path(createCircle(center, clamp(y, 18, 82), 9, 20), 'dim', 0.4, 0.45));
+      halos.push(createPath(createCircle(center, clamp(y, 18, 82), 9, 20), 'dim', 0.4, 0.45));
       for (let index = 0; index < 8; index++)
         points.push([center + random.gaussian() * 4, clamp(y + random.gaussian() * 4.5, 10, 90)]);
     });
@@ -1838,13 +1858,16 @@ const instrumentalVariablesCovariance: EntryPreview = {
     const narrow = (sign: number) => xs.map(x => [x, lineAt(x) + sign * half(x, 1)] as Point);
     return [
       createAxes(),
-      fills([{ring: band, role: 'violet', alpha: 0.2}], 'pulse'),
-      strokes([path(narrow(-1), 'dim', 0.7, 0.8), path(narrow(1), 'dim', 0.7, 0.8)]),
-      strokes(halos),
-      dots(toSprites(points, 'primary', 1.4, undefined, 0.9)),
-      strokes(
+      createFills([{ring: band, role: 'violet', alpha: 0.2}], 'pulse'),
+      createStrokes([
+        createPath(narrow(-1), 'dim', 0.7, 0.8),
+        createPath(narrow(1), 'dim', 0.7, 0.8)
+      ]),
+      createStrokes(halos),
+      createPulsingSprites(toSprites(points, 'primary', 1.4, undefined, 0.9)),
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [PLOT_LEFT, lineAt(PLOT_LEFT)],
               [PLOT_RIGHT, lineAt(PLOT_RIGHT)]
@@ -1862,7 +1885,7 @@ const instrumentalVariablesCovariance: EntryPreview = {
 };
 
 const spatialTwoStageLeastSquares: EntryPreview = {
-  parameters: [slider('strength', 'Instrument strength', 0.2, 1, 0.05, 0.7)],
+  parameters: [createSlider('strength', 'Instrument strength', 0.2, 1, 0.05, 0.7)],
   pointer: 'none',
   build: ({fork, p}) => {
     const random = fork('data');
@@ -1871,18 +1894,20 @@ const spatialTwoStageLeastSquares: EntryPreview = {
     const lagged = instrument.map(z =>
       clamp(0.15 + 0.7 * z + random.gaussian() * 0.32 * (1.15 - p.strength), 0.03, 0.97)
     );
-    const outcome = lagged.map(w => clamp(0.2 + 0.6 * w + random.gaussian() * 0.07, 0.03, 0.97));
+    const outcome = lagged.map(weight =>
+      clamp(0.2 + 0.6 * weight + random.gaussian() * 0.07, 0.03, 0.97)
+    );
     const stageOne = fitLine(instrument.map((z, index) => [z, lagged[index]] as Point));
     const fitted = instrument.map(z => clamp(stageOne.intercept + stageOne.slope * z, 0.03, 0.97));
     const toLeft = (u: number, v: number): Point => [10 + u * 62, 88 - v * 74];
     const toRight = (u: number, v: number): Point => [90 + u * 62, 88 - v * 74];
     const raw = instrument.map((z, index) => toLeft(z, lagged[index]));
     const hat = instrument.map((z, index) => toLeft(z, fitted[index]));
-    const second = fitted.map((w, index) => toRight(w, outcome[index]));
-    const stageTwo = fitLine(fitted.map((w, index) => [w, outcome[index]] as Point));
+    const second = fitted.map((weight, index) => toRight(weight, outcome[index]));
+    const stageTwo = fitLine(fitted.map((weight, index) => [weight, outcome[index]] as Point));
     return [
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [10, 10],
             [10, 88],
@@ -1892,7 +1917,7 @@ const spatialTwoStageLeastSquares: EntryPreview = {
           0.5,
           0.7
         ),
-        path(
+        createPath(
           [
             [90, 10],
             [90, 88],
@@ -1903,10 +1928,10 @@ const spatialTwoStageLeastSquares: EntryPreview = {
           0.7
         )
       ]),
-      strokes(raw.map((point, index) => path([point, hat[index]], 'dim', 0.4, 0.5))),
-      strokes(
+      createStrokes(raw.map((point, index) => createPath([point, hat[index]], 'dim', 0.4, 0.5))),
+      createStrokes(
         [
-          path(
+          createPath(
             [toLeft(0, stageOne.intercept), toLeft(1, stageOne.intercept + stageOne.slope)],
             'cool',
             1.5,
@@ -1916,11 +1941,11 @@ const spatialTwoStageLeastSquares: EntryPreview = {
         'draw',
         0.18
       ),
-      dots(toSprites(raw, 'hot', 1.4, undefined, 0.8)),
-      dots(toSprites(hat, 'cool', 1.5)),
-      strokes(
+      createPulsingSprites(toSprites(raw, 'hot', 1.4, undefined, 0.8)),
+      createPulsingSprites(toSprites(hat, 'cool', 1.5)),
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [77, 50],
               [86, 50]
@@ -1929,15 +1954,15 @@ const spatialTwoStageLeastSquares: EntryPreview = {
             1.5,
             1
           ),
-          path(arrowHead([77, 50], [86, 50], 3), 'violet', 1.3, 1)
+          createPath(arrowHead([77, 50], [86, 50], 3), 'violet', 1.3, 1)
         ],
         'flow',
         0.6
       ),
-      dots(toSprites(second, 'primary', 1.5)),
-      strokes(
+      createPulsingSprites(toSprites(second, 'primary', 1.5)),
+      createStrokes(
         [
-          path(
+          createPath(
             [toRight(0, stageTwo.intercept), toRight(1, stageTwo.intercept + stageTwo.slope)],
             'warm',
             1.8,
@@ -1955,7 +1980,7 @@ const spatialTwoStageLeastSquares: EntryPreview = {
 // Spatial lag and error models
 
 const spatialLagMaximumLikelihood: EntryPreview = {
-  parameters: [slider('rho', 'Spillover (rho)', 0, 0.95, 0.05, 0.55)],
+  parameters: [createSlider('rho', 'Spillover (rho)', 0, 0.95, 0.05, 0.55)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const field = createSmoothField(fork('field'), 7, mixNumbers(3.2, 0.9, p.rho));
@@ -1986,15 +2011,15 @@ const spatialLagMaximumLikelihood: EntryPreview = {
         strength: 0.06,
         speed: 0.25
       },
-      strokes(
+      createStrokes(
         neighbors.map((entry, order) =>
-          path([points[entry.index], points[focus]], 'ink', 1.3, 0.95, order / 4)
+          createPath([points[entry.index], points[focus]], 'ink', 1.3, 0.95, order / 4)
         ),
         'flow',
         0.5
       ),
-      dots(toSprites(points, 'primary', 1.5, undefined, 0.75)),
-      dots(
+      createPulsingSprites(toSprites(points, 'primary', 1.5, undefined, 0.75)),
+      createPulsingSprites(
         [
           {
             x: points[focus][0],
@@ -2015,8 +2040,8 @@ const spatialLagMaximumLikelihood: EntryPreview = {
         ],
         0.3
       ),
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [112, 94],
             [152, 94]
@@ -2025,15 +2050,15 @@ const spatialLagMaximumLikelihood: EntryPreview = {
           0.5,
           0.9
         ),
-        path(curve, 'ink', 1.3, 1)
+        createPath(curve, 'ink', 1.3, 1)
       ]),
-      dots([{x: marker[0], y: marker[1], radius: 3, role: 'hot', alpha: 1}], 0.3)
+      createPulsingSprites([{x: marker[0], y: marker[1], radius: 3, role: 'hot', alpha: 1}], 0.3)
     ];
   }
 };
 
 const spatialLagImpacts: EntryPreview = {
-  parameters: [slider('rho', 'Spillover (rho)', 0, 0.9, 0.05, 0.6)],
+  parameters: [createSlider('rho', 'Spillover (rho)', 0, 0.9, 0.05, 0.6)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const points = createSpreadPoints(fork('points'), 7, 5, 8, 108, 12, 88);
@@ -2053,7 +2078,7 @@ const spatialLagImpacts: EntryPreview = {
             : [points[second], points[first]]) as Point[]
       );
     const bar = (x: number, from: number, length: number, role: Role) =>
-      path(
+      createPath(
         [
           [x, 90 - from],
           [x, 90 - from - Math.max(length, 0.1)]
@@ -2063,15 +2088,15 @@ const spatialLagImpacts: EntryPreview = {
         0.9
       );
     return [
-      strokes(toPaths(edgesToPaths(points, edges), 'dim', 0.4, 0.4)),
-      strokes(
+      createStrokes(toPaths(edgesToPaths(points, edges), 'dim', 0.4, 0.4)),
+      createStrokes(
         directed.map((segment, order) =>
-          path(segment, 'warm', 1, 0.5 + 0.4 * p.rho, order / directed.length)
+          createPath(segment, 'warm', 1, 0.5 + 0.4 * p.rho, order / directed.length)
         ),
         'flow',
         0.45
       ),
-      dots(
+      createPulsingSprites(
         points.map((point, index) => ({
           x: point[0],
           y: point[1],
@@ -2081,8 +2106,8 @@ const spatialLagImpacts: EntryPreview = {
           phase: hops[index] / 6
         }))
       ),
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [118, 92],
             [152, 92]
@@ -2092,7 +2117,7 @@ const spatialLagImpacts: EntryPreview = {
           0.8
         )
       ]),
-      strokes(
+      createStrokes(
         [
           bar(124, 0, direct, 'hot'),
           bar(136, direct, indirect, 'cool'),
@@ -2107,7 +2132,7 @@ const spatialLagImpacts: EntryPreview = {
 };
 
 const spatialErrorMaximumLikelihood: EntryPreview = {
-  parameters: [slider('lambda', 'Error dependence (lambda)', 0, 0.95, 0.05, 0.8)],
+  parameters: [createSlider('lambda', 'Error dependence (lambda)', 0, 0.95, 0.05, 0.8)],
   pointer: 'none',
   build: ({fork, p}) => {
     const random = fork('errors');
@@ -2124,9 +2149,9 @@ const spatialErrorMaximumLikelihood: EntryPreview = {
     );
     const whitened = errors.map((value, index) => value - p.lambda * lagged[index]);
     const normalize = (values: number[]) => {
-      const std =
+      const standardDeviation =
         Math.sqrt(values.reduce((sum, value) => sum + value * value, 0) / values.length) || 1;
-      return values.map(value => value / std);
+      return values.map(value => value / standardDeviation);
     };
     const left = normalize(errors);
     const right = normalize(whitened);
@@ -2142,11 +2167,11 @@ const spatialErrorMaximumLikelihood: EntryPreview = {
         })
       );
     return [
-      strokes(toPaths(edgesToPaths(base, getUniqueEdges(edges)), 'dim', 0.4, 0.4)),
-      dots(makeDots(left, 0)),
-      strokes(
+      createStrokes(toPaths(edgesToPaths(base, getUniqueEdges(edges)), 'dim', 0.4, 0.4)),
+      createPulsingSprites(makeDots(left, 0)),
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [77, 50],
               [84, 50]
@@ -2155,14 +2180,14 @@ const spatialErrorMaximumLikelihood: EntryPreview = {
             1.6,
             1
           ),
-          path(arrowHead([77, 50], [84, 50], 3), 'violet', 1.3, 1)
+          createPath(arrowHead([77, 50], [84, 50], 3), 'violet', 1.3, 1)
         ],
         'flow',
         0.6
       ),
-      dots(makeDots(right, 80)),
-      strokes([
-        path(
+      createPulsingSprites(makeDots(right, 80)),
+      createStrokes([
+        createPath(
           [
             [80, 8],
             [80, 92]
@@ -2177,7 +2202,7 @@ const spatialErrorMaximumLikelihood: EntryPreview = {
 };
 
 const spatialErrorGm: EntryPreview = {
-  parameters: [slider('lambda', 'True lambda', 0.2, 0.9, 0.05, 0.6)],
+  parameters: [createSlider('lambda', 'True lambda', 0.2, 0.9, 0.05, 0.6)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const objectiveAt = (lambda: number) =>
@@ -2192,21 +2217,21 @@ const spatialErrorGm: EntryPreview = {
     const best: Point = [toX(p.lambda), clamp(objectiveAt(p.lambda), 8, 90)];
     const random = fork('moments');
     const pairs: Point[] = Array.from({length: 26}, () => {
-      const e = random.gaussian();
+      const noise = random.gaussian();
       return [
-        134 + clamp(e, -2, 2) * 8,
-        24 - clamp(p.lambda * e + random.gaussian() * 0.5, -2, 2) * 8
+        134 + clamp(noise, -2, 2) * 8,
+        24 - clamp(p.lambda * noise + random.gaussian() * 0.5, -2, 2) * 8
       ] as Point;
     });
     const pairFit = fitLine(pairs);
     const trace: Point[] = Array.from({length: 14}, (_, index) => {
-      const t = index / 13;
-      const lambda = mixNumbers(trial, p.lambda, t);
+      const amount = index / 13;
+      const lambda = mixNumbers(trial, p.lambda, amount);
       return [toX(lambda), clamp(objectiveAt(lambda), 8, 90)] as Point;
     });
     return [
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [20, 8],
             [20, 92],
@@ -2217,10 +2242,10 @@ const spatialErrorGm: EntryPreview = {
           0.7
         )
       ]),
-      strokes([path(curve, 'violet', 1.6, 0.95)]),
-      strokes([path(trace, 'warm', 1.4, 1)], 'flow', 0.35),
-      strokes([path([trialPoint, [trialPoint[0], 92]], 'dim', 0.6, 0.7)]),
-      dots(
+      createStrokes([createPath(curve, 'violet', 1.6, 0.95)]),
+      createStrokes([createPath(trace, 'warm', 1.4, 1)], 'flow', 0.35),
+      createStrokes([createPath([trialPoint, [trialPoint[0], 92]], 'dim', 0.6, 0.7)]),
+      createPulsingSprites(
         [
           {
             x: trialPoint[0],
@@ -2233,9 +2258,9 @@ const spatialErrorGm: EntryPreview = {
         ],
         0.3
       ),
-      strokes(
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [best[0], best[1]],
               [best[0], 92]
@@ -2248,8 +2273,8 @@ const spatialErrorGm: EntryPreview = {
         'pulse',
         0.5
       ),
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [118, 24],
             [152, 24]
@@ -2258,7 +2283,7 @@ const spatialErrorGm: EntryPreview = {
           0.3,
           0.5
         ),
-        path(
+        createPath(
           [
             [134, 8],
             [134, 40]
@@ -2268,10 +2293,10 @@ const spatialErrorGm: EntryPreview = {
           0.5
         )
       ]),
-      dots(toSprites(pairs, 'primary', 1.2, undefined, 0.8)),
-      strokes(
+      createPulsingSprites(toSprites(pairs, 'primary', 1.2, undefined, 0.8)),
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [118, pairFit.intercept + pairFit.slope * 118],
               [152, pairFit.intercept + pairFit.slope * 152]
@@ -2292,7 +2317,7 @@ const spatialErrorGm: EntryPreview = {
 // Regimes
 
 const spatialRegimeRegression: EntryPreview = {
-  parameters: [slider('difference', 'Regime difference', 0, 1, 0.05, 0.85)],
+  parameters: [createSlider('difference', 'Regime difference', 0, 1, 0.05, 0.85)],
   pointer: 'none',
   build: ({fork, p}) => {
     const random = fork('points');
@@ -2316,7 +2341,7 @@ const spatialRegimeRegression: EntryPreview = {
       }
     ];
     const layers: PreviewLayer[] = [
-      fills(
+      createFills(
         [
           {
             ring: [
@@ -2342,9 +2367,9 @@ const spatialRegimeRegression: EntryPreview = {
         'pulse'
       ),
       createAxes(),
-      strokes(
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [boundary, 8],
               [boundary, 92]
@@ -2375,10 +2400,10 @@ const spatialRegimeRegression: EntryPreview = {
         ] as Point;
       });
       everything.push(...points);
-      layers.push(dots(toSprites(points, region.role, 1.5)));
+      layers.push(createPulsingSprites(toSprites(points, region.role, 1.5)));
       const fit = fitLine(points);
       lines.push(
-        path(
+        createPath(
           [
             [region.from, fit.intercept + fit.slope * region.from],
             [region.to, fit.intercept + fit.slope * region.to]
@@ -2391,8 +2416,8 @@ const spatialRegimeRegression: EntryPreview = {
     });
     const pooled = fitLine(everything);
     layers.push(
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [PLOT_LEFT, pooled.intercept + pooled.slope * PLOT_LEFT],
             [PLOT_RIGHT, pooled.intercept + pooled.slope * PLOT_RIGHT]
@@ -2403,15 +2428,15 @@ const spatialRegimeRegression: EntryPreview = {
         )
       ])
     );
-    layers.push(strokes(lines, 'draw', 0.2));
+    layers.push(createStrokes(lines, 'draw', 0.2));
     return layers;
   }
 };
 
 const restrictedRegimeRegression: EntryPreview = {
   parameters: [
-    slider('gap', 'Intercept gap', 0, 1, 0.05, 0.7),
-    slider('slope', 'Shared slope', -0.6, 0.6, 0.05, 0.35)
+    createSlider('gap', 'Intercept gap', 0, 1, 0.05, 0.7),
+    createSlider('slope', 'Shared slope', -0.6, 0.6, 0.05, 0.35)
   ],
   pointer: 'none',
   build: ({fork, p}) => {
@@ -2427,13 +2452,13 @@ const restrictedRegimeRegression: EntryPreview = {
         const x = random.range(PLOT_LEFT + 4, PLOT_RIGHT - 2);
         return [x, clamp(lineAt(x)[1] + random.gaussian() * 4.5, 8, 92)] as Point;
       });
-      layers.push(dots(toSprites(points, role, 1.4, undefined, 0.85)));
-      lines.push(path([lineAt(PLOT_LEFT), lineAt(PLOT_RIGHT)], role, 1.7, 1));
+      layers.push(createPulsingSprites(toSprites(points, role, 1.4, undefined, 0.85)));
+      lines.push(createPath([lineAt(PLOT_LEFT), lineAt(PLOT_RIGHT)], role, 1.7, 1));
       if (index > 0) {
         const previous = 50 + (index - 2) * 24 * p.gap - p.slope * (PLOT_LEFT - 83);
         const here = lineAt(PLOT_LEFT)[1];
         markers.push(
-          path(
+          createPath(
             [
               [PLOT_LEFT + 5, previous],
               [PLOT_LEFT + 5, here]
@@ -2442,11 +2467,16 @@ const restrictedRegimeRegression: EntryPreview = {
             0.9,
             0.9
           ),
-          path(arrowHead([PLOT_LEFT + 5, previous], [PLOT_LEFT + 5, here], 2.4), 'ink', 0.8, 0.9)
+          createPath(
+            arrowHead([PLOT_LEFT + 5, previous], [PLOT_LEFT + 5, here], 2.4),
+            'ink',
+            0.8,
+            0.9
+          )
         );
       }
     });
-    layers.push(strokes(markers, 'pulse', 0.5), strokes(lines, 'draw', 0.2));
+    layers.push(createStrokes(markers, 'pulse', 0.5), createStrokes(lines, 'draw', 0.2));
     return layers;
   }
 };
@@ -2471,7 +2501,7 @@ function getLocalCoefficient(x: number, y: number): number {
 }
 
 const geographicallyWeightedRegression: EntryPreview = {
-  parameters: [slider('bandwidth', 'Bandwidth', 10, 40, 1, 22, 'px')],
+  parameters: [createSlider('bandwidth', 'Bandwidth', 10, 40, 1, 22, 'px')],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const origin: Point = pointer ?? [62, 46];
@@ -2489,7 +2519,7 @@ const geographicallyWeightedRegression: EntryPreview = {
       const dx = Math.cos(angle) * 4.2;
       const dy = Math.sin(angle) * 4.2;
       buckets[weight > 0.5 ? 2 : weight > 0.18 ? 1 : 0].push(
-        path(
+        createPath(
           [
             [x - dx, y - dy],
             [x + dx, y + dy]
@@ -2517,21 +2547,21 @@ const geographicallyWeightedRegression: EntryPreview = {
       };
     });
     return [
-      dots(observations, 0.15),
-      strokes(buckets[0]),
-      strokes(buckets[1]),
-      strokes(buckets[2]),
-      strokes(
+      createPulsingSprites(observations, 0.15),
+      createStrokes(buckets[0]),
+      createStrokes(buckets[1]),
+      createStrokes(buckets[2]),
+      createStrokes(
         [
-          path(createCircle(origin[0], origin[1], p.bandwidth, 44), 'cool', 1, 0.9),
-          path(createCircle(origin[0], origin[1], p.bandwidth * 2, 56), 'cool', 0.5, 0.35)
+          createPath(createCircle(origin[0], origin[1], p.bandwidth, 44), 'cool', 1, 0.9),
+          createPath(createCircle(origin[0], origin[1], p.bandwidth * 2, 56), 'cool', 0.5, 0.35)
         ],
         'pulse',
         0.4
       ),
-      strokes(
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [origin[0] - Math.cos(localAngle) * 13, origin[1] - Math.sin(localAngle) * 13],
               [origin[0] + Math.cos(localAngle) * 13, origin[1] + Math.sin(localAngle) * 13]
@@ -2544,13 +2574,13 @@ const geographicallyWeightedRegression: EntryPreview = {
         'draw',
         0.3
       ),
-      dots([{x: origin[0], y: origin[1], radius: 2.6, role: 'hot', alpha: 1}], 0.3)
+      createPulsingSprites([{x: origin[0], y: origin[1], radius: 2.6, role: 'hot', alpha: 1}], 0.3)
     ];
   }
 };
 
 const generalizedGwr: EntryPreview = {
-  parameters: [slider('bandwidth', 'Bandwidth', 10, 40, 1, 24, 'px')],
+  parameters: [createSlider('bandwidth', 'Bandwidth', 10, 40, 1, 24, 'px')],
   pointer: 'hover',
   build: ({p, pointer}) => {
     const origin: Point = pointer ?? [100, 50];
@@ -2558,12 +2588,20 @@ const generalizedGwr: EntryPreview = {
       Math.exp(-0.5 * (getDistance([x, y], origin) / p.bandwidth) ** 2);
     const getSteepness = (x: number, y: number) =>
       clamp(0.5 + 0.5 * Math.sin(x * 0.04 - 0.6) * Math.cos(y * 0.05 + 0.4) * 1.5, 0, 1);
-    const buildCurve = (cx: number, cy: number, halfWidth: number, steepness: number): Point[] =>
+    const buildCurve = (
+      centerX: number,
+      centerY: number,
+      halfWidth: number,
+      steepness: number
+    ): Point[] =>
       Array.from({length: 12}, (_, index) => {
-        const t = index / 11;
-        const z = (t - 0.5) * 2;
+        const amount = index / 11;
+        const z = (amount - 0.5) * 2;
         const logistic = 1 / (1 + Math.exp(-(0.6 + steepness * 7) * z));
-        return [cx + z * halfWidth, cy + halfWidth * 0.8 - logistic * halfWidth * 1.6] as Point;
+        return [
+          centerX + z * halfWidth,
+          centerY + halfWidth * 0.8 - logistic * halfWidth * 1.6
+        ] as Point;
       });
     const items: Record<Role, PathItem[]> = {
       primary: [],
@@ -2583,27 +2621,36 @@ const generalizedGwr: EntryPreview = {
       steepSum += weight * steepness;
       const role: Role = steepness > 0.66 ? 'hot' : steepness > 0.33 ? 'violet' : 'cool';
       items[role].push(
-        path(buildCurve(x, y, 5, steepness), role, 0.7 + weight, 0.2 + 0.8 * Math.sqrt(weight))
+        createPath(
+          buildCurve(x, y, 5, steepness),
+          role,
+          0.7 + weight,
+          0.2 + 0.8 * Math.sqrt(weight)
+        )
       );
     });
     const local = steepSum / (weightSum || 1);
     return [
-      strokes(items.cool),
-      strokes(items.violet),
-      strokes(items.hot),
-      strokes(
-        [path(createCircle(origin[0], origin[1], p.bandwidth, 44), 'ink', 0.9, 0.85)],
+      createStrokes(items.cool),
+      createStrokes(items.violet),
+      createStrokes(items.hot),
+      createStrokes(
+        [createPath(createCircle(origin[0], origin[1], p.bandwidth, 44), 'ink', 0.9, 0.85)],
         'pulse',
         0.4
       ),
-      strokes([path(buildCurve(origin[0], origin[1], 14, local), 'warm', 2.2, 1)], 'draw', 0.3),
-      dots([{x: origin[0], y: origin[1], radius: 2.4, role: 'warm', alpha: 1}], 0.3)
+      createStrokes(
+        [createPath(buildCurve(origin[0], origin[1], 14, local), 'warm', 2.2, 1)],
+        'draw',
+        0.3
+      ),
+      createPulsingSprites([{x: origin[0], y: origin[1], radius: 2.4, role: 'warm', alpha: 1}], 0.3)
     ];
   }
 };
 
 const multiscaleGwr: EntryPreview = {
-  parameters: [slider('rough', 'Local share', 0, 1, 0.05, 0.45)],
+  parameters: [createSlider('rough', 'Local share', 0, 1, 0.05, 0.45)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const smooth = createSmoothField(fork('smooth'), 4, 0.7);
@@ -2623,22 +2670,22 @@ const multiscaleGwr: EntryPreview = {
         strength: 0.05,
         speed: 0.25
       },
-      strokes(
+      createStrokes(
         [
-          path(createCircle(origin[0], origin[1], 38, 56), 'cool', 1.1, 0.95),
-          path(createCircle(origin[0], origin[1], 21, 44), 'violet', 1.1, 0.95),
-          path(createCircle(origin[0], origin[1], 8, 30), 'hot', 1.2, 1)
+          createPath(createCircle(origin[0], origin[1], 38, 56), 'cool', 1.1, 0.95),
+          createPath(createCircle(origin[0], origin[1], 21, 44), 'violet', 1.1, 0.95),
+          createPath(createCircle(origin[0], origin[1], 8, 30), 'hot', 1.2, 1)
         ],
         'pulse',
         0.4
       ),
-      dots([{x: origin[0], y: origin[1], radius: 2.4, role: 'ink', alpha: 1}], 0.3)
+      createPulsingSprites([{x: origin[0], y: origin[1], radius: 2.4, role: 'ink', alpha: 1}], 0.3)
     ];
   }
 };
 
 const gwrNonstationarityTest: EntryPreview = {
-  parameters: [slider('observed', 'Observed spread', 0.4, 3, 0.05, 2.1)],
+  parameters: [createSlider('observed', 'Observed spread', 0.4, 3, 0.05, 2.1)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const random = fork('permutations');
@@ -2680,8 +2727,8 @@ const gwrNonstationarityTest: EntryPreview = {
     const shuffleLeft: Point[] = Array.from({length: 6}, (_, index) => [114, 10 + index * 5]);
     const order = [3, 0, 5, 1, 4, 2];
     return [
-      strokes([
-        path(
+      createStrokes([
+        createPath(
           [
             [left, 92],
             [right, 92]
@@ -2691,11 +2738,11 @@ const gwrNonstationarityTest: EntryPreview = {
           0.8
         )
       ]),
-      fills(normal, 'pulse'),
-      fills(tail, 'pulse'),
-      strokes(
+      createFills(normal, 'pulse'),
+      createFills(tail, 'pulse'),
+      createStrokes(
         [
-          path(
+          createPath(
             [
               [observedX, 24],
               [observedX, 92]
@@ -2708,15 +2755,15 @@ const gwrNonstationarityTest: EntryPreview = {
         'draw',
         0.3
       ),
-      dots([{x: observedX, y: 24, radius: 3.4, role: 'warm', alpha: 1}], 0.3),
-      strokes(
+      createPulsingSprites([{x: observedX, y: 24, radius: 3.4, role: 'warm', alpha: 1}], 0.3),
+      createStrokes(
         shuffleLeft.map((point, index) =>
-          path([point, [146, 10 + order[index] * 5]], 'violet', 0.6, 0.8, index / 6)
+          createPath([point, [146, 10 + order[index] * 5]], 'violet', 0.6, 0.8, index / 6)
         ),
         'flow',
         0.4
       ),
-      dots(
+      createPulsingSprites(
         shuffleLeft.flatMap((point, index): SpriteItem[] => [
           {
             x: point[0],
@@ -2740,23 +2787,31 @@ const gwrNonstationarityTest: EntryPreview = {
 };
 
 const localCollinearity: EntryPreview = {
-  parameters: [slider('threshold', 'Flag above', 0.3, 0.9, 0.05, 0.6)],
+  parameters: [createSlider('threshold', 'Flag above', 0.3, 0.9, 0.05, 0.6)],
   pointer: 'hover',
   build: ({fork, p, pointer}) => {
     const getCollinearity = (x: number, y: number) =>
       clamp(0.5 + 0.7 * Math.sin(x * 0.042 + 1.2) * Math.cos(y * 0.06 + 0.4), 0, 1);
-    const values = evaluateField(FIELD_COLUMNS, FIELD_ROWS, (u, v) =>
-      getCollinearity(u * 160, v * 100)
+    const values = evaluateField(FIELD_COLUMNS, FIELD_ROWS, (unitX, unitY) =>
+      getCollinearity(unitX * 160, unitY * 100)
     );
-    const buildEllipse = (cx: number, cy: number, size: number, collinearity: number): Point[] => {
+    const buildEllipse = (
+      centerX: number,
+      centerY: number,
+      size: number,
+      collinearity: number
+    ): Point[] => {
       const major = size;
       const minor = size * (1 - 0.88 * collinearity);
       const cos = Math.SQRT1_2;
       return Array.from({length: 22}, (_, index) => {
         const angle = (index / 21) * Math.PI * 2;
-        const a = Math.cos(angle) * major;
-        const b = Math.sin(angle) * minor;
-        return [cx + a * cos - b * cos, cy - (a * cos + b * cos)] as Point;
+        const majorOffset = Math.cos(angle) * major;
+        const minorOffset = Math.sin(angle) * minor;
+        return [
+          centerX + majorOffset * cos - minorOffset * cos,
+          centerY - (majorOffset * cos + minorOffset * cos)
+        ] as Point;
       });
     };
     const flagged: PathItem[] = [];
@@ -2764,7 +2819,7 @@ const localCollinearity: EntryPreview = {
     getGlyphCenters().forEach(([x, y]) => {
       const collinearity = getCollinearity(x, y);
       (collinearity > p.threshold ? flagged : calm).push(
-        path(
+        createPath(
           buildEllipse(x, y, 5.6, collinearity),
           collinearity > p.threshold ? 'hot' : 'cool',
           0.9,
@@ -2798,12 +2853,12 @@ const localCollinearity: EntryPreview = {
         strength: 0.05,
         speed: 0.25
       },
-      strokes(calm),
-      strokes(flagged, 'pulse', 0.5),
-      strokes(
+      createStrokes(calm),
+      createStrokes(flagged, 'pulse', 0.5),
+      createStrokes(
         [
-          path(createCircle(origin[0], origin[1], 15, 36), 'ink', 0.9, 0.9),
-          path(
+          createPath(createCircle(origin[0], origin[1], 15, 36), 'ink', 0.9, 0.9),
+          createPath(
             buildEllipse(origin[0], origin[1], 11, here),
             here > p.threshold ? 'hot' : 'warm',
             1.6,
@@ -2813,7 +2868,7 @@ const localCollinearity: EntryPreview = {
         'pulse',
         0.4
       ),
-      dots(cloud, 0.2)
+      createPulsingSprites(cloud, 0.2)
     ];
   }
 };
@@ -2851,9 +2906,9 @@ function buildPanel(mode: PanelMode): EntryPreview['build'] {
         project(0, 1, period)
       ];
       slabs.push({ring, role: 'primary', alpha: 0.06 + 0.02 * period});
-      slabEdges.push(path(closeRing(ring), 'dim', 0.5, 0.65));
+      slabEdges.push(createPath(closeRing(ring), 'dim', 0.5, 0.65));
     }
-    layers.push(fills(slabs), strokes(slabEdges));
+    layers.push(createFills(slabs), createStrokes(slabEdges));
     const links: PathItem[] = [];
     const spatial: PathItem[] = [];
     const sprites: SpriteItem[] = [];
@@ -2869,7 +2924,7 @@ function buildPanel(mode: PanelMode): EntryPreview['build'] {
           const picked = mode === 'regression' && index === focus;
           const colored = mode === 'error';
           links.push(
-            path(
+            createPath(
               [below, point],
               picked ? 'warm' : colored ? getClassRole(Math.floor(place.effect * 5), 5) : 'dim',
               picked ? 1.3 : colored ? 0.8 : 0.4,
@@ -2883,7 +2938,7 @@ function buildPanel(mode: PanelMode): EntryPreview['build'] {
           const row = Math.floor(index / columns);
           if (column + 1 < columns)
             spatial.push(
-              path(
+              createPath(
                 [point, project(places[index + 1].u, places[index + 1].v, period)],
                 'warm',
                 0.5 + p.rho * 1.2,
@@ -2893,7 +2948,7 @@ function buildPanel(mode: PanelMode): EntryPreview['build'] {
             );
           if (row + 1 < rows)
             spatial.push(
-              path(
+              createPath(
                 [point, project(places[index + columns].u, places[index + columns].v, period)],
                 'warm',
                 0.5 + p.rho * 1.2,
@@ -2924,28 +2979,28 @@ function buildPanel(mode: PanelMode): EntryPreview['build'] {
         });
       });
     }
-    layers.push(strokes(links, 'flow', 0.3, 'add', 0.8));
-    if (mode === 'lag') layers.push(strokes(spatial, 'flow', 0.5));
+    layers.push(createStrokes(links, 'flow', 0.3, 'add', 0.8));
+    if (mode === 'lag') layers.push(createStrokes(spatial, 'flow', 0.5));
     if (mode === 'regression') {
       const arrowStart: Point = [128, 80];
       const arrowEnd: Point = [150, 44];
       layers.push(
-        strokes(
+        createStrokes(
           [
-            path([arrowStart, arrowEnd], 'warm', 1.6, 1),
-            path(arrowHead(arrowStart, arrowEnd, 3.4), 'warm', 1.3, 1)
+            createPath([arrowStart, arrowEnd], 'warm', 1.6, 1),
+            createPath(arrowHead(arrowStart, arrowEnd, 3.4), 'warm', 1.3, 1)
           ],
           'flow',
           0.4
         )
       );
     }
-    layers.push(dots(sprites, 0.2));
+    layers.push(createPulsingSprites(sprites, 0.2));
     return layers;
   };
 }
 
-const PANEL_PARAMETERS = [slider('periods', 'Periods', 2, 6, 1, 4)];
+const PANEL_PARAMETERS = [createSlider('periods', 'Periods', 2, 6, 1, 4)];
 
 export const REGRESSION_WEIGHTS_PREVIEWS: Record<string, EntryPreview> = {
   'contiguity-weights': contiguityWeights,
@@ -3005,7 +3060,7 @@ export const REGRESSION_WEIGHTS_PREVIEWS: Record<string, EntryPreview> = {
     build: buildPanel('regression')
   },
   'spatial-panel-lag-ml': {
-    parameters: [...PANEL_PARAMETERS, slider('rho', 'Spillover (rho)', 0, 0.95, 0.05, 0.6)],
+    parameters: [...PANEL_PARAMETERS, createSlider('rho', 'Spillover (rho)', 0, 0.95, 0.05, 0.6)],
     pointer: 'none',
     build: buildPanel('lag')
   },

@@ -11,7 +11,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 2,
     step: 1,
-    default: 1,
+    default: 2,
     options: ['HC0', 'HC1', 'HAC']
   },
   {
@@ -22,5 +22,5 @@ export const parameters: GpuSceneParameter[] = [
     step: 0.1,
     default: 1.5
   },
-  {id: 'kernelWeight', label: 'Data: kernel weight', min: 0.02, max: 0.15, step: 0.01, default: 0.1}
+  {id: 'kernelWeight', label: 'Data: kernel weight', min: 0.02, max: 0.4, step: 0.02, default: 0.2}
 ];

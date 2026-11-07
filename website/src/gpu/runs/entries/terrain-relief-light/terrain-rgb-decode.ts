@@ -33,7 +33,7 @@ function packHeight(height: number, encoding: 'terrarium' | 'mapbox', alpha: num
 
 export default defineOperationRun({
   parameters,
-  rebuildOn: ['encoding', 'alphaNoData', 'validMaximum'],
+  rebuildOn: ['alphaNoData', 'validMaximum'],
   caption: 'An RGBA elevation tile in; heights in meters, with missing data marked, out.',
   createInputs: ({random, world}) => {
     const terrain = createTerrainInput(random, world, 48);
@@ -58,7 +58,8 @@ export default defineOperationRun({
     return {...terrain, isHole};
   },
   build(builder, terrain, values) {
-    const encoding = values.encoding === 1 ? 'mapbox' : 'terrarium';
+    // Both encodings decode to the same heights, so the tile is packed as Terrarium.
+    const encoding = 'terrarium';
     const words = Uint32Array.from(terrain.elevation, (height, index) =>
       terrain.isHole(index) ? packHeight(0, encoding, 0) : packHeight(height, encoding, 255)
     );

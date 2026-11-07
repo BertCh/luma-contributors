@@ -56,6 +56,9 @@ export default defineOperationRun({
     );
     return {
       update: current => {
+        // The cover appends, so clear rows left over from a larger polygon.
+        cells.write(new Uint32Array(OUTPUT_CAPACITY * 2));
+        core.write(new Uint32Array(OUTPUT_CAPACITY));
         const scale = (array: Float32Array, stride: number, ownerOf: (index: number) => number) =>
           Float32Array.from(array, (value, index) => {
             const center = polygons.centers[ownerOf(Math.floor(index / stride)) * 2 + (index % 2)];

@@ -83,7 +83,7 @@ export default defineOperationRun({
   },
   draw: ({outputs, theme}) => [
     {layer: 'lines', segments: outputs.ruler, color: [...theme.ink, 0.25]},
-    {layer: 'dots', context: true, positions: outputs.trueShift, radius: 20},
-    {layer: 'dots', positions: outputs.shift, radius: 12, color: [...theme.ink, 1]}
+    {layer: 'dots', context: true, positions: outputs.trueShift, radius: 34},
+    {layer: 'dots', positions: outputs.shift, radius: 24, color: [...theme.ink, 1]}
   ]
 });

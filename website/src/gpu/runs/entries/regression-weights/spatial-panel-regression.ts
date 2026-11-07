@@ -15,7 +15,7 @@ export default definePanelRun({
   parameters,
   caption: 'Panel 2SLS: estimates (bars) against the true coefficients (dots).',
   process: 'lag',
-  rebuildOn: ['effects', 'instrumentOrder'],
+  rebuildOn: ['effects'],
   addOperation: ({builder, values, weights, predictors, response, periodCount, residuals}) => {
     const table = builder.allocate('table', 'float32', 16);
     builder.graph.add(
@@ -26,7 +26,6 @@ export default definePanelRun({
         predictorCount: 2,
         predictors: predictors.view,
         response: response.view,
-        instrumentOrder: values.instrumentOrder === 1 ? 1 : 2,
         output: {
           status: {code: builder.allocate('status', 'uint32', 1).view},
           table: table.view,

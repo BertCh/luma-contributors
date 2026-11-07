@@ -14,14 +14,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['full-rank', 'geographic-rank']
   },
-  {
-    id: 'tieOrder',
-    label: 'tieOrder',
-    min: 0,
-    max: 1,
-    step: 1,
-    default: 0,
-    options: ['giddy', 'row-id']
-  },
   {id: 'period', label: 'Show: period', min: 0, max: 5, step: 1, default: 0}
 ];

@@ -4,9 +4,10 @@
 // GPUTerrainDEMCoregistration between a reference DEM and a second epoch that is the same terrain
 // plus a constant vertical bias, plus real change (a thinning glacier) on unstable ground. The
 // median shift is fitted on the stable mask only, and the corrected difference is drawn: the bias
-// is gone, the glacier loss remains. (The output interleaves difference and standard deviation, so
+// is gone, the glacier loss remains. The inset bar is the fitted shift. (The output interleaves difference and standard deviation, so
 // each cell is two pixels wide: difference left, uncertainty right.)
 
+import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import {GPUTerrainDEMCoregistration} from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
 import {parameters} from './terrain-dem-coregistration.parameters';
@@ -43,6 +44,9 @@ export default defineOperationRun({
       'float32',
       new Float32Array(terrain.cellCount).fill(NOISE_STANDARD_DEVIATION ** 2)
     );
+    const fit = builder.allocate('fit', 'float32', 4);
+    // The fitted vertical shift (fit row 0), copied so it can be drawn as one bar.
+    const shift = builder.allocate('shift', 'float32', 1);
     const differences = builder.allocate('differences', 'float32', terrain.cellCount * 2);
     builder.graph.add(
       new GPUTerrainDEMCoregistration({
@@ -52,15 +56,29 @@ export default defineOperationRun({
         stableMask: stableMask.view,
         differenceVariance: differenceVariance.view,
         output: {
-          fit: builder.allocate('fit', 'float32', 4).view,
+          fit: fit.view,
           differences: differences.view,
           validity: builder.allocate('validity', 'uint32', terrain.cellCount).view,
           volume: builder.allocate('volume', 'float32', 3).view
         }
       })
     );
+    builder.graph.add({
+      getCommandNodes: graph => [
+        createWGSLKernelNode(graph, {
+          id: 'fitted-shift',
+          operation: 'fit-shift',
+          bindings: [
+            {name: 'fitSource', view: fit.view, type: 'f32', access: 'read'},
+            {name: 'shiftTarget', view: shift.view, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: 'shiftTarget[shiftTargetOffset] = fitSource[fitSourceOffset];'
+        })
+      ]
+    });
     return {
-      outputs: {reference, differences},
+      outputs: {reference, differences, shift},
       update: current => {
         const epoch = new Float32Array(terrain.cellCount);
         for (let cell = 0; cell < terrain.cellCount; cell++) {
@@ -84,6 +102,15 @@ export default defineOperationRun({
       ramp: 'diverging',
       range: [-0.1, 0.1],
       alpha: 0.95
+    },
+    {
+      // The median shift the operation fitted on stable ground: it follows the bias slider.
+      layer: 'chart',
+      kind: 'bars',
+      values: outputs.shift,
+      range: [-0.12, 0.12],
+      rectangle: [0.84, 0.04, 0.97, 0.24],
+      ramp: 'diverging'
     }
   ]
 });

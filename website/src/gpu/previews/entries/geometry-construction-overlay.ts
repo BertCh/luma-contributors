@@ -15,6 +15,18 @@ import {
   type Random
 } from '../data.ts';
 import {
+  clipRingByHalfPlane,
+  closeRing,
+  createRectangleRing,
+  getConvexHull,
+  getCross,
+  getNearestOnSegment,
+  getRingBounds,
+  getSignedArea,
+  getVertexMean,
+  isInsideRing
+} from '../geometry.ts';
+import {
   createGridLayer,
   getRoleCycle,
   getSegmentDistance,
@@ -22,8 +34,16 @@ import {
   toSprites,
   type EntryPreview
 } from '../helpers.ts';
+import {
+  createChoice,
+  createDot,
+  createFillLayer,
+  createPath,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer
+} from '../layers.ts';
 import type {
-  FillLayer,
   PathItem,
   Point,
   PolygonItem,
@@ -33,114 +53,49 @@ import type {
   StrokeLayer
 } from '../types.ts';
 import {SCENE_HEIGHT, SCENE_WIDTH} from '../types.ts';
-import type {GpuSceneParameter} from '../../types.ts';
 
 // ---------------------------------------------------------------------------------------------
-// Local layer shorthands
+// Layer shorthands with this group's defaults
 // ---------------------------------------------------------------------------------------------
 
 type Ring = Point[];
-type Animation = 'static' | 'flow' | 'draw' | 'pulse';
 
-function createPath(points: Point[], role: Role, width = 0.8, alpha = 0.9, phase = 0): PathItem {
-  return {points, role, width, alpha, phase};
-}
-
-function createLoop(ring: Ring, role: Role, width = 0.8, alpha = 0.9, phase = 0): PathItem {
-  return {points: [...ring, ring[0]], role, width, alpha, phase};
+/** A closed outline of a ring. */
+function createLoop(ring: Ring, role: Role, width: number, alpha: number, phase = 0): PathItem {
+  return createPath(closeRing(ring), role, width, alpha, phase);
 }
 
 function createPolygon(ring: Ring, role: Role, alpha = 0.3, phase = 0): PolygonItem {
   return {ring, role, alpha, phase};
 }
 
-function createDot(point: Point, role: Role, radius: number, alpha = 0.9, phase = 0): SpriteItem {
-  return {x: point[0], y: point[1], radius, role, alpha, phase};
-}
-
 function createStrokes(
   items: PathItem[],
-  animation: Animation = 'static',
+  animation: StrokeLayer['animation'] = 'static',
   speed = 0.2,
   trail?: number
 ): StrokeLayer {
-  return {type: 'strokes', items, animation, speed, trail, blend: 'add'};
+  return createStrokeLayer(items, {animation, speed, trail, blend: 'add'});
 }
 
-function createFills(items: PolygonItem[], animation: 'static' | 'pulse' = 'pulse'): FillLayer {
-  return {
-    type: 'fills',
-    items: items.filter(item => item.ring.length >= 3),
-    animation,
-    blend: 'add'
-  };
+/** Additive fills; rings with fewer than three vertices are skipped. */
+function createFills(items: PolygonItem[], animation: 'static' | 'pulse' = 'pulse') {
+  return createFillLayer(
+    items.filter(item => item.ring.length >= 3),
+    {animation, blend: 'add'}
+  );
 }
 
-function createSpriteLayer(items: SpriteItem[], pulse = 0.2): PreviewLayer {
-  return {type: 'sprites', items, pulse};
-}
-
-function createSlider(
-  id: string,
-  label: string,
-  min: number,
-  max: number,
-  step: number,
-  defaultValue: number,
-  unit?: string
-): GpuSceneParameter {
-  return {id, label, min, max, step, default: defaultValue, unit};
-}
-
-function createChoice(id: string, label: string, options: readonly string[], defaultIndex: number) {
-  return {
-    id,
-    label,
-    min: 0,
-    max: options.length - 1,
-    step: 1,
-    default: defaultIndex,
-    options
-  };
+function createPulseSprites(items: SpriteItem[], pulse = 0.2) {
+  return createSpriteLayer(items, {pulse});
 }
 
 // ---------------------------------------------------------------------------------------------
-// Local geometry
+// Geometry for this group
 // ---------------------------------------------------------------------------------------------
 
 function mixPoints(first: Point, second: Point, amount: number): Point {
   return [mixNumbers(first[0], second[0], amount), mixNumbers(first[1], second[1], amount)];
-}
-
-function getCross(origin: Point, first: Point, second: Point): number {
-  return (
-    (first[0] - origin[0]) * (second[1] - origin[1]) -
-    (first[1] - origin[1]) * (second[0] - origin[0])
-  );
-}
-
-function getSignedArea(ring: Ring): number {
-  let sum = 0;
-  for (let index = 0; index < ring.length; index++) {
-    const next = ring[(index + 1) % ring.length];
-    sum += ring[index][0] * next[1] - next[0] * ring[index][1];
-  }
-  return sum / 2;
-}
-
-function isInsideRing(point: Point, ring: Ring): boolean {
-  let inside = false;
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
-    const [ax, ay] = ring[index];
-    const [bx, by] = ring[previous];
-    if (
-      ay > point[1] !== by > point[1] &&
-      point[0] < ((bx - ax) * (point[1] - ay)) / (by - ay) + ax
-    ) {
-      inside = !inside;
-    }
-  }
-  return inside;
 }
 
 function createEllipse(
@@ -162,30 +117,7 @@ function createEllipse(
 }
 
 function createRectangle(x: number, y: number, width: number, height: number): Ring {
-  return [
-    [x, y],
-    [x + width, y],
-    [x + width, y + height],
-    [x, y + height]
-  ];
-}
-
-/** Sutherland-Hodgman against one half plane: keeps the side where dot(point - origin, normal) >= 0. */
-function clipRingByHalfPlane(ring: Ring, origin: Point, normal: Point): Ring {
-  const result: Ring = [];
-  const getSide = (point: Point) =>
-    (point[0] - origin[0]) * normal[0] + (point[1] - origin[1]) * normal[1];
-  for (let index = 0; index < ring.length; index++) {
-    const current = ring[index];
-    const next = ring[(index + 1) % ring.length];
-    const currentSide = getSide(current);
-    const nextSide = getSide(next);
-    if (currentSide >= 0) result.push(current);
-    if (currentSide >= 0 !== nextSide >= 0) {
-      result.push(mixPoints(current, next, currentSide / (currentSide - nextSide)));
-    }
-  }
-  return result;
+  return createRectangleRing(x, y, x + width, y + height);
 }
 
 function getInwardNormal(clip: Ring, index: number): {origin: Point; normal: Point} {
@@ -221,21 +153,23 @@ function subtractConvex(subject: Ring, clip: Ring): Ring[] {
   return pieces;
 }
 
-function intersectSegments(
+/** Position along the first segment (0..1) where it crosses the second, or null. */
+function getSegmentCrossing(
   first: Point,
   second: Point,
   third: Point,
   fourth: Point
-): {t: number; u: number} | null {
-  const dx1 = second[0] - first[0];
-  const dy1 = second[1] - first[1];
-  const dx2 = fourth[0] - third[0];
-  const dy2 = fourth[1] - third[1];
-  const denominator = dx1 * dy2 - dy1 * dx2;
+): number | null {
+  const firstX = second[0] - first[0];
+  const firstY = second[1] - first[1];
+  const secondX = fourth[0] - third[0];
+  const secondY = fourth[1] - third[1];
+  const denominator = firstX * secondY - firstY * secondX;
   if (Math.abs(denominator) < 1e-9) return null;
-  const t = ((third[0] - first[0]) * dy2 - (third[1] - first[1]) * dx2) / denominator;
-  const u = ((third[0] - first[0]) * dy1 - (third[1] - first[1]) * dx1) / denominator;
-  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? {t, u} : null;
+  const amount = ((third[0] - first[0]) * secondY - (third[1] - first[1]) * secondX) / denominator;
+  const otherAmount =
+    ((third[0] - first[0]) * firstY - (third[1] - first[1]) * firstX) / denominator;
+  return amount >= 0 && amount <= 1 && otherAmount >= 0 && otherAmount <= 1 ? amount : null;
 }
 
 /** Splits a polyline into runs inside and outside a ring. */
@@ -248,8 +182,8 @@ function clipPathByRing(path: Point[], ring: Ring): {inside: Point[][]; outside:
     const end = path[index + 1];
     const cuts = [0, 1];
     for (let edge = 0; edge < ring.length; edge++) {
-      const hit = intersectSegments(start, end, ring[edge], ring[(edge + 1) % ring.length]);
-      if (hit) cuts.push(hit.t);
+      const hit = getSegmentCrossing(start, end, ring[edge], ring[(edge + 1) % ring.length]);
+      if (hit !== null) cuts.push(hit);
     }
     cuts.sort((first, second) => first - second);
     for (let cut = 0; cut + 1 < cuts.length; cut++) {
@@ -319,25 +253,22 @@ function getNearestOnPath(path: Point[], point: Point) {
   for (let index = 0; index + 1 < path.length; index++) {
     const start = path[index];
     const end = path[index + 1];
-    const dx = end[0] - start[0];
-    const dy = end[1] - start[1];
-    const lengthSquared = dx * dx + dy * dy || 1;
-    const amount = clamp(
-      ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / lengthSquared,
-      0,
-      1
-    );
-    const snapped: Point = [start[0] + dx * amount, start[1] + dy * amount];
-    const distance = getDistance(point, snapped);
-    if (distance < best.distance) {
+    const nearest = getNearestOnSegment(point, start, end);
+    const length = getDistance(start, end);
+    if (nearest.distance < best.distance) {
       best = {
-        distance,
-        point: snapped,
-        measure: walked + Math.sqrt(lengthSquared) * amount,
-        side: dx * (point[1] - start[1]) - dy * (point[0] - start[0]) >= 0 ? 1 : -1
+        distance: nearest.distance,
+        point: nearest.point,
+        measure: walked + length * nearest.amount,
+        side:
+          (end[0] - start[0]) * (point[1] - start[1]) -
+            (end[1] - start[1]) * (point[0] - start[0]) >=
+          0
+            ? 1
+            : -1
       };
     }
-    walked += Math.sqrt(lengthSquared);
+    walked += length;
   }
   return best;
 }
@@ -385,25 +316,6 @@ function simplifyVisvalingam(path: Point[], minimumArea: number): Point[] {
   return points;
 }
 
-function getConvexHull(points: Point[]): Ring {
-  const sorted = [...points].sort((first, second) => first[0] - second[0] || first[1] - second[1]);
-  const build = (input: Point[]) => {
-    const chain: Point[] = [];
-    for (const point of input) {
-      while (
-        chain.length >= 2 &&
-        getCross(chain[chain.length - 2], chain[chain.length - 1], point) <= 0
-      ) {
-        chain.pop();
-      }
-      chain.push(point);
-    }
-    chain.pop();
-    return chain;
-  };
-  return [...build(sorted), ...build([...sorted].reverse())];
-}
-
 /** Closed Chaikin corner cutting. */
 function smoothRing(ring: Ring, iterations: number): Ring {
   let current = ring;
@@ -445,28 +357,37 @@ function getRightNormal(start: Point, end: Point): Point {
 type Triangle = [number, number, number];
 
 function getCircumcircle(first: Point, second: Point, third: Point) {
-  const [ax, ay] = first;
-  const [bx, by] = second;
-  const [cx, cy] = third;
-  const determinant = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+  const [firstX, firstY] = first;
+  const [secondX, secondY] = second;
+  const [thirdX, thirdY] = third;
+  const determinant =
+    2 * (firstX * (secondY - thirdY) + secondX * (thirdY - firstY) + thirdX * (firstY - secondY));
   if (Math.abs(determinant) < 1e-9) return {x: 0, y: 0, radiusSquared: Infinity};
-  const a = ax * ax + ay * ay;
-  const b = bx * bx + by * by;
-  const c = cx * cx + cy * cy;
-  const x = (a * (by - cy) + b * (cy - ay) + c * (ay - by)) / determinant;
-  const y = (a * (cx - bx) + b * (ax - cx) + c * (bx - ax)) / determinant;
-  return {x, y, radiusSquared: (ax - x) ** 2 + (ay - y) ** 2};
+  const firstSquared = firstX * firstX + firstY * firstY;
+  const secondSquared = secondX * secondX + secondY * secondY;
+  const thirdSquared = thirdX * thirdX + thirdY * thirdY;
+  const x =
+    (firstSquared * (secondY - thirdY) +
+      secondSquared * (thirdY - firstY) +
+      thirdSquared * (firstY - secondY)) /
+    determinant;
+  const y =
+    (firstSquared * (thirdX - secondX) +
+      secondSquared * (firstX - thirdX) +
+      thirdSquared * (secondX - firstX)) /
+    determinant;
+  return {x, y, radiusSquared: (firstX - x) ** 2 + (firstY - y) ** 2};
 }
 
 /** Bowyer-Watson Delaunay triangulation. */
 function triangulatePoints(sites: Point[]): Triangle[] {
   const count = sites.length;
   const points: Point[] = [...sites, [-3000, -3000], [3000, -3000], [80, 3500]];
-  const createTriangle = (a: number, b: number, c: number) => ({
-    a,
-    b,
-    c,
-    circle: getCircumcircle(points[a], points[b], points[c])
+  const createTriangle = (first: number, second: number, third: number) => ({
+    first,
+    second,
+    third,
+    circle: getCircumcircle(points[first], points[second], points[third])
   });
   let triangles = [createTriangle(count, count + 1, count + 2)];
   for (let index = 0; index < count; index++) {
@@ -477,9 +398,9 @@ function triangulatePoints(sites: Point[]): Triangle[] {
       const {x, y, radiusSquared} = triangle.circle;
       if ((point[0] - x) ** 2 + (point[1] - y) ** 2 < radiusSquared) {
         for (const [from, to] of [
-          [triangle.a, triangle.b],
-          [triangle.b, triangle.c],
-          [triangle.c, triangle.a]
+          [triangle.first, triangle.second],
+          [triangle.second, triangle.third],
+          [triangle.third, triangle.first]
         ]) {
           const key = from < to ? `${from}:${to}` : `${to}:${from}`;
           const entry = edges.get(key);
@@ -496,8 +417,8 @@ function triangulatePoints(sites: Point[]): Triangle[] {
     triangles = kept;
   }
   return triangles
-    .filter(triangle => triangle.a < count && triangle.b < count && triangle.c < count)
-    .map(triangle => [triangle.a, triangle.b, triangle.c]);
+    .filter(triangle => triangle.first < count && triangle.second < count && triangle.third < count)
+    .map(triangle => [triangle.first, triangle.second, triangle.third]);
 }
 
 function isInsideTriangle(point: Point, first: Point, second: Point, third: Point): boolean {
@@ -554,11 +475,11 @@ function clipEars(ring: Ring): Triangle[] {
 
 function getTriangleEdges(triangles: Triangle[]): Map<string, [number, number]> {
   const edges = new Map<string, [number, number]>();
-  for (const [a, b, c] of triangles) {
+  for (const [first, second, third] of triangles) {
     for (const [from, to] of [
-      [a, b],
-      [b, c],
-      [c, a]
+      [first, second],
+      [second, third],
+      [third, first]
     ]) {
       edges.set(from < to ? `${from}:${to}` : `${to}:${from}`, from < to ? [from, to] : [to, from]);
     }
@@ -675,7 +596,7 @@ function createHexCoverage(): HexCell[] {
         [1, 0]
       ];
       cells[lookup.get(`${column}:${row}`)!].neighbors = offsets.map(
-        ([dc, dr]) => lookup.get(`${column + dc}:${row + dr}`) ?? -1
+        ([deltaColumn, deltaRow]) => lookup.get(`${column + deltaColumn}:${row + deltaRow}`) ?? -1
       );
     }
   }
@@ -756,10 +677,6 @@ function createRotatedCluster(
   });
 }
 
-function getRoleFor(index: number): Role {
-  return getRoleCycle(index);
-}
-
 const NO_POINTER = 'none' as const;
 const HOVER_POINTER = 'hover' as const;
 
@@ -777,8 +694,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       const columns = 64;
       const rows = 40;
       const distance = p.distance;
-      const values = evaluateField(columns, rows, (u, v) => {
-        const point: Point = [u * SCENE_WIDTH, v * SCENE_HEIGHT];
+      const values = evaluateField(columns, rows, (unitX, unitY) => {
+        const point: Point = [unitX * SCENE_WIDTH, unitY * SCENE_HEIGHT];
         let best = Infinity;
         for (let index = 0; index + 1 < line.length; index++) {
           best = Math.min(best, getSegmentDistance(point, line[index], line[index + 1]));
@@ -810,7 +727,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           [createPath(line, 'cool', 1.3, 0.95), createLoop(parcel, 'warm', 1, 0.95)],
           'static'
         ),
-        createSpriteLayer(
+        createPulseSprites(
           toSprites(
             line.filter((_, index) => index % 3 === 0),
             'ink',
@@ -838,7 +755,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createStrokes(ticks, 'static'),
         createStrokes([createPath(street, 'primary', 1.2, 0.9)], 'static'),
         createStrokes([createPath(offset, 'warm', 1.5, 0.95)], 'flow', 0.3, 1.3),
-        createSpriteLayer(toSprites(offset, 'warm', 1.2), 0.2)
+        createPulseSprites(toSprites(offset, 'warm', 1.2), 0.2)
       ];
     }
   },
@@ -875,7 +792,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           'pulse',
           0.25
         ),
-        createSpriteLayer(
+        createPulseSprites(
           vertices.map((vertex, index) =>
             createDot(vertex, 'cool', p.radius * 1.15, 0.3, index / vertices.length)
           ),
@@ -885,7 +802,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           [createPath(line, 'ink', 0.6, 0.9), createLoop(ring, 'ink', 0.6, 0.9)],
           'static'
         ),
-        createSpriteLayer(toSprites(vertices, 'warm', 1.3), 0.1)
+        createPulseSprites(toSprites(vertices, 'warm', 1.3), 0.1)
       ];
     }
   },
@@ -1040,7 +957,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           0.22,
           1.3
         ),
-        createSpriteLayer(toSprites(kept, 'hot', 1.5), 0.2)
+        createPulseSprites(toSprites(kept, 'hot', 1.5), 0.2)
       ];
     }
   },
@@ -1116,7 +1033,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           'pulse',
           0.6
         ),
-        createSpriteLayer(
+        createPulseSprites(
           [
             createDot(mixPoints(gapMiddle, gapTip, 0.5), 'hot', 7, 0.55),
             createDot(mixPoints(overlapMiddle, overlapTip, 0.5), 'hot', 7, 0.55, 0.33),
@@ -1226,9 +1143,9 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createFills(fills, 'static'),
         createStrokes(strays, 'draw', 0.15),
         createStrokes(loose, 'pulse', 0.4),
-        createSpriteLayer(heads, 0.4),
+        createPulseSprites(heads, 0.4),
         createStrokes(chained, 'flow', 0.25, 1.4),
-        createSpriteLayer(joints, 0.1)
+        createPulseSprites(joints, 0.1)
       ];
     }
   },
@@ -1255,7 +1172,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createStrokes([createLoop(convex, 'dim', 0.6, 0.6)]),
         createFills([createPolygon(concave, 'warm', 0.24)]),
         createStrokes([createLoop(concave, 'hot', 1.3, 0.95)], 'flow', 0.22, 1.4),
-        createSpriteLayer(toSprites(points, 'cool', 1.3, fork('radius')), 0.15)
+        createPulseSprites(toSprites(points, 'cool', 1.3, fork('radius')), 0.15)
       ];
     }
   },
@@ -1317,7 +1234,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           1.2
         ),
         ...groups.map((group, index) =>
-          createSpriteLayer(
+          createPulseSprites(
             toSprites(
               createCrescentPoints(
                 fork(`group-${index}`),
@@ -1334,7 +1251,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
             0.15
           )
         ),
-        createSpriteLayer(toSprites(noisePoints, 'dim', 1, undefined, 0.5), 0)
+        createPulseSprites(toSprites(noisePoints, 'dim', 1, undefined, 0.5), 0)
       ];
     }
   },
@@ -1369,18 +1286,18 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       return [
         createGridLayer(),
         createFills(
-          hulls.map((ring, index) => createPolygon(ring, getRoleFor(index + 1), 0.16, index / 4))
+          hulls.map((ring, index) => createPolygon(ring, getRoleCycle(index + 1), 0.16, index / 4))
         ),
         createStrokes(
-          hulls.map((ring, index) => createLoop(ring, getRoleFor(index + 1), 1.1, 0.95)),
+          hulls.map((ring, index) => createLoop(ring, getRoleCycle(index + 1), 1.1, 0.95)),
           'flow',
           0.2,
           1.3
         ),
         ...clusters.map((points, index) =>
-          createSpriteLayer(toSprites(points, getRoleFor(index + 1), 1.1), 0.1)
+          createPulseSprites(toSprites(points, getRoleCycle(index + 1), 1.1), 0.1)
         ),
-        createSpriteLayer(
+        createPulseSprites(
           hulls.flatMap((ring, index) =>
             toSprites(ring, 'ink', 1.7, undefined, 0.9).map(item => ({
               ...item,
@@ -1389,7 +1306,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           ),
           0.3
         ),
-        createSpriteLayer(toSprites(noise, 'dim', 1), 0)
+        createPulseSprites(toSprites(noise, 'dim', 1), 0)
       ];
     }
   },
@@ -1417,20 +1334,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           spec.rotation,
           30
         );
-        let minimumX = Infinity;
-        let maximumX = -Infinity;
-        let minimumY = Infinity;
-        let maximumY = -Infinity;
-        let meanX = 0;
-        let meanY = 0;
-        for (const [x, y] of points) {
-          minimumX = Math.min(minimumX, x);
-          maximumX = Math.max(maximumX, x);
-          minimumY = Math.min(minimumY, y);
-          maximumY = Math.max(maximumY, y);
-          meanX += x / points.length;
-          meanY += y / points.length;
-        }
+        const [minimumX, minimumY, maximumX, maximumY] = getRingBounds(points);
+        const [meanX, meanY] = getVertexMean(points);
         let varianceX = 0;
         let varianceY = 0;
         let covariance = 0;
@@ -1465,13 +1370,13 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         );
         centroids.push(createDot([meanX, meanY], 'hot', 2.6, 1, index / 3));
         medoids.push(createDot(medoid, 'ink', 1.5, 0.95));
-        layers.push(createSpriteLayer(toSprites(points, spec.role, 1.1, undefined, 0.75), 0.1));
+        layers.push(createPulseSprites(toSprites(points, spec.role, 1.1, undefined, 0.75), 0.1));
       });
       layers.push(
         createStrokes(strokes),
         createStrokes(ellipses, 'flow', 0.2, 1.2),
-        createSpriteLayer(medoids, 0),
-        createSpriteLayer(centroids, 0.35)
+        createPulseSprites(medoids, 0),
+        createPulseSprites(centroids, 0.35)
       );
       return layers;
     }
@@ -1491,12 +1396,12 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       const probe: Point = pointer ?? [86, 46];
       let selected = 0;
       let selectedDistance = Infinity;
-      triangles.forEach(([a, b, c], index) => {
+      triangles.forEach(([first, second, third], index) => {
         const centroid: Point = [
-          (sites[a][0] + sites[b][0] + sites[c][0]) / 3,
-          (sites[a][1] + sites[b][1] + sites[c][1]) / 3
+          (sites[first][0] + sites[second][0] + sites[third][0]) / 3,
+          (sites[first][1] + sites[second][1] + sites[third][1]) / 3
         ];
-        const distance = isInsideTriangle(probe, sites[a], sites[b], sites[c])
+        const distance = isInsideTriangle(probe, sites[first], sites[second], sites[third])
           ? -1
           : getDistance(centroid, probe);
         if (distance < selectedDistance) {
@@ -1506,8 +1411,13 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       });
       const layers: PreviewLayer[] = [
         createFills(
-          triangles.map(([a, b, c], index) =>
-            createPolygon([sites[a], sites[b], sites[c]], getRoleFor(index), 0.1, (index % 9) / 9)
+          triangles.map(([first, second, third], index) =>
+            createPolygon(
+              [sites[first], sites[second], sites[third]],
+              getRoleCycle(index),
+              0.1,
+              (index % 9) / 9
+            )
           )
         ),
         createStrokes(
@@ -1518,22 +1428,22 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         )
       ];
       if (triangles[selected]) {
-        const [a, b, c] = triangles[selected];
-        const circle = getCircumcircle(sites[a], sites[b], sites[c]);
+        const [first, second, third] = triangles[selected];
+        const circle = getCircumcircle(sites[first], sites[second], sites[third]);
         const center: Point = [circle.x, circle.y];
         const radius = Math.sqrt(circle.radiusSquared);
         layers.push(
-          createFills([createPolygon([sites[a], sites[b], sites[c]], 'warm', 0.4)]),
+          createFills([createPolygon([sites[first], sites[second], sites[third]], 'warm', 0.4)]),
           createStrokes(
             [createLoop(createCircle(center[0], center[1], radius, 48), 'warm', 0.9, 0.9)],
             'flow',
             0.3,
             1.2
           ),
-          createSpriteLayer([createDot(center, 'warm', 1.6, 0.9)], 0.3)
+          createPulseSprites([createDot(center, 'warm', 1.6, 0.9)], 0.3)
         );
       }
-      layers.push(createSpriteLayer(toSprites(sites, 'ink', 1.4), 0.1));
+      layers.push(createPulseSprites(toSprites(sites, 'ink', 1.4), 0.1));
       return layers;
     }
   },
@@ -1567,13 +1477,13 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createFills(
           cells
             .slice(0, -1)
-            .map((ring, index) => createPolygon(ring, getRoleFor(index), 0.13, (index % 8) / 8))
+            .map((ring, index) => createPolygon(ring, getRoleCycle(index), 0.13, (index % 8) / 8))
         ),
         createFills([createPolygon(probeCell, 'warm', 0.4)]),
         createStrokes(cells.slice(0, -1).map(ring => createLoop(ring, 'primary', 0.6, 0.7))),
         createStrokes([createLoop(probeCell, 'warm', 1.2, 0.95)], 'flow', 0.3, 1.2),
-        createSpriteLayer(toSprites(sites, 'ink', 1.4), 0.1),
-        createSpriteLayer([createDot(probe, 'warm', 2.6)], 0.3)
+        createPulseSprites(toSprites(sites, 'ink', 1.4), 0.1),
+        createPulseSprites([createDot(probe, 'warm', 2.6)], 0.3)
       ];
     }
   },
@@ -1591,10 +1501,10 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       const edges = getTriangleEdges(triangles);
       return [
         createFills(
-          triangles.map(([a, b, c], index) =>
+          triangles.map(([first, second, third], index) =>
             createPolygon(
-              [merged[a], merged[b], merged[c]],
-              getRoleFor(index),
+              [merged[first], merged[second], merged[third]],
+              getRoleCycle(index),
               0.34,
               index / Math.max(triangles.length, 1)
             )
@@ -1611,7 +1521,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           [createLoop(outer, 'hot', 1.1, 0.95), createLoop(hole, 'violet', 1.1, 0.95)],
           'static'
         ),
-        createSpriteLayer(toSprites(outer, 'ink', 1.2), 0.1)
+        createPulseSprites(toSprites(outer, 'ink', 1.2), 0.1)
       ];
     }
   },
@@ -1628,10 +1538,10 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       const removed = [...before.entries()].filter(([key]) => !after.has(key));
       return [
         createFills(
-          triangles.map(([a, b, c], index) =>
+          triangles.map(([first, second, third], index) =>
             createPolygon(
-              [outline[a], outline[b], outline[c]],
-              getRoleFor(index),
+              [outline[first], outline[second], outline[third]],
+              getRoleCycle(index),
               0.16,
               index / triangles.length
             )
@@ -1655,7 +1565,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           0.5
         ),
         createStrokes([createLoop(outline, 'ink', 1, 0.9)]),
-        createSpriteLayer(toSprites(outline, 'ink', 1.2), 0.1)
+        createPulseSprites(toSprites(outline, 'ink', 1.2), 0.1)
       ];
     }
   },
@@ -1693,8 +1603,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           0.18,
           1
         ),
-        createSpriteLayer(inserted, 0.3),
-        createSpriteLayer(original, 0.1)
+        createPulseSprites(inserted, 0.3),
+        createPulseSprites(original, 0.1)
       ];
     }
   },
@@ -1717,11 +1627,15 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           (hub[1] + destination[1]) / 2 - distance * 0.34
         ];
         return Array.from({length: segments + 1}, (_, step): Point => {
-          const t = step / segments;
-          const inverse = 1 - t;
+          const amount = step / segments;
+          const inverse = 1 - amount;
           return [
-            inverse * inverse * hub[0] + 2 * inverse * t * control[0] + t * t * destination[0],
-            inverse * inverse * hub[1] + 2 * inverse * t * control[1] + t * t * destination[1]
+            inverse * inverse * hub[0] +
+              2 * inverse * amount * control[0] +
+              amount * amount * destination[0],
+            inverse * inverse * hub[1] +
+              2 * inverse * amount * control[1] +
+              amount * amount * destination[1]
           ];
         });
       });
@@ -1769,9 +1683,9 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           1.1
         ),
         createStrokes([createPath(arcs[longest], 'warm', 1.2, 0.95)], 'flow', 0.3, 1.5),
-        createSpriteLayer(toSprites(arcs[longest], 'warm', 1.1), 0.2),
-        createSpriteLayer(toSprites(destinations, 'hot', 1.5), 0.25),
-        createSpriteLayer([createDot(hub, 'warm', 3.8)], 0.3)
+        createPulseSprites(toSprites(arcs[longest], 'warm', 1.1), 0.2),
+        createPulseSprites(toSprites(destinations, 'hot', 1.5), 0.25),
+        createPulseSprites([createDot(hub, 'warm', 3.8)], 0.3)
       ];
     }
   },
@@ -1806,7 +1720,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           0.25,
           1.4
         ),
-        createSpriteLayer(toSprites([...zigzag, ...square], 'primary', 1.6), 0.2)
+        createPulseSprites(toSprites([...zigzag, ...square], 'primary', 1.6), 0.2)
       ];
     }
   },
@@ -1824,7 +1738,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         for (let start = 0; start < total; start += p.length) {
           const piece = sliceRange(street, start + 0.8, Math.min(total, start + p.length) - 0.8);
           if (piece.length >= 2)
-            strokes.push(createPath(piece, getRoleFor(count), 1.5, 0.95, count / 10));
+            strokes.push(createPath(piece, getRoleCycle(count), 1.5, 0.95, count / 10));
           if (start > 0)
             cuts.push(createDot(getPointAtMeasure(street, start).point, 'ink', 1.2, 0.9));
           count++;
@@ -1833,7 +1747,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       return [
         createGridLayer(),
         createStrokes(strokes, 'flow', 0.2, 0.8),
-        createSpriteLayer(cuts, 0.3)
+        createPulseSprites(cuts, 0.3)
       ];
     }
   },
@@ -1854,18 +1768,18 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           streets.forEach((other, otherIndex) => {
             if (otherIndex === streetIndex) return;
             for (let edge = 0; edge + 1 < other.length; edge++) {
-              const hit = intersectSegments(
+              const hit = getSegmentCrossing(
                 street[index],
                 street[index + 1],
                 other[edge],
                 other[edge + 1]
               );
-              if (hit) {
-                positions.push(walked + hit.t * length);
+              if (hit !== null) {
+                positions.push(walked + hit * length);
                 if (otherIndex > streetIndex)
                   nodes.push(
                     createDot(
-                      mixPoints(street[index], street[index + 1], hit.t),
+                      mixPoints(street[index], street[index + 1], hit),
                       'hot',
                       3,
                       1,
@@ -1886,14 +1800,14 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
             positions[index + 1] - (index + 2 < positions.length ? p.gap : 0)
           );
           if (piece.length >= 2)
-            strokes.push(createPath(piece, getRoleFor(count), 1.4, 0.95, count / 8));
+            strokes.push(createPath(piece, getRoleCycle(count), 1.4, 0.95, count / 8));
           count++;
         }
       });
       return [
         createGridLayer(),
         createStrokes(strokes, 'flow', 0.2, 0.9),
-        createSpriteLayer(nodes, 0.45)
+        createPulseSprites(nodes, 0.45)
       ];
     }
   },
@@ -1945,7 +1859,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
             strokes.push(
               createPath(
                 sliceRange(chain, from + 0.7, to - 0.7),
-                getRoleFor(chainIndex * 6 + piece),
+                getRoleCycle(chainIndex * 6 + piece),
                 1.4,
                 0.95,
                 piece / pieces
@@ -1966,8 +1880,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       return [
         createGridLayer(),
         createStrokes(strokes, merged ? 'flow' : 'pulse', 0.2, 1.2),
-        createSpriteLayer(joins, 0.2),
-        createSpriteLayer(
+        createPulseSprites(joins, 0.2),
+        createPulseSprites(
           [
             createDot(junction, 'hot', 3.2),
             ...chains.map(chain => createDot(chain[chain.length - 1], 'hot', 2)),
@@ -2001,9 +1915,9 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       return [
         createGridLayer(),
         createStrokes([createPath(track, 'dim', 0.5, 0.8)]),
-        createSpriteLayer(toSprites(track, 'dim', 0.55, undefined, 0.5), 0),
+        createPulseSprites(toSprites(track, 'dim', 0.55, undefined, 0.5), 0),
         createStrokes([createPath(kept, 'hot', 1.4, 0.95)], 'flow', 0.25, 1.4),
-        createSpriteLayer(toSprites(kept, 'warm', 1.7), 0.25)
+        createPulseSprites(toSprites(kept, 'warm', 1.7), 0.25)
       ];
     }
   },
@@ -2039,7 +1953,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createStrokes([createLoop(district, 'cool', 1, 0.9)], 'flow', 0.15, 1),
         createStrokes(discarded),
         createStrokes(kept, 'flow', 0.25, 1.1),
-        createSpriteLayer(cuts, 0.3)
+        createPulseSprites(cuts, 0.3)
       ];
     }
   },
@@ -2092,7 +2006,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           )
         ]),
         createStrokes([createPath(shared, 'hot', 2.8, 0.95)], 'flow', 0.28, 1.5),
-        createSpriteLayer(
+        createPulseSprites(
           [createDot(shared[0], 'warm', 2.4), createDot(shared[shared.length - 1], 'warm', 2.4)],
           0.4
         )
@@ -2147,8 +2061,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           1.2
         ),
         createStrokes(links),
-        createSpriteLayer(snaps, 0.1),
-        createSpriteLayer(queries, 0.25)
+        createPulseSprites(snaps, 0.1),
+        createPulseSprites(queries, 0.25)
       ];
     }
   },
@@ -2193,9 +2107,9 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createGridLayer(),
         createStrokes(strokes),
         createStrokes(traveled, 'flow', 0.25, 1.2),
-        createSpriteLayer(ticks, 0),
+        createPulseSprites(ticks, 0),
         createStrokes(arrows),
-        createSpriteLayer(markers, 0.35)
+        createPulseSprites(markers, 0.35)
       ];
     }
   },
@@ -2216,7 +2130,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       const points: SpriteItem[] = [];
       const waveOf = (x: number, y: number) => getDistance([x, y], origin) / 110;
       const add = (ring: Ring, x: number, y: number) => {
-        if (ring.some(([px, py]) => px > SCENE_WIDTH + 1 || py > SCENE_HEIGHT + 1)) return;
+        if (ring.some(([ringX, ringY]) => ringX > SCENE_WIDTH + 1 || ringY > SCENE_HEIGHT + 1))
+          return;
         cells.push(createPolygon(ring, 'cool', 0.3, waveOf(x, y)));
         outlines.push(createLoop(ring, 'primary', 0.5, 0.7));
       };
@@ -2270,8 +2185,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       return [
         createFills(cells),
         createStrokes(outlines),
-        createSpriteLayer(points, 0.5),
-        createSpriteLayer([createDot(origin, 'warm', 3.2)], 0.3)
+        createPulseSprites(points, 0.5),
+        createPulseSprites([createDot(origin, 'warm', 3.2)], 0.3)
       ];
     }
   },
@@ -2297,16 +2212,28 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       }));
       const half = ((p.beam / 2) * Math.PI) / 180;
       const rings = towers.map(tower => {
-        const [cx, cy] = tower.center;
-        if (tower.type === 0) return createCircle(cx, cy, p.radius, 36);
+        const [centerX, centerY] = tower.center;
+        if (tower.type === 0) return createCircle(centerX, centerY, p.radius, 36);
         if (tower.type === 2)
-          return createEllipse(cx, cy, p.radius * 1.3, p.radius * 0.65, tower.azimuth, 32);
-        const azimuth = pointer ? Math.atan2(pointer[1] - cy, pointer[0] - cx) : tower.azimuth;
+          return createEllipse(
+            centerX,
+            centerY,
+            p.radius * 1.3,
+            p.radius * 0.65,
+            tower.azimuth,
+            32
+          );
+        const azimuth = pointer
+          ? Math.atan2(pointer[1] - centerY, pointer[0] - centerX)
+          : tower.azimuth;
         return [
           tower.center,
           ...Array.from({length: 16}, (_, step): Point => {
             const angle = azimuth - half + (step / 15) * half * 2;
-            return [cx + Math.cos(angle) * p.radius * 1.2, cy + Math.sin(angle) * p.radius * 1.2];
+            return [
+              centerX + Math.cos(angle) * p.radius * 1.2,
+              centerY + Math.sin(angle) * p.radius * 1.2
+            ];
           })
         ];
       });
@@ -2323,7 +2250,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           'draw',
           0.15
         ),
-        createSpriteLayer(
+        createPulseSprites(
           towers.map((tower, index) => createDot(tower.center, 'ink', 2, 0.95, index / 5)),
           0.3
         )
@@ -2385,7 +2312,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createStrokes(
           origins.map((origin, index) => createPath([origin, positions[index]], 'dim', 0.35, 0.5))
         ),
-        createSpriteLayer(toSprites(origins, 'dim', 1, undefined, 0.7), 0),
+        createPulseSprites(toSprites(origins, 'dim', 1, undefined, 0.7), 0),
         createFills(
           positions.map((position, index) =>
             createPolygon(
@@ -2466,7 +2393,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
       const offsets: SpriteItem[] = [];
       let consumed = 0;
       counts.forEach((count, index) => {
-        const role = getRoleFor(index);
+        const role = getRoleCycle(index);
         const topX = topStart + consumed * cellWidth + index * gap;
         const bottomX = bottomStart + consumed * cellWidth;
         const width = count * cellWidth;
@@ -2532,7 +2459,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
             0.6
           )
         ]),
-        createSpriteLayer(offsets, 0.3),
+        createPulseSprites(offsets, 0.3),
         createFills(links, 'static'),
         createStrokes(edges, 'flow', 0.25, 1),
         createFills(parentBoxes),
@@ -2589,14 +2516,14 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         ),
         createStrokes(feeds, 'flow', 0.35, 1.2),
         createStrokes(nodeEdges, 'static'),
-        createSpriteLayer(
+        createPulseSprites(
           nodes.map(node => createDot(node, 'primary', 3.6, 0.9)),
           0.1
         ),
         createStrokes([createPath([nodes[1], [102, 50]], 'primary', 0.8, 0.7)], 'flow', 0.3, 1),
         createFills([createPolygon(ring, 'warm', 0.18)]),
         createStrokes([createLoop(ring, 'warm', 1.2, 0.95)], 'static'),
-        createSpriteLayer([createDot([124, 50], 'hot', 2.2)], 0.3)
+        createPulseSprites([createDot([124, 50], 'hot', 2.2)], 0.3)
       ];
     }
   },
@@ -2683,7 +2610,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createStrokes(buildings.map(ring => createLoop(ring, 'primary', 0.6, 0.75))),
         createStrokes(links, 'static'),
         createStrokes(walls, 'flow', 0.3, 1.4),
-        createSpriteLayer(toSprites(centers, 'ink', 1.1), 0.15)
+        createPulseSprites(toSprites(centers, 'ink', 1.1), 0.15)
       ];
     }
   },
@@ -2724,7 +2651,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         }
         return createPolygon(
           ring,
-          getRoleFor(owners[index]),
+          getRoleCycle(owners[index]),
           0.17,
           owners[index] / buildings.length
         );
@@ -2734,16 +2661,16 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createStrokes([createLoop(bounds, 'dim', 0.7, 0.7)]),
         createFills(
           buildings.map((ring, index) =>
-            createPolygon(ring, getRoleFor(index), 0.55, index / buildings.length)
+            createPolygon(ring, getRoleCycle(index), 0.55, index / buildings.length)
           )
         ),
         createStrokes(
-          buildings.map((ring, index) => createLoop(ring, getRoleFor(index), 1, 0.95)),
+          buildings.map((ring, index) => createLoop(ring, getRoleCycle(index), 1, 0.95)),
           'flow',
           0.2,
           1.1
         ),
-        createSpriteLayer(toSprites(sites, 'ink', 0.7, undefined, 0.8), 0)
+        createPulseSprites(toSprites(sites, 'ink', 0.7, undefined, 0.8), 0)
       ];
     }
   },
@@ -2774,8 +2701,13 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         let nearest = 1;
         for (const obstacle of obstacles) {
           for (let edge = 0; edge < 4; edge++) {
-            const hit = intersectSegments(viewpoint, far, obstacle[edge], obstacle[(edge + 1) % 4]);
-            if (hit && hit.t < nearest) nearest = hit.t;
+            const hit = getSegmentCrossing(
+              viewpoint,
+              far,
+              obstacle[edge],
+              obstacle[(edge + 1) % 4]
+            );
+            if (hit !== null && hit < nearest) nearest = hit;
           }
         }
         hits.push(mixPoints(viewpoint, far, nearest));
@@ -2793,7 +2725,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           'static'
         ),
         createStrokes(obstacles.map(ring => createLoop(ring, 'ink', 0.8, 0.85))),
-        createSpriteLayer([createDot(viewpoint, 'ink', 2.8)], 0.3)
+        createPulseSprites([createDot(viewpoint, 'ink', 2.8)], 0.3)
       ];
     }
   },
@@ -2866,8 +2798,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         createStrokes(outlines),
         createStrokes([createPath(street, 'primary', 2.2, 0.9)], 'flow', 0.2, 1.5),
         createStrokes(rays, 'pulse', 0.35),
-        createSpriteLayer(hitsSprites, 0.2),
-        createSpriteLayer(censored, 0)
+        createPulseSprites(hitsSprites, 0.2),
+        createPulseSprites(censored, 0)
       ];
     }
   },
@@ -2907,8 +2839,8 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
         for (const obstacle of obstacles) {
           if (isInsideRing(mixPoints(first, second, 0.5), obstacle)) return false;
           for (let edge = 0; edge < 4; edge++) {
-            const hit = intersectSegments(first, second, obstacle[edge], obstacle[(edge + 1) % 4]);
-            if (hit && hit.t > 1e-6 && hit.t < 1 - 1e-6) return false;
+            const hit = getSegmentCrossing(first, second, obstacle[edge], obstacle[(edge + 1) % 4]);
+            if (hit !== null && hit > 1e-6 && hit < 1 - 1e-6) return false;
           }
         }
         return true;
@@ -2944,7 +2876,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           'static'
         ),
         createStrokes(obstacles.map(ring => createLoop(ring, 'ink', 0.8, 0.85))),
-        createSpriteLayer(
+        createPulseSprites(
           points.map((point, index) =>
             createDot(
               point,
@@ -2956,7 +2888,7 @@ export const GEOMETRY_CONSTRUCTION_OVERLAY_PREVIEWS: Record<string, EntryPreview
           ),
           0.25
         ),
-        createSpriteLayer(probe ? [createDot(probe, 'warm', 3)] : [], 0.3)
+        createPulseSprites(probe ? [createDot(probe, 'warm', 3)] : [], 0.3)
       ];
     }
   }

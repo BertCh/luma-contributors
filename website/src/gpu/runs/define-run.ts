@@ -7,7 +7,11 @@
 // change, value ranges, layers, theme, resize and cleanup. See ./README.md.
 
 import {Buffer, type Device} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {GpuScene, GpuSceneInstance, GpuSceneParameter} from '../types';
 import {readParameterValues} from '../demos/parameters';
@@ -87,10 +91,16 @@ export type RunBuilder = {
   upload<Format extends RunFormat>(id: string, format: Format, data: RunArray): RunBuffer<Format>;
   /** Allocates a zero-filled buffer for an operation output. */
   allocate<Format extends RunFormat>(id: string, format: Format, length: number): RunBuffer<Format>;
+  /**
+   * Hands a resource the run must clean up (a snapshot arena, a readback ring) to the framework.
+   * It is destroyed together with this build's buffers, on rebuild and on destroy.
+   */
+  own<Resource extends {destroy(): void}>(resource: Resource): Resource;
 };
 
 class RunBufferSet {
   readonly buffers: Buffer[] = [];
+  readonly resources: {destroy(): void}[] = [];
 
   createBuilder(device: Device, graph: GPUCommandGraph<void>): RunBuilder {
     const wrap = <Format extends RunFormat>(
@@ -125,11 +135,17 @@ class RunBufferSet {
           format,
           createEmptyStorageBuffer(device, length * FORMAT_LAYOUT[format].components),
           length
-        )
+        ),
+      own: resource => {
+        this.resources.push(resource);
+        return resource;
+      }
     };
   }
 
   destroy(): void {
+    for (const resource of this.resources) resource.destroy();
+    this.resources.length = 0;
     for (const buffer of this.buffers) buffer.destroy();
     this.buffers.length = 0;
   }
@@ -295,23 +311,53 @@ export type RunBuild<Outputs> = {
   update?: (values: ParameterValues) => void;
 };
 
-export type RunDrawState<Inputs, Outputs> = {
+export type RunDrawState<Inputs, Outputs, Extra = undefined> = {
   inputs: Inputs;
   outputs: Outputs;
   values: ParameterValues;
   theme: DemoTheme;
   world: {width: number; height: number};
+  /** What `afterRun` returned for the latest run; `undefined` for runs without `afterRun`. */
+  extra: Extra;
 };
 
-export type OperationRunSpec<Inputs, Outputs> = {
+/** What `afterRun` receives: the finished run, and builders for the buffers `draw` will show. */
+export type RunAfterState<Inputs, Outputs> = {
+  device: Device;
+  /** The compiled graph that just ran (describe it, read its preflight, encode it again). */
+  compiled: CompiledGPUCommandGraph<void>;
+  inputs: Inputs;
+  outputs: Outputs;
+  /** Slider values of this run (a copy). */
+  values: ParameterValues;
+  /**
+   * Uploads CPU data (an async readback, a decoded record) for `draw`. The buffers belong to this
+   * result and are destroyed when the next `afterRun` result replaces it.
+   */
+  upload: RunBuilder['upload'];
+  allocate: RunBuilder['allocate'];
+};
+
+export type OperationRunSpec<Inputs, Outputs, Extra = undefined> = {
   /** Slider parameters, bound to real props. Import them from the sibling `.parameters.ts`. */
   parameters?: readonly GpuSceneParameter[];
   /** Seeded CPU inputs, at most ~20k elements. */
   createInputs(context: RunInputContext): Inputs;
   /** Uploads inputs, allocates outputs and adds the real operation: `builder.graph.add(...)`. */
   build(builder: RunBuilder, inputs: Inputs, values: ParameterValues): RunBuild<Outputs>;
+  /**
+   * Optional asynchronous post-run hook, for operations whose output is not a buffer but a
+   * readback or a record of the run (a snapshot arena, a command-graph description, a CPU
+   * summary). Called after every run, with the finished graph; its result is handed to `draw` as
+   * `extra`. Buffers made through `state.upload` are drawn like any other. Results of superseded
+   * runs are dropped, and `draw` keeps the previous `extra` until the new one is ready. Runs
+   * without `afterRun` behave exactly as before.
+   */
+  afterRun?: (state: RunAfterState<Inputs, Outputs>) => Promise<Extra> | Extra;
   /** Layers to draw, in order: input context first, then the operation's output. */
-  draw: readonly RunLayer[] | ((state: RunDrawState<Inputs, Outputs>) => readonly RunLayer[]);
+  draw:
+    | readonly RunLayer[]
+    | ((state: RunDrawState<Inputs, Outputs, Extra>) => readonly RunLayer[]);
   /**
    * Parameter ids that are compile-time props (change the graph itself). Default: every parameter
    * when `build` returns no `update`, none otherwise.
@@ -376,8 +422,8 @@ type Resolved = {layer: DemoLayer; look: LookOptions; instanceCount?: number};
 type CachedLayer = {signature: unknown[]; layer: DemoLayer; owned: Buffer[]};
 
 /** Builds the scene function for one operation. */
-export function defineOperationRun<Inputs, Outputs>(
-  spec: OperationRunSpec<Inputs, Outputs>
+export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
+  spec: OperationRunSpec<Inputs, Outputs, Extra>
 ): RunScene {
   const parameters = spec.parameters ?? [];
 
@@ -718,9 +764,22 @@ export function defineOperationRun<Inputs, Outputs>(
       if (changed) framesToDraw = 3;
     };
 
+    // Post-run results (`afterRun`): the latest committed value, its buffers, and the run in flight.
+    let extra: Extra | undefined;
+    let extraBuffers: RunBufferSet | null = null;
+    let afterGeneration = 0;
+    let pendingAfter: Promise<void> | null = null;
+
     const getLayerList = (): readonly RunLayer[] =>
       typeof spec.draw === 'function'
-        ? spec.draw({inputs, outputs: current.result.outputs, values, theme, world})
+        ? spec.draw({
+            inputs,
+            outputs: current.result.outputs,
+            values,
+            theme,
+            world,
+            extra: extra as Extra
+          })
         : spec.draw;
 
     const render = () => {
@@ -745,6 +804,55 @@ export function defineOperationRun<Inputs, Outputs>(
       runCount++;
     };
 
+    /** Runs `afterRun` for the build that just ran; a newer run or rebuild supersedes it. */
+    const refreshExtra = (): Promise<void> => {
+      const afterRun = spec.afterRun;
+      if (!afterRun) return Promise.resolve();
+      const generation = ++afterGeneration;
+      const built = current;
+      const staged = new RunBufferSet();
+      const task = (async () => {
+        let result: Extra;
+        try {
+          const builder = staged.createBuilder(
+            device,
+            new GPUCommandGraph<void>(device, {id: 'run-after'})
+          );
+          result = await afterRun({
+            device,
+            compiled: built.runner.compiled,
+            inputs,
+            outputs: built.result.outputs,
+            values: {...values},
+            upload: builder.upload,
+            allocate: builder.allocate
+          });
+        } catch (error) {
+          staged.destroy();
+          // A rebuild or newer run may have destroyed what this one was reading.
+          if (isDestroyed || generation !== afterGeneration) return;
+          throw error;
+        }
+        if (isDestroyed || generation !== afterGeneration) {
+          staged.destroy();
+          return;
+        }
+        extraBuffers?.destroy();
+        extraBuffers = staged;
+        extra = result;
+        framesToDraw = 3;
+        scheduler.request();
+      })();
+      // The caller handles `task`'s rejection; this copy only tracks that a run is in flight.
+      const tracked: Promise<void> = task
+        .catch(() => undefined)
+        .finally(() => {
+          if (pendingAfter === tracked) pendingAfter = null;
+        });
+      pendingAfter = tracked;
+      return task;
+    };
+
     const rebuild = () => {
       rebuildPromise ??= (async () => {
         needsRebuild = false;
@@ -756,6 +864,7 @@ export function defineOperationRun<Inputs, Outputs>(
         disposeLayers();
         ranges.clear();
         wantedRanges.clear();
+        afterGeneration++;
         destroyBuilt(current);
         current = next;
         rebuildCount++;
@@ -776,6 +885,8 @@ export function defineOperationRun<Inputs, Outputs>(
         framesToDraw = 3;
         render();
         void refreshRanges();
+        // biome-ignore lint/suspicious/noConsole: a failed post-run hook must be visible
+        void refreshExtra().catch(error => console.error(error));
         return;
       }
       render();
@@ -785,6 +896,7 @@ export function defineOperationRun<Inputs, Outputs>(
     // First run, so the first frame already shows the operation's output.
     runOperation();
     needsRun = false;
+    await refreshExtra();
     render();
     await refreshRanges();
 
@@ -816,6 +928,7 @@ export function defineOperationRun<Inputs, Outputs>(
         scheduler.cancel();
         disposeLayers();
         if (dummyValues) dummyValues.destroy();
+        extraBuffers?.destroy();
         destroyBuilt(current);
       },
       debug: {
@@ -829,7 +942,7 @@ export function defineOperationRun<Inputs, Outputs>(
           const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
           for (
             let attempt = 0;
-            attempt < 400 && (rebuildPromise || needsRebuild || needsRun);
+            attempt < 400 && (rebuildPromise || needsRebuild || needsRun || pendingAfter);
             attempt++
           ) {
             draw();

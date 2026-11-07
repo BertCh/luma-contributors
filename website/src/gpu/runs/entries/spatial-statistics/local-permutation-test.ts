@@ -76,7 +76,7 @@ export default defineOperationRun({
       positions: outputs.positions,
       values: outputs.significant,
       ramp: 'categorical',
-      radius: 4.5
+      radius: 6.5
     }
   ]
 });

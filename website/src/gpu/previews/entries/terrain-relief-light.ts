@@ -3,8 +3,17 @@
 
 // Function-specific previews for the catalog group src/catalog/entries/terrain-relief-light.ts, keyed by entry id.
 
-import {clamp, createSmoothField, FIELD_COLUMNS, FIELD_ROWS, mixNumbers} from '../data.ts';
 import {
+  clamp,
+  createSmoothField,
+  FIELD_COLUMNS,
+  FIELD_ROWS,
+  mixNumbers,
+  normalizeValues
+} from '../data.ts';
+import {createFillLayer, createSpriteLayer, createStrokeLayer} from '../layers.ts';
+import {
+  clampPoint,
   createGridLayer,
   getLightAngle,
   smoothPath,
@@ -67,17 +76,6 @@ function remember<T>(terrain: Terrain, name: string, compute: () => T): T {
   return terrain.memo.get(name) as T;
 }
 
-function normalize(values: Float32Array): Float32Array {
-  let minimum = Infinity;
-  let maximum = -Infinity;
-  for (const value of values) {
-    minimum = Math.min(minimum, value);
-    maximum = Math.max(maximum, value);
-  }
-  const range = maximum - minimum || 1;
-  return values.map(value => (value - minimum) / range);
-}
-
 function downsample(values: Float32Array): Float32Array {
   const coarse = new Float32Array(COARSE_COLUMNS * COARSE_ROWS);
   for (let row = 0; row < COARSE_ROWS; row++) {
@@ -114,7 +112,7 @@ function getTerrain(context: BuildContext): Terrain {
       raw[row * COLUMNS + column] = sum;
     }
   }
-  const heights = normalize(raw);
+  const heights = normalizeValues(raw);
   // Rough ground: high frequency detail that is strong in some places and absent in others.
   const detail = createSmoothField(random, 8, 7);
   const mask = createSmoothField(random, 5, 1.2);
@@ -210,7 +208,8 @@ function blurField(
   for (let row = 0; row < rows; row++) {
     const offset = row * columns;
     let sum = 0;
-    for (let k = -size; k <= size; k++) sum += values[offset + clamp(k, 0, columns - 1)];
+    for (let shift = -size; shift <= size; shift++)
+      sum += values[offset + clamp(shift, 0, columns - 1)];
     for (let column = 0; column < columns; column++) {
       temporary[offset + column] = sum / width;
       sum +=
@@ -220,7 +219,8 @@ function blurField(
   }
   for (let column = 0; column < columns; column++) {
     let sum = 0;
-    for (let k = -size; k <= size; k++) sum += temporary[clamp(k, 0, rows - 1) * columns + column];
+    for (let shift = -size; shift <= size; shift++)
+      sum += temporary[clamp(shift, 0, rows - 1) * columns + column];
     for (let row = 0; row < rows; row++) {
       output[row * columns + column] = sum / width;
       sum +=
@@ -350,14 +350,13 @@ function createSunRays(sun: Point, role: Role, count = 5): PreviewLayer {
 }
 
 function createSunSprite(position: Point, radius = 4): PreviewLayer {
-  return {
-    type: 'sprites',
-    items: [
+  return createSpriteLayer(
+    [
       {x: position[0], y: position[1], radius: radius * 2.2, role: 'warm', alpha: 0.25},
       {x: position[0], y: position[1], radius, role: 'warm', alpha: 1}
     ],
-    pulse: 0.2
-  };
+    {pulse: 0.2}
+  );
 }
 
 function createSegmentPaths(
@@ -481,7 +480,7 @@ function getSkyViewFactor(terrain: Terrain, directions: number): Float32Array {
       }
       values[cell] = 1 - sum / directions;
     }
-    return normalize(values);
+    return normalizeValues(values);
   });
 }
 
@@ -704,12 +703,11 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           strength: p.exaggeration,
           light: getLightAngle(azimuth)
         }),
-        {type: 'fills', items: wedges, blend: 'add'},
-        {
-          type: 'strokes',
-          items: [{points: createRing(wheelCenter, 13, 30), role: 'dim', width: 0.4, alpha: 0.8}],
-          animation: 'static'
-        },
+        createFillLayer(wedges, {blend: 'add'}),
+        createStrokeLayer(
+          [{points: createRing(wheelCenter, 13, 30), role: 'dim', width: 0.4, alpha: 0.8}],
+          {animation: 'static'}
+        ),
         createSunRays(sun, 'warm'),
         createSunSprite(sun)
       ];
@@ -753,14 +751,11 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       (runConvex ? convexRuns : concaveRuns).push(run);
       return [
         createField(curvature, 'spectral', 'ramp', {strength: 0.06, speed: 0.4}),
-        {
-          type: 'strokes',
-          items: [{points: smoothPath(profile, 0), role: 'ink', width: 2.2, alpha: 0.3}],
+        createStrokeLayer([{points: smoothPath(profile, 0), role: 'ink', width: 2.2, alpha: 0.3}], {
           animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: [
+        }),
+        createStrokeLayer(
+          [
             {
               points: [
                 [0, lineY],
@@ -771,30 +766,24 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          toPaths(
             convexRuns.filter(path => path.length > 1),
             'hot',
             1.4
           ),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        ),
+        createStrokeLayer(
+          toPaths(
             concaveRuns.filter(path => path.length > 1),
             'cool',
             1.4
           ),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        )
       ];
     }
   },
@@ -874,16 +863,15 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       }
       return [
         createField(scaled, 'heat', 'ramp', {strength: 0.05, speed: 0.5}),
-        {type: 'strokes', items: spokes, animation: 'flow', speed: 0.4, blend: 'add'},
-        {type: 'strokes', items: cells, animation: 'static', blend: 'add'},
-        {
-          type: 'sprites',
-          items: [
+        createStrokeLayer(spokes, {animation: 'flow', speed: 0.4, blend: 'add'}),
+        createStrokeLayer(cells, {animation: 'static', blend: 'add'}),
+        createSpriteLayer(
+          [
             ...neighbors,
             {x: windowOrigin[0], y: windowOrigin[1], radius: 2.2, role: 'cool', alpha: 1}
           ],
-          pulse: 0.25
-        }
+          {pulse: 0.25}
+        )
       ];
     }
   },
@@ -947,8 +935,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       }
       return [
         createField(background, 'ice', 'ramp', {filter: 'linear', strength: 0.06}, 32, 20),
-        {type: 'strokes', items: calm, animation: 'pulse', speed: 0.25, blend: 'add'},
-        {type: 'strokes', items: rugged, animation: 'pulse', speed: 0.6, blend: 'add'}
+        createStrokeLayer(calm, {animation: 'pulse', speed: 0.25, blend: 'add'}),
+        createStrokeLayer(rugged, {animation: 'pulse', speed: 0.6, blend: 'add'})
       ];
     }
   },
@@ -968,18 +956,15 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           levels: Math.round(p.levels),
           speed: 0.12
         }),
-        {
-          type: 'strokes',
-          items: createSegmentPaths(segments, 'warm', 1.1),
+        createStrokeLayer(createSegmentPaths(segments, 'warm', 1.1), {
           animation: 'pulse',
           speed: 0.5,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: pointer ? [{x: probe[0], y: probe[1], radius: 2.4, role: 'warm', alpha: 1}] : [],
-          pulse: 0.3
-        }
+        }),
+        createSpriteLayer(
+          pointer ? [{x: probe[0], y: probe[1], radius: 2.4, role: 'warm', alpha: 1}] : [],
+          {pulse: 0.3}
+        )
       ];
     }
   },
@@ -1019,10 +1004,10 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const lower: SpriteItem[] = [];
       for (let direction = 0; direction < 8; direction++) {
         const angle = (direction / 8) * Math.PI * 2;
-        const end = clampPoint2([
-          probe[0] + Math.cos(angle) * p.search,
-          probe[1] + Math.sin(angle) * p.search * 0.8
-        ]);
+        const end = clampPoint(
+          [probe[0] + Math.cos(angle) * p.search, probe[1] + Math.sin(angle) * p.search * 0.8],
+          4
+        );
         rays.push({
           points: [probe, end],
           role: 'primary',
@@ -1042,16 +1027,11 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       }
       return [
         createField(classes, 'spectral', 'ramp', {filter: 'nearest'}, COARSE_COLUMNS, COARSE_ROWS),
-        {type: 'strokes', items: rays, animation: 'flow', speed: 0.4, blend: 'add'},
-        {
-          type: 'sprites',
-          items: [
-            ...higher,
-            ...lower,
-            {x: probe[0], y: probe[1], radius: 2.6, role: 'warm', alpha: 1}
-          ],
-          pulse: 0.2
-        }
+        createStrokeLayer(rays, {animation: 'flow', speed: 0.4, blend: 'add'}),
+        createSpriteLayer(
+          [...higher, ...lower, {x: probe[0], y: probe[1], radius: 2.6, role: 'warm', alpha: 1}],
+          {pulse: 0.2}
+        )
       ];
     }
   },
@@ -1088,9 +1068,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const probe = pointer ?? [86, 52];
       return [
         createField(classes, 'terrain', 'ramp', {filter: 'nearest'}, COARSE_COLUMNS, COARSE_ROWS),
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {points: createRing(probe, p.small, 28), role: 'cool', width: 0.9, alpha: 0.95},
             {
               points: createRing(probe, p.large, 48),
@@ -1100,15 +1079,11 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               phase: 0.5
             }
           ],
-          animation: 'pulse',
-          speed: 0.35,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{x: probe[0], y: probe[1], radius: 2, role: 'ink', alpha: 1}],
+          {animation: 'pulse', speed: 0.35, blend: 'add'}
+        ),
+        createSpriteLayer([{x: probe[0], y: probe[1], radius: 2, role: 'ink', alpha: 1}], {
           pulse: 0.1
-        }
+        })
       ];
     }
   },
@@ -1138,24 +1113,19 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const probe = pointer ?? [90, 48];
       return [
         createField(values, 'spectral', 'ramp', {strength: 0.05, speed: 0.5}),
-        {
-          type: 'strokes',
-          items: radii.map((radius, index) => ({
+        createStrokeLayer(
+          radii.map((radius, index) => ({
             points: createRing(probe, radius * FINE_CELL, 40),
             role: 'ink' as Role,
             width: 0.8,
             alpha: 0.95,
             phase: index / radii.length
           })),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'alpha'
-        },
-        {
-          type: 'sprites',
-          items: [{x: probe[0], y: probe[1], radius: 1.8, role: 'warm', alpha: 1}],
+          {animation: 'flow', speed: 0.3, blend: 'alpha'}
+        ),
+        createSpriteLayer([{x: probe[0], y: probe[1], radius: 1.8, role: 'warm', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
@@ -1206,15 +1176,14 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       }
       return [
         createField(terrain.heights, 'ice', 'contours', {levels: 12, speed: 0.1}),
-        {
-          type: 'sprites',
-          items: [
+        createSpriteLayer(
+          [
             ...toSprites(saddles.slice(0, 8), 'violet', 2.4),
             ...toSprites(pits.slice(0, 8), 'cool', 3),
             ...toSprites(peaks.slice(0, 10), 'hot', 3.2)
           ],
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
@@ -1251,32 +1220,27 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           strength: 5,
           light: getLightAngle(315)
         }),
-        {
-          type: 'strokes',
-          items: shown.map((summit, index) => ({
+        createStrokeLayer(
+          shown.map((summit, index) => ({
             points: createRing([summit.x, summit.y], p.radius, 36),
             role: 'warm' as Role,
             width: 0.7,
             alpha: 0.9,
             phase: index / shown.length
           })),
-          animation: 'pulse',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: shown.map(summit => ({
+          {animation: 'pulse', speed: 0.3, blend: 'add'}
+        ),
+        createStrokeLayer(
+          shown.map(summit => ({
             points: createRing([summit.x, summit.y], p.radius * 1.8, 40),
             role: 'dim' as Role,
             width: 0.4,
             alpha: 0.7
           })),
-          animation: 'static'
-        },
-        {
-          type: 'sprites',
-          items: [
+          {animation: 'static'}
+        ),
+        createSpriteLayer(
+          [
             ...toSprites(
               rejected.map(summit => [summit.x, summit.y] as Point),
               'dim',
@@ -1288,8 +1252,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               3
             )
           ],
-          pulse: 0.25
-        }
+          {pulse: 0.25}
+        )
       ];
     }
   },
@@ -1321,10 +1285,9 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
         );
       return [
         createField(terrain.heights, 'ice', 'contours', {levels: 10, speed: 0.1}),
-        {type: 'strokes', items: toKey, animation: 'flow', speed: 0.3, blend: 'add'},
-        {
-          type: 'sprites',
-          items: [
+        createStrokeLayer(toKey, {animation: 'flow', speed: 0.3, blend: 'add'}),
+        createSpriteLayer(
+          [
             ...kept.map(
               (summit, index): SpriteItem => ({
                 x: summit.keyX,
@@ -1355,8 +1318,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               })
             )
           ],
-          pulse: 0.2
-        }
+          {pulse: 0.2}
+        )
       ];
     }
   },
@@ -1381,10 +1344,10 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const catalogue = chosen.map((summit): Point => {
         const angle = random.range(0, Math.PI * 2);
         const distance = random.range(9, 24);
-        return clampPoint2([
-          summit.x + Math.cos(angle) * distance,
-          summit.y + Math.sin(angle) * distance
-        ]);
+        return clampPoint(
+          [summit.x + Math.cos(angle) * distance, summit.y + Math.sin(angle) * distance],
+          4
+        );
       });
       const snapped: PathItem[] = [];
       const searchRings: PathItem[] = [];
@@ -1431,11 +1394,10 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           strength: 4,
           light: getLightAngle(315)
         }),
-        {type: 'strokes', items: searchRings, animation: 'static'},
-        {type: 'strokes', items: snapped, animation: 'flow', speed: 0.45, blend: 'add'},
-        {
-          type: 'sprites',
-          items: [
+        createStrokeLayer(searchRings, {animation: 'static'}),
+        createStrokeLayer(snapped, {animation: 'flow', speed: 0.45, blend: 'add'}),
+        createSpriteLayer(
+          [
             ...stayedPoints,
             ...movedPoints,
             ...toSprites(
@@ -1444,8 +1406,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               2.8
             )
           ],
-          pulse: 0.25
-        }
+          {pulse: 0.25}
+        )
       ];
     }
   },
@@ -1523,10 +1485,10 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        {type: 'strokes', items: baselines, animation: 'static'},
-        {type: 'strokes', items: lines, animation: 'flow', speed: 0.2, blend: 'add'},
-        {type: 'strokes', items: prominenceBars, animation: 'pulse', speed: 0.4, blend: 'add'},
-        {type: 'sprites', items: peaks, pulse: 0.25}
+        createStrokeLayer(baselines, {animation: 'static'}),
+        createStrokeLayer(lines, {animation: 'flow', speed: 0.2, blend: 'add'}),
+        createStrokeLayer(prominenceBars, {animation: 'pulse', speed: 0.4, blend: 'add'}),
+        createSpriteLayer(peaks, {pulse: 0.25})
       ];
     }
   },
@@ -1593,16 +1555,15 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       }
       return [
         createField(values, 'heat', 'ramp', {filter: 'nearest'}, COARSE_COLUMNS, COARSE_ROWS),
-        {type: 'strokes', items: rays, animation: 'flow', speed: 0.35, blend: 'add'},
-        {
-          type: 'sprites',
-          items: [
+        createStrokeLayer(rays, {animation: 'flow', speed: 0.35, blend: 'add'}),
+        createSpriteLayer(
+          [
             ...blockers,
             {x: observer[0], y: observer[1], radius: 5, role: 'cool', alpha: 0.3},
             {x: observer[0], y: observer[1], radius: 2.4, role: 'cool', alpha: 1}
           ],
-          pulse: 0.25
-        }
+          {pulse: 0.25}
+        )
       ];
     }
   },
@@ -1635,9 +1596,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           COARSE_COLUMNS,
           COARSE_ROWS
         ),
-        {
-          type: 'sprites',
-          items: [
+        createSpriteLayer(
+          [
             ...toSprites(
               towers.map(tower => [tower.x, tower.y] as Point),
               'cool',
@@ -1649,8 +1609,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               2.2
             )
           ],
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
@@ -1741,10 +1701,10 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           strength: 4,
           light: getLightAngle(315)
         }),
-        {type: 'strokes', items: hidden, animation: 'pulse', speed: 0.3, blend: 'add'},
-        {type: 'strokes', items: blocked, animation: 'flow', speed: 0.35, blend: 'add'},
-        {type: 'strokes', items: clear, animation: 'flow', speed: 0.4, blend: 'add'},
-        {type: 'sprites', items: sprites, pulse: 0.2}
+        createStrokeLayer(hidden, {animation: 'pulse', speed: 0.3, blend: 'add'}),
+        createStrokeLayer(blocked, {animation: 'flow', speed: 0.35, blend: 'add'}),
+        createStrokeLayer(clear, {animation: 'flow', speed: 0.4, blend: 'add'}),
+        createSpriteLayer(sprites, {pulse: 0.2})
       ];
     }
   },
@@ -1797,31 +1757,24 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       });
       return [
         createField(terrain.heights, 'ice', 'hillshade', {strength: 3, light: getLightAngle(315)}),
-        {type: 'strokes', items: spokes, animation: 'static'},
-        {
-          type: 'strokes',
-          items: [{points: createRing(observer, inner, 36), role: 'dim', width: 0.5, alpha: 0.9}],
-          animation: 'static'
-        },
-        {
-          type: 'fills',
-          items: [{ring: curve, role: 'violet', alpha: 0.28}],
+        createStrokeLayer(spokes, {animation: 'static'}),
+        createStrokeLayer(
+          [{points: createRing(observer, inner, 36), role: 'dim', width: 0.5, alpha: 0.9}],
+          {animation: 'static'}
+        ),
+        createFillLayer([{ring: curve, role: 'violet', alpha: 0.28}], {
           animation: 'pulse',
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [{points: curve, role: 'warm', width: 1.4, alpha: 1}],
+        }),
+        createStrokeLayer([{points: curve, role: 'warm', width: 1.4, alpha: 1}], {
           animation: 'flow',
           speed: 0.3,
           trail: 1.5,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{x: observer[0], y: observer[1], radius: 2.2, role: 'warm', alpha: 1}],
+        }),
+        createSpriteLayer([{x: observer[0], y: observer[1], radius: 2.2, role: 'warm', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
@@ -1882,27 +1835,23 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       }
       return [
         createGridLayer(),
-        {
-          type: 'fills',
-          items: [
+        createFillLayer(
+          [
             {
               ring: [...silhouette, [152, baseline + 12], [8, baseline + 12]],
               role: 'cool',
               alpha: 0.35
             }
           ],
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [{points: silhouette, role: 'primary', width: 1.2, alpha: 1}],
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer([{points: silhouette, role: 'primary', width: 1.2, alpha: 1}], {
           animation: 'flow',
           speed: 0.25,
           blend: 'add'
-        },
-        {type: 'strokes', items: drops, animation: 'static', blend: 'add'},
-        {type: 'sprites', items: [...hiddenTargets, ...seen], pulse: 0.3}
+        }),
+        createStrokeLayer(drops, {animation: 'static', blend: 'add'}),
+        createSpriteLayer([...hiddenTargets, ...seen], {pulse: 0.3})
       ];
     }
   },
@@ -1951,29 +1900,22 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           COARSE_COLUMNS,
           COARSE_ROWS
         ),
-        {
-          type: 'strokes',
-          items: [{points: createRing(probe, 15, 36), role: 'dim', width: 0.5, alpha: 0.9}],
-          animation: 'static'
-        },
-        {
-          type: 'fills',
-          items: [{ring: dome, role: 'warm', alpha: 0.35}],
+        createStrokeLayer(
+          [{points: createRing(probe, 15, 36), role: 'dim', width: 0.5, alpha: 0.9}],
+          {animation: 'static'}
+        ),
+        createFillLayer([{ring: dome, role: 'warm', alpha: 0.35}], {
           animation: 'pulse',
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [{points: dome, role: 'warm', width: 1.1, alpha: 1}],
+        }),
+        createStrokeLayer([{points: dome, role: 'warm', width: 1.1, alpha: 1}], {
           animation: 'flow',
           speed: 0.35,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{x: probe[0], y: probe[1], radius: 2, role: 'warm', alpha: 1}],
+        }),
+        createSpriteLayer([{x: probe[0], y: probe[1], radius: 2, role: 'warm', alpha: 1}], {
           pulse: 0.3
-        }
+        })
       ];
     }
   },
@@ -2032,8 +1974,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       });
       return [
         createField(values, 'ice', 'ramp', {filter: 'linear'}, COARSE_COLUMNS, COARSE_ROWS),
-        {type: 'strokes', items: [createSunArc()], animation: 'static'},
-        {type: 'sprites', items: toSprites(frames, 'dim', 1.1, undefined, 0.9)},
+        createStrokeLayer([createSunArc()], {animation: 'static'}),
+        createSpriteLayer(toSprites(frames, 'dim', 1.1, undefined, 0.9)),
         createSunSprite(sun, 3.4)
       ];
     }
@@ -2109,9 +2051,9 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const subsolar: Point = [subsolarX, 50 - (declinationDegrees / 70) * 38];
       return [
         createGridLayer(),
-        {type: 'sprites', items: night},
-        {type: 'strokes', items: ticks, animation: 'static', blend: 'add'},
-        {type: 'sprites', items: day, pulse: 0.15},
+        createSpriteLayer(night),
+        createStrokeLayer(ticks, {animation: 'static', blend: 'add'}),
+        createSpriteLayer(day, {pulse: 0.15}),
         ...(terminator.length > 0
           ? [
               {
@@ -2173,7 +2115,7 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           22 - 16 * (maximumAltitude / 60) * Math.sin(Math.PI * time) - 2
         ]);
       }
-      const normalized = normalize(accumulated);
+      const normalized = normalizeValues(accumulated);
       return [
         createField(
           normalized,
@@ -2183,14 +2125,12 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           COARSE_COLUMNS,
           COARSE_ROWS
         ),
-        {
-          type: 'strokes',
-          items: [{points: sunPoints, role: 'warm', width: 0.6, alpha: 0.9}],
+        createStrokeLayer([{points: sunPoints, role: 'warm', width: 0.6, alpha: 0.9}], {
           animation: 'flow',
           speed: 0.25,
           blend: 'add'
-        },
-        {type: 'sprites', items: toSprites(sunPoints, 'warm', 2.2), pulse: 0.35}
+        }),
+        createSpriteLayer(toSprites(sunPoints, 'warm', 2.2), {pulse: 0.35})
       ];
     }
   },
@@ -2250,8 +2190,11 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           const radiusY = ring * 2.9;
           const arc: Point[] = [];
           for (let step = -6; step <= 6; step++) {
-            const t = centerAngle + (step / 6) * 0.75;
-            arc.push([summit[0] + Math.cos(t) * radiusX, summit[1] + Math.sin(t) * radiusY]);
+            const arcAngle = centerAngle + (step / 6) * 0.75;
+            arc.push([
+              summit[0] + Math.cos(arcAngle) * radiusX,
+              summit[1] + Math.sin(arcAngle) * radiusY
+            ]);
           }
           arcItems.push({
             points: arc,
@@ -2263,9 +2206,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
         }
       });
       lightLayers.push(
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: createRing(CENTER, 66 * 0.95, 60, 40 * 0.95),
               role: 'dim',
@@ -2273,12 +2215,12 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.5
             }
           ],
-          animation: 'static'
-        },
-        {type: 'strokes', items: arcItems, animation: 'pulse', speed: 0.3, blend: 'add'},
-        {type: 'strokes', items: rayItems, animation: 'flow', speed: 0.35, blend: 'add'},
-        {type: 'sprites', items: toSprites([summit], 'ink', 2.2), pulse: 0.2},
-        {type: 'sprites', items: sunSprites, pulse: 0.3}
+          {animation: 'static'}
+        ),
+        createStrokeLayer(arcItems, {animation: 'pulse', speed: 0.3, blend: 'add'}),
+        createStrokeLayer(rayItems, {animation: 'flow', speed: 0.35, blend: 'add'}),
+        createSpriteLayer(toSprites([summit], 'ink', 2.2), {pulse: 0.2}),
+        createSpriteLayer(sunSprites, {pulse: 0.3})
       );
       return [createField(values, 'terrain', 'ramp', {filter: 'linear'}), ...lightLayers];
     }
@@ -2303,8 +2245,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           enhanced[index] += (terrain.rough[index] - blurred[index]) * weight;
         }
       }
-      const sharp = normalize(enhanced);
-      const soft = normalize(blurField(terrain.rough, COLUMNS, ROWS, 4));
+      const sharp = normalizeValues(enhanced);
+      const soft = normalizeValues(blurField(terrain.rough, COLUMNS, ROWS, 4));
       // Left half: conventional hillshade of the soft surface. Right half: texture shaded.
       const split = COLUMNS / 2;
       const values = new Float32Array(COLUMNS * ROWS);
@@ -2375,12 +2317,11 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const probe: Point = pointer ? [Math.max(pointer[0], 96), pointer[1]] : [118, 50];
       return [
         createField(values, 'ice', 'hillshade', {strength: p.exaggeration}),
-        {type: 'strokes', items: softItems, animation: 'static', blend: 'add'},
-        {type: 'strokes', items: ridgeItems, animation: 'flow', speed: 0.2, blend: 'add'},
-        {type: 'strokes', items: valleyItems, animation: 'flow', speed: 0.3, blend: 'add'},
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(softItems, {animation: 'static', blend: 'add'}),
+        createStrokeLayer(ridgeItems, {animation: 'flow', speed: 0.2, blend: 'add'}),
+        createStrokeLayer(valleyItems, {animation: 'flow', speed: 0.3, blend: 'add'}),
+        createStrokeLayer(
+          [
             {
               points: [
                 [80, 0],
@@ -2391,23 +2332,18 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9
             }
           ],
-          animation: 'pulse',
-          speed: 0.4,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [1, 2, 4, 8].map((radius, index) => ({
+          {animation: 'pulse', speed: 0.4, blend: 'add'}
+        ),
+        createStrokeLayer(
+          [1, 2, 4, 8].map((radius, index) => ({
             points: createRing(probe, radius * FINE_CELL * 1.2, 28),
             role: 'violet' as Role,
             width: 0.5,
             alpha: 0.9,
             phase: index / 4
           })),
-          animation: 'pulse',
-          speed: 0.4,
-          blend: 'add'
-        }
+          {animation: 'pulse', speed: 0.4, blend: 'add'}
+        )
       ];
     }
   },
@@ -2428,9 +2364,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const probe = pointer ?? [88, 50];
       return [
         createField(values, 'spectral', 'ramp', {strength: 0.05, speed: 0.4}),
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: createRing(probe, p.window * FINE_CELL, 40),
               role: 'ink',
@@ -2456,8 +2391,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.95
             }
           ],
-          animation: 'static'
-        }
+          {animation: 'static'}
+        )
       ];
     }
   },
@@ -2486,19 +2421,16 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const probe = pointer ?? [88, 50];
       return [
         createField(values, 'ice', 'contours', {levels: 12, speed: 0.15}),
-        {
-          type: 'strokes',
-          items: radii.map((radius, index) => ({
+        createStrokeLayer(
+          radii.map((radius, index) => ({
             points: createRing(probe, radius * FINE_CELL, 40),
             role: (index % 2 === 0 ? 'warm' : 'hot') as Role,
             width: 0.8,
             alpha: 0.95,
             phase: index / radii.length
           })),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        )
       ];
     }
   },
@@ -2563,22 +2495,20 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
           COARSE_COLUMNS,
           COARSE_ROWS
         ),
-        {
-          type: 'strokes',
-          items: [p.inner, p.outer].map((radius, index) => ({
+        createStrokeLayer(
+          [p.inner, p.outer].map((radius, index) => ({
             points: createRing(probe, (radius / 2) * COARSE_CELL, 40),
             role: 'cool' as Role,
             width: 0.4,
             alpha: 0.7,
             phase: index
           })),
-          animation: 'static'
-        },
-        {
-          type: 'sprites',
-          items: [...samples, {x: probe[0], y: probe[1], radius: 2.4, role: 'warm', alpha: 1}],
-          pulse: 0.25
-        }
+          {animation: 'static'}
+        ),
+        createSpriteLayer(
+          [...samples, {x: probe[0], y: probe[1], radius: 2.4, role: 'warm', alpha: 1}],
+          {pulse: 0.25}
+        )
       ];
     }
   },
@@ -2626,12 +2556,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       );
       return [
         createField(values, 'ice', 'ramp', {strength: 0.05, speed: 0.3}),
-        {type: 'strokes', items: rails, animation: 'flow', speed: 0.3, trail: 1.4, blend: 'add'},
-        {
-          type: 'sprites',
-          items: [{x: 112, y: 28, radius: 3, role: 'warm', alpha: 1}],
-          pulse: 0.35
-        }
+        createStrokeLayer(rails, {animation: 'flow', speed: 0.3, trail: 1.4, blend: 'add'}),
+        createSpriteLayer([{x: 112, y: 28, radius: 3, role: 'warm', alpha: 1}], {pulse: 0.35})
       ];
     }
   },
@@ -2661,9 +2587,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
       const x = boundary * FINE_CELL;
       return [
         createField(values, 'spectral', 'ramp', {filter: 'nearest'}),
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: [
                 [x, 0],
@@ -2674,10 +2599,8 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.95
             }
           ],
-          animation: 'flow',
-          speed: 0.4,
-          blend: 'alpha'
-        }
+          {animation: 'flow', speed: 0.4, blend: 'alpha'}
+        )
       ];
     }
   },
@@ -2762,32 +2685,24 @@ export const TERRAIN_RELIEF_LIGHT_PREVIEWS: Record<string, EntryPreview> = {
         alpha: 0.14
       });
       return [
-        {type: 'fills', items: [toBody(median, topBase), toBody(after, bottomBase)], blend: 'add'},
-        {
-          type: 'strokes',
-          items: [
+        createFillLayer([toBody(median, topBase), toBody(after, bottomBase)], {blend: 'add'}),
+        createStrokeLayer(
+          [
             {points: median, role: 'cool', width: 0.5, alpha: 0.6},
             {points: before, role: 'hot', width: 0.9, alpha: 0.95}
           ],
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [{points: after, role: 'primary', width: 1.1, alpha: 1}],
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer([{points: after, role: 'primary', width: 1.1, alpha: 1}], {
           animation: 'flow',
           speed: 0.25,
           blend: 'add'
-        },
-        {type: 'strokes', items: connectors, animation: 'flow', speed: 0.5, blend: 'add'},
-        {type: 'sprites', items: tipsBefore, pulse: 0.4},
-        {type: 'sprites', items: leftover, pulse: 0.5},
-        {type: 'sprites', items: clamped, pulse: 0.25}
+        }),
+        createStrokeLayer(connectors, {animation: 'flow', speed: 0.5, blend: 'add'}),
+        createSpriteLayer(tipsBefore, {pulse: 0.4}),
+        createSpriteLayer(leftover, {pulse: 0.5}),
+        createSpriteLayer(clamped, {pulse: 0.25})
       ];
     }
   }
 };
-
-function clampPoint2(point: Point): Point {
-  return [clamp(point[0], 4, SCENE_WIDTH - 4), clamp(point[1], 4, SCENE_HEIGHT - 4)];
-}

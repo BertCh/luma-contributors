@@ -24,6 +24,7 @@ export default defineOperationRun({
       tracks,
       jumpChance: Float32Array.from({length: fixCount}, () => random()),
       jumpOffset: Float32Array.from({length: fixCount * 2}, () => (random() - 0.5) * 0.5),
+      // Each fix that follows a gap waits 1.5 to 10.5 time units, so `maximumGap` sorts them.
       gapChance: Float32Array.from({length: fixCount}, () => random()),
       points: new Float32Array(fixCount * 2),
       timestamps: new Float32Array(fixCount),
@@ -65,7 +66,9 @@ export default defineOperationRun({
             tracks.points[fix * 2] + (isGlitch ? inputs.jumpOffset[fix * 2] : 0);
           inputs.points[fix * 2 + 1] =
             tracks.points[fix * 2 + 1] + (isGlitch ? inputs.jumpOffset[fix * 2 + 1] : 0);
-          if (!isTrackStart && inputs.gapChance[fix] < values.glitchRate * 0.8) elapsedExtra += 6;
+          if (!isTrackStart && inputs.gapChance[fix] < values.glitchRate * 0.8) {
+            elapsedExtra += 1.5 + 9 * (inputs.gapChance[fix] / (values.glitchRate * 0.8));
+          }
           inputs.timestamps[fix] = tracks.timestamps[fix] + elapsedExtra;
         }
         let segment = 0;
@@ -90,6 +93,6 @@ export default defineOperationRun({
   },
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.lines, radius: 1},
-    {layer: 'dots', positions: outputs.positions, values: outputs.flags, radius: 4}
+    {layer: 'dots', positions: outputs.positions, values: outputs.flags, radius: 5}
   ]
 });

@@ -18,13 +18,13 @@ import {
   createMatrixGrid,
   getPeriodOwners,
   PERIOD_COUNT,
-  rowStandardize,
   uploadMatrixMesh
 } from './support/dynamics';
 import {uploadTractMesh} from './support/geometry';
 
 export default defineOperationRun({
   parameters,
+  // Binary contiguity weights: `normalize` decides between the mean and the sum of the neighbors.
   caption: 'Transition matrices for low to high lag classes; the map shows each tract lag class.',
   createInputs: ({random, world}) => ({...createDynamics(random, world), world}),
   build(builder, {tracts, values, world}, current) {
@@ -51,7 +51,7 @@ export default defineOperationRun({
         values: input.view,
         classes: classes.view,
         classCount,
-        weights: uploadSpatialWeights(builder, rowStandardize(tracts.contiguity)),
+        weights: uploadSpatialWeights(builder, tracts.contiguity),
         periodCount: PERIOD_COUNT,
         normalize: current.normalize === 1,
         maximumLagClassCount: lagClassCount,

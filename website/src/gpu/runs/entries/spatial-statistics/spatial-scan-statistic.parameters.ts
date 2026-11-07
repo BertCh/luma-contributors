@@ -21,8 +21,8 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 2,
     step: 1,
-    default: 2,
-    options: ['high', 'low', 'both']
+    default: 0,
+    options: ['both', 'high', 'low']
   },
   {id: 'excessRate', label: 'Data: excessRate', min: 0.05, max: 0.3, step: 0.01, default: 0.15}
 ];

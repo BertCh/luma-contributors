@@ -37,7 +37,6 @@ export default defineOperationRun({
         predictorCount: 2,
         response: response.view,
         maximumIterations: values.maximumIterations,
-        tolerance: 10 ** -values.tolerance,
         output: {
           coefficients: coefficients.view,
           standardErrors: builder.allocate('standard-errors', 'float32', 3).view,
@@ -66,7 +65,7 @@ export default defineOperationRun({
       }
     };
   },
-  rebuildOn: ['maximumIterations', 'tolerance'],
+  rebuildOn: ['maximumIterations'],
   draw: ({inputs, outputs}) => [
     ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [0, 1]}),
     ...drawCoefficientPanel(outputs.panel).map(layer =>

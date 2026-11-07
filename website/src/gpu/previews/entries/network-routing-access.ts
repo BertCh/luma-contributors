@@ -29,52 +29,27 @@ import {
   type EntryPreview
 } from '../helpers.ts';
 import {
+  createChoice,
+  createFillLayer,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer
+} from '../layers.ts';
+import {createRectangleRing, getNearestOnSegment} from '../geometry.ts';
+import {
   SCENE_HEIGHT,
   SCENE_WIDTH,
-  type FillLayer,
   type PathItem,
   type Point,
   type PolygonItem,
   type PreviewLayer,
   type Role,
   type SpriteItem,
-  type SpriteLayer,
   type StrokeLayer
 } from '../types.ts';
 
 // ---------------------------------------------------------------------------------------------
-// Layer shorthands
-
-type StrokeOptions = Partial<Omit<StrokeLayer, 'type' | 'items' | 'animation'>>;
-
-function createStrokes(
-  items: PathItem[],
-  animation: StrokeLayer['animation'] = 'static',
-  options: StrokeOptions = {}
-): StrokeLayer {
-  return {type: 'strokes', items, animation, ...options};
-}
-
-function createSprites(items: SpriteItem[], pulse = 0): SpriteLayer {
-  return {type: 'sprites', items, pulse};
-}
-
-function createFills(
-  items: PolygonItem[],
-  animation: FillLayer['animation'] = 'static',
-  blend: FillLayer['blend'] = 'add'
-): FillLayer {
-  return {type: 'fills', items, animation, blend};
-}
-
-function createRectangle(x: number, y: number, width: number, height: number): Point[] {
-  return [
-    [x, y],
-    [x + width, y],
-    [x + width, y + height],
-    [x, y + height]
-  ];
-}
+// Roles
 
 function getHeatRole(value: number): Role {
   return CLASS_ROLES[clamp(Math.floor(value * 5), 0, 4)];
@@ -139,11 +114,11 @@ function createHeap() {
   };
 }
 
-function createAdjacency(net: RoadNetwork, closed?: ReadonlySet<number>): Arc[][] {
-  const adjacency: Arc[][] = Array.from({length: net.nodes.length}, () => []);
-  net.edges.forEach(([first, second], edge) => {
+function createAdjacency(network: RoadNetwork, closed?: ReadonlySet<number>): Arc[][] {
+  const adjacency: Arc[][] = Array.from({length: network.nodes.length}, () => []);
+  network.edges.forEach(([first, second], edge) => {
     if (closed?.has(edge)) return;
-    const length = getDistance(net.nodes[first], net.nodes[second]);
+    const length = getDistance(network.nodes[first], network.nodes[second]);
     adjacency[first].push({to: second, length, edge});
     adjacency[second].push({to: first, length, edge});
   });
@@ -200,71 +175,68 @@ function getMaxFinite(values: number[]): number {
   return maximum || 1;
 }
 
-function getNodeIndex(net: RoadNetwork, row: number, column: number): number {
-  return row * net.columns + column;
+function getNodeIndex(network: RoadNetwork, row: number, column: number): number {
+  return row * network.columns + column;
 }
 
-function pickNode(net: RoadNetwork, pointer: Point | null, row: number, column: number): number {
-  return pointer ? findNearestIndex(net.nodes, pointer) : getNodeIndex(net, row, column);
+function pickNode(
+  network: RoadNetwork,
+  pointer: Point | null,
+  row: number,
+  column: number
+): number {
+  return pointer ? findNearestIndex(network.nodes, pointer) : getNodeIndex(network, row, column);
 }
 
-function getPathPoints(net: RoadNetwork, nodes: number[]): Point[] {
-  return nodes.map(node => net.nodes[node]);
+function getPathPoints(network: RoadNetwork, nodes: number[]): Point[] {
+  return nodes.map(node => network.nodes[node]);
 }
 
-function getEdgePaths(net: RoadNetwork, edges: Iterable<number>): Point[][] {
+function getEdgePaths(network: RoadNetwork, edges: Iterable<number>): Point[][] {
   const paths: Point[][] = [];
   for (const edge of edges) {
-    paths.push([net.nodes[net.edges[edge][0]], net.nodes[net.edges[edge][1]]]);
+    paths.push([network.nodes[network.edges[edge][0]], network.nodes[network.edges[edge][1]]]);
   }
   return paths;
 }
 
-function getAllEdges(net: RoadNetwork): number[] {
-  return net.edges.map((_, index) => index);
+function getAllEdges(network: RoadNetwork): number[] {
+  return network.edges.map((_, index) => index);
 }
 
 /** Network drawn into a sub box of the scene, so a chart or matrix can share the picture. */
-function placeNet(
-  net: RoadNetwork,
+function placeNetwork(
+  network: RoadNetwork,
   box: {x: number; y: number; width: number; height: number}
 ): RoadNetwork {
-  const nodes = net.nodes.map(
+  const nodes = network.nodes.map(
     ([x, y]): Point => [
       box.x + ((x - 12) / (SCENE_WIDTH - 24)) * box.width,
       box.y + ((y - 12) / (SCENE_HEIGHT - 24)) * box.height
     ]
   );
-  return {...net, nodes};
+  return {...network, nodes};
 }
 
 function createBackdrop(
-  net: RoadNetwork,
+  network: RoadNetwork,
   options: {closed?: ReadonlySet<number>; alpha?: number; width?: number} = {}
 ): StrokeLayer {
   const {closed, alpha = 0.5, width = 0.5} = options;
-  const edges = getAllEdges(net).filter(edge => !closed?.has(edge));
-  return createStrokes(toPaths(getEdgePaths(net, edges), 'dim', width, alpha));
+  const edges = getAllEdges(network).filter(edge => !closed?.has(edge));
+  return createStrokeLayer(toPaths(getEdgePaths(network, edges), 'dim', width, alpha), {
+    animation: 'static'
+  });
 }
 
-function findNearestSegmentPoint(
-  net: RoadNetwork,
+function findNearestEdgePoint(
+  network: RoadNetwork,
   point: Point
 ): {point: Point; distance: number; edge: number} {
-  let best = {point: net.nodes[0], distance: Infinity, edge: 0};
-  net.edges.forEach(([first, second], edge) => {
-    const start = net.nodes[first];
-    const end = net.nodes[second];
-    const dx = end[0] - start[0];
-    const dy = end[1] - start[1];
-    const amount = clamp(
-      ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (dx * dx + dy * dy || 1),
-      0,
-      1
-    );
-    const projected: Point = [start[0] + dx * amount, start[1] + dy * amount];
-    const distance = getDistance(point, projected);
-    if (distance < best.distance) best = {point: projected, distance, edge};
+  let best = {point: network.nodes[0], distance: Infinity, edge: 0};
+  network.edges.forEach(([first, second], edge) => {
+    const nearest = getNearestOnSegment(point, network.nodes[first], network.nodes[second]);
+    if (nearest.distance < best.distance) best = {...nearest, edge};
   });
   return best;
 }
@@ -289,20 +261,21 @@ function samplePolyline(points: Point[], spacing: number): Point[] {
 }
 
 function createCostField(
-  net: RoadNetwork,
+  network: RoadNetwork,
   distances: number[],
   limit: number,
   columns = 48,
   rows = 30
 ): Float32Array {
-  return evaluateField(columns, rows, (u, v) => {
-    const x = u * SCENE_WIDTH;
-    const y = v * SCENE_HEIGHT;
+  return evaluateField(columns, rows, (unitX, unitY) => {
+    const x = unitX * SCENE_WIDTH;
+    const y = unitY * SCENE_HEIGHT;
     let best = Infinity;
-    for (let index = 0; index < net.nodes.length; index++) {
+    for (let index = 0; index < network.nodes.length; index++) {
       if (distances[index] === Infinity) continue;
       const cost =
-        distances[index] + 1.25 * Math.hypot(net.nodes[index][0] - x, net.nodes[index][1] - y);
+        distances[index] +
+        1.25 * Math.hypot(network.nodes[index][0] - x, network.nodes[index][1] - y);
       if (cost < best) best = cost;
     }
     return Math.min(best, limit) / limit;
@@ -396,13 +369,13 @@ function shuffleIndices(random: Random, count: number): number[] {
 
 /** Clustered events on network nodes: the nodes closest to a few seeded centers are most likely. */
 function pickClusteredEvents(
-  net: RoadNetwork,
+  network: RoadNetwork,
   random: Random,
   count: number,
   centers: Point[],
   spread: number
 ): number[] {
-  const weights = net.nodes.map(node => {
+  const weights = network.nodes.map(node => {
     let best = 0;
     for (const center of centers) {
       best = Math.max(best, Math.exp(-Math.pow(getDistance(node, center) / spread, 2)));
@@ -467,16 +440,16 @@ function createChartMapper(box: {x: number; y: number; width: number; height: nu
 const reachability: EntryPreview = {
   pointer: 'sticky',
   parameters: [
-    {id: 'budget', label: 'Cost budget', min: 20, max: 100, step: 5, default: 70, unit: '%'},
-    {id: 'starts', label: 'Start nodes', min: 1, max: 3, step: 1, default: 2}
+    createSlider('budget', 'Cost budget', 20, 100, 5, 70, '%'),
+    createSlider('starts', 'Start nodes', 1, 3, 1, 2)
   ],
   build: ({random, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
     const starts = [
-      pickNode(net, pointer, 2, 2),
-      getNodeIndex(net, 4, 6),
-      getNodeIndex(net, 1, 7)
+      pickNode(network, pointer, 2, 2),
+      getNodeIndex(network, 4, 6),
+      getNodeIndex(network, 1, 7)
     ].slice(0, Math.round(p.starts));
     const result = runSearch(adjacency, starts);
     const limit = getMaxFinite(result.distances) * (p.budget / 100);
@@ -484,11 +457,11 @@ const reachability: EntryPreview = {
     const getBand = (node: number) => Math.min(3, Math.floor((result.distances[node] / limit) * 4));
     const tree: PathItem[] = [];
     const nodes: SpriteItem[] = [];
-    net.nodes.forEach(([x, y], node) => {
+    network.nodes.forEach(([x, y], node) => {
       const reached = result.distances[node] <= limit;
       if (reached && result.previous[node] >= 0) {
         tree.push({
-          points: [net.nodes[result.previous[node]], net.nodes[node]],
+          points: [network.nodes[result.previous[node]], network.nodes[node]],
           role: bandRoles[getBand(node)],
           width: 1.2,
           alpha: 0.95,
@@ -505,37 +478,37 @@ const reachability: EntryPreview = {
       });
     });
     const startSprites = toSprites(
-      starts.map(node => net.nodes[node]),
+      starts.map(node => network.nodes[node]),
       'ink',
       4.2
     );
     return [
-      createBackdrop(net),
-      createStrokes(tree, 'flow', {speed: 0.35, trail: 1.2, blend: 'add'}),
-      createSprites(nodes, 0.35),
-      createSprites(startSprites, 0.3)
+      createBackdrop(network),
+      createStrokeLayer(tree, {animation: 'flow', speed: 0.35, trail: 1.2, blend: 'add'}),
+      createSpriteLayer(nodes, {pulse: 0.35}),
+      createSpriteLayer(startSprites, {pulse: 0.3})
     ];
   }
 };
 
 const serviceAreas: EntryPreview = {
   pointer: 'hover',
-  parameters: [{id: 'sites', label: 'Facilities', min: 2, max: 5, step: 1, default: 4}],
+  parameters: [createSlider('sites', 'Facilities', 2, 5, 1, 4)],
   build: ({random, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
     const sites = [
-      pickNode(net, pointer, 1, 1),
-      getNodeIndex(net, 1, 6),
-      getNodeIndex(net, 4, 2),
-      getNodeIndex(net, 4, 7),
-      getNodeIndex(net, 2, 4)
+      pickNode(network, pointer, 1, 1),
+      getNodeIndex(network, 1, 6),
+      getNodeIndex(network, 4, 2),
+      getNodeIndex(network, 4, 7),
+      getNodeIndex(network, 2, 4)
     ].slice(0, Math.round(p.sites));
     const result = runSearch(adjacency, sites);
     const owned: PathItem[] = [];
     const boundary: Point[] = [];
-    net.edges.forEach(([first, second]) => {
-      const points: Point[] = [net.nodes[first], net.nodes[second]];
+    network.edges.forEach(([first, second]) => {
+      const points: Point[] = [network.nodes[first], network.nodes[second]];
       if (result.owner[first] === result.owner[second]) {
         owned.push({
           points,
@@ -549,10 +522,10 @@ const serviceAreas: EntryPreview = {
       }
     });
     return [
-      createBackdrop(net, {alpha: 0.3}),
-      createStrokes(owned, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(
-        net.nodes.map(([x, y], node) => ({
+      createBackdrop(network, {alpha: 0.3}),
+      createStrokeLayer(owned, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => ({
           x,
           y,
           radius: 1.5,
@@ -560,18 +533,18 @@ const serviceAreas: EntryPreview = {
           alpha: 0.9,
           phase: result.distances[node] / 120
         })),
-        0.3
+        {pulse: 0.3}
       ),
-      createSprites(toSprites(boundary, 'ink', 1.6, undefined, 0.95), 0.5),
-      createSprites(
+      createSpriteLayer(toSprites(boundary, 'ink', 1.6, undefined, 0.95), {pulse: 0.5}),
+      createSpriteLayer(
         sites.map((node, index) => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 4.4,
           role: OWNER_ROLES[index],
           phase: index / 5
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -580,15 +553,15 @@ const serviceAreas: EntryPreview = {
 const isochrones: EntryPreview = {
   pointer: 'sticky',
   parameters: [
-    {id: 'budget', label: 'Travel budget', min: 20, max: 100, step: 5, default: 75, unit: '%'},
-    {id: 'bands', label: 'Contour bands', min: 3, max: 12, step: 1, default: 7}
+    createSlider('budget', 'Travel budget', 20, 100, 5, 75, '%'),
+    createSlider('bands', 'Contour bands', 3, 12, 1, 7)
   ],
   build: ({random, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const source = pickNode(net, pointer, 3, 3);
-    const result = runSearch(createAdjacency(net), [source]);
+    const network = createRoadNetwork(random);
+    const source = pickNode(network, pointer, 3, 3);
+    const result = runSearch(createAdjacency(network), [source]);
     const limit = 200 * (p.budget / 100);
-    const values = createCostField(net, result.distances, limit).map(value => 1 - value);
+    const values = createCostField(network, result.distances, limit).map(value => 1 - value);
     return [
       {
         type: 'field',
@@ -601,10 +574,12 @@ const isochrones: EntryPreview = {
         strength: 0.8,
         speed: 0.12
       },
-      createStrokes(toPaths(getEdgePaths(net, getAllEdges(net)), 'ink', 0.35, 0.2)),
-      createSprites(
-        [{x: net.nodes[source][0], y: net.nodes[source][1], radius: 4, role: 'ink'}],
-        0.3
+      createStrokeLayer(toPaths(getEdgePaths(network, getAllEdges(network)), 'ink', 0.35, 0.2), {
+        animation: 'static'
+      }),
+      createSpriteLayer(
+        [{x: network.nodes[source][0], y: network.nodes[source][1], radius: 4, role: 'ink'}],
+        {pulse: 0.3}
       )
     ];
   }
@@ -615,27 +590,25 @@ const isochrones: EntryPreview = {
 
 const costMatrix: EntryPreview = {
   pointer: 'hover',
-  parameters: [
-    {id: 'bound', label: 'Cost bound', min: 20, max: 100, step: 5, default: 75, unit: '%'}
-  ],
+  parameters: [createSlider('bound', 'Cost bound', 20, 100, 5, 75, '%')],
   build: ({random, p, pointer}) => {
-    const net = placeNet(createRoadNetwork(random), {x: 4, y: 6, width: 100, height: 88});
-    const adjacency = createAdjacency(net);
+    const network = placeNetwork(createRoadNetwork(random), {x: 4, y: 6, width: 100, height: 88});
+    const adjacency = createAdjacency(network);
     const origins = [
-      pickNode(net, pointer, 1, 1),
-      getNodeIndex(net, 4, 2),
-      getNodeIndex(net, 2, 5),
-      getNodeIndex(net, 5, 7)
+      pickNode(network, pointer, 1, 1),
+      getNodeIndex(network, 4, 2),
+      getNodeIndex(network, 2, 5),
+      getNodeIndex(network, 5, 7)
     ];
     const searches = origins.map(origin => runSearch(adjacency, [origin]));
     const columns = Array.from({length: 14}, (_, index) => Math.round(2 + index * 3.6));
     const bound = getMaxFinite(searches[0].distances) * (p.bound / 100) * 0.8;
     const trees: PathItem[] = [];
     searches.forEach((search, row) => {
-      net.nodes.forEach((_, node) => {
+      network.nodes.forEach((_, node) => {
         if (search.previous[node] >= 0 && search.distances[node] <= bound) {
           trees.push({
-            points: [net.nodes[search.previous[node]], net.nodes[node]],
+            points: [network.nodes[search.previous[node]], network.nodes[node]],
             role: OWNER_ROLES[row],
             width: 0.7,
             alpha: 0.5,
@@ -650,7 +623,12 @@ const costMatrix: EntryPreview = {
         const cost = search.distances[node];
         const reached = cost <= bound;
         cells.push({
-          ring: createRectangle(112 + column * 3.4, 34 + row * 8, 2.8, 6.4),
+          ring: createRectangleRing(
+            112 + column * 3.4,
+            34 + row * 8,
+            112 + column * 3.4 + 2.8,
+            34 + row * 8 + 6.4
+          ),
           role: reached ? getHeatRole(cost / bound) : 'dim',
           alpha: reached ? 0.9 : 0.22,
           phase: (row * 14 + column) / 56
@@ -658,40 +636,39 @@ const costMatrix: EntryPreview = {
       });
     });
     return [
-      createBackdrop(net, {alpha: 0.35}),
-      createStrokes(trees, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(
+      createBackdrop(network, {alpha: 0.35}),
+      createStrokeLayer(trees, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(
         columns.map(node => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 1.5,
           role: 'ink' as Role,
           alpha: 0.7
-        }))
+        })),
+        {pulse: 0}
       ),
-      createSprites(
+      createSpriteLayer(
         origins.map((node, row) => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 3.8,
           role: OWNER_ROLES[row],
           phase: row / 4
         })),
-        0.3
+        {pulse: 0.3}
       ),
-      createFills(cells, 'pulse')
+      createFillLayer(cells, {animation: 'pulse', blend: 'add'})
     ];
   }
 };
 
 const costTable: EntryPreview = {
   pointer: 'none',
-  parameters: [
-    {id: 'bound', label: 'Cost bound', min: 10, max: 90, step: 5, default: 35, unit: '%'}
-  ],
+  parameters: [createSlider('bound', 'Cost bound', 10, 90, 5, 35, '%')],
   build: ({random, p}) => {
-    const net = placeNet(createRoadNetwork(random), {x: 4, y: 6, width: 82, height: 88});
-    const adjacency = createAdjacency(net);
+    const network = placeNetwork(createRoadNetwork(random), {x: 4, y: 6, width: 82, height: 88});
+    const adjacency = createAdjacency(network);
     const sampled = Array.from({length: 14}, (_, index) => Math.round(index * 3.8));
     const table = sampled.map(node => runSearch(adjacency, [node]).distances);
     const bound = getMaxFinite(table[0]) * (p.bound / 100) * 1.2;
@@ -709,7 +686,7 @@ const costTable: EntryPreview = {
         if (row[node] <= bound) {
           reachable++;
           lit.push({
-            ring: createRectangle(x, y, pitch - 0.7, pitch - 0.7),
+            ring: createRectangleRing(x, y, x + (pitch - 0.7), y + (pitch - 0.7)),
             role: getHeatRole(row[node] / bound),
             alpha: 0.95,
             phase: (rowIndex + columnIndex) / 28
@@ -729,40 +706,38 @@ const costTable: EntryPreview = {
       });
     });
     return [
-      createBackdrop(net, {alpha: 0.4}),
-      createSprites(
+      createBackdrop(network, {alpha: 0.4}),
+      createSpriteLayer(
         sampled.map((node, index) => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 2.4,
           role: getClassRole(index, 14),
           phase: index / 14
         })),
-        0.3
+        {pulse: 0.3}
       ),
-      createSprites(toSprites(empty, 'dim', 0.5, undefined, 0.5)),
-      createFills(lit, 'pulse'),
-      createStrokes(rowTicks, 'pulse', {speed: 0.3, blend: 'add'})
+      createSpriteLayer(toSprites(empty, 'dim', 0.5, undefined, 0.5), {pulse: 0}),
+      createFillLayer(lit, {animation: 'pulse', blend: 'add'}),
+      createStrokeLayer(rowTicks, {animation: 'pulse', speed: 0.3, blend: 'add'})
     ];
   }
 };
 
 const costWeights: EntryPreview = {
   pointer: 'sticky',
-  parameters: [
-    {id: 'bandwidth', label: 'Decay scale', min: 10, max: 80, step: 2, default: 32, unit: 'px'}
-  ],
+  parameters: [createSlider('bandwidth', 'Decay scale', 10, 80, 2, 32, 'px')],
   build: ({random, p, pointer}) => {
-    const net = placeNet(createRoadNetwork(random), {x: 4, y: 4, width: 112, height: 92});
-    const origin = pickNode(net, pointer, 2, 3);
-    const result = runSearch(createAdjacency(net), [origin]);
+    const network = placeNetwork(createRoadNetwork(random), {x: 4, y: 4, width: 112, height: 92});
+    const origin = pickNode(network, pointer, 2, 3);
+    const result = runSearch(createAdjacency(network), [origin]);
     const links: PathItem[] = [];
     const nodes: SpriteItem[] = [];
-    net.nodes.forEach(([x, y], node) => {
+    network.nodes.forEach(([x, y], node) => {
       const weight = Math.exp(-result.distances[node] / p.bandwidth);
       if (node !== origin && weight > 0.05) {
         links.push({
-          points: [net.nodes[origin], [x, y]],
+          points: [network.nodes[origin], [x, y]],
           role: weight > 0.5 ? 'warm' : weight > 0.22 ? 'primary' : 'cool',
           width: 0.5 + weight * 1.8,
           alpha: 0.35 + weight * 0.6,
@@ -782,14 +757,14 @@ const costWeights: EntryPreview = {
       return [124 + amount * 30, 90 - Math.exp(-(amount * 120) / p.bandwidth) * 32];
     });
     return [
-      createBackdrop(net, {alpha: 0.3}),
-      createStrokes(links, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(nodes),
-      createSprites(
-        [{x: net.nodes[origin][0], y: net.nodes[origin][1], radius: 4, role: 'ink'}],
-        0.3
+      createBackdrop(network, {alpha: 0.3}),
+      createStrokeLayer(links, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(nodes, {pulse: 0}),
+      createSpriteLayer(
+        [{x: network.nodes[origin][0], y: network.nodes[origin][1], radius: 4, role: 'ink'}],
+        {pulse: 0.3}
       ),
-      createStrokes(
+      createStrokeLayer(
         [
           {
             points: [
@@ -802,9 +777,10 @@ const costWeights: EntryPreview = {
             alpha: 0.7
           }
         ],
-        'static'
+        {animation: 'static'}
       ),
-      createStrokes([{points: curve, role: 'violet', width: 1.4, alpha: 1}], 'draw', {
+      createStrokeLayer([{points: curve, role: 'violet', width: 1.4, alpha: 1}], {
+        animation: 'draw',
         speed: 0.25,
         blend: 'add'
       })
@@ -818,25 +794,17 @@ const costWeights: EntryPreview = {
 const accessibility: EntryPreview = {
   pointer: 'none',
   parameters: [
-    {id: 'decay', label: 'Cost scale', min: 10, max: 80, step: 2, default: 36, unit: 'px'},
-    {
-      id: 'measure',
-      label: 'Measure',
-      min: 0,
-      max: 1,
-      step: 1,
-      default: 1,
-      options: ['Cumulative', 'Gravity']
-    }
+    createSlider('decay', 'Cost scale', 10, 80, 2, 36, 'px'),
+    createChoice('measure', 'Measure', ['Cumulative', 'Gravity'], 1)
   ],
   build: ({random, fork, p}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
     const opportunityRandom = fork('opportunities');
     const opportunities = Array.from({length: 6}, () =>
-      opportunityRandom.integer(net.nodes.length)
+      opportunityRandom.integer(network.nodes.length)
     );
-    const scores = new Array<number>(net.nodes.length).fill(0);
+    const scores = new Array<number>(network.nodes.length).fill(0);
     for (const opportunity of opportunities) {
       const {distances} = runSearch(adjacency, [opportunity]);
       distances.forEach((distance, node) => {
@@ -846,9 +814,9 @@ const accessibility: EntryPreview = {
     }
     const maximum = Math.max(...scores, 1e-6);
     return [
-      createBackdrop(net, {alpha: 0.35}),
-      createSprites(
-        net.nodes.map(([x, y], node) => ({
+      createBackdrop(network, {alpha: 0.35}),
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => ({
           x,
           y,
           radius: 1 + Math.sqrt(scores[node] / maximum) * 3.6,
@@ -856,28 +824,27 @@ const accessibility: EntryPreview = {
           alpha: 0.5 + 0.5 * (scores[node] / maximum),
           phase: scores[node] / maximum
         })),
-        0.3
+        {pulse: 0.3}
       ),
-      createStrokes(
+      createStrokeLayer(
         opportunities.flatMap(node => [
           {
-            points: createCircle(net.nodes[node][0], net.nodes[node][1], 6, 24),
+            points: createCircle(network.nodes[node][0], network.nodes[node][1], 6, 24),
             role: 'violet' as Role,
             width: 0.8,
             alpha: 0.9
           }
         ]),
-        'pulse',
-        {speed: 0.35, blend: 'add'}
+        {animation: 'pulse', speed: 0.35, blend: 'add'}
       ),
-      createSprites(
+      createSpriteLayer(
         opportunities.map(node => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 2.4,
           role: 'violet' as Role
         })),
-        0.2
+        {pulse: 0.2}
       )
     ];
   }
@@ -885,9 +852,7 @@ const accessibility: EntryPreview = {
 
 const catchmentAccessibility: EntryPreview = {
   pointer: 'hover',
-  parameters: [
-    {id: 'radius', label: 'Catchment', min: 12, max: 52, step: 1, default: 28, unit: 'px'}
-  ],
+  parameters: [createSlider('radius', 'Catchment', 12, 52, 1, 28, 'px')],
   build: ({fork, p, pointer}) => {
     const supplyRandom = fork('supply');
     const facilities: Point[] = [
@@ -926,17 +891,16 @@ const catchmentAccessibility: EntryPreview = {
     );
     const maximum = Math.max(...access, 1e-6);
     return [
-      createStrokes(
+      createStrokeLayer(
         facilities.map(facility => ({
           points: createCircle(facility[0], facility[1], p.radius, 48),
           role: 'warm' as Role,
           width: 0.7,
           alpha: 0.7
         })),
-        'pulse',
-        {speed: 0.3, blend: 'add'}
+        {animation: 'pulse', speed: 0.3, blend: 'add'}
       ),
-      createSprites(
+      createSpriteLayer(
         demand.map(([x, y], zone) => ({
           x,
           y,
@@ -945,9 +909,9 @@ const catchmentAccessibility: EntryPreview = {
           alpha: access[zone] > 0 ? 0.95 : 0.4,
           phase: zone / demand.length
         })),
-        0.25
+        {pulse: 0.25}
       ),
-      createSprites(
+      createSpriteLayer(
         facilities.map(([x, y], index) => ({
           x,
           y,
@@ -955,7 +919,7 @@ const catchmentAccessibility: EntryPreview = {
           role: 'ink' as Role,
           phase: index / 4
         })),
-        0.25
+        {pulse: 0.25}
       )
     ];
   }
@@ -963,7 +927,7 @@ const catchmentAccessibility: EntryPreview = {
 
 const huffTradeAreas: EntryPreview = {
   pointer: 'hover',
-  parameters: [{id: 'beta', label: 'Distance decay', min: 0.5, max: 4, step: 0.1, default: 2}],
+  parameters: [createSlider('beta', 'Distance decay', 0.5, 4, 0.1, 2)],
   build: ({fork, p, pointer}) => {
     const facilities: Point[] = [pointer ? clampPoint(pointer, 10) : [44, 42], [118, 30], [92, 78]];
     const attractiveness = [1.4, 1, 0.8];
@@ -1001,9 +965,9 @@ const huffTradeAreas: EntryPreview = {
     });
     const loadTotal = load.reduce((sum, value) => sum + value, 0);
     return [
-      createStrokes(links, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(toSprites(demand, 'cool', 1.2, undefined, 0.85)),
-      createSprites(
+      createStrokeLayer(links, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(toSprites(demand, 'cool', 1.2, undefined, 0.85), {pulse: 0}),
+      createSpriteLayer(
         facilities.map(([x, y], index) => ({
           x,
           y,
@@ -1011,7 +975,7 @@ const huffTradeAreas: EntryPreview = {
           role: OWNER_ROLES[index],
           phase: index / 3
         })),
-        0.2
+        {pulse: 0.2}
       )
     ];
   }
@@ -1067,16 +1031,8 @@ function selectFacilities(
 const locationAllocation: EntryPreview = {
   pointer: 'none',
   parameters: [
-    {id: 'count', label: 'Facilities (p)', min: 1, max: 5, step: 1, default: 3},
-    {
-      id: 'objective',
-      label: 'Objective',
-      min: 0,
-      max: 2,
-      step: 1,
-      default: 0,
-      options: ['p-median', 'p-center', 'Coverage']
-    }
+    createSlider('count', 'Facilities (p)', 1, 5, 1, 3),
+    createChoice('objective', 'Objective', ['p-median', 'p-center', 'Coverage'])
   ],
   build: ({fork, p}) => {
     const demand = createClusterPoints(
@@ -1129,11 +1085,11 @@ const locationAllocation: EntryPreview = {
         alpha: 0.8
       }));
     return [
-      createStrokes(rings, 'pulse', {speed: 0.3, blend: 'add'}),
-      createStrokes(assignment, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(toSprites(demand, 'cool', 1.1, undefined, 0.85)),
-      createSprites(toSprites(candidates, 'dim', 1.8, undefined, 0.5)),
-      createSprites(
+      createStrokeLayer(rings, {animation: 'pulse', speed: 0.3, blend: 'add'}),
+      createStrokeLayer(assignment, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(toSprites(demand, 'cool', 1.1, undefined, 0.85), {pulse: 0}),
+      createSpriteLayer(toSprites(candidates, 'dim', 1.8, undefined, 0.5), {pulse: 0}),
+      createSpriteLayer(
         chosen.map((facility, index) => ({
           x: candidates[facility][0],
           y: candidates[facility][1],
@@ -1141,7 +1097,7 @@ const locationAllocation: EntryPreview = {
           role: OWNER_ROLES[index],
           phase: index / 5
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -1202,9 +1158,9 @@ function buildSubsetScene(
     });
   });
   const layers: PreviewLayer[] = [
-    createStrokes(assignment, 'flow', {speed: 0.3, blend: 'add'}),
-    createSprites(toSprites(demand, 'cool', 1.1, undefined, 0.8)),
-    createSprites(toSprites(candidates, 'dim', 1.8, undefined, 0.6))
+    createStrokeLayer(assignment, {animation: 'flow', speed: 0.3, blend: 'add'}),
+    createSpriteLayer(toSprites(demand, 'cool', 1.1, undefined, 0.8), {pulse: 0}),
+    createSpriteLayer(toSprites(candidates, 'dim', 1.8, undefined, 0.6), {pulse: 0})
   ];
   const cells: PolygonItem[] = [];
   const extras: SpriteItem[] = [];
@@ -1221,7 +1177,7 @@ function buildSubsetScene(
       const y = originY + Math.floor(index / columns) * pitch;
       const value = (scores[index] - minimum) / (maximum - minimum || 1);
       cells.push({
-        ring: createRectangle(x, y, pitch - 1, pitch - 1),
+        ring: createRectangleRing(x, y, x + (pitch - 1), y + (pitch - 1)),
         role: index === best ? 'warm' : getHeatRole(Math.min(0.99, value)),
         alpha: index === best ? 1 : 0.8,
         phase: (index * 0.61) % 1
@@ -1243,11 +1199,11 @@ function buildSubsetScene(
         if (scores[index] < scores[rowBest]) rowBest = index;
         const value = (scores[index] - minimum) / (maximum - minimum || 1);
         cells.push({
-          ring: createRectangle(
+          ring: createRectangleRing(
             originX + column * pitch,
             originY + row * pitch,
-            pitch * 0.8,
-            pitch * 0.8
+            originX + column * pitch + pitch * 0.8,
+            originY + row * pitch + pitch * 0.8
           ),
           role: index === best ? 'warm' : getHeatRole(Math.min(0.99, value)),
           alpha: index === best ? 1 : 0.75,
@@ -1266,7 +1222,7 @@ function buildSubsetScene(
     }
   }
   layers.push(
-    createSprites(
+    createSpriteLayer(
       chosen.map((facility, index) => ({
         x: candidates[facility][0],
         y: candidates[facility][1],
@@ -1274,54 +1230,57 @@ function buildSubsetScene(
         role: mode === 'batches' ? 'violet' : 'warm',
         phase: index / 4
       })),
-      0.3
+      {pulse: 0.3}
     ),
-    createFills(cells, 'pulse')
+    createFillLayer(cells, {animation: 'pulse', blend: 'add'})
   );
   if (mode === 'batches') {
     layers.push(
-      createStrokes([{points: snake, role: 'primary', width: 0.6, alpha: 0.9}], 'draw', {
+      createStrokeLayer([{points: snake, role: 'primary', width: 0.6, alpha: 0.9}], {
+        animation: 'draw',
         speed: 0.18,
         blend: 'add'
       })
     );
   }
-  layers.push(createSprites(extras, 0.3));
+  layers.push(createSpriteLayer(extras, {pulse: 0.3}));
   return layers;
 }
 
 const boundedFacilityAllocation: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'size', label: 'Facilities (p)', min: 2, max: 4, step: 1, default: 3}],
+  parameters: [createSlider('size', 'Facilities (p)', 2, 4, 1, 3)],
   build: context => buildSubsetScene(context, 'all')
 };
 
 const networkFacilityOptimization: EntryPreview = {
   pointer: 'none',
   parameters: [
-    {id: 'size', label: 'Facilities (p)', min: 2, max: 4, step: 1, default: 4},
-    {id: 'batch', label: 'Batch size', min: 4, max: 14, step: 1, default: 8}
+    createSlider('size', 'Facilities (p)', 2, 4, 1, 4),
+    createSlider('batch', 'Batch size', 4, 14, 1, 8)
   ],
   build: context => buildSubsetScene(context, 'batches')
 };
 
 const facilityScenario: EntryPreview = {
   pointer: 'sticky',
-  parameters: [
-    {id: 'coverage', label: 'Coverage cutoff', min: 20, max: 100, step: 5, default: 55, unit: '%'}
-  ],
+  parameters: [createSlider('coverage', 'Coverage cutoff', 20, 100, 5, 55, '%')],
   build: ({random, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const sites = [pickNode(net, pointer, 3, 4), getNodeIndex(net, 1, 1), getNodeIndex(net, 4, 7)];
-    const result = runSearch(createAdjacency(net), sites);
+    const network = createRoadNetwork(random);
+    const sites = [
+      pickNode(network, pointer, 3, 4),
+      getNodeIndex(network, 1, 1),
+      getNodeIndex(network, 4, 7)
+    ];
+    const result = runSearch(createAdjacency(network), sites);
     const maximum = getMaxFinite(result.distances);
     const cutoff = maximum * (p.coverage / 100);
     const tree: PathItem[] = [];
     const halos: SpriteItem[] = [];
-    net.nodes.forEach(([x, y], node) => {
+    network.nodes.forEach(([x, y], node) => {
       if (result.previous[node] >= 0) {
         tree.push({
-          points: [net.nodes[result.previous[node]], [x, y]],
+          points: [network.nodes[result.previous[node]], [x, y]],
           role: getHeatRole(result.distances[node] / maximum),
           width: 0.9,
           alpha: 0.8,
@@ -1333,11 +1292,11 @@ const facilityScenario: EntryPreview = {
       }
     });
     return [
-      createBackdrop(net, {alpha: 0.3}),
-      createSprites(halos, 0.4),
-      createStrokes(tree, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(
-        net.nodes.map(([x, y], node) => ({
+      createBackdrop(network, {alpha: 0.3}),
+      createSpriteLayer(halos, {pulse: 0.4}),
+      createStrokeLayer(tree, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => ({
           x,
           y,
           radius: 1.4,
@@ -1346,17 +1305,18 @@ const facilityScenario: EntryPreview = {
               ? getHeatRole(result.distances[node] / maximum)
               : 'dim',
           alpha: result.distances[node] <= cutoff ? 0.95 : 0.45
-        }))
+        })),
+        {pulse: 0}
       ),
-      createSprites(
+      createSpriteLayer(
         sites.map((node, index) => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: index === 0 ? 5 : 3.8,
           role: index === 0 ? 'warm' : 'ink',
           phase: index / 3
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -1364,12 +1324,12 @@ const facilityScenario: EntryPreview = {
 
 const networkDisruption: EntryPreview = {
   pointer: 'sticky',
-  parameters: [{id: 'closures', label: 'Closed roads', min: 1, max: 10, step: 1, default: 4}],
+  parameters: [createSlider('closures', 'Closed roads', 1, 10, 1, 4)],
   build: ({random, fork, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const source = pickNode(net, pointer, 3, 0);
-    const target = getNodeIndex(net, 2, net.columns - 1);
-    const baseline = runSearch(createAdjacency(net), [source]);
+    const network = createRoadNetwork(random);
+    const source = pickNode(network, pointer, 3, 0);
+    const target = getNodeIndex(network, 2, network.columns - 1);
+    const baseline = runSearch(createAdjacency(network), [source]);
     const counts = getSubtreeCounts(baseline);
     const jitter = fork('closures');
     const closed = new Set(
@@ -1383,36 +1343,40 @@ const networkDisruption: EntryPreview = {
         .slice(0, Math.round(p.closures))
         .map(entry => entry.edge)
     );
-    const disrupted = runSearch(createAdjacency(net, closed), [source]);
-    const delta = net.nodes.map((_, node) => disrupted.distances[node] - baseline.distances[node]);
+    const disrupted = runSearch(createAdjacency(network, closed), [source]);
+    const delta = network.nodes.map(
+      (_, node) => disrupted.distances[node] - baseline.distances[node]
+    );
     const maximumDelta = Math.max(...delta.filter(value => value < Infinity), 1);
     const detour =
       disrupted.distances[target] < Infinity
-        ? getPathPoints(net, getPathTo(disrupted.previous, target))
+        ? getPathPoints(network, getPathTo(disrupted.previous, target))
         : [];
     return [
-      createBackdrop(net, {closed, alpha: 0.4}),
-      createStrokes(toPaths(getEdgePaths(net, closed), 'hot', 1.2, 0.8), 'pulse', {
+      createBackdrop(network, {closed, alpha: 0.4}),
+      createStrokeLayer(toPaths(getEdgePaths(network, closed), 'hot', 1.2, 0.8), {
+        animation: 'pulse',
         speed: 0.5,
         blend: 'add'
       }),
-      createStrokes(
+      createStrokeLayer(
         [
           {
-            points: getPathPoints(net, getPathTo(baseline.previous, target)),
+            points: getPathPoints(network, getPathTo(baseline.previous, target)),
             role: 'cool',
             width: 1.4,
             alpha: 0.55
           }
         ],
-        'static'
+        {animation: 'static'}
       ),
-      createStrokes([{points: detour, role: 'warm', width: 2.2, alpha: 1}], 'flow', {
+      createStrokeLayer([{points: detour, role: 'warm', width: 2.2, alpha: 1}], {
+        animation: 'flow',
         speed: 0.3,
         blend: 'add'
       }),
-      createSprites(
-        net.nodes.map(([x, y], node) =>
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) =>
           delta[node] === Infinity
             ? {x, y, radius: 3, role: 'hot' as Role, alpha: 1, phase: node / 54}
             : {
@@ -1424,14 +1388,14 @@ const networkDisruption: EntryPreview = {
                 phase: node / 54
               }
         ),
-        0.4
+        {pulse: 0.4}
       ),
-      createSprites(
+      createSpriteLayer(
         [
-          {x: net.nodes[source][0], y: net.nodes[source][1], radius: 4, role: 'ink'},
-          {x: net.nodes[target][0], y: net.nodes[target][1], radius: 4, role: 'ink'}
+          {x: network.nodes[source][0], y: network.nodes[source][1], radius: 4, role: 'ink'},
+          {x: network.nodes[target][0], y: network.nodes[target][1], radius: 4, role: 'ink'}
         ],
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -1439,11 +1403,11 @@ const networkDisruption: EntryPreview = {
 
 const driveTimeCatchment: EntryPreview = {
   pointer: 'hover',
-  parameters: [{id: 'bands', label: 'Time bands', min: 2, max: 7, step: 1, default: 4}],
+  parameters: [createSlider('bands', 'Time bands', 2, 7, 1, 4)],
   build: ({random, fork, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const sites = [pickNode(net, pointer, 2, 2), getNodeIndex(net, 3, 7)];
-    const result = runSearch(createAdjacency(net), sites);
+    const network = createRoadNetwork(random);
+    const sites = [pickNode(network, pointer, 2, 2), getNodeIndex(network, 3, 7)];
+    const result = runSearch(createAdjacency(network), sites);
     const demandRandom = fork('demand');
     const bands = Math.round(p.bands);
     const bandWidth = 120 / bands;
@@ -1451,12 +1415,12 @@ const driveTimeCatchment: EntryPreview = {
     const dots: SpriteItem[] = [];
     for (let index = 0; index < 34; index++) {
       const point: Point = [demandRandom.range(10, 150), demandRandom.range(10, 90)];
-      const node = findNearestIndex(net.nodes, point);
-      const cost = result.distances[node] + getDistance(point, net.nodes[node]);
+      const node = findNearestIndex(network.nodes, point);
+      const cost = result.distances[node] + getDistance(point, network.nodes[node]);
       const band = Math.floor(cost / bandWidth);
       const inside = band < bands;
       stubs.push({
-        points: [point, net.nodes[node]],
+        points: [point, network.nodes[node]],
         role: inside ? getClassRole(band, bands) : 'dim',
         width: 0.35,
         alpha: inside ? 0.5 : 0.15
@@ -1471,31 +1435,30 @@ const driveTimeCatchment: EntryPreview = {
       });
     }
     return [
-      createBackdrop(net, {alpha: 0.4}),
-      createStrokes(
-        net.nodes
+      createBackdrop(network, {alpha: 0.4}),
+      createStrokeLayer(
+        network.nodes
           .map((_, node) => node)
           .filter(node => result.previous[node] >= 0 && result.distances[node] < bandWidth * bands)
           .map(node => ({
-            points: [net.nodes[result.previous[node]], net.nodes[node]] as Point[],
+            points: [network.nodes[result.previous[node]], network.nodes[node]] as Point[],
             role: getClassRole(Math.floor(result.distances[node] / bandWidth), bands),
             width: 0.9,
             alpha: 0.7,
             phase: result.distances[node] / 120
           })),
-        'flow',
-        {speed: 0.3, blend: 'add'}
+        {animation: 'flow', speed: 0.3, blend: 'add'}
       ),
-      createStrokes(stubs),
-      createSprites(dots, 0.3),
-      createSprites(
+      createStrokeLayer(stubs, {animation: 'static'}),
+      createSpriteLayer(dots, {pulse: 0.3}),
+      createSpriteLayer(
         sites.map(node => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 4.4,
           role: 'ink' as Role
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -1506,21 +1469,21 @@ const driveTimeCatchment: EntryPreview = {
 
 const networkSnapping: EntryPreview = {
   pointer: 'hover',
-  parameters: [
-    {id: 'maximum', label: 'Snap distance', min: 3, max: 30, step: 1, default: 14, unit: 'px'}
-  ],
+  parameters: [createSlider('maximum', 'Snap distance', 3, 30, 1, 14, 'px')],
   build: ({random, fork, p, pointer}) => {
-    const net = createRoadNetwork(random);
+    const network = createRoadNetwork(random);
     const pointRandom = fork('points');
     const points: Point[] = Array.from({length: 24}, () => {
-      const [first, second] = net.edges[pointRandom.integer(net.edges.length)];
+      const [first, second] = network.edges[pointRandom.integer(network.edges.length)];
       const amount = pointRandom.next();
       const angle = pointRandom.range(0, Math.PI * 2);
       const offset = pointRandom.range(2, 18);
       return clampPoint(
         [
-          mixNumbers(net.nodes[first][0], net.nodes[second][0], amount) + Math.cos(angle) * offset,
-          mixNumbers(net.nodes[first][1], net.nodes[second][1], amount) + Math.sin(angle) * offset
+          mixNumbers(network.nodes[first][0], network.nodes[second][0], amount) +
+            Math.cos(angle) * offset,
+          mixNumbers(network.nodes[first][1], network.nodes[second][1], amount) +
+            Math.sin(angle) * offset
         ],
         3
       );
@@ -1532,7 +1495,7 @@ const networkSnapping: EntryPreview = {
     const rejected: SpriteItem[] = [];
     const usedEdges = new Set<number>();
     all.forEach((point, index) => {
-      const snap = findNearestSegmentPoint(net, point);
+      const snap = findNearestEdgePoint(network, point);
       const isProbe = index === points.length;
       if (snap.distance <= p.maximum) {
         usedEdges.add(snap.edge);
@@ -1555,32 +1518,32 @@ const networkSnapping: EntryPreview = {
       }
     });
     return [
-      createBackdrop(net, {alpha: 0.35}),
-      createStrokes(toPaths(getEdgePaths(net, usedEdges), 'primary', 0.9, 0.55)),
-      createStrokes(stubs, 'draw', {speed: 0.35, blend: 'add'}),
-      createSprites(snaps, 0.3),
-      createSprites(toSprites(points, 'cool', 1.2, undefined, 0.85)),
-      createSprites(rejected, 0.5),
-      createSprites([{x: probe[0], y: probe[1], radius: 3.4, role: 'ink'}], 0.3)
+      createBackdrop(network, {alpha: 0.35}),
+      createStrokeLayer(toPaths(getEdgePaths(network, usedEdges), 'primary', 0.9, 0.55), {
+        animation: 'static'
+      }),
+      createStrokeLayer(stubs, {animation: 'draw', speed: 0.35, blend: 'add'}),
+      createSpriteLayer(snaps, {pulse: 0.3}),
+      createSpriteLayer(toSprites(points, 'cool', 1.2, undefined, 0.85), {pulse: 0}),
+      createSpriteLayer(rejected, {pulse: 0.5}),
+      createSpriteLayer([{x: probe[0], y: probe[1], radius: 3.4, role: 'ink'}], {pulse: 0.3})
     ];
   }
 };
 
 const mapMatching: EntryPreview = {
   pointer: 'none',
-  parameters: [
-    {id: 'noise', label: 'GPS noise', min: 0, max: 10, step: 0.5, default: 4.5, unit: 'px'}
-  ],
+  parameters: [createSlider('noise', 'GPS noise', 0, 10, 0.5, 4.5, 'px')],
   build: ({random, fork, p}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
-    const start = getNodeIndex(net, 4, 0);
-    const end = getNodeIndex(net, 1, net.columns - 1);
-    const via = getNodeIndex(net, 3, 4);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
+    const start = getNodeIndex(network, 4, 0);
+    const end = getNodeIndex(network, 1, network.columns - 1);
+    const via = getNodeIndex(network, 3, 4);
     const first = runSearch(adjacency, [start]);
     const second = runSearch(adjacency, [via]);
     const route = [...getPathTo(first.previous, via), ...getPathTo(second.previous, end).slice(1)];
-    const routePoints = getPathPoints(net, route);
+    const routePoints = getPathPoints(network, route);
     const truth = samplePolyline(routePoints, 7);
     const noiseRandom = fork('noise');
     const fixes = truth.map(
@@ -1592,18 +1555,16 @@ const mapMatching: EntryPreview = {
     const candidates: SpriteItem[] = [];
     const residuals: PathItem[] = [];
     fixes.forEach((fix, index) => {
-      const ranked = net.edges
-        .map(([a, b]) => ({
-          a,
-          b,
-          snap: findNearestSegmentPoint({...net, edges: [[a, b]]}, fix)
-        }))
-        .sort((x, y) => x.snap.distance - y.snap.distance)
+      const ranked = network.edges
+        .map(([first, second]) =>
+          getNearestOnSegment(fix, network.nodes[first], network.nodes[second])
+        )
+        .sort((first, second) => first.distance - second.distance)
         .slice(0, 3);
       ranked.slice(1).forEach(entry => {
         candidates.push({
-          x: entry.snap.point[0],
-          y: entry.snap.point[1],
+          x: entry.point[0],
+          y: entry.point[1],
           radius: 1,
           role: 'violet',
           alpha: 0.6
@@ -1617,25 +1578,26 @@ const mapMatching: EntryPreview = {
       });
     });
     return [
-      createBackdrop(net, {alpha: 0.3}),
-      createSprites(candidates, 0.2),
-      createStrokes(residuals),
-      createStrokes([{points: routePoints, role: 'warm', width: 2.2, alpha: 1}], 'flow', {
+      createBackdrop(network, {alpha: 0.3}),
+      createSpriteLayer(candidates, {pulse: 0.2}),
+      createStrokeLayer(residuals, {animation: 'static'}),
+      createStrokeLayer([{points: routePoints, role: 'warm', width: 2.2, alpha: 1}], {
+        animation: 'flow',
         speed: 0.25,
         trail: 1.4,
         blend: 'add'
       }),
-      createStrokes([{points: fixes, role: 'cool', width: 0.5, alpha: 0.5}]),
-      createSprites(toSprites(fixes, 'cool', 1.5, undefined, 0.95), 0.2)
+      createStrokeLayer([{points: fixes, role: 'cool', width: 0.5, alpha: 0.5}], {
+        animation: 'static'
+      }),
+      createSpriteLayer(toSprites(fixes, 'cool', 1.5, undefined, 0.95), {pulse: 0.2})
     ];
   }
 };
 
 const trackQuality: EntryPreview = {
   pointer: 'none',
-  parameters: [
-    {id: 'limit', label: 'Speed limit', min: 5, max: 20, step: 0.5, default: 9, unit: 'px/s'}
-  ],
+  parameters: [createSlider('limit', 'Speed limit', 5, 20, 0.5, 9, 'px/s')],
   build: ({fork, p}) => {
     const trackRandom = fork('track');
     const phase = trackRandom.range(0, Math.PI);
@@ -1684,10 +1646,10 @@ const trackQuality: EntryPreview = {
       }
     }
     return [
-      createStrokes(good, 'flow', {speed: 0.3, blend: 'add'}),
-      createStrokes(bad, 'pulse', {speed: 0.6, blend: 'add'}),
-      createStrokes(gaps, 'pulse', {speed: 0.3, blend: 'add'}),
-      createSprites(
+      createStrokeLayer(good, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createStrokeLayer(bad, {animation: 'pulse', speed: 0.6, blend: 'add'}),
+      createStrokeLayer(gaps, {animation: 'pulse', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(
         sampled.map(({point}, index) => ({
           x: point[0],
           y: point[1],
@@ -1700,7 +1662,7 @@ const trackQuality: EntryPreview = {
           alpha: 0.95,
           phase: index / sampled.length
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -1711,21 +1673,21 @@ const trackQuality: EntryPreview = {
 
 const networkPathExtraction: EntryPreview = {
   pointer: 'sticky',
-  parameters: [{id: 'targets', label: 'Targets', min: 1, max: 8, step: 1, default: 4}],
+  parameters: [createSlider('targets', 'Targets', 1, 8, 1, 4)],
   build: ({random, fork, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const source = pickNode(net, pointer, 3, 1);
-    const result = runSearch(createAdjacency(net), [source]);
+    const network = createRoadNetwork(random);
+    const source = pickNode(network, pointer, 3, 1);
+    const result = runSearch(createAdjacency(network), [source]);
     const targetRandom = fork('targets');
-    const targets = Array.from({length: 8}, () => targetRandom.integer(net.nodes.length)).slice(
+    const targets = Array.from({length: 8}, () => targetRandom.integer(network.nodes.length)).slice(
       0,
       Math.round(p.targets)
     );
     const tree: PathItem[] = [];
-    net.nodes.forEach((point, node) => {
+    network.nodes.forEach((point, node) => {
       if (result.previous[node] >= 0) {
         tree.push({
-          points: [net.nodes[result.previous[node]], point],
+          points: [network.nodes[result.previous[node]], point],
           role: 'primary',
           width: 0.5,
           alpha: 0.4
@@ -1737,7 +1699,7 @@ const networkPathExtraction: EntryPreview = {
     targets.forEach((target, index) => {
       const nodes = getPathTo(result.previous, target);
       paths.push({
-        points: getPathPoints(net, nodes),
+        points: getPathPoints(network, nodes),
         role: index % 2 === 0 ? 'warm' : 'hot',
         width: 1.8,
         alpha: 0.95,
@@ -1745,8 +1707,8 @@ const networkPathExtraction: EntryPreview = {
       });
       nodes.forEach((node, position) => {
         ordered.push({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 1 + (position / Math.max(nodes.length - 1, 1)) * 1.8,
           role: index % 2 === 0 ? 'warm' : 'hot',
           alpha: 0.9,
@@ -1755,22 +1717,22 @@ const networkPathExtraction: EntryPreview = {
       });
     });
     return [
-      createBackdrop(net, {alpha: 0.25}),
-      createStrokes(tree),
-      createStrokes(paths, 'flow', {speed: 0.3, trail: 1.5, blend: 'add'}),
-      createSprites(ordered, 0.6),
-      createSprites(
-        [{x: net.nodes[source][0], y: net.nodes[source][1], radius: 4.6, role: 'ink'}],
-        0.3
+      createBackdrop(network, {alpha: 0.25}),
+      createStrokeLayer(tree, {animation: 'static'}),
+      createStrokeLayer(paths, {animation: 'flow', speed: 0.3, trail: 1.5, blend: 'add'}),
+      createSpriteLayer(ordered, {pulse: 0.6}),
+      createSpriteLayer(
+        [{x: network.nodes[source][0], y: network.nodes[source][1], radius: 4.6, role: 'ink'}],
+        {pulse: 0.3}
       ),
-      createSprites(
+      createSpriteLayer(
         targets.map(node => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 3.4,
           role: 'hot' as Role
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -1779,15 +1741,15 @@ const networkPathExtraction: EntryPreview = {
 const alternativeRoutes: EntryPreview = {
   pointer: 'sticky',
   parameters: [
-    {id: 'routes', label: 'Routes per query', min: 1, max: 4, step: 1, default: 3},
-    {id: 'penalty', label: 'Overlap penalty', min: 0.3, max: 3, step: 0.1, default: 1.2}
+    createSlider('routes', 'Routes per query', 1, 4, 1, 3),
+    createSlider('penalty', 'Overlap penalty', 0.3, 3, 0.1, 1.2)
   ],
   build: ({random, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
-    const source = pickNode(net, pointer, 4, 0);
-    const target = getNodeIndex(net, 1, net.columns - 1);
-    const usage = new Array<number>(net.edges.length).fill(0);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
+    const source = pickNode(network, pointer, 4, 0);
+    const target = getNodeIndex(network, 1, network.columns - 1);
+    const usage = new Array<number>(network.edges.length).fill(0);
     const seen = new Set<string>();
     const roles: Role[] = ['warm', 'primary', 'violet', 'cool'];
     const widths = [2.6, 1.8, 1.8, 1.8];
@@ -1807,30 +1769,29 @@ const alternativeRoutes: EntryPreview = {
       if (seen.has(key)) continue;
       seen.add(key);
       routes.push(
-        createStrokes(
+        createStrokeLayer(
           [
             {
-              points: getPathPoints(net, nodes),
+              points: getPathPoints(network, nodes),
               role: roles[routes.length],
               width: widths[routes.length],
               alpha: 0.95,
               phase: routes.length * 0.25
             }
           ],
-          'flow',
-          {speed: 0.22 + routes.length * 0.04, trail: 1.3, blend: 'add'}
+          {animation: 'flow', speed: 0.22 + routes.length * 0.04, trail: 1.3, blend: 'add'}
         )
       );
     }
     return [
-      createBackdrop(net, {alpha: 0.4}),
+      createBackdrop(network, {alpha: 0.4}),
       ...routes,
-      createSprites(
+      createSpriteLayer(
         [
-          {x: net.nodes[source][0], y: net.nodes[source][1], radius: 4.4, role: 'ink'},
-          {x: net.nodes[target][0], y: net.nodes[target][1], radius: 4.4, role: 'ink'}
+          {x: network.nodes[source][0], y: network.nodes[source][1], radius: 4.4, role: 'ink'},
+          {x: network.nodes[target][0], y: network.nodes[target][1], radius: 4.4, role: 'ink'}
         ],
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -1839,13 +1800,13 @@ const alternativeRoutes: EntryPreview = {
 type TurnKind = 'straight' | 'left' | 'right' | 'uturn';
 
 function classifyTurn(previous: Point, node: Point, next: Point): TurnKind {
-  const ax = node[0] - previous[0];
-  const ay = node[1] - previous[1];
-  const bx = next[0] - node[0];
-  const by = next[1] - node[1];
-  const length = Math.hypot(ax, ay) * Math.hypot(bx, by) || 1;
-  const cosine = (ax * bx + ay * by) / length;
-  const sine = (ax * by - ay * bx) / length;
+  const incomingX = node[0] - previous[0];
+  const incomingY = node[1] - previous[1];
+  const outgoingX = next[0] - node[0];
+  const outgoingY = next[1] - node[1];
+  const length = Math.hypot(incomingX, incomingY) * Math.hypot(outgoingX, outgoingY) || 1;
+  const cosine = (incomingX * outgoingX + incomingY * outgoingY) / length;
+  const sine = (incomingX * outgoingY - incomingY * outgoingX) / length;
   if (cosine < -0.9) return 'uturn';
   if (Math.abs(sine) < 0.45) return 'straight';
   return sine < 0 ? 'left' : 'right';
@@ -1853,13 +1814,13 @@ function classifyTurn(previous: Point, node: Point, next: Point): TurnKind {
 
 /** Dijkstra over (previous node, node) states, so turns can cost something or be banned. */
 function findTurnRoute(
-  net: RoadNetwork,
+  network: RoadNetwork,
   adjacency: Arc[][],
   source: number,
   target: number,
   getTurnCost: (kind: TurnKind) => number
 ): number[] {
-  const count = net.nodes.length;
+  const count = network.nodes.length;
   const distances = new Float64Array(count * count).fill(Infinity);
   const parents = new Int32Array(count * count).fill(-1);
   const heap = createHeap();
@@ -1883,7 +1844,9 @@ function findTurnRoute(
       const turn =
         previous === node
           ? 0
-          : getTurnCost(classifyTurn(net.nodes[previous], net.nodes[node], net.nodes[arc.to]));
+          : getTurnCost(
+              classifyTurn(network.nodes[previous], network.nodes[node], network.nodes[arc.to])
+            );
       if (turn === Infinity) continue;
       const next = node * count + arc.to;
       const cost = distance + arc.length + turn;
@@ -1899,16 +1862,14 @@ function findTurnRoute(
 
 const networkPointRouting: EntryPreview = {
   pointer: 'hover',
-  parameters: [
-    {id: 'penalty', label: 'Left-turn penalty', min: 0, max: 80, step: 2, default: 34, unit: 'px'}
-  ],
+  parameters: [createSlider('penalty', 'Left-turn penalty', 0, 80, 2, 34, 'px')],
   build: ({random, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
     const pairs: [number, number][] = [
-      [pickNode(net, pointer, 1, 0), getNodeIndex(net, 4, 8)],
-      [getNodeIndex(net, 5, 1), getNodeIndex(net, 0, 7)],
-      [getNodeIndex(net, 3, 0), getNodeIndex(net, 1, 8)]
+      [pickNode(network, pointer, 1, 0), getNodeIndex(network, 4, 8)],
+      [getNodeIndex(network, 5, 1), getNodeIndex(network, 0, 7)],
+      [getNodeIndex(network, 3, 0), getNodeIndex(network, 1, 8)]
     ];
     const roles: Role[] = ['warm', 'primary', 'violet'];
     const costs = (kind: TurnKind) =>
@@ -1923,11 +1884,11 @@ const networkPointRouting: EntryPreview = {
     const aware: PathItem[] = [];
     const turns: SpriteItem[] = [];
     pairs.forEach(([source, target], index) => {
-      const free = findTurnRoute(net, adjacency, source, target, () => 0);
-      plain.push({points: getPathPoints(net, free), role: 'dim', width: 1.6, alpha: 0.6});
-      const route = findTurnRoute(net, adjacency, source, target, costs);
+      const free = findTurnRoute(network, adjacency, source, target, () => 0);
+      plain.push({points: getPathPoints(network, free), role: 'dim', width: 1.6, alpha: 0.6});
+      const route = findTurnRoute(network, adjacency, source, target, costs);
       aware.push({
-        points: getPathPoints(net, route),
+        points: getPathPoints(network, route),
         role: roles[index],
         width: 1.8,
         alpha: 0.95,
@@ -1936,14 +1897,14 @@ const networkPointRouting: EntryPreview = {
       for (let step = 1; step + 1 < route.length; step++) {
         if (
           classifyTurn(
-            net.nodes[route[step - 1]],
-            net.nodes[route[step]],
-            net.nodes[route[step + 1]]
+            network.nodes[route[step - 1]],
+            network.nodes[route[step]],
+            network.nodes[route[step + 1]]
           ) !== 'straight'
         ) {
           turns.push({
-            x: net.nodes[route[step]][0],
-            y: net.nodes[route[step]][1],
+            x: network.nodes[route[step]][0],
+            y: network.nodes[route[step]][1],
             radius: 2.2,
             role: 'ink',
             alpha: 0.9,
@@ -1953,28 +1914,28 @@ const networkPointRouting: EntryPreview = {
       }
     });
     return [
-      createBackdrop(net, {alpha: 0.35}),
-      createStrokes(plain),
-      createStrokes(aware, 'flow', {speed: 0.25, trail: 1.3, blend: 'add'}),
-      createSprites(turns, 0.4),
-      createSprites(
+      createBackdrop(network, {alpha: 0.35}),
+      createStrokeLayer(plain, {animation: 'static'}),
+      createStrokeLayer(aware, {animation: 'flow', speed: 0.25, trail: 1.3, blend: 'add'}),
+      createSpriteLayer(turns, {pulse: 0.4}),
+      createSpriteLayer(
         pairs.flatMap(([source, target], index) => [
           {
-            x: net.nodes[source][0],
-            y: net.nodes[source][1],
+            x: network.nodes[source][0],
+            y: network.nodes[source][1],
             radius: 3.8,
             role: roles[index],
             phase: 0
           },
           {
-            x: net.nodes[target][0],
-            y: net.nodes[target][1],
+            x: network.nodes[target][0],
+            y: network.nodes[target][1],
             radius: 3.8,
             role: roles[index],
             phase: 0.5
           }
         ]),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -1982,20 +1943,20 @@ const networkPointRouting: EntryPreview = {
 
 const networkTimeRouting: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'depart', label: 'Departure time', min: 0, max: 1, step: 0.02, default: 0.45}],
+  parameters: [createSlider('depart', 'Departure time', 0, 1, 0.02, 0.45)],
   build: ({random, p}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
-    const source = getNodeIndex(net, 3, 0);
-    const target = getNodeIndex(net, 2, net.columns - 1);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
+    const source = getNodeIndex(network, 3, 0);
+    const target = getNodeIndex(network, 2, network.columns - 1);
     // A congestion blob drifts east across the middle corridor, so the earliest-arrival route
     // must bend around it while the free-flow route runs straight through.
     const getCenter = (time: number) => -10 + (time % 1.4) * 110;
-    const corridorY = (net.nodes[source][1] + net.nodes[target][1]) / 2;
+    const corridorY = (network.nodes[source][1] + network.nodes[target][1]) / 2;
     const getFactor = (edge: number, time: number) => {
-      const [first, second] = net.edges[edge];
-      const middleX = (net.nodes[first][0] + net.nodes[second][0]) / 2;
-      const middleY = (net.nodes[first][1] + net.nodes[second][1]) / 2;
+      const [first, second] = network.edges[edge];
+      const middleX = (network.nodes[first][0] + network.nodes[second][0]) / 2;
+      const middleY = (network.nodes[first][1] + network.nodes[second][1]) / 2;
       const across = (middleX - getCenter(time)) / 24;
       const along = (middleY - corridorY) / 20;
       return 1 + 7 * Math.exp(-(across * across + along * along));
@@ -2007,11 +1968,11 @@ const networkTimeRouting: EntryPreview = {
     );
     const free = runSearch(adjacency, [source]);
     const slow: PathItem[] = [];
-    net.edges.forEach((_, edge) => {
+    network.edges.forEach((_, edge) => {
       const factor = getFactor(edge, p.depart);
       if (factor > 1.35) {
         slow.push({
-          points: getEdgePaths(net, [edge])[0],
+          points: getEdgePaths(network, [edge])[0],
           role: 'hot',
           width: 0.5 + factor * 0.25,
           alpha: Math.min(0.9, 0.25 + (factor - 1) * 0.3)
@@ -2020,9 +1981,9 @@ const networkTimeRouting: EntryPreview = {
     });
     const centerX = getCenter(p.depart);
     return [
-      createBackdrop(net, {alpha: 0.4}),
-      createStrokes(slow, 'pulse', {speed: 0.5, blend: 'add'}),
-      createStrokes(
+      createBackdrop(network, {alpha: 0.4}),
+      createStrokeLayer(slow, {animation: 'pulse', speed: 0.5, blend: 'add'}),
+      createStrokeLayer(
         [
           {
             points: [
@@ -2034,35 +1995,36 @@ const networkTimeRouting: EntryPreview = {
             alpha: 0.25
           }
         ],
-        'pulse',
-        {speed: 0.3, blend: 'add'}
+        {animation: 'pulse', speed: 0.3, blend: 'add'}
       ),
-      createStrokes([
-        {
-          points: getPathPoints(net, getPathTo(free.previous, target)),
-          role: 'cool',
-          width: 1.3,
-          alpha: 0.5
-        }
-      ]),
-      createStrokes(
+      createStrokeLayer(
         [
           {
-            points: getPathPoints(net, getPathTo(timed.previous, target)),
+            points: getPathPoints(network, getPathTo(free.previous, target)),
+            role: 'cool',
+            width: 1.3,
+            alpha: 0.5
+          }
+        ],
+        {animation: 'static'}
+      ),
+      createStrokeLayer(
+        [
+          {
+            points: getPathPoints(network, getPathTo(timed.previous, target)),
             role: 'warm',
             width: 2.4,
             alpha: 1
           }
         ],
-        'flow',
-        {speed: 0.25, trail: 1.4, blend: 'add'}
+        {animation: 'flow', speed: 0.25, trail: 1.4, blend: 'add'}
       ),
-      createSprites(
+      createSpriteLayer(
         [
-          {x: net.nodes[source][0], y: net.nodes[source][1], radius: 4.2, role: 'ink'},
-          {x: net.nodes[target][0], y: net.nodes[target][1], radius: 4.2, role: 'ink'}
+          {x: network.nodes[source][0], y: network.nodes[source][1], radius: 4.2, role: 'ink'},
+          {x: network.nodes[target][0], y: network.nodes[target][1], radius: 4.2, role: 'ink'}
         ],
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -2070,23 +2032,23 @@ const networkTimeRouting: EntryPreview = {
 
 const networkLineGraph: EntryPreview = {
   pointer: 'hover',
-  parameters: [{id: 'hops', label: 'Junction radius', min: 0, max: 2, step: 1, default: 1}],
+  parameters: [createSlider('hops', 'Junction radius', 0, 2, 1, 1)],
   build: ({random, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
-    const focus = pickNode(net, pointer, 3, 4);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
+    const focus = pickNode(network, pointer, 3, 4);
     const reach = runSearch(
       adjacency.map(arcs => arcs.map(arc => ({...arc, length: 1}))),
       [focus]
     );
-    const junctions = net.nodes
+    const junctions = network.nodes
       .map((_, node) => node)
       .filter(node => reach.distances[node] <= Math.round(p.hops));
     const middle = (edge: number): Point => {
-      const [first, second] = net.edges[edge];
+      const [first, second] = network.edges[edge];
       return [
-        (net.nodes[first][0] + net.nodes[second][0]) / 2,
-        (net.nodes[first][1] + net.nodes[second][1]) / 2
+        (network.nodes[first][0] + network.nodes[second][0]) / 2,
+        (network.nodes[first][1] + network.nodes[second][1]) / 2
       ];
     };
     const transitions: PathItem[] = [];
@@ -2094,13 +2056,13 @@ const networkLineGraph: EntryPreview = {
       for (const incoming of adjacency[junction]) {
         for (const outgoing of adjacency[junction]) {
           const kindReversed = classifyTurn(
-            net.nodes[incoming.to],
-            net.nodes[junction],
-            net.nodes[outgoing.to]
+            network.nodes[incoming.to],
+            network.nodes[junction],
+            network.nodes[outgoing.to]
           );
           transitions.push({
             points: smoothPath(
-              [middle(incoming.edge), net.nodes[junction], middle(outgoing.edge)],
+              [middle(incoming.edge), network.nodes[junction], middle(outgoing.edge)],
               3
             ),
             role: kindReversed === 'uturn' ? 'hot' : kindReversed === 'left' ? 'warm' : 'violet',
@@ -2112,31 +2074,29 @@ const networkLineGraph: EntryPreview = {
       }
     }
     return [
-      createBackdrop(net, {alpha: 0.35}),
-      createStrokes(
+      createBackdrop(network, {alpha: 0.35}),
+      createStrokeLayer(
         transitions.filter(entry => entry.role === 'hot'),
-        'pulse',
-        {speed: 0.5, blend: 'add'}
+        {animation: 'pulse', speed: 0.5, blend: 'add'}
       ),
-      createStrokes(
+      createStrokeLayer(
         transitions.filter(entry => entry.role !== 'hot'),
-        'flow',
-        {speed: 0.3, trail: 0.8, blend: 'add'}
+        {animation: 'flow', speed: 0.3, trail: 0.8, blend: 'add'}
       ),
-      createSprites(
-        net.edges.map((_, edge) => ({
+      createSpriteLayer(
+        network.edges.map((_, edge) => ({
           x: middle(edge)[0],
           y: middle(edge)[1],
           radius: 1.6,
           role: 'violet' as Role,
           alpha: 0.75,
-          phase: edge / net.edges.length
+          phase: edge / network.edges.length
         })),
-        0.3
+        {pulse: 0.3}
       ),
-      createSprites(
-        [{x: net.nodes[focus][0], y: net.nodes[focus][1], radius: 3.4, role: 'ink'}],
-        0.3
+      createSpriteLayer(
+        [{x: network.nodes[focus][0], y: network.nodes[focus][1], radius: 3.4, role: 'ink'}],
+        {pulse: 0.3}
       )
     ];
   }
@@ -2147,23 +2107,23 @@ const networkLineGraph: EntryPreview = {
 
 type Segment = {start: Point; end: Point};
 
-function intersectSegments(first: Segment, second: Segment): [number, number] | null {
-  const ax = first.end[0] - first.start[0];
-  const ay = first.end[1] - first.start[1];
-  const bx = second.end[0] - second.start[0];
-  const by = second.end[1] - second.start[1];
-  const denominator = ax * by - ay * bx;
+function intersectSegmentFractions(first: Segment, second: Segment): [number, number] | null {
+  const firstDx = first.end[0] - first.start[0];
+  const firstDy = first.end[1] - first.start[1];
+  const secondDx = second.end[0] - second.start[0];
+  const secondDy = second.end[1] - second.start[1];
+  const denominator = firstDx * secondDy - firstDy * secondDx;
   if (Math.abs(denominator) < 1e-9) return null;
-  const dx = second.start[0] - first.start[0];
-  const dy = second.start[1] - first.start[1];
-  const along = (dx * by - dy * bx) / denominator;
-  const across = (dx * ay - dy * ax) / denominator;
+  const offsetX = second.start[0] - first.start[0];
+  const offsetY = second.start[1] - first.start[1];
+  const along = (offsetX * secondDy - offsetY * secondDx) / denominator;
+  const across = (offsetX * firstDy - offsetY * firstDx) / denominator;
   return along > 0.01 && along < 0.99 && across > 0.01 && across < 0.99 ? [along, across] : null;
 }
 
 const networkNoding: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'lines', label: 'Raw lines', min: 3, max: 16, step: 1, default: 8}],
+  parameters: [createSlider('lines', 'Raw lines', 3, 16, 1, 8)],
   build: ({fork, p}) => {
     const lineRandom = fork('lines');
     const segments: Segment[] = Array.from({length: 16}, (_, index): Segment => {
@@ -2182,7 +2142,7 @@ const networkNoding: EntryPreview = {
     const joints: Point[] = [];
     for (let first = 0; first < segments.length; first++) {
       for (let second = first + 1; second < segments.length; second++) {
-        const hit = intersectSegments(segments[first], segments[second]);
+        const hit = intersectSegmentFractions(segments[first], segments[second]);
         if (!hit) continue;
         cuts[first].push(hit[0]);
         cuts[second].push(hit[1]);
@@ -2194,7 +2154,7 @@ const networkNoding: EntryPreview = {
     }
     const pieces: PathItem[] = [];
     segments.forEach((segment, index) => {
-      const stops = [0, ...cuts[index].sort((a, b) => a - b), 1];
+      const stops = [0, ...cuts[index].sort((first, second) => first - second), 1];
       for (let piece = 0; piece + 1 < stops.length; piece++) {
         const length = getDistance(segment.start, segment.end);
         const shrink = Math.min(1.8 / length, (stops[piece + 1] - stops[piece]) / 3);
@@ -2219,30 +2179,34 @@ const networkNoding: EntryPreview = {
       }
     });
     return [
-      createStrokes(
+      createStrokeLayer(
         segments.map(segment => ({
           points: [segment.start, segment.end],
           role: 'dim' as Role,
           width: 2.6,
           alpha: 0.18
-        }))
+        })),
+        {animation: 'static'}
       ),
-      createStrokes(pieces, 'pulse', {speed: 0.25, blend: 'add'}),
-      createSprites(toSprites(joints, 'ink', 2.2, undefined, 0.95), 0.5)
+      createStrokeLayer(pieces, {animation: 'pulse', speed: 0.25, blend: 'add'}),
+      createSpriteLayer(toSprites(joints, 'ink', 2.2, undefined, 0.95), {pulse: 0.5})
     ];
   }
 };
 
 const networkCentrality: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'pivots', label: 'Pivots', min: 3, max: 54, step: 1, default: 16}],
+  parameters: [createSlider('pivots', 'Pivots', 3, 54, 1, 16)],
   build: ({random, fork, p}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
-    const pivots = shuffleIndices(fork('pivots'), net.nodes.length).slice(0, Math.round(p.pivots));
-    const betweenness = new Array<number>(net.nodes.length).fill(0);
-    const closeness = new Array<number>(net.nodes.length).fill(0);
-    const load = new Array<number>(net.edges.length).fill(0);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
+    const pivots = shuffleIndices(fork('pivots'), network.nodes.length).slice(
+      0,
+      Math.round(p.pivots)
+    );
+    const betweenness = new Array<number>(network.nodes.length).fill(0);
+    const closeness = new Array<number>(network.nodes.length).fill(0);
+    const load = new Array<number>(network.edges.length).fill(0);
     for (const pivot of pivots) {
       const result = runSearch(adjacency, [pivot]);
       const counts = getSubtreeCounts(result);
@@ -2262,7 +2226,7 @@ const networkCentrality: EntryPreview = {
     load.forEach((value, edge) => {
       if (value / maximumLoad > 0.3) {
         edges.push({
-          points: getEdgePaths(net, [edge])[0],
+          points: getEdgePaths(network, [edge])[0],
           role: 'warm',
           width: 0.6 + (value / maximumLoad) * 2.4,
           alpha: 0.9,
@@ -2271,10 +2235,10 @@ const networkCentrality: EntryPreview = {
       }
     });
     return [
-      createBackdrop(net, {alpha: 0.4}),
-      createStrokes(edges, 'flow', {speed: 0.28, blend: 'add'}),
-      createSprites(
-        net.nodes.map(([x, y], node) => ({
+      createBackdrop(network, {alpha: 0.4}),
+      createStrokeLayer(edges, {animation: 'flow', speed: 0.28, blend: 'add'}),
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => ({
           x,
           y,
           radius: 1 + 5 * Math.sqrt(betweenness[node] / maximum),
@@ -2282,17 +2246,17 @@ const networkCentrality: EntryPreview = {
             Math.min(0.99, 1 - (closeness[node] - nearest) / (farthest - nearest || 1))
           ),
           alpha: 0.55 + 0.45 * Math.sqrt(betweenness[node] / maximum),
-          phase: node / net.nodes.length
+          phase: node / network.nodes.length
         })),
-        0.25
+        {pulse: 0.25}
       )
     ];
   }
 };
 
-function findCutVertices(net: RoadNetwork, closed: ReadonlySet<number>) {
-  const adjacency = createAdjacency(net, closed);
-  const count = net.nodes.length;
+function findCutVertices(network: RoadNetwork, closed: ReadonlySet<number>) {
+  const adjacency = createAdjacency(network, closed);
+  const count = network.nodes.length;
   const discovery = new Array<number>(count).fill(-1);
   const low = new Array<number>(count).fill(0);
   const component = new Array<number>(count).fill(-1);
@@ -2326,11 +2290,11 @@ function findCutVertices(net: RoadNetwork, closed: ReadonlySet<number>) {
 
 const networkStructure: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'removed', label: 'Removed links', min: 0, max: 34, step: 1, default: 14}],
+  parameters: [createSlider('removed', 'Removed links', 0, 34, 1, 14)],
   build: ({random, fork, p}) => {
-    const net = createRoadNetwork(random);
-    const closed = pickClosedEdges(fork('removed'), net.edges.length, p.removed);
-    const {component, bridges, articulation} = findCutVertices(net, closed);
+    const network = createRoadNetwork(random);
+    const closed = pickClosedEdges(fork('removed'), network.edges.length, p.removed);
+    const {component, bridges, articulation} = findCutVertices(network, closed);
     const sizes = new Map<number, number>();
     component.forEach(label => sizes.set(label, (sizes.get(label) ?? 0) + 1));
     const ranked = [...sizes.entries()]
@@ -2340,25 +2304,27 @@ const networkStructure: EntryPreview = {
       (['primary', 'violet', 'cool', 'warm'] as const)[
         Math.min(ranked.indexOf(component[node]), 3)
       ];
-    const open = getAllEdges(net).filter(edge => !closed.has(edge));
+    const open = getAllEdges(network).filter(edge => !closed.has(edge));
     return [
-      createStrokes(
+      createStrokeLayer(
         toPaths(
           getEdgePaths(
-            net,
+            network,
             open.filter(edge => !bridges.has(edge))
           ),
           'dim',
           0.7,
           0.55
-        )
+        ),
+        {animation: 'static'}
       ),
-      createStrokes(toPaths(getEdgePaths(net, [...bridges]), 'hot', 1.8, 0.95), 'pulse', {
+      createStrokeLayer(toPaths(getEdgePaths(network, [...bridges]), 'hot', 1.8, 0.95), {
+        animation: 'pulse',
         speed: 0.5,
         blend: 'add'
       }),
-      createSprites(
-        net.nodes.map(([x, y], node) => ({
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => ({
           x,
           y,
           radius: 1.7,
@@ -2366,17 +2332,16 @@ const networkStructure: EntryPreview = {
           alpha: 0.9,
           phase: node / 54
         })),
-        0.2
+        {pulse: 0.2}
       ),
-      createStrokes(
+      createStrokeLayer(
         [...articulation].map(node => ({
-          points: createCircle(net.nodes[node][0], net.nodes[node][1], 3.8, 20),
+          points: createCircle(network.nodes[node][0], network.nodes[node][1], 3.8, 20),
           role: 'ink' as Role,
           width: 0.9,
           alpha: 0.95
         })),
-        'pulse',
-        {speed: 0.4, blend: 'add'}
+        {animation: 'pulse', speed: 0.4, blend: 'add'}
       )
     ];
   }
@@ -2385,10 +2350,10 @@ const networkStructure: EntryPreview = {
 const networkStatistics: EntryPreview = {
   pointer: 'none',
   build: ({random}) => {
-    const net = createRoadNetwork(random);
-    const placed = placeNet(net, {x: 4, y: 8, width: 94, height: 84});
-    const degree = new Array<number>(net.nodes.length).fill(0);
-    net.edges.forEach(([first, second]) => {
+    const network = createRoadNetwork(random);
+    const placed = placeNetwork(network, {x: 4, y: 8, width: 94, height: 84});
+    const degree = new Array<number>(network.nodes.length).fill(0);
+    network.edges.forEach(([first, second]) => {
       degree[first]++;
       degree[second]++;
     });
@@ -2411,7 +2376,12 @@ const networkStatistics: EntryPreview = {
     const bars: PolygonItem[] = histogram.slice(1).map((count, index) => {
       const height = (count / peak) * 46;
       return {
-        ring: createRectangle(108 + index * 11, 90 - height, 8, height),
+        ring: createRectangleRing(
+          108 + index * 11,
+          90 - height,
+          108 + index * 11 + 8,
+          90 - height + height
+        ),
         role: getClassRole(index, 4),
         alpha: 0.9,
         phase: index / 4
@@ -2419,7 +2389,7 @@ const networkStatistics: EntryPreview = {
     });
     return [
       createBackdrop(placed, {alpha: 0.45}),
-      createSprites(
+      createSpriteLayer(
         placed.nodes.map(([x, y], node) => ({
           x,
           y,
@@ -2428,21 +2398,24 @@ const networkStatistics: EntryPreview = {
           alpha: 0.9,
           phase: node / 54
         })),
-        0.3
+        {pulse: 0.3}
       ),
-      createFills(bars, 'pulse'),
-      createStrokes([
-        {
-          points: [
-            [104, 91],
-            [154, 91]
-          ],
-          role: 'dim',
-          width: 0.5,
-          alpha: 0.8
-        }
-      ]),
-      createSprites(
+      createFillLayer(bars, {animation: 'pulse', blend: 'add'}),
+      createStrokeLayer(
+        [
+          {
+            points: [
+              [104, 91],
+              [154, 91]
+            ],
+            role: 'dim',
+            width: 0.5,
+            alpha: 0.8
+          }
+        ],
+        {animation: 'static'}
+      ),
+      createSpriteLayer(
         sizes.map((size, index) => ({
           x: 118 + index * 14,
           y: 16,
@@ -2450,7 +2423,7 @@ const networkStatistics: EntryPreview = {
           role: OWNER_ROLES[index],
           phase: index / 3
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -2459,12 +2432,12 @@ const networkStatistics: EntryPreview = {
 const networkAnalyticsColumns: EntryPreview = {
   pointer: 'hover',
   build: ({random, fork, pointer}) => {
-    const net = createRoadNetwork(random);
-    const placed = placeNet(net, {x: 4, y: 8, width: 100, height: 84});
+    const network = createRoadNetwork(random);
+    const placed = placeNetwork(network, {x: 4, y: 8, width: 100, height: 84});
     const orientation = fork('orientation');
-    const degree = new Array<number>(net.nodes.length).fill(0);
-    const inDegree = new Array<number>(net.nodes.length).fill(0);
-    net.edges.forEach(([first, second]) => {
+    const degree = new Array<number>(network.nodes.length).fill(0);
+    const inDegree = new Array<number>(network.nodes.length).fill(0);
+    network.edges.forEach(([first, second]) => {
       degree[first]++;
       degree[second]++;
       inDegree[orientation.next() > 0.5 ? first : second]++;
@@ -2478,12 +2451,12 @@ const networkAnalyticsColumns: EntryPreview = {
     const cells: PolygonItem[] = [];
     const marks: SpriteItem[] = [];
     columns.forEach((getValue, column) => {
-      net.nodes.forEach((_, node) => {
+      network.nodes.forEach((_, node) => {
         const x = 114 + (node % 9) * 4.4;
         const y = 10 + column * 29 + Math.floor(node / 9) * 4.4;
         const value = getValue(node);
         cells.push({
-          ring: createRectangle(x, y, 3.6, 3.6),
+          ring: createRectangleRing(x, y, x + 3.6, y + 3.6),
           role:
             column === 2
               ? value > 0.5
@@ -2498,7 +2471,7 @@ const networkAnalyticsColumns: EntryPreview = {
     });
     return [
       createBackdrop(placed, {alpha: 0.4}),
-      createSprites(
+      createSpriteLayer(
         placed.nodes.map(([x, y], node) => ({
           x,
           y,
@@ -2507,10 +2480,10 @@ const networkAnalyticsColumns: EntryPreview = {
           alpha: 0.9,
           phase: node / 54
         })),
-        0.3
+        {pulse: 0.3}
       ),
-      createFills(cells, 'pulse'),
-      createSprites(
+      createFillLayer(cells, {animation: 'pulse', blend: 'add'}),
+      createSpriteLayer(
         focus >= 0
           ? [
               {
@@ -2522,7 +2495,7 @@ const networkAnalyticsColumns: EntryPreview = {
               ...marks
             ]
           : [],
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -2530,18 +2503,18 @@ const networkAnalyticsColumns: EntryPreview = {
 
 const networkNeighborhood: EntryPreview = {
   pointer: 'sticky',
-  parameters: [{id: 'hops', label: 'Hops (k)', min: 0, max: 6, step: 1, default: 3}],
+  parameters: [createSlider('hops', 'Hops (k)', 0, 6, 1, 3)],
   build: ({random, p, pointer}) => {
-    const net = createRoadNetwork(random);
-    const source = pickNode(net, pointer, 3, 4);
+    const network = createRoadNetwork(random);
+    const source = pickNode(network, pointer, 3, 4);
     const hops = Math.round(p.hops);
     const result = runSearch(
-      createAdjacency(net).map(arcs => arcs.map(arc => ({...arc, length: 1}))),
+      createAdjacency(network).map(arcs => arcs.map(arc => ({...arc, length: 1}))),
       [source]
     );
     const outward: PathItem[] = [];
     const inside = new Set<number>();
-    net.edges.forEach(([first, second], edge) => {
+    network.edges.forEach(([first, second], edge) => {
       const near = Math.min(result.distances[first], result.distances[second]);
       const far = Math.max(result.distances[first], result.distances[second]);
       if (far <= hops) {
@@ -2549,7 +2522,7 @@ const networkNeighborhood: EntryPreview = {
         const from = result.distances[first] <= result.distances[second] ? first : second;
         const to = from === first ? second : first;
         outward.push({
-          points: [net.nodes[from], net.nodes[to]],
+          points: [network.nodes[from], network.nodes[to]],
           role: getClassRole(near, hops + 1),
           width: 1.3,
           alpha: 0.9,
@@ -2558,10 +2531,10 @@ const networkNeighborhood: EntryPreview = {
       }
     });
     return [
-      createBackdrop(net, {alpha: 0.3}),
-      createStrokes(outward, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(
-        net.nodes.map(([x, y], node) => {
+      createBackdrop(network, {alpha: 0.3}),
+      createStrokeLayer(outward, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => {
           const hop = result.distances[node];
           return hop <= hops
             ? {
@@ -2574,7 +2547,7 @@ const networkNeighborhood: EntryPreview = {
               }
             : {x, y, radius: 1, role: 'dim' as Role, alpha: 0.4};
         }),
-        0.4
+        {pulse: 0.4}
       )
     ];
   }
@@ -2583,14 +2556,14 @@ const networkNeighborhood: EntryPreview = {
 const networkSubgraphFilter: EntryPreview = {
   pointer: 'none',
   parameters: [
-    {id: 'minimum', label: 'Attribute min', min: 0, max: 1, step: 0.02, default: 0.28},
-    {id: 'maximum', label: 'Attribute max', min: 0, max: 1, step: 0.02, default: 0.85},
-    {id: 'time', label: 'Edge time', min: 0, max: 1, step: 0.02, default: 0.8}
+    createSlider('minimum', 'Attribute min', 0, 1, 0.02, 0.28),
+    createSlider('maximum', 'Attribute max', 0, 1, 0.02, 0.85),
+    createSlider('time', 'Edge time', 0, 1, 0.02, 0.8)
   ],
   build: ({random, fork, p}) => {
-    const net = createRoadNetwork(random);
+    const network = createRoadNetwork(random);
     const noise = fork('attributes');
-    const attribute = net.nodes.map(([x, y]) =>
+    const attribute = network.nodes.map(([x, y]) =>
       clamp(
         0.5 +
           0.34 * Math.sin(x * 0.05 + 1.3) +
@@ -2600,12 +2573,12 @@ const networkSubgraphFilter: EntryPreview = {
         1
       )
     );
-    const edgeTime = net.edges.map(() => noise.next());
+    const edgeTime = network.edges.map(() => noise.next());
     const keepNode = attribute.map(value => value >= p.minimum && value <= p.maximum);
     const kept: PathItem[] = [];
     const ghosts: PathItem[] = [];
-    net.edges.forEach(([first, second], edge) => {
-      const points: Point[] = [net.nodes[first], net.nodes[second]];
+    network.edges.forEach(([first, second], edge) => {
+      const points: Point[] = [network.nodes[first], network.nodes[second]];
       if (keepNode[first] && keepNode[second] && edgeTime[edge] <= p.time) {
         kept.push({points, role: 'primary', width: 1.1, alpha: 0.95, phase: edgeTime[edge]});
       } else {
@@ -2613,10 +2586,10 @@ const networkSubgraphFilter: EntryPreview = {
       }
     });
     return [
-      createStrokes(ghosts),
-      createStrokes(kept, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(
-        net.nodes.map(([x, y], node) =>
+      createStrokeLayer(ghosts, {animation: 'static'}),
+      createStrokeLayer(kept, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) =>
           keepNode[node]
             ? {
                 x,
@@ -2628,7 +2601,7 @@ const networkSubgraphFilter: EntryPreview = {
               }
             : {x, y, radius: 1, role: 'dim' as Role, alpha: 0.3}
         ),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -2636,9 +2609,9 @@ const networkSubgraphFilter: EntryPreview = {
 
 const networkCoarsening: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'groups', label: 'Groups', min: 2, max: 8, step: 1, default: 5}],
+  parameters: [createSlider('groups', 'Groups', 2, 8, 1, 5)],
   build: ({random, fork, p}) => {
-    const net = createRoadNetwork(random);
+    const network = createRoadNetwork(random);
     const centerRandom = fork('centers');
     const groupCount = Math.round(p.groups);
     const seeds = Array.from({length: 8}, (_, index): Point => {
@@ -2649,9 +2622,9 @@ const networkCoarsening: EntryPreview = {
         28 + row * 44 + centerRandom.range(-8, 8)
       ];
     }).slice(0, groupCount);
-    const group = net.nodes.map(point => findNearestIndex(seeds, point));
+    const group = network.nodes.map(point => findNearestIndex(seeds, point));
     const centroids: Point[] = seeds.map((_, index) => {
-      const members = net.nodes.filter((_, node) => group[node] === index);
+      const members = network.nodes.filter((_, node) => group[node] === index);
       if (members.length === 0) return seeds[index];
       return [
         members.reduce((sum, point) => sum + point[0], 0) / members.length,
@@ -2660,7 +2633,7 @@ const networkCoarsening: EntryPreview = {
     });
     const sizes = seeds.map((_, index) => group.filter(value => value === index).length);
     const weights = new Map<string, number>();
-    net.edges.forEach(([first, second]) => {
+    network.edges.forEach(([first, second]) => {
       if (group[first] === group[second]) return;
       const key = `${Math.min(group[first], group[second])}:${Math.max(group[first], group[second])}`;
       weights.set(key, (weights.get(key) ?? 0) + 1);
@@ -2676,18 +2649,18 @@ const networkCoarsening: EntryPreview = {
       };
     });
     return [
-      createBackdrop(net, {alpha: 0.18}),
-      createStrokes(
-        net.nodes.map((point, node) => ({
+      createBackdrop(network, {alpha: 0.18}),
+      createStrokeLayer(
+        network.nodes.map((point, node) => ({
           points: [point, centroids[group[node]]],
           role: OWNER_ROLES[group[node] % 5],
           width: 0.35,
           alpha: 0.28
         })),
-        'static'
+        {animation: 'static'}
       ),
-      createSprites(
-        net.nodes.map(([x, y], node) => ({
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => ({
           x,
           y,
           radius: 1.3,
@@ -2695,10 +2668,10 @@ const networkCoarsening: EntryPreview = {
           alpha: 0.85,
           phase: node / 54
         })),
-        0.2
+        {pulse: 0.2}
       ),
-      createStrokes(summary, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(
+      createStrokeLayer(summary, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(
         centroids.map(([x, y], index) => ({
           x,
           y,
@@ -2707,9 +2680,9 @@ const networkCoarsening: EntryPreview = {
           alpha: 0.9,
           phase: index / groupCount
         })),
-        0.25
+        {pulse: 0.25}
       ),
-      createSprites(
+      createSpriteLayer(
         centroids.map(([x, y], index) => ({
           x,
           y,
@@ -2717,7 +2690,7 @@ const networkCoarsening: EntryPreview = {
           role: OWNER_ROLES[index % 5],
           alpha: 1
         })),
-        0
+        {pulse: 0}
       )
     ];
   }
@@ -2725,7 +2698,7 @@ const networkCoarsening: EntryPreview = {
 
 const networkLouvain: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'communities', label: 'Communities', min: 2, max: 5, step: 1, default: 4}],
+  parameters: [createSlider('communities', 'Communities', 2, 5, 1, 4)],
   build: ({fork, p}) => {
     const clusters = Math.round(p.communities);
     const graph = createCommunityGraph(fork('graph'), clusters, Math.floor(28 / clusters));
@@ -2752,10 +2725,10 @@ const networkLouvain: EntryPreview = {
       phase: cluster / clusters
     }));
     return [
-      createFills(halos, 'pulse'),
-      createStrokes(between),
-      createStrokes(inside, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(
+      createFillLayer(halos, {animation: 'pulse', blend: 'add'}),
+      createStrokeLayer(between, {animation: 'static'}),
+      createStrokeLayer(inside, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(
         graph.points.map(([x, y], node) => ({
           x,
           y,
@@ -2763,7 +2736,7 @@ const networkLouvain: EntryPreview = {
           role: OWNER_ROLES[graph.group[node]],
           phase: node / graph.points.length
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -2774,7 +2747,7 @@ const networkLouvain: EntryPreview = {
 
 function createMatrixFrame(x: number, y: number, size: number): PathItem {
   return {
-    points: [...createRectangle(x, y, size, size), [x, y]],
+    points: [...createRectangleRing(x, y, x + size, y + size), [x, y]],
     role: 'dim',
     width: 0.5,
     alpha: 0.75
@@ -2783,7 +2756,7 @@ function createMatrixFrame(x: number, y: number, size: number): PathItem {
 
 const adjacencyMatrix: EntryPreview = {
   pointer: 'hover',
-  parameters: [{id: 'resolution', label: 'Matrix size (R)', min: 4, max: 24, step: 1, default: 24}],
+  parameters: [createSlider('resolution', 'Matrix size (R)', 4, 24, 1, 24)],
   build: ({fork, p, pointer}) => {
     const graph = createCommunityGraph(fork('graph'), 4, 6);
     const count = graph.points.length;
@@ -2810,11 +2783,11 @@ const adjacencyMatrix: EntryPreview = {
     const cells: PolygonItem[] = [...counts.entries()].map(([key, value], index) => {
       const [row, column] = key.split(':').map(Number);
       return {
-        ring: createRectangle(
+        ring: createRectangleRing(
           originX + column * cell + 0.15,
           originY + row * cell + 0.15,
-          cell - 0.3,
-          cell - 0.3
+          originX + column * cell + 0.15 + (cell - 0.3),
+          originY + row * cell + 0.15 + (cell - 0.3)
         ),
         role: value / peak > 0.6 ? 'hot' : value / peak > 0.3 ? 'warm' : 'primary',
         alpha: 0.9,
@@ -2826,12 +2799,22 @@ const adjacencyMatrix: EntryPreview = {
     if (focus >= 0) {
       highlight.push(
         {
-          ring: createRectangle(originX, originY + bin(focus) * cell, side, cell),
+          ring: createRectangleRing(
+            originX,
+            originY + bin(focus) * cell,
+            originX + side,
+            originY + bin(focus) * cell + cell
+          ),
           role: 'ink',
           alpha: 0.2
         },
         {
-          ring: createRectangle(originX + bin(focus) * cell, originY, cell, side),
+          ring: createRectangleRing(
+            originX + bin(focus) * cell,
+            originY,
+            originX + bin(focus) * cell + cell,
+            originY + side
+          ),
           role: 'ink',
           alpha: 0.2
         }
@@ -2847,16 +2830,17 @@ const adjacencyMatrix: EntryPreview = {
       });
     }
     return [
-      createStrokes(
+      createStrokeLayer(
         graph.edges.map(([first, second]) => ({
           points: [placed[first], placed[second]],
           role: 'primary' as Role,
           width: 0.5,
           alpha: 0.4
-        }))
+        })),
+        {animation: 'static'}
       ),
-      createStrokes(incident, 'flow', {speed: 0.35, blend: 'add'}),
-      createSprites(
+      createStrokeLayer(incident, {animation: 'flow', speed: 0.35, blend: 'add'}),
+      createSpriteLayer(
         placed.map(([x, y], node) => ({
           x,
           y,
@@ -2864,18 +2848,18 @@ const adjacencyMatrix: EntryPreview = {
           role: node === focus ? ('ink' as Role) : getClassRole(graph.group[node], 4),
           phase: node / count
         })),
-        0.3
+        {pulse: 0.3}
       ),
-      createStrokes([createMatrixFrame(originX, originY, side)]),
-      createFills(cells, 'pulse'),
-      createFills(highlight, 'static')
+      createStrokeLayer([createMatrixFrame(originX, originY, side)], {animation: 'static'}),
+      createFillLayer(cells, {animation: 'pulse', blend: 'add'}),
+      createFillLayer(highlight, {animation: 'static', blend: 'add'})
     ];
   }
 };
 
 const adjacencyMatrixOrder: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'groups', label: 'Groups', min: 2, max: 5, step: 1, default: 4}],
+  parameters: [createSlider('groups', 'Groups', 2, 5, 1, 4)],
   build: ({fork, p}) => {
     const groups = Math.round(p.groups);
     const size = Math.round(24 / groups);
@@ -2896,11 +2880,11 @@ const adjacencyMatrixOrder: EntryPreview = {
           [second, first]
         ]) {
           cells.push({
-            ring: createRectangle(
+            ring: createRectangleRing(
               originX + position[column] * pitch,
               originY + position[row] * pitch,
-              pitch - 0.25,
-              pitch - 0.25
+              originX + position[column] * pitch + (pitch - 0.25),
+              originY + position[row] * pitch + (pitch - 0.25)
             ),
             role: same ? OWNER_ROLES[graph.group[first]] : 'dim',
             alpha: same ? 0.95 : 0.55,
@@ -2930,13 +2914,13 @@ const adjacencyMatrixOrder: EntryPreview = {
       };
     });
     return [
-      createStrokes([
-        createMatrixFrame(leftX, originY, span),
-        createMatrixFrame(rightX, originY, span)
-      ]),
-      createFills(draw(shuffled, leftX), 'pulse'),
-      createStrokes(permutation, 'flow', {speed: 0.3, blend: 'add'}),
-      createFills(draw(sortedPosition, rightX), 'pulse')
+      createStrokeLayer(
+        [createMatrixFrame(leftX, originY, span), createMatrixFrame(rightX, originY, span)],
+        {animation: 'static'}
+      ),
+      createFillLayer(draw(shuffled, leftX), {animation: 'pulse', blend: 'add'}),
+      createStrokeLayer(permutation, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createFillLayer(draw(sortedPosition, rightX), {animation: 'pulse', blend: 'add'})
     ];
   }
 };
@@ -2946,7 +2930,7 @@ const adjacencyMatrixOrder: EntryPreview = {
 
 const edgeBundling: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'bundling', label: 'Bundling', min: 0, max: 1, step: 0.05, default: 0.85}],
+  parameters: [createSlider('bundling', 'Bundling', 0, 1, 0.05, 0.85)],
   build: ({fork, p}) => {
     const centers: Point[] = [
       [26, 28],
@@ -3007,16 +2991,16 @@ const edgeBundling: EntryPreview = {
       });
     }
     return [
-      createStrokes(items, 'flow', {speed: 0.3, trail: 1.1, blend: 'add'}),
-      createSprites(toSprites(ends, 'ink', 1.1, undefined, 0.7)),
-      createSprites(toSprites(centers, 'dim', 0.1, undefined, 0))
+      createStrokeLayer(items, {animation: 'flow', speed: 0.3, trail: 1.1, blend: 'add'}),
+      createSpriteLayer(toSprites(ends, 'ink', 1.1, undefined, 0.7), {pulse: 0}),
+      createSpriteLayer(toSprites(centers, 'dim', 0.1, undefined, 0), {pulse: 0})
     ];
   }
 };
 
 const flowAggregation: EntryPreview = {
   pointer: 'none',
-  parameters: [{id: 'top', label: 'Top K flows', min: 1, max: 12, step: 1, default: 6}],
+  parameters: [createSlider('top', 'Top K flows', 1, 12, 1, 6)],
   build: ({fork, p}) => {
     const zones: Point[] = [
       [24, 52],
@@ -3063,9 +3047,9 @@ const flowAggregation: EntryPreview = {
       };
     });
     return [
-      createStrokes(raw),
-      createStrokes(top, 'flow', {speed: 0.3, trail: 1.3, blend: 'add'}),
-      createSprites(
+      createStrokeLayer(raw, {animation: 'static'}),
+      createStrokeLayer(top, {animation: 'flow', speed: 0.3, trail: 1.3, blend: 'add'}),
+      createSpriteLayer(
         zones.map(([x, y], index) => ({
           x,
           y,
@@ -3073,7 +3057,7 @@ const flowAggregation: EntryPreview = {
           role: 'ink' as Role,
           phase: index / 7
         })),
-        0.25
+        {pulse: 0.25}
       )
     ];
   }
@@ -3083,34 +3067,34 @@ type FlowArc = {to: number; capacity: number; cost: number; reverse: number; edg
 
 const networkFlow: EntryPreview = {
   pointer: 'sticky',
-  parameters: [{id: 'capacity', label: 'Max capacity', min: 1, max: 4, step: 1, default: 2}],
+  parameters: [createSlider('capacity', 'Max capacity', 1, 4, 1, 2)],
   build: ({random, fork, p, pointer}) => {
-    const net = createRoadNetwork(random);
+    const network = createRoadNetwork(random);
     const capacityRandom = fork('capacity');
-    const capacities = net.edges.map(
+    const capacities = network.edges.map(
       () => 1 + Math.floor(capacityRandom.next() * Math.round(p.capacity))
     );
-    const arcs: FlowArc[][] = net.nodes.map(() => []);
-    const forwardArcs: FlowArc[][] = net.edges.map(() => []);
+    const arcs: FlowArc[][] = network.nodes.map(() => []);
+    const forwardArcs: FlowArc[][] = network.edges.map(() => []);
     const addArc = (from: number, to: number, capacity: number, cost: number, edge: number) => {
       const arc = {to, capacity, cost, reverse: arcs[to].length, edge};
       arcs[from].push(arc);
       arcs[to].push({to: from, capacity: 0, cost: -cost, reverse: arcs[from].length - 1, edge});
       forwardArcs[edge].push(arc);
     };
-    net.edges.forEach(([first, second], edge) => {
-      const cost = getDistance(net.nodes[first], net.nodes[second]);
+    network.edges.forEach(([first, second], edge) => {
+      const cost = getDistance(network.nodes[first], network.nodes[second]);
       addArc(first, second, capacities[edge], cost, edge);
       addArc(second, first, capacities[edge], cost, edge);
     });
-    const source = getNodeIndex(net, 2, 0);
+    const source = getNodeIndex(network, 2, 0);
     const sink =
       pointer && pointer[0] > 90
-        ? findNearestIndex(net.nodes, pointer)
-        : getNodeIndex(net, 3, net.columns - 1);
+        ? findNearestIndex(network.nodes, pointer)
+        : getNodeIndex(network, 3, network.columns - 1);
     for (let round = 0; round < 40; round++) {
-      const distance = new Array<number>(net.nodes.length).fill(Infinity);
-      const via = new Array<[number, number]>(net.nodes.length).fill([-1, -1]);
+      const distance = new Array<number>(network.nodes.length).fill(Infinity);
+      const via = new Array<[number, number]>(network.nodes.length).fill([-1, -1]);
       distance[source] = 0;
       const queue = [source];
       for (let head = 0; head < queue.length; head++) {
@@ -3133,7 +3117,7 @@ const networkFlow: EntryPreview = {
         arcs[node][arc.reverse].capacity += push;
       }
     }
-    const side = new Array<boolean>(net.nodes.length).fill(false);
+    const side = new Array<boolean>(network.nodes.length).fill(false);
     const stack = [source];
     side[source] = true;
     while (stack.length > 0) {
@@ -3147,15 +3131,15 @@ const networkFlow: EntryPreview = {
     }
     const flows: PathItem[] = [];
     const cut: PathItem[] = [];
-    net.edges.forEach(([first, second], edge) => {
+    network.edges.forEach(([first, second], edge) => {
       const used = capacities[edge] - forwardArcs[edge][0].capacity;
       const usedBack = capacities[edge] - forwardArcs[edge][1].capacity;
       const netFlow = used - usedBack;
       if (netFlow !== 0) {
         const points =
           netFlow > 0
-            ? [net.nodes[first], net.nodes[second]]
-            : [net.nodes[second], net.nodes[first]];
+            ? [network.nodes[first], network.nodes[second]]
+            : [network.nodes[second], network.nodes[first]];
         flows.push({
           points,
           role: Math.abs(netFlow) >= capacities[edge] ? 'hot' : 'warm',
@@ -3166,32 +3150,38 @@ const networkFlow: EntryPreview = {
       }
       if (side[first] !== side[second])
         cut.push({
-          points: [net.nodes[first], net.nodes[second]],
+          points: [network.nodes[first], network.nodes[second]],
           role: 'violet',
           width: 2.4,
           alpha: 0.95
         });
     });
     return [
-      createBackdrop(net, {alpha: 0.35}),
-      createStrokes(flows, 'flow', {speed: 0.35, blend: 'add'}),
-      createStrokes(cut, 'pulse', {speed: 0.5, blend: 'add'}),
-      createSprites(
-        net.nodes.map(([x, y], node) => ({
+      createBackdrop(network, {alpha: 0.35}),
+      createStrokeLayer(flows, {animation: 'flow', speed: 0.35, blend: 'add'}),
+      createStrokeLayer(cut, {animation: 'pulse', speed: 0.5, blend: 'add'}),
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => ({
           x,
           y,
           radius: 1.2,
           role: side[node] ? ('warm' as Role) : ('cool' as Role),
           alpha: side[node] ? 0.8 : 0.55
         })),
-        0
+        {pulse: 0}
       ),
-      createSprites(
+      createSpriteLayer(
         [
-          {x: net.nodes[source][0], y: net.nodes[source][1], radius: 4.6, role: 'ink'},
-          {x: net.nodes[sink][0], y: net.nodes[sink][1], radius: 4.6, role: 'ink', phase: 0.5}
+          {x: network.nodes[source][0], y: network.nodes[source][1], radius: 4.6, role: 'ink'},
+          {
+            x: network.nodes[sink][0],
+            y: network.nodes[sink][1],
+            radius: 4.6,
+            role: 'ink',
+            phase: 0.5
+          }
         ],
-        0.3
+        {pulse: 0.3}
       )
     ];
   }
@@ -3199,9 +3189,7 @@ const networkFlow: EntryPreview = {
 
 const networkRationalAccess: EntryPreview = {
   pointer: 'hover',
-  parameters: [
-    {id: 'equalization', label: 'Congestion', min: 0, max: 1, step: 0.05, default: 0.85}
-  ],
+  parameters: [createSlider('equalization', 'Congestion', 0, 1, 0.05, 0.85)],
   build: ({fork, p, pointer}) => {
     const facilities: Point[] = [pointer ? clampPoint(pointer, 10) : [36, 38], [118, 30], [86, 78]];
     const capacity = [1, 1, 1];
@@ -3256,18 +3244,18 @@ const networkRationalAccess: EntryPreview = {
     });
     const scale = (value: number) => 4 + 13 * Math.sqrt(value);
     return [
-      createStrokes(
+      createStrokeLayer(
         facilities.map(([x, y]) => ({
           points: createCircle(x, y, scale(1 / 3), 40),
           role: 'ink' as Role,
           width: 0.6,
           alpha: 0.6
         })),
-        'static'
+        {animation: 'static'}
       ),
-      createStrokes(links, 'flow', {speed: 0.3, blend: 'add'}),
-      createSprites(toSprites(demand, 'cool', 1.2, undefined, 0.85)),
-      createSprites(
+      createStrokeLayer(links, {animation: 'flow', speed: 0.3, blend: 'add'}),
+      createSpriteLayer(toSprites(demand, 'cool', 1.2, undefined, 0.85), {pulse: 0}),
+      createSpriteLayer(
         facilities.map(([x, y], index) => ({
           x,
           y,
@@ -3276,7 +3264,7 @@ const networkRationalAccess: EntryPreview = {
           alpha: 0.8,
           phase: index / 3
         })),
-        0.2
+        {pulse: 0.2}
       )
     ];
   }
@@ -3295,12 +3283,12 @@ function buildKFunctionScene(
   inhomogeneous: boolean
 ): PreviewLayer[] {
   const {random, fork, p, pointer} = context;
-  const net = placeNet(createRoadNetwork(random), {x: 4, y: 6, width: 106, height: 88});
-  const adjacency = createAdjacency(net);
+  const network = placeNetwork(createRoadNetwork(random), {x: 4, y: 6, width: 106, height: 88});
+  const adjacency = createAdjacency(network);
   const table = getAllPairs(adjacency);
   const maximumRadius = 70;
   const count = 16;
-  const intensity = net.nodes.map(([x, y]) =>
+  const intensity = network.nodes.map(([x, y]) =>
     inhomogeneous
       ? 0.15 +
         Math.exp(-Math.pow((x - 38) / 26, 2) - Math.pow((y - 38) / 30, 2)) +
@@ -3315,7 +3303,7 @@ function buildKFunctionScene(
         count
       )
     : pickClusteredEvents(
-        net,
+        network,
         eventRandom,
         count,
         [
@@ -3360,7 +3348,7 @@ function buildKFunctionScene(
         table,
         pickWeightedNodes(
           simulationRandom,
-          net.nodes.map(() => 1),
+          network.nodes.map(() => 1),
           count
         ),
         maximumRadius
@@ -3381,14 +3369,14 @@ function buildKFunctionScene(
   );
   const band: Point[] = [...toLine(upper), ...toLine(lower).reverse()];
   const naive = observed.map((value, bin) => ratio(value, mean(uniform, bin)));
-  const origin = pointer ? findNearestIndex(net.nodes, pointer) : events[0];
+  const origin = pointer ? findNearestIndex(network.nodes, pointer) : events[0];
   const search = runSearch(adjacency, [origin]);
   const radius = p.radius;
   const ball: PathItem[] = [];
-  net.edges.forEach(([first, second], edge) => {
+  network.edges.forEach(([first, second], edge) => {
     if (search.distances[first] <= radius && search.distances[second] <= radius) {
       ball.push({
-        points: [net.nodes[first], net.nodes[second]],
+        points: [network.nodes[first], network.nodes[second]],
         role: 'warm',
         width: 1.2,
         alpha: 0.9,
@@ -3401,8 +3389,8 @@ function buildKFunctionScene(
   const layers: PreviewLayer[] = [];
   if (inhomogeneous) {
     layers.push(
-      createSprites(
-        net.nodes.map(([x, y], node) => ({
+      createSpriteLayer(
+        network.nodes.map(([x, y], node) => ({
           x,
           y,
           radius: 4 + intensity[node] * 5,
@@ -3410,49 +3398,54 @@ function buildKFunctionScene(
           alpha: 0.05 + intensity[node] * 0.13,
           phase: node / 54
         })),
-        0.35
+        {pulse: 0.35}
       )
     );
   }
   layers.push(
-    createBackdrop(net, {alpha: 0.3}),
-    createStrokes(ball, 'flow', {speed: 0.3, blend: 'add'}),
-    createSprites(
+    createBackdrop(network, {alpha: 0.3}),
+    createStrokeLayer(ball, {animation: 'flow', speed: 0.3, blend: 'add'}),
+    createSpriteLayer(
       events.map(node => ({
-        x: net.nodes[node][0],
-        y: net.nodes[node][1],
+        x: network.nodes[node][0],
+        y: network.nodes[node][1],
         radius: search.distances[node] <= radius ? 3.2 : 2.2,
         role: search.distances[node] <= radius ? ('warm' as Role) : ('hot' as Role),
         phase: node / 54
       })),
-      0.3
+      {pulse: 0.3}
     ),
-    createSprites(
-      [{x: net.nodes[origin][0], y: net.nodes[origin][1], radius: 4.4, role: 'ink'}],
-      0.3
+    createSpriteLayer(
+      [{x: network.nodes[origin][0], y: network.nodes[origin][1], radius: 4.4, role: 'ink'}],
+      {pulse: 0.3}
     ),
-    createStrokes(chart.axes()),
-    createFills([{ring: band, role: 'violet', alpha: 0.35}], 'static'),
-    createStrokes([
-      {
-        points: [
-          [markerX, chart.box.y],
-          [markerX, chart.box.y + chart.box.height]
-        ],
-        role: 'ink',
-        width: 0.5,
-        alpha: 0.6
-      }
-    ]),
-    createStrokes(
+    createStrokeLayer(chart.axes(), {animation: 'static'}),
+    createFillLayer([{ring: band, role: 'violet', alpha: 0.35}], {
+      animation: 'static',
+      blend: 'add'
+    }),
+    createStrokeLayer(
+      [
+        {
+          points: [
+            [markerX, chart.box.y],
+            [markerX, chart.box.y + chart.box.height]
+          ],
+          role: 'ink',
+          width: 0.5,
+          alpha: 0.6
+        }
+      ],
+      {animation: 'static'}
+    ),
+    createStrokeLayer(
       [
         ...(inhomogeneous
           ? [{points: toLine(naive), role: 'hot' as Role, width: 1, alpha: 0.7}]
           : []),
         {points: toLine(observedRatios), role: 'warm' as Role, width: 1.6, alpha: 1}
       ],
-      'draw',
-      {speed: 0.2, blend: 'add'}
+      {animation: 'draw', speed: 0.2, blend: 'add'}
     )
   );
   return layers;
@@ -3460,29 +3453,27 @@ function buildKFunctionScene(
 
 const networkKFunction: EntryPreview = {
   pointer: 'sticky',
-  parameters: [{id: 'radius', label: 'Radius', min: 8, max: 70, step: 2, default: 34, unit: 'px'}],
+  parameters: [createSlider('radius', 'Radius', 8, 70, 2, 34, 'px')],
   build: context => buildKFunctionScene(context, false)
 };
 
 const networkInhomogeneousK: EntryPreview = {
   pointer: 'sticky',
   parameters: [
-    {id: 'radius', label: 'Radius', min: 8, max: 70, step: 2, default: 34, unit: 'px'},
-    {id: 'clustering', label: 'Extra clustering', min: 0, max: 1, step: 0.1, default: 0}
+    createSlider('radius', 'Radius', 8, 70, 2, 34, 'px'),
+    createSlider('clustering', 'Extra clustering', 0, 1, 0.1, 0)
   ],
   build: context => buildKFunctionScene(context, true)
 };
 
 const networkKernelDensity: EntryPreview = {
   pointer: 'none',
-  parameters: [
-    {id: 'bandwidth', label: 'Bandwidth', min: 8, max: 50, step: 1, default: 22, unit: 'px'}
-  ],
+  parameters: [createSlider('bandwidth', 'Bandwidth', 8, 50, 1, 22, 'px')],
   build: ({random, fork, p}) => {
-    const net = createRoadNetwork(random);
-    const adjacency = createAdjacency(net);
+    const network = createRoadNetwork(random);
+    const adjacency = createAdjacency(network);
     const events = pickClusteredEvents(
-      net,
+      network,
       fork('events'),
       22,
       [
@@ -3491,7 +3482,7 @@ const networkKernelDensity: EntryPreview = {
       ],
       16
     );
-    const density = new Array<number>(net.nodes.length).fill(0);
+    const density = new Array<number>(network.nodes.length).fill(0);
     for (const event of events) {
       const {distances} = runSearch(adjacency, [event]);
       distances.forEach((distance, node) => {
@@ -3501,20 +3492,21 @@ const networkKernelDensity: EntryPreview = {
     const peak = Math.max(...density, 1e-6);
     const lixels: PathItem[] = [];
     const pieces = 4;
-    net.edges.forEach(([first, second], edge) => {
+    network.edges.forEach(([first, second], edge) => {
       for (let piece = 0; piece < pieces; piece++) {
-        const a = piece / pieces;
-        const b = (piece + 1) / pieces;
-        const value = mixNumbers(density[first], density[second], (a + b) / 2) / peak;
+        const pieceStart = piece / pieces;
+        const pieceEnd = (piece + 1) / pieces;
+        const value =
+          mixNumbers(density[first], density[second], (pieceStart + pieceEnd) / 2) / peak;
         lixels.push({
           points: [
             [
-              mixNumbers(net.nodes[first][0], net.nodes[second][0], a),
-              mixNumbers(net.nodes[first][1], net.nodes[second][1], a)
+              mixNumbers(network.nodes[first][0], network.nodes[second][0], pieceStart),
+              mixNumbers(network.nodes[first][1], network.nodes[second][1], pieceStart)
             ],
             [
-              mixNumbers(net.nodes[first][0], net.nodes[second][0], b),
-              mixNumbers(net.nodes[first][1], net.nodes[second][1], b)
+              mixNumbers(network.nodes[first][0], network.nodes[second][0], pieceEnd),
+              mixNumbers(network.nodes[first][1], network.nodes[second][1], pieceEnd)
             ]
           ],
           role: getHeatRole(Math.min(0.99, Math.pow(value, 0.7))),
@@ -3525,30 +3517,27 @@ const networkKernelDensity: EntryPreview = {
       }
     });
     return [
-      createStrokes(
+      createStrokeLayer(
         lixels.filter(item => item.role !== 'hot' && item.role !== 'warm'),
-        'static',
-        {blend: 'add'}
+        {animation: 'static', blend: 'add'}
       ),
-      createStrokes(
+      createStrokeLayer(
         lixels.filter(item => item.role === 'warm'),
-        'pulse',
-        {speed: 0.25, blend: 'add'}
+        {animation: 'pulse', speed: 0.25, blend: 'add'}
       ),
-      createStrokes(
+      createStrokeLayer(
         lixels.filter(item => item.role === 'hot'),
-        'pulse',
-        {speed: 0.4, blend: 'add'}
+        {animation: 'pulse', speed: 0.4, blend: 'add'}
       ),
-      createSprites(
+      createSpriteLayer(
         events.map(node => ({
-          x: net.nodes[node][0],
-          y: net.nodes[node][1],
+          x: network.nodes[node][0],
+          y: network.nodes[node][1],
           radius: 1.4,
           role: 'ink' as Role,
           alpha: 0.9
         })),
-        0.3
+        {pulse: 0.3}
       )
     ];
   }

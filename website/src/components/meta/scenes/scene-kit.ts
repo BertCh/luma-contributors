@@ -124,3 +124,70 @@ export function getPulse(position: number, center: number, width: number): numbe
   const distance = (position - center) / width;
   return Math.exp(-distance * distance);
 }
+
+/** Seconds for the eased pointer position to close most of the gap to the real pointer. */
+const POINTER_FOLLOW_SECONDS = 0.08;
+/** Presence fades in faster than it fades out, so a hover answers at once and lingers briefly. */
+const PRESENCE_IN_SECONDS = 0.12;
+const PRESENCE_OUT_SECONDS = 0.22;
+/** Longest frame gap that easing integrates; longer gaps (a background tab) snap. */
+const MAXIMUM_EASING_STEP_SECONDS = 0.1;
+
+/**
+ * Pointer state shared by the how-it-works scenes. `setPointer` records the target in canvas
+ * pixels; `update` once per frame eases the position toward it and fades `presence` (0..1) in while
+ * the pointer is over the canvas and out after it leaves, so hover effects never pop. With reduced
+ * motion both snap. Scenes write `x`, `y` (converted to their own units) and `presence` into a
+ * `pointer: vec4f` field of their Look uniform; the fourth component is scene specific.
+ */
+export class ScenePointer {
+  /** Eased position in canvas pixels; holds the last position while presence fades out. */
+  x = 0;
+  y = 0;
+  /** 0 with no pointer, 1 while hovered. */
+  presence = 0;
+  /** Latest position in canvas pixels, or null when the pointer is away. */
+  target: [number, number] | null = null;
+  private readonly reducedMotion: boolean;
+  private lastSeconds = -1;
+
+  constructor(reducedMotion: boolean) {
+    this.reducedMotion = reducedMotion;
+  }
+
+  /** True while the pointer is over the canvas. */
+  get isActive(): boolean {
+    return this.target !== null;
+  }
+
+  set(position: [number, number] | null): void {
+    // Arriving from nowhere jumps to the pointer instead of sweeping in from the last position.
+    if (position && this.presence < 0.01) {
+      this.x = position[0];
+      this.y = position[1];
+    }
+    this.target = position;
+  }
+
+  /** Advances the easing; call once per frame with the frame time in seconds. */
+  update(seconds: number): void {
+    const step = this.lastSeconds < 0 ? 0 : seconds - this.lastSeconds;
+    this.lastSeconds = seconds;
+    const isSnapping = this.reducedMotion || step <= 0 || step > MAXIMUM_EASING_STEP_SECONDS;
+    const goal = this.target ? 1 : 0;
+    if (isSnapping) {
+      if (this.target) [this.x, this.y] = this.target;
+      this.presence = goal;
+      return;
+    }
+    if (this.target) {
+      const follow = 1 - Math.exp(-step / POINTER_FOLLOW_SECONDS);
+      this.x += (this.target[0] - this.x) * follow;
+      this.y += (this.target[1] - this.y) * follow;
+    }
+    const fade =
+      1 - Math.exp(-step / (goal > this.presence ? PRESENCE_IN_SECONDS : PRESENCE_OUT_SECONDS));
+    this.presence += (goal - this.presence) * fade;
+    if (Math.abs(goal - this.presence) < 0.002) this.presence = goal;
+  }
+}

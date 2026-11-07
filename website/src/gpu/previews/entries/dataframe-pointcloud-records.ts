@@ -18,7 +18,17 @@ import {
   sampleField,
   type Random
 } from '../data.ts';
+import {closeRing, createRectangleRing} from '../geometry.ts';
 import {getClassRole, getRoleCycle, type EntryPreview} from '../helpers.ts';
+import {
+  createChoice,
+  createDot,
+  createFillLayer,
+  createPath,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer
+} from '../layers.ts';
 import type {
   FillLayer,
   PathItem,
@@ -30,72 +40,56 @@ import type {
   StrokeLayer
 } from '../types.ts';
 
-// ---------------------------------------------------------------------------------------------
-// Local building blocks
-// ---------------------------------------------------------------------------------------------
+// Local layer builders with this group's defaults (explicit animation, speed, trail and pulse).
 
-function dot(x: number, y: number, radius: number, role: Role, alpha = 0.9, phase = 0): SpriteItem {
-  return {x, y, radius, role, alpha, phase};
+function createDotAt(
+  x: number,
+  y: number,
+  radius: number,
+  role: Role,
+  alpha = 0.9,
+  phase = 0
+): SpriteItem {
+  return createDot([x, y], role, radius, alpha, phase);
 }
 
-function seg(points: Point[], role: Role, width = 0.6, alpha = 0.8, phase = 0): PathItem {
-  return {points, role, width, alpha, phase};
+function createPlotPath(
+  points: Point[],
+  role: Role,
+  width = 0.6,
+  alpha = 0.8,
+  phase = 0
+): PathItem {
+  return createPath(points, role, width, alpha, phase);
 }
 
-function strokes(
+function createStrokes(
   items: PathItem[],
   animation: StrokeLayer['animation'] = 'static',
   speed = 0.3,
   trail = 1,
   blend: 'add' | 'alpha' = 'add'
 ): StrokeLayer {
-  return {type: 'strokes', items, animation, speed, trail, blend};
+  return createStrokeLayer(items, {animation, speed, trail, blend});
 }
 
-function sprites(items: SpriteItem[], pulse = 0.3): SpriteLayer {
-  return {type: 'sprites', items, pulse};
+function createSprites(items: SpriteItem[], pulse = 0.3): SpriteLayer {
+  return createSpriteLayer(items, {pulse});
 }
 
-function fills(
+function createFills(
   items: PolygonItem[],
   animation: FillLayer['animation'] = 'static',
   blend: 'add' | 'alpha' = 'add'
 ): FillLayer {
-  return {type: 'fills', items, animation, blend};
-}
-
-function slider(
-  id: string,
-  label: string,
-  min: number,
-  max: number,
-  step: number,
-  defaultValue: number,
-  unit?: string
-): GpuSceneParameter {
-  return unit
-    ? {id, label, min, max, step, default: defaultValue, unit}
-    : {id, label, min, max, step, default: defaultValue};
-}
-
-function rectangle(left: number, top: number, right: number, bottom: number): Point[] {
-  return [
-    [left, top],
-    [right, top],
-    [right, bottom],
-    [left, bottom]
-  ];
-}
-
-function outline(ring: Point[]): Point[] {
-  return [...ring, ring[0]];
+  return createFillLayer(items, {animation, blend});
 }
 
 /** The dim L-shaped axes of a small plot. */
 function getAxes(left = 14, right = 150, top = 12, bottom = 86): StrokeLayer {
-  return strokes(
+  return createStrokes(
     [
-      seg(
+      createPlotPath(
         [
           [left, top],
           [left, bottom],
@@ -136,7 +130,7 @@ function getBars(
   const step = (right - left) / values.length;
   return values.map((value, index) => {
     const x = left + (index + 0.5) * step;
-    return seg(
+    return createPlotPath(
       [
         [x, bottom],
         [x, bottom - Math.max(value * height, 0.4)]
@@ -282,7 +276,7 @@ function createCloudPoints(random: Random, count: number): CloudPoint[] {
   return points;
 }
 
-function cloudDot(
+function createCloudDot(
   point: {x: number; z: number},
   height: number,
   role: Role,
@@ -293,7 +287,7 @@ function cloudDot(
   return {x: 80 + point.x, y: 74 - height * 1.9, z: point.z, radius, role, alpha, phase};
 }
 
-function cloudLayer(items: SpriteItem[], depth: number, pulse = 0.2): SpriteLayer {
+function createCloudLayer(items: SpriteItem[], depth: number, pulse = 0.2): SpriteLayer {
   return {
     type: 'sprites',
     items,
@@ -303,8 +297,8 @@ function cloudLayer(items: SpriteItem[], depth: number, pulse = 0.2): SpriteLaye
 }
 
 const SPIN_PARAMETERS: GpuSceneParameter[] = [
-  slider('spin', 'Spin', -90, 90, 5, 15, '°/s'),
-  slider('depth', 'Perspective', 0, 8, 0.5, 4.5)
+  createSlider('spin', 'Spin', -90, 90, 5, 15, '°/s'),
+  createSlider('depth', 'Perspective', 0, 8, 0.5, 4.5)
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -316,7 +310,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // A column strip is scanned and summarized into a histogram with a mean marker.
   'column-profile': {
-    parameters: [slider('bins', 'Bins', 6, 28, 1, 16)],
+    parameters: [createSlider('bins', 'Bins', 6, 28, 1, 16)],
     pointer: 'none',
     build: ({fork, p}) => {
       const values = getSkewedColumn(fork('column'), 320);
@@ -325,7 +319,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const right = 148;
       const mean = getMean(values);
       const strip = Array.from({length: 12}, (_, index) =>
-        seg(
+        createPlotPath(
           [
             [10, 16 + index * 6],
             [24, 16 + index * 6]
@@ -339,7 +333,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const step = (right - left) / counts.length;
       const arcs = [1, 4, 7, 10].map((row, index) => {
         const bin = Math.floor(((index + 0.5) / 4) * counts.length * 0.8);
-        return seg(
+        return createPlotPath(
           createArc(
             [26, 16 + row * 6],
             [left + (bin + 0.5) * step, 84 - counts[bin] * 60],
@@ -353,8 +347,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       });
       return [
-        strokes(strip, 'pulse', 0.4),
-        strokes(
+        createStrokes(strip, 'pulse', 0.4),
+        createStrokes(
           getBars(
             counts,
             left,
@@ -367,10 +361,10 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.2
         ),
-        strokes(arcs, 'flow', 0.35, 1.2),
-        strokes(
+        createStrokes(arcs, 'flow', 0.35, 1.2),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [left + mean * (right - left), 84],
                 [left + mean * (right - left), 20]
@@ -383,10 +377,10 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.5
         ),
-        sprites([
-          dot(left, 86, 1.8, 'cool'),
-          dot(right, 86, 1.8, 'hot'),
-          dot(left + mean * (right - left), 18, 2.4, 'warm')
+        createSprites([
+          createDotAt(left, 86, 1.8, 'cool'),
+          createDotAt(right, 86, 1.8, 'hot'),
+          createDotAt(left + mean * (right - left), 18, 2.4, 'warm')
         ])
       ];
     }
@@ -394,7 +388,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Histogram shaded by the trimmed band, with quartile lines and a box plot underneath.
   'column-quantiles': {
-    parameters: [slider('trim', 'Trim each tail', 0, 20, 1, 5, '%')],
+    parameters: [createSlider('trim', 'Trim each tail', 0, 20, 1, 5, '%')],
     pointer: 'none',
     build: ({fork, p}) => {
       const values = getSkewedColumn(fork('column'), 400);
@@ -407,7 +401,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const highCut = getQuantile(sorted, 1 - p.trim / 100);
       const [q1, median, q3] = [0.25, 0.5, 0.75].map(fraction => getQuantile(sorted, fraction));
       const line = (value: number, role: Role, bottom = 70, top = 18) =>
-        seg(
+        createPlotPath(
           [
             [toX(value), bottom],
             [toX(value), top]
@@ -417,7 +411,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.9
         );
       return [
-        strokes(
+        createStrokes(
           getBars(counts, left, right, 66, 46, index => {
             const center = (index + 0.5) / counts.length;
             return center >= lowCut && center <= highCut ? 'primary' : 'dim';
@@ -425,10 +419,13 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.2
         ),
-        fills([{ring: rectangle(toX(q1), 72, toX(q3), 88), role: 'violet', alpha: 0.35}], 'pulse'),
-        strokes(
+        createFills(
+          [{ring: createRectangleRing(toX(q1), 72, toX(q3), 88), role: 'violet', alpha: 0.35}],
+          'pulse'
+        ),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [toX(sorted[0]), 80],
                 [toX(sorted[sorted.length - 1]), 80]
@@ -437,7 +434,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.4,
               0.6
             ),
-            seg(
+            createPlotPath(
               [
                 [toX(lowCut), 80],
                 [toX(highCut), 80]
@@ -449,15 +446,22 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes([line(q1, 'warm'), line(q3, 'warm'), line(median, 'hot', 90, 18)], 'pulse', 0.4),
-        sprites([dot(toX(lowCut), 80, 1.8, 'cool'), dot(toX(highCut), 80, 1.8, 'hot')])
+        createStrokes(
+          [line(q1, 'warm'), line(q3, 'warm'), line(median, 'hot', 90, 18)],
+          'pulse',
+          0.4
+        ),
+        createSprites([
+          createDotAt(toX(lowCut), 80, 1.8, 'cool'),
+          createDotAt(toX(highCut), 80, 1.8, 'hot')
+        ])
       ];
     }
   },
 
   // Natural-breaks classes: bars coloured by class, break lines between, class ribbon below.
   'class-breaks': {
-    parameters: [slider('classes', 'Classes', 2, 7, 1, 5)],
+    parameters: [createSlider('classes', 'Classes', 2, 7, 1, 5)],
     pointer: 'none',
     build: ({fork, p}) => {
       const values = getSkewedColumn(fork('column'), 400);
@@ -497,7 +501,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       let start = 0;
       [...breaks, 1].forEach((end, index) => {
         ribbon.push(
-          seg(
+          createPlotPath(
             [
               [left + start * (right - left) + 0.5, 82],
               [left + end * (right - left) - 0.5, 82]
@@ -510,16 +514,16 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         start = end;
       });
       return [
-        strokes(
+        createStrokes(
           getBars(counts, left, right, 70, 52, index =>
             getClassRole(getClass((index + 0.5) / binCount), classes)
           ),
           'pulse',
           0.2
         ),
-        strokes(
+        createStrokes(
           breaks.map(value =>
-            seg(
+            createPlotPath(
               [
                 [left + value * (right - left), 74],
                 [left + value * (right - left), 14]
@@ -532,14 +536,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.5
         ),
-        strokes(ribbon, 'flow', 0.25, 1.4)
+        createStrokes(ribbon, 'flow', 0.25, 1.4)
       ];
     }
   },
 
   // A number line of values, threshold ticks, and a stepped palette they are painted with.
   'color-scale': {
-    parameters: [slider('steps', 'Palette steps', 3, 7, 1, 5)],
+    parameters: [createSlider('steps', 'Palette steps', 3, 7, 1, 5)],
     pointer: 'none',
     build: ({fork, p}) => {
       const values = getSkewedColumn(fork('column'), 44, 0.6);
@@ -551,7 +555,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const getStep = (value: number) => thresholds.filter(threshold => value >= threshold).length;
       const toX = (value: number) => 14 + value * 132;
       const items = values.map((value, index) =>
-        dot(
+        createDotAt(
           toX(value),
           30 + (index % 4) * 6,
           1.7,
@@ -564,7 +568,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const edges = [0, ...thresholds, 1];
       for (let index = 0; index < steps; index++) {
         swatches.push(
-          seg(
+          createPlotPath(
             [
               [toX(edges[index]) + 0.5, 76],
               [toX(edges[index + 1]) - 0.5, 76]
@@ -577,9 +581,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       }
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [14, 58],
                 [146, 58]
@@ -591,9 +595,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes(
+        createStrokes(
           thresholds.map(threshold =>
-            seg(
+            createPlotPath(
               [
                 [toX(threshold), 64],
                 [toX(threshold), 22]
@@ -606,8 +610,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.4
         ),
-        sprites(items, 0.4),
-        strokes(swatches, 'flow', 0.2, 1.6)
+        createSprites(items, 0.4),
+        createStrokes(swatches, 'flow', 0.2, 1.6)
       ];
     }
   },
@@ -615,8 +619,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
   // Proportional symbols: domain ticks map to a range of radii.
   'scalar-scale': {
     parameters: [
-      slider('maxRadius', 'Max radius', 2, 9, 0.5, 6.5, 'px'),
-      {...slider('scale', 'Scale', 0, 1, 1, 1), options: ['linear', 'sqrt']}
+      createSlider('maxRadius', 'Max radius', 2, 9, 0.5, 6.5, 'px'),
+      createChoice('scale', 'Scale', ['linear', 'sqrt'], 1)
     ],
     pointer: 'none',
     build: ({p}) => {
@@ -628,9 +632,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const scaled = p.scale >= 0.5 ? Math.sqrt(amount) : amount;
         const x = 20 + amount * 120;
         const radius = 1 + scaled * (p.maxRadius - 1);
-        items.push(dot(x, 62, radius, getClassRole(index, count), 0.85, amount));
+        items.push(createDotAt(x, 62, radius, getClassRole(index, count), 0.85, amount));
         links.push(
-          seg(
+          createPlotPath(
             [
               [x, 24],
               [x, 62 - radius]
@@ -643,9 +647,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       }
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [20, 20],
                 [140, 20]
@@ -655,7 +659,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.7
             ),
             ...Array.from({length: count}, (_, index) =>
-              seg(
+              createPlotPath(
                 [
                   [20 + (index / (count - 1)) * 120, 17],
                   [20 + (index / (count - 1)) * 120, 23]
@@ -668,11 +672,11 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes(links, 'flow', 0.35, 1),
-        sprites(items, 0.3),
-        strokes(
+        createStrokes(links, 'flow', 0.35, 1),
+        createSprites(items, 0.3),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [20, 86],
                 [20 + 120, 86]
@@ -690,7 +694,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // A 3 by 3 grid whose cells mix two hues; the scatter falls into it.
   'bivariate-classification': {
-    parameters: [slider('correlation', 'Correlation', 0, 1, 0.05, 0.55)],
+    parameters: [createSlider('correlation', 'Correlation', 0, 1, 0.05, 0.55)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('scatter');
@@ -702,7 +706,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const lines: PathItem[] = [];
       for (let row = 0; row < 3; row++) {
         for (let column = 0; column < 3; column++) {
-          const ring = rectangle(
+          const ring = createRectangleRing(
             left + column * cellWidth + 1,
             top + row * cellHeight + 1,
             left + (column + 1) * cellWidth - 1,
@@ -711,7 +715,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           const high = 2 - row;
           cells.push({ring, role: 'cool', alpha: 0.05 + column * 0.17});
           cells.push({ring, role: 'warm', alpha: 0.05 + high * 0.17});
-          lines.push(seg(outline(ring), 'dim', 0.3, 0.5));
+          lines.push(createPlotPath(closeRing(ring), 'dim', 0.3, 0.5));
         }
       }
       const points = Array.from({length: 38}, (_, index) => {
@@ -733,7 +737,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
                 : row > column
                   ? 'warm'
                   : 'violet';
-        return dot(
+        return createDotAt(
           left + valueA * cellWidth * 3,
           top + (1 - valueB) * cellHeight * 3,
           1.4,
@@ -743,11 +747,11 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       });
       return [
-        fills(cells, 'pulse'),
-        strokes(lines, 'static'),
-        strokes(
+        createFills(cells, 'pulse'),
+        createStrokes(lines, 'static'),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [left, 86],
                 [left + 75, 86]
@@ -756,7 +760,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.9,
               0.9
             ),
-            seg(
+            createPlotPath(
               [
                 [36, top + 66],
                 [36, top]
@@ -769,14 +773,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'flow',
           0.3
         ),
-        sprites(points, 0.4)
+        createSprites(points, 0.4)
       ];
     }
   },
 
   // A skewed histogram recentered and rescaled: shape stays, position and spread change.
   'variable-standardization': {
-    parameters: [slider('skew', 'Skew', 0.2, 1.2, 0.05, 0.7)],
+    parameters: [createSlider('skew', 'Skew', 0.2, 1.2, 0.05, 0.7)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('column');
@@ -791,20 +795,20 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const zeroX = 14 + (2 / 6) * 134;
       const sigmaX = (1 / 6) * 134;
       return [
-        strokes(
+        createStrokes(
           getBars(rawCounts, 14, 148, 44, 28, () => 'dim', 0.7),
           'static'
         ),
-        strokes(
+        createStrokes(
           getBars(zCounts, 14, 148, 90, 30, index =>
             Math.abs(index / 32 - 2 / 6) < 1 / 6 ? 'primary' : 'cool'
           ),
           'pulse',
           0.2
         ),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [zeroX, 92],
                 [zeroX, 54]
@@ -813,7 +817,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.7,
               0.9
             ),
-            seg(
+            createPlotPath(
               [
                 [zeroX - sigmaX, 90],
                 [zeroX - sigmaX, 62]
@@ -822,7 +826,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.4,
               0.6
             ),
-            seg(
+            createPlotPath(
               [
                 [zeroX + sigmaX, 90],
                 [zeroX + sigmaX, 62]
@@ -831,7 +835,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.4,
               0.6
             ),
-            seg(
+            createPlotPath(
               [
                 [14 + (mean / (top * 1.6)) * 134, 46],
                 [14 + (mean / (top * 1.6)) * 134, 14]
@@ -844,9 +848,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.4
         ),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               createArc([14 + (mean / (top * 1.6)) * 134, 34], [zeroX, 60], -0.35, 20),
               'warm',
               0.8,
@@ -863,7 +867,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Four indicator grids fold into one composite grid; the first weight is adjustable.
   'composite-score': {
-    parameters: [slider('weight', 'First weight', 0, 1, 0.05, 0.5)],
+    parameters: [createSlider('weight', 'First weight', 0, 1, 0.05, 0.5)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('indicators');
@@ -884,7 +888,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         for (let row = 0; row < 4; row++) {
           for (let column = 0; column < 4; column++) {
             miniItems.push(
-              dot(
+              createDotAt(
                 14 + column * 4,
                 originY + row * 4,
                 1.1,
@@ -896,7 +900,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           }
         }
         flows.push(
-          seg(
+          createPlotPath(
             createArc([32, originY + 6], [90, 48], index < 2 ? 0.12 : -0.12, 24),
             roles[index],
             0.4 + weights[index] * 1.2,
@@ -914,7 +918,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           for (let index = 0; index < 4; index++)
             value += (weights[index] / weightTotal) * sample(index, u, v);
           output.push(
-            dot(
+            createDotAt(
               100 + column * 6,
               22 + row * 6,
               2.3,
@@ -925,13 +929,17 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           );
         }
       }
-      return [strokes(flows, 'flow', 0.3, 1.2), sprites(miniItems, 0.15), sprites(output, 0.35)];
+      return [
+        createStrokes(flows, 'flow', 0.3, 1.2),
+        createSprites(miniItems, 0.15),
+        createSprites(output, 0.35)
+      ];
     }
   },
 
   // Lorenz curves bowing under the equality line; the gap is the Gini.
   inequality: {
-    parameters: [slider('gini', 'Gini', 0.1, 0.85, 0.05, 0.5)],
+    parameters: [createSlider('gini', 'Gini', 0.1, 0.85, 0.05, 0.5)],
     pointer: 'none',
     build: ({p}) => {
       const left = 24;
@@ -946,25 +954,28 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const gap = [...diagonal, ...[...main].reverse()];
       return [
         getAxes(left, right + 6, 12, bottom),
-        fills([{ring: gap, role: 'hot', alpha: 0.28}], 'pulse'),
-        strokes([seg(diagonal, 'dim', 0.5, 0.8)], 'static'),
-        strokes(
+        createFills([{ring: gap, role: 'hot', alpha: 0.28}], 'pulse'),
+        createStrokes([createPlotPath(diagonal, 'dim', 0.5, 0.8)], 'static'),
+        createStrokes(
           [
-            seg(lorenz(Math.max(0.1, p.gini - 0.3)), 'cool', 0.8, 0.8),
-            seg(lorenz(Math.min(0.9, p.gini + 0.2)), 'violet', 0.8, 0.8)
+            createPlotPath(lorenz(Math.max(0.1, p.gini - 0.3)), 'cool', 0.8, 0.8),
+            createPlotPath(lorenz(Math.min(0.9, p.gini + 0.2)), 'violet', 0.8, 0.8)
           ],
           'draw',
           0.15
         ),
-        strokes([seg(main, 'hot', 1.3, 1)], 'flow', 0.3, 1.6),
-        sprites([dot(left, bottom, 1.6, 'dim'), dot(right, bottom - height, 1.6, 'dim')], 0)
+        createStrokes([createPlotPath(main, 'hot', 1.3, 1)], 'flow', 0.3, 1.6),
+        createSprites(
+          [createDotAt(left, bottom, 1.6, 'dim'), createDotAt(right, bottom - height, 1.6, 'dim')],
+          0
+        )
       ];
     }
   },
 
   // Dots in four group columns with a mean bar and a standard deviation whisker per group.
   'group-statistics': {
-    parameters: [slider('spread', 'Spread', 0.4, 2, 0.05, 1)],
+    parameters: [createSlider('spread', 'Spread', 0.4, 2, 0.05, 1)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('rows');
@@ -979,7 +990,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const deviation = deviations[group] * p.spread;
         for (let index = 0; index < 14; index++) {
           dots.push(
-            dot(
+            createDotAt(
               x + random.range(-7, 7),
               clamp(mean + random.gaussian() * deviation, 8, 92),
               1.2,
@@ -990,7 +1001,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           );
         }
         bars.push(
-          seg(
+          createPlotPath(
             [
               [x - 9, mean],
               [x + 9, mean]
@@ -1002,7 +1013,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           )
         );
         whiskers.push(
-          seg(
+          createPlotPath(
             [
               [x, mean - deviation],
               [x, mean + deviation]
@@ -1014,7 +1025,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           )
         );
         whiskers.push(
-          seg(
+          createPlotPath(
             [
               [x - 3, mean - deviation],
               [x + 3, mean - deviation]
@@ -1025,7 +1036,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           )
         );
         whiskers.push(
-          seg(
+          createPlotPath(
             [
               [x - 3, mean + deviation],
               [x + 3, mean + deviation]
@@ -1037,16 +1048,16 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       });
       return [
-        sprites(dots, 0.35),
-        strokes(whiskers, 'pulse', 0.4),
-        strokes(bars, 'flow', 0.25, 1.6)
+        createSprites(dots, 0.35),
+        createStrokes(whiskers, 'pulse', 0.4),
+        createStrokes(bars, 'flow', 0.25, 1.6)
       ];
     }
   },
 
   // Two tables linked by key: right rows are gathered onto left rows; a left join keeps orphans.
   'key-join': {
-    parameters: [{...slider('joinKind', 'Join kind', 0, 1, 1, 0), options: ['left', 'inner']}],
+    parameters: [createChoice('joinKind', 'Join kind', ['left', 'inner'])],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('keys');
@@ -1061,11 +1072,11 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       leftKeys.forEach((key, index) => {
         const y = getY(index, leftKeys.length);
         const rightIndex = rightKeys.indexOf(key);
-        left.push(dot(24, y, 2, getRoleCycle(key), 0.9, index / 9));
+        left.push(createDotAt(24, y, 2, getRoleCycle(key), 0.9, index / 9));
         if (rightIndex >= 0) {
           const rightY = getY(rightIndex, rightKeys.length);
           links.push(
-            seg(
+            createPlotPath(
               [
                 [134, rightY],
                 [108, rightY],
@@ -1078,20 +1089,20 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               index / 9
             )
           );
-          result.push(dot(76, y, 1.8, getRoleCycle(key), 0.9, index / 9));
+          result.push(createDotAt(76, y, 1.8, getRoleCycle(key), 0.9, index / 9));
         } else if (!inner) {
-          orphans.push(dot(76, y, 1.4, 'dim', 0.55));
-          orphans.push(dot(24, y, 4, 'hot', 0.25, index / 9));
+          orphans.push(createDotAt(76, y, 1.4, 'dim', 0.55));
+          orphans.push(createDotAt(24, y, 4, 'hot', 0.25, index / 9));
         }
       });
       const right = rightKeys.map((key, index) =>
-        dot(136, getY(index, rightKeys.length), 2.6, getRoleCycle(key), 0.9, index / 6)
+        createDotAt(136, getY(index, rightKeys.length), 2.6, getRoleCycle(key), 0.9, index / 6)
       );
       return [
-        strokes(links, 'flow', 0.3, 1.2),
-        strokes(
+        createStrokes(links, 'flow', 0.3, 1.2),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [76, 8],
                 [76, 92]
@@ -1103,8 +1114,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        sprites([...left, ...right, ...result], 0.3),
-        sprites(orphans, 0.5)
+        createSprites([...left, ...right, ...result], 0.3),
+        createSprites(orphans, 0.5)
       ];
     }
   },
@@ -1113,7 +1124,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Events on a timeline folded into a weekday by hour grid.
   'calendar-buckets': {
-    parameters: [slider('events', 'Events', 10, 60, 2, 36)],
+    parameters: [createSlider('events', 'Events', 10, 60, 2, 36)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('events');
@@ -1132,9 +1143,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const column = Math.min(columns - 1, Math.floor(event.time * columns));
         counts[event.row * columns + column]++;
         const x = 18 + event.time * 124;
-        ticks.push(dot(x, 12, 0.9, 'primary', 0.9, index / 60));
+        ticks.push(createDotAt(x, 12, 0.9, 'primary', 0.9, index / 60));
         flows.push(
-          seg(
+          createPlotPath(
             [
               [x, 14],
               [cellX(column), cellY(event.row) - 4]
@@ -1149,7 +1160,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const maximum = Math.max(...counts, 1);
       const cells = counts.map((count, index) => {
         const amount = count / maximum;
-        return dot(
+        return createDotAt(
           cellX(index % columns),
           cellY(Math.floor(index / columns)),
           4.3,
@@ -1159,9 +1170,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       });
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [16, 12],
                 [144, 12]
@@ -1171,7 +1182,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.6
             ),
             ...Array.from({length: columns - 1}, (_, index) =>
-              seg(
+              createPlotPath(
                 [
                   [18 + ((index + 1) / columns) * 124, 9],
                   [18 + ((index + 1) / columns) * 124, 15]
@@ -1184,16 +1195,16 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes(flows, 'flow', 0.3, 1),
-        sprites(cells, 0.3),
-        sprites(ticks, 0.2)
+        createStrokes(flows, 'flow', 0.3, 1),
+        createSprites(cells, 0.3),
+        createSprites(ticks, 0.2)
       ];
     }
   },
 
   // A window slides over bursty events; those inside are copied down to a selected strip.
   'time-window-filter': {
-    parameters: [slider('width', 'Window', 10, 90, 2, 40, 'px')],
+    parameters: [createSlider('width', 'Window', 10, 90, 2, 40, 'px')],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const random = fork('events');
@@ -1205,7 +1216,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const half = p.width / 2;
       const inside = (x: number) => Math.abs(x - center) <= half;
       const top: SpriteItem[] = events.map((x, index) =>
-        dot(
+        createDotAt(
           x,
           30 + (index % 3) * 3,
           1.4,
@@ -1216,9 +1227,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       );
       const picked: SpriteItem[] = events
         .filter(inside)
-        .map((x, index) => dot(x, 74 + (index % 3) * 3, 1.4, 'warm', 0.95, index / 20));
+        .map((x, index) => createDotAt(x, 74 + (index % 3) * 3, 1.4, 'warm', 0.95, index / 20));
       const drops: PathItem[] = events.filter(inside).map((x, index) =>
-        seg(
+        createPlotPath(
           [
             [x, 38],
             [x, 72]
@@ -1230,9 +1241,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         )
       );
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [8, 44],
                 [152, 44]
@@ -1241,7 +1252,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.4,
               0.6
             ),
-            seg(
+            createPlotPath(
               [
                 [8, 86],
                 [152, 86]
@@ -1253,13 +1264,19 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        fills(
-          [{ring: rectangle(center - half, 22, center + half, 50), role: 'warm', alpha: 0.12}],
+        createFills(
+          [
+            {
+              ring: createRectangleRing(center - half, 22, center + half, 50),
+              role: 'warm',
+              alpha: 0.12
+            }
+          ],
           'pulse'
         ),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [center - half, 20],
                 [center - half, 52]
@@ -1268,7 +1285,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.8,
               0.9
             ),
-            seg(
+            createPlotPath(
               [
                 [center + half, 20],
                 [center + half, 52]
@@ -1281,16 +1298,16 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.5
         ),
-        strokes(drops, 'flow', 0.4, 0.8),
-        sprites(top, 0.3),
-        sprites(picked, 0.3)
+        createStrokes(drops, 'flow', 0.4, 0.8),
+        createSprites(top, 0.3),
+        createSprites(picked, 0.3)
       ];
     }
   },
 
   // Raw samples per hour reduced to a minimum and maximum, joined into two envelope lines.
   'temporal-reduction': {
-    parameters: [slider('samples', 'Samples per hour', 3, 12, 1, 6)],
+    parameters: [createSlider('samples', 'Samples per hour', 3, 12, 1, 6)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('samples');
@@ -1308,9 +1325,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const used = samples.slice(0, Math.round(p.samples));
         const low = Math.min(...used);
         const high = Math.max(...used);
-        used.forEach(value => raw.push(dot(x, 90 - value * 76, 0.7, 'dim', 0.5)));
+        used.forEach(value => raw.push(createDotAt(x, 90 - value * 76, 0.7, 'dim', 0.5)));
         whiskers.push(
-          seg(
+          createPlotPath(
             [
               [x, 90 - low * 76],
               [x, 90 - high * 76]
@@ -1325,13 +1342,18 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         highs.push([x, 90 - high * 76]);
       }
       return [
-        sprites(raw, 0),
-        strokes(whiskers, 'pulse', 0.3),
-        strokes([seg(lows, 'cool', 1, 0.95), seg(highs, 'hot', 1, 0.95)], 'flow', 0.25, 1.4),
-        sprites(
+        createSprites(raw, 0),
+        createStrokes(whiskers, 'pulse', 0.3),
+        createStrokes(
+          [createPlotPath(lows, 'cool', 1, 0.95), createPlotPath(highs, 'hot', 1, 0.95)],
+          'flow',
+          0.25,
+          1.4
+        ),
+        createSprites(
           [
-            ...lows.map(([x, y], index) => dot(x, y, 1.4, 'cool', 0.9, index / hours)),
-            ...highs.map(([x, y], index) => dot(x, y, 1.4, 'hot', 0.9, index / hours))
+            ...lows.map(([x, y], index) => createDotAt(x, y, 1.4, 'cool', 0.9, index / hours)),
+            ...highs.map(([x, y], index) => createDotAt(x, y, 1.4, 'hot', 0.9, index / hours))
           ],
           0.3
         )
@@ -1343,7 +1365,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Clustered points and a K curve above the random expectation; the ring sets the radius.
   'ripley-k': {
-    parameters: [slider('radius', 'Radius', 4, 34, 1, 16, 'px')],
+    parameters: [createSlider('radius', 'Radius', 4, 34, 1, 16, 'px')],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const random = fork('points');
@@ -1369,9 +1391,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const markerExpected: Point = [left + t * (right - left), 84 - expected(t) * 64];
       return [
         getAxes(left, right, 18, 84),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               createCircle(focal[0], focal[1], p.radius, 36).concat([
                 [focal[0] + p.radius, focal[1]]
               ]),
@@ -1383,25 +1405,39 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.5
         ),
-        sprites(
+        createSprites(
           points.map(([x, y], index) =>
-            dot(x, y, 1.5, inRing[index] ? 'warm' : 'primary', inRing[index] ? 1 : 0.7, index / 40)
+            createDotAt(
+              x,
+              y,
+              1.5,
+              inRing[index] ? 'warm' : 'primary',
+              inRing[index] ? 1 : 0.7,
+              index / 40
+            )
           ),
           0.3
         ),
-        sprites([dot(focal[0], focal[1], 2.6, 'hot')], 0.5),
-        strokes([seg(getCurve(left, right, 84, 64, expected, 30), 'dim', 0.6, 0.8)], 'static'),
-        strokes(
-          [seg(getCurve(left, right, 84, 64, observed, 30), 'hot', 1.1, 0.95)],
+        createSprites([createDotAt(focal[0], focal[1], 2.6, 'hot')], 0.5),
+        createStrokes(
+          [createPlotPath(getCurve(left, right, 84, 64, expected, 30), 'dim', 0.6, 0.8)],
+          'static'
+        ),
+        createStrokes(
+          [createPlotPath(getCurve(left, right, 84, 64, observed, 30), 'hot', 1.1, 0.95)],
           'flow',
           0.3,
           1.4
         ),
-        strokes([seg([markerExpected, markerObserved], 'warm', 0.6, 0.9)], 'pulse', 0.5),
-        sprites(
+        createStrokes(
+          [createPlotPath([markerExpected, markerObserved], 'warm', 0.6, 0.9)],
+          'pulse',
+          0.5
+        ),
+        createSprites(
           [
-            dot(markerObserved[0], markerObserved[1], 2, 'hot'),
-            dot(markerExpected[0], markerExpected[1], 1.5, 'dim')
+            createDotAt(markerObserved[0], markerObserved[1], 2, 'hot'),
+            createDotAt(markerExpected[0], markerExpected[1], 1.5, 'dim')
           ],
           0.3
         )
@@ -1411,7 +1447,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // The observed curve against a band drawn from simulated random patterns.
   'ripley-envelope': {
-    parameters: [slider('simulations', 'Simulations', 5, 30, 1, 16)],
+    parameters: [createSlider('simulations', 'Simulations', 5, 30, 1, 16)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('simulations');
@@ -1456,10 +1492,13 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       if (run.length > 1) hotRuns.push(run);
       return [
         getAxes(left, right + 2, 10, bottom),
-        fills([{ring: [...upper, ...[...lower].reverse()], role: 'cool', alpha: 0.28}], 'pulse'),
-        strokes(
+        createFills(
+          [{ring: [...upper, ...[...lower].reverse()], role: 'cool', alpha: 0.28}],
+          'pulse'
+        ),
+        createStrokes(
           used.map(wave =>
-            seg(
+            createPlotPath(
               getCurve(left, right, bottom, height, amount => simulate(wave, amount), steps),
               'dim',
               0.25,
@@ -1468,9 +1507,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ),
           'static'
         ),
-        strokes([seg(observedPoints, 'warm', 1.1, 0.95)], 'flow', 0.3, 1.5),
-        strokes(
-          hotRuns.map(points => seg(points, 'hot', 1.8, 1)),
+        createStrokes([createPlotPath(observedPoints, 'warm', 1.1, 0.95)], 'flow', 0.3, 1.5),
+        createStrokes(
+          hotRuns.map(points => createPlotPath(points, 'hot', 1.8, 1)),
           'pulse',
           0.6
         )
@@ -1480,7 +1519,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Nearest-neighbor distances (G) and empty-space distances (F) from probe locations.
   'ripley-distance-functions': {
-    parameters: [slider('points', 'Points', 12, 60, 2, 28)],
+    parameters: [createSlider('points', 'Points', 12, 60, 2, 28)],
     pointer: 'none',
     build: ({fork, p}) => {
       const points = createScatterPoints(fork('points'), 60, 8)
@@ -1500,7 +1539,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             target = other;
           }
         });
-        nearestLinks.push(seg([point, target], 'cool', 0.4, 0.7, index / points.length));
+        nearestLinks.push(createPlotPath([point, target], 'cool', 0.4, 0.7, index / points.length));
         return best;
       });
       const fLinks: PathItem[] = [];
@@ -1514,7 +1553,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             target = point;
           }
         });
-        fLinks.push(seg([probe, target], 'warm', 0.4, 0.7, index / probes.length));
+        fLinks.push(createPlotPath([probe, target], 'warm', 0.4, 0.7, index / probes.length));
         return best;
       });
       const maximum = Math.max(...gDistances, ...fDistances, 1);
@@ -1530,9 +1569,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const intensity = points.length / (78 * 72);
       return [
         getAxes(104, 150, 18, 84),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               getCurve(
                 104,
                 150,
@@ -1548,18 +1587,21 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes(fLinks, 'flow', 0.3, 0.8),
-        strokes(nearestLinks, 'static'),
-        sprites(
-          probes.map(([x, y]) => dot(x, y, 1, 'warm', 0.8)),
+        createStrokes(fLinks, 'flow', 0.3, 0.8),
+        createStrokes(nearestLinks, 'static'),
+        createSprites(
+          probes.map(([x, y]) => createDotAt(x, y, 1, 'warm', 0.8)),
           0
         ),
-        sprites(
-          points.map(([x, y], index) => dot(x, y, 1.5, 'primary', 0.95, index / 30)),
+        createSprites(
+          points.map(([x, y], index) => createDotAt(x, y, 1.5, 'primary', 0.95, index / 30)),
           0.3
         ),
-        strokes(
-          [seg(curve(gDistances), 'cool', 1, 0.95), seg(curve(fDistances), 'warm', 1, 0.95)],
+        createStrokes(
+          [
+            createPlotPath(curve(gDistances), 'cool', 1, 0.95),
+            createPlotPath(curve(fDistances), 'warm', 1, 0.95)
+          ],
           'flow',
           0.3,
           1.4
@@ -1570,7 +1612,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // An 8 by 8 quadrat grid with counts, plus nearest-neighbor links.
   'point-pattern-indices': {
-    parameters: [slider('clustering', 'Clustering', 0, 1, 0.05, 0.6)],
+    parameters: [createSlider('clustering', 'Clustering', 0, 1, 0.05, 0.6)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('points');
@@ -1606,7 +1648,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const column = index % columns;
         const row = Math.floor(index / columns);
         cells.push({
-          ring: rectangle(
+          ring: createRectangleRing(
             column * cellWidth + 0.8,
             row * cellHeight + 0.8,
             (column + 1) * cellWidth - 0.8,
@@ -1626,12 +1668,12 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             target = other;
           }
         });
-        return seg([point, target], 'cool', 0.4, 0.8, index / count);
+        return createPlotPath([point, target], 'cool', 0.4, 0.8, index / count);
       });
       const grid: PathItem[] = [];
       for (let column = 1; column < columns; column++)
         grid.push(
-          seg(
+          createPlotPath(
             [
               [column * cellWidth, 0],
               [column * cellWidth, 100]
@@ -1643,7 +1685,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       for (let row = 1; row < rows; row++)
         grid.push(
-          seg(
+          createPlotPath(
             [
               [0, row * cellHeight],
               [160, row * cellHeight]
@@ -1654,11 +1696,11 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           )
         );
       return [
-        fills(cells, 'pulse'),
-        strokes(grid, 'static'),
-        strokes(links, 'flow', 0.25, 0.8),
-        sprites(
-          mixed.map(([x, y], index) => dot(x, y, 1.4, 'primary', 0.95, index / count)),
+        createFills(cells, 'pulse'),
+        createStrokes(grid, 'static'),
+        createStrokes(links, 'flow', 0.25, 0.8),
+        createSprites(
+          mixed.map(([x, y], index) => createDotAt(x, y, 1.4, 'primary', 0.95, index / count)),
           0.3
         )
       ];
@@ -1667,7 +1709,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Two point types; links from a chosen type A point to type B points within the ring.
   'marked-point-statistics': {
-    parameters: [slider('attraction', 'Attraction', 0, 1, 0.05, 0.7)],
+    parameters: [createSlider('attraction', 'Attraction', 0, 1, 0.05, 0.7)],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const random = fork('points');
@@ -1707,7 +1749,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const radius = 16;
       const links = typeB
         .filter(point => getDistance(point, center) <= radius)
-        .map((point, index) => seg([center, point], 'violet', 0.6, 0.95, index / 6));
+        .map((point, index) => createPlotPath([center, point], 'violet', 0.6, 0.95, index / 6));
       const t = 0.5;
       const observed = (amount: number) =>
         clamp(amount * amount * (1 + 2.6 * p.attraction * (1 - amount) ** 1.5), 0, 1);
@@ -1715,9 +1757,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const right = 152;
       return [
         getAxes(left, right, 24, 80),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               createCircle(center[0], center[1], radius, 32).concat([
                 [center[0] + radius, center[1]]
               ]),
@@ -1729,18 +1771,18 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.5
         ),
-        strokes(links, 'flow', 0.5, 1),
-        sprites(
+        createStrokes(links, 'flow', 0.5, 1),
+        createSprites(
           [
-            ...typeA.map(([x, y], index) => dot(x, y, 1.6, 'cool', 0.9, index / 24)),
-            ...typeB.map(([x, y], index) => dot(x, y, 1.6, 'warm', 0.9, index / 24)),
-            dot(center[0], center[1], 3, 'cool', 0.6)
+            ...typeA.map(([x, y], index) => createDotAt(x, y, 1.6, 'cool', 0.9, index / 24)),
+            ...typeB.map(([x, y], index) => createDotAt(x, y, 1.6, 'warm', 0.9, index / 24)),
+            createDotAt(center[0], center[1], 3, 'cool', 0.6)
           ],
           0.3
         ),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               getCurve(left, right, 80, 48, amount => amount * amount, 24),
               'dim',
               0.5,
@@ -1749,13 +1791,16 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes(
-          [seg(getCurve(left, right, 80, 48, observed, 24), 'violet', 1, 0.95)],
+        createStrokes(
+          [createPlotPath(getCurve(left, right, 80, 48, observed, 24), 'violet', 1, 0.95)],
           'flow',
           0.3,
           1.4
         ),
-        sprites([dot(left + t * (right - left), 80 - observed(t) * 48, 1.8, 'violet')], 0.4)
+        createSprites(
+          [createDotAt(left + t * (right - left), 80 - observed(t) * 48, 1.8, 'violet')],
+          0.4
+        )
       ];
     }
   },
@@ -1764,7 +1809,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Empirical semivariance by lag: dots sized by pair count rising to a sill, nugget at the origin.
   variogram: {
-    parameters: [slider('range', 'Range', 20, 95, 5, 50, '%')],
+    parameters: [createSlider('range', 'Range', 20, 95, 5, 50, '%')],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('bins');
@@ -1782,10 +1827,10 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const rangeX = getPlotPoint(Math.min(range, 1), 0)[0];
       return [
         getAxes(PLOT.left, PLOT.right + 2, 12, PLOT.bottom),
-        strokes(
+        createStrokes(
           [
-            seg([getPlotPoint(0, 1), getPlotPoint(1, 1)], 'warm', 0.5, 0.7),
-            seg(
+            createPlotPath([getPlotPoint(0, 1), getPlotPoint(1, 1)], 'warm', 0.5, 0.7),
+            createPlotPath(
               [
                 [rangeX, PLOT.bottom],
                 [rangeX, getPlotPoint(0, 1)[1]]
@@ -1798,9 +1843,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.3
         ),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               bins.map(bin => getPlotPoint(bin.lag, bin.gamma)),
               'primary',
               0.5,
@@ -1811,14 +1856,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.3,
           1.2
         ),
-        sprites(
+        createSprites(
           bins.map((bin, index) => {
             const [x, y] = getPlotPoint(bin.lag, bin.gamma);
-            return dot(x, y, 1.2 + bin.count * 0.8, 'primary', 0.9, index / 14);
+            return createDotAt(x, y, 1.2 + bin.count * 0.8, 'primary', 0.9, index / 14);
           }),
           0.3
         ),
-        sprites([dot(...getPlotPoint(0, nugget), 2.4, 'hot')], 0.5)
+        createSprites([createDotAt(...getPlotPoint(0, nugget), 2.4, 'hot')], 0.5)
       ];
     }
   },
@@ -1826,11 +1871,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
   // The same bins with three candidate models; the best fit by squared error is bright.
   'variogram-model-fit': {
     parameters: [
-      {
-        ...slider('truth', 'Underlying model', 0, 2, 1, 0),
-        options: ['spherical', 'exponential', 'gaussian']
-      },
-      slider('range', 'Range', 20, 95, 5, 55, '%')
+      createChoice('truth', 'Underlying model', ['spherical', 'exponential', 'gaussian']),
+      createSlider('range', 'Range', 20, 95, 5, 55, '%')
     ],
     pointer: 'none',
     build: ({fork, p}) => {
@@ -1865,16 +1907,26 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       return [
         getAxes(PLOT.left, PLOT.right + 2, 12, PLOT.bottom),
-        strokes(
+        createStrokes(
           VARIOGRAM_MODELS.map((model, index) =>
-            seg(curve(model), roles[index], index === best ? 1.4 : 0.6, index === best ? 1 : 0.4)
+            createPlotPath(
+              curve(model),
+              roles[index],
+              index === best ? 1.4 : 0.6,
+              index === best ? 1 : 0.4
+            )
           ),
           'static'
         ),
-        strokes([seg(curve(VARIOGRAM_MODELS[best]), roles[best], 1.8, 1)], 'flow', 0.3, 1.5),
-        sprites(
+        createStrokes(
+          [createPlotPath(curve(VARIOGRAM_MODELS[best]), roles[best], 1.8, 1)],
+          'flow',
+          0.3,
+          1.5
+        ),
+        createSprites(
           bins.map((bin, index) =>
-            dot(...getPlotPoint(bin.lag, bin.gamma), 1.5, 'primary', 0.95, index / 14)
+            createDotAt(...getPlotPoint(bin.lag, bin.gamma), 1.5, 'primary', 0.95, index / 14)
           ),
           0.25
         )
@@ -1884,7 +1936,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Two direct variograms and the cross variogram between them, with a zero line.
   'cross-variogram': {
-    parameters: [slider('correlation', 'Correlation', -1, 1, 0.05, 0.6)],
+    parameters: [createSlider('correlation', 'Correlation', -1, 1, 0.05, 0.6)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('bins');
@@ -1904,9 +1956,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const curve = (evaluate: (lag: number) => number) =>
         Array.from({length: 41}, (_, index) => toPoint(index / 40, evaluate(index / 40)));
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [PLOT.left, 14],
                 [PLOT.left, 90]
@@ -1915,7 +1967,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.5,
               0.6
             ),
-            seg(
+            createPlotPath(
               [
                 [PLOT.left, base],
                 [PLOT.right + 2, base]
@@ -1927,15 +1979,24 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes(
-          [seg(curve(gammaA), 'cool', 0.7, 0.6), seg(curve(gammaB), 'warm', 0.7, 0.6)],
+        createStrokes(
+          [
+            createPlotPath(curve(gammaA), 'cool', 0.7, 0.6),
+            createPlotPath(curve(gammaB), 'warm', 0.7, 0.6)
+          ],
           'pulse',
           0.25
         ),
-        strokes([seg(curve(cross), 'violet', 1.5, 1)], 'flow', 0.3, 1.6),
-        sprites(
+        createStrokes([createPlotPath(curve(cross), 'violet', 1.5, 1)], 'flow', 0.3, 1.6),
+        createSprites(
           bins.map((bin, index) =>
-            dot(...toPoint(bin.lag, cross(bin.lag) + bin.noise), 1.4, 'violet', 0.95, index / 14)
+            createDotAt(
+              ...toPoint(bin.lag, cross(bin.lag) + bin.noise),
+              1.4,
+              'violet',
+              0.95,
+              index / 14
+            )
           ),
           0.3
         )
@@ -1946,8 +2007,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
   // Semivariance surface over space lag (right) and time lag (up); the probe reads one pair of lags.
   'space-time-variogram': {
     parameters: [
-      slider('spaceRange', 'Space range', 0.3, 2, 0.05, 1),
-      slider('timeRange', 'Time range', 0.3, 2, 0.05, 0.85)
+      createSlider('spaceRange', 'Space range', 0.3, 2, 0.05, 1),
+      createSlider('timeRange', 'Time range', 0.3, 2, 0.05, 0.85)
     ],
     pointer: 'hover',
     build: ({p, pointer}) => {
@@ -1969,9 +2030,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           strength: 0.05,
           speed: 0.4
         },
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [probe[0], probe[1]],
                 [probe[0], 98]
@@ -1980,7 +2041,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.5,
               0.8
             ),
-            seg(
+            createPlotPath(
               [
                 [probe[0], probe[1]],
                 [0, probe[1]]
@@ -1994,11 +2055,11 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.4,
           1.2
         ),
-        sprites(
+        createSprites(
           [
-            dot(probe[0], probe[1], 2.6, 'ink'),
-            dot(probe[0], 96, 1.8, 'warm'),
-            dot(4, probe[1], 1.8, 'cool')
+            createDotAt(probe[0], probe[1], 2.6, 'ink'),
+            createDotAt(probe[0], 96, 1.8, 'warm'),
+            createDotAt(4, probe[1], 1.8, 'cool')
           ],
           0.5
         )
@@ -2008,7 +2069,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Moran's I per distance band: bars fall from positive through zero, with a significance band.
   'spatial-correlogram': {
-    parameters: [slider('decay', 'Decay', 0.1, 1, 0.05, 0.45)],
+    parameters: [createSlider('decay', 'Decay', 0.1, 1, 0.05, 0.45)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('bands');
@@ -2022,7 +2083,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const step = 128 / count;
       const bars = values.map((value, index): PathItem => {
         const x = 18 + (index + 0.5) * step;
-        return seg(
+        return createPlotPath(
           [
             [x, zeroY],
             [x, zeroY - value * 42]
@@ -2034,10 +2095,12 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       });
       return [
-        fills([{ring: rectangle(16, zeroY - 5, 148, zeroY + 5), role: 'dim', alpha: 0.18}]),
-        strokes(
+        createFills([
+          {ring: createRectangleRing(16, zeroY - 5, 148, zeroY + 5), role: 'dim', alpha: 0.18}
+        ]),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [16, zeroY],
                 [148, zeroY]
@@ -2046,7 +2109,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.5,
               0.8
             ),
-            seg(
+            createPlotPath(
               [
                 [16, 12],
                 [16, 90]
@@ -2058,10 +2121,10 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes(bars, 'pulse', 0.25),
-        strokes(
+        createStrokes(bars, 'pulse', 0.25),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               values.map((value, index): Point => [18 + (index + 0.5) * step, zeroY - value * 42]),
               'warm',
               0.9,
@@ -2072,9 +2135,16 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.3,
           1.4
         ),
-        sprites(
+        createSprites(
           values.map((value, index) =>
-            dot(18 + (index + 0.5) * step, zeroY - value * 42, 1.6, 'warm', 0.95, index / count)
+            createDotAt(
+              18 + (index + 0.5) * step,
+              zeroY - value * 42,
+              1.6,
+              'warm',
+              0.95,
+              index / count
+            )
           ),
           0.3
         )
@@ -2086,7 +2156,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // Radius neighborhoods: three probe points light up the lidar points within a sphere.
   'pointcloud-neighborhoods': {
-    parameters: [slider('neighborhood', 'Radius', 4, 20, 1, 12), ...SPIN_PARAMETERS],
+    parameters: [createSlider('neighborhood', 'Radius', 4, 20, 1, 12), ...SPIN_PARAMETERS],
     build: ({fork, p}) => {
       const points = createCloudPoints(fork('cloud'), 1300);
       const focalIndices = [
@@ -2115,9 +2185,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             radius = 1.1;
           }
         });
-        return cloudDot(point, point.height, role, radius, alpha, index / 1300);
+        return createCloudDot(point, point.height, role, radius, alpha, index / 1300);
       });
-      return [cloudLayer(items, p.depth, 0.2)];
+      return [createCloudLayer(items, p.depth, 0.2)];
     }
   },
 
@@ -2134,9 +2204,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       };
       const edge = (point: CloudPoint) => point.kind === 'wall' && point.height > point.ground + 12;
       return [
-        cloudLayer(
+        createCloudLayer(
           points.map((point, index) =>
-            cloudDot(
+            createCloudDot(
               point,
               point.height,
               edge(point) ? 'warm' : roles[point.kind],
@@ -2153,14 +2223,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // A dense surface with floating noise; noise past the threshold is rejected (pulsing hot).
   'pointcloud-statistical-filter': {
-    parameters: [slider('ratio', 'Std ratio', 0.5, 3, 0.1, 1.2), ...SPIN_PARAMETERS],
+    parameters: [createSlider('ratio', 'Std ratio', 0.5, 3, 0.1, 1.2), ...SPIN_PARAMETERS],
     build: ({fork, p}) => {
       const surface = createCloudPoints(fork('cloud'), 800).filter(
         point => point.kind !== 'canopy'
       );
       const random = fork('noise');
       const items: SpriteItem[] = surface.map((point, index) =>
-        cloudDot(
+        createCloudDot(
           point,
           point.height,
           point.kind === 'ground' ? 'cool' : 'primary',
@@ -2176,7 +2246,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const point = {x, z};
         const removed = isolation > 3 + 5 * p.ratio;
         items.push(
-          cloudDot(
+          createCloudDot(
             point,
             getTerrainHeight(x, z) + isolation,
             removed ? 'hot' : 'warm',
@@ -2186,13 +2256,13 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           )
         );
       }
-      return [cloudLayer(items, p.depth, 0.35)];
+      return [createCloudLayer(items, p.depth, 0.35)];
     }
   },
 
   // Tiles of points each reduce to voxel centroids; voxels spanning the seam (hot) merge both tiles.
   'pointcloud-voxel-merge': {
-    parameters: [slider('voxel', 'Voxel size', 4, 18, 1, 9), ...SPIN_PARAMETERS],
+    parameters: [createSlider('voxel', 'Voxel size', 4, 18, 1, 9), ...SPIN_PARAMETERS],
     build: ({fork, p}) => {
       const points = createCloudPoints(fork('cloud'), 1000);
       const voxel = Math.round(p.voxel);
@@ -2215,12 +2285,12 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         cells.set(key, cell);
       });
       const items: SpriteItem[] = points.map((point, index) =>
-        cloudDot(point, point.height, point.x < 0 ? 'cool' : 'warm', 0.55, 0.28, index / 1000)
+        createCloudDot(point, point.height, point.x < 0 ? 'cool' : 'warm', 0.55, 0.28, index / 1000)
       );
       cells.forEach(cell => {
         const merged = cell.tiles === 3;
         items.push(
-          cloudDot(
+          createCloudDot(
             {x: cell.x / cell.count, z: cell.z / cell.count},
             cell.height / cell.count,
             merged ? 'hot' : 'primary',
@@ -2230,13 +2300,13 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           )
         );
       });
-      return [cloudLayer(items, p.depth, 0.3)];
+      return [createCloudLayer(items, p.depth, 0.3)];
     }
   },
 
   // Top-down ground and canopy surfaces rasterized from the points.
   'pointcloud-surfaces': {
-    parameters: [slider('canopy', 'Canopy', 0, 1, 0.05, 0.75)],
+    parameters: [createSlider('canopy', 'Canopy', 0, 1, 0.05, 0.75)],
     pointer: 'none',
     build: ({fork, p}) => {
       const ground = createSmoothField(fork('ground'), 4, 0.9);
@@ -2279,7 +2349,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           const addCell = (items: PolygonItem[], panel: number, role: Role, alpha: number) => {
             const left = panelLeft[panel] + column * cellSize + 0.2;
             items.push({
-              ring: rectangle(left, top, left + cellSize - 0.4, bottom),
+              ring: createRectangleRing(left, top, left + cellSize - 0.4, bottom),
               role,
               alpha,
               phase
@@ -2306,9 +2376,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         }
       }
       const panelOutlines: PathItem[] = panelLeft.map(left =>
-        seg(
-          outline(
-            rectangle(
+        createPlotPath(
+          closeRing(
+            createRectangleRing(
               left - 0.6,
               panelTop - 0.6,
               left + panelSize + 0.6,
@@ -2323,7 +2393,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       // Minus between DSM and DTM, equals before the canopy height panel.
       const middleY = panelTop + panelSize / 2;
       const operators: PathItem[] = [
-        seg(
+        createPlotPath(
           [
             [53.6, middleY],
             [57.6, middleY]
@@ -2332,7 +2402,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.9,
           0.95
         ),
-        seg(
+        createPlotPath(
           [
             [104.2, middleY - 1.6],
             [108.2, middleY - 1.6]
@@ -2341,7 +2411,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.9,
           0.95
         ),
-        seg(
+        createPlotPath(
           [
             [104.2, middleY + 1.6],
             [108.2, middleY + 1.6]
@@ -2375,7 +2445,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const x = profileLeft + u * profileWidth;
         const base = getGround(u, 0.5);
         groundPoints.push(
-          dot(
+          createDotAt(
             x,
             baseline - base * groundScale + pointRandom.range(0.2, 1.2),
             0.8,
@@ -2388,7 +2458,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         if (height > 0.06) {
           const lift = pointRandom.range(0.3, 1);
           canopyPoints.push(
-            dot(
+            createDotAt(
               x,
               baseline - base * groundScale - height * treeScale * lift,
               0.9,
@@ -2410,7 +2480,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           surfaceY <= (surfaceLine[index + 1]?.[1] ?? Infinity);
         if (isPeak)
           brackets.push(
-            seg(
+            createPlotPath(
               [
                 [x, surfaceY],
                 [x, terrainY]
@@ -2423,22 +2493,22 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           );
       }
       return [
-        fills(dsmItems, 'pulse'),
-        fills(dtmItems, 'pulse'),
-        fills(chmItems, 'pulse'),
-        strokes([...panelOutlines, ...operators]),
-        strokes([seg(terrainLine, 'cool', 0.9, 0.9)]),
-        strokes([seg(surfaceLine, 'hot', 1.1, 0.95)], 'flow', 0.25, 1.4),
-        strokes(brackets, 'pulse', 0.5),
-        sprites(groundPoints, 0.3),
-        sprites(canopyPoints, 0.4)
+        createFills(dsmItems, 'pulse'),
+        createFills(dtmItems, 'pulse'),
+        createFills(chmItems, 'pulse'),
+        createStrokes([...panelOutlines, ...operators]),
+        createStrokes([createPlotPath(terrainLine, 'cool', 0.9, 0.9)]),
+        createStrokes([createPlotPath(surfaceLine, 'hot', 1.1, 0.95)], 'flow', 0.25, 1.4),
+        createStrokes(brackets, 'pulse', 0.5),
+        createSprites(groundPoints, 0.3),
+        createSprites(canopyPoints, 0.4)
       ];
     }
   },
 
   // Points lifted off a terrain by their height above ground, as stems coloured by height.
   'pointcloud-height': {
-    parameters: [slider('scale', 'Height scale', 0.4, 1.6, 0.05, 1)],
+    parameters: [createSlider('scale', 'Height scale', 0.4, 1.6, 0.05, 1)],
     pointer: 'none',
     build: ({fork, p}) => {
       const ground = createSmoothField(fork('ground'), 5, 1.1);
@@ -2453,7 +2523,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const amount = clamp(rise / 26, 0, 1);
         const role: Role = amount > 0.66 ? 'hot' : amount > 0.33 ? 'warm' : 'cool';
         stems.push(
-          seg(
+          createPlotPath(
             [
               [x, y],
               [x, y - rise]
@@ -2464,8 +2534,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             random.next()
           )
         );
-        tops.push(dot(x, y - rise, 1.8, role, 0.95, random.next()));
-        feet.push(dot(x, y, 1, 'dim', 0.6));
+        tops.push(createDotAt(x, y - rise, 1.8, role, 0.95, random.next()));
+        feet.push(createDotAt(x, y, 1, 'dim', 0.6));
       }
       return [
         {
@@ -2478,23 +2548,26 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           strength: 0.03,
           speed: 0.3
         },
-        sprites(feet, 0),
-        strokes(stems, 'flow', 0.4, 1),
-        sprites(tops, 0.4)
+        createSprites(feet, 0),
+        createStrokes(stems, 'flow', 0.4, 1),
+        createSprites(tops, 0.4)
       ];
     }
   },
 
   // Ground classification: points within a tolerance of the local terrain are ground.
   'pointcloud-ground': {
-    parameters: [slider('tolerance', 'Height tolerance', 0.2, 6, 0.2, 1.5), ...SPIN_PARAMETERS],
+    parameters: [
+      createSlider('tolerance', 'Height tolerance', 0.2, 6, 0.2, 1.5),
+      ...SPIN_PARAMETERS
+    ],
     build: ({fork, p}) => {
       const points = createCloudPoints(fork('cloud'), 1200);
       return [
-        cloudLayer(
+        createCloudLayer(
           points.map((point, index) => {
             const isGround = point.height - point.ground <= p.tolerance;
-            return cloudDot(
+            return createCloudDot(
               point,
               point.height,
               isGround ? 'cool' : 'warm',
@@ -2511,7 +2584,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // SMRF in profile: an opening of the lowest returns builds the ground line under trees and a roof.
   'pointcloud-smrf': {
-    parameters: [slider('window', 'Window', 3, 26, 1, 14, 'cells')],
+    parameters: [createSlider('window', 'Window', 3, 26, 1, 14, 'cells')],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const random = fork('profile');
@@ -2528,19 +2601,26 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const base = terrain(index);
         if (isBuilding(index)) {
           lowest.push(base + buildingHeight);
-          items.push(dot(x, 88 - base - buildingHeight, 1.1, 'warm', 0.95, random.next()));
+          items.push(createDotAt(x, 88 - base - buildingHeight, 1.1, 'warm', 0.95, random.next()));
           items.push(
-            dot(x, 88 - base - buildingHeight + random.range(0, 3), 0.8, 'warm', 0.6, random.next())
+            createDotAt(
+              x,
+              88 - base - buildingHeight + random.range(0, 3),
+              0.8,
+              'warm',
+              0.6,
+              random.next()
+            )
           );
         } else {
           lowest.push(base);
           if (index % 2 === 0 || !isTree(index))
-            items.push(dot(x, 88 - base, 1.1, 'cool', 0.9, random.next()));
+            items.push(createDotAt(x, 88 - base, 1.1, 'cool', 0.9, random.next()));
         }
         if (isTree(index)) {
           for (let leaf = 0; leaf < 3; leaf++)
             items.push(
-              dot(
+              createDotAt(
                 x + random.range(-0.6, 0.6),
                 88 - base - random.range(5, 14),
                 1,
@@ -2564,9 +2644,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const center = pointer ? clamp(pointer[0], 12 + half * 1.7, 148 - half * 1.7) : 80;
       const halfWidth = half * 1.72;
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [12, 88],
                 [148, 88]
@@ -2578,19 +2658,19 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        fills(
+        createFills(
           [
             {
-              ring: rectangle(center - halfWidth, 8, center + halfWidth, 92),
+              ring: createRectangleRing(center - halfWidth, 8, center + halfWidth, 92),
               role: 'violet',
               alpha: 0.1
             }
           ],
           'pulse'
         ),
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [center - halfWidth, 8],
                 [center - halfWidth, 92]
@@ -2599,7 +2679,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.5,
               0.7
             ),
-            seg(
+            createPlotPath(
               [
                 [center + halfWidth, 8],
                 [center + halfWidth, 92]
@@ -2612,15 +2692,15 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.5
         ),
-        sprites(items, 0.25),
-        strokes([seg(line, 'hot', 1.4, 1)], 'flow', 0.3, 1.8)
+        createSprites(items, 0.25),
+        createStrokes([createPlotPath(line, 'hot', 1.4, 1)], 'flow', 0.3, 1.8)
       ];
     }
   },
 
   // ICP: the warm scan converges onto the cool reference as iterations increase.
   'pointcloud-icp': {
-    parameters: [slider('iteration', 'Iteration', 0, 10, 1, 3), ...SPIN_PARAMETERS],
+    parameters: [createSlider('iteration', 'Iteration', 0, 10, 1, 3), ...SPIN_PARAMETERS],
     build: ({fork, p}) => {
       const reference = createCloudPoints(fork('cloud'), 520).filter(
         point => point.kind !== 'canopy'
@@ -2632,35 +2712,42 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const sine = Math.sin(angle);
       const items: SpriteItem[] = [];
       reference.forEach((point, index) => {
-        items.push(cloudDot(point, point.height, 'cool', 0.9, 0.85, index / 520));
+        items.push(createCloudDot(point, point.height, 'cool', 0.9, 0.85, index / 520));
         const jitter = noise.gaussian() * 0.25;
         const moved = {
           x: point.x * cosine + point.z * sine + 18 * remaining,
           z: -point.x * sine + point.z * cosine + 10 * remaining
         };
         items.push(
-          cloudDot(moved, point.height + 6 * remaining + jitter, 'warm', 0.9, 0.85, index / 520)
+          createCloudDot(
+            moved,
+            point.height + 6 * remaining + jitter,
+            'warm',
+            0.9,
+            0.85,
+            index / 520
+          )
         );
       });
-      return [cloudLayer(items, p.depth, 0.2)];
+      return [createCloudLayer(items, p.depth, 0.2)];
     }
   },
 
   // Change detection: signed change along the surface, hot where it grew and cool where it was cut.
   'pointcloud-change': {
-    parameters: [slider('threshold', 'Min change', 0.5, 6, 0.25, 2), ...SPIN_PARAMETERS],
+    parameters: [createSlider('threshold', 'Min change', 0.5, 6, 0.25, 2), ...SPIN_PARAMETERS],
     build: ({fork, p}) => {
       const points = createCloudPoints(fork('cloud'), 1100).filter(
         point => point.kind === 'ground' || point.kind === 'roof'
       );
       return [
-        cloudLayer(
+        createCloudLayer(
           points.map((point, index) => {
             const delta =
               8 * Math.exp(-(((point.x - 20) ** 2 + (point.z + 14) ** 2) / 220)) -
               7 * Math.exp(-(((point.x + 30) ** 2 + (point.z - 8) ** 2) / 260));
             const changed = Math.abs(delta) >= p.threshold;
-            return cloudDot(
+            return createCloudDot(
               point,
               point.height + delta,
               changed ? (delta > 0 ? 'hot' : 'cool') : 'primary',
@@ -2677,7 +2764,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // A cloud with a huge world offset (quantised, jagged) recentered to a clean local frame.
   'pointcloud-local-positions': {
-    parameters: [slider('offset', 'Precision loss', 1, 9, 0.5, 4)],
+    parameters: [createSlider('offset', 'Precision loss', 1, 9, 0.5, 4)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('cloud');
@@ -2690,9 +2777,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const jitter = random.gaussian() * 2.2;
         const x = amount * 48;
         const y = surface(amount) + jitter;
-        clean.push(dot(104 + x - 24, y, 1.1, 'primary', 0.9, random.next()));
+        clean.push(createDotAt(104 + x - 24, y, 1.1, 'primary', 0.9, random.next()));
         quantised.push(
-          dot(
+          createDotAt(
             10 + Math.round(x / p.offset) * p.offset,
             Math.round(y / p.offset) * p.offset,
             1.1,
@@ -2703,9 +2790,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       }
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [10, 94],
                 [10, 90]
@@ -2714,7 +2801,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.3,
               0.3
             ),
-            seg(
+            createPlotPath(
               [
                 [82, 50],
                 [78, 50]
@@ -2726,10 +2813,15 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes([seg(createArc([60, 30], [100, 30], -0.3, 18), 'warm', 1, 0.95)], 'flow', 0.4, 1.4),
-        strokes(
+        createStrokes(
+          [createPlotPath(createArc([60, 30], [100, 30], -0.3, 18), 'warm', 1, 0.95)],
+          'flow',
+          0.4,
+          1.4
+        ),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [6, 96],
                 [6, 70],
@@ -2739,7 +2831,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.5,
               0.6
             ),
-            seg(
+            createPlotPath(
               [
                 [2, 92],
                 [12, 92]
@@ -2752,16 +2844,16 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'pulse',
           0.4
         ),
-        sprites(quantised, 0.3),
-        sprites(clean, 0.3),
-        sprites([dot(104, 20, 2.4, 'violet', 0.9)], 0.5)
+        createSprites(quantised, 0.3),
+        createSprites(clean, 0.3),
+        createSprites([createDotAt(104, 20, 2.4, 'violet', 0.9)], 0.5)
       ];
     }
   },
 
   // A shift grid: old lattice nodes (dim) move to datum-shifted positions (warm); a probe reads one.
   'datum-grid-transform': {
-    parameters: [slider('magnify', 'Shift scale', 1, 9, 0.5, 4.5, '×')],
+    parameters: [createSlider('magnify', 'Shift scale', 1, 9, 0.5, 4.5, '×')],
     pointer: 'hover',
     build: ({p, pointer}) => {
       const shift = (x: number, y: number): Point => [
@@ -2780,10 +2872,10 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           const x = 14 + column * 16.5;
           const y = 12 + row * 15.2;
           const [dx, dy] = shift(x, y);
-          oldNodes.push(dot(x, y, 0.9, 'dim', 0.8));
-          newNodes.push(dot(x + dx, y + dy, 1.3, 'warm', 0.95, (row * 9 + column) / 54));
+          oldNodes.push(createDotAt(x, y, 0.9, 'dim', 0.8));
+          newNodes.push(createDotAt(x + dx, y + dy, 1.3, 'warm', 0.95, (row * 9 + column) / 54));
           links.push(
-            seg(
+            createPlotPath(
               [
                 [x, y],
                 [x + dx, y + dy]
@@ -2808,14 +2900,18 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           strength: 0.05,
           speed: 0.4
         },
-        strokes(links, 'flow', 0.3, 1.2),
-        sprites(oldNodes, 0),
-        sprites(newNodes, 0.3),
-        strokes([seg([probe, [probe[0] + probeX, probe[1] + probeY]], 'hot', 1, 1)], 'pulse', 0.6),
-        sprites(
+        createStrokes(links, 'flow', 0.3, 1.2),
+        createSprites(oldNodes, 0),
+        createSprites(newNodes, 0.3),
+        createStrokes(
+          [createPlotPath([probe, [probe[0] + probeX, probe[1] + probeY]], 'hot', 1, 1)],
+          'pulse',
+          0.6
+        ),
+        createSprites(
           [
-            dot(probe[0], probe[1], 2, 'ink'),
-            dot(probe[0] + probeX, probe[1] + probeY, 2.6, 'hot')
+            createDotAt(probe[0], probe[1], 2, 'ink'),
+            createDotAt(probe[0] + probeX, probe[1] + probeY, 2.6, 'hot')
           ],
           0.5
         )
@@ -2825,7 +2921,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // A circle of one radius around every point, with the radius spoke on the first.
   'point-buffer': {
-    parameters: [slider('distance', 'Distance', 2, 24, 1, 12, 'px')],
+    parameters: [createSlider('distance', 'Distance', 2, 24, 1, 12, 'px')],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const points = createScatterPoints(fork('points'), 11, 18);
@@ -2833,14 +2929,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const circles = all.map(([x, y]) => createCircle(x, y, p.distance, 28));
       const first = all[0];
       return [
-        fills(
+        createFills(
           circles.map(ring => ({ring, role: 'cool', alpha: 0.2})),
           'pulse'
         ),
-        strokes(
+        createStrokes(
           circles.map((ring, index) =>
-            seg(
-              outline(ring),
+            createPlotPath(
+              closeRing(ring),
               index === all.length - 1 && pointer ? 'warm' : 'primary',
               0.55,
               0.9,
@@ -2850,10 +2946,15 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'draw',
           0.2
         ),
-        strokes([seg([first, [first[0] + p.distance, first[1]]], 'warm', 0.9, 1)], 'flow', 0.5, 1),
-        sprites(
+        createStrokes(
+          [createPlotPath([first, [first[0] + p.distance, first[1]]], 'warm', 0.9, 1)],
+          'flow',
+          0.5,
+          1
+        ),
+        createSprites(
           all.map(([x, y], index) =>
-            dot(
+            createDotAt(
               x,
               y,
               1.7,
@@ -2872,7 +2973,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // A command graph grows node by node as it is recorded; the newest node blinks like a REC light.
   'computation-recorder': {
-    parameters: [slider('nodes', 'Recorded nodes', 2, 10, 1, 7)],
+    parameters: [createSlider('nodes', 'Recorded nodes', 2, 10, 1, 7)],
     pointer: 'none',
     build: ({p}) => {
       const lanes = [50, 50, 30, 70, 50, 30, 70, 50, 50, 50];
@@ -2885,14 +2986,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       for (let index = 0; index < 10; index++) {
         const [x, y] = position(index);
         if (index >= count) {
-          ghosts.push(dot(x, y, 1.3, 'dim', 0.6));
+          ghosts.push(createDotAt(x, y, 1.3, 'dim', 0.6));
           continue;
         }
         parents[index].forEach(parent =>
-          edges.push(seg([position(parent), [x, y]], 'primary', 0.7, 0.85, index / 10))
+          edges.push(createPlotPath([position(parent), [x, y]], 'primary', 0.7, 0.85, index / 10))
         );
         recorded.push(
-          dot(
+          createDotAt(
             x,
             y,
             index === count - 1 ? 3 : 2.1,
@@ -2903,24 +3004,24 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         );
       }
       const newest = parents[count - 1].map(parent =>
-        seg([position(parent), position(count - 1)], 'hot', 1.1, 1)
+        createPlotPath([position(parent), position(count - 1)], 'hot', 1.1, 1)
       );
       return [
-        sprites(ghosts, 0),
-        strokes(edges, 'static'),
-        strokes(newest, 'draw', 0.5),
-        sprites(recorded, 0.35),
-        sprites([dot(148, 10, 3, 'hot', 1)], 0.8)
+        createSprites(ghosts, 0),
+        createStrokes(edges, 'static'),
+        createStrokes(newest, 'draw', 0.5),
+        createSprites(recorded, 0.35),
+        createSprites([createDotAt(148, 10, 3, 'hot', 1)], 0.8)
       ];
     }
   },
 
   // One record frames the graph, its adapter and the data version together.
   'computation-record': {
-    parameters: [slider('version', 'Data version', 1, 6, 1, 3)],
+    parameters: [createSlider('version', 'Data version', 1, 6, 1, 3)],
     pointer: 'none',
     build: ({p}) => {
-      const frame = outline(rectangle(8, 10, 152, 90));
+      const frame = closeRing(createRectangleRing(8, 10, 152, 90));
       const graphNodes: Point[] = [
         [22, 36],
         [34, 50],
@@ -2938,7 +3039,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       for (let index = 0; index < 4; index++) {
         const offset = 70 + index * 7 + 2;
         pins.push(
-          seg(
+          createPlotPath(
             [
               [offset, 38],
               [offset, 42]
@@ -2947,7 +3048,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             0.6,
             0.9
           ),
-          seg(
+          createPlotPath(
             [
               [offset, 58],
               [offset, 62]
@@ -2962,7 +3063,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const stack: PathItem[] = [];
       for (let index = 0; index < layers; index++)
         stack.push(
-          seg(
+          createPlotPath(
             [
               [112, 66 - index * 7],
               [136, 66 - index * 7]
@@ -2974,22 +3075,28 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           )
         );
       return [
-        strokes([seg(frame, 'violet', 0.8, 0.8)], 'pulse', 0.25),
-        strokes(
-          graphEdges.map(points => seg(points, 'primary', 0.6, 0.85)),
+        createStrokes([createPlotPath(frame, 'violet', 0.8, 0.8)], 'pulse', 0.25),
+        createStrokes(
+          graphEdges.map(points => createPlotPath(points, 'primary', 0.6, 0.85)),
           'static'
         ),
-        sprites(
-          graphNodes.map(([x, y], index) => dot(x, y, 2, 'primary', 0.95, index / 5)),
+        createSprites(
+          graphNodes.map(([x, y], index) => createDotAt(x, y, 2, 'primary', 0.95, index / 5)),
           0.3
         ),
-        strokes([seg(outline(rectangle(66, 36, 98, 64)), 'warm', 0.9, 0.95)], 'static'),
-        strokes(pins, 'static'),
-        fills([{ring: rectangle(72, 42, 92, 58), role: 'warm', alpha: 0.25}], 'pulse'),
-        strokes(stack, 'pulse', 0.35),
-        strokes(
+        createStrokes(
+          [createPlotPath(closeRing(createRectangleRing(66, 36, 98, 64)), 'warm', 0.9, 0.95)],
+          'static'
+        ),
+        createStrokes(pins, 'static'),
+        createFills(
+          [{ring: createRectangleRing(72, 42, 92, 58), role: 'warm', alpha: 0.25}],
+          'pulse'
+        ),
+        createStrokes(stack, 'pulse', 0.35),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [50, 50],
                 [66, 50]
@@ -2998,7 +3105,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.8,
               0.9
             ),
-            seg(
+            createPlotPath(
               [
                 [98, 50],
                 [112, 50],
@@ -3013,14 +3120,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.4,
           1
         ),
-        sprites([dot(124, 26, 1.6, 'cool', 0.8)], 0.4)
+        createSprites([createDotAt(124, 26, 1.6, 'cool', 0.8)], 0.4)
       ];
     }
   },
 
   // Node durations on a GPU timeline, with the short CPU encode time above each node.
   'computation-metrics': {
-    parameters: [slider('nodes', 'Nodes', 4, 12, 1, 8)],
+    parameters: [createSlider('nodes', 'Nodes', 4, 12, 1, 8)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('durations');
@@ -3037,7 +3144,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const width = (duration / total) * 126;
         const share = duration / maximum;
         gpu.push(
-          seg(
+          createPlotPath(
             [
               [cursor + 0.6, 60],
               [cursor + width - 0.6, 60]
@@ -3049,7 +3156,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           )
         );
         cpu.push(
-          seg(
+          createPlotPath(
             [
               [cursor + 0.6, 34],
               [cursor + 0.6 + Math.min(width * 0.35, 4), 34]
@@ -3060,14 +3167,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             index / count
           )
         );
-        marks.push(dot(cursor, 76, 0.8, 'dim', 0.7));
+        marks.push(createDotAt(cursor, 76, 0.8, 'dim', 0.7));
         cursor += width;
       });
-      marks.push(dot(cursor, 76, 0.8, 'dim', 0.7));
+      marks.push(createDotAt(cursor, 76, 0.8, 'dim', 0.7));
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [14, 76],
                 [140, 76]
@@ -3076,7 +3183,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
               0.3,
               0.5
             ),
-            seg(
+            createPlotPath(
               [
                 [14, 34],
                 [140, 34]
@@ -3088,11 +3195,11 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ],
           'static'
         ),
-        strokes(cpu, 'static'),
-        strokes(gpu, 'pulse', 0.3),
-        strokes(
+        createStrokes(cpu, 'static'),
+        createStrokes(gpu, 'pulse', 0.3),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [14, 60],
                 [140, 60]
@@ -3106,14 +3213,14 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.25,
           0.6
         ),
-        sprites(marks, 0)
+        createSprites(marks, 0)
       ];
     }
   },
 
   // Snapshot frames hang off the nodes of the run that produced them.
   'computation-captures': {
-    parameters: [slider('captures', 'Captures', 1, 6, 1, 3)],
+    parameters: [createSlider('captures', 'Captures', 1, 6, 1, 3)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('frames');
@@ -3127,11 +3234,18 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         const x = 20 + index * 24;
         const captured = index < count;
         nodes.push(
-          dot(x, 24, captured ? 2.6 : 2, captured ? 'warm' : 'primary', 0.95, index / columns)
+          createDotAt(
+            x,
+            24,
+            captured ? 2.6 : 2,
+            captured ? 'warm' : 'primary',
+            0.95,
+            index / columns
+          )
         );
         if (!captured) continue;
         hangers.push(
-          seg(
+          createPlotPath(
             [
               [x, 27],
               [x, 50]
@@ -3142,11 +3256,13 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             index / columns
           )
         );
-        frameOutlines.push(seg(outline(rectangle(x - 8, 50, x + 8, 70)), 'violet', 0.7, 0.9));
+        frameOutlines.push(
+          createPlotPath(closeRing(createRectangleRing(x - 8, 50, x + 8, 70)), 'violet', 0.7, 0.9)
+        );
         for (let row = 0; row < 4; row++) {
           for (let column = 0; column < 3; column++) {
             pixels.push(
-              dot(
+              createDotAt(
                 x - 5 + column * 5,
                 54 + row * 4.4,
                 1.3,
@@ -3159,9 +3275,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         }
       }
       return [
-        strokes(
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [10, 24],
                 [150, 24]
@@ -3175,17 +3291,17 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.3,
           1.2
         ),
-        strokes(hangers, 'flow', 0.4, 0.8),
-        strokes(frameOutlines, 'static'),
-        sprites(pixels, 0.35),
-        sprites(nodes, 0.3)
+        createStrokes(hangers, 'flow', 0.4, 0.8),
+        createStrokes(frameOutlines, 'static'),
+        createSprites(pixels, 0.35),
+        createSprites(nodes, 0.3)
       ];
     }
   },
 
   // One arena buffer divided into slots; frames from the graph nodes fill the slots in order.
   'snapshot-arena': {
-    parameters: [slider('frames', 'Frames stored', 1, 12, 1, 7)],
+    parameters: [createSlider('frames', 'Frames stored', 1, 12, 1, 7)],
     pointer: 'none',
     build: ({p}) => {
       const slotCount = 12;
@@ -3197,15 +3313,20 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const links: PathItem[] = [];
       for (let slot = 0; slot < slotCount; slot++) {
         const left = 16 + slot * slotWidth;
-        const ring = rectangle(left + 0.6, 62, left + slotWidth - 0.6, 82);
+        const ring = createRectangleRing(left + 0.6, 62, left + slotWidth - 0.6, 82);
         lines.push(
-          seg(outline(ring), slot < filled ? 'warm' : 'dim', 0.5, slot < filled ? 0.9 : 0.4)
+          createPlotPath(
+            closeRing(ring),
+            slot < filled ? 'warm' : 'dim',
+            0.5,
+            slot < filled ? 0.9 : 0.4
+          )
         );
         if (slot < filled) {
           slots.push({ring, role: getRoleCycle(slot), alpha: 0.4, phase: slot / slotCount});
           const source = chain[slot % chain.length];
           links.push(
-            seg(
+            createPlotPath(
               [
                 [source[0], 26],
                 [source[0], 40],
@@ -3221,25 +3342,30 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         }
       }
       return [
-        fills(slots, 'pulse'),
-        strokes(lines, 'static'),
-        strokes(links, 'flow', 0.3, 0.7),
-        strokes(
-          chain.slice(1).map((point, index) => seg([chain[index], point], 'primary', 0.7, 0.85)),
+        createFills(slots, 'pulse'),
+        createStrokes(lines, 'static'),
+        createStrokes(links, 'flow', 0.3, 0.7),
+        createStrokes(
+          chain
+            .slice(1)
+            .map((point, index) => createPlotPath([chain[index], point], 'primary', 0.7, 0.85)),
           'static'
         ),
-        sprites(
-          chain.map(([x, y], index) => dot(x, y, 2.2, 'primary', 0.95, index / 6)),
+        createSprites(
+          chain.map(([x, y], index) => createDotAt(x, y, 2.2, 'primary', 0.95, index / 6)),
           0.3
         ),
-        sprites([dot(16 + Math.min(filled, slotCount) * slotWidth, 88, 1.4, 'hot')], 0.7)
+        createSprites(
+          [createDotAt(16 + Math.min(filled, slotCount) * slotWidth, 88, 1.4, 'hot')],
+          0.7
+        )
       ];
     }
   },
 
   // A tap on the edge between two nodes copies a view off the main flow into a captured square.
   'snapshot-tap': {
-    parameters: [slider('afterNode', 'Tap after node', 0, 2, 1, 1)],
+    parameters: [createSlider('afterNode', 'Tap after node', 0, 2, 1, 1)],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('view');
@@ -3251,12 +3377,12 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       ];
       const index = Math.round(p.afterNode);
       const tapX = (nodes[index][0] + nodes[index + 1][0]) / 2;
-      const view = rectangle(tapX - 12, 62, tapX + 12, 86);
+      const view = createRectangleRing(tapX - 12, 62, tapX + 12, 86);
       const pixels: SpriteItem[] = [];
       for (let row = 0; row < 4; row++)
         for (let column = 0; column < 5; column++)
           pixels.push(
-            dot(
+            createDotAt(
               tapX - 8 + column * 4,
               67 + row * 5,
               1.5,
@@ -3266,10 +3392,10 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             )
           );
       return [
-        strokes([seg(nodes, 'primary', 0.9, 0.7)], 'flow', 0.35, 1.4),
-        strokes(
+        createStrokes([createPlotPath(nodes, 'primary', 0.9, 0.7)], 'flow', 0.35, 1.4),
+        createStrokes(
           [
-            seg(
+            createPlotPath(
               [
                 [tapX, 32],
                 [tapX, 62]
@@ -3283,12 +3409,12 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           0.5,
           0.9
         ),
-        strokes([seg(outline(view), 'violet', 0.8, 0.9)], 'static'),
-        sprites(pixels, 0.3),
-        sprites(
+        createStrokes([createPlotPath(closeRing(view), 'violet', 0.8, 0.9)], 'static'),
+        createSprites(pixels, 0.3),
+        createSprites(
           [
             ...nodes.map(([x, y], order) =>
-              dot(
+              createDotAt(
                 x,
                 y,
                 order === index || order === index + 1 ? 2.8 : 2,
@@ -3297,7 +3423,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
                 order / 4
               )
             ),
-            dot(tapX, 32, 2.6, 'violet', 1)
+            createDotAt(tapX, 32, 2.6, 'violet', 1)
           ],
           0.35
         )
@@ -3307,7 +3433,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
 
   // A selection mask carried across a relation: selected child rows select their parent rows.
   'transfer-mask': {
-    parameters: [slider('width', 'Selection', 8, 60, 2, 26, 'px')],
+    parameters: [createSlider('width', 'Selection', 8, 60, 2, 26, 'px')],
     pointer: 'sticky',
     build: ({fork, p, pointer}) => {
       const random = fork('relation');
@@ -3330,7 +3456,7 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const quiet: PathItem[] = [];
       const active: PathItem[] = [];
       parentOf.forEach((parent, index) => {
-        const link = seg(
+        const link = createPlotPath(
           [
             [28, leftY(index)],
             [60, leftY(index)],
@@ -3345,21 +3471,21 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
         (selected[index] ? active : quiet).push(link);
       });
       return [
-        fills(
+        createFills(
           [
             {
-              ring: rectangle(10, center - p.width / 2, 36, center + p.width / 2),
+              ring: createRectangleRing(10, center - p.width / 2, 36, center + p.width / 2),
               role: 'warm',
               alpha: 0.1
             }
           ],
           'pulse'
         ),
-        strokes(quiet, 'static'),
-        strokes(active, 'flow', 0.4, 1),
-        sprites(
+        createStrokes(quiet, 'static'),
+        createStrokes(active, 'flow', 0.4, 1),
+        createSprites(
           Array.from({length: leftCount}, (_, index) =>
-            dot(
+            createDotAt(
               24,
               leftY(index),
               selected[index] ? 2.4 : 1.7,
@@ -3370,9 +3496,9 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           ),
           0.3
         ),
-        sprites(
+        createSprites(
           Array.from({length: rightCount}, (_, index) =>
-            dot(
+            createDotAt(
               136,
               rightY(index),
               carried[index] ? 3.4 : 2.4,

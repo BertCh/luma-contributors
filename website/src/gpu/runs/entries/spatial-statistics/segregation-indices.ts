@@ -12,8 +12,6 @@ import {createTracts, uploadSpatialWeights} from '../../inputs';
 import {uploadTractMesh} from './shared/tract-rates';
 import {parameters} from './segregation-indices.parameters';
 
-const SPATIAL_FORMS = ['environment', 'smoothed-population'] as const;
-
 export default defineOperationRun({
   parameters,
   caption: 'Local entropy per tract: dark is one dominant group, bright is mixed.',
@@ -45,7 +43,6 @@ export default defineOperationRun({
         groupCount,
         groupCounts: groupCounts.view,
         scales: [isSpatial ? uploadSpatialWeights(builder, tracts.contiguity) : null],
-        spatialForm: SPATIAL_FORMS[values.spatialForm],
         output: {
           indices: indices.view,
           localEnvironment: environment.view,
@@ -72,7 +69,7 @@ export default defineOperationRun({
       }
     };
   },
-  rebuildOn: ['groupCount', 'scale', 'spatialForm'],
+  rebuildOn: ['groupCount', 'scale'],
   draw: ({inputs, outputs, values}) => [
     {
       layer: 'polygons',

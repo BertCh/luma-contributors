@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Function-specific previews for the catalog group src/catalog/entries/terrain-hydrology-flow.ts, keyed by entry id.
+// Function-specific previews for the catalog group src/catalog/entries/terrain-hydrology-flow.ts, keyed secondY entry id.
 
 import {
   FIELD_COLUMNS,
@@ -25,6 +25,15 @@ import {
   type BuildContext,
   type EntryPreview
 } from '../helpers.ts';
+import {isInsideRing} from '../geometry.ts';
+import {
+  createChoice,
+  createFillLayer,
+  createSpriteLayer,
+  createStrokeLayer,
+  createDot,
+  createSlider
+} from '../layers.ts';
 import {
   SCENE_HEIGHT,
   SCENE_WIDTH,
@@ -36,9 +45,7 @@ import {
   type SpriteItem
 } from '../types.ts';
 
-// ---------------------------------------------------------------------------------------------
 // Shared terrain model: a coarse DEM with priority-flood filling, D8 routing and accumulation.
-// ---------------------------------------------------------------------------------------------
 
 const GRID_COLUMNS = 40;
 const GRID_ROWS = 25;
@@ -155,7 +162,7 @@ function fillDepressions(elevation: Float32Array): Float32Array {
 }
 
 type Terrain = {
-  /** Fine DEM, 128 by 80, 0..1. */
+  /** Fine DEM, 128 secondY 80, 0..1. */
   fine: Float32Array;
   elevation: Float32Array;
   filled: Float32Array;
@@ -341,10 +348,6 @@ function getAccumulationClass(accumulation: number, threshold: number): number {
   return clamp(Math.floor(Math.log2(accumulation / threshold)), 0, 4);
 }
 
-function sprite(point: Point, radius: number, role: Role, alpha = 0.9, phase = 0): SpriteItem {
-  return {x: point[0], y: point[1], radius, role, alpha, phase};
-}
-
 function getMaxValue(values: ArrayLike<number>): number {
   let maximum = -Infinity;
   for (let index = 0; index < values.length; index++) maximum = Math.max(maximum, values[index]);
@@ -380,19 +383,9 @@ function findNearestCell(mask: Uint8Array, point: Point): number {
   return best;
 }
 
-const THRESHOLD_PARAMETER = {
-  id: 'threshold',
-  label: 'Stream threshold',
-  min: 4,
-  max: 60,
-  step: 2,
-  default: 12,
-  unit: 'cells'
-};
+const THRESHOLD_PARAMETER = createSlider('threshold', 'Stream threshold', 4, 60, 2, 12, 'cells');
 
-// ---------------------------------------------------------------------------------------------
-// Fractional flow: eight neighbour fractions (MFD style) used by several entries.
-// ---------------------------------------------------------------------------------------------
+// Fractional flow: eight neighbour fractions (MFD style) used secondY several entries.
 
 function getFlowFractions(terrain: Terrain, cell: number, exponent: number): number[] {
   const fractions = new Array<number>(8).fill(0);
@@ -420,10 +413,13 @@ function createFanPaths(
   const items: PathItem[] = [];
   fractions.forEach((fraction, index) => {
     if (fraction < 0.025) return;
-    const [dc, dr, distance] = NEIGHBOR_OFFSETS[index];
+    const [columnOffset, rowOffset, distance] = NEIGHBOR_OFFSETS[index];
     const reach = length * (0.3 + 0.7 * Math.sqrt(fraction));
     items.push({
-      points: [center, [center[0] + (dc / distance) * reach, center[1] + (dr / distance) * reach]],
+      points: [
+        center,
+        [center[0] + (columnOffset / distance) * reach, center[1] + (rowOffset / distance) * reach]
+      ],
       role,
       width: width * (0.4 + fraction * 1.1),
       alpha: 0.3 + 0.7 * fraction,
@@ -433,9 +429,7 @@ function createFanPaths(
   return items;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Contours: marching squares with stitched polylines.
-// ---------------------------------------------------------------------------------------------
 
 type Contour = {points: Point[]; closed: boolean};
 
@@ -555,27 +549,10 @@ function traceContours(
   return contours.filter(contour => contour.points.length > 2);
 }
 
-function isPointInRing(point: Point, ring: Point[]): boolean {
-  let inside = false;
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
-    const [ax, ay] = ring[index];
-    const [bx, by] = ring[previous];
-    if (
-      ay > point[1] !== by > point[1] &&
-      point[0] < ((bx - ax) * (point[1] - ay)) / (by - ay) + ax
-    ) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
 const SURFACE_COLUMNS = 64;
 const SURFACE_ROWS = 40;
 
-// ---------------------------------------------------------------------------------------------
 // Vector fields: uniform wind plus vortices.
-// ---------------------------------------------------------------------------------------------
 
 type Vortex = {x: number; y: number; strength: number; radius: number};
 
@@ -641,7 +618,7 @@ function traceVectorLine(
   return points;
 }
 
-/** Evenly spaced streamlines by seed and reject, with a spatial hash of accepted samples. */
+/** Evenly spaced streamlines secondY seed and reject, with a spatial hash of accepted samples. */
 function createEvenStreamlines(vortices: Vortex[], separation: number): Point[][] {
   const hashSize = Math.max(1, separation);
   const hashColumns = Math.ceil(SCENE_WIDTH / hashSize) + 3;
@@ -651,9 +628,9 @@ function createEvenStreamlines(vortices: Vortex[], separation: number): Point[][
   const isNear = (point: Point, distance: number) => {
     const column = Math.floor(point[0] / hashSize) + 1;
     const row = Math.floor(point[1] / hashSize) + 1;
-    for (let dr = -1; dr <= 1; dr++) {
-      for (let dc = -1; dc <= 1; dc++) {
-        const bucket = buckets.get((row + dr) * hashColumns + column + dc);
+    for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
+      for (let columnOffset = -1; columnOffset <= 1; columnOffset++) {
+        const bucket = buckets.get((row + rowOffset) * hashColumns + column + columnOffset);
         if (!bucket) continue;
         for (const sample of bucket) {
           if ((sample[0] - point[0]) ** 2 + (sample[1] - point[1]) ** 2 < distance * distance) {
@@ -686,9 +663,7 @@ function createEvenStreamlines(vortices: Vortex[], separation: number): Point[][
   return lines;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Cost surface: friction, Dijkstra accumulation and back-links.
-// ---------------------------------------------------------------------------------------------
 
 const ROAD_START: Point = [0, 42];
 const ROAD_END: Point = [160, 52];
@@ -697,9 +672,9 @@ const BARRIER_RIGHT = 96;
 const BRIDGE_TOP = 58;
 const BRIDGE_BOTTOM = 70;
 const FRICTION_ZONES = [
-  {x: 40, y: 72, rx: 22, ry: 10},
-  {x: 124, y: 26, rx: 20, ry: 12},
-  {x: 58, y: 18, rx: 14, ry: 8}
+  {x: 40, y: 72, radiusX: 22, radiusY: 10},
+  {x: 124, y: 26, radiusX: 20, radiusY: 12},
+  {x: 58, y: 18, radiusX: 14, radiusY: 8}
 ];
 
 function getFriction(x: number, y: number, obstacle: number): number {
@@ -708,7 +683,8 @@ function getFriction(x: number, y: number, obstacle: number): number {
   }
   if (getSegmentDistance([x, y], ROAD_START, ROAD_END) < 2.6) return 0.3;
   for (const zone of FRICTION_ZONES) {
-    if (((x - zone.x) / zone.rx) ** 2 + ((y - zone.y) / zone.ry) ** 2 < 1) return obstacle;
+    if (((x - zone.x) / zone.radiusX) ** 2 + ((y - zone.y) / zone.radiusY) ** 2 < 1)
+      return obstacle;
   }
   return 1;
 }
@@ -716,7 +692,7 @@ function getFriction(x: number, y: number, obstacle: number): number {
 function createFrictionLayer(): PreviewLayer[] {
   const items: PolygonItem[] = FRICTION_ZONES.map(zone => ({
     ring: createCircle(0, 0, 1, 28).map(
-      ([x, y]): Point => [zone.x + x * zone.rx, zone.y + y * zone.ry]
+      ([x, y]): Point => [zone.x + x * zone.radiusX, zone.y + y * zone.radiusY]
     ),
     role: 'violet',
     alpha: 0.2
@@ -744,10 +720,9 @@ function createFrictionLayer(): PreviewLayer[] {
     }
   );
   return [
-    {type: 'fills', items, animation: 'static', blend: 'add'},
-    {
-      type: 'strokes',
-      items: [
+    createFillLayer(items, {animation: 'static', blend: 'add'}),
+    createStrokeLayer(
+      [
         {
           points: [ROAD_START, ROAD_END],
           role: 'cool',
@@ -755,9 +730,8 @@ function createFrictionLayer(): PreviewLayer[] {
           alpha: 0.55
         }
       ],
-      animation: 'static',
-      blend: 'add'
-    }
+      {animation: 'static', blend: 'add'}
+    )
   ];
 }
 
@@ -789,24 +763,12 @@ function solveCostSurface(obstacle: number, source: number) {
   return {cost, previous};
 }
 
-// ---------------------------------------------------------------------------------------------
-// Entries
-// ---------------------------------------------------------------------------------------------
-
 export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
   // The whole pipeline: fill, route, accumulate, threshold.
   'terrain-flow': {
     parameters: [
       THRESHOLD_PARAMETER,
-      {
-        id: 'fill',
-        label: 'Depressions',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 1,
-        options: ['Raw DEM', 'Filled']
-      }
+      createChoice('fill', 'Depressions', ['Raw DEM', 'Filled'], 1)
     ],
     pointer: 'none',
     build: context => {
@@ -819,27 +781,24 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
       const markers: SpriteItem[] = [];
       for (let cell = 0; cell < GRID_COUNT; cell++) {
         if (p.fill >= 1 && terrain.filled[cell] - terrain.elevation[cell] > 0.01) {
-          markers.push(sprite(getCellCenter(cell), 1.3, 'cool', 0.45, (cell % 7) / 7));
+          markers.push(createDot(getCellCenter(cell), 'cool', 1.3, 0.45, (cell % 7) / 7));
         } else if (p.fill < 1 && !isBorderCell(cell) && terrain.receiver[cell] < 0) {
-          markers.push(sprite(getCellCenter(cell), 2.6, 'hot', 0.85, (cell % 5) / 5));
+          markers.push(createDot(getCellCenter(cell), 'hot', 2.6, 0.85, (cell % 5) / 5));
         } else if (mask[cell] && terrain.receiver[cell] < 0) {
-          markers.push(sprite(getCellCenter(cell), 2.4, 'warm', 0.95, 0));
+          markers.push(createDot(getCellCenter(cell), 'warm', 2.4, 0.95, 0));
         }
       }
       return [
         createReliefLayer(terrain, 3),
-        {
-          type: 'strokes',
-          items: createStreamItems(
+        createStrokeLayer(
+          createStreamItems(
             paths,
             streamClass => (streamClass < 2 ? 'cool' : 'primary'),
             streamClass => 0.6 + streamClass * 0.5
           ),
-          animation: 'flow',
-          speed: 0.35,
-          blend: 'add'
-        },
-        {type: 'sprites', items: markers, pulse: 0.5}
+          {animation: 'flow', speed: 0.35, blend: 'add'}
+        ),
+        createSpriteLayer(markers, {pulse: 0.5})
       ];
     }
   },
@@ -902,34 +861,28 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.08,
           speed: 0.5
         },
-        {
-          type: 'strokes',
-          items: createStreamItems(
+        createStrokeLayer(
+          createStreamItems(
             outsidePaths,
             () => 'dim',
             () => 0.6,
             0.5
           ),
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: createStreamItems(
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          createStreamItems(
             insidePaths,
             () => 'warm',
             () => 1.1
           ),
-          animation: 'flow',
-          speed: 0.35,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.35, blend: 'add'}
+        )
       ];
       if (pour >= 0) {
-        layers.push({
-          type: 'sprites',
-          items: [sprite(getCellCenter(pour), 3.6, 'hot', 1, 0)],
-          pulse: 0.4
-        });
+        layers.push(
+          createSpriteLayer([createDot(getCellCenter(pour), 'hot', 3.6, 1, 0)], {pulse: 0.4})
+        );
       }
       return layers;
     }
@@ -952,7 +905,7 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
         const value = maxInflow[cell] === 0 ? 1 : maxInflow[cell] + (maxCount[cell] >= 2 ? 1 : 0);
         order[cell] = value;
         maximumOrder = Math.max(maximumOrder, value);
-        if (maxCount[cell] >= 2) junctions.push(sprite(getCellCenter(cell), 2.2, 'ink', 0.9, 0));
+        if (maxCount[cell] >= 2) junctions.push(createDot(getCellCenter(cell), 'ink', 2.2, 0.9, 0));
         const next = terrain.receiver[cell];
         if (next < 0 || !mask[next]) continue;
         if (value > maxInflow[next]) {
@@ -965,18 +918,15 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
       const paths = traceStreamPaths(terrain, mask, cell => order[cell]);
       return [
         createReliefLayer(terrain, 1.5),
-        {
-          type: 'strokes',
-          items: createStreamItems(
+        createStrokeLayer(
+          createStreamItems(
             paths,
             streamClass => getClassRole(streamClass - 1, maximumOrder),
             streamClass => 0.5 + (streamClass - 1) * 1
           ),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {type: 'sprites', items: junctions, pulse: 0.5}
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer(junctions, {pulse: 0.5})
       ];
     }
   },
@@ -985,15 +935,7 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
   'terrain-height-above-drainage': {
     parameters: [
       THRESHOLD_PARAMETER,
-      {
-        id: 'cutoff',
-        label: 'Floodplain height',
-        min: 4,
-        max: 60,
-        step: 2,
-        default: 8,
-        unit: '%'
-      }
+      createSlider('cutoff', 'Floodplain height', 4, 60, 2, 8, '%')
     ],
     pointer: 'none',
     build: context => {
@@ -1038,45 +980,30 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.12,
           speed: 0.5
         },
-        {
-          type: 'strokes',
-          items: createStreamItems(
+        createStrokeLayer(
+          createStreamItems(
             paths,
             () => 'primary',
             () => 1
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths(slopes, 'warm', 0.8, 0.9),
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(toPaths(slopes, 'warm', 0.8, 0.9), {
           animation: 'flow',
           speed: 0.3,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: slopes.map(path => sprite(path[0], 1.6, 'warm', 0.95, 0)),
-          pulse: 0.4
-        }
+        }),
+        createSpriteLayer(
+          slopes.map(path => createDot(path[0], 'warm', 1.6, 0.95, 0)),
+          {pulse: 0.4}
+        )
       ];
     }
   },
 
   // Wetness, stream power or slope derived from accumulation and slope.
   'terrain-hydrologic-indices': {
-    parameters: [
-      {
-        id: 'index',
-        label: 'Index',
-        min: 0,
-        max: 2,
-        step: 1,
-        default: 0,
-        options: ['Wetness', 'Stream power', 'Slope']
-      }
-    ],
+    parameters: [createChoice('index', 'Index', ['Wetness', 'Stream power', 'Slope'])],
     pointer: 'none',
     build: context => {
       const terrain = createTerrain(context);
@@ -1115,46 +1042,34 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
         const strength = (level - cutoff) / (1 - cutoff);
         const [x, y] = getCellCenter(cell);
         glow.push(
-          sprite([x, y], 1.8 + 3.4 * strength, role, 0.35 + 0.65 * strength, (cell % 9) / 9)
+          createDot([x, y], role, 1.8 + 3.4 * strength, 0.35 + 0.65 * strength, (cell % 9) / 9)
         );
       }
       const layers: PreviewLayer[] = [createReliefLayer(terrain, mode === 2 ? 4 : 2)];
       if (mode !== 2) {
-        layers.push({
-          type: 'strokes',
-          items: streams.map(
-            (path, index): PathItem => ({
-              points: smoothPath(path.points, 2),
-              role: mode === 0 ? 'primary' : 'warm',
-              width: mode === 0 ? 1.1 : 0.7,
-              alpha: 0.55,
-              phase: (index * 0.37) % 1
-            })
-          ),
-          animation: 'flow',
-          speed: 0.35,
-          blend: 'add'
-        });
+        layers.push(
+          createStrokeLayer(
+            streams.map(
+              (path, index): PathItem => ({
+                points: smoothPath(path.points, 2),
+                role: mode === 0 ? 'primary' : 'warm',
+                width: mode === 0 ? 1.1 : 0.7,
+                alpha: 0.55,
+                phase: (index * 0.37) % 1
+              })
+            ),
+            {animation: 'flow', speed: 0.35, blend: 'add'}
+          )
+        );
       }
-      layers.push({type: 'sprites', items: glow, pulse: mode === 1 ? 0.5 : 0.3});
+      layers.push(createSpriteLayer(glow, {pulse: mode === 1 ? 0.5 : 0.3}));
       return layers;
     }
   },
 
   // Distance along the D8 path to the stream; a probe shows one path.
   'terrain-flow-distance': {
-    parameters: [
-      THRESHOLD_PARAMETER,
-      {
-        id: 'reach',
-        label: 'Reach',
-        min: 20,
-        max: 100,
-        step: 5,
-        default: 70,
-        unit: '%'
-      }
-    ],
+    parameters: [THRESHOLD_PARAMETER, createSlider('reach', 'Reach', 20, 100, 5, 70, '%')],
     pointer: 'hover',
     build: context => {
       const {p, pointer} = context;
@@ -1187,29 +1102,21 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           cutoff: p.reach / 100,
           speed: 0.12
         },
-        {
-          type: 'strokes',
-          items: createStreamItems(
+        createStrokeLayer(
+          createStreamItems(
             paths,
             () => 'ink',
             () => 0.7,
             0.7
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: toPaths([smoothPath(probePath, 1)], 'warm', 1.3, 1),
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(toPaths([smoothPath(probePath, 1)], 'warm', 1.3, 1), {
           animation: 'flow',
           speed: 0.35,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [sprite(probePath[0], 3, 'warm', 1, 0)],
-          pulse: 0.4
-        }
+        }),
+        createSpriteLayer([createDot(probePath[0], 'warm', 3, 1, 0)], {pulse: 0.4})
       ];
     }
   },
@@ -1234,12 +1141,12 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
         if (!isNode(cell)) continue;
         const center = getCellCenter(cell);
         if (terrain.receiver[cell] < 0 || !mask[terrain.receiver[cell]]) {
-          markers.push(sprite(center, 2.8, 'hot', 0.95, 0));
+          markers.push(createDot(center, 'hot', 2.8, 0.95, 0));
           continue;
         }
         const isHead = inflow[cell] === 0;
         markers.push(
-          sprite(center, isHead ? 1.7 : 2.5, isHead ? 'cool' : 'warm', 0.95, (cell % 9) / 9)
+          createDot(center, isHead ? 'cool' : 'warm', isHead ? 1.7 : 2.5, 0.95, (cell % 9) / 9)
         );
         const points: Point[] = [center];
         let current = cell;
@@ -1254,44 +1161,26 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
       }
       const roles: Role[] = ['primary', 'cool', 'violet', 'primary'];
       return [
-        {
-          type: 'strokes',
-          items: reaches.map((points, index) => ({
+        createStrokeLayer(
+          reaches.map((points, index) => ({
             points,
             role: roles[index % roles.length],
             width: 1.2,
             alpha: 0.9,
             phase: (index * 0.29) % 1
           })),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {type: 'sprites', items: markers, pulse: 0.4}
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer(markers, {pulse: 0.4})
       ];
     }
   },
 
-  // Wind deflected by relief: streamlines bend around hills.
+  // Wind deflected secondY relief: streamlines bend around hills.
   'terrain-flow-field': {
     parameters: [
-      {
-        id: 'direction',
-        label: 'Wind direction',
-        min: -60,
-        max: 60,
-        step: 5,
-        default: 10,
-        unit: '°'
-      },
-      {
-        id: 'deflection',
-        label: 'Deflection',
-        min: 0,
-        max: 2,
-        step: 0.1,
-        default: 1.2
-      }
+      createSlider('direction', 'Wind direction', -60, 60, 5, 10, '°'),
+      createSlider('deflection', 'Deflection', 0, 2, 0.1, 1.2)
     ],
     pointer: 'none',
     build: context => {
@@ -1328,18 +1217,18 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
         let y = 50 - windY * 110 + windX * offset;
         const points: Point[] = [];
         for (let step = 0; step < 150; step++) {
-          const gx = (getHeight(x + 1.5, y) - getHeight(x - 1.5, y)) / 3;
-          const gy = (getHeight(x, y + 1.5) - getHeight(x, y - 1.5)) / 3;
-          const gradient = Math.hypot(gx, gy) || 1;
-          const into = Math.max(0, windX * (gx / gradient) + windY * (gy / gradient));
+          const gradientX = (getHeight(x + 1.5, y) - getHeight(x - 1.5, y)) / 3;
+          const gradientY = (getHeight(x, y + 1.5) - getHeight(x, y - 1.5)) / 3;
+          const gradient = Math.hypot(gradientX, gradientY) || 1;
+          const into = Math.max(0, windX * (gradientX / gradient) + windY * (gradientY / gradient));
           const factor = clamp(gradient * 45, 0, 1) * p.deflection;
-          let vx = windX - factor * into * (gx / gradient);
-          let vy = windY - factor * into * (gy / gradient);
-          const length = Math.hypot(vx, vy) || 1;
-          vx /= length;
-          vy /= length;
-          x += vx * 2;
-          y += vy * 2;
+          let velocityX = windX - factor * into * (gradientX / gradient);
+          let velocityY = windY - factor * into * (gradientY / gradient);
+          const length = Math.hypot(velocityX, velocityY) || 1;
+          velocityX /= length;
+          velocityY /= length;
+          x += velocityX * 2;
+          y += velocityY * 2;
           if (x >= 0 && x <= SCENE_WIDTH && y >= 0 && y <= SCENE_HEIGHT) points.push([x, y]);
           else if (points.length > 0) break;
         }
@@ -1356,36 +1245,23 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 4,
           light: getLightAngle(315)
         },
-        {
-          type: 'strokes',
-          items: strands.map((points, index) => ({
+        createStrokeLayer(
+          strands.map((points, index) => ({
             points,
             role: 'primary' as Role,
             width: 0.8,
             alpha: 0.85,
             phase: (index * 0.13) % 1
           })),
-          animation: 'flow',
-          speed: 0.28,
-          trail: 1.4,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.28, trail: 1.4, blend: 'add'}
+        )
       ];
     }
   },
 
   // Eight neighbour fractions per cell; the exponent sharpens D8-like or spreads MFD-like.
   'terrain-flow-fractions': {
-    parameters: [
-      {
-        id: 'exponent',
-        label: 'Flow exponent',
-        min: 1,
-        max: 12,
-        step: 0.5,
-        default: 3
-      }
-    ],
+    parameters: [createSlider('exponent', 'Flow exponent', 1, 12, 0.5, 3)],
     pointer: 'hover',
     build: context => {
       const {p, pointer} = context;
@@ -1402,38 +1278,23 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           fans.push(
             ...createFanPaths(center, getFlowFractions(terrain, cell, p.exponent), 9, 'cool', 1)
           );
-          centers.push(sprite(center, 0.9, 'dim', 0.7, 0));
+          centers.push(createDot(center, 'dim', 0.9, 0.7, 0));
         }
       }
       return [
-        {
-          type: 'strokes',
-          items: fans,
-          animation: 'flow',
-          speed: 0.5,
-          trail: 0.8,
-          blend: 'add'
-        },
-        {type: 'sprites', items: centers},
-        {
-          type: 'strokes',
-          items: createFanPaths(
+        createStrokeLayer(fans, {animation: 'flow', speed: 0.5, trail: 0.8, blend: 'add'}),
+        createSpriteLayer(centers),
+        createStrokeLayer(
+          createFanPaths(
             probeCenter,
             getFlowFractions(terrain, probe, p.exponent),
             17,
             'warm',
             2.2
           ),
-          animation: 'flow',
-          speed: 0.5,
-          trail: 1.2,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [sprite(probeCenter, 2.6, 'warm', 1, 0)],
-          pulse: 0.4
-        }
+          {animation: 'flow', speed: 0.5, trail: 1.2, blend: 'add'}
+        ),
+        createSpriteLayer([createDot(probeCenter, 'warm', 2.6, 1, 0)], {pulse: 0.4})
       ];
     }
   },
@@ -1441,15 +1302,7 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
   // Mass, expected distance or outlet probability pushed through the fraction DAG.
   'terrain-branching-flow': {
     parameters: [
-      {
-        id: 'quantity',
-        label: 'Propagate',
-        min: 0,
-        max: 2,
-        step: 1,
-        default: 0,
-        options: ['Mass', 'Flow distance', 'Outlet probability']
-      }
+      createChoice('quantity', 'Propagate', ['Mass', 'Flow distance', 'Outlet probability'])
     ],
     pointer: 'sticky',
     build: context => {
@@ -1502,7 +1355,7 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           });
         }
         for (let cell = 0; cell < GRID_COUNT; cell++) value[cell] = value[cell] ** 0.3;
-        // Seeded walkers pick each next cell by the flow fractions, tracing the braided fan.
+        // Seeded walkers pick each next cell secondY the flow fractions, tracing the braided fan.
         const walker = context.fork('walkers');
         for (let index = 0; index < 26; index++) {
           let cell = source;
@@ -1558,44 +1411,29 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
         }
       ];
       if (strokes.length > 0) {
-        layers.push({
-          type: 'strokes',
-          items: strokes,
-          animation: 'flow',
-          speed: 0.4,
-          blend: 'add'
-        });
+        layers.push(createStrokeLayer(strokes, {animation: 'flow', speed: 0.4, blend: 'add'}));
       }
-      layers.push({
-        type: 'sprites',
-        items: [
-          sprite(
-            getCellCenter(mode === 2 ? outlet : source),
-            3.4,
-            mode === 0 ? 'ink' : 'warm',
-            1,
-            0
-          )
-        ],
-        pulse: 0.4
-      });
+      layers.push(
+        createSpriteLayer(
+          [
+            createDot(
+              getCellCenter(mode === 2 ? outlet : source),
+              mode === 0 ? 'ink' : 'warm',
+              3.4,
+              1,
+              0
+            )
+          ],
+          {pulse: 0.4}
+        )
+      );
       return layers;
     }
   },
 
   // Tiles resolved in a wave, with streams crossing tile edges through exchanged cells.
   'terrain-tiled-flow': {
-    parameters: [
-      {
-        id: 'tiles',
-        label: 'Tiles across',
-        min: 2,
-        max: 8,
-        step: 1,
-        default: 4
-      },
-      THRESHOLD_PARAMETER
-    ],
+    parameters: [createSlider('tiles', 'Tiles across', 2, 8, 1, 4), THRESHOLD_PARAMETER],
     pointer: 'none',
     build: context => {
       const {p} = context;
@@ -1610,9 +1448,9 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
       const edges: PathItem[] = [];
       const width = SCENE_WIDTH / tilesX;
       const height = SCENE_HEIGHT / tilesY;
-      for (let ty = 0; ty < tilesY; ty++) {
-        for (let tx = 0; tx < tilesX; tx++) {
-          const [x, y] = [tx * width, ty * height];
+      for (let tileRow = 0; tileRow < tilesY; tileRow++) {
+        for (let tileColumn = 0; tileColumn < tilesX; tileColumn++) {
+          const [x, y] = [tileColumn * width, tileRow * height];
           tiles.push({
             ring: [
               [x + 0.8, y + 0.8],
@@ -1622,26 +1460,26 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
             ],
             role: 'primary',
             alpha: 0.09,
-            phase: (tx + ty) / (tilesX + tilesY - 2)
+            phase: (tileColumn + tileRow) / (tilesX + tilesY - 2)
           });
         }
       }
-      for (let tx = 1; tx < tilesX; tx++) {
+      for (let tileColumn = 1; tileColumn < tilesX; tileColumn++) {
         edges.push({
           points: [
-            [tx * width, 0],
-            [tx * width, SCENE_HEIGHT]
+            [tileColumn * width, 0],
+            [tileColumn * width, SCENE_HEIGHT]
           ],
           role: 'dim',
           width: 0.4,
           alpha: 0.6
         });
       }
-      for (let ty = 1; ty < tilesY; ty++) {
+      for (let tileRow = 1; tileRow < tilesY; tileRow++) {
         edges.push({
           points: [
-            [0, ty * height],
-            [SCENE_WIDTH, ty * height]
+            [0, tileRow * height],
+            [SCENE_WIDTH, tileRow * height]
           ],
           role: 'dim',
           width: 0.4,
@@ -1655,44 +1493,37 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
       for (let cell = 0; cell < GRID_COUNT; cell++) {
         const next = terrain.receiver[cell];
         if (!mask[cell] || next < 0 || tileOf(cell) === tileOf(next)) continue;
-        const [ax, ay] = getCellCenter(cell);
-        const [bx, by] = getCellCenter(next);
+        const [firstX, firstY] = getCellCenter(cell);
+        const [secondX, secondY] = getCellCenter(next);
         exchanges.push(
-          sprite([(ax + bx) / 2, (ay + by) / 2], 2, 'warm', 0.95, (tileOf(cell) % 5) / 5)
+          createDot(
+            [(firstX + secondX) / 2, (firstY + secondY) / 2],
+            'warm',
+            2,
+            0.95,
+            (tileOf(cell) % 5) / 5
+          )
         );
       }
       return [
-        {type: 'fills', items: tiles, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: edges, animation: 'static'},
-        {
-          type: 'strokes',
-          items: createStreamItems(
+        createFillLayer(tiles, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(edges, {animation: 'static'}),
+        createStrokeLayer(
+          createStreamItems(
             paths,
             () => 'cool',
             streamClass => 0.7 + streamClass * 0.45
           ),
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {type: 'sprites', items: exchanges, pulse: 0.5}
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer(exchanges, {pulse: 0.5})
       ];
     }
   },
 
   // Two walled pits; the cheapest cut opens only if it fits the bound.
   'terrain-breach': {
-    parameters: [
-      {
-        id: 'maxLength',
-        label: 'Max cut length',
-        min: 10,
-        max: 48,
-        step: 1,
-        default: 28,
-        unit: 'px'
-      }
-    ],
+    parameters: [createSlider('maxLength', 'Max cut length', 10, 48, 1, 28, 'px')],
     pointer: 'none',
     build: context => {
       const {p} = context;
@@ -1727,7 +1558,7 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
       const runoff: PathItem[] = [];
       const markers: SpriteItem[] = [];
       for (const pit of pits) {
-        markers.push(sprite([pit.x, pit.y], 3.2, pit.open ? 'cool' : 'hot', 0.95, 0));
+        markers.push(createDot([pit.x, pit.y], pit.open ? 'cool' : 'hot', 3.2, 0.95, 0));
         if (!pit.open) continue;
         cuts.push({
           points: [[pit.x, pit.y], pit.end],
@@ -1761,38 +1592,16 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 5,
           light: getLightAngle(315)
         },
-        {
-          type: 'strokes',
-          items: cuts,
-          animation: 'draw',
-          speed: 0.25,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: runoff,
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {type: 'sprites', items: markers, pulse: 0.5}
+        createStrokeLayer(cuts, {animation: 'draw', speed: 0.25, blend: 'add'}),
+        createStrokeLayer(runoff, {animation: 'flow', speed: 0.3, blend: 'add'}),
+        createSpriteLayer(markers, {pulse: 0.5})
       ];
     }
   },
 
   // Lakes rise with the stage and merge across sills.
   'terrain-depression-hierarchy': {
-    parameters: [
-      {
-        id: 'stage',
-        label: 'Stage',
-        min: 0,
-        max: 100,
-        step: 2,
-        default: 82,
-        unit: '%'
-      }
-    ],
+    parameters: [createSlider('stage', 'Stage', 0, 100, 2, 82, '%')],
     pointer: 'none',
     build: context => {
       const {p} = context;
@@ -1885,27 +1694,26 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.1,
           speed: 0.5
         },
-        {
-          type: 'strokes',
-          items: links,
-          animation: 'flow',
-          speed: 0.4,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: centers.map(([center, id]) =>
-            sprite(center, id >= 0 ? 2.4 : 1.6, id >= 0 ? 'warm' : 'cool', 0.95, id >= 0 ? 0 : 0.5)
+        createStrokeLayer(links, {animation: 'flow', speed: 0.4, blend: 'add'}),
+        createSpriteLayer(
+          centers.map(([center, id]) =>
+            createDot(
+              center,
+              id >= 0 ? 'warm' : 'cool',
+              id >= 0 ? 2.4 : 1.6,
+              0.95,
+              id >= 0 ? 0 : 0.5
+            )
           ),
-          pulse: 0.4
-        }
+          {pulse: 0.4}
+        )
       ];
     }
   },
 
   // Largest catchments coloured apart, with their hypsometric curves.
   'terrain-catchment-summary': {
-    parameters: [{id: 'count', label: 'Catchments', min: 2, max: 6, step: 1, default: 4}],
+    parameters: [createSlider('count', 'Catchments', 2, 6, 1, 4)],
     pointer: 'none',
     build: context => {
       const count = Math.round(context.p.count);
@@ -1957,7 +1765,7 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           alpha: 0.95,
           phase: rank / count
         });
-        outletSprites.push(sprite(getCellCenter(best), 2.4, role, 0.95, rank / count));
+        outletSprites.push(createDot(getCellCenter(best), role, 2.4, 0.95, rank / count));
       });
       return [
         {
@@ -1971,9 +1779,8 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.08,
           speed: 0.5
         },
-        {
-          type: 'fills',
-          items: [
+        createFillLayer(
+          [
             {
               ring: [
                 [4, 66],
@@ -1985,12 +1792,10 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.08
             }
           ],
-          animation: 'static',
-          blend: 'alpha'
-        },
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'static', blend: 'alpha'}
+        ),
+        createStrokeLayer(
+          [
             {
               points: [
                 [6, 68],
@@ -2002,27 +1807,19 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.6
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: createStreamItems(
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          createStreamItems(
             traceStreamPaths(terrain, getStreamMask(terrain, 14), () => 0),
             () => 'ink',
             () => 0.5,
             0.45
           ),
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: curves,
-          animation: 'draw',
-          speed: 0.2,
-          blend: 'add'
-        },
-        {type: 'sprites', items: outletSprites, pulse: 0.4}
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(curves, {animation: 'draw', speed: 0.2, blend: 'add'}),
+        createSpriteLayer(outletSprites, {pulse: 0.4})
       ];
     }
   },
@@ -2030,24 +1827,8 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
   // Reference and moving DEM profiles; robust shift from stable ground, outliers ignored.
   'terrain-dem-coregistration': {
     parameters: [
-      {
-        id: 'shift',
-        label: 'Vertical offset',
-        min: -9,
-        max: 9,
-        step: 0.5,
-        default: 6,
-        unit: 'm'
-      },
-      {
-        id: 'change',
-        label: 'Real change',
-        min: 0,
-        max: 14,
-        step: 1,
-        default: 9,
-        unit: 'm'
-      }
+      createSlider('shift', 'Vertical offset', -9, 9, 0.5, 6, 'm'),
+      createSlider('change', 'Real change', 0, 14, 1, 9, 'm')
     ],
     pointer: 'none',
     build: context => {
@@ -2060,11 +1841,11 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
         amplitude: 8 / (index + 1)
       }));
       const sampleCount = 72;
-      const xs = Array.from(
+      const sampleXs = Array.from(
         {length: sampleCount},
         (_, index) => 8 + (index / (sampleCount - 1)) * 144
       );
-      const reference = xs.map(
+      const reference = sampleXs.map(
         x =>
           30 -
           waves.reduce(
@@ -2076,16 +1857,17 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
       const changeAt = (x: number) =>
         p.change * (Math.exp(-(((x - 52) / 8) ** 2)) - 0.8 * Math.exp(-(((x - 112) / 7) ** 2)));
       const isChanged = (x: number) => Math.abs(changeAt(x)) > 2.5;
-      const raw = xs.map((x, index) => reference[index] + (p.shift - changeAt(x)) * unit);
-      const corrected = xs.map((x, index) => reference[index] - changeAt(x) * unit);
+      const raw = sampleXs.map((x, index) => reference[index] + (p.shift - changeAt(x)) * unit);
+      const corrected = sampleXs.map((x, index) => reference[index] - changeAt(x) * unit);
       const zeroLine = 80;
-      const zip = (values: number[]): Point[] => xs.map((x, index) => [x, values[index]]);
+      const pairWithX = (values: number[]): Point[] =>
+        sampleXs.map((x, index) => [x, values[index]]);
       const difference = (values: number[]) =>
         values.map((value, index) => zeroLine + value - reference[index]);
       const links: PathItem[] = [];
       const stable: SpriteItem[] = [];
       const outliers: SpriteItem[] = [];
-      xs.forEach((x, index) => {
+      sampleXs.forEach((x, index) => {
         if (index % 4 !== 2) return;
         const changed = isChanged(x);
         if (!changed) {
@@ -2101,26 +1883,27 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           });
         }
         (changed ? outliers : stable).push(
-          sprite(
+          createDot(
             [x, reference[index]],
-            changed ? 2 : 1.5,
             changed ? 'hot' : 'cool',
+            changed ? 2 : 1.5,
             0.95,
             (index % 7) / 7
           )
         );
       });
-      const ground: Point[] = [[xs[0], 56], ...zip(reference), [xs[sampleCount - 1], 56]];
+      const ground: Point[] = [
+        [sampleXs[0], 56],
+        ...pairWithX(reference),
+        [sampleXs[sampleCount - 1], 56]
+      ];
       return [
-        {
-          type: 'fills',
-          items: [{ring: ground, role: 'primary', alpha: 0.1}],
+        createFillLayer([{ring: ground, role: 'primary', alpha: 0.1}], {
           animation: 'static',
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+        }),
+        createStrokeLayer(
+          [
             {
               points: [
                 [8, zeroLine],
@@ -2131,36 +1914,33 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.8
             }
           ],
-          animation: 'static'
-        },
-        {type: 'strokes', items: links, animation: 'pulse', speed: 0.3, blend: 'add'},
-        {
-          type: 'strokes',
-          items: [{points: zip(raw), role: 'warm', width: 1.2, alpha: 0.85}],
+          {animation: 'static'}
+        ),
+        createStrokeLayer(links, {animation: 'pulse', speed: 0.3, blend: 'add'}),
+        createStrokeLayer([{points: pairWithX(raw), role: 'warm', width: 1.2, alpha: 0.85}], {
           animation: 'static',
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [{points: zip(reference), role: 'primary', width: 1.6, alpha: 0.95}],
-          animation: 'flow',
-          speed: 0.25,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [{points: zip(difference(raw)), role: 'warm', width: 0.9, alpha: 0.5}],
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [{points: zip(difference(corrected)), role: 'cool', width: 1.4, alpha: 0.95}],
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {type: 'sprites', items: [...stable, ...outliers], pulse: 0.4}
+        }),
+        createStrokeLayer(
+          [{points: pairWithX(reference), role: 'primary', width: 1.6, alpha: 0.95}],
+          {
+            animation: 'flow',
+            speed: 0.25,
+            blend: 'add'
+          }
+        ),
+        createStrokeLayer(
+          [{points: pairWithX(difference(raw)), role: 'warm', width: 0.9, alpha: 0.5}],
+          {
+            animation: 'static',
+            blend: 'add'
+          }
+        ),
+        createStrokeLayer(
+          [{points: pairWithX(difference(corrected)), role: 'cool', width: 1.4, alpha: 0.95}],
+          {animation: 'flow', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer([...stable, ...outliers], {pulse: 0.4})
       ];
     }
   },
@@ -2168,23 +1948,8 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
   // Cheapest travel cost expanding from a source across friction.
   'cost-distance': {
     parameters: [
-      {
-        id: 'budget',
-        label: 'Travel budget',
-        min: 10,
-        max: 100,
-        step: 5,
-        default: 60,
-        unit: '%'
-      },
-      {
-        id: 'obstacle',
-        label: 'Obstacle friction',
-        min: 2,
-        max: 10,
-        step: 0.5,
-        default: 5
-      }
+      createSlider('budget', 'Travel budget', 10, 100, 5, 60, '%'),
+      createSlider('obstacle', 'Obstacle friction', 2, 10, 0.5, 5)
     ],
     pointer: 'sticky',
     build: context => {
@@ -2206,27 +1971,14 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           speed: 0.12
         },
         ...createFrictionLayer(),
-        {
-          type: 'sprites',
-          items: [sprite(getCellCenter(source), 3.6, 'ink', 1, 0)],
-          pulse: 0.4
-        }
+        createSpriteLayer([createDot(getCellCenter(source), 'ink', 3.6, 1, 0)], {pulse: 0.4})
       ];
     }
   },
 
   // Back-links from a target trace the cheapest route over the same surface.
   'cost-distance-path': {
-    parameters: [
-      {
-        id: 'obstacle',
-        label: 'Obstacle friction',
-        min: 2,
-        max: 10,
-        step: 0.5,
-        default: 5
-      }
-    ],
+    parameters: [createSlider('obstacle', 'Obstacle friction', 2, 10, 0.5, 5)],
     pointer: 'sticky',
     build: context => {
       const {p, pointer} = context;
@@ -2256,28 +2008,25 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           speed: 0.3
         },
         ...createFrictionLayer(),
-        {
-          type: 'strokes',
-          items: toPaths([smoothPath(route.reverse(), 2)], 'hot', 1.7, 1),
+        createStrokeLayer(toPaths([smoothPath(route.reverse(), 2)], 'hot', 1.7, 1), {
           animation: 'flow',
           speed: 0.3,
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [
-            sprite(getCellCenter(source), 3.4, 'warm', 1, 0),
-            sprite(getCellCenter(target), 3.4, 'hot', 1, 0.5)
+        }),
+        createSpriteLayer(
+          [
+            createDot(getCellCenter(source), 'warm', 3.4, 1, 0),
+            createDot(getCellCenter(target), 'hot', 3.4, 1, 0.5)
           ],
-          pulse: 0.4
-        }
+          {pulse: 0.4}
+        )
       ];
     }
   },
 
   // Distance to the nearest seed, with the nearest-seed allocation colouring each zone.
   'distance-field': {
-    parameters: [{id: 'seeds', label: 'Seeds', min: 2, max: 12, step: 1, default: 6}],
+    parameters: [createSlider('seeds', 'Seeds', 2, 12, 1, 6)],
     pointer: 'hover',
     build: context => {
       const {p, pointer} = context;
@@ -2324,31 +2073,27 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.1,
           speed: 0.6
         },
-        {
-          type: 'strokes',
-          items: seeds.map((seed, index) => ({
+        createStrokeLayer(
+          seeds.map((seed, index) => ({
             points: createCircle(seed[0], seed[1], 7, 24).concat([[seed[0] + 7, seed[1]]]),
             role: 'ink' as Role,
             width: 0.4,
             alpha: 0.5,
             phase: (index * 0.21) % 1
           })),
-          animation: 'pulse',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: seeds.map(seed => sprite(seed, 2.2, 'ink', 1, 0)),
-          pulse: 0.3
-        }
+          {animation: 'pulse', speed: 0.3, blend: 'add'}
+        ),
+        createSpriteLayer(
+          seeds.map(seed => createDot(seed, 'ink', 2.2, 1, 0)),
+          {pulse: 0.3}
+        )
       ];
     }
   },
 
   // Marching-squares contour lines at chosen levels; the pointer picks a level.
   isolines: {
-    parameters: [{id: 'levels', label: 'Levels', min: 3, max: 16, step: 1, default: 8}],
+    parameters: [createSlider('levels', 'Levels', 3, 16, 1, 8)],
     pointer: 'hover',
     build: context => {
       const {p, pointer} = context;
@@ -2392,13 +2137,7 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.1,
           speed: 0.4
         },
-        {
-          type: 'strokes',
-          items: lines,
-          animation: 'draw',
-          speed: 0.15,
-          blend: 'add'
-        }
+        createStrokeLayer(lines, {animation: 'draw', speed: 0.15, blend: 'add'})
       ];
       if (pointer) {
         const level = sampleField(
@@ -2409,23 +2148,16 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           pointer[1] / SCENE_HEIGHT
         );
         layers.push(
-          {
-            type: 'strokes',
-            items: traceContours(surface, SURFACE_COLUMNS, SURFACE_ROWS, level).map(contour => ({
+          createStrokeLayer(
+            traceContours(surface, SURFACE_COLUMNS, SURFACE_ROWS, level).map(contour => ({
               points: smoothPath(contour.points, 1),
               role: 'hot' as Role,
               width: 1.4,
               alpha: 1
             })),
-            animation: 'flow',
-            speed: 0.4,
-            blend: 'add'
-          },
-          {
-            type: 'sprites',
-            items: [sprite(pointer, 2, 'hot', 1, 0)],
-            pulse: 0.3
-          }
+            {animation: 'flow', speed: 0.4, blend: 'add'}
+          ),
+          createSpriteLayer([createDot(pointer, 'hot', 2, 1, 0)], {pulse: 0.3})
         );
       }
       return layers;
@@ -2434,7 +2166,7 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
 
   // Filled bands between breaks, one class colour each.
   isobands: {
-    parameters: [{id: 'bands', label: 'Bands', min: 3, max: 10, step: 1, default: 6}],
+    parameters: [createSlider('bands', 'Bands', 3, 10, 1, 6)],
     pointer: 'none',
     build: context => {
       const count = Math.round(context.p.bands);
@@ -2476,14 +2208,14 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.12,
           speed: 0.5
         },
-        {type: 'strokes', items: breaks, animation: 'static', blend: 'add'}
+        createStrokeLayer(breaks, {animation: 'static', blend: 'add'})
       ];
     }
   },
 
   // Closed rings per level: shells filled, holes outlined apart.
   'isoband-rings': {
-    parameters: [{id: 'levels', label: 'Rings', min: 2, max: 8, step: 1, default: 4}],
+    parameters: [createSlider('levels', 'Rings', 2, 8, 1, 4)],
     pointer: 'none',
     build: context => {
       const count = Math.round(context.p.levels);
@@ -2512,13 +2244,16 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           .filter(contour => contour.closed)
           .map(contour => clampRing(contour.points));
         rings.forEach((ring, index) => {
-          const xs = ring.map(point => point[0]);
-          const ys = ring.map(point => point[1]);
-          if (Math.max(...xs) - Math.min(...xs) > 150 && Math.max(...ys) - Math.min(...ys) > 90)
+          const sampleXs = ring.map(point => point[0]);
+          const sampleYs = ring.map(point => point[1]);
+          if (
+            Math.max(...sampleXs) - Math.min(...sampleXs) > 150 &&
+            Math.max(...sampleYs) - Math.min(...sampleYs) > 90
+          )
             return;
           let depth = 0;
           rings.forEach((other, otherIndex) => {
-            if (otherIndex !== index && isPointInRing(ring[0], other)) depth++;
+            if (otherIndex !== index && isInsideRing(ring[0], other)) depth++;
           });
           const isHole = depth % 2 === 1;
           if (isHole) {
@@ -2538,87 +2273,50 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
               phase: level / count
             });
           }
-          starts.push(sprite(ring[0], 1.1, isHole ? 'ink' : role, 0.95, level / count));
+          starts.push(createDot(ring[0], isHole ? 'ink' : role, 1.1, 0.95, level / count));
         });
       }
       return [
-        {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: shells,
-          animation: 'draw',
-          speed: 0.15,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: holes,
-          animation: 'flow',
-          speed: 0.25,
-          blend: 'add'
-        },
-        {type: 'sprites', items: starts, pulse: 0.3}
+        createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(shells, {animation: 'draw', speed: 0.15, blend: 'add'}),
+        createStrokeLayer(holes, {animation: 'flow', speed: 0.25, blend: 'add'}),
+        createSpriteLayer(starts, {pulse: 0.3})
       ];
     }
   },
 
   // Evenly spaced streamlines through a vortex field.
   streamlines: {
-    parameters: [
-      {
-        id: 'separation',
-        label: 'Separation',
-        min: 4,
-        max: 16,
-        step: 0.5,
-        default: 6,
-        unit: 'px'
-      }
-    ],
+    parameters: [createSlider('separation', 'Separation', 4, 16, 0.5, 6, 'px')],
     pointer: 'hover',
     build: context => {
       const vortices = createVortices(context.fork('vortices'), 4, context.pointer);
       const lines = createEvenStreamlines(vortices, context.p.separation);
       return [
-        {
-          type: 'strokes',
-          items: lines.map((points, index) => {
+        createStrokeLayer(
+          lines.map((points, index) => {
             const middle = points[points.length >> 1];
-            const [vx, vy] = evaluateVectorField(vortices, middle[0], middle[1]);
+            const [velocityX, velocityY] = evaluateVectorField(vortices, middle[0], middle[1]);
             return {
               points,
-              role: (Math.hypot(vx, vy) > 0.5 ? 'warm' : 'primary') as Role,
+              role: (Math.hypot(velocityX, velocityY) > 0.5 ? 'warm' : 'primary') as Role,
               width: 0.8,
               alpha: 0.9,
               phase: (index * 0.17) % 1
             };
           }),
-          animation: 'flow',
-          speed: 0.25,
-          trail: 1.3,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: vortices.map(vortex => sprite([vortex.x, vortex.y], 1.2, 'dim', 0.6, 0))
-        }
+          {animation: 'flow', speed: 0.25, trail: 1.3, blend: 'add'}
+        ),
+        createSpriteLayer(
+          vortices.map(vortex => createDot([vortex.x, vortex.y], 'dim', 1.2, 0.6, 0))
+        )
       ];
     }
   },
 
   // Noise smeared along the field's streamlines.
   'line-integral-convolution': {
-    parameters: [
-      {
-        id: 'length',
-        label: 'Kernel length',
-        min: 2,
-        max: 24,
-        step: 1,
-        default: 14,
-        unit: 'steps'
-      }
-    ],
+    parameters: [createSlider('length', 'Kernel length', 2, 24, 1, 14, 'steps')],
     pointer: 'hover',
     build: context => {
       const columns = 64;
@@ -2641,10 +2339,10 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           for (const direction of [1, -1]) {
             let [x, y] = start;
             for (let step = 0; step < half; step++) {
-              const [vx, vy] = evaluateVectorField(vortices, x, y);
-              const length = Math.hypot(vx, vy) || 1;
-              x += (direction * vx * 1.6) / length;
-              y += (direction * vy * 1.6) / length;
+              const [velocityX, velocityY] = evaluateVectorField(vortices, x, y);
+              const length = Math.hypot(velocityX, velocityY) || 1;
+              x += (direction * velocityX * 1.6) / length;
+              y += (direction * velocityY * 1.6) / length;
               const sampleColumn = Math.floor((x / SCENE_WIDTH) * columns);
               const sampleRow = Math.floor((y / SCENE_HEIGHT) * rows);
               if (
@@ -2674,19 +2372,16 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.1,
           speed: 0.6
         },
-        {
-          type: 'strokes',
-          items: guides.map((points, index) => ({
+        createStrokeLayer(
+          guides.map((points, index) => ({
             points,
             role: 'ink' as Role,
             width: 0.5,
             alpha: 0.45,
             phase: (index * 0.2) % 1
           })),
-          animation: 'flow',
-          speed: 0.25,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.25, blend: 'add'}
+        )
       ];
     }
   },
@@ -2694,15 +2389,8 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
   // Particles stepped through the field with replayable randomness, trailing their last frames.
   'particle-advection': {
     parameters: [
-      {id: 'frames', label: 'Frames', min: 1, max: 40, step: 1, default: 14},
-      {
-        id: 'particles',
-        label: 'Particles',
-        min: 30,
-        max: 260,
-        step: 10,
-        default: 140
-      }
+      createSlider('frames', 'Frames', 1, 40, 1, 14),
+      createSlider('particles', 'Particles', 30, 260, 10, 140)
     ],
     pointer: 'hover',
     build: context => {
@@ -2717,9 +2405,9 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
         let [x, y] = start;
         let trail: Point[] = [[x, y]];
         for (let frame = 0; frame < frames; frame++) {
-          const [vx, vy] = evaluateVectorField(vortices, x, y);
-          x += vx * 3.2;
-          y += vy * 3.2;
+          const [velocityX, velocityY] = evaluateVectorField(vortices, x, y);
+          x += velocityX * 3.2;
+          y += velocityY * 3.2;
           if (x < 0 || y < 0 || x > SCENE_WIDTH || y > SCENE_HEIGHT) {
             const respawn = createRandom(index * 7919 + frame * 104729 + 17);
             x = respawn.range(4, SCENE_WIDTH - 4);
@@ -2738,17 +2426,17 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
             phase: (index * 0.13) % 1
           });
         }
-        heads.push(sprite([x, y], 0.9, 'warm', 0.95, (index % 9) / 9));
+        heads.push(createDot([x, y], 'warm', 0.9, 0.95, (index % 9) / 9));
       });
       const arrows: PathItem[] = [];
       for (let y = 8; y < SCENE_HEIGHT; y += 12) {
         for (let x = 8; x < SCENE_WIDTH; x += 12) {
-          const [vx, vy] = evaluateVectorField(vortices, x, y);
-          const length = Math.hypot(vx, vy) || 1;
+          const [velocityX, velocityY] = evaluateVectorField(vortices, x, y);
+          const length = Math.hypot(velocityX, velocityY) || 1;
           arrows.push({
             points: [
               [x, y],
-              [x + (vx / length) * 4, y + (vy / length) * 4]
+              [x + (velocityX / length) * 4, y + (velocityY / length) * 4]
             ],
             role: 'dim',
             width: 0.4,
@@ -2757,16 +2445,9 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        {type: 'strokes', items: arrows, animation: 'static'},
-        {
-          type: 'strokes',
-          items: trails,
-          animation: 'flow',
-          speed: 0.5,
-          trail: 0.7,
-          blend: 'add'
-        },
-        {type: 'sprites', items: heads, pulse: 0.3}
+        createStrokeLayer(arrows, {animation: 'static'}),
+        createStrokeLayer(trails, {animation: 'flow', speed: 0.5, trail: 0.7, blend: 'add'}),
+        createSpriteLayer(heads, {pulse: 0.3})
       ];
     }
   }

@@ -15,14 +15,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 1,
     options: ['counts', 'means', 'minima', 'maxima', 'standardDeviations', 'sums']
   },
-  {
-    id: 'sumOrder',
-    label: 'sumOrder',
-    min: 0,
-    max: 1,
-    step: 1,
-    default: 0,
-    options: ['atomic', 'sorted']
-  },
   {id: 'pointCount', label: 'Data: pointCount', min: 500, max: 6000, step: 250, default: 3000}
 ];

@@ -7,6 +7,6 @@ import type {GpuSceneParameter} from '../../../types';
 export const parameters: GpuSceneParameter[] = [
   {id: 'classCount', label: 'classCount', min: 3, max: 8, step: 1, default: 5},
   {id: 'periodLag', label: 'periodLag', min: 1, max: 4, step: 1, default: 1},
-  {id: 'minimumTransitions', label: 'minimumTransitions', min: 0, max: 40, step: 2, default: 10},
+  {id: 'minimumTransitions', label: 'minimumTransitions', min: 1, max: 120, step: 1, default: 30},
   {id: 'period', label: 'Show: period', min: 0, max: 5, step: 1, default: 0}
 ];

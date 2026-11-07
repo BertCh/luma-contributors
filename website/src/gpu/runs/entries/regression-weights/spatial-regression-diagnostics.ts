@@ -33,11 +33,21 @@ export default defineOperationRun({
     const predictors = builder.upload('predictors', 'float32', inputs.predictors);
     const response = builder.allocate('response', 'float32', rowCount);
     const residuals = builder.allocate('residuals', 'float32', rowCount);
+    // A third of the tracts is left out of the fit; their links are dropped, which leaves rows of
+    // the row-standardized weights short of 1 unless `restandardizeRows` rescales them.
+    const mask = builder.upload(
+      'mask',
+      'uint32',
+      Uint32Array.from({length: rowCount}, (_, row) =>
+        ((row * 2654435761) >>> 0) % 100 < 35 ? 0 : 1
+      )
+    );
     builder.graph.add(
       new GPUOrdinaryLeastSquares({
         predictors: predictors.view,
         response: response.view,
         predictorCount: 2,
+        mask: mask.view,
         output: {
           status: {code: builder.allocate('ols-status', 'uint32', 1).view},
           coefficients: builder.allocate('ols-coefficients', 'float32', 3).view,
@@ -59,6 +69,7 @@ export default defineOperationRun({
         predictors: predictors.view,
         response: response.view,
         residuals: residuals.view,
+        mask: mask.view,
         predictorCount: 2,
         restandardizeRows: values.restandardizeRows === 1,
         output: {

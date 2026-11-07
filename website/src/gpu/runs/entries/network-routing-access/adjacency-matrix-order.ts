@@ -10,8 +10,6 @@ import {defineOperationRun} from '../../define-run';
 import {createCommunityGraph, uploadAdjacency} from './shared/graphs';
 import {parameters} from './adjacency-matrix-order.parameters';
 
-const RESOLUTION = 128;
-
 export default defineOperationRun({
   parameters,
   caption: 'Adjacency matrix drawn in the order the operation produced.',
@@ -22,31 +20,28 @@ export default defineOperationRun({
     builder.graph.add(
       new GPUAdjacencyMatrixOrder({
         groups: builder.upload('groups', 'uint32', graph.groups).view,
-        tieKeys:
-          values.tieKeys === 1
-            ? builder.upload('degrees', 'uint32', graph.degrees).view
-            : undefined,
+        tieKeys: builder.upload('degrees', 'uint32', graph.degrees).view,
         output: {order: order.view}
       })
     );
-    const counts = builder.allocate('counts', 'uint32', RESOLUTION * RESOLUTION);
+    const counts = builder.allocate('counts', 'uint32', values.resolution * values.resolution);
     builder.graph.add(
       new GPUAdjacencyMatrix({
         topology: uploadAdjacency(builder, graph),
         directed: true,
         order: order.view,
-        resolution: RESOLUTION,
+        resolution: values.resolution,
         output: {counts: counts.view}
       })
     );
-    return {outputs: {counts}};
+    return {outputs: {counts, resolution: values.resolution}};
   },
   draw: ({outputs}) => [
     {
       layer: 'raster',
       values: outputs.counts,
-      columns: RESOLUTION,
-      rows: RESOLUTION,
+      columns: outputs.resolution,
+      rows: outputs.resolution,
       ramp: 'sequential',
       range: [0, 6]
     }

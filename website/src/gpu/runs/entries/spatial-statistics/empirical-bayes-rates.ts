@@ -17,7 +17,7 @@ export default defineOperationRun({
     const tracts = createTracts(random, world);
     return {tracts, seeds: createRateSeeds(random, tracts.count)};
   },
-  build(builder, {tracts, seeds}, values) {
+  build(builder, {tracts, seeds}) {
     const events = builder.allocate('events', 'float32', tracts.count);
     const populations = builder.allocate('populations', 'float32', tracts.count);
     const smoothedRates = builder.allocate('smoothed-rates', 'float32', tracts.count);
@@ -26,7 +26,6 @@ export default defineOperationRun({
       new GPUEmpiricalBayesRates({
         events: events.view,
         populations: populations.view,
-        clampPriorVariance: values.clampPriorVariance === 1,
         output: {smoothedRates: smoothedRates.view, rawRates: rawRates.view}
       })
     );
@@ -44,7 +43,6 @@ export default defineOperationRun({
       }
     };
   },
-  rebuildOn: ['clampPriorVariance'],
   draw: ({inputs, outputs}) => [
     {
       layer: 'polygons',

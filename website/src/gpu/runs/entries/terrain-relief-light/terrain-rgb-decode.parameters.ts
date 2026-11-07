@@ -6,15 +6,6 @@ import type {GpuSceneParameter} from '../../../types';
 // Bound to GPUTerrainRGBDecode({encoding, alphaNoData, validRange}); the tile is re-encoded to match the encoding.
 export const parameters: GpuSceneParameter[] = [
   {
-    id: 'encoding',
-    label: 'encoding',
-    min: 0,
-    max: 1,
-    step: 1,
-    default: 0,
-    options: ['terrarium', 'mapbox']
-  },
-  {
     id: 'alphaNoData',
     label: 'alphaNoData',
     min: 0,

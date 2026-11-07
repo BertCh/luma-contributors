@@ -89,6 +89,9 @@ export function TopicCardVisual({slug, models}: {slug: TopicSlug; models: TopicC
         seed={1}
         label={`Live picture for ${slug}`}
         aspectRatio={CARD_ASPECT_RATIO}
+        interactive
+        pointerSurface="card"
+        hint={false}
       />
     </div>
   );

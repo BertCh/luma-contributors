@@ -54,6 +54,7 @@ export default defineOperationRun({
       })
     );
     const steadyStates = builder.allocate('steady-states', 'float32', 3 * classCount);
+    const stateSparsity = builder.allocate('state-sparsity', 'uint32', 2);
     builder.graph.add(
       new GPUTransitionDiagnostics({
         counts: counts.view,
@@ -63,7 +64,7 @@ export default defineOperationRun({
         output: {
           homogeneity: builder.allocate('homogeneity', 'float32', 5).view,
           steadyStates: steadyStates.view,
-          stateSparsity: builder.allocate('state-sparsity', 'uint32', 2).view,
+          stateSparsity: stateSparsity.view,
           status: {converged: builder.allocate('converged', 'uint32', 1).view}
         }
       })
@@ -78,6 +79,8 @@ export default defineOperationRun({
       outputs: {
         counts: addSlice(builder, counts, 0, counts.length, 'counts-float'),
         steadyStates,
+        sparsity: addSlice(builder, stateSparsity, 0, 2, 'sparsity-float'),
+        stateCount: 2 * classCount,
         matrixMesh: uploadMatrixMesh(builder, matrix, 'matrix'),
         matrixOutline: builder.upload('matrix-outline', 'float32x4', matrix.outline),
         matrixOutlineCount: matrix.outlineCount
@@ -108,6 +111,15 @@ export default defineOperationRun({
       values: outputs.steadyStates,
       range: [0, 0.5],
       rectangle: [0.58, 0.1, 0.97, 0.9],
+      ramp: 'sequential'
+    },
+    {
+      // Sparse and empty (condition, from) states: bars grow with minimumTransitions.
+      layer: 'chart',
+      kind: 'bars',
+      values: outputs.sparsity,
+      range: [0, outputs.stateCount],
+      rectangle: [0.03, 0.08, 0.52, 0.24],
       ramp: 'sequential'
     }
   ]

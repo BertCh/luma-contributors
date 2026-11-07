@@ -14,8 +14,7 @@ export default definePanelRun({
   parameters,
   caption: 'Panel error model by maximum likelihood: estimates (bars) against the truth (dots).',
   process: 'error',
-  rebuildOn: ['maximumPower', 'traceMode'],
-  addOperation: ({builder, values, weights, predictors, response, periodCount, residuals}) => {
+  addOperation: ({builder, weights, predictors, response, periodCount, residuals}) => {
     const table = builder.allocate('table', 'float32', 16);
     builder.graph.add(
       new GPUSpatialPanelErrorMaximumLikelihood({
@@ -24,8 +23,7 @@ export default definePanelRun({
         predictors: predictors.view,
         predictorCount: 2,
         response: response.view,
-        maximumPower: values.maximumPower,
-        traceMode: values.traceMode === 0 ? 'exact' : 'stochastic',
+        maximumPower: 24,
         output: {
           status: {code: builder.allocate('status', 'uint32', 1).view},
           table: table.view,

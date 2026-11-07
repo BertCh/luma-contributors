@@ -28,6 +28,29 @@ import {
   type EntryPreview
 } from '../helpers.ts';
 import {
+  closeRing,
+  createRectangleRing,
+  getCross,
+  getSignedArea,
+  getVertexMean,
+  isInsideRing
+} from '../geometry.ts';
+import {
+  getVectorCross,
+  getVectorDot,
+  projectGlobe as projectGlobeWithDepth,
+  toLonLat,
+  toVector,
+  type GlobeView
+} from '../globe.ts';
+import {
+  createChoice,
+  createFillLayer,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer
+} from '../layers.ts';
+import {
   SCENE_HEIGHT,
   SCENE_WIDTH,
   type PathItem,
@@ -101,13 +124,13 @@ function getHexDistance(first: HexCell, second: HexCell): number {
     const x = cell.column - (cell.row - (cell.row & 1)) / 2;
     return [x, -x - cell.row, cell.row];
   };
-  const a = toCube(first);
-  const b = toCube(second);
-  return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
-}
-
-function closeRing(ring: Point[]): Point[] {
-  return [...ring, ring[0]];
+  const firstCube = toCube(first);
+  const secondCube = toCube(second);
+  return Math.max(
+    Math.abs(firstCube[0] - secondCube[0]),
+    Math.abs(firstCube[1] - secondCube[1]),
+    Math.abs(firstCube[2] - secondCube[2])
+  );
 }
 
 function createHexOutlines(
@@ -117,41 +140,31 @@ function createHexOutlines(
   role: Role = 'dim',
   width = 0.25
 ): PreviewLayer {
-  return {
-    type: 'strokes',
-    items: cells.map(cell => ({
+  return createStrokeLayer(
+    cells.map(cell => ({
       points: closeRing(getHexRing(cell, radius)),
       role,
       width,
       alpha
     })),
-    animation: 'static'
-  };
+    {animation: 'static'}
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
 // Planar geometry
 // ---------------------------------------------------------------------------------------------
 
-function isInsidePolygon([x, y]: Point, polygon: Point[]): boolean {
-  let inside = false;
-  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
-    const [xi, yi] = polygon[index];
-    const [xj, yj] = polygon[previous];
-    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-function getCross(origin: Point, first: Point, second: Point): number {
+function doSegmentsIntersect(
+  firstStart: Point,
+  firstEnd: Point,
+  secondStart: Point,
+  secondEnd: Point
+): boolean {
   return (
-    (first[0] - origin[0]) * (second[1] - origin[1]) -
-    (first[1] - origin[1]) * (second[0] - origin[0])
+    getCross(secondStart, secondEnd, firstStart) * getCross(secondStart, secondEnd, firstEnd) < 0 &&
+    getCross(firstStart, firstEnd, secondStart) * getCross(firstStart, firstEnd, secondEnd) < 0
   );
-}
-
-function doSegmentsIntersect(a: Point, b: Point, c: Point, d: Point): boolean {
-  return getCross(c, d, a) * getCross(c, d, b) < 0 && getCross(a, b, c) * getCross(a, b, d) < 0;
 }
 
 type Box = {minX: number; minY: number; maxX: number; maxY: number};
@@ -168,13 +181,7 @@ function getBounds(points: Point[]): Box {
 }
 
 function getBoxRing(box: Box): Point[] {
-  return [
-    [box.minX, box.minY],
-    [box.maxX, box.minY],
-    [box.maxX, box.maxY],
-    [box.minX, box.maxY],
-    [box.minX, box.minY]
-  ];
+  return closeRing(createRectangleRing(box.minX, box.minY, box.maxX, box.maxY));
 }
 
 function expandBox(box: Box, distance: number): Box {
@@ -214,13 +221,7 @@ function doesPolygonTouchBoxEdges(polygon: Point[], box: Box): boolean {
 }
 
 function createSquareRing(x: number, y: number, size: number): Point[] {
-  return [
-    [x, y],
-    [x + size, y],
-    [x + size, y + size],
-    [x, y + size],
-    [x, y]
-  ];
+  return closeRing(createRectangleRing(x, y, x + size, y + size));
 }
 
 function createClusterPointsIn(
@@ -246,29 +247,10 @@ function createClusterPointsIn(
 // Globe (orthographic view) for the S2 and spherical entries
 // ---------------------------------------------------------------------------------------------
 
-type GlobeView = {
-  centerX: number;
-  centerY: number;
-  radius: number;
-  longitude: number;
-  latitude: number;
-};
-type Vector = [number, number, number];
-
-function projectGlobe(view: GlobeView, longitude: number, latitude: number): Point | null {
-  const lambda = (longitude - view.longitude) * DEGREES;
-  const phi = latitude * DEGREES;
-  const phiCenter = view.latitude * DEGREES;
-  const cosine =
-    Math.sin(phiCenter) * Math.sin(phi) + Math.cos(phiCenter) * Math.cos(phi) * Math.cos(lambda);
-  if (cosine < 0.02) return null;
-  return [
-    view.centerX + view.radius * Math.cos(phi) * Math.sin(lambda),
-    view.centerY -
-      view.radius *
-        (Math.cos(phiCenter) * Math.sin(phi) -
-          Math.sin(phiCenter) * Math.cos(phi) * Math.cos(lambda))
-  ];
+/** Visible points only: null once the point is within a hair of the horizon. */
+function projectVisible(view: GlobeView, longitude: number, latitude: number): Point | null {
+  const {point, depth} = projectGlobeWithDepth(view, longitude, latitude);
+  return depth < 0.02 ? null : point;
 }
 
 function unprojectGlobe(view: GlobeView, point: Point): Point | null {
@@ -277,16 +259,16 @@ function unprojectGlobe(view: GlobeView, point: Point): Point | null {
   const rho = Math.hypot(x, y);
   if (rho > 1) return null;
   if (rho < 1e-6) return [view.longitude, view.latitude];
-  const c = Math.asin(rho);
+  const angle = Math.asin(rho);
   const phiCenter = view.latitude * DEGREES;
   const latitude = Math.asin(
-    Math.cos(c) * Math.sin(phiCenter) + (y * Math.sin(c) * Math.cos(phiCenter)) / rho
+    Math.cos(angle) * Math.sin(phiCenter) + (y * Math.sin(angle) * Math.cos(phiCenter)) / rho
   );
   const longitude =
     view.longitude +
     Math.atan2(
-      x * Math.sin(c),
-      rho * Math.cos(phiCenter) * Math.cos(c) - y * Math.sin(phiCenter) * Math.sin(c)
+      x * Math.sin(angle),
+      rho * Math.cos(phiCenter) * Math.cos(angle) - y * Math.sin(phiCenter) * Math.sin(angle)
     ) /
       DEGREES;
   return [longitude, latitude / DEGREES];
@@ -297,7 +279,7 @@ function projectLonLatPath(view: GlobeView, points: Point[]): Point[][] {
   const runs: Point[][] = [];
   let current: Point[] = [];
   for (const [longitude, latitude] of points) {
-    const projected = projectGlobe(view, longitude, latitude);
+    const projected = projectVisible(view, longitude, latitude);
     if (projected) current.push(projected);
     else if (current.length > 0) {
       runs.push(current);
@@ -309,7 +291,9 @@ function projectLonLatPath(view: GlobeView, points: Point[]): Point[][] {
 }
 
 function projectLonLatRing(view: GlobeView, points: Point[]): Point[] | null {
-  const projected = points.map(([longitude, latitude]) => projectGlobe(view, longitude, latitude));
+  const projected = points.map(([longitude, latitude]) =>
+    projectVisible(view, longitude, latitude)
+  );
   return projected.every(point => point) ? (projected as Point[]) : null;
 }
 
@@ -330,17 +314,13 @@ function createGlobeBase(view: GlobeView): PreviewLayer[] {
     }
   }
   return [
-    {
-      type: 'fills',
-      items: [
-        {ring: createCircle(view.centerX, view.centerY, view.radius, 56), role: 'dim', alpha: 0.12}
-      ],
-      animation: 'static'
-    },
-    {type: 'strokes', items: graticule, animation: 'static'},
-    {
-      type: 'strokes',
-      items: [
+    createFillLayer(
+      [{ring: createCircle(view.centerX, view.centerY, view.radius, 56), role: 'dim', alpha: 0.12}],
+      {animation: 'static'}
+    ),
+    createStrokeLayer(graticule, {animation: 'static'}),
+    createStrokeLayer(
+      [
         {
           points: closeRing(createCircle(view.centerX, view.centerY, view.radius, 56)),
           role: 'cool',
@@ -348,51 +328,34 @@ function createGlobeBase(view: GlobeView): PreviewLayer[] {
           alpha: 0.7
         }
       ],
-      animation: 'static'
-    }
-  ];
-}
-
-function toVector(longitude: number, latitude: number): Vector {
-  const lambda = longitude * DEGREES;
-  const phi = latitude * DEGREES;
-  return [Math.cos(phi) * Math.cos(lambda), Math.cos(phi) * Math.sin(lambda), Math.sin(phi)];
-}
-
-function toLonLat(vector: Vector): Point {
-  return [Math.atan2(vector[1], vector[0]) / DEGREES, Math.asin(clamp(vector[2], -1, 1)) / DEGREES];
-}
-
-function getDot(first: Vector, second: Vector): number {
-  return first[0] * second[0] + first[1] * second[1] + first[2] * second[2];
-}
-
-function getVectorCross(first: Vector, second: Vector): Vector {
-  return [
-    first[1] * second[2] - first[2] * second[1],
-    first[2] * second[0] - first[0] * second[2],
-    first[0] * second[1] - first[1] * second[0]
+      {animation: 'static'}
+    )
   ];
 }
 
 function getAngularDistance(first: Point, second: Point): number {
   return (
-    Math.acos(clamp(getDot(toVector(first[0], first[1]), toVector(second[0], second[1])), -1, 1)) /
-    DEGREES
+    Math.acos(
+      clamp(getVectorDot(toVector(first[0], first[1]), toVector(second[0], second[1])), -1, 1)
+    ) / DEGREES
   );
 }
 
 /** Great-circle arc between two longitude/latitude points, sampled. */
 function sampleArc(first: Point, second: Point, steps: number): Point[] {
-  const a = toVector(first[0], first[1]);
-  const b = toVector(second[0], second[1]);
-  const omega = Math.acos(clamp(getDot(a, b), -1, 1));
+  const firstVector = toVector(first[0], first[1]);
+  const secondVector = toVector(second[0], second[1]);
+  const omega = Math.acos(clamp(getVectorDot(firstVector, secondVector), -1, 1));
   const sine = Math.sin(omega) || 1;
   return Array.from({length: steps + 1}, (_, index) => {
-    const t = index / steps;
-    const wa = Math.sin((1 - t) * omega) / sine;
-    const wb = Math.sin(t * omega) / sine;
-    return toLonLat([wa * a[0] + wb * b[0], wa * a[1] + wb * b[1], wa * a[2] + wb * b[2]]);
+    const amount = index / steps;
+    const firstWeight = Math.sin((1 - amount) * omega) / sine;
+    const secondWeight = Math.sin(amount * omega) / sine;
+    return toLonLat([
+      firstWeight * firstVector[0] + secondWeight * secondVector[0],
+      firstWeight * firstVector[1] + secondWeight * secondVector[1],
+      firstWeight * firstVector[2] + secondWeight * secondVector[2]
+    ]);
   });
 }
 
@@ -438,27 +401,18 @@ function clipConvex(subject: Point[], clip: Point[]): Point[] {
       const current = input[cursor];
       const previous = input[(cursor + input.length - 1) % input.length];
       if (isInside(current) !== isInside(previous)) {
-        const t =
+        const amount =
           getCross(start, end, previous) /
           (getCross(start, end, previous) - getCross(start, end, current));
         output.push([
-          previous[0] + (current[0] - previous[0]) * t,
-          previous[1] + (current[1] - previous[1]) * t
+          previous[0] + (current[0] - previous[0]) * amount,
+          previous[1] + (current[1] - previous[1]) * amount
         ]);
       }
       if (isInside(current)) output.push(current);
     }
   }
   return output;
-}
-
-function getPolygonArea(ring: Point[]): number {
-  let sum = 0;
-  ring.forEach((point, index) => {
-    const next = ring[(index + 1) % ring.length];
-    sum += point[0] * next[1] - next[0] * point[1];
-  });
-  return Math.abs(sum) / 2;
 }
 
 function createLonLatPolygon(
@@ -540,16 +494,8 @@ function createTractQuads(random: Random, columns: number, rows: number): Point[
   return quads;
 }
 
-function getPolygonCentroid(ring: Point[]): Point {
-  const sum = ring.reduce<Point>(
-    (total, point) => [total[0] + point[0], total[1] + point[1]],
-    [0, 0]
-  );
-  return [sum[0] / ring.length, sum[1] / ring.length];
-}
-
 function getDistanceToRing(point: Point, ring: Point[]): number {
-  if (isInsidePolygon(point, ring)) return 0;
+  if (isInsideRing(point, ring)) return 0;
   let best = Infinity;
   ring.forEach((start, index) => {
     best = Math.min(best, getSegmentDistance(point, start, ring[(index + 1) % ring.length]));
@@ -607,8 +553,8 @@ function createSquareCountLayers(
     outlines.push({points: closeRing(ring), role, width: 0.3, alpha: 0.6});
   }
   return [
-    {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-    {type: 'strokes', items: outlines, animation: 'static'}
+    createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+    createStrokeLayer(outlines, {animation: 'static'})
   ];
 }
 
@@ -619,8 +565,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
 
   'point-to-cell': {
     parameters: [
-      {id: 'size', label: 'Cell size', min: 4, max: 14, step: 0.5, default: 8, unit: 'px'},
-      {id: 'count', label: 'Points', min: 20, max: 120, step: 4, default: 56}
+      createSlider('size', 'Cell size', 4, 14, 0.5, 8, 'px'),
+      createSlider('count', 'Points', 20, 120, 4, 56)
     ],
     build: ({fork, p}) => {
       const radius = p.size;
@@ -646,32 +592,29 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const cells = [...lit.values()];
       return [
         createHexOutlines(getHexCells(radius), radius),
-        {
-          type: 'fills',
-          items: cells.map(cell => ({
+        createFillLayer(
+          cells.map(cell => ({
             ring: getHexRing(cell, radius),
             role: 'primary' as Role,
             alpha: 0.35,
             phase: (cell.x + cell.y) / 260
           })),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {type: 'strokes', items: links, animation: 'flow', speed: 0.35, trail: 0.7, blend: 'add'},
-        {
-          type: 'sprites',
-          items: cells.map(cell => ({x: cell.x, y: cell.y, radius: 1.3, role: 'primary' as Role})),
-          pulse: 0.2
-        },
-        {type: 'sprites', items: toSprites(points, 'ink', 0.9, undefined, 0.8)}
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(links, {animation: 'flow', speed: 0.35, trail: 0.7, blend: 'add'}),
+        createSpriteLayer(
+          cells.map(cell => ({x: cell.x, y: cell.y, radius: 1.3, role: 'primary' as Role})),
+          {pulse: 0.2}
+        ),
+        createSpriteLayer(toSprites(points, 'ink', 0.9, undefined, 0.8))
       ];
     }
   },
 
   'cell-geometry': {
     parameters: [
-      {id: 'size', label: 'Cell size', min: 8, max: 18, step: 0.5, default: 13, unit: 'px'},
-      {id: 'cells', label: 'Keys', min: 1, max: 8, step: 1, default: 5}
+      createSlider('size', 'Cell size', 8, 18, 0.5, 13, 'px'),
+      createSlider('cells', 'Keys', 1, 8, 1, 5)
     ],
     build: ({fork, p}) => {
       const radius = p.size;
@@ -715,46 +658,40 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       );
       return [
         createHexOutlines(getHexCells(radius), radius, 0.14),
-        {
-          type: 'fills',
-          items: cells.map((cell, index) => ({
+        createFillLayer(
+          cells.map((cell, index) => ({
             ring: getHexRing(cell, radius),
             role: getRoleCycle(index),
             alpha: 0.2,
             phase: index / count
           })),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {type: 'strokes', items: wires, animation: 'flow', speed: 0.3, blend: 'add'},
-        {
-          type: 'strokes',
-          items: cells.map((cell, index) => ({
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(wires, {animation: 'flow', speed: 0.3, blend: 'add'}),
+        createStrokeLayer(
+          cells.map((cell, index) => ({
             points: closeRing(getHexRing(cell, radius, 1)),
             role: getRoleCycle(index),
             width: 0.8,
             alpha: 0.95,
             phase: index / count
           })),
-          animation: 'draw',
-          speed: 0.25,
-          blend: 'add'
-        },
-        {type: 'sprites', items: keyBits, pulse: 0.2},
-        {type: 'sprites', items: corners},
-        {
-          type: 'sprites',
-          items: cells.map(cell => ({x: cell.x, y: cell.y, radius: 2, role: 'warm' as Role})),
-          pulse: 0.3
-        }
+          {animation: 'draw', speed: 0.25, blend: 'add'}
+        ),
+        createSpriteLayer(keyBits, {pulse: 0.2}),
+        createSpriteLayer(corners),
+        createSpriteLayer(
+          cells.map(cell => ({x: cell.x, y: cell.y, radius: 2, role: 'warm' as Role})),
+          {pulse: 0.3}
+        )
       ];
     }
   },
 
   'cell-measures': {
     parameters: [
-      {id: 'size', label: 'Cell size', min: 5, max: 12, step: 0.5, default: 9, unit: 'px'},
-      {id: 'classes', label: 'Area classes', min: 2, max: 5, step: 1, default: 5}
+      createSlider('size', 'Cell size', 5, 12, 0.5, 9, 'px'),
+      createSlider('classes', 'Area classes', 2, 5, 1, 5)
     ],
     build: ({p}) => {
       const radius = p.size;
@@ -781,39 +718,32 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         -Math.PI / 2
       ).map(warp);
       return [
-        {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: fills.map(item => ({
+        createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(
+          fills.map(item => ({
             points: closeRing(item.ring),
             role: item.role,
             width: 0.3,
             alpha: 0.3
           })),
-          animation: 'static'
-        },
-        {
-          type: 'fills',
-          items: [{ring: pentagon, role: 'violet', alpha: 0.75}],
+          {animation: 'static'}
+        ),
+        createFillLayer([{ring: pentagon, role: 'violet', alpha: 0.75}], {
           animation: 'pulse',
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [{points: closeRing(pentagon), role: 'violet', width: 1, alpha: 1}],
+        }),
+        createStrokeLayer([{points: closeRing(pentagon), role: 'violet', width: 1, alpha: 1}], {
           animation: 'flow',
           speed: 0.4,
           blend: 'add'
-        }
+        })
       ];
     }
   },
 
   'h3-cell-identities': {
     pointer: 'sticky',
-    parameters: [
-      {id: 'size', label: 'Cell size', min: 10, max: 22, step: 0.5, default: 15, unit: 'px'}
-    ],
+    parameters: [createSlider('size', 'Cell size', 10, 22, 0.5, 15, 'px')],
     build: ({p, pointer}) => {
       const radius = p.size;
       const focus = getHexCell(pointer ?? [80, 50], radius);
@@ -839,34 +769,31 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       });
       return [
         createHexOutlines(getHexCells(radius), radius, 0.3),
-        {
-          type: 'fills',
-          items: [{ring: getHexRing(focus, radius), role: 'primary', alpha: 0.28}],
+        createFillLayer([{ring: getHexRing(focus, radius), role: 'primary', alpha: 0.28}], {
           animation: 'pulse',
           blend: 'add'
-        },
-        {type: 'strokes', items: spokes, animation: 'static'},
-        {type: 'strokes', items: directed, animation: 'flow', speed: 0.5, trail: 0.8, blend: 'add'},
-        {
-          type: 'sprites',
-          items: ring.map(([x, y], index) => ({
+        }),
+        createStrokeLayer(spokes, {animation: 'static'}),
+        createStrokeLayer(directed, {animation: 'flow', speed: 0.5, trail: 0.8, blend: 'add'}),
+        createSpriteLayer(
+          ring.map(([x, y], index) => ({
             x,
             y,
             radius: 1.9,
             role: 'violet' as Role,
             phase: index / 6
           })),
-          pulse: 0.3
-        },
-        {type: 'sprites', items: [{x: focus.x, y: focus.y, radius: 2.4, role: 'hot'}], pulse: 0.3}
+          {pulse: 0.3}
+        ),
+        createSpriteLayer([{x: focus.x, y: focus.y, radius: 2.4, role: 'hot'}], {pulse: 0.3})
       ];
     }
   },
 
   'cell-aggregation': {
     parameters: [
-      {id: 'size', label: 'Cell size', min: 5, max: 14, step: 0.5, default: 8, unit: 'px'},
-      {id: 'count', label: 'Points', min: 30, max: 240, step: 10, default: 110}
+      createSlider('size', 'Cell size', 5, 14, 0.5, 8, 'px'),
+      createSlider('count', 'Points', 30, 240, 10, 110)
     ],
     build: ({fork, p}) => {
       const radius = p.size;
@@ -890,21 +817,18 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
           radius,
           0.2
         ),
-        {
-          type: 'fills',
-          items: rows.map(({cell, count}) => ({
+        createFillLayer(
+          rows.map(({cell, count}) => ({
             ring: getHexRing(cell, radius),
             role: roleOf(count),
             alpha: 0.2 + 0.6 * (count / maximum),
             phase: cell.x / 160
           })),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {type: 'sprites', items: toSprites(points, 'ink', 0.7, undefined, 0.55)},
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createSpriteLayer(toSprites(points, 'ink', 0.7, undefined, 0.55)),
+        createStrokeLayer(
+          [
             {
               points: [
                 [124, 6],
@@ -915,11 +839,10 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.5
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: bars.map(({count}, index) => ({
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          bars.map(({count}, index) => ({
             points: [
               [128, 12 + index * 9],
               [128 + 26 * (count / maximum), 12 + index * 9]
@@ -929,17 +852,14 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.9,
             phase: index / bars.length
           })),
-          animation: 'flow',
-          speed: 0.3,
-          trail: 1.4,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.3, trail: 1.4, blend: 'add'}
+        )
       ];
     }
   },
 
   'cell-rollup': {
-    parameters: [{id: 'contrast', label: 'Contrast', min: 0.5, max: 2.5, step: 0.1, default: 1}],
+    parameters: [createSlider('contrast', 'Contrast', 0.5, 2.5, 0.1, 1)],
     build: ({fork, p}) => {
       const random = fork('values');
       const childSize = 12;
@@ -1005,15 +925,15 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         });
       }
       return [
-        {type: 'fills', items: [...fills, ...parentFills], animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: frames, animation: 'static'},
-        {type: 'strokes', items: links, animation: 'flow', speed: 0.35, trail: 1.2, blend: 'add'}
+        createFillLayer([...fills, ...parentFills], {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(frames, {animation: 'static'}),
+        createStrokeLayer(links, {animation: 'flow', speed: 0.35, trail: 1.2, blend: 'add'})
       ];
     }
   },
 
   'cell-pyramid': {
-    parameters: [{id: 'points', label: 'Points', min: 30, max: 220, step: 10, default: 100}],
+    parameters: [createSlider('points', 'Points', 30, 220, 10, 100)],
     build: ({fork, p}) => {
       const panelWidth = 72;
       const panelHeight = 44;
@@ -1060,26 +980,14 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         for (const [x, y] of points)
           dots.push({x: originX + x, y: originY + y, radius: 0.5, role: 'ink', alpha: 0.7});
       }
-      return [
-        ...layers,
-        {type: 'strokes', items: frames, animation: 'static'},
-        {type: 'sprites', items: dots}
-      ];
+      return [...layers, createStrokeLayer(frames, {animation: 'static'}), createSpriteLayer(dots)];
     }
   },
 
   'cell-level-selection': {
     parameters: [
-      {
-        id: 'level',
-        label: 'Level',
-        min: 0,
-        max: 3,
-        step: 1,
-        default: 1,
-        options: ['L1', 'L2', 'L3', 'L4']
-      },
-      {id: 'points', label: 'Points', min: 40, max: 300, step: 10, default: 140}
+      createChoice('level', 'Level', ['L1', 'L2', 'L3', 'L4'], 1),
+      createSlider('points', 'Points', 40, 300, 10, 140)
     ],
     build: ({fork, p}) => {
       const width = 104;
@@ -1129,11 +1037,10 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       });
       return [
         ...layers,
-        {type: 'strokes', items: pipOutlines, animation: 'static'},
-        {type: 'fills', items: pips, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(pipOutlines, {animation: 'static'}),
+        createFillLayer(pips, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(
+          [
             {
               points: [selectedCenter, [112, selectedCenter[1]]],
               role: 'warm',
@@ -1141,19 +1048,16 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9
             }
           ],
-          animation: 'flow',
-          speed: 0.5,
-          trail: 0.8,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.5, trail: 0.8, blend: 'add'}
+        )
       ];
     }
   },
 
   'cell-table-compare': {
     parameters: [
-      {id: 'size', label: 'Cell size', min: 5, max: 14, step: 0.5, default: 7.5, unit: 'px'},
-      {id: 'threshold', label: 'Change threshold', min: 0.05, max: 0.4, step: 0.01, default: 0.16}
+      createSlider('size', 'Cell size', 5, 14, 0.5, 7.5, 'px'),
+      createSlider('threshold', 'Change threshold', 0.05, 0.4, 0.01, 0.16)
     ],
     build: ({fork, p}) => {
       const radius = p.size;
@@ -1168,13 +1072,13 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const fills: PolygonItem[] = [];
       const outlines: PathItem[] = [];
       for (const cell of getHexCells(radius)) {
-        const a = sample(before, cell);
-        const b = 0.5 * a + 0.5 * sample(other, cell);
+        const beforeValue = sample(before, cell);
+        const afterValue = 0.5 * beforeValue + 0.5 * sample(other, cell);
         // Outer join: a cell missing from one table counts as zero there.
-        const presentBefore = a > 0.42;
-        const presentAfter = b > 0.42;
+        const presentBefore = beforeValue > 0.42;
+        const presentAfter = afterValue > 0.42;
         if (!presentBefore && !presentAfter) continue;
-        const difference = (presentAfter ? b : 0) - (presentBefore ? a : 0);
+        const difference = (presentAfter ? afterValue : 0) - (presentBefore ? beforeValue : 0);
         const role: Role =
           difference > p.threshold ? 'hot' : difference < -p.threshold ? 'cool' : 'dim';
         const ring = getHexRing(cell, radius);
@@ -1192,8 +1096,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         });
       }
       return [
-        {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: outlines, animation: 'static'}
+        createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(outlines, {animation: 'static'})
       ];
     }
   },
@@ -1201,8 +1105,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'cell-topology': {
     pointer: 'hover',
     parameters: [
-      {id: 'size', label: 'Cell size', min: 5, max: 12, step: 0.5, default: 8, unit: 'px'},
-      {id: 'radius', label: 'Disk radius', min: 0, max: 5, step: 1, default: 2}
+      createSlider('size', 'Cell size', 5, 12, 0.5, 8, 'px'),
+      createSlider('radius', 'Disk radius', 0, 5, 1, 2)
     ],
     build: ({p, pointer}) => {
       const radius = p.size;
@@ -1236,16 +1140,16 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        {type: 'strokes', items: quiet, animation: 'static'},
-        {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: rim, animation: 'flow', speed: 0.4, trail: 0.6, blend: 'add'},
-        {type: 'sprites', items: [{x: center.x, y: center.y, radius: 2.2, role: 'ink'}], pulse: 0.3}
+        createStrokeLayer(quiet, {animation: 'static'}),
+        createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(rim, {animation: 'flow', speed: 0.4, trail: 0.6, blend: 'add'}),
+        createSpriteLayer([{x: center.x, y: center.y, radius: 2.2, role: 'ink'}], {pulse: 0.3})
       ];
     }
   },
 
   'cell-compaction': {
-    parameters: [{id: 'merge', label: 'Merge levels', min: 0, max: 3, step: 1, default: 2}],
+    parameters: [createSlider('merge', 'Merge levels', 0, 3, 1, 2)],
     build: ({fork, p}) => {
       const fine = 5;
       const columns = 32;
@@ -1254,7 +1158,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const inside = new Uint8Array(columns * rows);
       for (let row = 0; row < rows; row++) {
         for (let column = 0; column < columns; column++) {
-          inside[row * columns + column] = isInsidePolygon(
+          inside[row * columns + column] = isInsideRing(
             [(column + 0.5) * fine, (row + 0.5) * fine],
             region
           )
@@ -1302,24 +1206,20 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: outlines, animation: 'static'},
-        {
-          type: 'strokes',
-          items: [{points: closeRing(region), role: 'warm', width: 0.7, alpha: 0.8}],
+        createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(outlines, {animation: 'static'}),
+        createStrokeLayer([{points: closeRing(region), role: 'warm', width: 0.7, alpha: 0.8}], {
           animation: 'flow',
           speed: 0.2,
           blend: 'add'
-        }
+        })
       ];
     }
   },
 
   'cell-grid-path': {
     pointer: 'hover',
-    parameters: [
-      {id: 'size', label: 'Cell size', min: 6, max: 14, step: 0.5, default: 9, unit: 'px'}
-    ],
+    parameters: [createSlider('size', 'Cell size', 6, 14, 0.5, 9, 'px')],
     build: ({p, pointer}) => {
       const radius = p.size;
       const origin = getHexCell([24, 72], radius);
@@ -1327,9 +1227,12 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const steps = Math.max(1, getHexDistance(origin, destination));
       const chain = new Map<string, HexCell>();
       for (let index = 0; index <= steps; index++) {
-        const t = index / steps;
+        const amount = index / steps;
         const cell = getHexCell(
-          [mixNumbers(origin.x, destination.x, t), mixNumbers(origin.y, destination.y, t)],
+          [
+            mixNumbers(origin.x, destination.x, amount),
+            mixNumbers(origin.y, destination.y, amount)
+          ],
           radius
         );
         chain.set(getHexKey(cell), cell);
@@ -1337,20 +1240,17 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const cells = [...chain.values()];
       return [
         createHexOutlines(getHexCells(radius), radius, 0.24),
-        {
-          type: 'fills',
-          items: cells.map((cell, index) => ({
+        createFillLayer(
+          cells.map((cell, index) => ({
             ring: getHexRing(cell, radius),
             role: 'warm' as Role,
             alpha: 0.38,
             phase: index / cells.length
           })),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          [
             {
               points: cells.map<Point>(cell => [cell.x, cell.y]),
               role: 'warm',
@@ -1358,36 +1258,24 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.95
             }
           ],
-          animation: 'flow',
-          speed: 0.35,
-          trail: 1.2,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [
+          {animation: 'flow', speed: 0.35, trail: 1.2, blend: 'add'}
+        ),
+        createSpriteLayer(
+          [
             {x: origin.x, y: origin.y, radius: 3.4, role: 'cool'},
             {x: destination.x, y: destination.y, radius: 3.4, role: 'hot', phase: 0.5}
           ],
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
 
   'cell-cover': {
     parameters: [
-      {id: 'resolution', label: 'Resolution', min: 3, max: 8, step: 0.5, default: 6.5},
-      {id: 'vertices', label: 'Polygon vertices', min: 5, max: 20, step: 1, default: 11},
-      {
-        id: 'family',
-        label: 'Family',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 0,
-        options: ['H3 hex', 'Quadbin']
-      }
+      createSlider('resolution', 'Resolution', 3, 8, 0.5, 6.5),
+      createSlider('vertices', 'Polygon vertices', 5, 20, 1, 11),
+      createChoice('family', 'Family', ['H3 hex', 'Quadbin'])
     ],
     build: ({fork, p}) => {
       const polygon = createBlob(fork('polygon'), 80, 50, 34, Math.round(p.vertices), 0.3, 0.85);
@@ -1396,7 +1284,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const quiet: PathItem[] = [];
       const centers: SpriteItem[] = [];
       const consider = (x: number, y: number, ring: Point[]) => {
-        if (isInsidePolygon([x, y], polygon)) {
+        if (isInsideRing([x, y], polygon)) {
           lit.push({ring, role: 'primary', alpha: 0.5, phase: (x + y) / 260});
           centers.push({x, y, radius: 0.9, role: 'warm', phase: (x + y) / 200});
         } else {
@@ -1419,32 +1307,30 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        {type: 'strokes', items: quiet, animation: 'static'},
-        {type: 'fills', items: lit, animation: 'pulse', blend: 'add'},
-        {type: 'sprites', items: centers, pulse: 0.3},
-        {
-          type: 'strokes',
-          items: [{points: closeRing(polygon), role: 'warm', width: 1.1, alpha: 0.95}],
+        createStrokeLayer(quiet, {animation: 'static'}),
+        createFillLayer(lit, {animation: 'pulse', blend: 'add'}),
+        createSpriteLayer(centers, {pulse: 0.3}),
+        createStrokeLayer([{points: closeRing(polygon), role: 'warm', width: 1.1, alpha: 0.95}], {
           animation: 'flow',
           speed: 0.25,
           trail: 1.5,
           blend: 'add'
-        }
+        })
       ];
     }
   },
 
   'cell-set-outline': {
     parameters: [
-      {id: 'size', label: 'Cell size', min: 5, max: 12, step: 0.5, default: 7.5, unit: 'px'},
-      {id: 'holes', label: 'Holes', min: 0, max: 3, step: 1, default: 1}
+      createSlider('size', 'Cell size', 5, 12, 0.5, 7.5, 'px'),
+      createSlider('holes', 'Holes', 0, 3, 1, 1)
     ],
     build: ({fork, p}) => {
       const radius = p.size;
       const region = createBlob(fork('region'), 80, 50, 33, 12, 0.25, 0.9);
       const members = new Map<string, HexCell>();
       for (const cell of getHexCells(radius)) {
-        if (isInsidePolygon([cell.x, cell.y], region)) members.set(getHexKey(cell), cell);
+        if (isInsideRing([cell.x, cell.y], region)) members.set(getHexKey(cell), cell);
       }
       const width = SQRT3 * radius;
       const neighborKey = (cell: HexCell, side: number) => {
@@ -1479,19 +1365,17 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        {
-          type: 'fills',
-          items: [...members.values()].map(cell => ({
+        createFillLayer(
+          [...members.values()].map(cell => ({
             ring: getHexRing(cell, radius),
             role: 'primary' as Role,
             alpha: 0.14,
             phase: cell.x / 160
           })),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {type: 'strokes', items: shared, animation: 'static'},
-        {type: 'strokes', items: boundary, animation: 'flow', speed: 0.3, trail: 1.5, blend: 'add'}
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(shared, {animation: 'static'}),
+        createStrokeLayer(boundary, {animation: 'flow', speed: 0.3, trail: 1.5, blend: 'add'})
       ];
     }
   },
@@ -1502,7 +1386,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
 
   's2-cell-hierarchy': {
     pointer: 'hover',
-    parameters: [{id: 'depth', label: 'Levels', min: 1, max: 5, step: 1, default: 3}],
+    parameters: [createSlider('depth', 'Levels', 1, 5, 1, 3)],
     build: ({p, pointer}) => {
       const face = {x: 36, y: 6, size: 88};
       const focus: Point = pointer
@@ -1559,17 +1443,17 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         size = half;
       }
       return [
-        {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: outlines, animation: 'static'},
-        {type: 'strokes', items: links, animation: 'flow', speed: 0.4, blend: 'add'},
-        {type: 'sprites', items: [{x: focus[0], y: focus[1], radius: 1.6, role: 'ink'}], pulse: 0.3}
+        createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(outlines, {animation: 'static'}),
+        createStrokeLayer(links, {animation: 'flow', speed: 0.4, blend: 'add'}),
+        createSpriteLayer([{x: focus[0], y: focus[1], radius: 1.6, role: 'ink'}], {pulse: 0.3})
       ];
     }
   },
 
   's2-cell-measures': {
     pointer: 'hover',
-    parameters: [{id: 'level', label: 'Level', min: 1, max: 3, step: 1, default: 2}],
+    parameters: [createSlider('level', 'Level', 1, 3, 1, 2)],
     build: ({p, pointer}) => {
       const view = createGlobeView(pointer, 56, 50, 40, true);
       const span = 40 / 2 ** (Math.round(p.level) - 1);
@@ -1628,16 +1512,14 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       }
       return [
         ...createGlobeBase(view),
-        {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: outlines, animation: 'static'},
-        {
-          type: 'strokes',
-          items: [...areaBars, ...perimeterBars],
+        createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(outlines, {animation: 'static'}),
+        createStrokeLayer([...areaBars, ...perimeterBars], {
           animation: 'flow',
           speed: 0.3,
           trail: 1.2,
           blend: 'add'
-        }
+        })
       ];
     }
   },
@@ -1645,17 +1527,9 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   's2-cap-covering': {
     pointer: 'hover',
     parameters: [
-      {id: 'radius', label: 'Cap radius', min: 8, max: 60, step: 1, default: 30, unit: '°'},
-      {id: 'level', label: 'Level', min: 1, max: 4, step: 1, default: 3},
-      {
-        id: 'mode',
-        label: 'Cells',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 0,
-        options: ['exterior', 'interior']
-      }
+      createSlider('radius', 'Cap radius', 8, 60, 1, 30, '°'),
+      createSlider('level', 'Level', 1, 4, 1, 3),
+      createChoice('mode', 'Cells', ['exterior', 'interior'])
     ],
     build: ({p, pointer}) => {
       const view: GlobeView = {centerX: 80, centerY: 50, radius: 44, longitude: 0, latitude: 20};
@@ -1702,47 +1576,32 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
           );
         boundary.push([longitude / DEGREES, latitude / DEGREES]);
       }
-      const centerPoint = projectGlobe(view, center[0], center[1]);
+      const centerPoint = projectVisible(view, center[0], center[1]);
       return [
         ...createGlobeBase(view),
-        {type: 'strokes', items: quiet, animation: 'static'},
-        {type: 'fills', items: lit, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: projectLonLatPath(view, boundary).map(run => ({
+        createStrokeLayer(quiet, {animation: 'static'}),
+        createFillLayer(lit, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(
+          projectLonLatPath(view, boundary).map(run => ({
             points: run,
             role: 'warm' as Role,
             width: 1.1,
             alpha: 1
           })),
-          animation: 'flow',
-          speed: 0.3,
-          trail: 1.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: centerPoint
-            ? [{x: centerPoint[0], y: centerPoint[1], radius: 2.4, role: 'hot'}]
-            : [],
-          pulse: 0.3
-        }
+          {animation: 'flow', speed: 0.3, trail: 1.5, blend: 'add'}
+        ),
+        createSpriteLayer(
+          centerPoint ? [{x: centerPoint[0], y: centerPoint[1], radius: 2.4, role: 'hot'}] : [],
+          {pulse: 0.3}
+        )
       ];
     }
   },
 
   's2-polygon-covering': {
     parameters: [
-      {id: 'level', label: 'Max level', min: 2, max: 6, step: 1, default: 5},
-      {
-        id: 'mode',
-        label: 'Cover',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 0,
-        options: ['exterior', 'interior']
-      }
+      createSlider('level', 'Max level', 2, 6, 1, 5),
+      createChoice('mode', 'Cover', ['exterior', 'interior'])
     ],
     build: ({fork, p}) => {
       const face = {x: 36, y: 6, size: 88};
@@ -1755,7 +1614,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         const box: Box = {minX: x, minY: y, maxX: x + size, maxY: y + size};
         const crossing = doesPolygonTouchBoxEdges(polygon, box);
         if (!crossing) {
-          if (!isInsidePolygon([x + size / 2, y + size / 2], polygon)) return;
+          if (!isInsideRing([x + size / 2, y + size / 2], polygon)) return;
         } else if (level < maximum) {
           const half = size / 2;
           visit(x, y, half, level + 1);
@@ -1780,16 +1639,14 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       };
       visit(face.x, face.y, face.size, 0);
       return [
-        {type: 'fills', items: fills, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: outlines, animation: 'static'},
-        {
-          type: 'strokes',
-          items: [{points: closeRing(polygon), role: 'warm', width: 0.9, alpha: 0.95}],
+        createFillLayer(fills, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(outlines, {animation: 'static'}),
+        createStrokeLayer([{points: closeRing(polygon), role: 'warm', width: 0.9, alpha: 0.95}], {
           animation: 'flow',
           speed: 0.25,
           trail: 1.5,
           blend: 'add'
-        }
+        })
       ];
     }
   },
@@ -1801,29 +1658,22 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'spherical-convex-contains': {
     pointer: 'hover',
     parameters: [
-      {id: 'points', label: 'Points', min: 30, max: 160, step: 10, default: 90},
-      {id: 'vertices', label: 'Vertices', min: 3, max: 8, step: 1, default: 5},
-      {
-        id: 'region',
-        label: 'Region',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 0,
-        options: ['inside', 'complement']
-      }
+      createSlider('points', 'Points', 30, 160, 10, 90),
+      createSlider('vertices', 'Vertices', 3, 8, 1, 5),
+      createChoice('region', 'Region', ['inside', 'complement'])
     ],
     build: ({fork, p, pointer}) => {
       const view: GlobeView = {centerX: 80, centerY: 50, radius: 44, longitude: 0, latitude: 20};
       const vertices = createLonLatPolygon(fork('shape'), 0, 15, 34, Math.round(p.vertices), 0.12);
       const vectors = vertices.map(([longitude, latitude]) => toVector(longitude, latitude));
       const centroid = toVector(0, 15);
-      const orientation = Math.sign(getDot(getVectorCross(vectors[0], vectors[1]), centroid)) || 1;
+      const orientation =
+        Math.sign(getVectorDot(getVectorCross(vectors[0], vectors[1]), centroid)) || 1;
       const contains = (point: Point): boolean => {
         const vector = toVector(point[0], point[1]);
         return vectors.every(
           (start, index) =>
-            getDot(getVectorCross(start, vectors[(index + 1) % vectors.length]), vector) *
+            getVectorDot(getVectorCross(start, vectors[(index + 1) % vectors.length]), vector) *
               orientation >=
             0
         );
@@ -1834,7 +1684,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const others: SpriteItem[] = [];
       for (let index = 0; index < Math.round(p.points); index++) {
         const point: Point = [random.range(-75, 75), random.range(-50, 75)];
-        const projected = projectGlobe(view, point[0], point[1]);
+        const projected = projectVisible(view, point[0], point[1]);
         if (!projected) continue;
         const item: SpriteItem = {
           x: projected[0],
@@ -1851,27 +1701,18 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const ring = projectLonLatRing(view, sampleArcRing(vertices, 10));
       return [
         ...createGlobeBase(view),
-        {
-          type: 'fills',
-          items: ring
-            ? [{ring, role: complement ? 'dim' : 'warm', alpha: complement ? 0.1 : 0.14}]
-            : [],
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {type: 'sprites', items: others},
-        {type: 'sprites', items: selected, pulse: 0.3},
-        {
-          type: 'strokes',
-          items: boundary.map(run => ({points: run, role: 'warm' as Role, width: 1, alpha: 0.95})),
-          animation: 'flow',
-          speed: 0.25,
-          trail: 1.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: probe
+        createFillLayer(
+          ring ? [{ring, role: complement ? 'dim' : 'warm', alpha: complement ? 0.1 : 0.14}] : [],
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createSpriteLayer(others),
+        createSpriteLayer(selected, {pulse: 0.3}),
+        createStrokeLayer(
+          boundary.map(run => ({points: run, role: 'warm' as Role, width: 1, alpha: 0.95})),
+          {animation: 'flow', speed: 0.25, trail: 1.5, blend: 'add'}
+        ),
+        createSpriteLayer(
+          probe
             ? [
                 {
                   x: pointer![0],
@@ -1881,16 +1722,16 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
                 }
               ]
             : [],
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
 
   'spherical-polygon-contains': {
     parameters: [
-      {id: 'points', label: 'Points', min: 40, max: 240, step: 10, default: 180},
-      {id: 'twist', label: 'Concavity', min: 0.3, max: 0.9, step: 0.05, default: 0.5}
+      createSlider('points', 'Points', 40, 240, 10, 180),
+      createSlider('twist', 'Concavity', 0.3, 0.9, 0.05, 0.5)
     ],
     build: ({fork, p}) => {
       const view: GlobeView = {centerX: 80, centerY: 50, radius: 44, longitude: 0, latitude: 20};
@@ -1910,7 +1751,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const onEdge: SpriteItem[] = [];
       for (let index = 0; index < Math.round(p.points); index++) {
         const point: Point = [random.range(-48, 48), random.range(-38, 62)];
-        const projected = projectGlobe(view, point[0], point[1]);
+        const projected = projectVisible(view, point[0], point[1]);
         if (!projected) continue;
         const item: SpriteItem = {
           x: projected[0],
@@ -1923,7 +1764,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
           ...allEdges.map(([start, end]) => getSegmentDistance(point, start, end))
         );
         if (edgeDistance < 2.2) onEdge.push({...item, role: 'violet', radius: 1.8});
-        else if (isInsidePolygon(point, outer) && !isInsidePolygon(point, hole)) inside.push(item);
+        else if (isInsideRing(point, outer) && !isInsideRing(point, hole)) inside.push(item);
         else outside.push({...item, role: 'primary', alpha: 0.45, radius: 0.9});
       }
       const outlines = [outer, hole].flatMap(ring =>
@@ -1931,31 +1772,25 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       );
       return [
         ...createGlobeBase(view),
-        {type: 'sprites', items: outside},
-        {type: 'sprites', items: inside, pulse: 0.3},
-        {
-          type: 'strokes',
-          items: outlines.map(run => ({
+        createSpriteLayer(outside),
+        createSpriteLayer(inside, {pulse: 0.3}),
+        createStrokeLayer(
+          outlines.map(run => ({
             points: run,
             role: 'warm' as Role,
             width: 0.9,
             alpha: 0.95
           })),
-          animation: 'flow',
-          speed: 0.25,
-          trail: 1.5,
-          blend: 'add'
-        },
-        {type: 'sprites', items: onEdge, pulse: 0.5}
+          {animation: 'flow', speed: 0.25, trail: 1.5, blend: 'add'}
+        ),
+        createSpriteLayer(onEdge, {pulse: 0.5})
       ];
     }
   },
 
   'spherical-convex-intersection': {
     pointer: 'hover',
-    parameters: [
-      {id: 'separation', label: 'Separation', min: 0, max: 50, step: 1, default: 20, unit: '°'}
-    ],
+    parameters: [createSlider('separation', 'Separation', 0, 50, 1, 20, '°')],
     build: ({fork, p, pointer}) => {
       const view: GlobeView = {centerX: 66, centerY: 50, radius: 42, longitude: 0, latitude: 20};
       const pointerCenter = pointer ? unprojectGlobe(view, pointer) : null;
@@ -1977,30 +1812,23 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         const projected = ring.length > 2 ? projectLonLatRing(view, ring) : null;
         return projected ? [{ring: projected, role, alpha}] : [];
       };
-      const intersectionArea = overlap.length > 2 ? getPolygonArea(overlap) : 0;
-      const union = getPolygonArea(first) + getPolygonArea(second) - intersectionArea;
+      const intersectionArea = overlap.length > 2 ? Math.abs(getSignedArea(overlap)) : 0;
+      const union =
+        Math.abs(getSignedArea(first)) + Math.abs(getSignedArea(second)) - intersectionArea;
       const fraction = clamp(intersectionArea / union, 0, 1);
       const vertexSprites: SpriteItem[] = overlap
-        .map(([longitude, latitude]) => projectGlobe(view, longitude, latitude))
+        .map(([longitude, latitude]) => projectVisible(view, longitude, latitude))
         .filter((point): point is Point => point !== null)
         .map(([x, y]) => ({x, y, radius: 1.6, role: 'ink' as Role}));
       return [
         ...createGlobeBase(view),
-        {
-          type: 'fills',
-          items: [...toFill(firstRing, 'cool', 0.2), ...toFill(secondRing, 'warm', 0.2)],
+        createFillLayer([...toFill(firstRing, 'cool', 0.2), ...toFill(secondRing, 'warm', 0.2)], {
           animation: 'static',
           blend: 'add'
-        },
-        {
-          type: 'fills',
-          items: toFill(overlapRing, 'violet', 0.7),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+        }),
+        createFillLayer(toFill(overlapRing, 'violet', 0.7), {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(
+          [
             ...projectLonLatPath(view, closeRing(firstRing)).map(run => ({
               points: run,
               role: 'cool' as Role,
@@ -2014,13 +1842,11 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.95
             }))
           ],
-          animation: 'static',
-          blend: 'add'
-        },
-        {type: 'sprites', items: vertexSprites, pulse: 0.3},
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'static', blend: 'add'}
+        ),
+        createSpriteLayer(vertexSprites, {pulse: 0.3}),
+        createStrokeLayer(
+          [
             {
               points: [
                 [124, 88],
@@ -2040,9 +1866,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.95
             }
           ],
-          animation: 'static',
-          blend: 'add'
-        }
+          {animation: 'static', blend: 'add'}
+        )
       ];
     }
   },
@@ -2050,16 +1875,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'spherical-polygon-overlay': {
     pointer: 'hover',
     parameters: [
-      {
-        id: 'operation',
-        label: 'Operation',
-        min: 0,
-        max: 2,
-        step: 1,
-        default: 0,
-        options: ['intersection', 'union', 'difference']
-      },
-      {id: 'separation', label: 'Separation', min: 0, max: 40, step: 1, default: 16, unit: '°'}
+      createChoice('operation', 'Operation', ['intersection', 'union', 'difference']),
+      createSlider('separation', 'Separation', 0, 40, 1, 16, '°')
     ],
     build: ({fork, p, pointer}) => {
       const view: GlobeView = {centerX: 80, centerY: 50, radius: 44, longitude: 0, latitude: 20};
@@ -2072,8 +1889,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const dots: SpriteItem[] = [];
       for (let latitude = -42; latitude <= 62; latitude += 3.2) {
         for (let longitude = -62; longitude <= 62; longitude += 3.2) {
-          const inLeft = isInsidePolygon([longitude, latitude], left);
-          const inRight = isInsidePolygon([longitude, latitude], right);
+          const inLeft = isInsideRing([longitude, latitude], left);
+          const inRight = isInsideRing([longitude, latitude], right);
           const kept =
             operation === 0
               ? inLeft && inRight
@@ -2081,7 +1898,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
                 ? inLeft || inRight
                 : inLeft && !inRight;
           if (!kept) continue;
-          const projected = projectGlobe(view, longitude, latitude);
+          const projected = projectVisible(view, longitude, latitude);
           if (projected)
             dots.push({
               x: projected[0],
@@ -2095,10 +1912,9 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       }
       return [
         ...createGlobeBase(view),
-        {type: 'sprites', items: dots, pulse: 0.25},
-        {
-          type: 'strokes',
-          items: [
+        createSpriteLayer(dots, {pulse: 0.25}),
+        createStrokeLayer(
+          [
             ...projectLonLatPath(view, closeRing(sampleArcRing(left, 2))).map(run => ({
               points: run,
               role: 'cool' as Role,
@@ -2112,11 +1928,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.95
             }))
           ],
-          animation: 'flow',
-          speed: 0.2,
-          trail: 1.6,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.2, trail: 1.6, blend: 'add'}
+        )
       ];
     }
   },
@@ -2124,8 +1937,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'spherical-arc-overlay': {
     pointer: 'hover',
     parameters: [
-      {id: 'radius', label: 'Cap radius', min: 100, max: 155, step: 1, default: 140, unit: '°'},
-      {id: 'separation', label: 'Separation', min: 20, max: 120, step: 2, default: 56, unit: '°'}
+      createSlider('radius', 'Cap radius', 100, 155, 1, 140, '°'),
+      createSlider('separation', 'Separation', 20, 120, 2, 56, '°')
     ],
     build: ({p, pointer}) => {
       const view: GlobeView = {centerX: 80, centerY: 50, radius: 44, longitude: 0, latitude: 20};
@@ -2175,10 +1988,9 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       };
       return [
         ...createGlobeBase(view),
-        {type: 'sprites', items: dots, pulse: 0.2},
-        {
-          type: 'strokes',
-          items: [
+        createSpriteLayer(dots, {pulse: 0.2}),
+        createStrokeLayer(
+          [
             ...circle(firstHole).map(run => ({
               points: run,
               role: 'cool' as Role,
@@ -2192,11 +2004,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }))
           ],
-          animation: 'flow',
-          speed: 0.25,
-          trail: 1.6,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.25, trail: 1.6, blend: 'add'}
+        )
       ];
     }
   },
@@ -2204,8 +2013,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'hilbert-keys': {
     pointer: 'hover',
     parameters: [
-      {id: 'order', label: 'Order', min: 1, max: 5, step: 1, default: 3},
-      {id: 'points', label: 'Points', min: 10, max: 80, step: 2, default: 28}
+      createSlider('order', 'Order', 1, 5, 1, 3),
+      createSlider('points', 'Points', 10, 80, 2, 28)
     ],
     build: ({fork, p, pointer}) => {
       const order = Math.round(p.order);
@@ -2277,16 +2086,15 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         });
       }
       return [
-        {type: 'strokes', items: grid, animation: 'static'},
-        {type: 'strokes', items: curve, animation: 'flow', speed: 0.25, trail: 2.5, blend: 'add'},
-        {type: 'sprites', items: points, pulse: 0.2},
-        {
-          type: 'sprites',
-          items: probe
+        createStrokeLayer(grid, {animation: 'static'}),
+        createStrokeLayer(curve, {animation: 'flow', speed: 0.25, trail: 2.5, blend: 'add'}),
+        createSpriteLayer(points, {pulse: 0.2}),
+        createSpriteLayer(
+          probe
             ? [{x: centers[probeKey][0], y: centers[probeKey][1], radius: 3.2, role: 'warm'}]
             : [],
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
@@ -2298,16 +2106,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'spatial-predicate-join': {
     pointer: 'hover',
     parameters: [
-      {
-        id: 'predicate',
-        label: 'Predicate',
-        min: 0,
-        max: 2,
-        step: 1,
-        default: 0,
-        options: ['intersects', 'contains', 'dwithin']
-      },
-      {id: 'parks', label: 'Parks', min: 1, max: 5, step: 1, default: 3}
+      createChoice('predicate', 'Predicate', ['intersects', 'contains', 'dwithin']),
+      createSlider('parks', 'Parks', 1, 5, 1, 3)
     ],
     build: ({fork, p, pointer}) => {
       const tracts = createTractQuads(fork('tracts'), 7, 4);
@@ -2337,15 +2137,15 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
           const samples = [park.center, ...park.ring];
           const hit =
             predicate === 0
-              ? samples.some(point => isInsidePolygon(point, tract)) ||
+              ? samples.some(point => isInsideRing(point, tract)) ||
                 tract.some(vertex => getDistance(vertex, park.center) < park.radius)
               : predicate === 1
-                ? samples.every(point => isInsidePolygon(point, tract))
+                ? samples.every(point => isInsideRing(point, tract))
                 : getDistanceToRing(park.center, tract) < park.radius + 6;
           if (!hit) return;
           matched.add(tractIndex);
           links.push({
-            points: [park.center, getPolygonCentroid(tract)],
+            points: [park.center, getVertexMean(tract)],
             role: 'warm',
             width: 0.6,
             alpha: 0.85,
@@ -2354,54 +2154,48 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        {
-          type: 'fills',
-          items: tracts.flatMap((tract, index) =>
+        createFillLayer(
+          tracts.flatMap((tract, index) =>
             matched.has(index)
               ? [{ring: tract, role: 'primary' as Role, alpha: 0.3, phase: index / 15}]
               : []
           ),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: tracts.map(tract => ({
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          tracts.map(tract => ({
             points: closeRing(tract),
             role: 'dim' as Role,
             width: 0.4,
             alpha: 0.6
           })),
-          animation: 'static'
-        },
-        {
-          type: 'fills',
-          items: parks.map((park, index) => ({
+          {animation: 'static'}
+        ),
+        createFillLayer(
+          parks.map((park, index) => ({
             ring: park.ring,
             role: 'warm' as Role,
             alpha: 0.5,
             phase: index / 5
           })),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {type: 'strokes', items: links, animation: 'flow', speed: 0.4, blend: 'add'},
-        {
-          type: 'sprites',
-          items: parks.map(park => ({
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(links, {animation: 'flow', speed: 0.4, blend: 'add'}),
+        createSpriteLayer(
+          parks.map(park => ({
             x: park.center[0],
             y: park.center[1],
             radius: 1.6,
             role: 'hot' as Role
           })),
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
 
   'point-in-polygon-join': {
-    parameters: [{id: 'points', label: 'Points', min: 30, max: 220, step: 10, default: 100}],
+    parameters: [createSlider('points', 'Points', 30, 220, 10, 100)],
     build: ({fork, p}) => {
       const centers: Point[] = [
         [36, 32],
@@ -2418,7 +2212,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const quiet: SpriteItem[] = [];
       const random2 = fork('phase');
       for (const point of points) {
-        const zone = zones.findIndex(ring => isInsidePolygon(point, ring));
+        const zone = zones.findIndex(ring => isInsideRing(point, ring));
         if (zone < 0) quiet.push({x: point[0], y: point[1], radius: 0.8, role: 'dim', alpha: 0.5});
         else
           sprites.push({
@@ -2430,39 +2224,33 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
           });
       }
       return [
-        {
-          type: 'fills',
-          items: zones.map((ring, index) => ({
+        createFillLayer(
+          zones.map((ring, index) => ({
             ring,
             role: roles[index],
             alpha: 0.14,
             phase: index / 5
           })),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: zones.map((ring, index) => ({
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(
+          zones.map((ring, index) => ({
             points: closeRing(ring),
             role: roles[index],
             width: 0.7,
             alpha: 0.85
           })),
-          animation: 'static',
-          blend: 'add'
-        },
-        {type: 'sprites', items: quiet},
-        {type: 'sprites', items: sprites, pulse: 0.3}
+          {animation: 'static', blend: 'add'}
+        ),
+        createSpriteLayer(quiet),
+        createSpriteLayer(sprites, {pulse: 0.3})
       ];
     }
   },
 
   'spatial-join-candidates': {
     pointer: 'hover',
-    parameters: [
-      {id: 'distance', label: 'Box expansion', min: 0, max: 14, step: 0.5, default: 3, unit: 'px'}
-    ],
+    parameters: [createSlider('distance', 'Box expansion', 0, 14, 0.5, 3, 'px')],
     build: ({fork, p, pointer}) => {
       const random = fork('shapes');
       const left = (
@@ -2502,7 +2290,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
             phase: (leftIndex + rightIndex) / 8
           });
           links.push({
-            points: [getPolygonCentroid(left[leftIndex]), getPolygonCentroid(right[rightIndex])],
+            points: [getVertexMean(left[leftIndex]), getVertexMean(right[rightIndex])],
             role: 'violet',
             width: 0.7,
             alpha: 0.9,
@@ -2511,18 +2299,15 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        {
-          type: 'fills',
-          items: [
+        createFillLayer(
+          [
             ...left.map(ring => ({ring, role: 'cool' as Role, alpha: 0.3})),
             ...right.map(ring => ({ring, role: 'warm' as Role, alpha: 0.3}))
           ],
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(
+          [
             ...left.map(ring => ({
               points: closeRing(ring),
               role: 'cool' as Role,
@@ -2536,12 +2321,10 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9
             }))
           ],
-          animation: 'static',
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'static', blend: 'add'}
+        ),
+        createStrokeLayer(
+          [
             ...leftBoxes.map(box => ({
               points: getBoxRing(box),
               role: 'cool' as Role,
@@ -2555,10 +2338,10 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.6
             }))
           ],
-          animation: 'static'
-        },
-        {type: 'fills', items: overlaps, animation: 'pulse', blend: 'add'},
-        {type: 'strokes', items: links, animation: 'flow', speed: 0.4, blend: 'add'}
+          {animation: 'static'}
+        ),
+        createFillLayer(overlaps, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(links, {animation: 'flow', speed: 0.4, blend: 'add'})
       ];
     }
   },
@@ -2566,8 +2349,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'spatial-join-prepared': {
     pointer: 'hover',
     parameters: [
-      {id: 'features', label: 'Features', min: 6, max: 26, step: 1, default: 14},
-      {id: 'leaf', label: 'Leaf size', min: 1, max: 4, step: 1, default: 2}
+      createSlider('features', 'Features', 6, 26, 1, 14),
+      createSlider('leaf', 'Leaf size', 1, 4, 1, 2)
     ],
     build: ({fork, p, pointer}) => {
       const random = fork('features');
@@ -2608,20 +2391,18 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       }
       const candidates = items.map(entry => isInsideBox(query, entry.box));
       return [
-        {
-          type: 'fills',
-          items: features.map((ring, index) => ({
+        createFillLayer(
+          features.map((ring, index) => ({
             ring,
             role: candidates[index] ? ('hot' as Role) : ('primary' as Role),
             alpha: candidates[index] ? 0.7 : 0.3,
             phase: index / features.length
           })),
-          animation: 'pulse',
-          blend: 'add'
-        },
-        {type: 'strokes', items: quiet, animation: 'static'},
-        {type: 'strokes', items: hit, animation: 'flow', speed: 0.4, trail: 1.5, blend: 'add'},
-        {type: 'sprites', items: [{x: query[0], y: query[1], radius: 2.2, role: 'ink'}], pulse: 0.4}
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createStrokeLayer(quiet, {animation: 'static'}),
+        createStrokeLayer(hit, {animation: 'flow', speed: 0.4, trail: 1.5, blend: 'add'}),
+        createSpriteLayer([{x: query[0], y: query[1], radius: 2.2, role: 'ink'}], {pulse: 0.4})
       ];
     }
   },
@@ -2629,8 +2410,8 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'nearest-feature-join': {
     pointer: 'hover',
     parameters: [
-      {id: 'queries', label: 'Queries', min: 6, max: 60, step: 2, default: 26},
-      {id: 'features', label: 'Features', min: 3, max: 12, step: 1, default: 6}
+      createSlider('queries', 'Queries', 6, 60, 2, 26),
+      createSlider('features', 'Features', 3, 12, 1, 6)
     ],
     build: ({fork, p, pointer}) => {
       const features = createScatterPoints(fork('features'), Math.round(p.features), 14);
@@ -2687,19 +2468,18 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.15,
           speed: 0.3
         },
-        {type: 'strokes', items: links, animation: 'flow', speed: 0.4, blend: 'add'},
-        {type: 'sprites', items: sprites, pulse: 0.15},
-        {
-          type: 'sprites',
-          items: features.map(([x, y], index) => ({
+        createStrokeLayer(links, {animation: 'flow', speed: 0.4, blend: 'add'}),
+        createSpriteLayer(sprites, {pulse: 0.15}),
+        createSpriteLayer(
+          features.map(([x, y], index) => ({
             x,
             y,
             radius: 3.4,
             role: getRoleCycle(index),
             phase: index / features.length
           })),
-          pulse: 0.3
-        }
+          {pulse: 0.3}
+        )
       ];
     }
   },
@@ -2707,26 +2487,18 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
   'nearest-feature-weights': {
     pointer: 'hover',
     parameters: [
-      {id: 'neighbors', label: 'Neighbors (k)', min: 1, max: 8, step: 1, default: 3},
-      {
-        id: 'scheme',
-        label: 'Weights',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 1,
-        options: ['binary', 'inverse distance']
-      }
+      createSlider('neighbors', 'Neighbors (k)', 1, 8, 1, 3),
+      createChoice('scheme', 'Weights', ['binary', 'inverse distance'], 1)
     ],
     build: ({fork, p, pointer}) => {
       const points = createScatterPoints(fork('points'), 38, 10);
-      const k = Math.round(p.neighbors);
+      const neighborCount = Math.round(p.neighbors);
       const nearestOf = (index: number) =>
         points
           .map((other, otherIndex) => ({otherIndex, distance: getDistance(points[index], other)}))
           .filter(entry => entry.otherIndex !== index)
           .sort((first, second) => first.distance - second.distance)
-          .slice(0, k);
+          .slice(0, neighborCount);
       let focus = 0;
       let centerDistance = Infinity;
       points.forEach((point, index) => {
@@ -2772,7 +2544,7 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         role: 'warm',
         width: 0.5 + weights[index] * 3.2,
         alpha: 0.95,
-        phase: index / k
+        phase: index / neighborCount
       }));
       const bars: PathItem[] = weights.map((weight, index) => ({
         points: [
@@ -2784,33 +2556,30 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
         alpha: 0.95
       }));
       return [
-        {type: 'strokes', items: background, animation: 'static'},
-        {type: 'strokes', items: links, animation: 'flow', speed: 0.5, blend: 'add'},
-        {type: 'sprites', items: toSprites(points, 'primary', 1.6), pulse: 0.2},
-        {
-          type: 'sprites',
-          items: [
+        createStrokeLayer(background, {animation: 'static'}),
+        createStrokeLayer(links, {animation: 'flow', speed: 0.5, blend: 'add'}),
+        createSpriteLayer(toSprites(points, 'primary', 1.6), {pulse: 0.2}),
+        createSpriteLayer(
+          [
             {x: points[focus][0], y: points[focus][1], radius: 4.2, role: 'hot' as Role},
             ...neighbors.map((entry, index) => ({
               x: points[entry.otherIndex][0],
               y: points[entry.otherIndex][1],
               radius: 1.8 + weights[index] * 4,
               role: 'warm' as Role,
-              phase: index / k
+              phase: index / neighborCount
             }))
           ],
-          pulse: 0.3
-        },
-        {type: 'strokes', items: bars, animation: 'static', blend: 'add'}
+          {pulse: 0.3}
+        ),
+        createStrokeLayer(bars, {animation: 'static', blend: 'add'})
       ];
     }
   },
 
   'buffer-selection': {
     pointer: 'hover',
-    parameters: [
-      {id: 'distance', label: 'Distance', min: 2, max: 24, step: 1, default: 10, unit: 'px'}
-    ],
+    parameters: [createSlider('distance', 'Distance', 2, 24, 1, 10, 'px')],
     build: ({fork, p, pointer}) => {
       const phase = fork('road').range(0, 3);
       const road: Point[] = [];
@@ -2828,34 +2597,21 @@ export const CELLS_INDEX_JOIN_PREVIEWS: Record<string, EntryPreview> = {
       const rest: Point[] = [];
       for (const point of points) (isSelected(point) ? selected : rest).push(point);
       return [
-        {
-          type: 'strokes',
-          items: [{points: road, role: 'cool', width: p.distance * 2, alpha: 0.13}],
+        createStrokeLayer([{points: road, role: 'cool', width: p.distance * 2, alpha: 0.13}], {
           animation: 'static',
           blend: 'add'
-        },
-        {
-          type: 'fills',
-          items: [
-            {ring: createCircle(feature[0], feature[1], p.distance, 36), role: 'cool', alpha: 0.16}
-          ],
-          animation: 'static',
-          blend: 'add'
-        },
-        {type: 'sprites', items: toSprites(rest, 'dim', 0.9, undefined, 0.6)},
-        {
-          type: 'strokes',
-          items: [{points: smoothPath(road, 1), role: 'primary', width: 0.8, alpha: 0.9}],
-          animation: 'flow',
-          speed: 0.2,
-          blend: 'add'
-        },
-        {type: 'sprites', items: toSprites(selected, 'warm', 1.7), pulse: 0.3},
-        {
-          type: 'sprites',
-          items: [{x: feature[0], y: feature[1], radius: 2.6, role: 'hot'}],
-          pulse: 0.3
-        }
+        }),
+        createFillLayer(
+          [{ring: createCircle(feature[0], feature[1], p.distance, 36), role: 'cool', alpha: 0.16}],
+          {animation: 'static', blend: 'add'}
+        ),
+        createSpriteLayer(toSprites(rest, 'dim', 0.9, undefined, 0.6)),
+        createStrokeLayer(
+          [{points: smoothPath(road, 1), role: 'primary', width: 0.8, alpha: 0.9}],
+          {animation: 'flow', speed: 0.2, blend: 'add'}
+        ),
+        createSpriteLayer(toSprites(selected, 'warm', 1.7), {pulse: 0.3}),
+        createSpriteLayer([{x: feature[0], y: feature[1], radius: 2.6, role: 'hot'}], {pulse: 0.3})
       ];
     }
   }

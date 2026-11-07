@@ -24,6 +24,8 @@ import {
   toSprites,
   type EntryPreview
 } from '../helpers.ts';
+import {isInsideRing} from '../geometry.ts';
+import {createFillLayer, createStrokeLayer} from '../layers.ts';
 import type {
   FillLayer,
   PathItem,
@@ -168,45 +170,23 @@ function createLink(from: Point, to: Point, role: Role = 'warm', alpha = 0.8): P
   return {points: [from, to], role, width: 0.7, alpha};
 }
 
-function createFlowLayer(items: PathItem[], speed = 0.35, trail = 1): StrokeLayer {
-  return {
-    type: 'strokes',
-    items,
-    animation: 'flow',
-    speed,
-    trail,
-    blend: 'add'
-  };
+function createFlowStrokeLayer(items: PathItem[], speed = 0.35, trail = 1): StrokeLayer {
+  return createStrokeLayer(items, {animation: 'flow', speed, trail, blend: 'add'});
 }
 
-function createStaticLayer(items: PathItem[]): StrokeLayer {
-  return {type: 'strokes', items, animation: 'static'};
+function createStaticStrokeLayer(items: PathItem[]): StrokeLayer {
+  return createStrokeLayer(items, {animation: 'static'});
 }
 
-function createFillLayer(
+function createAdditiveFillLayer(
   items: PolygonItem[],
   animation: 'static' | 'pulse' = 'static'
 ): FillLayer {
-  return {type: 'fills', items, animation, blend: 'add'};
+  return createFillLayer(items, {animation, blend: 'add'});
 }
 
 function createNode(x: number, y: number, role: Role = 'warm', radius = 3): SpriteItem {
   return {x, y, radius, role, alpha: 0.95, phase: 0};
-}
-
-function isInsideRing(point: Point, ring: Point[]): boolean {
-  let inside = false;
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
-    const [ax, ay] = ring[index];
-    const [bx, by] = ring[previous];
-    if (
-      ay > point[1] !== by > point[1] &&
-      point[0] < ((bx - ax) * (point[1] - ay)) / (by - ay) + ax
-    ) {
-      inside = !inside;
-    }
-  }
-  return inside;
 }
 
 /** Shared "bands in, derived raster out" picture. */
@@ -230,15 +210,15 @@ function buildCombine(options: {
   const centerB = getPanelEdge(inputBottom, 'right');
   const operator: Point = [68, 50];
   return [
-    createFillLayer(paintPanel(inputTop, (u, v) => makeCell(roleA, inputA(u, v)))),
-    createFillLayer(paintPanel(inputBottom, (u, v) => makeCell(roleB, inputB(u, v)))),
-    createFillLayer(outputItems, 'pulse'),
-    createStaticLayer([
+    createAdditiveFillLayer(paintPanel(inputTop, (u, v) => makeCell(roleA, inputA(u, v)))),
+    createAdditiveFillLayer(paintPanel(inputBottom, (u, v) => makeCell(roleB, inputB(u, v)))),
+    createAdditiveFillLayer(outputItems, 'pulse'),
+    createStaticStrokeLayer([
       getPanelOutline(inputTop, roleA, 0.5),
       getPanelOutline(inputBottom, roleB, 0.5),
       getPanelOutline(output, 'dim', 0.6)
     ]),
-    createFlowLayer([
+    createFlowStrokeLayer([
       createLink(centerA, operator, roleA),
       createLink(centerB, operator, roleB),
       createLink(operator, getPanelEdge(output, 'left'), operatorRole)
@@ -368,10 +348,10 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const originY = northUp ? top : bottom;
       const rowStep = northUp ? size : -size;
       const cellRing = (column: number, row: number, inset: number): Point[] => {
-        const y0 = originY + row * rowStep;
-        const y1 = y0 + rowStep;
-        const yNear = y0 + (northUp ? inset : -inset);
-        const yFar = y1 + (northUp ? -inset : inset);
+        const rowStartY = originY + row * rowStep;
+        const rowEndY = rowStartY + rowStep;
+        const yNear = rowStartY + (northUp ? inset : -inset);
+        const yFar = rowEndY + (northUp ? -inset : inset);
         return [
           [left + column * size + inset, yNear],
           [left + (column + 1) * size - inset, yNear],
@@ -480,13 +460,13 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        createFillLayer(cells, 'pulse'),
-        createStaticLayer([...lines, ...sizeBracket, ...worldAxes]),
-        createFillLayer(
+        createAdditiveFillLayer(cells, 'pulse'),
+        createStaticStrokeLayer([...lines, ...sizeBracket, ...worldAxes]),
+        createAdditiveFillLayer(
           [{ring: cellRing(0, 0, 0.2), role: 'warm', alpha: 0.9}, ...hovered],
           'pulse'
         ),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: [
@@ -515,7 +495,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ],
           0.3
         ),
-        createStaticLayer([extent]),
+        createStaticStrokeLayer([extent]),
         {
           type: 'sprites',
           items: [
@@ -553,13 +533,15 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       );
       const isValid = (column: number, row: number) => mask[row * valid.columns + column];
       return [
-        createFillLayer(paintPanel(values, (u, v) => makeCell('cool', readField(field, u, v)))),
-        createFillLayer(
+        createAdditiveFillLayer(
+          paintPanel(values, (u, v) => makeCell('cool', readField(field, u, v)))
+        ),
+        createAdditiveFillLayer(
           paintPanel(valid, (_u, _v, column, row) =>
             isValid(column, row) ? {role: 'primary', alpha: 0.75} : {role: 'hot', alpha: 0.25}
           )
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(band, (u, v, column, row) =>
             isValid(column, row)
               ? {
@@ -570,12 +552,12 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ),
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(values, 'cool', 0.5),
           getPanelOutline(valid, 'primary', 0.5),
           getPanelOutline(band, 'warm', 0.5)
         ]),
-        createFlowLayer([
+        createFlowStrokeLayer([
           createLink([46, 50], [58, 50], 'cool'),
           createLink([100, 50], [112, 50], 'primary')
         ]),
@@ -613,17 +595,17 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
     build: ({fork, p}) => {
       const field = createLandscape(fork('land'), 6, 1.5);
       const water = (u: number, v: number) => clamp((0.42 - readField(field, u, v)) * 6, 0, 1);
-      const gao = p.variant > 0.5;
+      const isGaoVariant = p.variant > 0.5;
       // McFeeters: green is bright over water, NIR dark. Gao: NIR against SWIR.
       const first = (u: number, v: number) =>
-        gao ? 0.7 - 0.5 * water(u, v) : 0.35 + 0.35 * water(u, v);
+        isGaoVariant ? 0.7 - 0.5 * water(u, v) : 0.35 + 0.35 * water(u, v);
       const second = (u: number, v: number) =>
-        gao ? 0.25 + 0.2 * (1 - water(u, v)) : 0.7 - 0.5 * water(u, v);
+        isGaoVariant ? 0.25 + 0.2 * (1 - water(u, v)) : 0.7 - 0.5 * water(u, v);
       return buildCombine({
         inputA: first,
         inputB: second,
-        roleA: gao ? 'violet' : 'primary',
-        roleB: gao ? 'hot' : 'violet',
+        roleA: isGaoVariant ? 'violet' : 'primary',
+        roleB: isGaoVariant ? 'hot' : 'violet',
         paintOutput: (a, b) => {
           const index = (a - b) / (a + b + 1e-6);
           const scaled = clamp((index + 0.6) / 1.2, 0, 1);
@@ -660,10 +642,10 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         roleA: 'primary',
         roleB: 'warm',
         paintOutput: (nir, swir) => {
-          const nbr = (nir - swir) / (nir + swir + 1e-6);
-          return nbr < 0.25
-            ? makeCell('hot', 0.4 + (0.25 - nbr), 0.4)
-            : makeCell('primary', nbr, 0.15);
+          const normalizedBurnRatio = (nir - swir) / (nir + swir + 1e-6);
+          return normalizedBurnRatio < 0.25
+            ? makeCell('hot', 0.4 + (0.25 - normalizedBurnRatio), 0.4)
+            : makeCell('primary', normalizedBurnRatio, 0.15);
         },
         operatorRole: 'hot'
       });
@@ -690,34 +672,34 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const ndviPanel = makePanel(86, 10, 17, 9);
       const eviPanel = makePanel(86, 54, 17, 9);
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(inputTop, (u, v) => makeCell('violet', 0.25 + 0.55 * clamp(cover(u, v), 0, 1)))
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(inputBottom, (u, v) => makeCell('hot', 0.7 - 0.4 * clamp(cover(u, v), 0, 1)))
         ),
         // The blue band: an aerosol haze EVI corrects for.
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(inputBottom, (u, v) => makeCell('cool', readField(haze, u, v) * 0.5, 0.0))
         ),
         // NDVI saturates over dense canopy; EVI keeps a gradient.
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(ndviPanel, (u, v) => makeCell('dim', Math.min(1, cover(u, v) * 2.6), 0.2))
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(eviPanel, (u, v, column) => ({
             ...makeCell('primary', (cover(u, v) / 1.4) ** 0.7, 0.1),
             phase: column / eviPanel.columns
           })),
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(inputTop, 'violet', 0.5),
           getPanelOutline(inputBottom, 'hot', 0.5),
           getPanelOutline(ndviPanel, 'dim', 0.6),
           getPanelOutline(eviPanel, 'primary', 0.7)
         ]),
-        createFlowLayer([
+        createFlowStrokeLayer([
           createLink([52, 28], [68, 50], 'violet'),
           createLink([52, 72], [68, 50], 'hot'),
           createLink([68, 50], [84, 28], 'dim', 0.5),
@@ -777,7 +759,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const raster = makePanel(88, 12, 16, 20, 4);
       const cover = createLandscape(fork('cover'), 5, 1.8);
       return [
-        createStaticLayer([
+        createStaticStrokeLayer([
           {
             points: [
               [10, 14],
@@ -790,7 +772,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           },
           {points: soilLine, role: 'cool', width: 0.8, alpha: 0.6}
         ]),
-        createFlowLayer(fan, 0.25, 0.6),
+        createFlowStrokeLayer(fan, 0.25, 0.6),
         {
           type: 'sprites',
           items: [
@@ -801,7 +783,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           pulse: 0.3
         },
         // Sparse cover over bare ground: soil cells stay dark.
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(raster, (u, v, column) => {
             const amount = clamp((readField(cover, u, v) - 0.55) * 3, 0, 1);
             return amount > 0.05
@@ -813,7 +795,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createStaticLayer([getPanelOutline(raster, 'primary', 0.5)])
+        createStaticStrokeLayer([getPanelOutline(raster, 'primary', 0.5)])
       ];
     }
   },
@@ -896,12 +878,12 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       }));
       return [
         ...stackPanels.map((panel, index) =>
-          createFillLayer(
+          createAdditiveFillLayer(
             paintPanel(panel, (u, v) => makeCell('cool', readField(fields[index], u, v), 0.1))
           )
         ),
-        createStaticLayer(stackPanels.map(panel => getPanelOutline(panel, 'cool', 0.45))),
-        createFillLayer(
+        createStaticStrokeLayer(stackPanels.map(panel => getPanelOutline(panel, 'cool', 0.45))),
+        createAdditiveFillLayer(
           paintPanel(output, (u, v, column) => {
             const value = reduce(u, v);
             return {
@@ -911,8 +893,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createFlowLayer(links, 0.3, 0.8),
-        createFillLayer(
+        createFlowStrokeLayer(links, 0.3, 0.8),
+        createAdditiveFillLayer(
           [
             {
               ring: getCellRing(output, selected[0], selected[1]),
@@ -922,7 +904,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ],
           'pulse'
         ),
-        createStaticLayer([getPanelOutline(output, 'dim', 0.6)])
+        createStaticStrokeLayer([getPanelOutline(output, 'dim', 0.6)])
       ];
     }
   },
@@ -948,14 +930,18 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const output = makePanel(86, 10, 17, 20);
       const passes = (u: number, v: number) => readField(conditionField, u, v) > p.threshold;
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(condition, (u, v) =>
             passes(u, v) ? {role: 'primary', alpha: 0.85} : {role: 'dim', alpha: 0.2}
           )
         ),
-        createFillLayer(paintPanel(inputA, (u, v) => makeCell('warm', readField(fieldA, u, v)))),
-        createFillLayer(paintPanel(inputB, (u, v) => makeCell('cool', readField(fieldB, u, v)))),
-        createFillLayer(
+        createAdditiveFillLayer(
+          paintPanel(inputA, (u, v) => makeCell('warm', readField(fieldA, u, v)))
+        ),
+        createAdditiveFillLayer(
+          paintPanel(inputB, (u, v) => makeCell('cool', readField(fieldB, u, v)))
+        ),
+        createAdditiveFillLayer(
           paintPanel(output, (u, v, column) =>
             passes(u, v)
               ? {
@@ -969,13 +955,13 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ),
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(condition, 'primary', 0.5),
           getPanelOutline(inputA, 'warm', 0.5),
           getPanelOutline(inputB, 'cool', 0.5),
           getPanelOutline(output, 'dim', 0.6)
         ]),
-        createFlowLayer([
+        createFlowStrokeLayer([
           createLink([42, 18], [68, 50], 'primary'),
           createLink([42, 50], [68, 50], 'warm'),
           createLink([42, 82], [68, 50], 'cool'),
@@ -1015,10 +1001,10 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         alpha: 0.8
       }));
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(source, (u, v) => makeCell('primary', readField(field, u, v), 0.08))
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(target, (u, v, column) => {
             const bin = classOf(readField(field, u, v));
             return {
@@ -1029,13 +1015,13 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createFillLayer(bars, 'pulse'),
-        createStaticLayer([
+        createAdditiveFillLayer(bars, 'pulse'),
+        createStaticStrokeLayer([
           getPanelOutline(source, 'primary', 0.5),
           getPanelOutline(target, 'dim', 0.6),
           ...breaks
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [createLink([68, 50], [71, 50], 'primary'), createLink([82, 50], [86, 50], 'warm')],
           0.3
         )
@@ -1090,13 +1076,13 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       }));
       return [
         ...inputs.map((panel, index) =>
-          createFillLayer(
+          createAdditiveFillLayer(
             paintPanel(panel, (u, v) =>
               makeCell(roles[index], readField(fields[index], u, v), 0.08)
             )
           )
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(output, (u, v, column) => {
             const score =
               fields.reduce(
@@ -1110,11 +1096,11 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           ...inputs.map((panel, index) => getPanelOutline(panel, roles[index], 0.5)),
           getPanelOutline(output, 'dim', 0.6)
         ]),
-        createFlowLayer([...links, createLink([68, 50], [84, 50], 'ink')]),
+        createFlowStrokeLayer([...links, createLink([68, 50], [84, 50], 'ink')]),
         {
           type: 'sprites',
           items: [createNode(68, 50, 'ink', 3.6)],
@@ -1176,7 +1162,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           : {role: getRoleCycle(zone), alpha: 0.5, phase: zone / 3};
       });
       return [
-        createFillLayer(items, 'pulse'),
+        createAdditiveFillLayer(items, 'pulse'),
         {
           type: 'strokes',
           items: toPaths(
@@ -1232,12 +1218,12 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const summary = (zone: number) =>
         [sums[zone] / counts[zone], maxima[zone], Math.min(1, sums[zone] / 60)][statistic];
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(raw, (_u, _v, column, row) =>
             makeCell('cool', values[row * raw.columns + column], 0.1)
           )
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(zonal, (_u, _v, column, row) => {
             const value = summary(zones[row * zonal.columns + column]);
             return {
@@ -1247,8 +1233,11 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createStaticLayer([getPanelOutline(raw, 'cool', 0.5), getPanelOutline(zonal, 'dim', 0.6)]),
-        createFlowLayer(
+        createStaticStrokeLayer([
+          getPanelOutline(raw, 'cool', 0.5),
+          getPanelOutline(zonal, 'dim', 0.6)
+        ]),
+        createFlowStrokeLayer(
           [
             createLink([72, 30], [82, 30], 'warm'),
             createLink([72, 50], [82, 50], 'warm'),
@@ -1295,13 +1284,13 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         phase: index / 4
       }));
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (u, v) => ({
             role: getRoleCycle(getZoneIndex(centers, u, v)),
             alpha: 0.16
           }))
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (_u, _v, column, row) => {
             const count = counts.get(row * panel.columns + column);
             return count
@@ -1314,13 +1303,13 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createFillLayer(bars, 'pulse'),
+        createAdditiveFillLayer(bars, 'pulse'),
         {
           type: 'sprites',
           items: toSprites(points, 'warm', 1.1, random, 0.9),
           pulse: 0.3
         },
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(panel, 'dim', 0.5),
           {
             points: [
@@ -1332,7 +1321,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.6
           }
         ]),
-        createFlowLayer([createLink([121, 50], [129, 50], 'warm')], 0.3)
+        createFlowStrokeLayer([createLink([121, 50], [129, 50], 'warm')], 0.3)
       ];
     }
   },
@@ -1359,11 +1348,11 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const samples = 4;
       const items = paintPanel(panel, (_u, _v, column, row) => {
         let inside = 0;
-        for (let sy = 0; sy < samples; sy++) {
-          for (let sx = 0; sx < samples; sx++) {
+        for (let sampleRow = 0; sampleRow < samples; sampleRow++) {
+          for (let sampleColumn = 0; sampleColumn < samples; sampleColumn++) {
             const point: Point = [
-              panel.x + (column + (sx + 0.5) / samples) * size,
-              panel.y + (row + (sy + 0.5) / samples) * size
+              panel.x + (column + (sampleColumn + 0.5) / samples) * size,
+              panel.y + (row + (sampleRow + 0.5) / samples) * size
             ];
             if (isInsideRing(point, ring)) inside++;
           }
@@ -1375,7 +1364,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           : {role: 'warm', alpha: 0.2 + fraction * 0.7, phase: fraction};
       });
       return [
-        createFillLayer(items, 'pulse'),
+        createAdditiveFillLayer(items, 'pulse'),
         {
           type: 'strokes',
           items: toPaths([[...ring, ring[0]]], 'ink', 0.5, 0.85),
@@ -1401,11 +1390,14 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       let hardCount = 0;
       const items = paintPanel(panel, (u, v, column, row) => {
         let inside = 0;
-        for (let sy = 0; sy < 3; sy++) {
-          for (let sx = 0; sx < 3; sx++) {
+        for (let sampleRow = 0; sampleRow < 3; sampleRow++) {
+          for (let sampleColumn = 0; sampleColumn < 3; sampleColumn++) {
             if (
               isInsideRing(
-                [panel.x + (column + (sx + 0.5) / 3) * 4, panel.y + (row + (sy + 0.5) / 3) * 4],
+                [
+                  panel.x + (column + (sampleColumn + 0.5) / 3) * 4,
+                  panel.y + (row + (sampleRow + 0.5) / 3) * 4
+                ],
                 ring
               )
             )
@@ -1430,8 +1422,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const weightedMean = weighted / (weightSum || 1);
       const hardMean = hardSum / (hardCount || 1);
       return [
-        createFillLayer(items, 'pulse'),
-        createStaticLayer([
+        createAdditiveFillLayer(items, 'pulse'),
+        createStaticStrokeLayer([
           ...toPaths([[...ring, ring[0]]], 'ink', 0.5, 0.8),
           {
             points: [
@@ -1444,7 +1436,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }
         ]),
         // Two means: the hard-edged one (cell centre inside) against the coverage-weighted one.
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: [
@@ -1526,7 +1518,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       }));
       const selected = getQuantile(p.quantile);
       return [
-        createFillLayer([
+        createAdditiveFillLayer([
           {
             ring: [
               [toX(mean - deviation), 20],
@@ -1538,8 +1530,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.12
           }
         ]),
-        createFillLayer(bars, 'pulse'),
-        createStaticLayer([
+        createAdditiveFillLayer(bars, 'pulse'),
+        createStaticStrokeLayer([
           {
             points: [
               [24, 88],
@@ -1561,7 +1553,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             })
           )
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: [
@@ -1619,9 +1611,9 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        createFillLayer(items),
-        createFillLayer(bars, 'pulse'),
-        createStaticLayer([
+        createAdditiveFillLayer(items),
+        createAdditiveFillLayer(bars, 'pulse'),
+        createStaticStrokeLayer([
           getPanelOutline(panel, 'dim', 0.55),
           {
             points: [
@@ -1642,7 +1634,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.7
           }
         ]),
-        createFlowLayer([createLink([72, 50], [82, 50], 'warm')], 0.3)
+        createFlowStrokeLayer([createLink([72, 50], [82, 50], 'warm')], 0.3)
       ];
     }
   },
@@ -1705,7 +1697,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           filter: method === 0 ? 'nearest' : 'linear',
           strength: 0.05
         },
-        createFlowLayer(
+        createFlowStrokeLayer(
           taps.map(tap => createLink(tap, probe, 'warm', 0.8)),
           0.4,
           0.8
@@ -1799,7 +1791,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           strength: 4,
           light: -2.3
         },
-        createFlowLayer(toPaths([path], 'warm', 1.1), 0.25),
+        createFlowStrokeLayer(toPaths([path], 'warm', 1.1), 0.25),
         {
           type: 'sprites',
           items: samplesOnPath.map(
@@ -1814,7 +1806,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ),
           pulse: 0.3
         },
-        createStaticLayer([
+        createStaticStrokeLayer([
           {
             points: [
               [12, 94],
@@ -1825,7 +1817,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.7
           }
         ]),
-        createFlowLayer(toPaths([profile], 'primary', 1.1), 0.35, 1.4),
+        createFlowStrokeLayer(toPaths([profile], 'primary', 1.1), 0.35, 1.4),
         {
           type: 'sprites',
           items: profile.map(
@@ -1892,8 +1884,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const beforeWidth = 144;
       const toX = (value: number) => beforeLeft + value * beforeWidth;
       return [
-        createFillLayer(makeBars(value => value, beforeLeft, beforeWidth, 44, 34, 'cool')),
-        createFillLayer(
+        createAdditiveFillLayer(makeBars(value => value, beforeLeft, beforeWidth, 44, 34, 'cool')),
+        createAdditiveFillLayer(
           makeBars(
             value => (value - low) / (high - low + 1e-6),
             beforeLeft,
@@ -1904,7 +1896,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ),
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           {
             points: [
               [8, 44],
@@ -1942,7 +1934,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.9
           }
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             createLink([toX(low), 46], [8, 56], 'warm', 0.8),
             createLink([toX(high), 46], [152, 56], 'warm', 0.8)
@@ -2013,20 +2005,20 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         phase: index / 9
       }));
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(noisy, (_u, _v, column, row) =>
             makeCell('cool', values[row * columns + column], 0.08)
           )
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(filtered, (_u, _v, column, row) => ({
             ...makeCell('primary', pick(column, row), 0.08),
             phase: column / columns
           })),
           'pulse'
         ),
-        createFillLayer(sortedBars, 'pulse'),
-        createStaticLayer([
+        createAdditiveFillLayer(sortedBars, 'pulse'),
+        createStaticStrokeLayer([
           getPanelOutline(noisy, 'cool', 0.5),
           getPanelOutline(filtered, 'primary', 0.55),
           {
@@ -2039,7 +2031,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.7
           }
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {points: windowRing, role: 'warm', width: 1, alpha: 1},
             createLink([68, 54], [80, 36], 'warm', 0.5),
@@ -2074,16 +2066,16 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const map = makePanel(94, 10, 15, 18);
       const columns = map.columns;
       const rows = map.rows;
-      const a = new Float32Array(columns * rows);
-      const b = new Float32Array(columns * rows);
+      const valuesA = new Float32Array(columns * rows);
+      const valuesB = new Float32Array(columns * rows);
       for (let row = 0; row < rows; row++) {
         for (let column = 0; column < columns; column++) {
           const u = (column + 0.5) / columns;
           const v = (row + 0.5) / rows;
           const index = row * columns + column;
-          a[index] = readField(fieldA, u, v);
+          valuesA[index] = readField(fieldA, u, v);
           const relation = (readField(slopeField, u, v) - 0.5) * 3;
-          b[index] = 0.5 + relation * (a[index] - 0.5) + noise.gaussian() * 0.12;
+          valuesB[index] = 0.5 + relation * (valuesA[index] - 0.5) + noise.gaussian() * 0.12;
         }
       }
       const radius = Math.round(p.window);
@@ -2095,8 +2087,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           for (let dx = -radius; dx <= radius; dx++) {
             const index =
               clamp(row + dy, 0, rows - 1) * columns + clamp(column + dx, 0, columns - 1);
-            meanA += a[index];
-            meanB += b[index];
+            meanA += valuesA[index];
+            meanB += valuesB[index];
             count++;
           }
         }
@@ -2109,9 +2101,9 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           for (let dx = -radius; dx <= radius; dx++) {
             const index =
               clamp(row + dy, 0, rows - 1) * columns + clamp(column + dx, 0, columns - 1);
-            covariance += (a[index] - meanA) * (b[index] - meanB);
-            varianceA += (a[index] - meanA) ** 2;
-            varianceB += (b[index] - meanB) ** 2;
+            covariance += (valuesA[index] - meanA) * (valuesB[index] - meanB);
+            varianceA += (valuesA[index] - meanA) ** 2;
+            varianceB += (valuesB[index] - meanB) ** 2;
           }
         }
         return {
@@ -2130,8 +2122,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             clamp(selected[1] + dy, 0, rows - 1) * columns +
             clamp(selected[0] + dx, 0, columns - 1);
           scatter.push({
-            x: 46 + clamp(a[index], 0, 1) * 34,
-            y: 84 - clamp(b[index], 0, 1) * 34,
+            x: 46 + clamp(valuesA[index], 0, 1) * 34,
+            y: 84 - clamp(valuesB[index], 0, 1) * 34,
             radius: 1.5,
             role: 'ink',
             alpha: 0.9,
@@ -2148,17 +2140,17 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         84 - clamp(target.meanB + target.slope * (1 - target.meanA), 0, 1.2) * 34
       ];
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(first, (_u, _v, column, row) =>
-            makeCell('cool', a[row * 2 * columns + Math.min(columns - 1, column * 2)], 0.1)
+            makeCell('cool', valuesA[row * 2 * columns + Math.min(columns - 1, column * 2)], 0.1)
           )
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(second, (_u, _v, column, row) =>
-            makeCell('violet', b[row * 2 * columns + Math.min(columns - 1, column * 2)], 0.1)
+            makeCell('violet', valuesB[row * 2 * columns + Math.min(columns - 1, column * 2)], 0.1)
           )
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(map, (_u, _v, column, row) => {
             const {correlation} = correlationAt(column, row);
             return {
@@ -2169,7 +2161,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           [
             {
               ring: getCellRing(map, selected[0], selected[1]),
@@ -2179,7 +2171,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ],
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(first, 'cool', 0.5),
           getPanelOutline(second, 'violet', 0.5),
           getPanelOutline(map, 'dim', 0.6),
@@ -2195,7 +2187,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.7
           }
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: [fitStart, fitEnd],
@@ -2258,10 +2250,10 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const peak = Math.max(...counts, 1);
       const matrix = makePanel(88, 18, levels, levels, 8);
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(image, (_u, _v, column, row) => makeCell('cool', level(column, row), 0.05))
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(matrix, (_u, _v, column, row) => {
             const share = counts[row * levels + column] / peak;
             return share > 0.02
@@ -2273,7 +2265,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(image, 'dim', 0.5),
           getPanelOutline(matrix, 'dim', 0.6),
           {
@@ -2290,7 +2282,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 1
           }
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [createLink([image.x + (selectedBand + 1) * bandWidth * 4, 50], [86, 50], 'warm')],
           0.35
         )
@@ -2352,7 +2344,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       }
       const rounds = Math.round(p.rounds);
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (_u, _v, column, row) => {
             const index = row * columns + column;
             if (!mask[index]) return null;
@@ -2463,7 +2455,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (_u, _v, column, row) => {
             const index = row * columns + column;
             if (land[index]) return {role: 'primary', alpha: 0.6, phase: 0};
@@ -2507,7 +2499,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         holes.some(([hc, hr], index) => Math.hypot(column - hc, (row - hr) * 1.1) < radii[index]);
       const searchRadius = Math.round(p.radius);
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (u, v, column, row) => {
             if (!isHole(column, row)) return makeCell('cool', readField(field, u, v), 0.1);
             let weightSum = 0;
@@ -2601,8 +2593,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       });
       const area = sizes[selected] ?? 0;
       return [
-        createFillLayer(items, 'pulse'),
-        createFlowLayer(
+        createAdditiveFillLayer(items, 'pulse'),
+        createFlowStrokeLayer(
           [
             {
               points: [
@@ -2685,7 +2677,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         if (votes[best] > 0) merged[index] = best;
       }
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (_u, _v, column, row) => {
             const index = row * columns + column;
             const changed = merged[index] !== classes[index];
@@ -2756,7 +2748,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         return best;
       };
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (_u, _v, column, row) => {
             const distance = distanceToSpine(getCellCenter(panel, column, row));
             return distance < half
@@ -2768,7 +2760,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
               : null;
           })
         ),
-        createFlowLayer(toPaths(spine, 'primary', 1.5, 1), 0.35, 1.6),
+        createFlowStrokeLayer(toPaths(spine, 'primary', 1.5, 1), 0.35, 1.6),
         {
           type: 'sprites',
           items: [
@@ -2798,8 +2790,13 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         3
       );
       const halfWidthAt = (index: number) => {
-        const t = index / (axis.length - 1);
-        return 4 + 13 * (0.35 + 0.65 * Math.sin(t * Math.PI * 1.5 + 0.4) ** 2) * (1 - p.taper * t);
+        const axisFraction = index / (axis.length - 1);
+        return (
+          4 +
+          13 *
+            (0.35 + 0.65 * Math.sin(axisFraction * Math.PI * 1.5 + 0.4) ** 2) *
+            (1 - p.taper * axisFraction)
+        );
       };
       fork('unused');
       const panel = FULL_PANEL;
@@ -2820,7 +2817,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         .map((point, index) => ({point, radius: halfWidthAt(index)}))
         .filter((_, index) => index % 6 === 0 || index === selected);
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (_u, _v, column, row) => {
             const center = getCellCenter(panel, column, row);
             const index = nearestAxis(center);
@@ -2829,7 +2826,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
               : null;
           })
         ),
-        createStaticLayer(
+        createStaticStrokeLayer(
           discs.map(({point, radius}) => ({
             points: createCircle(point[0], point[1], radius, 24).concat([
               [point[0] + radius, point[1]]
@@ -2839,7 +2836,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.5
           }))
         ),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: createCircle(
@@ -2855,7 +2852,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ],
           0.3
         ),
-        createFlowLayer(toPaths([axis], 'primary', 1.4), 0.3, 1.5),
+        createFlowStrokeLayer(toPaths([axis], 'primary', 1.4), 0.3, 1.5),
         {
           type: 'sprites',
           items: axis
@@ -2955,14 +2952,14 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         .filter(([first, second]) => first === hovered || second === hovered)
         .map(([first, second]) => [nodes[first], nodes[second]]);
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (_u, _v, column, row) => ({
             role: getRoleCycle(owner[row * columns + column]),
             alpha: owner[row * columns + column] === hovered ? 0.35 : 0.15
           }))
         ),
-        createFlowLayer(toPaths(quiet, 'primary', 0.8, 0.8), 0.25),
-        createFlowLayer(toPaths(active, 'warm', 1.4, 1), 0.4),
+        createFlowStrokeLayer(toPaths(quiet, 'primary', 0.8, 0.8), 0.25),
+        createFlowStrokeLayer(toPaths(active, 'warm', 1.4, 1), 0.4),
         {
           type: 'sprites',
           items: nodes.map(
@@ -3072,7 +3069,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           strength: 3,
           light: -2.2
         },
-        createFillLayer(items, 'pulse'),
+        createAdditiveFillLayer(items, 'pulse'),
         {
           type: 'sprites',
           items: seedIds.map(
@@ -3191,7 +3188,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           strength: 4,
           light: -2.3
         },
-        createStaticLayer(grid),
+        createStaticStrokeLayer(grid),
         {type: 'sprites', items: [...lows, ...highs], pulse: 0.35}
       ];
     }
@@ -3341,10 +3338,10 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         const u = index / 8;
         lines.push({
           points: Array.from({length: 14}, (_, step): Point => {
-            const [wu, wv] = warp(u, step / 13);
+            const [warpedU, warpedV] = warp(u, step / 13);
             return [
-              16 + clamp(2 * u - wu, 0, 1) * 128,
-              10 + clamp((step / 13) * 2 - wv, 0, 1) * 80
+              16 + clamp(2 * u - warpedU, 0, 1) * 128,
+              10 + clamp((step / 13) * 2 - warpedV, 0, 1) * 80
             ];
           }),
           role: 'cool',
@@ -3356,10 +3353,10 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         const v = index / 5;
         lines.push({
           points: Array.from({length: 18}, (_, step): Point => {
-            const [wu, wv] = warp(step / 17, v);
+            const [warpedU, warpedV] = warp(step / 17, v);
             return [
-              16 + clamp((step / 17) * 2 - wu, 0, 1) * 128,
-              10 + clamp(2 * v - wv, 0, 1) * 80
+              16 + clamp((step / 17) * 2 - warpedU, 0, 1) * 128,
+              10 + clamp(2 * v - warpedV, 0, 1) * 80
             ];
           }),
           role: 'cool',
@@ -3368,7 +3365,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
         });
       }
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(panel, (u, v, column) => {
             const [sourceU, sourceV] = warp(u, v);
             return {
@@ -3382,8 +3379,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createFlowLayer(lines, 0.2, 0.9),
-        createStaticLayer([getPanelOutline(panel, 'warm', 0.7)])
+        createFlowStrokeLayer(lines, 0.2, 0.9),
+        createStaticStrokeLayer([getPanelOutline(panel, 'warm', 0.7)])
       ];
     }
   },
@@ -3394,40 +3391,40 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const image = createLandscape(fork('image'), 6, 1.4);
       const gap = (1 - p.join) * 16;
       const tiles = [0, 1, 2, 3].map(index => {
-        const tx = index % 2;
-        const ty = Math.floor(index / 2);
+        const tileColumn = index % 2;
+        const tileRow = Math.floor(index / 2);
         return {
-          tx,
-          ty,
+          tileColumn,
+          tileRow,
           panel: makePanel(
-            26 + tx * 56 + (tx - 0.5) * gap,
-            14 + ty * 36 + (ty - 0.5) * gap + (tx === 1 ? gap * 0.15 : 0),
+            26 + tileColumn * 56 + (tileColumn - 0.5) * gap,
+            14 + tileRow * 36 + (tileRow - 0.5) * gap + (tileColumn === 1 ? gap * 0.15 : 0),
             14,
             9
           )
         };
       });
       return [
-        ...tiles.map(({tx, ty, panel}, index) =>
-          createFillLayer(
+        ...tiles.map(({tileColumn, tileRow, panel}, index) =>
+          createAdditiveFillLayer(
             paintPanel(panel, (u, v) =>
               makeCell(
                 getRoleCycle(index) === 'primary'
                   ? 'primary'
                   : (['primary', 'warm', 'cool', 'violet'][index] as Role),
-                readField(image, (tx + u) / 2, (ty + v) / 2),
+                readField(image, (tileColumn + u) / 2, (tileRow + v) / 2),
                 0.14
               )
             ),
             'pulse'
           )
         ),
-        createStaticLayer(
+        createStaticStrokeLayer(
           tiles.map(({panel}, index) =>
             getPanelOutline(panel, (['primary', 'warm', 'cool', 'violet'] as Role[])[index], 0.8)
           )
         ),
-        createFlowLayer(
+        createFlowStrokeLayer(
           tiles.map(({panel}) => createLink([panel.x + 28, panel.y + 18], [82, 50], 'ink', 0.4)),
           0.3,
           0.6
@@ -3475,19 +3472,19 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const blockLeft = fine.x + selected[0] * factor * 4;
       const blockTop = fine.y + selected[1] * factor * 4;
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(fine, (_u, _v, column, row) =>
             makeCell('cool', values[row * fine.columns + column], 0.1)
           )
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(coarse, (_u, _v, column, row) => ({
             ...makeCell('warm', sums[row * coarse.columns + column] / peak, 0.12),
             phase: column / coarse.columns
           })),
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(fine, 'cool', 0.5),
           getPanelOutline(coarse, 'warm', 0.5),
           {
@@ -3503,7 +3500,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 1
           }
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             createLink(
               [blockLeft + factor * 4, blockTop + factor * 2],
@@ -3514,7 +3511,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ],
           0.35
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           [
             {
               ring: getCellRing(coarse, selected[0], selected[1], 0.3),
@@ -3551,7 +3548,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const peak = getCellCenter(correlation, clamp(peakColumn, 0, 10), clamp(peakRow, 0, 10));
       const origin = getCellCenter(correlation, 5, 5);
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(correlation, (_u, _v, column, row) => {
             const distance = Math.hypot(column - peakColumn, row - peakRow);
             const value =
@@ -3565,7 +3562,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(correlation, 'dim', 0.6),
           {
             points: [
@@ -3586,7 +3583,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.8
           }
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {points: before[0], role: 'cool', width: 1, alpha: 0.9},
             {points: before[1], role: 'hot', width: 1, alpha: 0.9},
@@ -3647,7 +3644,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       return [
         // Three additive layers per pixel: the colour mix is the abundance mix.
         ...roles.map((role, endmember) =>
-          createFillLayer(
+          createAdditiveFillLayer(
             paintPanel(image, (u, v) => ({
               role,
               alpha: 0.7 * fractionsAt(u, v)[endmember],
@@ -3655,7 +3652,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             }))
           )
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           [
             {
               ring: getCellRing(image, selected[0], selected[1]),
@@ -3665,7 +3662,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ],
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(image, 'dim', 0.5),
           {
             points: [
@@ -3686,8 +3683,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             })
           )
         ]),
-        createFlowLayer([{points: blended, role: 'ink', width: 1.4, alpha: 0.95}], 0.3, 1.5),
-        createFillLayer(
+        createFlowStrokeLayer([{points: blended, role: 'ink', width: 1.4, alpha: 0.95}], 0.3, 1.5),
+        createAdditiveFillLayer(
           fractions.map(
             (fraction, index): PolygonItem => ({
               ring: createBarPolygon(84, 70 + index * 9 + 5, 4 + fraction * 66, 4),
@@ -3734,7 +3731,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       ];
       const significant = Math.abs(slope) > p.significance;
       return [
-        createFillLayer(
+        createAdditiveFillLayer(
           paintPanel(map, (u, v, column) => {
             const value = slopeAt(u, v);
             const passes = Math.abs(value) > p.significance;
@@ -3746,7 +3743,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createFillLayer(
+        createAdditiveFillLayer(
           [
             {
               ring: getCellRing(map, selected[0], selected[1]),
@@ -3756,7 +3753,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           ],
           'pulse'
         ),
-        createStaticLayer([
+        createStaticStrokeLayer([
           getPanelOutline(map, 'dim', 0.55),
           {
             points: [
@@ -3778,7 +3775,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.6
           }
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {points: series, role: 'ink', width: 0.9, alpha: 0.9},
             {
@@ -3791,7 +3788,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           0.3,
           1.2
         ),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: [
@@ -3880,7 +3877,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       const peak = Math.max(0.6, ...cusum.map(Math.abs));
       const detectedAt = detection >= 0 ? detection : breakIndex;
       return [
-        createStaticLayer([
+        createStaticStrokeLayer([
           {
             points: [
               [10, 60],
@@ -3918,7 +3915,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             alpha: 0.4
           }
         ]),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: observed.map((value, index): Point => [toX(index), 56 - value * 48]),
@@ -3930,7 +3927,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           0.25,
           1.4
         ),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: cusum.map((value, index): Point => [toX(index), 77 + (value / peak) * 15]),
@@ -3942,7 +3939,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           0.3,
           1.2
         ),
-        createFlowLayer(
+        createFlowStrokeLayer(
           [
             {
               points: [
@@ -3993,7 +3990,7 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
       );
       return [
         ...panels.map((panel, date) =>
-          createFillLayer(
+          createAdditiveFillLayer(
             paintPanel(panel, (u, v) =>
               isCloudy(date, u, v)
                 ? {role: 'ink', alpha: 0.85}
@@ -4001,8 +3998,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
             )
           )
         ),
-        createStaticLayer(panels.map(panel => getPanelOutline(panel, 'cool', 0.4))),
-        createFillLayer(
+        createStaticStrokeLayer(panels.map(panel => getPanelOutline(panel, 'cool', 0.4))),
+        createAdditiveFillLayer(
           paintPanel(output, (u, v, column) => {
             const clearDate = Array.from({length: dates}, (_, date) => date).find(
               date => !isCloudy(date, u, v)
@@ -4016,8 +4013,8 @@ export const RASTER_BANDS_INDICES_PREVIEWS: Record<string, EntryPreview> = {
           }),
           'pulse'
         ),
-        createStaticLayer([getPanelOutline(output, 'dim', 0.6)]),
-        createFlowLayer([...links, createLink([72, 50], [86, 50], 'warm')], 0.3, 0.8),
+        createStaticStrokeLayer([getPanelOutline(output, 'dim', 0.6)]),
+        createFlowStrokeLayer([...links, createLink([72, 50], [86, 50], 'warm')], 0.3, 0.8),
         {
           type: 'sprites',
           items: [createNode(72, 50, 'warm', 3.4)],

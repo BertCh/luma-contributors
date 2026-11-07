@@ -83,6 +83,7 @@ export default defineOperationRun({
       }
     };
   },
+  rebuildOn: ['kind', 'binCount'],
   draw: ({outputs}) => [
     {layer: 'dots', context: true, positions: outputs.positions, radius: 1.6, alpha: 0.5},
     {

@@ -11,7 +11,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 3,
     step: 1,
-    default: 0,
+    default: 1,
     options: ['localMoran', 'localGeary', 'localG', 'localGStar']
   },
   {

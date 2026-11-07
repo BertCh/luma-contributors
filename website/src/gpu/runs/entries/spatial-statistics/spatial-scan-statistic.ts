@@ -20,7 +20,7 @@ const COLUMNS = 14;
 const ROWS = 8;
 const MAXIMUM_PERMUTATIONS = 99;
 const MAXIMUM_CLUSTERS = 4;
-const RATE_DIRECTIONS = ['high', 'low', 'both'] as const;
+const RATE_DIRECTIONS = ['both', 'high', 'low'] as const;
 
 export default defineOperationRun({
   parameters,
@@ -96,6 +96,8 @@ export default defineOperationRun({
             let rate = 0.05;
             if (column >= 2 && column <= 4 && row >= 1 && row <= 3) rate = current.excessRate;
             if (column >= 10 && column <= 11 && row >= 5 && row <= 6) rate = 0.1;
+            // A deficit, found only when the scan looks for low rates.
+            if (column >= 6 && column <= 8 && row >= 4 && row <= 6) rate = 0.012;
             return Math.round(population * rate * (0.85 + 0.3 * inputs.uniform[zone]));
           })
         );

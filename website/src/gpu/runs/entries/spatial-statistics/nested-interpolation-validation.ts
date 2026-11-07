@@ -95,7 +95,7 @@ export default defineOperationRun({
         testing: testing.view,
         foldCount,
         innerBlocks: builder.upload('inner-blocks', 'uint32', inputs.innerBlocks).view,
-        innerFoldCount: values.innerFoldCount,
+        innerFoldCount: 3,
         seed: 2,
         neighborCount: values.neighborCount,
         candidates,
@@ -130,7 +130,7 @@ export default defineOperationRun({
       }
     };
   },
-  rebuildOn: ['foldCount', 'innerFoldCount', 'neighborCount'],
+  rebuildOn: ['foldCount', 'neighborCount'],
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.diagonal, radius: 1},
     {

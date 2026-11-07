@@ -14,7 +14,7 @@ import {parameters} from './pair-gather.parameters';
 
 const NO_ROW = 0xffffffff;
 const QUERY_COUNT = 50;
-const TARGET_COUNT = 70;
+const TARGET_COUNT = 60;
 
 const PAIR_BODY = /* wgsl */ `
   let rowCount = joinedCount[joinedCountOffset];
@@ -131,7 +131,7 @@ export default defineOperationRun({
       layer: 'dots',
       positions: outputs.queryDots,
       values: outputs.gathered,
-      radius: 4.4,
+      radius: 6,
       range: [0, 1]
     }
   ]

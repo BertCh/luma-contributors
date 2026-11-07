@@ -13,7 +13,15 @@ import {
   getDistance,
   type Random
 } from '../data.ts';
+import {closeRing} from '../geometry.ts';
 import {getClassRole, toSprites, type EntryPreview} from '../helpers.ts';
+import {
+  createChoice,
+  createFillLayer,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer
+} from '../layers.ts';
 import type {
   FillLayer,
   PathItem,
@@ -41,7 +49,8 @@ const MAP_LAYOUT: Layout = {columns: 16, rows: 10, size: 9, x: 8, y: 5};
 
 const ROLE_CYCLE: Role[] = ['primary', 'warm', 'violet', 'cool', 'hot'];
 
-function rectangle(x: number, y: number, width: number, height: number): Point[] {
+/** Rectangle ring from its top-left corner and size. */
+function createSizedRectangle(x: number, y: number, width: number, height: number): Point[] {
   return [
     [x, y],
     [x + width, y],
@@ -59,7 +68,7 @@ function getCellCenter(layout: Layout, index: number): Point {
 function getCellRing(layout: Layout, index: number, inset = 0.5): Point[] {
   const column = index % layout.columns;
   const row = Math.floor(index / layout.columns);
-  return rectangle(
+  return createSizedRectangle(
     layout.x + column * layout.size + inset,
     layout.y + row * layout.size + inset,
     layout.size - inset * 2,
@@ -82,10 +91,16 @@ function getQueenNeighbors(layout: Layout, index: number, radius = 1): number[] 
   const neighbors: number[] = [];
   for (let dy = -radius; dy <= radius; dy++) {
     for (let dx = -radius; dx <= radius; dx++) {
-      const c = column + dx;
-      const r = row + dy;
-      if ((dx || dy) && c >= 0 && r >= 0 && c < layout.columns && r < layout.rows) {
-        neighbors.push(r * layout.columns + c);
+      const neighborColumn = column + dx;
+      const neighborRow = row + dy;
+      if (
+        (dx || dy) &&
+        neighborColumn >= 0 &&
+        neighborRow >= 0 &&
+        neighborColumn < layout.columns &&
+        neighborRow < layout.rows
+      ) {
+        neighbors.push(neighborRow * layout.columns + neighborColumn);
       }
     }
   }
@@ -136,7 +151,9 @@ function getIndexOfMaximum(values: number[]): number {
 
 /** Ranks values into 0..1 so a class ramp always uses its whole range. */
 function getRanks(values: number[]): number[] {
-  const order = values.map((value, index) => ({value, index})).sort((a, b) => a.value - b.value);
+  const order = values
+    .map((value, index) => ({value, index}))
+    .sort((first, second) => first.value - second.value);
   const ranks: number[] = [];
   order.forEach((entry, rank) => {
     ranks[entry.index] = rank / Math.max(1, values.length - 1);
@@ -166,51 +183,44 @@ function createCellLinks(
 ): PreviewLayer[] {
   const center = getCellCenter(layout, index);
   return [
-    {
-      type: 'strokes',
-      items: neighbors.map((neighbor, position) => ({
+    createStrokeLayer(
+      neighbors.map((neighbor, position) => ({
         points: [center, getCellCenter(layout, neighbor)],
         role: 'warm' as Role,
         width: widths ? widths[position] : 0.8,
         alpha: 0.95,
         phase: position / neighbors.length
       })),
-      animation: 'flow',
-      speed: 0.5,
-      blend: 'add'
-    },
-    {
-      type: 'strokes',
-      items: [
+      {animation: 'flow', speed: 0.5, blend: 'add'}
+    ),
+    createStrokeLayer(
+      [
         {
-          points: [...getCellRing(layout, index, 0), getCellRing(layout, index, 0)[0]],
+          points: closeRing(getCellRing(layout, index, 0)),
           role: 'warm',
           width: 0.9,
           alpha: 1
         }
       ],
-      animation: 'pulse',
-      speed: 0.5,
-      blend: 'add'
-    }
+      {animation: 'pulse', speed: 0.5, blend: 'add'}
+    )
   ];
 }
 
-function createFillLayer(items: PolygonItem[]): FillLayer {
-  return {type: 'fills', items, animation: 'pulse', blend: 'add'};
+function createPulsingFillLayer(items: PolygonItem[]): FillLayer {
+  return createFillLayer(items, {animation: 'pulse', blend: 'add'});
 }
 
 function createOutlineLayer(rings: Point[][], role: Role = 'dim', alpha = 0.5): StrokeLayer {
-  return {
-    type: 'strokes',
-    items: rings.map(ring => ({
-      points: [...ring, ring[0]],
+  return createStrokeLayer(
+    rings.map(ring => ({
+      points: closeRing(ring),
       role,
       width: 0.35,
       alpha
     })),
-    animation: 'static'
-  };
+    {animation: 'static'}
+  );
 }
 
 function createLatticeOutline(layout: Layout, alpha = 0.35): StrokeLayer {
@@ -221,32 +231,22 @@ function createLatticeOutline(layout: Layout, alpha = 0.35): StrokeLayer {
   return createOutlineLayer(rings, 'dim', alpha);
 }
 
-const HOTSPOT_THRESHOLD_PARAMETER = {
-  id: 'threshold',
-  label: 'Significance',
-  min: 0.2,
-  max: 3,
-  step: 0.1,
-  default: 0.5,
-  unit: '|I|'
-};
-
-// ---------------------------------------------------------------------------------------------
+const HOTSPOT_THRESHOLD_PARAMETER = createSlider(
+  'threshold',
+  'Significance',
+  0.2,
+  3,
+  0.1,
+  0.5,
+  '|I|'
+);
 
 const AUTOCORRELATION_PREVIEWS: Record<string, EntryPreview> = {
-  // ------------------------------------------------------------------------ autocorrelation
   'local-morans-i': {
     pointer: 'hover',
     parameters: [
       HOTSPOT_THRESHOLD_PARAMETER,
-      {
-        id: 'outliers',
-        label: 'Local outliers',
-        min: 0,
-        max: 14,
-        step: 1,
-        default: 7
-      }
+      createSlider('outliers', 'Local outliers', 0, 14, 1, 7)
     ],
     build: ({fork, p, pointer}) => {
       const layout = MAP_LAYOUT;
@@ -265,7 +265,7 @@ const AUTOCORRELATION_PREVIEWS: Record<string, EntryPreview> = {
       });
       const probe = getCellAt(layout, pointer) ?? getIndexOfMaximum(localI);
       return [
-        createFillLayer(items),
+        createPulsingFillLayer(items),
         createLatticeOutline(layout),
         ...createCellLinks(layout, probe, getQueenNeighbors(layout, probe))
       ];
@@ -274,16 +274,7 @@ const AUTOCORRELATION_PREVIEWS: Record<string, EntryPreview> = {
 
   'local-gearys-c': {
     pointer: 'hover',
-    parameters: [
-      {
-        id: 'contrasts',
-        label: 'Contrasts',
-        min: 0,
-        max: 14,
-        step: 1,
-        default: 6
-      }
-    ],
+    parameters: [createSlider('contrasts', 'Contrasts', 0, 14, 1, 6)],
     build: ({fork, p, pointer}) => {
       const layout = MAP_LAYOUT;
       const values = createLatticeValues(fork('values'), layout, 1);
@@ -312,23 +303,13 @@ const AUTOCORRELATION_PREVIEWS: Record<string, EntryPreview> = {
       const widths = neighbors.map(
         neighbor => 0.3 + Math.min(3, (values[probe] - values[neighbor]) ** 2 * 0.5)
       );
-      return [createFillLayer(items), ...createCellLinks(layout, probe, neighbors, widths)];
+      return [createPulsingFillLayer(items), ...createCellLinks(layout, probe, neighbors, widths)];
     }
   },
 
   'hot-spot-analysis-gi-star': {
     pointer: 'hover',
-    parameters: [
-      {
-        id: 'window',
-        label: 'Neighborhood',
-        min: 1,
-        max: 3,
-        step: 1,
-        default: 2,
-        unit: 'cells'
-      }
-    ],
+    parameters: [createSlider('window', 'Neighborhood', 1, 3, 1, 2, 'cells')],
     build: ({fork, p, pointer}) => {
       const layout = MAP_LAYOUT;
       const smooth = createLatticeValues(fork('values'), layout, 1);
@@ -363,49 +344,35 @@ const AUTOCORRELATION_PREVIEWS: Record<string, EntryPreview> = {
       const right = Math.min(layout.columns - 1, column + radius);
       const top = Math.max(0, row - radius);
       const bottom = Math.min(layout.rows - 1, row + radius);
-      const window = rectangle(
+      const window = createSizedRectangle(
         layout.x + left * layout.size,
         layout.y + top * layout.size,
         (right - left + 1) * layout.size,
         (bottom - top + 1) * layout.size
       );
       return [
-        createFillLayer(items),
+        createPulsingFillLayer(items),
         createLatticeOutline(layout, 0.2),
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
-              points: [...window, window[0]],
+              points: closeRing(window),
               role: 'warm',
               width: 1.1,
               alpha: 1
             }
           ],
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{...toCenter(layout, probe), radius: 3, role: 'warm', alpha: 0.9}],
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        ),
+        createSpriteLayer([{...toCenter(layout, probe), radius: 3, role: 'warm', alpha: 0.9}], {
           pulse: 0.5
-        }
+        })
       ];
     }
   },
 
   'global-spatial-statistics': {
-    parameters: [
-      {
-        id: 'clustering',
-        label: 'Clustering',
-        min: 0,
-        max: 1,
-        step: 0.05,
-        default: 0.8
-      }
-    ],
+    parameters: [createSlider('clustering', 'Clustering', 0, 1, 0.05, 0.8)],
     build: ({fork, p}) => {
       const layout: Layout = {columns: 10, rows: 8, size: 6, x: 8, y: 26};
       const smooth = createLatticeValues(fork('values'), layout, 1);
@@ -429,7 +396,12 @@ const AUTOCORRELATION_PREVIEWS: Record<string, EntryPreview> = {
         const height = clamp(magnitude, -34, 34);
         const outside = Math.abs(height) > 11;
         bars.push({
-          ring: rectangle(x, Math.min(baseline, baseline - height), 8, Math.abs(height) + 0.6),
+          ring: createSizedRectangle(
+            x,
+            Math.min(baseline, baseline - height),
+            8,
+            Math.abs(height) + 0.6
+          ),
           role: outside ? (height > 0 ? 'hot' : 'cool') : 'dim',
           alpha: outside ? 0.7 : 0.4,
           phase: index / 5
@@ -455,23 +427,15 @@ const AUTOCORRELATION_PREVIEWS: Record<string, EntryPreview> = {
         phase: index / 3
       }));
       return [
-        createFillLayer(items),
-        createOutlineLayer([rectangle(layout.x, layout.y, 60, 48)], 'dim', 0.5),
-        {
-          type: 'fills',
-          // The no-evidence band: z within about two standard errors of zero.
-          items: [
-            {
-              ring: rectangle(80, baseline - 11, 68, 22),
-              role: 'ink',
-              alpha: 0.1
-            }
-          ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: [
+        createPulsingFillLayer(items),
+        createOutlineLayer([createSizedRectangle(layout.x, layout.y, 60, 48)], 'dim', 0.5),
+        // The no-evidence band: z within about two standard errors of zero.
+        createFillLayer(
+          [{ring: createSizedRectangle(80, baseline - 11, 68, 22), role: 'ink', alpha: 0.1}],
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          [
             {
               points: [
                 [80, baseline],
@@ -483,12 +447,10 @@ const AUTOCORRELATION_PREVIEWS: Record<string, EntryPreview> = {
             },
             ...flows
           ],
-          animation: 'flow',
-          speed: 0.4,
-          blend: 'add'
-        },
-        createFillLayer(bars),
-        {type: 'sprites', items: caps, pulse: 0.4}
+          {animation: 'flow', speed: 0.4, blend: 'add'}
+        ),
+        createPulsingFillLayer(bars),
+        createSpriteLayer(caps, {pulse: 0.4})
       ];
     }
   }
@@ -531,16 +493,7 @@ const BELL_HEIGHTS = [0.06, 0.18, 0.4, 0.7, 0.95, 0.95, 0.7, 0.4, 0.18, 0.06];
 
 const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
   'spatial-pearson': {
-    parameters: [
-      {
-        id: 'correlation',
-        label: 'Correlation',
-        min: -1,
-        max: 1,
-        step: 0.05,
-        default: 0.7
-      }
-    ],
+    parameters: [createSlider('correlation', 'Correlation', -1, 1, 0.05, 0.7)],
     build: ({fork, p}) => {
       const random = fork('pairs');
       const centerX = 112;
@@ -588,9 +541,8 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
         [2, 4]
       ];
       return [
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             getAxes(centerX - 40, 8, centerX + 40, 92),
             {
               points: [
@@ -611,30 +563,25 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.4
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: links.map(([from, to], index) => ({
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          links.map(([from, to], index) => ({
             points: [neighbors[to], focal[from]],
             role: 'violet' as Role,
             width: 0.8,
             alpha: 0.9,
             phase: index / links.length
           })),
-          animation: 'flow',
-          speed: 0.35,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [...toSprites(focal, 'primary', 3.2), ...toSprites(neighbors, 'violet', 2.4)],
-          pulse: 0.3
-        },
-        {type: 'sprites', items: points, pulse: 0.3},
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'flow', speed: 0.35, blend: 'add'}
+        ),
+        createSpriteLayer(
+          [...toSprites(focal, 'primary', 3.2), ...toSprites(neighbors, 'violet', 2.4)],
+          {pulse: 0.3}
+        ),
+        createSpriteLayer(points, {pulse: 0.3}),
+        createStrokeLayer(
+          [
             {
               points: [
                 [centerX - 34, centerY + correlation * 34],
@@ -645,33 +592,16 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.95
             }
           ],
-          animation: 'pulse',
-          speed: 0.4,
-          blend: 'add'
-        }
+          {animation: 'pulse', speed: 0.4, blend: 'add'}
+        )
       ];
     }
   },
 
   'gamma-statistic': {
     parameters: [
-      {
-        id: 'bandwidth',
-        label: 'Neighbor reach',
-        min: 1,
-        max: 4,
-        step: 1,
-        default: 2
-      },
-      {
-        id: 'similarity',
-        label: 'Similarity',
-        min: 0,
-        max: 1,
-        step: 1,
-        default: 0,
-        options: ['Cross-product', 'Squared difference']
-      }
+      createSlider('bandwidth', 'Neighbor reach', 1, 4, 1, 2),
+      createChoice('similarity', 'Similarity', ['Cross-product', 'Squared difference'])
     ],
     build: ({fork, p}) => {
       const size = 10;
@@ -709,7 +639,7 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
         for (let index = 0; index < size * size; index++) {
           const {role, alpha} = fill(index);
           items.push({
-            ring: rectangle(
+            ring: createSizedRectangle(
               origin + (index % size) * cell + 0.25,
               top + Math.floor(index / size) * cell + 0.25,
               cell - 0.5,
@@ -768,9 +698,8 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
         }
       ];
       return [
-        {
-          type: 'fills',
-          items: [
+        createFillLayer(
+          [
             ...matrix(origins[0], index => ({
               role: 'primary',
               alpha: weights[index] ? 0.7 : 0.06
@@ -780,24 +709,16 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
               weights[index] ? similarityFill(index) : {role: 'ink', alpha: 0.04}
             )
           ],
-          animation: 'pulse',
-          blend: 'add'
-        },
+          {animation: 'pulse', blend: 'add'}
+        ),
         createOutlineLayer(
-          origins.map(origin => rectangle(origin, top, size * cell, size * cell)),
+          origins.map(origin => createSizedRectangle(origin, top, size * cell, size * cell)),
           'dim',
           0.5
         ),
-        {
-          type: 'strokes',
-          items: arrows,
-          animation: 'flow',
-          speed: 0.45,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(arrows, {animation: 'flow', speed: 0.45, blend: 'add'}),
+        createStrokeLayer(
+          [
             {
               points: [
                 [12, 84],
@@ -808,11 +729,10 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.5
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          [
             {
               points: [
                 [12, 84],
@@ -823,25 +743,14 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          animation: 'draw',
-          speed: 0.25,
-          blend: 'add'
-        }
+          {animation: 'draw', speed: 0.25, blend: 'add'}
+        )
       ];
     }
   },
 
   'local-spatial-heteroscedasticity': {
-    parameters: [
-      {
-        id: 'noise',
-        label: 'Noisy area',
-        min: 0,
-        max: 1.5,
-        step: 0.05,
-        default: 1
-      }
-    ],
+    parameters: [createSlider('noise', 'Noisy area', 0, 1.5, 0.05, 1)],
     build: ({fork, p}) => {
       const layout = MAP_LAYOUT;
       const base = createLatticeValues(fork('values'), layout, 0.9);
@@ -854,7 +763,9 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
         const column = index % layout.columns;
         const row = Math.floor(index / layout.columns);
         const near = Math.min(
-          ...centers.map(([cx, cy]) => Math.hypot(column - cx, (row - cy) * 1.1))
+          ...centers.map(([centerX, centerY]) =>
+            Math.hypot(column - centerX, (row - centerY) * 1.1)
+          )
         );
         const patch = Math.max(0, 1 - near / 4);
         return value * 0.5 + noise.gaussian() * patch * p.noise * 1.6;
@@ -886,24 +797,15 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
         };
       });
       return [
-        createFillLayer(items),
+        createPulsingFillLayer(items),
         createLatticeOutline(layout, 0.2),
-        {type: 'sprites', items: dots, pulse: 0.2}
+        createSpriteLayer(dots, {pulse: 0.2})
       ];
     }
   },
 
   'multivariate-local-gearys-c': {
-    parameters: [
-      {
-        id: 'variables',
-        label: 'Variables',
-        min: 1,
-        max: 3,
-        step: 1,
-        default: 3
-      }
-    ],
+    parameters: [createSlider('variables', 'Variables', 1, 3, 1, 3)],
     build: ({fork, p}) => {
       const panel: Layout = {columns: 10, rows: 7, size: 3.6, x: 6, y: 6};
       const result: Layout = {columns: 10, rows: 7, size: 8, x: 72, y: 22};
@@ -950,20 +852,16 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
         phase: ranks[index]
       }));
       return [
-        createFillLayer(panels),
+        createPulsingFillLayer(panels),
         createOutlineLayer(
-          [0, 1, 2].map(variable => rectangle(panel.x, panel.y + variable * 30, 36, 25.2)),
+          [0, 1, 2].map(variable =>
+            createSizedRectangle(panel.x, panel.y + variable * 30, 36, 25.2)
+          ),
           'dim',
           0.5
         ),
-        {
-          type: 'strokes',
-          items: arcs,
-          animation: 'flow',
-          speed: 0.4,
-          blend: 'add'
-        },
-        createFillLayer(items),
+        createStrokeLayer(arcs, {animation: 'flow', speed: 0.4, blend: 'add'}),
+        createPulsingFillLayer(items),
         createLatticeOutline(result, 0.25)
       ];
     }
@@ -974,17 +872,7 @@ const WEIGHTS_AND_TESTS_PREVIEWS: Record<string, EntryPreview> = {
 const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
   'global-permutation-test': {
     pointer: 'sticky',
-    parameters: [
-      {
-        id: 'observed',
-        label: 'Observed statistic',
-        min: -1,
-        max: 4.5,
-        step: 0.1,
-        default: 2,
-        unit: 'σ'
-      }
-    ],
+    parameters: [createSlider('observed', 'Observed statistic', -1, 4.5, 0.1, 2, 'σ')],
     build: ({fork, p, pointer}) => {
       const bins = 26;
       const centerX = 80;
@@ -1001,7 +889,7 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
         const height = Math.exp(-(sigma * sigma) / 2) * 50 * (0.9 + noise.next() * 0.2);
         const inTail = sigma >= observed;
         bars.push({
-          ring: rectangle(x + 0.4, baseline - height, width - 0.8, height),
+          ring: createSizedRectangle(x + 0.4, baseline - height, width - 0.8, height),
           role: inTail ? 'hot' : 'cool',
           alpha: inTail ? 0.85 : 0.4,
           phase: bin / bins
@@ -1018,10 +906,9 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
         phase: rug.next()
       }));
       return [
-        createFillLayer(bars),
-        {
-          type: 'strokes',
-          items: [
+        createPulsingFillLayer(bars),
+        createStrokeLayer(
+          [
             {
               points: [
                 [10, baseline],
@@ -1032,12 +919,11 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.8
             }
           ],
-          animation: 'static'
-        },
-        {type: 'sprites', items: dots, pulse: 0.5},
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'static'}
+        ),
+        createSpriteLayer(dots, {pulse: 0.5}),
+        createStrokeLayer(
+          [
             {
               points: [
                 [observedX, 10],
@@ -1048,15 +934,11 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [{x: observedX, y: 10, radius: 3.4, role: 'warm', alpha: 1}],
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        ),
+        createSpriteLayer([{x: observedX, y: 10, radius: 3.4, role: 'warm', alpha: 1}], {
           pulse: 0.4
-        }
+        })
       ];
     }
   },
@@ -1064,23 +946,8 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
   'local-permutation-test': {
     pointer: 'sticky',
     parameters: [
-      {
-        id: 'shuffles',
-        label: 'Shuffles shown',
-        min: 1,
-        max: 12,
-        step: 1,
-        default: 3
-      },
-      {
-        id: 'threshold',
-        label: 'Significance',
-        min: 0.2,
-        max: 3,
-        step: 0.1,
-        default: 1,
-        unit: '|I|'
-      }
+      createSlider('shuffles', 'Shuffles shown', 1, 12, 1, 3),
+      createSlider('threshold', 'Significance', 0.2, 3, 0.1, 1, '|I|')
     ],
     build: ({fork, p, pointer}) => {
       const layout: Layout = {columns: 12, rows: 9, size: 8, x: 6, y: 14};
@@ -1123,40 +990,30 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
       const bars: PolygonItem[] = BELL_HEIGHTS.map((height, index) => {
         const x = 114 + index * 4.2;
         return {
-          ring: rectangle(x, 74 - height * 36, 3.6, height * 36),
+          ring: createSizedRectangle(x, 74 - height * 36, 3.6, height * 36),
           role: x + 2 >= observed ? 'hot' : 'violet',
           alpha: x + 2 >= observed ? 0.85 : 0.45,
           phase: index / 10
         };
       });
       return [
-        createFillLayer(items),
+        createPulsingFillLayer(items),
         createLatticeOutline(layout, 0.2),
-        {
-          type: 'strokes',
-          items: fans,
-          animation: 'flow',
-          speed: 0.5,
-          trail: 0.7,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(fans, {animation: 'flow', speed: 0.5, trail: 0.7, blend: 'add'}),
+        createStrokeLayer(
+          [
             {
-              points: [...getCellRing(layout, probe, 0), getCellRing(layout, probe, 0)[0]],
+              points: closeRing(getCellRing(layout, probe, 0)),
               role: 'warm',
               width: 1,
               alpha: 1
             }
           ],
-          animation: 'pulse',
-          blend: 'add'
-        },
-        createFillLayer(bars),
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'pulse', blend: 'add'}
+        ),
+        createPulsingFillLayer(bars),
+        createStrokeLayer(
+          [
             {
               points: [
                 [112, 75],
@@ -1176,30 +1033,16 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          animation: 'static'
-        }
+          {animation: 'static'}
+        )
       ];
     }
   },
 
   'losh-residual-permutation-test': {
     parameters: [
-      {
-        id: 'shuffles',
-        label: 'Shuffled rows',
-        min: 1,
-        max: 3,
-        step: 1,
-        default: 2
-      },
-      {
-        id: 'noise',
-        label: 'Noisy area',
-        min: 0,
-        max: 1.5,
-        step: 0.05,
-        default: 1
-      }
+      createSlider('shuffles', 'Shuffled rows', 1, 3, 1, 2),
+      createSlider('noise', 'Noisy area', 0, 1.5, 0.05, 1)
     ],
     build: ({fork, p}) => {
       const layout: Layout = {columns: 10, rows: 8, size: 8, x: 6, y: 18};
@@ -1240,7 +1083,7 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
       const barX = (slot: number) => 98 + slot * 4.3;
       previous.forEach(({height}, slot) => {
         bars.push({
-          ring: rectangle(barX(slot), 38 - height, 3, height),
+          ring: createSizedRectangle(barX(slot), 38 - height, 3, height),
           role: 'warm',
           alpha: 0.8,
           phase: slot / 12
@@ -1250,11 +1093,11 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
         const baseline = 38 + row * 22;
         const order = previous
           .map(entry => ({entry, key: shuffle.next()}))
-          .sort((a, b) => a.key - b.key)
+          .sort((first, second) => first.key - second.key)
           .map(({entry}) => entry);
         order.forEach(({height, index}, slot) => {
           bars.push({
-            ring: rectangle(barX(slot), baseline - height, 3, height),
+            ring: createSizedRectangle(barX(slot), baseline - height, 3, height),
             role: 'violet',
             alpha: 0.6,
             phase: slot / 12
@@ -1274,27 +1117,19 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
         previous = order;
       }
       return [
-        createFillLayer(items),
+        createPulsingFillLayer(items),
         createLatticeOutline(layout, 0.2),
-        {
-          type: 'strokes',
-          items: links,
-          animation: 'flow',
-          speed: 0.4,
-          trail: 0.6,
-          blend: 'add'
-        },
-        createFillLayer(bars),
-        {
-          type: 'strokes',
-          items: [38, 60, 82].slice(0, rows + 1).map(y => ({
+        createStrokeLayer(links, {animation: 'flow', speed: 0.4, trail: 0.6, blend: 'add'}),
+        createPulsingFillLayer(bars),
+        createStrokeLayer(
+          [38, 60, 82].slice(0, rows + 1).map(y => ({
             points: [[96, y] as Point, [150, y] as Point],
             role: 'dim' as Role,
             width: 0.4,
             alpha: 0.7
           })),
-          animation: 'static'
-        }
+          {animation: 'static'}
+        )
       ];
     }
   },
@@ -1330,7 +1165,7 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
         // Where this cell's statistic falls in the spread of all cells stands in for its place in the null.
         const offset = clamp((getRanks(scoresOfVariable)[probe] - 0.5) * 44, -20, 20);
         bands.push({
-          ring: rectangle(118, y - 4, 24, 8),
+          ring: createSizedRectangle(118, y - 4, 24, 8),
           role: 'ink',
           alpha: 0.18
         });
@@ -1354,17 +1189,15 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
       });
       const ring = getCellRing(layout, probe, 0);
       return [
-        createFillLayer(items),
+        createPulsingFillLayer(items),
         createLatticeOutline(layout, 0.2),
-        {
-          type: 'strokes',
-          items: [{points: [...ring, ring[0]], role: 'warm', width: 1, alpha: 1}],
+        createStrokeLayer([{points: closeRing(ring), role: 'warm', width: 1, alpha: 1}], {
           animation: 'pulse',
           blend: 'add'
-        },
-        {type: 'fills', items: bands, animation: 'static'},
-        {type: 'strokes', items: guides, animation: 'static'},
-        {type: 'sprites', items: markers, pulse: 0.5}
+        }),
+        createFillLayer(bands, {animation: 'static'}),
+        createStrokeLayer(guides, {animation: 'static'}),
+        createSpriteLayer(markers, {pulse: 0.5})
       ];
     }
   }
@@ -1373,23 +1206,8 @@ const PERMUTATION_PREVIEWS: Record<string, EntryPreview> = {
 const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
   'multiple-testing-adjustment': {
     parameters: [
-      {
-        id: 'alpha',
-        label: 'Alpha',
-        min: 0.01,
-        max: 0.3,
-        step: 0.01,
-        default: 0.12
-      },
-      {
-        id: 'method',
-        label: 'Method',
-        min: 0,
-        max: 3,
-        step: 1,
-        default: 3,
-        options: ['None', 'Bonferroni', 'Holm', 'Benjamini-Hochberg']
-      }
+      createSlider('alpha', 'Alpha', 0.01, 0.3, 0.01, 0.12),
+      createChoice('method', 'Method', ['None', 'Bonferroni', 'Holm', 'Benjamini-Hochberg'], 3)
     ],
     build: ({fork, p}) => {
       const random = fork('values');
@@ -1398,7 +1216,7 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
       const width = 136;
       const values = Array.from({length: count}, (_, index) =>
         index < 18 ? 0.0025 * (index + 1) * random.range(0.35, 1.2) : random.range(0.01, 1)
-      ).sort((a, b) => a - b);
+      ).sort((first, second) => first - second);
       const getX = (index: number) => left + ((index + 0.5) * width) / count;
       // Square-root scale so both tiny p-values and the threshold lines stay readable.
       const getY = (value: number) => 92 - Math.sqrt(value) * 78;
@@ -1438,19 +1256,15 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
         phase: index / count
       }));
       return [
-        {
-          type: 'strokes',
-          items: [getAxes(10, 8, 150, 92)],
-          animation: 'static'
-        },
-        {type: 'strokes', items: lines, animation: 'static', blend: 'add'},
-        {type: 'sprites', items: dots, pulse: 0.5}
+        createStrokeLayer([getAxes(10, 8, 150, 92)], {animation: 'static'}),
+        createStrokeLayer(lines, {animation: 'static', blend: 'add'}),
+        createSpriteLayer(dots, {pulse: 0.5})
       ];
     }
   },
 
   'assuncao-reis-standardization': {
-    parameters: [{id: 'areas', label: 'Areas', min: 20, max: 80, step: 2, default: 46}],
+    parameters: [createSlider('areas', 'Areas', 20, 80, 2, 46)],
     build: ({fork, p}) => {
       const random = fork('areas');
       const effects = fork('effects');
@@ -1495,9 +1309,8 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
         });
       }
       return [
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: [
                 [8, 50],
@@ -1537,11 +1350,10 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.7
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          [
             {
               points: [
                 [74, 50],
@@ -1552,32 +1364,21 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          animation: 'flow',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {type: 'sprites', items: [...rawItems, ...standardized], pulse: 0.35}
+          {animation: 'flow', speed: 0.5, blend: 'add'}
+        ),
+        createSpriteLayer([...rawItems, ...standardized], {pulse: 0.35})
       ];
     }
   },
 
   'empirical-bayes-rates': {
-    parameters: [
-      {
-        id: 'spread',
-        label: 'Between-area spread',
-        min: 0.3,
-        max: 3,
-        step: 0.1,
-        default: 1
-      }
-    ],
+    parameters: [createSlider('spread', 'Between-area spread', 0.3, 3, 0.1, 1)],
     build: ({fork, p}) => {
       const random = fork('areas');
       const rows = Array.from({length: 14}, () => ({
         population: random.range(25, 600),
         score: random.gaussian()
-      })).sort((a, b) => b.population - a.population);
+      })).sort((first, second) => second.population - first.population);
       const prior = 10 * p.spread;
       const rawItems: SpriteItem[] = [];
       const shrunk: SpriteItem[] = [];
@@ -1587,7 +1388,7 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
         const noise = 38 / Math.sqrt(population / 25);
         const weight = (prior * prior) / (prior * prior + noise * noise);
         const rawX = clamp(80 + score * noise, 10, 150);
-        const eb = 80 + (rawX - 80) * weight;
+        const shrunkX = 80 + (rawX - 80) * weight;
         const radius = 0.8 + (population / 600) * 1.1;
         rawItems.push({
           x: rawX,
@@ -1598,7 +1399,7 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
           phase: index / 14
         });
         shrunk.push({
-          x: eb,
+          x: shrunkX,
           y,
           radius,
           role: 'primary',
@@ -1608,7 +1409,7 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
         arrows.push({
           points: [
             [rawX, y],
-            [eb, y]
+            [shrunkX, y]
           ],
           role: 'warm',
           width: 0.7,
@@ -1617,9 +1418,8 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: [
                 [80, 4],
@@ -1630,36 +1430,18 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.75
             }
           ],
-          animation: 'pulse',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: arrows,
-          animation: 'flow',
-          speed: 0.45,
-          trail: 0.8,
-          blend: 'add'
-        },
-        {type: 'sprites', items: rawItems, pulse: 0.2},
-        {type: 'sprites', items: shrunk, pulse: 0.3}
+          {animation: 'pulse', speed: 0.3, blend: 'add'}
+        ),
+        createStrokeLayer(arrows, {animation: 'flow', speed: 0.45, trail: 0.8, blend: 'add'}),
+        createSpriteLayer(rawItems, {pulse: 0.2}),
+        createSpriteLayer(shrunk, {pulse: 0.3})
       ];
     }
   },
 
   'spatial-empirical-bayes-rates': {
     pointer: 'hover',
-    parameters: [
-      {
-        id: 'smoothing',
-        label: 'Smoothing',
-        min: 0,
-        max: 1,
-        step: 0.05,
-        default: 0.8
-      }
-    ],
+    parameters: [createSlider('smoothing', 'Smoothing', 0, 1, 0.05, 0.8)],
     build: ({fork, p, pointer}) => {
       const left: Layout = {columns: 8, rows: 7, size: 8, x: 10, y: 22};
       const right: Layout = {...left, x: 86};
@@ -1697,32 +1479,34 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
       const probeRow = Math.floor(probe / left.columns);
       const windows = [left, right].map(layout => {
         const column0 = Math.max(0, probeColumn - 1);
-        const row0 = Math.max(0, probeRow - 1);
+        const firstRow = Math.max(0, probeRow - 1);
         const column1 = Math.min(layout.columns - 1, probeColumn + 1);
-        const row1 = Math.min(layout.rows - 1, probeRow + 1);
-        const ring = rectangle(
+        const lastRow = Math.min(layout.rows - 1, probeRow + 1);
+        const ring = createSizedRectangle(
           layout.x + column0 * layout.size,
-          layout.y + row0 * layout.size,
+          layout.y + firstRow * layout.size,
           (column1 - column0 + 1) * layout.size,
-          (row1 - row0 + 1) * layout.size
+          (lastRow - firstRow + 1) * layout.size
         );
         return {
-          points: [...ring, ring[0]],
+          points: closeRing(ring),
           role: 'warm' as Role,
           width: 1,
           alpha: 1
         };
       });
       return [
-        createFillLayer([...toItems(left, raw), ...toItems(right, smoothed)]),
+        createPulsingFillLayer([...toItems(left, raw), ...toItems(right, smoothed)]),
         createOutlineLayer(
-          [rectangle(left.x, left.y, 64, 56), rectangle(right.x, right.y, 64, 56)],
+          [
+            createSizedRectangle(left.x, left.y, 64, 56),
+            createSizedRectangle(right.x, right.y, 64, 56)
+          ],
           'dim',
           0.5
         ),
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
               points: [
                 [76, 50],
@@ -1733,32 +1517,15 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          animation: 'flow',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: windows,
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        }
+          {animation: 'flow', speed: 0.5, blend: 'add'}
+        ),
+        createStrokeLayer(windows, {animation: 'pulse', speed: 0.5, blend: 'add'})
       ];
     }
   },
 
   'emerging-hot-spots': {
-    parameters: [
-      {
-        id: 'radius',
-        label: 'Hot spot size',
-        min: 1.2,
-        max: 3.2,
-        step: 0.1,
-        default: 2
-      }
-    ],
+    parameters: [createSlider('radius', 'Hot spot size', 1.2, 3.2, 0.1, 2)],
     build: ({fork, p}) => {
       const columns = 8;
       const rows = 6;
@@ -1800,9 +1567,9 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
       for (let slice = 3; slice >= 0; slice--) {
         const x = 6 + slice * 14;
         const y = 58 - slice * 11;
-        frames.push(rectangle(x, y, columns * cell, rows * cell));
+        frames.push(createSizedRectangle(x, y, columns * cell, rows * cell));
         slices.push({
-          ring: rectangle(x, y, columns * cell, rows * cell),
+          ring: createSizedRectangle(x, y, columns * cell, rows * cell),
           role: 'ink',
           alpha: 0.06
         });
@@ -1810,7 +1577,7 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
           const level = category < 0 ? 0 : intensity(category, slice);
           if (level < 0.15) return;
           slices.push({
-            ring: rectangle(
+            ring: createSizedRectangle(
               x + (index % columns) * cell + 0.2,
               y + Math.floor(index / columns) * cell + 0.2,
               cell - 0.4,
@@ -1836,11 +1603,10 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
         phase: (index % columns) / columns
       }));
       return [
-        {type: 'fills', items: slices, animation: 'pulse', blend: 'add'},
+        createFillLayer(slices, {animation: 'pulse', blend: 'add'}),
         createOutlineLayer(frames, 'dim', 0.55),
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {points: trendLine, role: 'violet', width: 0.9, alpha: 1},
             {
               points: createArc([77, 34], [83, 46], 0.2, 10),
@@ -1849,11 +1615,9 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          animation: 'flow',
-          speed: 0.35,
-          blend: 'add'
-        },
-        createFillLayer(items),
+          {animation: 'flow', speed: 0.35, blend: 'add'}
+        ),
+        createPulsingFillLayer(items),
         createLatticeOutline(result, 0.25)
       ];
     }
@@ -1861,23 +1625,8 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
 
   'knox-test': {
     parameters: [
-      {
-        id: 'distance',
-        label: 'Near in space',
-        min: 6,
-        max: 30,
-        step: 1,
-        default: 11,
-        unit: 'px'
-      },
-      {
-        id: 'window',
-        label: 'Near in time',
-        min: 0.04,
-        max: 0.5,
-        step: 0.02,
-        default: 0.16
-      }
+      createSlider('distance', 'Near in space', 6, 30, 1, 11, 'px'),
+      createSlider('window', 'Near in time', 0.04, 0.5, 0.02, 0.16)
     ],
     build: ({fork, p}) => {
       const random = fork('cases');
@@ -1928,35 +1677,26 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
       }
       const peak = Math.log1p(Math.max(...counts));
       const table: PolygonItem[] = counts.map((count, index) => ({
-        ring: rectangle(116 + (index % 2) * 17, 34 + Math.floor(index / 2) * 17, 15, 15),
+        ring: createSizedRectangle(116 + (index % 2) * 17, 34 + Math.floor(index / 2) * 17, 15, 15),
         role: index === 0 ? 'warm' : 'primary',
         alpha: 0.12 + (Math.log1p(count) / peak) * (index === 0 ? 0.85 : 0.5),
         phase: index / 4
       }));
       return [
-        {
-          type: 'strokes',
-          items: [
+        createStrokeLayer(
+          [
             {
-              points: [...rectangle(6, 6, 98, 88), [6, 6]],
+              points: [...createSizedRectangle(6, 6, 98, 88), [6, 6]],
               role: 'dim',
               width: 0.4,
               alpha: 0.5
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: links,
-          animation: 'flow',
-          speed: 0.5,
-          trail: 0.7,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: cases.map(
+          {animation: 'static'}
+        ),
+        createStrokeLayer(links, {animation: 'flow', speed: 0.5, trail: 0.7, blend: 'add'}),
+        createSpriteLayer(
+          cases.map(
             (entry, index): SpriteItem => ({
               x: entry.x,
               y: entry.y,
@@ -1966,29 +1706,22 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
               phase: index / cases.length
             })
           ),
-          pulse: 0.3
-        },
-        createFillLayer(table),
-        createOutlineLayer([rectangle(116, 34, 32, 32)], 'dim', 0.6)
+          {pulse: 0.3}
+        ),
+        createPulsingFillLayer(table),
+        createOutlineLayer([createSizedRectangle(116, 34, 32, 32)], 'dim', 0.6)
       ];
     }
   },
 
   'mantel-test': {
-    parameters: [
-      {
-        id: 'correlation',
-        label: 'Space-time link',
-        min: 0,
-        max: 1,
-        step: 0.05,
-        default: 0.8
-      }
-    ],
+    parameters: [createSlider('correlation', 'Space-time link', 0, 1, 0.05, 0.8)],
     build: ({fork, p}) => {
       const size = 10;
       const random = fork('places');
-      const positions = Array.from({length: size}, () => random.next()).sort((a, b) => a - b);
+      const positions = Array.from({length: size}, () => random.next()).sort(
+        (first, second) => first - second
+      );
       const times = positions.map(
         position => p.correlation * position + (1 - p.correlation) * random.next()
       );
@@ -2007,13 +1740,13 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
           const space = Math.abs(positions[row] - positions[column]);
           const time = Math.abs(times[row] - times[column]);
           matrices.push({
-            ring: rectangle(8 + column * cell, 8 + row * cell, cell - 0.3, cell - 0.3),
+            ring: createSizedRectangle(8 + column * cell, 8 + row * cell, cell - 0.3, cell - 0.3),
             role: 'primary',
             alpha: 0.08 + space * 0.8,
             phase: space
           });
           matrices.push({
-            ring: rectangle(8 + column * cell, 54 + row * cell, cell - 0.3, cell - 0.3),
+            ring: createSizedRectangle(8 + column * cell, 54 + row * cell, cell - 0.3, cell - 0.3),
             role: 'violet',
             alpha: 0.08 + time * 0.8,
             phase: time
@@ -2037,11 +1770,14 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
       const fit = (space: number): Point =>
         toPoint([space, meanTime + slope * (space - meanSpace)]);
       return [
-        createFillLayer(matrices),
-        createOutlineLayer([rectangle(8, 8, 37, 37), rectangle(8, 54, 37, 37)], 'dim', 0.55),
-        {
-          type: 'strokes',
-          items: [
+        createPulsingFillLayer(matrices),
+        createOutlineLayer(
+          [createSizedRectangle(8, 8, 37, 37), createSizedRectangle(8, 54, 37, 37)],
+          'dim',
+          0.55
+        ),
+        createStrokeLayer(
+          [
             getAxes(64, 8, 150, 90),
             {
               points: [
@@ -2062,43 +1798,22 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9
             }
           ],
-          animation: 'flow',
-          speed: 0.4,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: toSprites(nullPairs.map(toPoint), 'ink', 1, undefined, 0.3)
-        },
-        {
-          type: 'sprites',
-          items: toSprites(pairs.map(toPoint), 'warm', 1.5, undefined, 0.9),
-          pulse: 0.3
-        },
-        {
-          type: 'strokes',
-          items: [{points: [fit(0), fit(1)], role: 'hot', width: 1.1, alpha: 1}],
+          {animation: 'flow', speed: 0.4, blend: 'add'}
+        ),
+        createSpriteLayer(toSprites(nullPairs.map(toPoint), 'ink', 1, undefined, 0.3)),
+        createSpriteLayer(toSprites(pairs.map(toPoint), 'warm', 1.5, undefined, 0.9), {pulse: 0.3}),
+        createStrokeLayer([{points: [fit(0), fit(1)], role: 'hot', width: 1.1, alpha: 1}], {
           animation: 'pulse',
           speed: 0.4,
           blend: 'add'
-        }
+        })
       ];
     }
   },
 
   'spatial-scan-statistic': {
     pointer: 'hover',
-    parameters: [
-      {
-        id: 'radius',
-        label: 'Window radius',
-        min: 8,
-        max: 34,
-        step: 1,
-        default: 17,
-        unit: 'px'
-      }
-    ],
+    parameters: [createSlider('radius', 'Window radius', 8, 34, 1, 17, 'px')],
     build: ({fork, p, pointer}) => {
       const random = fork('points');
       const hot: Point = [random.range(64, 108), random.range(34, 66)];
@@ -2127,25 +1842,16 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
           alpha: 0.7,
           phase: index / 7
         };
-      }).map(item => ({...item, points: [...item.points, item.points[0]]}));
+      }).map(item => ({...item, points: closeRing(item.points)}));
       const ring = createCircle(center[0], center[1], p.radius, 48);
       return [
-        {
-          type: 'strokes',
-          items: candidates,
-          animation: 'pulse',
-          speed: 0.35,
-          blend: 'add'
-        },
-        {
-          type: 'fills',
-          items: [{ring, role: windowRole, alpha: 0.16}],
+        createStrokeLayer(candidates, {animation: 'pulse', speed: 0.35, blend: 'add'}),
+        createFillLayer([{ring, role: windowRole, alpha: 0.16}], {
           animation: 'pulse',
           blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: points.map(
+        }),
+        createSpriteLayer(
+          points.map(
             ([x, y], index): SpriteItem => ({
               x,
               y,
@@ -2155,22 +1861,19 @@ const RATES_AND_SPACE_TIME_PREVIEWS: Record<string, EntryPreview> = {
               phase: index / points.length
             })
           ),
-          pulse: 0.3
-        },
-        {
-          type: 'strokes',
-          items: [
+          {pulse: 0.3}
+        ),
+        createStrokeLayer(
+          [
             {
-              points: [...ring, ring[0]],
+              points: closeRing(ring),
               role: windowRole,
               width: 1.2,
               alpha: 1
             }
           ],
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        }
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        )
       ];
     }
   }
@@ -2192,7 +1895,7 @@ function getNearestNeighbors(points: Point[], index: number, count: number): num
       distance: getDistance(point, points[index])
     }))
     .filter(entry => entry.other !== index)
-    .sort((a, b) => a.distance - b.distance)
+    .sort((first, second) => first.distance - second.distance)
     .slice(0, count)
     .map(entry => entry.other);
 }
@@ -2232,23 +1935,8 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
   'dbscan-clustering': {
     pointer: 'hover',
     parameters: [
-      {
-        id: 'epsilon',
-        label: 'Radius (eps)',
-        min: 4,
-        max: 14,
-        step: 0.5,
-        default: 7.5,
-        unit: 'px'
-      },
-      {
-        id: 'minimumPoints',
-        label: 'Min points',
-        min: 3,
-        max: 10,
-        step: 1,
-        default: 5
-      }
+      createSlider('epsilon', 'Radius (eps)', 4, 14, 0.5, 7.5, 'px'),
+      createSlider('minimumPoints', 'Min points', 3, 10, 1, 5)
     ],
     build: ({fork, p, pointer}) => {
       const random = fork('points');
@@ -2300,36 +1988,20 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
       const ring = createCircle(anchor[0], anchor[1], p.epsilon, 40);
       return [
         ...[...links.values()].map(
-          (list): StrokeLayer => ({
-            type: 'strokes',
-            items: list,
-            animation: 'static',
-            blend: 'add'
-          })
+          (list): StrokeLayer => createStrokeLayer(list, {animation: 'static', blend: 'add'})
         ),
-        {type: 'sprites', items, pulse: 0.3},
-        {
-          type: 'strokes',
-          items: [{points: [...ring, ring[0]], role: 'warm', width: 0.9, alpha: 1}],
+        createSpriteLayer(items, {pulse: 0.3}),
+        createStrokeLayer([{points: closeRing(ring), role: 'warm', width: 0.9, alpha: 1}], {
           animation: 'pulse',
           speed: 0.5,
           blend: 'add'
-        }
+        })
       ];
     }
   },
 
   'hdbscan-clustering': {
-    parameters: [
-      {
-        id: 'minimumSize',
-        label: 'Min cluster size',
-        min: 3,
-        max: 30,
-        step: 1,
-        default: 10
-      }
-    ],
+    parameters: [createSlider('minimumSize', 'Min cluster size', 3, 30, 1, 10)],
     build: ({fork, p}) => {
       const groups: Cluster[] = [
         {center: [34, 32], spread: 3.5, count: 22},
@@ -2355,7 +2027,7 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
           });
           const ring = createCircle(group.center[0], group.center[1], group.spread * 1.2, 32);
           rings.push({
-            points: [...ring, ring[0]],
+            points: closeRing(ring),
             role,
             width: 0.5,
             alpha: 0.8,
@@ -2392,30 +2064,15 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
         });
       }
       return [
-        {type: 'fills', items: halos, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: rings,
-          animation: 'pulse',
-          speed: 0.35,
-          blend: 'add'
-        },
-        {type: 'sprites', items, pulse: 0.3}
+        createFillLayer(halos, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer(rings, {animation: 'pulse', speed: 0.35, blend: 'add'}),
+        createSpriteLayer(items, {pulse: 0.3})
       ];
     }
   },
 
   'optics-clustering': {
-    parameters: [
-      {
-        id: 'threshold',
-        label: 'Reachability cut',
-        min: 6,
-        max: 32,
-        step: 1,
-        default: 18
-      }
-    ],
+    parameters: [createSlider('threshold', 'Reachability cut', 6, 32, 1, 18)],
     build: ({fork, p}) => {
       const random = fork('points');
       const groups: Cluster[] = [
@@ -2459,7 +2116,12 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
         const inside = entry.height < p.threshold && entry.cluster >= 0;
         const role: Role = inside ? ROLE_CYCLE[entry.cluster % ROLE_CYCLE.length] : 'dim';
         bars.push({
-          ring: rectangle(8 + index * width, baseline - entry.height, width * 0.8, entry.height),
+          ring: createSizedRectangle(
+            8 + index * width,
+            baseline - entry.height,
+            width * 0.8,
+            entry.height
+          ),
           role,
           alpha: inside ? 0.85 : 0.35,
           phase: index / order.length
@@ -2475,19 +2137,16 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
         profile.push([8 + (index + 0.4) * width, baseline - entry.height]);
       });
       return [
-        {type: 'sprites', items: sprites, pulse: 0.3},
-        {type: 'fills', items: bars, animation: 'pulse', blend: 'add'},
-        {
-          type: 'strokes',
-          items: [{points: profile, role: 'primary', width: 0.6, alpha: 0.9}],
+        createSpriteLayer(sprites, {pulse: 0.3}),
+        createFillLayer(bars, {animation: 'pulse', blend: 'add'}),
+        createStrokeLayer([{points: profile, role: 'primary', width: 0.6, alpha: 0.9}], {
           animation: 'flow',
           speed: 0.25,
           trail: 1.5,
           blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+        }),
+        createStrokeLayer(
+          [
             {
               points: [
                 [6, baseline],
@@ -2507,30 +2166,16 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9
             }
           ],
-          animation: 'static'
-        }
+          {animation: 'static'}
+        )
       ];
     }
   },
 
   'k-means-clustering': {
     parameters: [
-      {
-        id: 'clusters',
-        label: 'Centers (k)',
-        min: 2,
-        max: 6,
-        step: 1,
-        default: 4
-      },
-      {
-        id: 'iterations',
-        label: 'Iterations',
-        min: 0,
-        max: 8,
-        step: 1,
-        default: 5
-      }
+      createSlider('clusters', 'Centers (k)', 2, 6, 1, 4),
+      createSlider('iterations', 'Iterations', 0, 8, 1, 5)
     ],
     build: ({fork, p}) => {
       const random = fork('points');
@@ -2575,10 +2220,9 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
         alpha: 0.35
       }));
       return [
-        {type: 'strokes', items: spokes, animation: 'static', blend: 'add'},
-        {
-          type: 'sprites',
-          items: points.map(
+        createStrokeLayer(spokes, {animation: 'static', blend: 'add'}),
+        createSpriteLayer(
+          points.map(
             ([x, y], index): SpriteItem => ({
               x,
               y,
@@ -2588,11 +2232,10 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               phase: random.next()
             })
           ),
-          pulse: 0.25
-        },
-        {
-          type: 'strokes',
-          items: history
+          {pulse: 0.25}
+        ),
+        createStrokeLayer(
+          history
             .filter(path => path.length > 1)
             .map((path, index) => ({
               points: path,
@@ -2601,13 +2244,10 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9,
               phase: index / count
             })),
-          animation: 'flow',
-          speed: 0.4,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: centers.map(
+          {animation: 'flow', speed: 0.4, blend: 'add'}
+        ),
+        createSpriteLayer(
+          centers.map(
             ([x, y], index): SpriteItem => ({
               x,
               y,
@@ -2617,11 +2257,10 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               phase: index / count
             })
           ),
-          pulse: 0.5
-        },
-        {
-          type: 'sprites',
-          items: centers.map(
+          {pulse: 0.5}
+        ),
+        createSpriteLayer(
+          centers.map(
             ([x, y], index): SpriteItem => ({
               x,
               y,
@@ -2630,23 +2269,14 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             })
           )
-        }
+        )
       ];
     }
   },
 
   'local-outlier-factor': {
     pointer: 'hover',
-    parameters: [
-      {
-        id: 'neighbors',
-        label: 'Neighbors (k)',
-        min: 3,
-        max: 15,
-        step: 1,
-        default: 6
-      }
-    ],
+    parameters: [createSlider('neighbors', 'Neighbors (k)', 3, 15, 1, 6)],
     build: ({fork, p, pointer}) => {
       const random = fork('points');
       const points: Point[] = [
@@ -2693,9 +2323,8 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
       const outliers = points.map((_, index) => index).filter(index => factor[index] > 1.3);
       const ring = createCircle(points[probe][0], points[probe][1], kDistance[probe], 40);
       return [
-        {
-          type: 'sprites',
-          items: outliers.map(
+        createSpriteLayer(
+          outliers.map(
             (index): SpriteItem => ({
               x: points[index][0],
               y: points[index][1],
@@ -2705,38 +2334,31 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               phase: index / points.length
             })
           ),
-          pulse: 0.6
-        },
-        {
-          type: 'strokes',
-          items: nearest[probe].map((other, index) => ({
+          {pulse: 0.6}
+        ),
+        createStrokeLayer(
+          nearest[probe].map((other, index) => ({
             points: [points[probe], points[other]],
             role: 'violet' as Role,
             width: 0.6,
             alpha: 0.9,
             phase: index / k
           })),
-          animation: 'flow',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'flow', speed: 0.5, blend: 'add'}
+        ),
+        createStrokeLayer(
+          [
             {
-              points: [...ring, ring[0]],
+              points: closeRing(ring),
               role: 'warm',
               width: 0.5,
               alpha: 0.4
             }
           ],
-          animation: 'pulse',
-          speed: 0.4,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: points.map(
+          {animation: 'pulse', speed: 0.4, blend: 'add'}
+        ),
+        createSpriteLayer(
+          points.map(
             ([x, y], index): SpriteItem => ({
               x,
               y,
@@ -2746,15 +2368,15 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               phase: index / points.length
             })
           ),
-          pulse: 0.2
-        }
+          {pulse: 0.2}
+        )
       ];
     }
   },
 
   'similar-locations': {
     pointer: 'sticky',
-    parameters: [{id: 'matches', label: 'Matches', min: 1, max: 10, step: 1, default: 5}],
+    parameters: [createSlider('matches', 'Matches', 1, 10, 1, 5)],
     build: ({fork, p, pointer}) => {
       const columns = 32;
       const rows = 20;
@@ -2780,7 +2402,9 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
         ((index % columns) + 0.5) * 5,
         (Math.floor(index / columns) + 0.5) * 5
       ];
-      const ranked = Array.from(similarity.keys()).sort((a, b) => similarity[b] - similarity[a]);
+      const ranked = Array.from(similarity.keys()).sort(
+        (first, second) => similarity[second] - similarity[first]
+      );
       const matches: number[] = [];
       for (const index of ranked) {
         if (matches.length >= p.matches) break;
@@ -2799,22 +2423,18 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
           filter: 'nearest',
           strength: 0.05
         },
-        {
-          type: 'strokes',
-          items: matches.map((index, order) => ({
+        createStrokeLayer(
+          matches.map((index, order) => ({
             points: createArc(center(reference), center(index), 0.18, 20),
             role: 'warm' as Role,
             width: 0.7,
             alpha: 0.9,
             phase: order / matches.length
           })),
-          animation: 'flow',
-          speed: 0.35,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: matches.map(
+          {animation: 'flow', speed: 0.35, blend: 'add'}
+        ),
+        createSpriteLayer(
+          matches.map(
             (index): SpriteItem => ({
               x: center(index)[0],
               y: center(index)[1],
@@ -2823,11 +2443,10 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9
             })
           ),
-          pulse: 0.4
-        },
-        {
-          type: 'sprites',
-          items: [
+          {pulse: 0.4}
+        ),
+        createSpriteLayer(
+          [
             {
               x: center(reference)[0],
               y: center(reference)[1],
@@ -2836,23 +2455,14 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          pulse: 0.6
-        }
+          {pulse: 0.6}
+        )
       ];
     }
   },
 
   'segregation-indices': {
-    parameters: [
-      {
-        id: 'segregation',
-        label: 'Segregation',
-        min: 0,
-        max: 1,
-        step: 0.05,
-        default: 0.7
-      }
-    ],
+    parameters: [createSlider('segregation', 'Segregation', 0, 1, 0.05, 0.7)],
     build: ({fork, p}) => {
       const layout: Layout = {columns: 8, rows: 4, size: 17, x: 12, y: 6};
       const smooth = createSmoothField(fork('structure'), 4, 0.8, layout.columns, layout.rows);
@@ -2861,30 +2471,30 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
       const dots: SpriteItem[] = [];
       let totalA = 0;
       let totalB = 0;
-      const tracts: Array<{a: number; b: number}> = [];
+      const tracts: Array<{groupA: number; groupB: number}> = [];
       smooth.forEach((value, index) => {
         const share = clamp(
           0.5 + (value - 0.5) * p.segregation * 2.6 + random.gaussian() * 0.08,
           0.03,
           0.97
         );
-        let a = 0;
-        const [cx, cy] = getCellCenter(layout, index);
-        for (let dot = 0; dot < 9; dot++) {
-          const isA = random.next() < share;
-          if (isA) a++;
+        let groupACount = 0;
+        const [centerX, centerY] = getCellCenter(layout, index);
+        for (let dotIndex = 0; dotIndex < 9; dotIndex++) {
+          const isGroupA = random.next() < share;
+          if (isGroupA) groupACount++;
           dots.push({
-            x: cx + ((dot % 3) - 1) * 4.6,
-            y: cy + (Math.floor(dot / 3) - 1) * 4.6,
+            x: centerX + ((dotIndex % 3) - 1) * 4.6,
+            y: centerY + (Math.floor(dotIndex / 3) - 1) * 4.6,
             radius: 1.3,
-            role: isA ? 'hot' : 'cool',
+            role: isGroupA ? 'hot' : 'cool',
             alpha: 0.95,
             phase: random.next()
           });
         }
-        tracts.push({a, b: 9 - a});
-        totalA += a;
-        totalB += 9 - a;
+        tracts.push({groupA: groupACount, groupB: 9 - groupACount});
+        totalA += groupACount;
+        totalB += 9 - groupACount;
         fills.push({
           ring: getCellRing(layout, index, 0.6),
           role: share > 0.5 ? 'hot' : 'cool',
@@ -2896,19 +2506,19 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
       const dissimilarity = clamp(
         0.5 *
           tracts.reduce(
-            (sum, tract) => sum + Math.abs(tract.a / (totalA || 1) - tract.b / (totalB || 1)),
+            (sum, tract) =>
+              sum + Math.abs(tract.groupA / (totalA || 1) - tract.groupB / (totalB || 1)),
             0
           ),
         0.02,
         1
       );
       return [
-        createFillLayer(fills),
+        createPulsingFillLayer(fills),
         createLatticeOutline(layout, 0.4),
-        {type: 'sprites', items: dots, pulse: 0.2},
-        {
-          type: 'strokes',
-          items: [
+        createSpriteLayer(dots, {pulse: 0.2}),
+        createStrokeLayer(
+          [
             {
               points: [
                 [12, 88],
@@ -2919,11 +2529,10 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.5
             }
           ],
-          animation: 'static'
-        },
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'static'}
+        ),
+        createStrokeLayer(
+          [
             {
               points: [
                 [12, 88],
@@ -2934,10 +2543,8 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          animation: 'draw',
-          speed: 0.25,
-          blend: 'add'
-        }
+          {animation: 'draw', speed: 0.25, blend: 'add'}
+        )
       ];
     }
   }
@@ -2947,16 +2554,7 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
 const MODEL_PREVIEWS: Record<string, EntryPreview> = {
   'spatial-interaction': {
     pointer: 'hover',
-    parameters: [
-      {
-        id: 'decay',
-        label: 'Distance decay',
-        min: 0.3,
-        max: 3.5,
-        step: 0.1,
-        default: 1.4
-      }
-    ],
+    parameters: [createSlider('decay', 'Distance decay', 0.3, 3.5, 0.1, 1.4)],
     build: ({fork, p, pointer}) => {
       const random = fork('places');
       const places: Array<{point: Point; mass: number}> = Array.from({length: 8}, () => ({
@@ -2975,7 +2573,7 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
           });
         }
       }
-      flows.sort((a, b) => b.amount - a.amount);
+      flows.sort((first, second) => second.amount - first.amount);
       const top = flows.slice(0, 14);
       const peak = top[0].amount;
       const arcs: PathItem[] = top.map(({from, to, amount}, index) => {
@@ -2989,16 +2587,9 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
         };
       });
       return [
-        {
-          type: 'strokes',
-          items: arcs,
-          animation: 'flow',
-          speed: 0.3,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: places.map(
+        createStrokeLayer(arcs, {animation: 'flow', speed: 0.3, blend: 'add'}),
+        createSpriteLayer(
+          places.map(
             ({point, mass}, index): SpriteItem => ({
               x: point[0],
               y: point[1],
@@ -3008,8 +2599,8 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
               phase: index / places.length
             })
           ),
-          pulse: 0.35
-        }
+          {pulse: 0.35}
+        )
       ];
     }
   },
@@ -3017,23 +2608,8 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
   'spatial-cross-validation': {
     pointer: 'sticky',
     parameters: [
-      {
-        id: 'fold',
-        label: 'Held-out block',
-        min: 0,
-        max: 7,
-        step: 1,
-        default: 5
-      },
-      {
-        id: 'buffer',
-        label: 'Buffer',
-        min: 0,
-        max: 2,
-        step: 1,
-        default: 1,
-        unit: 'cells'
-      }
+      createSlider('fold', 'Held-out block', 0, 7, 1, 5),
+      createSlider('buffer', 'Buffer', 0, 2, 1, 1, 'cells')
     ],
     build: ({p, pointer}) => {
       const layout = MAP_LAYOUT;
@@ -3066,7 +2642,7 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
       const blocks: Point[][] = [];
       for (let block = 0; block < 8; block++) {
         blocks.push(
-          rectangle(
+          createSizedRectangle(
             layout.x + (block % 4) * blockColumns * layout.size,
             layout.y + Math.floor(block / 4) * blockRows * layout.size,
             blockColumns * layout.size,
@@ -3076,30 +2652,19 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
       }
       const test = blocks[fold];
       return [
-        createFillLayer(items),
+        createPulsingFillLayer(items),
         createOutlineLayer(blocks, 'dim', 0.8),
-        {
-          type: 'strokes',
-          items: [{points: [...test, test[0]], role: 'warm', width: 1.2, alpha: 1}],
+        createStrokeLayer([{points: closeRing(test), role: 'warm', width: 1.2, alpha: 1}], {
           animation: 'pulse',
           speed: 0.5,
           blend: 'add'
-        }
+        })
       ];
     }
   },
 
   'spatial-cross-validated-ols': {
-    parameters: [
-      {
-        id: 'noise',
-        label: 'Prediction error',
-        min: 0.02,
-        max: 0.3,
-        step: 0.01,
-        default: 0.1
-      }
-    ],
+    parameters: [createSlider('noise', 'Prediction error', 0.02, 0.3, 0.01, 0.1)],
     build: ({fork, p}) => {
       const random = fork('points');
       const foldBias = Array.from({length: 5}, () => random.gaussian() * 0.04);
@@ -3135,16 +2700,15 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
         });
       }
       const chips: PolygonItem[] = [0, 1, 2, 3, 4].map(fold => ({
-        ring: rectangle(10, 14 + fold * 15, 14, 9),
+        ring: createSizedRectangle(10, 14 + fold * 15, 14, 9),
         role: ROLE_CYCLE[fold],
         alpha: 0.7,
         phase: fold / 5
       }));
       return [
-        createFillLayer(chips),
-        {
-          type: 'strokes',
-          items: [
+        createPulsingFillLayer(chips),
+        createStrokeLayer(
+          [
             getAxes(40, 8, 132, 92),
             {
               points: [toPoint(0, 0), toPoint(1, 1)],
@@ -3153,28 +2717,19 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 0.9
             }
           ],
-          animation: 'static'
-        },
-        {type: 'strokes', items: whiskers, animation: 'static', blend: 'add'},
-        {type: 'sprites', items: dots, pulse: 0.3}
+          {animation: 'static'}
+        ),
+        createStrokeLayer(whiskers, {animation: 'static', blend: 'add'}),
+        createSpriteLayer(dots, {pulse: 0.3})
       ];
     }
   },
 
   'nested-interpolation-validation': {
-    parameters: [
-      {
-        id: 'roughness',
-        label: 'Surface roughness',
-        min: 0,
-        max: 1,
-        step: 0.05,
-        default: 0.5
-      }
-    ],
+    parameters: [createSlider('roughness', 'Surface roughness', 0, 1, 0.05, 0.5)],
     build: ({fork, p}) => {
       const random = fork('samples');
-      const held: Point[][] = [rectangle(60, 8, 36, 40)];
+      const held: Point[][] = [createSizedRectangle(60, 8, 36, 40)];
       const items: SpriteItem[] = [];
       for (const [x, y] of createScatterPoints(random, 58, 10).map(
         ([x, y]) => [6 + ((x - 10) / 140) * 90, 8 + ((y - 10) / 80) * 84] as Point
@@ -3207,27 +2762,24 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
       grid.forEach((row, candidate) => {
         row.forEach((error, block) => {
           cells.push({
-            ring: rectangle(110 + block * 8, 26 + candidate * 17, 7, 14),
+            ring: createSizedRectangle(110 + block * 8, 26 + candidate * 17, 7, 14),
             role: getClassRole(Math.min(4, Math.floor((error / 0.8) * 5)), 5),
             alpha: 0.7,
             phase: block / 5
           });
         });
       });
-      const winnerRow = rectangle(109, 25.5 + winner * 17, 42, 15);
+      const winnerRow = createSizedRectangle(109, 25.5 + winner * 17, 42, 15);
       return [
-        {
-          type: 'fills',
-          items: [{ring: held[0], role: 'warm', alpha: 0.16}],
+        createFillLayer([{ring: held[0], role: 'warm', alpha: 0.16}], {
           animation: 'pulse',
           blend: 'add'
-        },
-        createOutlineLayer([rectangle(6, 8, 90, 84)], 'dim', 0.5),
-        {
-          type: 'strokes',
-          items: [
+        }),
+        createOutlineLayer([createSizedRectangle(6, 8, 90, 84)], 'dim', 0.5),
+        createStrokeLayer(
+          [
             {
-              points: [...held[0], held[0][0]],
+              points: closeRing(held[0]),
               role: 'warm',
               width: 0.9,
               alpha: 1
@@ -3239,29 +2791,23 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          animation: 'flow',
-          speed: 0.4,
-          blend: 'add'
-        },
-        {type: 'sprites', items, pulse: 0.3},
-        createFillLayer(cells),
-        {
-          type: 'strokes',
-          items: [
+          {animation: 'flow', speed: 0.4, blend: 'add'}
+        ),
+        createSpriteLayer(items, {pulse: 0.3}),
+        createPulsingFillLayer(cells),
+        createStrokeLayer(
+          [
             {
-              points: [...winnerRow, winnerRow[0]],
+              points: closeRing(winnerRow),
               role: 'warm',
               width: 1.1,
               alpha: 1
             }
           ],
-          animation: 'pulse',
-          speed: 0.5,
-          blend: 'add'
-        },
-        {
-          type: 'sprites',
-          items: [
+          {animation: 'pulse', speed: 0.5, blend: 'add'}
+        ),
+        createSpriteLayer(
+          [
             {
               x: 104,
               y: 33 + winner * 17,
@@ -3270,8 +2816,8 @@ const MODEL_PREVIEWS: Record<string, EntryPreview> = {
               alpha: 1
             }
           ],
-          pulse: 0.5
-        }
+          {pulse: 0.5}
+        )
       ];
     }
   }

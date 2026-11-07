@@ -13,7 +13,7 @@ export default defineTableModelRun({
   parameters,
   caption: 'Maximum-likelihood lag model: estimates (bars) against the truth (dots).',
   process: 'lag',
-  rebuildOn: ['maximumPower', 'traceMode'],
+  rebuildOn: ['maximumPower'],
   addOperation: ({
     builder,
     values,
@@ -32,7 +32,6 @@ export default defineTableModelRun({
         response: response.view,
         predictorCount: 2,
         maximumPower: values.maximumPower,
-        traceMode: values.traceMode === 0 ? 'exact' : 'stochastic',
         output: {
           status: {code: status.view},
           table: table.view,

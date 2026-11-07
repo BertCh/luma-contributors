@@ -13,6 +13,6 @@ export const parameters: GpuSceneParameter[] = [
     step: 0.01,
     default: 0.07
   },
-  {id: 'maximumGap', label: 'thresholds (maximum gap)', min: 1, max: 10, step: 0.5, default: 3},
-  {id: 'glitchRate', label: 'Data: glitch rate', min: 0, max: 0.15, step: 0.01, default: 0.05}
+  {id: 'maximumGap', label: 'thresholds (maximum gap)', min: 1, max: 10, step: 0.5, default: 4},
+  {id: 'glitchRate', label: 'Data: glitch rate', min: 0, max: 0.2, step: 0.01, default: 0.08}
 ];

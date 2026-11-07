@@ -2587,7 +2587,7 @@ ${COMPILE_AND_ENCODE}
     summary:
       'Circuit-theory effective resistance and current flow between two nodes of a small network.',
     explanation:
-      'Measures how connected two habitat patches are through many paths, not just the best one. It solves a grounded Laplacian with conjugate gradients, then recomputes the true residual before reporting. Limited to 256 vertices.',
+      'Measures how connected two habitat patches are through many paths, not just the best one. It solves a grounded Laplacian with conjugate gradients, then recomputes the true residual before reporting. Limited to 256 vertices; the sparse recipe handles larger networks.',
     dataTypes: {input: ['network'], output: ['network', 'table']},
     useCases: ['route', 'model'],
     domains: ['ecology'],
@@ -2674,8 +2674,133 @@ const connectivity = addResistanceConnectivityRecipe(graph, {
 ${COMPILE_AND_ENCODE}
 // connectivity.outputs.diagnostics[0]: effective resistance, valid only if converged`,
     preview: {kind: 'network', caption: 'Current spreads over every path.', seed: 425},
-    related: ['landscape-metrics-recipe', 'patch-proximity-recipe'],
+    related: [
+      'landscape-metrics-recipe',
+      'patch-proximity-recipe',
+      'sparse-resistance-connectivity-recipe'
+    ],
     lensScenario: 'gpu-spatial-analysis.resistance-connectivity-recipe',
+    reference: ECOLOGY_REFERENCE,
+    maturity: 'partial'
+  },
+  {
+    id: 'sparse-resistance-connectivity-recipe',
+    symbol: 'addSparseResistanceConnectivityRecipe',
+    kind: 'recipe',
+    importPath: IMPORT_PATH,
+    title: 'Sparse resistance connectivity',
+    summary:
+      'Circuit-theory effective resistance and current flow between two nodes of a large network.',
+    explanation:
+      'Measures connectivity through every path of a large sparse network, not just the best one. It solves a grounded Laplacian with Jacobi-preconditioned conjugate gradients and checks a GPU-side convergence certificate. Limited to 1,048,576 vertices and 2,097,152 edges.',
+    dataTypes: {input: ['network'], output: ['network', 'table']},
+    useCases: ['route', 'model'],
+    domains: ['ecology'],
+    params: [
+      {
+        name: 'edges',
+        type: 'GraphDataView<"uint32x2">',
+        required: true,
+        description: 'Undirected edges, each listed once.'
+      },
+      {
+        name: 'conductances',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Conductance per edge; zero is a barrier.'
+      },
+      {
+        name: 'vertexCount',
+        type: 'number',
+        required: true,
+        description: 'Number of vertices, 2 to 1,048,576.'
+      },
+      {
+        name: 'source',
+        type: 'number',
+        required: true,
+        description: 'Vertex that injects unit current.'
+      },
+      {
+        name: 'sink',
+        type: 'number',
+        required: true,
+        description: 'Grounded vertex that extracts it.'
+      },
+      {
+        name: 'maximumIterations',
+        type: 'number | undefined',
+        default: '1024',
+        description: 'Conjugate gradient iterations, 1 to 4096. Compile-time.'
+      },
+      {
+        name: 'tolerance',
+        type: 'number | undefined',
+        default: '1e-4',
+        description: 'Maximum current-conservation residual.'
+      },
+      {
+        name: 'connectivityIterations',
+        type: 'number | undefined',
+        default: '128',
+        description: 'Label-propagation rounds, 1 to 1024. Compile-time.'
+      }
+    ],
+    outputs: [
+      {
+        name: 'outputs.potentials',
+        type: 'GraphDataView<"float32">',
+        description: 'Voltage per vertex.'
+      },
+      {
+        name: 'outputs.currents',
+        type: 'GraphDataView<"float32">',
+        description: 'Signed current per edge.'
+      },
+      {
+        name: 'outputs.vertexCurrents',
+        type: 'GraphDataView<"float32">',
+        description: 'Current passing through each vertex.'
+      },
+      {
+        name: 'outputs.diagnostics',
+        type: 'GraphDataView<"float32x4">',
+        description: '[effective resistance, true residual, energy, norm].'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32x4">',
+        description: '[converged, iterations, reachable, invalidEdges].'
+      },
+      {
+        name: 'provenance',
+        type: 'Record<string, GraphDataView>',
+        description: 'Stage ports that show how the result was built.'
+      }
+    ],
+    example: `import {addSparseResistanceConnectivityRecipe} from '${IMPORT_PATH}';
+
+// graph: GPUCommandGraph; conductance = 1 / resistance, each undirected edge once
+const connectivity = addSparseResistanceConnectivityRecipe(graph, {
+  edges, conductances,
+  vertexCount: 1536,
+  source: 0,
+  sink: 1535,
+  maximumIterations: 1024,
+  tolerance: 1e-4
+});
+${COMPILE_AND_ENCODE}
+// connectivity.outputs.diagnostics[0]: effective resistance; status[0] is 1 if converged`,
+    preview: {
+      kind: 'network',
+      caption: 'Current spreads over every path of a large network.',
+      seed: 426
+    },
+    related: [
+      'resistance-connectivity-recipe',
+      'landscape-metrics-recipe',
+      'patch-proximity-recipe'
+    ],
     reference: ECOLOGY_REFERENCE,
     maturity: 'partial'
   },

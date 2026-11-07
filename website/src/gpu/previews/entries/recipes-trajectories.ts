@@ -3,7 +3,6 @@
 
 // Function-specific previews for the catalog group src/catalog/entries/recipes-trajectories.ts, keyed by entry id.
 
-import type {GpuSceneParameter} from '../../types.ts';
 import {
   FIELD_COLUMNS,
   FIELD_ROWS,
@@ -30,80 +29,41 @@ import {
   type EntryPreview
 } from '../helpers.ts';
 import {
+  closeRing,
+  getConvexHull,
+  getNearestOnSegment,
+  getVertexMean,
+  isInsideRing
+} from '../geometry.ts';
+import {
+  createDot,
+  createFillLayer,
+  createPath,
+  createSlider,
+  createSpriteLayer,
+  createStrokeLayer,
+  type FillLayerOptions,
+  type StrokeLayerOptions
+} from '../layers.ts';
+import {
   SCENE_HEIGHT,
   SCENE_WIDTH,
-  type FillLayer,
   type PathItem,
   type PolygonItem,
   type Point,
   type PreviewLayer,
   type Role,
-  type SpriteItem,
-  type StrokeLayer
+  type SpriteItem
 } from '../types.ts';
 
-// ---------------------------------------------------------------------------------- local helpers
+const STROKE_DEFAULTS: StrokeLayerOptions = {
+  animation: 'static',
+  speed: 0.3,
+  trail: 1,
+  blend: 'add'
+};
 
-function slider(
-  id: string,
-  label: string,
-  min: number,
-  max: number,
-  step: number,
-  value: number,
-  unit?: string
-): GpuSceneParameter {
-  return {
-    id,
-    label,
-    min,
-    max,
-    step,
-    default: value,
-    ...(unit ? {unit} : {})
-  };
-}
-
-function strokeLayer(
-  items: PathItem[],
-  animation: StrokeLayer['animation'] = 'static',
-  speed = 0.3,
-  trail = 1,
-  blend: 'add' | 'alpha' = 'add'
-): StrokeLayer {
-  return {type: 'strokes', items, animation, speed, trail, blend};
-}
-
-function fillLayer(
-  items: PolygonItem[],
-  animation: FillLayer['animation'] = 'static',
-  blend: 'add' | 'alpha' = 'add'
-): FillLayer {
-  return {type: 'fills', items, animation, blend};
-}
-
-function spriteLayer(items: SpriteItem[], pulse = 0.4): PreviewLayer {
-  return {type: 'sprites', items, pulse};
-}
-
-function createDot(
-  x: number,
-  y: number,
-  radius: number,
-  role: Role,
-  alpha = 0.9,
-  phase = 0
-): SpriteItem {
-  return {x, y, radius, role, alpha, phase};
-}
-
-function createLine(points: Point[], role: Role, width: number, alpha = 0.9, phase = 0): PathItem {
-  return {points, role, width, alpha, phase};
-}
-
-function closeRing(ring: Point[]): Point[] {
-  return [...ring, ring[0]];
-}
+const FILL_DEFAULTS: FillLayerOptions = {animation: 'static', blend: 'add'};
 
 /** Shaft plus head of an arrow, as two layers: a flowing shaft and a static head. */
 function createArrowLayers(from: Point, to: Point, role: Role = 'warm', size = 3): PreviewLayer[] {
@@ -113,8 +73,13 @@ function createArrowLayers(from: Point, to: Point, role: Role = 'warm', size = 3
     to[1] - Math.sin(angle + offset) * size
   ];
   return [
-    strokeLayer([createLine([from, to], role, 0.8, 0.8)], 'flow', 0.35, 0.8),
-    strokeLayer([createLine([wing(0.5), to, wing(-0.5)], role, 0.8, 0.9)])
+    createStrokeLayer([createPath([from, to], role, 0.8, 0.8)], {
+      ...STROKE_DEFAULTS,
+      animation: 'flow',
+      speed: 0.35,
+      trail: 0.8
+    }),
+    createStrokeLayer([createPath([wing(0.5), to, wing(-0.5)], role, 0.8, 0.9)], STROKE_DEFAULTS)
   ];
 }
 
@@ -139,7 +104,7 @@ function createLatticeLines(
   const items: PathItem[] = [];
   for (let column = 0; column <= columns; column++) {
     items.push(
-      createLine(
+      createPath(
         [
           [x + column * size, y],
           [x + column * size, y + rows * size]
@@ -152,7 +117,7 @@ function createLatticeLines(
   }
   for (let row = 0; row <= rows; row++) {
     items.push(
-      createLine(
+      createPath(
         [
           [x, y + row * size],
           [x + columns * size, y + row * size]
@@ -205,68 +170,17 @@ function createZoneQuads(
   return zones;
 }
 
-function getCentroid(ring: Point[]): Point {
-  let x = 0;
-  let y = 0;
-  for (const point of ring) {
-    x += point[0];
-    y += point[1];
-  }
-  return [x / ring.length, y / ring.length];
-}
-
-function isInsideRing(point: Point, ring: Point[]): boolean {
-  let inside = false;
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
-    const [ax, ay] = ring[index];
-    const [bx, by] = ring[previous];
-    if (
-      ay > point[1] !== by > point[1] &&
-      point[0] < ((bx - ax) * (point[1] - ay)) / (by - ay) + ax
-    ) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
 /** Bilinear point inside a quad given as [top-left, top-right, bottom-right, bottom-left]. */
-function getQuadPoint(quad: Point[], u: number, v: number): Point {
-  const top: Point = [mixNumbers(quad[0][0], quad[1][0], u), mixNumbers(quad[0][1], quad[1][1], u)];
-  const bottom: Point = [
-    mixNumbers(quad[3][0], quad[2][0], u),
-    mixNumbers(quad[3][1], quad[2][1], u)
+function getQuadPoint(quad: Point[], fractionX: number, fractionY: number): Point {
+  const top: Point = [
+    mixNumbers(quad[0][0], quad[1][0], fractionX),
+    mixNumbers(quad[0][1], quad[1][1], fractionX)
   ];
-  return [mixNumbers(top[0], bottom[0], v), mixNumbers(top[1], bottom[1], v)];
-}
-
-function getConvexHull(points: Point[]): Point[] {
-  const sorted = [...points].sort((first, second) => first[0] - second[0] || first[1] - second[1]);
-  if (sorted.length < 3) return sorted;
-  const cross = (origin: Point, first: Point, second: Point) =>
-    (first[0] - origin[0]) * (second[1] - origin[1]) -
-    (first[1] - origin[1]) * (second[0] - origin[0]);
-  const lower: Point[] = [];
-  for (const point of sorted) {
-    while (
-      lower.length >= 2 &&
-      cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0
-    ) {
-      lower.pop();
-    }
-    lower.push(point);
-  }
-  const upper: Point[] = [];
-  for (const point of [...sorted].reverse()) {
-    while (
-      upper.length >= 2 &&
-      cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0
-    ) {
-      upper.pop();
-    }
-    upper.push(point);
-  }
-  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+  const bottom: Point = [
+    mixNumbers(quad[3][0], quad[2][0], fractionX),
+    mixNumbers(quad[3][1], quad[2][1], fractionX)
+  ];
+  return [mixNumbers(top[0], bottom[0], fractionY), mixNumbers(top[1], bottom[1], fractionY)];
 }
 
 function getStandardScores(values: number[]): number[] {
@@ -411,7 +325,7 @@ function createBars(
   alpha = 0.85
 ): PathItem[] {
   return heights.map((height, index) =>
-    createLine(
+    createPath(
       [
         [originX + index * spacing, baseline],
         [originX + index * spacing, baseline - Math.max(height, 0.4)]
@@ -444,13 +358,65 @@ function createMeetingTrack(random: Random, steps: number): Point[] {
   });
 }
 
+type CircuitEdge = {from: number; to: number; conductance: number};
+
+/** Dim wires, animated current along each wire (width by current) and the source and target. */
+function createCircuitLayers(
+  nodes: Point[],
+  edges: CircuitEdge[],
+  currents: number[],
+  source: number,
+  target: number,
+  options: {
+    minimumWidth: number;
+    widthRange: number;
+    levelExponent: number;
+    nodeRadius: number;
+    terminalRadius: number;
+    /** Nodes to draw; all nodes when omitted. */
+    drawnNodes?: Set<number>;
+  }
+): PreviewLayer[] {
+  const maximum = Math.max(...currents.map(Math.abs)) || 1;
+  const flows: PathItem[] = edges.map((edge, index) => {
+    const forward = currents[index] >= 0;
+    const points = forward
+      ? [nodes[edge.from], nodes[edge.to]]
+      : [nodes[edge.to], nodes[edge.from]];
+    const level = (Math.abs(currents[index]) / maximum) ** options.levelExponent;
+    return createPath(
+      points,
+      'warm',
+      options.minimumWidth + level * options.widthRange,
+      0.25 + level * 0.7,
+      index / edges.length
+    );
+  });
+  return [
+    createStrokeLayer(
+      edges.map(edge => createPath([nodes[edge.from], nodes[edge.to]], 'dim', 0.35, 0.55)),
+      STROKE_DEFAULTS
+    ),
+    createStrokeLayer(flows, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.4, trail: 1.2}),
+    createSpriteLayer(
+      nodes.flatMap((node, index) => {
+        if (options.drawnNodes && !options.drawnNodes.has(index)) return [];
+        if (index === source) return [createDot(node, 'hot', options.terminalRadius, 1)];
+        if (index === target) return [createDot(node, 'cool', options.terminalRadius, 1)];
+        return [createDot(node, 'primary', options.nodeRadius, 0.8, index / nodes.length)];
+      }),
+      {pulse: 0.4}
+    )
+  ];
+}
+
 export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
   // ------------------------------------------------------------ hot spots, rates and regression
 
   'hot-spot-analysis-recipe': {
     parameters: [
-      slider('events', 'Events', 40, 260, 10, 150),
-      slider('threshold', 'Significance', 0.3, 2.5, 0.1, 1, 'σ')
+      createSlider('events', 'Events', 40, 260, 10, 150),
+      createSlider('threshold', 'Significance', 0.3, 2.5, 0.1, 1, 'σ')
     ],
     build: ({fork, p}) => {
       const columns = 8;
@@ -531,20 +497,20 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        strokeLayer(createLatticeLines(leftX, top, columns, rows, size)),
-        spriteLayer(toSprites(points, 'primary', 1, fork('size'), 0.85), 0.3),
+        createStrokeLayer(createLatticeLines(leftX, top, columns, rows, size), STROKE_DEFAULTS),
+        createSpriteLayer(toSprites(points, 'primary', 1, fork('size'), 0.85), {pulse: 0.3}),
         ...createArrowLayers([77, 50], [92, 50]),
-        fillLayer(quiet),
-        fillLayer(cool),
-        fillLayer(hot, 'pulse')
+        createFillLayer(quiet, FILL_DEFAULTS),
+        createFillLayer(cool, FILL_DEFAULTS),
+        createFillLayer(hot, {...FILL_DEFAULTS, animation: 'pulse'})
       ];
     }
   },
 
   'space-time-hot-spots-recipe': {
     parameters: [
-      slider('slices', 'Time slices', 3, 6, 1, 5),
-      slider('hot', 'Hot cells', 1, 5, 1, 3)
+      createSlider('slices', 'Time slices', 3, 6, 1, 5),
+      createSlider('hot', 'Hot cells', 1, 5, 1, 3)
     ],
     build: ({fork, p}) => {
       const columns = 6;
@@ -576,7 +542,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const spine: PathItem[] = [];
       for (let slice = 0; slice < sliceCount; slice++) {
         frames.push(
-          createLine(
+          createPath(
             closeRing([
               project(0, 0, slice),
               project(columns, 0, slice),
@@ -622,7 +588,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         const column = index % columns;
         const row = Math.floor(index / columns);
         spine.push(
-          createLine(
+          createPath(
             [project(column + 0.5, row + 0.5, 0), project(column + 0.5, row + 0.5, sliceCount - 1)],
             'hot',
             0.7,
@@ -630,8 +596,14 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           )
         );
       });
-      slices.push(strokeLayer(frames), fillLayer(quiet), fillLayer(fillsByRole, 'pulse'));
-      slices.push(strokeLayer(spine, 'flow', 0.35, 1.2));
+      slices.push(
+        createStrokeLayer(frames, STROKE_DEFAULTS),
+        createFillLayer(quiet, FILL_DEFAULTS),
+        createFillLayer(fillsByRole, {...FILL_DEFAULTS, animation: 'pulse'})
+      );
+      slices.push(
+        createStrokeLayer(spine, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.35, trail: 1.2})
+      );
       // Flat result map: one emerging class per cell.
       const result: PolygonItem[] = [];
       for (let index = 0; index < columns * rows; index++) {
@@ -646,14 +618,18 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           alpha: category === undefined ? 0.15 : 0.85
         });
       }
-      return [...slices, ...createArrowLayers([94, 50], [112, 50]), fillLayer(result, 'pulse')];
+      return [
+        ...slices,
+        ...createArrowLayers([94, 50], [112, 50]),
+        createFillLayer(result, {...FILL_DEFAULTS, animation: 'pulse'})
+      ];
     }
   },
 
   'rate-cluster-map-recipe': {
     parameters: [
-      slider('noise', 'Small-area noise', 0, 0.5, 0.02, 0.28),
-      slider('shrinkage', 'Smoothing', 0, 1, 0.05, 0.65)
+      createSlider('noise', 'Small-area noise', 0, 0.5, 0.02, 0.28),
+      createSlider('shrinkage', 'Smoothing', 0, 1, 0.05, 0.65)
     ],
     build: ({fork, p}) => {
       const columns = 5;
@@ -692,20 +668,23 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        fillLayer(rawFills),
-        strokeLayer(toPaths([...zonesLeft, ...zonesRight].map(closeRing), 'dim', 0.35, 0.7)),
+        createFillLayer(rawFills, FILL_DEFAULTS),
+        createStrokeLayer(
+          toPaths([...zonesLeft, ...zonesRight].map(closeRing), 'dim', 0.35, 0.7),
+          STROKE_DEFAULTS
+        ),
         ...createArrowLayers([70, 46], [86, 46]),
-        fillLayer(quadrants[4]),
-        fillLayer([...quadrants[1], ...quadrants[2], ...quadrants[3]]),
-        fillLayer(quadrants[0], 'pulse')
+        createFillLayer(quadrants[4], FILL_DEFAULTS),
+        createFillLayer([...quadrants[1], ...quadrants[2], ...quadrants[3]], FILL_DEFAULTS),
+        createFillLayer(quadrants[0], {...FILL_DEFAULTS, animation: 'pulse'})
       ];
     }
   },
 
   'excess-risk-recipe': {
     parameters: [
-      slider('excess', 'Excess', 0, 2, 0.1, 1),
-      slider('noise', 'Noise', 0, 0.4, 0.02, 0.15)
+      createSlider('excess', 'Excess', 0, 2, 0.1, 1),
+      createSlider('noise', 'Noise', 0, 0.4, 0.02, 0.15)
     ],
     build: ({fork, p}) => {
       const columns = 4;
@@ -722,29 +701,29 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           1 + (field[index] - 0.5) * 1.3 * p.excess + noise.gaussian() * p.noise
         );
         const role: Role = ratio > 1.15 ? 'hot' : ratio < 0.87 ? 'cool' : 'primary';
-        const [x, y] = getCentroid(ring);
+        const [x, y] = getVertexMean(ring);
         const expected = 8;
         fills.push({
           ring,
           role,
           alpha: role === 'primary' ? 0.07 : clamp(Math.abs(ratio - 1) * 0.4, 0.08, 0.3)
         });
-        rings.push(createLine(closeRing(createCircle(x, y, expected, 36)), 'ink', 0.5, 0.6));
-        disks.push(createDot(x, y, expected * Math.sqrt(ratio), role, 0.8, index / zones.length));
+        rings.push(createPath(closeRing(createCircle(x, y, expected, 36)), 'ink', 0.5, 0.6));
+        disks.push(createDot([x, y], role, expected * Math.sqrt(ratio), 0.8, index / zones.length));
       });
       return [
-        fillLayer(fills),
-        strokeLayer(toPaths(zones.map(closeRing), 'dim', 0.35, 0.6)),
-        spriteLayer(disks, 0.25),
-        strokeLayer(rings, 'pulse', 0.25)
+        createFillLayer(fills, FILL_DEFAULTS),
+        createStrokeLayer(toPaths(zones.map(closeRing), 'dim', 0.35, 0.6), STROKE_DEFAULTS),
+        createSpriteLayer(disks, {pulse: 0.25}),
+        createStrokeLayer(rings, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.25})
       ];
     }
   },
 
   'spatial-rate-recipe': {
     parameters: [
-      slider('noise', 'Noise', 0.05, 0.7, 0.05, 0.4),
-      slider('order', 'Ring', 1, 2, 1, 1)
+      createSlider('noise', 'Noise', 0.05, 0.7, 0.05, 0.4),
+      createSlider('order', 'Ring', 1, 2, 1, 1)
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -765,11 +744,19 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         let people = 0;
         for (let rowOffset = -order; rowOffset <= order; rowOffset++) {
           for (let columnOffset = -order; columnOffset <= order; columnOffset++) {
-            const c = column + columnOffset;
-            const r = row + rowOffset;
-            if (c < 0 || r < 0 || c >= columns || r >= rows) continue;
-            events += rates[r * columns + c] * population[r * columns + c];
-            people += population[r * columns + c];
+            const neighborColumn = column + columnOffset;
+            const neighborRow = row + rowOffset;
+            if (
+              neighborColumn < 0 ||
+              neighborRow < 0 ||
+              neighborColumn >= columns ||
+              neighborRow >= rows
+            )
+              continue;
+            events +=
+              rates[neighborRow * columns + neighborColumn] *
+              population[neighborRow * columns + neighborColumn];
+            people += population[neighborRow * columns + neighborColumn];
           }
         }
         return events / people;
@@ -783,7 +770,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       }
       const focusColumn = focus % columns;
       const focusRow = Math.floor(focus / columns);
-      const centroids = zones.map(getCentroid);
+      const centroids = zones.map(getVertexMean);
       const links: PathItem[] = [];
       const outlines: PathItem[] = [];
       zones.forEach((ring, index) => {
@@ -793,32 +780,39 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           Math.abs(Math.floor(index / columns) - focusRow) <= order;
         if (isNeighbor) {
           links.push(
-            createLine([centroids[index], centroids[focus]], 'warm', 0.8, 0.8, index / zones.length)
+            createPath([centroids[index], centroids[focus]], 'warm', 0.8, 0.8, index / zones.length)
           );
-          outlines.push(createLine(closeRing(ring), 'warm', 0.6, 0.8));
+          outlines.push(createPath(closeRing(ring), 'warm', 0.6, 0.8));
         }
       });
       return [
-        fillLayer(
+        createFillLayer(
           zones.map((ring, index) => ({
             ring,
             role: getClassRole(Math.min(4, Math.floor(((pooled[index] - low) / range) * 5)), 5),
             alpha: 0.4
-          }))
+          })),
+          FILL_DEFAULTS
         ),
-        strokeLayer(toPaths(zones.map(closeRing), 'dim', 0.35, 0.6)),
-        strokeLayer(outlines),
-        strokeLayer(links, 'flow', 0.4, 0.9),
-        strokeLayer([createLine(closeRing(zones[focus]), 'ink', 1.1, 0.95)], 'pulse', 0.5),
-        spriteLayer([createDot(centroids[focus][0], centroids[focus][1], 2.6, 'warm', 1)], 0.5)
+        createStrokeLayer(toPaths(zones.map(closeRing), 'dim', 0.35, 0.6), STROKE_DEFAULTS),
+        createStrokeLayer(outlines, STROKE_DEFAULTS),
+        createStrokeLayer(links, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.4, trail: 0.9}),
+        createStrokeLayer([createPath(closeRing(zones[focus]), 'ink', 1.1, 0.95)], {
+          ...STROKE_DEFAULTS,
+          animation: 'pulse',
+          speed: 0.5
+        }),
+        createSpriteLayer([createDot([centroids[focus][0], centroids[focus][1]], 'warm', 2.6, 1)], {
+          pulse: 0.5
+        })
       ];
     }
   },
 
   'local-variability-recipe': {
     parameters: [
-      slider('erratic', 'Erratic area', 0, 1.2, 0.05, 0.8),
-      slider('threshold', 'LOSH cutoff', 0.3, 1.6, 0.05, 0.8)
+      createSlider('erratic', 'Erratic area', 0, 1.2, 0.05, 0.8),
+      createSlider('threshold', 'LOSH cutoff', 0.3, 1.6, 0.05, 0.8)
     ],
     build: ({fork, p}) => {
       const columns = 10;
@@ -843,11 +837,17 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         let count = 1;
         for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
           for (let columnOffset = -1; columnOffset <= 1; columnOffset++) {
-            const c = column + columnOffset;
-            const r = row + rowOffset;
-            if ((!rowOffset && !columnOffset) || c < 0 || r < 0 || c >= columns || r >= rows)
+            const neighborColumn = column + columnOffset;
+            const neighborRow = row + rowOffset;
+            if (
+              (!rowOffset && !columnOffset) ||
+              neighborColumn < 0 ||
+              neighborRow < 0 ||
+              neighborColumn >= columns ||
+              neighborRow >= rows
+            )
               continue;
-            sum += (scores[r * columns + c] - lags[index]) ** 2;
+            sum += (scores[neighborRow * columns + neighborColumn] - lags[index]) ** 2;
             count++;
           }
         }
@@ -882,24 +882,30 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        fillLayer(left.filter(item => item.role === 'dim')),
-        fillLayer(
+        createFillLayer(
+          left.filter(item => item.role === 'dim'),
+          FILL_DEFAULTS
+        ),
+        createFillLayer(
           left.filter(item => item.role !== 'dim'),
-          'pulse'
+          {...FILL_DEFAULTS, animation: 'pulse'}
         ),
-        fillLayer(right.filter(item => item.role === 'dim')),
-        fillLayer(
+        createFillLayer(
+          right.filter(item => item.role === 'dim'),
+          FILL_DEFAULTS
+        ),
+        createFillLayer(
           right.filter(item => item.role !== 'dim'),
-          'pulse'
+          {...FILL_DEFAULTS, animation: 'pulse'}
         ),
-        strokeLayer(toPaths(masked, 'dim', 0.3, 0.5)),
-        spriteLayer(
+        createStrokeLayer(toPaths(masked, 'dim', 0.3, 0.5), STROKE_DEFAULTS),
+        createSpriteLayer(
           [
-            createDot(80, 50, 1.4, 'ink', 0.7),
-            createDot(75, 50, 0.9, 'dim', 0.6),
-            createDot(85, 50, 0.9, 'dim', 0.6)
+            createDot([80, 50], 'ink', 1.4, 0.7),
+            createDot([75, 50], 'dim', 0.9, 0.6),
+            createDot([85, 50], 'dim', 0.9, 0.6)
           ],
-          0.3
+          {pulse: 0.3}
         )
       ];
     }
@@ -907,8 +913,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'quantile-lisa': {
     parameters: [
-      slider('quantiles', 'Quantiles', 3, 8, 1, 5),
-      slider('target', 'Class', 1, 8, 1, 5)
+      createSlider('quantiles', 'Quantiles', 3, 8, 1, 5),
+      createSlider('target', 'Class', 1, 8, 1, 5)
     ],
     build: ({fork, p}) => {
       const columns = 16;
@@ -957,7 +963,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           count++;
           if (neighbor > index)
             joins.push(
-              createLine([center(index), center(neighbor)], 'hot', 0.9, 0.9, index / values.length)
+              createPath([center(index), center(neighbor)], 'hot', 0.9, 0.9, index / values.length)
             );
         }
         (count >= 2 ? clustered : isolated).push({
@@ -968,18 +974,18 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         });
       }
       return [
-        fillLayer(background),
-        fillLayer(isolated),
-        fillLayer(clustered, 'pulse'),
-        strokeLayer(joins, 'flow', 0.35, 0.8)
+        createFillLayer(background, FILL_DEFAULTS),
+        createFillLayer(isolated, FILL_DEFAULTS),
+        createFillLayer(clustered, {...FILL_DEFAULTS, animation: 'pulse'}),
+        createStrokeLayer(joins, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.35, trail: 0.8})
       ];
     }
   },
 
   'spatial-regression-recipe': {
     parameters: [
-      slider('dependence', 'Residual pattern', 0, 1, 0.05, 0.85),
-      slider('noise', 'Noise', 4, 20, 0.5, 11, 'px')
+      createSlider('dependence', 'Residual pattern', 0, 1, 0.05, 0.85),
+      createSlider('noise', 'Noise', 4, 20, 0.5, 11, 'px')
     ],
     build: ({fork, p}) => {
       const columns = 6;
@@ -1013,7 +1019,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         const residual = fitted - ys[index];
         const role: Role = residual > 1.5 ? 'hot' : residual < -1.5 ? 'cool' : 'dim';
         drops.push(
-          createLine(
+          createPath(
             [
               [x, ys[index]],
               [x, fitted]
@@ -1024,7 +1030,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           )
         );
         dots.push(
-          createDot(x, ys[index], 1.6, role === 'dim' ? 'primary' : role, 0.95, index / count)
+          createDot([x, ys[index]], role === 'dim' ? 'primary' : role, 1.6, 0.95, index / count)
         );
         cells.push({
           ring: createCellRing(98 + (index % columns) * 8, 26 + Math.floor(index / columns) * 8, 8),
@@ -1034,30 +1040,33 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        strokeLayer([
-          createLine(
-            [
-              [10, 90],
-              [76, 90]
-            ],
-            'dim',
-            0.4,
-            0.5
-          ),
-          createLine(
-            [
-              [10, 90],
-              [10, 12]
-            ],
-            'dim',
-            0.4,
-            0.5
-          )
-        ]),
-        strokeLayer(drops),
-        strokeLayer(
+        createStrokeLayer(
           [
-            createLine(
+            createPath(
+              [
+                [10, 90],
+                [76, 90]
+              ],
+              'dim',
+              0.4,
+              0.5
+            ),
+            createPath(
+              [
+                [10, 90],
+                [10, 12]
+              ],
+              'dim',
+              0.4,
+              0.5
+            )
+          ],
+          STROKE_DEFAULTS
+        ),
+        createStrokeLayer(drops, STROKE_DEFAULTS),
+        createStrokeLayer(
+          [
+            createPath(
               [
                 [12, intercept + slope * 12],
                 [72, intercept + slope * 72]
@@ -1067,16 +1076,17 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.95
             )
           ],
-          'flow',
-          0.3,
-          1.2
+          {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 1.2}
         ),
-        spriteLayer(dots, 0.3),
+        createSpriteLayer(dots, {pulse: 0.3}),
         ...createArrowLayers([79, 50], [94, 50]),
-        fillLayer(cells.filter(cell => cell.role === 'dim')),
-        fillLayer(
+        createFillLayer(
+          cells.filter(cell => cell.role === 'dim'),
+          FILL_DEFAULTS
+        ),
+        createFillLayer(
           cells.filter(cell => cell.role !== 'dim'),
-          'pulse'
+          {...FILL_DEFAULTS, animation: 'pulse'}
         )
       ];
     }
@@ -1084,8 +1094,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'cluster-and-outline-recipe': {
     parameters: [
-      slider('epsilon', 'Epsilon', 3, 12, 0.5, 6.5, 'px'),
-      slider('noise', 'Noise points', 0, 60, 2, 26)
+      createSlider('epsilon', 'Epsilon', 3, 12, 0.5, 6.5, 'px'),
+      createSlider('noise', 'Noise points', 0, 60, 2, 26)
     ],
     build: ({fork, p}) => {
       const centers: Point[] = [
@@ -1136,33 +1146,32 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         if (hull.length < 3) continue;
         const role = clusterRoles[cluster % clusterRoles.length];
         hullFills.push({ring: hull, role, alpha: 0.12});
-        hulls.push(createLine(closeRing(hull), role, 0.9, 0.9, cluster / 4));
-        const [x, y] = getCentroid(members.map(point => point));
-        centroids.push(createDot(x, y, 2.4, 'ink', 1, cluster / 4));
+        hulls.push(createPath(closeRing(hull), role, 0.9, 0.9, cluster / 4));
+        const [x, y] = getVertexMean(members.map(point => point));
+        centroids.push(createDot([x, y], 'ink', 2.4, 1, cluster / 4));
       }
       const sprites = points.map(([x, y], index) =>
         createDot(
-          x,
-          y,
-          labels[index] >= 0 ? 1.4 : 0.9,
+          [x, y],
           labels[index] >= 0 ? clusterRoles[labels[index] % clusterRoles.length] : 'dim',
+          labels[index] >= 0 ? 1.4 : 0.9,
           labels[index] >= 0 ? 0.95 : 0.5,
           (index % 9) / 9
         )
       );
       return [
-        fillLayer(hullFills),
-        spriteLayer(sprites, 0.25),
-        strokeLayer(hulls, 'flow', 0.3, 1.5),
-        spriteLayer(centroids, 0.5)
+        createFillLayer(hullFills, FILL_DEFAULTS),
+        createSpriteLayer(sprites, {pulse: 0.25}),
+        createStrokeLayer(hulls, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 1.5}),
+        createSpriteLayer(centroids, {pulse: 0.5})
       ];
     }
   },
 
   'points-in-polygons-choropleth-recipe': {
     parameters: [
-      slider('classes', 'Classes', 2, 6, 1, 5),
-      slider('density', 'Points', 0.3, 1.6, 0.1, 1)
+      createSlider('classes', 'Classes', 2, 6, 1, 5),
+      createSlider('density', 'Points', 0.3, 1.6, 0.1, 1)
     ],
     build: ({fork, p}) => {
       const zones = createZoneQuads(fork('zones'), 4, 3, 8, 8, 144, 84, 0.12);
@@ -1177,7 +1186,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             placement.range(0.08, 0.92),
             placement.range(0.08, 0.92)
           );
-          sprites.push(createDot(x, y, 1, 'ink', 0.85, placement.next()));
+          sprites.push(createDot([x, y], 'ink', 1, 0.85, placement.next()));
         }
       });
       const classes = Math.round(p.classes);
@@ -1193,17 +1202,17 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         };
       });
       return [
-        fillLayer(fills, 'pulse'),
-        strokeLayer(toPaths(zones.map(closeRing), 'dim', 0.4, 0.7)),
-        spriteLayer(sprites, 0.35)
+        createFillLayer(fills, {...FILL_DEFAULTS, animation: 'pulse'}),
+        createStrokeLayer(toPaths(zones.map(closeRing), 'dim', 0.4, 0.7), STROKE_DEFAULTS),
+        createSpriteLayer(sprites, {pulse: 0.35})
       ];
     }
   },
 
   'period-comparison-recipe': {
     parameters: [
-      slider('shift', 'Shift', 0, 4, 0.1, 2.2, 'cells'),
-      slider('threshold', 'Change cutoff', 0.05, 0.5, 0.01, 0.2)
+      createSlider('shift', 'Shift', 0, 4, 0.1, 2.2, 'cells'),
+      createSlider('threshold', 'Change cutoff', 0.05, 0.5, 0.01, 0.2)
     ],
     build: ({fork, p}) => {
       const columns = 6;
@@ -1211,11 +1220,13 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const size = 6.5;
       const noise = fork('noise');
       const jitter = Array.from({length: columns * rows}, () => noise.range(-0.04, 0.04));
-      const blob = (cx: number, cy: number, spread: number, index: number) => {
+      const blob = (centerColumn: number, centerRow: number, spread: number, index: number) => {
         const column = index % columns;
         const row = Math.floor(index / columns);
         return clamp(
-          Math.exp(-((column - cx) ** 2 + (row - cy) ** 2) / (2 * spread * spread)) + jitter[index],
+          Math.exp(
+            -((column - centerColumn) ** 2 + (row - centerRow) ** 2) / (2 * spread * spread)
+          ) + jitter[index],
           0,
           1
         );
@@ -1253,31 +1264,34 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        fillLayer(panelA),
-        fillLayer(panelB),
-        strokeLayer([
-          createLine(
-            [
-              [50, 49],
-              [57, 49]
-            ],
-            'dim',
-            0.9,
-            0.8
-          )
-        ]),
+        createFillLayer(panelA, FILL_DEFAULTS),
+        createFillLayer(panelB, FILL_DEFAULTS),
+        createStrokeLayer(
+          [
+            createPath(
+              [
+                [50, 49],
+                [57, 49]
+              ],
+              'dim',
+              0.9,
+              0.8
+            )
+          ],
+          STROKE_DEFAULTS
+        ),
         ...createArrowLayers([102, 49], [111, 49]),
-        fillLayer(steady),
-        fillLayer(losses, 'pulse'),
-        fillLayer(gains, 'pulse')
+        createFillLayer(steady, FILL_DEFAULTS),
+        createFillLayer(losses, {...FILL_DEFAULTS, animation: 'pulse'}),
+        createFillLayer(gains, {...FILL_DEFAULTS, animation: 'pulse'})
       ];
     }
   },
 
   'cell-flow-topology-recipe': {
     parameters: [
-      slider('flows', 'Flows', 6, 40, 1, 22),
-      slider('far', 'Long trips', 0, 1, 0.05, 0.3)
+      createSlider('flows', 'Flows', 6, 40, 1, 22),
+      createSlider('far', 'Long trips', 0, 1, 0.05, 0.3)
     ],
     build: ({fork, p}) => {
       const radius = 9.5;
@@ -1316,7 +1330,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         const arc = createArc(centers[origin], centers[destination], 0.18, 14);
         const isNeighbor = getDistance(centers[origin], centers[destination]) < stepX * 1.05;
         (isNeighbor ? near : far).push(
-          createLine(
+          createPath(
             arc,
             isNeighbor ? 'warm' : 'cool',
             isNeighbor ? 1 : 0.5,
@@ -1326,7 +1340,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         );
       }
       const hexes = centers.map(([x, y]) =>
-        createLine(
+        createPath(
           closeRing(
             createCircle(x, y, radius * 0.97, 6).map((_, index): Point => {
               const angle = Math.PI / 6 + (index / 6) * Math.PI * 2;
@@ -1339,21 +1353,27 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         )
       );
       const sprites = centers.map(([x, y], index) =>
-        createDot(x, y, 1 + Math.sqrt(totals[index]) * 1.3, 'primary', 0.75, index / centers.length)
+        createDot(
+          [x, y],
+          'primary',
+          1 + Math.sqrt(totals[index]) * 1.3,
+          0.75,
+          index / centers.length
+        )
       );
       return [
-        strokeLayer(hexes),
-        strokeLayer(far),
-        strokeLayer(near, 'flow', 0.35, 1),
-        spriteLayer(sprites, 0.35)
+        createStrokeLayer(hexes, STROKE_DEFAULTS),
+        createStrokeLayer(far, STROKE_DEFAULTS),
+        createStrokeLayer(near, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.35, trail: 1}),
+        createSpriteLayer(sprites, {pulse: 0.35})
       ];
     }
   },
 
   'change-of-support-recipe': {
     parameters: [
-      slider('mismatch', 'Misalignment', 0, 0.45, 0.01, 0.25),
-      slider('contrast', 'Contrast', 0.2, 1, 0.05, 0.8)
+      createSlider('mismatch', 'Misalignment', 0, 0.45, 0.01, 0.25),
+      createSlider('contrast', 'Contrast', 0.2, 1, 0.05, 0.8)
     ],
     build: ({fork, p}) => {
       const width = 52;
@@ -1392,37 +1412,41 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         target.forEach((_, targetIndex) => {
           const weight = weights[sourceIndex][targetIndex];
           if (weight < 0.06) return;
-          const from = getCentroid(left[sourceIndex]);
-          const to = getCentroid(right[targetIndex]);
-          links.push(createLine(createArc(from, to, 0, 10), 'warm', 0.3 + weight * 2, 0.5, weight));
+          const from = getVertexMean(left[sourceIndex]);
+          const to = getVertexMean(right[targetIndex]);
+          links.push(createPath(createArc(from, to, 0, 10), 'warm', 0.3 + weight * 2, 0.5, weight));
         });
       });
       return [
-        fillLayer(
+        createFillLayer(
           left.map((ring, index) => ({
             ring,
             role: 'cool',
             alpha: 0.12 + 0.6 * values[index]
-          }))
+          })),
+          FILL_DEFAULTS
         ),
-        fillLayer(
+        createFillLayer(
           right.map((ring, index) => ({
             ring,
             role: 'hot',
             alpha: 0.12 + 0.7 * (transfer[index] / maximum)
           })),
-          'pulse'
+          {...FILL_DEFAULTS, animation: 'pulse'}
         ),
-        strokeLayer(toPaths([...left, ...right].map(closeRing), 'dim', 0.45, 0.8)),
-        strokeLayer(links, 'flow', 0.3, 1.1)
+        createStrokeLayer(
+          toPaths([...left, ...right].map(closeRing), 'dim', 0.45, 0.8),
+          STROKE_DEFAULTS
+        ),
+        createStrokeLayer(links, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 1.1})
       ];
     }
   },
 
   'dasymetric-redistribution-recipe': {
     parameters: [
-      slider('weight', 'Ancillary weight', 0, 1, 0.05, 0.85),
-      slider('total', 'People per zone', 30, 160, 5, 80)
+      createSlider('weight', 'Ancillary weight', 0, 1, 0.05, 0.85),
+      createSlider('total', 'People per zone', 30, 160, 5, 80)
     ],
     build: ({fork, p}) => {
       const ancillary = createSmoothField(fork('ancillary'), 6, 1.4);
@@ -1444,7 +1468,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             y / SCENE_HEIGHT
           );
           if (random.next() > 1 - p.weight + p.weight * density ** 2) continue;
-          dots.push(createDot(x, y, 1.15, 'warm', 0.95, random.next()));
+          dots.push(createDot([x, y], 'warm', 1.15, 0.95, random.next()));
           placed++;
         }
       }
@@ -1462,29 +1486,36 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           style: 'ramp',
           strength: 0.05
         },
-        strokeLayer([createLine(boundary, 'violet', 1.1, 0.95)], 'pulse', 0.2),
-        strokeLayer([
-          createLine(
-            closeRing([
-              [3, 3],
-              [157, 3],
-              [157, 97],
-              [3, 97]
-            ]),
-            'violet',
-            0.7,
-            0.7
-          )
-        ]),
-        spriteLayer(dots, 0.4)
+        createStrokeLayer([createPath(boundary, 'violet', 1.1, 0.95)], {
+          ...STROKE_DEFAULTS,
+          animation: 'pulse',
+          speed: 0.2
+        }),
+        createStrokeLayer(
+          [
+            createPath(
+              closeRing([
+                [3, 3],
+                [157, 3],
+                [157, 97],
+                [3, 97]
+              ]),
+              'violet',
+              0.7,
+              0.7
+            )
+          ],
+          STROKE_DEFAULTS
+        ),
+        createSpriteLayer(dots, {pulse: 0.4})
       ];
     }
   },
 
   'zonal-distribution-recipe': {
     parameters: [
-      slider('bins', 'Bins', 5, 14, 1, 9),
-      slider('spread', 'Spread', 0.1, 0.4, 0.01, 0.2)
+      createSlider('bins', 'Bins', 5, 14, 1, 9),
+      createSlider('spread', 'Spread', 0.1, 0.4, 0.01, 0.2)
     ],
     build: ({fork, p}) => {
       const zones = createZoneQuads(fork('zones'), 3, 2, 5, 6, 150, 88, 0.05);
@@ -1495,12 +1526,12 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const modes: SpriteItem[] = [];
       const ticks: PathItem[] = [];
       zones.forEach(ring => {
-        const [cx, cy] = getCentroid(ring);
+        const [centerX, centerY] = getVertexMean(ring);
         const mean = random.range(0.3, 0.7);
         const spread = p.spread * random.range(0.6, 1.3);
-        const left = cx - 19;
+        const left = centerX - 19;
         const spacing = 38 / (bins - 1);
-        const baseline = cy + 14;
+        const baseline = centerY + 14;
         const density = Array.from(
           {length: bins},
           (_, bin) =>
@@ -1530,12 +1561,12 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           return bins - 1;
         };
         running = quantile(0.5);
-        medians.push(createDot(left + running * spacing, baseline + 4.5, 1.9, 'warm', 1));
+        medians.push(createDot([left + running * spacing, baseline + 4.5], 'warm', 1.9, 1));
         modes.push(
-          createDot(left + density.indexOf(peak) * spacing, baseline - 30, 1.5, 'hot', 0.95)
+          createDot([left + density.indexOf(peak) * spacing, baseline - 30], 'hot', 1.5, 0.95)
         );
         ticks.push(
-          createLine(
+          createPath(
             [
               [left + quantile(0.1) * spacing, baseline + 4.5],
               [left + quantile(0.9) * spacing, baseline + 4.5]
@@ -1547,20 +1578,23 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         );
       });
       return [
-        fillLayer(zones.map(ring => ({ring, role: 'dim', alpha: 0.07}))),
-        strokeLayer(toPaths(zones.map(closeRing), 'dim', 0.4, 0.7)),
-        strokeLayer(bars, 'pulse', 0.4),
-        strokeLayer(ticks),
-        spriteLayer(medians, 0.5),
-        spriteLayer(modes, 0.4)
+        createFillLayer(
+          zones.map(ring => ({ring, role: 'dim', alpha: 0.07})),
+          FILL_DEFAULTS
+        ),
+        createStrokeLayer(toPaths(zones.map(closeRing), 'dim', 0.4, 0.7), STROKE_DEFAULTS),
+        createStrokeLayer(bars, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.4}),
+        createStrokeLayer(ticks, STROKE_DEFAULTS),
+        createSpriteLayer(medians, {pulse: 0.5}),
+        createSpriteLayer(modes, {pulse: 0.4})
       ];
     }
   },
 
   'raster-zonal-distribution-recipe': {
     parameters: [
-      slider('nodata', 'Nodata cells', 0, 50, 2, 16),
-      slider('roughness', 'Roughness', 0.7, 2.4, 0.1, 1.2)
+      createSlider('nodata', 'Nodata cells', 0, 50, 2, 16),
+      createSlider('roughness', 'Roughness', 0.7, 2.4, 0.1, 1.2)
     ],
     build: ({fork, p}) => {
       const columns = 40;
@@ -1588,13 +1622,13 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         found.sort((first, second) => first - second);
         const pick = (fraction: number) =>
           found[Math.min(found.length - 1, Math.floor(found.length * fraction))] ?? 0.5;
-        const [cx, cy] = getCentroid(ring);
-        const level = (value: number) => cy + 15 - value * 30;
+        const [centerX, centerY] = getVertexMean(ring);
+        const level = (value: number) => centerY + 15 - value * 30;
         whiskers.push(
-          createLine(
+          createPath(
             [
-              [cx, level(pick(0.05))],
-              [cx, level(pick(0.95))]
+              [centerX, level(pick(0.05))],
+              [centerX, level(pick(0.95))]
             ],
             'ink',
             0.7,
@@ -1603,15 +1637,15 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         );
         boxes.push({
           ring: [
-            [cx - 4.5, level(pick(0.75))],
-            [cx + 4.5, level(pick(0.75))],
-            [cx + 4.5, level(pick(0.25))],
-            [cx - 4.5, level(pick(0.25))]
+            [centerX - 4.5, level(pick(0.75))],
+            [centerX + 4.5, level(pick(0.75))],
+            [centerX + 4.5, level(pick(0.25))],
+            [centerX - 4.5, level(pick(0.25))]
           ],
           role: 'warm',
           alpha: 0.7
         });
-        medians.push(createDot(cx, level(pick(0.5)), 2, 'hot', 1));
+        medians.push(createDot([centerX, level(pick(0.5))], 'hot', 2, 1));
       });
       return [
         {
@@ -1624,19 +1658,19 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           filter: 'nearest',
           strength: 0.04
         },
-        fillLayer(holes),
-        strokeLayer(toPaths(zones.map(closeRing), 'ink', 0.5, 0.75)),
-        fillLayer(boxes, 'pulse'),
-        strokeLayer(whiskers),
-        spriteLayer(medians, 0.4)
+        createFillLayer(holes, FILL_DEFAULTS),
+        createStrokeLayer(toPaths(zones.map(closeRing), 'ink', 0.5, 0.75), STROKE_DEFAULTS),
+        createFillLayer(boxes, {...FILL_DEFAULTS, animation: 'pulse'}),
+        createStrokeLayer(whiskers, STROKE_DEFAULTS),
+        createSpriteLayer(medians, {pulse: 0.4})
       ];
     }
   },
 
   'exposure-by-zone-recipe': {
     parameters: [
-      slider('threshold', 'Hazard cutoff', 0.3, 0.9, 0.02, 0.6),
-      slider('people', 'People', 30, 200, 10, 100)
+      createSlider('threshold', 'Hazard cutoff', 0.3, 0.9, 0.02, 0.6),
+      createSlider('people', 'People', 30, 200, 10, 100)
     ],
     build: ({fork, p}) => {
       const hazard = createSmoothField(fork('hazard'), 5, 1);
@@ -1675,10 +1709,9 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         if (exposed && zone >= 0) exposedPerZone[zone]++;
         dots.push(
           createDot(
-            x,
-            y,
-            exposed ? 1.5 : 1,
+            [x, y],
             exposed ? 'ink' : 'cool',
+            exposed ? 1.5 : 1,
             exposed ? 1 : 0.5,
             random.next()
           )
@@ -1687,7 +1720,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const bars: PathItem[] = zones.map((ring, index) => {
         const bottom = Math.max(...ring.map(point => point[1])) - 3.5;
         const left = Math.min(...ring.map(point => point[0])) + 4;
-        return createLine(
+        return createPath(
           [
             [left, bottom],
             [left + exposedPerZone[index] * 2.2, bottom]
@@ -1708,23 +1741,22 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           style: 'ramp',
           strength: 0.05
         },
-        fillLayer(
+        createFillLayer(
           unobserved.map(ring => ({ring, role: 'dim', alpha: 0.75})),
-          'static',
-          'alpha'
+          {...FILL_DEFAULTS, animation: 'static', blend: 'alpha'}
         ),
-        strokeLayer(toPaths(unobserved.map(closeRing), 'dim', 0.5, 0.8)),
-        strokeLayer(toPaths(zones.map(closeRing), 'ink', 0.5, 0.6)),
-        spriteLayer(dots, 0.35),
-        strokeLayer(bars, 'pulse', 0.3)
+        createStrokeLayer(toPaths(unobserved.map(closeRing), 'dim', 0.5, 0.8), STROKE_DEFAULTS),
+        createStrokeLayer(toPaths(zones.map(closeRing), 'ink', 0.5, 0.6), STROKE_DEFAULTS),
+        createSpriteLayer(dots, {pulse: 0.35}),
+        createStrokeLayer(bars, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.3})
       ];
     }
   },
 
   'regional-raster-change-recipe': {
     parameters: [
-      slider('change', 'Change', 0.2, 1.5, 0.05, 0.8),
-      slider('support', 'Common support', 0, 10, 1, 4, 'cols')
+      createSlider('change', 'Change', 0.2, 1.5, 0.05, 0.8),
+      createSlider('support', 'Common support', 0, 10, 1, 4, 'cols')
     ],
     build: ({fork, p}) => {
       const columns = 32;
@@ -1747,12 +1779,11 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         if (zone >= 0) sums[zone] += difference[index];
       }
       const marks = zones.map((ring, index): SpriteItem => {
-        const [x, y] = getCentroid(ring);
+        const [x, y] = getVertexMean(ring);
         return createDot(
-          x,
-          y,
-          3 + Math.min(9, Math.abs(sums[index]) * 0.35),
+          [x, y],
           sums[index] >= 0 ? 'hot' : 'cool',
+          3 + Math.min(9, Math.abs(sums[index]) * 0.35),
           0.95,
           index / zones.length
         );
@@ -1774,7 +1805,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           filter: 'nearest',
           strength: 0.03
         },
-        fillLayer(
+        createFillLayer(
           support > 0
             ? [
                 {
@@ -1789,20 +1820,19 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
                 }
               ]
             : [],
-          'static',
-          'alpha'
+          {...FILL_DEFAULTS, animation: 'static', blend: 'alpha'}
         ),
-        strokeLayer(toPaths(zones.map(closeRing), 'ink', 0.5, 0.7)),
-        spriteLayer(halos, 0.4),
-        spriteLayer(marks, 0.4)
+        createStrokeLayer(toPaths(zones.map(closeRing), 'ink', 0.5, 0.7), STROKE_DEFAULTS),
+        createSpriteLayer(halos, {pulse: 0.4}),
+        createSpriteLayer(marks, {pulse: 0.4})
       ];
     }
   },
 
   'surface-preparation-recipe': {
     parameters: [
-      slider('gap', 'Gap size', 5, 17, 1, 11),
-      slider('filter', 'Rank filter', 0, 3, 1, 1)
+      createSlider('gap', 'Gap size', 5, 17, 1, 11),
+      createSlider('filter', 'Rank filter', 0, 3, 1, 1)
     ],
     build: ({fork, p}) => {
       const raw = createSmoothField(fork('surface'), 7, 1.3);
@@ -1831,20 +1861,19 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           levels: 14,
           strength: 0.04
         },
-        fillLayer(
+        createFillLayer(
           gaps.map(([x, y]) => ({
             ring: createCircle(x, y, p.gap, 36),
             role: 'warm' as Role,
             alpha: 0.1
           })),
-          'pulse'
+          {...FILL_DEFAULTS, animation: 'pulse'}
         ),
-        strokeLayer(
+        createStrokeLayer(
           gaps.map(([x, y], index) =>
-            createLine(closeRing(createCircle(x, y, p.gap, 36)), 'warm', 0.8, 0.9, index / 3)
+            createPath(closeRing(createCircle(x, y, p.gap, 36)), 'warm', 0.8, 0.9, index / 3)
           ),
-          'pulse',
-          0.4
+          {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.4}
         )
       ];
     }
@@ -1852,8 +1881,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'interpolation-diagnostics-recipe': {
     parameters: [
-      slider('samples', 'Samples', 6, 26, 1, 14),
-      slider('power', 'Range', 1, 6, 0.1, 2)
+      createSlider('samples', 'Samples', 6, 26, 1, 14),
+      createSlider('power', 'Range', 1, 6, 0.1, 2)
     ],
     build: ({fork, p}) => {
       const pool = createScatterPoints(fork('samples'), 26, 12);
@@ -1875,8 +1904,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         }
         return sum / weightSum;
       };
-      const predicted = evaluateField(FIELD_COLUMNS, FIELD_ROWS, (u, v) =>
-        predict(u * SCENE_WIDTH, v * SCENE_HEIGHT)
+      const predicted = evaluateField(FIELD_COLUMNS, FIELD_ROWS, (fractionX, fractionY) =>
+        predict(fractionX * SCENE_WIDTH, fractionY * SCENE_HEIGHT)
       );
       const low = Math.min(...predicted);
       const range = Math.max(...predicted) - low || 1;
@@ -1886,7 +1915,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         Math.sqrt(residuals.reduce((sum, value) => sum + value * value, 0) / count) || 1;
       const standardizedScores = residuals.map(value => value / deviation);
       const rings: PathItem[] = samples.map(([x, y], index) =>
-        createLine(
+        createPath(
           closeRing(
             createCircle(x, y, 2.5 + Math.min(Math.abs(standardizedScores[index]), 2.2) * 2.6, 28)
           ),
@@ -1906,8 +1935,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           style: 'ramp',
           strength: 0.05
         },
-        strokeLayer(rings, 'pulse', 0.4),
-        spriteLayer(toSprites(samples, 'ink', 1.3, undefined, 0.95), 0)
+        createStrokeLayer(rings, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.4}),
+        createSpriteLayer(toSprites(samples, 'ink', 1.3, undefined, 0.95), {pulse: 0})
       ];
     }
   },
@@ -1916,17 +1945,17 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'drainage-network-recipe': {
     parameters: [
-      slider('threshold', 'Stream threshold', 3, 60, 1, 8, 'cells'),
-      slider('roughness', 'Roughness', 0.7, 2.2, 0.1, 1.2)
+      createSlider('threshold', 'Stream threshold', 3, 60, 1, 8, 'cells'),
+      createSlider('roughness', 'Roughness', 0.7, 2.2, 0.1, 1.2)
     ],
     build: ({fork, p}) => {
       const columns = 40;
       const rows = 25;
       const noise = createSmoothField(fork('terrain'), 7, p.roughness, columns, rows);
       const elevation = noise.map((value, index) => {
-        const u = (index % columns) / columns;
-        const v = Math.floor(index / columns) / rows;
-        return value * 0.3 + (1 - (0.75 * u + 0.25 * v)) * 0.7;
+        const fractionX = (index % columns) / columns;
+        const fractionY = Math.floor(index / columns) / rows;
+        return value * 0.3 + (1 - (0.75 * fractionX + 0.25 * fractionY)) * 0.7;
       });
       const downstream = new Array<number>(elevation.length).fill(-1);
       for (let index = 0; index < elevation.length; index++) {
@@ -1935,15 +1964,22 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         let best = 0;
         for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
           for (let columnOffset = -1; columnOffset <= 1; columnOffset++) {
-            const c = column + columnOffset;
-            const r = row + rowOffset;
-            if ((!rowOffset && !columnOffset) || c < 0 || r < 0 || c >= columns || r >= rows)
+            const neighborColumn = column + columnOffset;
+            const neighborRow = row + rowOffset;
+            if (
+              (!rowOffset && !columnOffset) ||
+              neighborColumn < 0 ||
+              neighborRow < 0 ||
+              neighborColumn >= columns ||
+              neighborRow >= rows
+            )
               continue;
             const drop =
-              (elevation[index] - elevation[r * columns + c]) / Math.hypot(rowOffset, columnOffset);
+              (elevation[index] - elevation[neighborRow * columns + neighborColumn]) /
+              Math.hypot(rowOffset, columnOffset);
             if (drop > best) {
               best = drop;
-              downstream[index] = r * columns + c;
+              downstream[index] = neighborRow * columns + neighborColumn;
             }
           }
         }
@@ -1968,7 +2004,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         const width = clamp(0.35 + Math.sqrt(amount) * 0.12, 0.4, 2.6);
         if (next >= 0) {
           (amount > p.threshold * 4 ? large : small).push(
-            createLine(
+            createPath(
               [center(index), center(next)],
               amount > p.threshold * 4 ? 'primary' : 'cool',
               width,
@@ -1978,7 +2014,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           );
         } else if (amount > p.threshold * 2) {
           const [x, y] = center(index);
-          outlets.push(createDot(x, y, 2.4, 'warm', 1, index / elevation.length));
+          outlets.push(createDot([x, y], 'warm', 2.4, 1, index / elevation.length));
         }
       });
       const elevationValues = Float32Array.from(elevation);
@@ -2002,15 +2038,15 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           strength: 0.5,
           light: -2.4
         },
-        strokeLayer(small, 'flow', 0.3, 1.2),
-        strokeLayer(large, 'flow', 0.35, 1.6),
-        spriteLayer(outlets, 0.5)
+        createStrokeLayer(small, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 1.2}),
+        createStrokeLayer(large, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.35, trail: 1.6}),
+        createSpriteLayer(outlets, {pulse: 0.5})
       ];
     }
   },
 
   'straight-line-catchments-recipe': {
-    parameters: [slider('facilities', 'Facilities', 2, 7, 1, 5)],
+    parameters: [createSlider('facilities', 'Facilities', 2, 7, 1, 5)],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
       const pool = createScatterPoints(fork('facilities'), 7, 16);
@@ -2043,29 +2079,28 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       return [
-        fillLayer(fills),
-        spriteLayer(
+        createFillLayer(fills, FILL_DEFAULTS),
+        createSpriteLayer(
           facilities.map(([x, y], index) =>
             createDot(
-              x,
-              y,
-              3 + Math.sqrt(areas[index]) * 0.35,
+              [x, y],
               getRoleCycle(index),
+              3 + Math.sqrt(areas[index]) * 0.35,
               0.35,
               index / 7
             )
           ),
-          0.4
+          {pulse: 0.4}
         ),
-        spriteLayer(toSprites(facilities, 'ink', 2.1, undefined, 1), 0)
+        createSpriteLayer(toSprites(facilities, 'ink', 2.1, undefined, 1), {pulse: 0})
       ];
     }
   },
 
   'landscape-metrics-recipe': {
     parameters: [
-      slider('classes', 'Classes', 2, 5, 1, 4),
-      slider('fragmentation', 'Fragmentation', 0.8, 3, 0.1, 1.6)
+      createSlider('classes', 'Classes', 2, 5, 1, 4),
+      createSlider('fragmentation', 'Fragmentation', 0.8, 3, 0.1, 1.6)
     ],
     build: ({fork, p}) => {
       const columns = 32;
@@ -2094,7 +2129,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           });
           if (column < columns - 1 && classOf[index + 1] !== classOf[index]) {
             edges.push(
-              createLine(
+              createPath(
                 [
                   [(column + 1) * cell, row * cell],
                   [(column + 1) * cell, (row + 1) * cell]
@@ -2108,7 +2143,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           }
           if (row < rows - 1 && classOf[index + columns] !== classOf[index]) {
             edges.push(
-              createLine(
+              createPath(
                 [
                   [column * cell, (row + 1) * cell],
                   [(column + 1) * cell, (row + 1) * cell]
@@ -2122,14 +2157,17 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           }
         }
       }
-      return [fillLayer(fills), strokeLayer(edges, 'pulse', 0.3)];
+      return [
+        createFillLayer(fills, FILL_DEFAULTS),
+        createStrokeLayer(edges, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.3})
+      ];
     }
   },
 
   'patch-proximity-recipe': {
     parameters: [
-      slider('depth', 'Edge depth', 0, 8, 0.5, 3, 'px'),
-      slider('patches', 'Patches', 4, 9, 1, 8)
+      createSlider('depth', 'Edge depth', 0, 8, 0.5, 3, 'px'),
+      createSlider('patches', 'Patches', 4, 9, 1, 8)
     ],
     build: ({fork, p}) => {
       const random = fork('patches');
@@ -2165,7 +2203,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           nearest.center[0] - patch.center[0]
         );
         links.push(
-          createLine(
+          createPath(
             [
               [
                 patch.center[0] + Math.cos(angle) * patch.radius,
@@ -2197,28 +2235,30 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         };
       });
       return [
-        fillLayer(
+        createFillLayer(
           patches.map(patch => ({
             ring: patch.ring,
             role: (patch.habitat ? 'primary' : 'violet') as Role,
             alpha: patch.habitat ? 0.2 : 0.14
-          }))
+          })),
+          FILL_DEFAULTS
         ),
-        strokeLayer(
+        createStrokeLayer(
           patches.map(patch =>
-            createLine(closeRing(patch.ring), patch.habitat ? 'primary' : 'violet', 0.7, 0.8)
-          )
+            createPath(closeRing(patch.ring), patch.habitat ? 'primary' : 'violet', 0.7, 0.8)
+          ),
+          STROKE_DEFAULTS
         ),
-        fillLayer(cores, 'pulse'),
-        strokeLayer(links, 'flow', 0.35, 0.8)
+        createFillLayer(cores, {...FILL_DEFAULTS, animation: 'pulse'}),
+        createStrokeLayer(links, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.35, trail: 0.8})
       ];
     }
   },
 
   'resistance-connectivity-recipe': {
     parameters: [
-      slider('barrier', 'Barrier', 0, 1, 0.05, 0.7),
-      slider('jitter', 'Layout', 0, 1, 0.1, 0.5)
+      createSlider('barrier', 'Barrier', 0, 1, 0.05, 0.7),
+      createSlider('jitter', 'Layout', 0, 1, 0.1, 0.5)
     ],
     build: ({fork, p}) => {
       const columns = 5;
@@ -2290,35 +2330,131 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const currents = edges.map(
         edge => edge.conductance * (voltage[edge.from] - voltage[edge.to])
       );
-      const maximum = Math.max(...currents.map(Math.abs)) || 1;
-      const flows: PathItem[] = edges.map((edge, index) => {
-        const forward = currents[index] >= 0;
-        const points = forward
-          ? [nodes[edge.from], nodes[edge.to]]
-          : [nodes[edge.to], nodes[edge.from]];
-        const level = Math.abs(currents[index]) / maximum;
-        return createLine(
-          points,
-          'warm',
-          0.3 + level * 3.2,
-          0.25 + level * 0.7,
-          index / edges.length
-        );
+      return createCircuitLayers(nodes, edges, currents, source, target, {
+        minimumWidth: 0.3,
+        widthRange: 3.2,
+        levelExponent: 1,
+        nodeRadius: 1.6,
+        terminalRadius: 4
       });
+    }
+  },
+
+  'sparse-resistance-connectivity-recipe': {
+    parameters: [
+      createSlider('barrier', 'Barrier', 0, 1, 0.05, 0.7),
+      createSlider('jitter', 'Layout', 0, 1, 0.1, 0.5)
+    ],
+    build: ({fork, p}) => {
+      const columns = 26;
+      const rows = 14;
+      const random = fork('layout');
+      const nodes: Point[] = [];
+      for (let row = 0; row < rows; row++) {
+        for (let column = 0; column < columns; column++) {
+          nodes.push([
+            10 + column * 5.8 + random.range(-1.3, 1.3) * p.jitter,
+            12 + row * 6.1 + random.range(-1.3, 1.3) * p.jitter
+          ]);
+        }
+      }
+      // A fence of weak links across the middle with a few narrow gaps, over a thinned grid.
+      const fenceColumn = Math.floor(columns / 2) - 1;
+      const gapRows = new Set([2, 7, 11]);
+      const links: CircuitEdge[] = [];
+      for (let row = 0; row < rows; row++) {
+        for (let column = 0; column < columns; column++) {
+          const index = row * columns + column;
+          const isFence = column === fenceColumn && !gapRows.has(row);
+          const sideConductance = isFence ? 1 - 0.97 * p.barrier : 1;
+          if (column < columns - 1 && random.next() < 0.78) {
+            links.push({from: index, to: index + 1, conductance: sideConductance});
+          }
+          if (row < rows - 1 && random.next() < 0.72) {
+            links.push({from: index, to: index + columns, conductance: 1});
+          }
+        }
+      }
+      const source = Math.floor(rows / 2) * columns;
+      const target = source + columns - 1;
+      // Keep only the wires connected to the source, so every node takes part in the circuit.
+      const neighbors: number[][] = nodes.map(() => []);
+      for (const link of links) {
+        neighbors[link.from].push(link.to);
+        neighbors[link.to].push(link.from);
+      }
+      const reached = new Set([source]);
+      const queue = [source];
+      for (let cursor = 0; cursor < queue.length; cursor++) {
+        for (const neighbor of neighbors[queue[cursor]]) {
+          if (!reached.has(neighbor)) {
+            reached.add(neighbor);
+            queue.push(neighbor);
+          }
+        }
+      }
+      if (!reached.has(target)) {
+        for (let column = 0; column < columns - 1; column++) {
+          const index = source + column;
+          links.push({from: index, to: index + 1, conductance: 1});
+          reached.add(index).add(index + 1);
+        }
+      }
+      const edges = links.filter(link => reached.has(link.from) && reached.has(link.to));
+
+      // Conjugate gradient on the free nodes, with the source held at 1 and the target at 0.
+      const voltage = new Float64Array(nodes.length);
+      voltage[source] = 1;
+      const isFree = (node: number) => reached.has(node) && node !== source && node !== target;
+      const applyLaplacian = (input: Float64Array): Float64Array => {
+        const output = new Float64Array(nodes.length);
+        for (const edge of edges) {
+          const difference = edge.conductance * (input[edge.from] - input[edge.to]);
+          output[edge.from] += difference;
+          output[edge.to] -= difference;
+        }
+        for (let node = 0; node < nodes.length; node++) if (!isFree(node)) output[node] = 0;
+        return output;
+      };
+      const residual = applyLaplacian(voltage).map(value => -value);
+      const direction = Float64Array.from(residual);
+      let residualEnergy = residual.reduce((sum, value) => sum + value * value, 0);
+      for (let iteration = 0; iteration < 160 && residualEnergy > 1e-12; iteration++) {
+        const response = applyLaplacian(direction);
+        let curvature = 0;
+        for (let node = 0; node < nodes.length; node++)
+          curvature += direction[node] * response[node];
+        const step = residualEnergy / (curvature || 1);
+        let nextEnergy = 0;
+        for (let node = 0; node < nodes.length; node++) {
+          voltage[node] += step * direction[node];
+          residual[node] -= step * response[node];
+          nextEnergy += residual[node] * residual[node];
+        }
+        const ratio = nextEnergy / residualEnergy;
+        for (let node = 0; node < nodes.length; node++) {
+          direction[node] = residual[node] + ratio * direction[node];
+        }
+        residualEnergy = nextEnergy;
+      }
+      const currents = edges.map(
+        edge => edge.conductance * (voltage[edge.from] - voltage[edge.to])
+      );
+      // Square-root scaling keeps the many faint side paths visible next to the main channels.
+      // The terminals get their own small layer: the static fallback draws large sprite layers as
+      // uniform dots, which would hide them among hundreds of nodes.
       return [
-        strokeLayer(
-          edges.map(edge => createLine([nodes[edge.from], nodes[edge.to]], 'dim', 0.35, 0.55))
-        ),
-        strokeLayer(flows, 'flow', 0.4, 1.2),
-        spriteLayer(
-          nodes.map(([x, y], index) =>
-            index === source
-              ? createDot(x, y, 4, 'hot', 1)
-              : index === target
-                ? createDot(x, y, 4, 'cool', 1)
-                : createDot(x, y, 1.6, 'primary', 0.8, index / size)
-          ),
-          0.4
+        ...createCircuitLayers(nodes, edges, currents, source, target, {
+          minimumWidth: 0.25,
+          widthRange: 1.9,
+          levelExponent: 0.5,
+          nodeRadius: 0.9,
+          terminalRadius: 5.5,
+          drawnNodes: reached
+        }),
+        createSpriteLayer(
+          [createDot(nodes[source], 'hot', 5.5, 1), createDot(nodes[target], 'cool', 5.5, 1)],
+          {pulse: 0.4}
         )
       ];
     }
@@ -2328,8 +2464,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'segregation-decomposition-recipe': {
     parameters: [
-      slider('spatial', 'Spatial change', 0, 0.8, 0.05, 0.5),
-      slider('composition', 'Composition change', 0, 0.4, 0.02, 0.15)
+      createSlider('spatial', 'Spatial change', 0, 0.8, 0.05, 0.5),
+      createSlider('composition', 'Composition change', 0, 0.4, 0.02, 0.15)
     ],
     build: ({fork, p}) => {
       const keys = fork('keys');
@@ -2354,10 +2490,9 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         order.forEach((entry, rank) => {
           items.push(
             createDot(
-              originX + slots[entry.index][0],
-              originY + slots[entry.index][1],
-              1.5,
+              [originX + slots[entry.index][0], originY + slots[entry.index][1]],
               rank < count ? 'hot' : 'cool',
+              1.5,
               0.9,
               entry.index / 40
             )
@@ -2372,36 +2507,39 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const spatialLength = p.spatial * unit * 0.9;
       const start = 30;
       return [
-        strokeLayer([
-          createLine(
-            closeRing([
-              [4, 4],
-              [58, 4],
-              [58, 46],
-              [4, 46]
-            ]),
-            'dim',
-            0.3,
-            0.4
-          ),
-          createLine(
-            closeRing([
-              [98, 4],
-              [152, 4],
-              [152, 46],
-              [98, 46]
-            ]),
-            'dim',
-            0.3,
-            0.4
-          )
-        ]),
-        spriteLayer(before, 0.25),
-        spriteLayer(after, 0.25),
-        ...createArrowLayers([64, 26], [93, 26], 'ink'),
-        strokeLayer(
+        createStrokeLayer(
           [
-            createLine(
+            createPath(
+              closeRing([
+                [4, 4],
+                [58, 4],
+                [58, 46],
+                [4, 46]
+              ]),
+              'dim',
+              0.3,
+              0.4
+            ),
+            createPath(
+              closeRing([
+                [98, 4],
+                [152, 4],
+                [152, 46],
+                [98, 46]
+              ]),
+              'dim',
+              0.3,
+              0.4
+            )
+          ],
+          STROKE_DEFAULTS
+        ),
+        createSpriteLayer(before, {pulse: 0.25}),
+        createSpriteLayer(after, {pulse: 0.25}),
+        ...createArrowLayers([64, 26], [93, 26], 'ink'),
+        createStrokeLayer(
+          [
+            createPath(
               [
                 [start, 72],
                 [start + compositionLength, 72]
@@ -2410,7 +2548,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               3.4,
               0.95
             ),
-            createLine(
+            createPath(
               [
                 [start + compositionLength + 1, 72],
                 [start + compositionLength + 1 + spatialLength, 72]
@@ -2420,28 +2558,30 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.95
             )
           ],
-          'pulse',
-          0.3
+          {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.3}
         ),
-        strokeLayer([
-          createLine(
-            [
-              [start, 80],
-              [start + compositionLength + 1 + spatialLength, 80]
-            ],
-            'dim',
-            0.5,
-            0.7
-          )
-        ])
+        createStrokeLayer(
+          [
+            createPath(
+              [
+                [start, 80],
+                [start + compositionLength + 1 + spatialLength, 80]
+              ],
+              'dim',
+              0.5,
+              0.7
+            )
+          ],
+          STROKE_DEFAULTS
+        )
       ];
     }
   },
 
   'segregation-counterfactual-recipe': {
     parameters: [
-      slider('spatial', 'Spatial change', 0, 0.8, 0.05, 0.5),
-      slider('composition', 'Composition change', 0, 0.4, 0.02, 0.15)
+      createSlider('spatial', 'Spatial change', 0, 0.8, 0.05, 0.5),
+      createSlider('composition', 'Composition change', 0, 0.4, 0.02, 0.15)
     ],
     build: ({fork, p}) => {
       const keys = fork('keys');
@@ -2460,10 +2600,9 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         const count = Math.round(share * 40);
         return order.map((entry, rank) =>
           createDot(
-            originX + slots[entry.index][0],
-            originY + slots[entry.index][1],
-            1.25,
+            [originX + slots[entry.index][0], originY + slots[entry.index][1]],
             rank < count ? 'hot' : 'cool',
+            1.25,
             0.9,
             entry.index / 40
           )
@@ -2478,7 +2617,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const rowTop = 6;
       const rowBottom = 62;
       const frame = (x: number, y: number) =>
-        createLine(
+        createPath(
           closeRing([
             [x - 4, y - 4],
             [x + 39, y - 4],
@@ -2504,18 +2643,21 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         [columnRight + 17, 55]
       ];
       return [
-        strokeLayer([
-          frame(columnLeft, rowTop),
-          frame(columnRight, rowTop),
-          frame(columnLeft, rowBottom),
-          frame(columnRight, rowBottom)
-        ]),
-        spriteLayer(sprites, 0.25),
-        strokeLayer(
+        createStrokeLayer(
           [
-            createLine(downLeft, 'cool', 0.8, 0.8),
-            createLine(downRight, 'warm', 0.8, 0.8),
-            createLine(
+            frame(columnLeft, rowTop),
+            frame(columnRight, rowTop),
+            frame(columnLeft, rowBottom),
+            frame(columnRight, rowBottom)
+          ],
+          STROKE_DEFAULTS
+        ),
+        createSpriteLayer(sprites, {pulse: 0.25}),
+        createStrokeLayer(
+          [
+            createPath(downLeft, 'cool', 0.8, 0.8),
+            createPath(downRight, 'warm', 0.8, 0.8),
+            createPath(
               [
                 [columnLeft + 40, 30],
                 [columnRight - 6, 58]
@@ -2524,7 +2666,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.8,
               0.7
             ),
-            createLine(
+            createPath(
               [
                 [columnRight - 4, 30],
                 [columnLeft + 42, 58]
@@ -2534,9 +2676,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.7
             )
           ],
-          'flow',
-          0.35,
-          1.2
+          {...STROKE_DEFAULTS, animation: 'flow', speed: 0.35, trail: 1.2}
         )
       ];
     }
@@ -2544,8 +2684,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'population-support-alignment-recipe': {
     parameters: [
-      slider('missing', 'Missing IDs', 0, 2, 1, 0),
-      slider('duplicates', 'Duplicate IDs', 0, 2, 1, 0)
+      createSlider('missing', 'Missing IDs', 0, 2, 1, 0),
+      createSlider('duplicates', 'Duplicate IDs', 0, 2, 1, 0)
     ],
     build: ({fork, p}) => {
       const units = createZoneQuads(fork('units'), 3, 2, 100, 14, 52, 72, 0.08);
@@ -2560,7 +2700,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const ids = shuffled.slice(0, units.length - missing);
       for (let duplicate = 0; duplicate < duplicates; duplicate++) ids.push(ids[duplicate]);
       const spacing = 70 / Math.max(ids.length, 1);
-      const centroids = units.map(getCentroid);
+      const centroids = units.map(getVertexMean);
       const rowItems: PathItem[] = [];
       const links: PathItem[] = [];
       const faults: PathItem[] = [];
@@ -2571,7 +2711,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         seen.add(id);
         const role: Role = isDuplicate ? 'hot' : unitRoles[id];
         rowItems.push(
-          createLine(
+          createPath(
             [
               [8, y],
               [42, y]
@@ -2583,7 +2723,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           )
         );
         rowItems.push(
-          createLine(
+          createPath(
             [
               [8, y],
               [14, y]
@@ -2595,7 +2735,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         );
         const bend = (centroids[id][0] - 48) * 0.5;
         links.push(
-          createLine(
+          createPath(
             [[44, y], [44 + bend, y], [centroids[id][0] - bend, centroids[id][1]], centroids[id]],
             role,
             0.8,
@@ -2605,20 +2745,21 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         );
       });
       units.forEach((ring, index) => {
-        if (!ids.includes(index)) faults.push(createLine(closeRing(ring), 'hot', 1.4, 0.95));
+        if (!ids.includes(index)) faults.push(createPath(closeRing(ring), 'hot', 1.4, 0.95));
       });
       return [
-        fillLayer(
+        createFillLayer(
           units.map((ring, index) => ({
             ring,
             role: unitRoles[index],
             alpha: 0.22
-          }))
+          })),
+          FILL_DEFAULTS
         ),
-        strokeLayer(toPaths(units.map(closeRing), 'dim', 0.4, 0.7)),
-        strokeLayer(faults, 'pulse', 0.6),
-        strokeLayer(rowItems),
-        strokeLayer(links, 'flow', 0.4, 1)
+        createStrokeLayer(toPaths(units.map(closeRing), 'dim', 0.4, 0.7), STROKE_DEFAULTS),
+        createStrokeLayer(faults, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.6}),
+        createStrokeLayer(rowItems, STROKE_DEFAULTS),
+        createStrokeLayer(links, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.4, trail: 1})
       ];
     }
   },
@@ -2626,7 +2767,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
   // ------------------------------------------------------------ trajectories
 
   'trajectory-resample': {
-    parameters: [slider('samples', 'Samples', 4, 32, 1, 14)],
+    parameters: [createSlider('samples', 'Samples', 4, 32, 1, 14)],
     build: ({fork, p}) => {
       const phase = fork('shape').range(0, 1.5);
       const dense = Array.from(
@@ -2652,53 +2793,53 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const place = (fraction: number, offset: number) =>
         lane(getPointAtFraction(dense, lengths, fraction), offset);
       return [
-        strokeLayer([
-          createLine(
-            dense.map(point => lane(point, -22)),
-            'cool',
-            0.5,
-            0.35
-          ),
-          createLine(
-            dense.map(point => lane(point, 22)),
-            'warm',
-            0.5,
-            0.3
-          )
-        ]),
-        strokeLayer(
-          resampled.map((fraction, index) =>
-            createLine([place(fraction, -22), place(fraction, 22)], 'dim', 0.3, 0.25, index / count)
-          ),
-          'pulse',
-          0.2
-        ),
-        strokeLayer(
+        createStrokeLayer(
           [
-            createLine(
+            createPath(
+              dense.map(point => lane(point, -22)),
+              'cool',
+              0.5,
+              0.35
+            ),
+            createPath(
+              dense.map(point => lane(point, 22)),
+              'warm',
+              0.5,
+              0.3
+            )
+          ],
+          STROKE_DEFAULTS
+        ),
+        createStrokeLayer(
+          resampled.map((fraction, index) =>
+            createPath([place(fraction, -22), place(fraction, 22)], 'dim', 0.3, 0.25, index / count)
+          ),
+          {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.2}
+        ),
+        createStrokeLayer(
+          [
+            createPath(
               dense.map(point => lane(point, 22)),
               'warm',
               1.1,
               0.9
             )
           ],
-          'flow',
-          0.3,
-          1.5
+          {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 1.5}
         ),
-        spriteLayer(
+        createSpriteLayer(
           rawFractions.map(fraction => {
             const [x, y] = place(fraction, -22);
-            return createDot(x, y, 1.5, 'cool', 0.95, fraction);
+            return createDot([x, y], 'cool', 1.5, 0.95, fraction);
           }),
-          0.3
+          {pulse: 0.3}
         ),
-        spriteLayer(
+        createSpriteLayer(
           resampled.map((fraction, index) => {
             const [x, y] = place(fraction, 22);
-            return createDot(x, y, 1.7, 'warm', 0.95, index / count);
+            return createDot([x, y], 'warm', 1.7, 0.95, index / count);
           }),
-          0.3
+          {pulse: 0.3}
         )
       ];
     }
@@ -2706,8 +2847,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'trajectory-playhead': {
     parameters: [
-      slider('time', 'Time', 0, 1, 0.01, 0.55),
-      slider('vehicles', 'Vehicles', 3, 14, 1, 8)
+      createSlider('time', 'Time', 0, 1, 0.01, 0.55),
+      createSlider('vehicles', 'Vehicles', 3, 14, 1, 8)
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -2743,47 +2884,50 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           mixNumbers(track[cursor - 1][1], track[cursor][1], amount)
         ];
         const role = roles[vehicle % roles.length];
-        past.push(createLine([...track.slice(0, cursor), here], role, 1.1, 0.85, vehicle / 14));
-        future.push(createLine([here, ...track.slice(cursor)], 'dim', 0.5, 0.45));
-        vehicles.push(createDot(here[0], here[1], 2.4, 'ink', 1, vehicle / 14));
+        past.push(createPath([...track.slice(0, cursor), here], role, 1.1, 0.85, vehicle / 14));
+        future.push(createPath([here, ...track.slice(cursor)], 'dim', 0.5, 0.45));
+        vehicles.push(createDot(here, 'ink', 2.4, 1, vehicle / 14));
       }
       const barY = 94;
       const x = 14 + time * 132;
       const ticks: SpriteItem[] = Array.from({length: 12}, (_, index) =>
-        createDot(14 + (index / 11) * 132, barY, 0.7, 'dim', 0.8)
+        createDot([14 + (index / 11) * 132, barY], 'dim', 0.7, 0.8)
       );
       return [
-        strokeLayer(future),
-        strokeLayer(past, 'flow', 0.25, 1.4),
-        spriteLayer(vehicles, 0.35),
-        strokeLayer([
-          createLine(
-            [
-              [14, barY],
-              [146, barY]
-            ],
-            'dim',
-            0.5,
-            0.6
-          ),
-          createLine(
-            [
-              [14, barY],
-              [x, barY]
-            ],
-            'warm',
-            1.2,
-            0.9
-          )
-        ]),
-        spriteLayer(ticks, 0),
-        spriteLayer([createDot(x, barY, 3, 'hot', 1)], 0.4)
+        createStrokeLayer(future, STROKE_DEFAULTS),
+        createStrokeLayer(past, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.25, trail: 1.4}),
+        createSpriteLayer(vehicles, {pulse: 0.35}),
+        createStrokeLayer(
+          [
+            createPath(
+              [
+                [14, barY],
+                [146, barY]
+              ],
+              'dim',
+              0.5,
+              0.6
+            ),
+            createPath(
+              [
+                [14, barY],
+                [x, barY]
+              ],
+              'warm',
+              1.2,
+              0.9
+            )
+          ],
+          STROKE_DEFAULTS
+        ),
+        createSpriteLayer(ticks, {pulse: 0}),
+        createSpriteLayer([createDot([x, barY], 'hot', 3, 1)], {pulse: 0.4})
       ];
     }
   },
 
   'trajectory-metrics': {
-    parameters: [slider('stop', 'Stop speed', 0.04, 0.5, 0.02, 0.18)],
+    parameters: [createSlider('stop', 'Stop speed', 0.04, 0.5, 0.02, 0.18)],
     build: ({fork, p}) => {
       const random = fork('profile');
       const phase = fork('shape').range(0, 1.2);
@@ -2811,7 +2955,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         const role: Role =
           level < p.stop ? 'warm' : level < 0.6 ? 'cool' : level < 0.82 ? 'primary' : 'hot';
         pieces.push(
-          createLine([vertices[index], vertices[index + 1]], role, 1.5, 0.95, index / segments)
+          createPath([vertices[index], vertices[index + 1]], role, 1.5, 0.95, index / segments)
         );
         if (level < p.stop && !inStop) stops.push(vertices[index]);
         inStop = level < p.stop;
@@ -2821,23 +2965,22 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       );
       const threshold = 94 - p.stop * 12;
       return [
-        strokeLayer(pieces, 'flow', 0.25, 2),
-        spriteLayer(
+        createStrokeLayer(pieces, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.25, trail: 2}),
+        createSpriteLayer(
           vertices.map(([x, y], index) =>
-            createDot(x, y, 0.8, 'ink', 0.55, index / vertices.length)
+            createDot([x, y], 'ink', 0.8, 0.55, index / vertices.length)
           ),
-          0.2
+          {pulse: 0.2}
         ),
-        strokeLayer(
+        createStrokeLayer(
           stops.map(([x, y], index) =>
-            createLine(closeRing(createCircle(x, y, 6, 24)), 'warm', 0.9, 0.9, index / 3)
+            createPath(closeRing(createCircle(x, y, 6, 24)), 'warm', 0.9, 0.9, index / 3)
           ),
-          'pulse',
-          0.5
+          {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.5}
         ),
-        strokeLayer(
+        createStrokeLayer(
           [
-            createLine(
+            createPath(
               [
                 [12, threshold],
                 [148, threshold]
@@ -2846,9 +2989,9 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.4,
               0.7
             ),
-            createLine(profile, 'primary', 0.9, 0.95)
+            createPath(profile, 'primary', 0.9, 0.95)
           ],
-          'static'
+          {...STROKE_DEFAULTS, animation: 'static'}
         )
       ];
     }
@@ -2856,10 +2999,10 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'trajectory-kalman': {
     parameters: [
-      slider('noise', 'GPS noise', 1, 9, 0.5, 4.5, 'px'),
-      slider('gain', 'Filter gain', 0.1, 0.9, 0.05, 0.3),
+      createSlider('noise', 'GPS noise', 1, 9, 0.5, 4.5, 'px'),
+      createSlider('gain', 'Filter gain', 0.1, 0.9, 0.05, 0.3),
       {
-        ...slider('mode', 'Pass', 0, 1, 1, 1),
+        ...createSlider('mode', 'Pass', 0, 1, 1, 1),
         options: ['Filter', 'Smoother']
       }
     ],
@@ -2900,27 +3043,32 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             )
           : forward;
       return [
-        strokeLayer([createLine(truth, 'dim', 0.5, 0.5)]),
-        strokeLayer([createLine(measured, 'cool', 0.4, 0.4)]),
-        spriteLayer(
+        createStrokeLayer([createPath(truth, 'dim', 0.5, 0.5)], STROKE_DEFAULTS),
+        createStrokeLayer([createPath(measured, 'cool', 0.4, 0.4)], STROKE_DEFAULTS),
+        createSpriteLayer(
           smooth
             .filter((_, index) => index % 3 === 0)
-            .map(([x, y], index) => createDot(x, y, 4 + p.noise * 0.5, 'warm', 0.12, index / 15)),
-          0.3
+            .map(([x, y], index) => createDot([x, y], 'warm', 4 + p.noise * 0.5, 0.12, index / 15)),
+          {pulse: 0.3}
         ),
-        spriteLayer(
-          measured.map(([x, y], index) => createDot(x, y, 1.2, 'cool', 0.9, index / count)),
-          0.25
+        createSpriteLayer(
+          measured.map(([x, y], index) => createDot([x, y], 'cool', 1.2, 0.9, index / count)),
+          {pulse: 0.25}
         ),
-        strokeLayer([createLine(smooth, 'warm', 1.5, 0.95)], 'flow', 0.3, 1.8)
+        createStrokeLayer([createPath(smooth, 'warm', 1.5, 0.95)], {
+          ...STROKE_DEFAULTS,
+          animation: 'flow',
+          speed: 0.3,
+          trail: 1.8
+        })
       ];
     }
   },
 
   'trajectory-restriction': {
     parameters: [
-      slider('start', 'Window start', 0, 0.8, 0.02, 0.25),
-      slider('width', 'Window length', 0.1, 1, 0.02, 0.45)
+      createSlider('start', 'Window start', 0, 0.8, 0.02, 0.25),
+      createSlider('width', 'Window length', 0.1, 1, 0.02, 0.45)
     ],
     pointer: 'hover',
     build: ({fork, p, pointer}) => {
@@ -2947,7 +3095,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           width: number,
           alpha: number
         ) => {
-          if (buffer.length > 1) target.push(createLine(buffer, role, width, alpha, track / 7));
+          if (buffer.length > 1) target.push(createPath(buffer, role, width, alpha, track / 7));
         };
         let wasInside = false;
         points.forEach((point, index) => {
@@ -2961,7 +3109,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             time <= p.start + p.width;
           if (isInside) {
             if (!wasInside) {
-              crossings.push(createDot(point[0], point[1], 2, 'hot', 1));
+              crossings.push(createDot(point, 'hot', 2, 1));
               flush(outside, rest, 'dim', 0.5, 0.5);
               rest = [];
               run = [points[Math.max(0, index - 1)]];
@@ -2969,7 +3117,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             run.push(point);
           } else {
             if (wasInside) {
-              crossings.push(createDot(point[0], point[1], 2, 'cool', 1));
+              crossings.push(createDot(point, 'cool', 2, 1));
               run.push(point);
               flush(inside, run, 'warm', 1.5, 0.95);
               run = [];
@@ -2984,62 +3132,71 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       }
       const barX = (fraction: number) => 14 + fraction * 132;
       return [
-        strokeLayer(outside),
-        fillLayer([
-          {
-            ring: [
-              [box.left, box.top],
-              [box.right, box.top],
-              [box.right, box.bottom],
-              [box.left, box.bottom]
-            ],
-            role: 'violet',
-            alpha: 0.12
-          }
-        ]),
-        strokeLayer([
-          createLine(
-            closeRing([
-              [box.left, box.top],
-              [box.right, box.top],
-              [box.right, box.bottom],
-              [box.left, box.bottom]
-            ]),
-            'violet',
-            0.9,
-            0.9
-          )
-        ]),
-        strokeLayer(inside, 'flow', 0.35, 1),
-        spriteLayer(crossings, 0.4),
-        strokeLayer([
-          createLine(
-            [
-              [14, 95],
-              [146, 95]
-            ],
-            'dim',
-            0.5,
-            0.6
-          ),
-          createLine(
-            [
-              [barX(p.start), 95],
-              [barX(Math.min(1, p.start + p.width)), 95]
-            ],
-            'warm',
-            1.8,
-            0.95
-          )
-        ])
+        createStrokeLayer(outside, STROKE_DEFAULTS),
+        createFillLayer(
+          [
+            {
+              ring: [
+                [box.left, box.top],
+                [box.right, box.top],
+                [box.right, box.bottom],
+                [box.left, box.bottom]
+              ],
+              role: 'violet',
+              alpha: 0.12
+            }
+          ],
+          FILL_DEFAULTS
+        ),
+        createStrokeLayer(
+          [
+            createPath(
+              closeRing([
+                [box.left, box.top],
+                [box.right, box.top],
+                [box.right, box.bottom],
+                [box.left, box.bottom]
+              ]),
+              'violet',
+              0.9,
+              0.9
+            )
+          ],
+          STROKE_DEFAULTS
+        ),
+        createStrokeLayer(inside, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.35, trail: 1}),
+        createSpriteLayer(crossings, {pulse: 0.4}),
+        createStrokeLayer(
+          [
+            createPath(
+              [
+                [14, 95],
+                [146, 95]
+              ],
+              'dim',
+              0.5,
+              0.6
+            ),
+            createPath(
+              [
+                [barX(p.start), 95],
+                [barX(Math.min(1, p.start + p.width)), 95]
+              ],
+              'warm',
+              1.8,
+              0.95
+            )
+          ],
+          STROKE_DEFAULTS
+        )
       ];
     }
   },
 
   'zone-events': {
     parameters: [
-      slider('tracks', 'Tracks', 3, 12, 1, 7),
-      slider('zone', 'Zone size', 0.6, 1.4, 0.05, 1)
+      createSlider('tracks', 'Tracks', 3, 12, 1, 7),
+      createSlider('zone', 'Zone size', 0.6, 1.4, 0.05, 1)
     ],
     build: ({fork, p}) => {
       const shapeRandom = fork('zones');
@@ -3065,11 +3222,11 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               (point[1] + points[index - 1][1]) / 2
             ];
             (zone >= 0 ? enters : exits).push(
-              createDot(edge[0], edge[1], 2.1, zone >= 0 ? 'hot' : 'cool', 1, track / 12)
+              createDot(edge, zone >= 0 ? 'hot' : 'cool', 2.1, 1, track / 12)
             );
             buffer.push(edge);
             (state >= 0 ? inside : outside).push(
-              createLine(
+              createPath(
                 buffer,
                 state >= 0 ? 'primary' : 'dim',
                 state >= 0 ? 1.3 : 0.5,
@@ -3083,7 +3240,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           state = zone;
         });
         (state >= 0 ? inside : outside).push(
-          createLine(
+          createPath(
             buffer,
             state >= 0 ? 'primary' : 'dim',
             state >= 0 ? 1.3 : 0.5,
@@ -3092,23 +3249,26 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         );
       }
       return [
-        fillLayer(
+        createFillLayer(
           zones.map(ring => ({ring, role: 'violet' as Role, alpha: 0.12})),
-          'pulse'
+          {...FILL_DEFAULTS, animation: 'pulse'}
         ),
-        strokeLayer(zones.map(ring => createLine(closeRing(ring), 'violet', 0.9, 0.85))),
-        strokeLayer(outside),
-        strokeLayer(inside, 'flow', 0.35, 1),
-        spriteLayer(enters, 0.5),
-        spriteLayer(exits, 0.5)
+        createStrokeLayer(
+          zones.map(ring => createPath(closeRing(ring), 'violet', 0.9, 0.85)),
+          STROKE_DEFAULTS
+        ),
+        createStrokeLayer(outside, STROKE_DEFAULTS),
+        createStrokeLayer(inside, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.35, trail: 1}),
+        createSpriteLayer(enters, {pulse: 0.5}),
+        createSpriteLayer(exits, {pulse: 0.5})
       ];
     }
   },
 
   'fleet-dwell-recipe': {
     parameters: [
-      slider('vehicles', 'Vehicles', 3, 16, 1, 12),
-      slider('minimum', 'Min dwell', 0, 5, 0.5, 1.5)
+      createSlider('vehicles', 'Vehicles', 3, 16, 1, 12),
+      createSlider('minimum', 'Min dwell', 0, 5, 0.5, 1.5)
     ],
     build: ({fork, p}) => {
       const rectangle = (x: number, y: number, width: number, height: number): Point[] => [
@@ -3123,7 +3283,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         rectangle(26, 62, 30, 26),
         rectangle(100, 60, 34, 26)
       ];
-      const centers = zones.map(getCentroid);
+      const centers = zones.map(getVertexMean);
       const random = fork('routes');
       const totals = zones.map(() => 0);
       const routes: PathItem[] = [];
@@ -3138,7 +3298,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         ]);
         for (let leg = 0; leg + 1 < places.length; leg++)
           routes.push(
-            createLine(
+            createPath(
               createArc(places[leg], places[leg + 1], random.range(-0.2, 0.2), 16),
               'primary',
               1,
@@ -3152,10 +3312,9 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           if (kept) totals[visits[index]] += dwell;
           stops.push(
             createDot(
-              place[0],
-              place[1],
-              0.8 + Math.sqrt(dwell) * 0.8,
+              [place[0], place[1]],
               kept ? 'warm' : 'dim',
+              0.8 + Math.sqrt(dwell) * 0.8,
               kept ? 0.85 : 0.4,
               random.next()
             )
@@ -3164,25 +3323,28 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       }
       const peak = Math.max(...totals, 1);
       return [
-        fillLayer(
+        createFillLayer(
           zones.map((ring, index) => ({
             ring,
             role: 'hot' as Role,
             alpha: 0.05 + 0.35 * (totals[index] / peak)
           })),
-          'pulse'
+          {...FILL_DEFAULTS, animation: 'pulse'}
         ),
-        strokeLayer(zones.map(ring => createLine(closeRing(ring), 'hot', 0.7, 0.4 + 0.5 * 0))),
-        strokeLayer(routes, 'flow', 0.3, 1.2),
-        spriteLayer(stops, 0.4)
+        createStrokeLayer(
+          zones.map(ring => createPath(closeRing(ring), 'hot', 0.7, 0.4 + 0.5 * 0)),
+          STROKE_DEFAULTS
+        ),
+        createStrokeLayer(routes, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 1.2}),
+        createSpriteLayer(stops, {pulse: 0.4})
       ];
     }
   },
 
   'fleet-dwell-zone-events-recipe': {
     parameters: [
-      slider('tracks', 'Tracks', 3, 8, 1, 6),
-      slider('wiggle', 'Wiggle', 0.2, 1.6, 0.1, 0.8)
+      createSlider('tracks', 'Tracks', 3, 8, 1, 6),
+      createSlider('wiggle', 'Wiggle', 0.2, 1.6, 0.1, 0.8)
     ],
     build: ({fork, p}) => {
       const zones = [
@@ -3194,7 +3356,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const bottom = 62;
       const random = fork('tracks');
       const steps = 100;
-      const dim: PathItem[] = [];
+      const dimPaths: PathItem[] = [];
       const chords: PathItem[] = [];
       const enters: SpriteItem[] = [];
       const exits: SpriteItem[] = [];
@@ -3216,7 +3378,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             )
           ]
         );
-        dim.push(createLine(points, 'dim', 0.5, 0.5));
+        dimPaths.push(createPath(points, 'dim', 0.5, 0.5));
         zones.forEach((zone, zoneIndex) => {
           const inside = points.filter(
             point =>
@@ -3227,10 +3389,15 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           );
           lengths[zoneIndex].push(inside.length > 1 ? (getCumulative(inside).pop() ?? 0) : 0);
           if (inside.length > 1) {
-            chords.push(createLine(inside, roles[track % roles.length], 1.5, 0.95, track / 8));
-            enters.push(createDot(inside[0][0], inside[0][1], 1.7, 'hot', 1));
+            chords.push(createPath(inside, roles[track % roles.length], 1.5, 0.95, track / 8));
+            enters.push(createDot(inside[0], 'hot', 1.7, 1));
             exits.push(
-              createDot(inside[inside.length - 1][0], inside[inside.length - 1][1], 1.7, 'cool', 1)
+              createDot(
+                [inside[inside.length - 1][0], inside[inside.length - 1][1]],
+                'cool',
+                1.7,
+                1
+              )
             );
           }
         });
@@ -3241,7 +3408,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           const span = length * 0.14;
           if (span < 0.3) return;
           stacks.push(
-            createLine(
+            createPath(
               [
                 [cursor, 84],
                 [cursor + span, 84]
@@ -3255,7 +3422,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         });
       });
       return [
-        fillLayer(
+        createFillLayer(
           zones.map(zone => ({
             ring: [
               [zone.left, top],
@@ -3265,11 +3432,12 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             ] as Point[],
             role: 'violet' as Role,
             alpha: 0.1
-          }))
+          })),
+          FILL_DEFAULTS
         ),
-        strokeLayer(
+        createStrokeLayer(
           zones.map(zone =>
-            createLine(
+            createPath(
               closeRing([
                 [zone.left, top],
                 [zone.right, top],
@@ -3280,15 +3448,16 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.8,
               0.8
             )
-          )
+          ),
+          STROKE_DEFAULTS
         ),
-        strokeLayer(dim),
-        strokeLayer(chords, 'flow', 0.3, 1.4),
-        spriteLayer(enters, 0.4),
-        spriteLayer(exits, 0.4),
-        strokeLayer(
+        createStrokeLayer(dimPaths, STROKE_DEFAULTS),
+        createStrokeLayer(chords, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 1.4}),
+        createSpriteLayer(enters, {pulse: 0.4}),
+        createSpriteLayer(exits, {pulse: 0.4}),
+        createStrokeLayer(
           zones.map(zone =>
-            createLine(
+            createPath(
               [
                 [zone.left, 92],
                 [zone.right, 92]
@@ -3297,17 +3466,18 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.4,
               0.5
             )
-          )
+          ),
+          STROKE_DEFAULTS
         ),
-        strokeLayer(stacks, 'pulse', 0.3)
+        createStrokeLayer(stacks, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.3})
       ];
     }
   },
 
   'trajectory-encounters': {
     parameters: [
-      slider('distance', 'Distance', 2, 14, 0.5, 3.5, 'px'),
-      slider('tracks', 'Tracks', 6, 20, 1, 10)
+      createSlider('distance', 'Distance', 2, 14, 0.5, 3.5, 'px'),
+      createSlider('tracks', 'Tracks', 6, 20, 1, 10)
     ],
     build: ({fork, p}) => {
       const random = fork('tracks');
@@ -3322,31 +3492,29 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             if (getDistance(tracks[first][step], tracks[second][step]) > p.distance) continue;
             const x = (tracks[first][step][0] + tracks[second][step][0]) / 2;
             const y = (tracks[first][step][1] + tracks[second][step][1]) / 2;
-            links.push(createLine([tracks[first][step], tracks[second][step]], 'hot', 0.9, 0.9));
-            rings.push(createDot(x, y, p.distance * 0.7 + 1.5, 'hot', 0.4, step / steps));
+            links.push(createPath([tracks[first][step], tracks[second][step]], 'hot', 0.9, 0.9));
+            rings.push(createDot([x, y], 'hot', p.distance * 0.7 + 1.5, 0.4, step / steps));
             break;
           }
         }
       }
       return [
-        strokeLayer(
+        createStrokeLayer(
           tracks.map((track, index) =>
-            createLine(track, index % 2 ? 'primary' : 'violet', 0.8, 0.7, index / count)
+            createPath(track, index % 2 ? 'primary' : 'violet', 0.8, 0.7, index / count)
           ),
-          'flow',
-          0.2,
-          1.5
+          {...STROKE_DEFAULTS, animation: 'flow', speed: 0.2, trail: 1.5}
         ),
-        spriteLayer(rings, 0.5),
-        strokeLayer(links, 'pulse', 0.5)
+        createSpriteLayer(rings, {pulse: 0.5}),
+        createStrokeLayer(links, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.5})
       ];
     }
   },
 
   'clock-encounters': {
     parameters: [
-      slider('ticks', 'Clock ticks', 6, 20, 1, 12),
-      slider('distance', 'Distance', 3, 16, 0.5, 9, 'px')
+      createSlider('ticks', 'Clock ticks', 6, 20, 1, 12),
+      createSlider('distance', 'Distance', 3, 16, 0.5, 9, 'px')
     ],
     build: ({fork, p}) => {
       const mapTracks = (u: number): Point[] => [
@@ -3360,7 +3528,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       rowY.forEach((y, row) => {
         let u = random.range(0, 0.06);
         while (u < 1) {
-          raw.push(createDot(12 + 136 * u, y, 1.2, 'cool', 0.7, row / 3));
+          raw.push(createDot([12 + 136 * u, y], 'cool', 1.2, 0.7, row / 3));
           u += random.range(0.04, 0.2);
         }
       });
@@ -3374,7 +3542,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         const u = tick / (ticks - 1);
         const x = 12 + 136 * u;
         clock.push(
-          createLine(
+          createPath(
             [
               [x, 4],
               [x, 32]
@@ -3386,14 +3554,14 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         );
         const positions = mapTracks(u);
         positions.forEach((position, row) => {
-          aligned.push(createDot(x, rowY[row], 1.3, 'warm', 0.95, u));
-          mapDots.push(createDot(position[0], position[1], 1.2, 'warm', 0.7, u));
+          aligned.push(createDot([x, rowY[row]], 'warm', 1.3, 0.95, u));
+          mapDots.push(createDot(position, 'warm', 1.2, 0.7, u));
         });
         for (let first = 0; first < 3; first++) {
           for (let second = first + 1; second < 3; second++) {
             if (getDistance(positions[first], positions[second]) > p.distance) continue;
             meets.push(
-              createLine(
+              createPath(
                 [
                   [x, rowY[first]],
                   [x, rowY[second]]
@@ -3405,10 +3573,12 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
             );
             rings.push(
               createDot(
-                (positions[first][0] + positions[second][0]) / 2,
-                (positions[first][1] + positions[second][1]) / 2,
-                5,
+                [
+                  (positions[first][0] + positions[second][0]) / 2,
+                  (positions[first][1] + positions[second][1]) / 2
+                ],
                 'hot',
+                5,
                 0.5,
                 u
               )
@@ -3417,7 +3587,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         }
       }
       const mapPaths = [0, 1, 2].map(row =>
-        createLine(
+        createPath(
           Array.from({length: 40}, (_, index): Point => mapTracks(index / 39)[row]),
           (['primary', 'violet', 'cool'] as Role[])[row],
           0.8,
@@ -3425,10 +3595,10 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         )
       );
       return [
-        strokeLayer(clock),
-        strokeLayer(
+        createStrokeLayer(clock, STROKE_DEFAULTS),
+        createStrokeLayer(
           rowY.map(y =>
-            createLine(
+            createPath(
               [
                 [12, y],
                 [148, y]
@@ -3437,22 +3607,28 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.3,
               0.4
             )
-          )
+          ),
+          STROKE_DEFAULTS
         ),
-        spriteLayer(raw, 0),
-        strokeLayer(mapPaths, 'flow', 0.2, 1.5),
-        spriteLayer(aligned, 0.2),
-        spriteLayer(mapDots, 0.2),
-        strokeLayer(meets, 'pulse', 0.5),
-        spriteLayer(rings, 0.6)
+        createSpriteLayer(raw, {pulse: 0}),
+        createStrokeLayer(mapPaths, {
+          ...STROKE_DEFAULTS,
+          animation: 'flow',
+          speed: 0.2,
+          trail: 1.5
+        }),
+        createSpriteLayer(aligned, {pulse: 0.2}),
+        createSpriteLayer(mapDots, {pulse: 0.2}),
+        createStrokeLayer(meets, {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.5}),
+        createSpriteLayer(rings, {pulse: 0.6})
       ];
     }
   },
 
   'trajectory-closest-approach': {
     parameters: [
-      slider('threshold', 'Threshold', 4, 24, 1, 12, 'px'),
-      slider('separation', 'Separation', -12, 30, 1, 6, 'px')
+      createSlider('threshold', 'Threshold', 4, 24, 1, 12, 'px'),
+      createSlider('separation', 'Separation', -12, 30, 1, 6, 'px')
     ],
     build: ({p}) => {
       const first: {time: number; point: Point}[] = [
@@ -3498,53 +3674,55 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
         near.length > 1 ? near.map(step => at(route, step / samples)) : [];
       const connectors: PathItem[] = Array.from({length: 9}, (_, index) => {
         const time = (index + 0.5) / 9;
-        return createLine([at(first, time), at(second, time)], 'dim', 0.3, 0.3, index / 9);
+        return createPath([at(first, time), at(second, time)], 'dim', 0.3, 0.3, index / 9);
       });
-      const a = at(first, closest / samples);
-      const b = at(second, closest / samples);
+      const closestStart = at(first, closest / samples);
+      const closestEnd = at(second, closest / samples);
       return [
-        strokeLayer(connectors),
-        strokeLayer(
+        createStrokeLayer(connectors, STROKE_DEFAULTS),
+        createStrokeLayer(
           [
-            createLine(
+            createPath(
               first.map(entry => entry.point),
               'primary',
               0.8,
               0.8
             ),
-            createLine(
+            createPath(
               second.map(entry => entry.point),
               'violet',
               0.8,
               0.8
             )
           ],
-          'flow',
-          0.2,
-          1.5
+          {...STROKE_DEFAULTS, animation: 'flow', speed: 0.2, trail: 1.5}
         ),
-        spriteLayer(
+        createSpriteLayer(
           [...first, ...second].map(entry =>
-            createDot(entry.point[0], entry.point[1], 1.1, 'ink', 0.5)
+            createDot([entry.point[0], entry.point[1]], 'ink', 1.1, 0.5)
           ),
-          0
+          {pulse: 0}
         ),
-        strokeLayer(
+        createStrokeLayer(
           [
-            createLine(slice(first), 'warm', 1.8, 0.95),
-            createLine(slice(second), 'warm', 1.8, 0.95)
+            createPath(slice(first), 'warm', 1.8, 0.95),
+            createPath(slice(second), 'warm', 1.8, 0.95)
           ].filter(item => item.points.length > 1),
-          'pulse',
-          0.4
+          {...STROKE_DEFAULTS, animation: 'pulse', speed: 0.4}
         ),
-        strokeLayer([createLine([a, b], 'hot', 1.2, 1)]),
-        spriteLayer(
+        createStrokeLayer([createPath([closestStart, closestEnd], 'hot', 1.2, 1)], STROKE_DEFAULTS),
+        createSpriteLayer(
           [
-            createDot(a[0], a[1], 2.6, 'hot', 1),
-            createDot(b[0], b[1], 2.6, 'hot', 1),
-            createDot((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 6, 'hot', 0.35)
+            createDot(closestStart, 'hot', 2.6, 1),
+            createDot(closestEnd, 'hot', 2.6, 1),
+            createDot(
+              [(closestStart[0] + closestEnd[0]) / 2, (closestStart[1] + closestEnd[1]) / 2],
+              'hot',
+              6,
+              0.35
+            )
           ],
-          0.5
+          {pulse: 0.5}
         )
       ];
     }
@@ -3552,8 +3730,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'track-similarity': {
     parameters: [
-      slider('deviation', 'Deviation', 0, 22, 1, 14, 'px'),
-      slider('links', 'Alignment links', 4, 24, 1, 12)
+      createSlider('deviation', 'Deviation', 0, 22, 1, 14, 'px'),
+      createSlider('links', 'Alignment links', 4, 24, 1, 12)
     ],
     build: ({fork, p}) => {
       const phase = fork('shape').range(0, 1);
@@ -3570,7 +3748,7 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const links: PathItem[] = [];
       const step = Math.max(1, Math.floor(count / Math.round(p.links)));
       for (let index = 0; index < count; index += step)
-        links.push(createLine([first[index], second[index]], 'violet', 0.5, 0.55, index / count));
+        links.push(createPath([first[index], second[index]], 'violet', 0.5, 0.55, index / count));
       let worst = 0;
       let worstFrom: Point = first[0];
       let worstTo: Point = second[0];
@@ -3579,10 +3757,10 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
           let nearest = Infinity;
           let nearestPoint: Point = to[0];
           for (let index = 1; index < to.length; index++) {
-            const distance = getSegmentDistanceLocal(point, to[index - 1], to[index]);
-            if (distance.value < nearest) {
-              nearest = distance.value;
-              nearestPoint = distance.point;
+            const segment = getNearestOnSegment(point, to[index - 1], to[index]);
+            if (segment.distance < nearest) {
+              nearest = segment.distance;
+              nearestPoint = segment.point;
             }
           }
           if (nearest > worst) {
@@ -3595,20 +3773,19 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       search(first, second, false);
       search(second, first, true);
       return [
-        strokeLayer(links, 'flow', 0.3, 0.8),
-        strokeLayer(
-          [createLine(first, 'cool', 1.3, 0.95), createLine(second, 'warm', 1.3, 0.95)],
-          'flow',
-          0.18,
-          1.5
+        createStrokeLayer(links, {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 0.8}),
+        createStrokeLayer(
+          [createPath(first, 'cool', 1.3, 0.95), createPath(second, 'warm', 1.3, 0.95)],
+          {...STROKE_DEFAULTS, animation: 'flow', speed: 0.18, trail: 1.5}
         ),
-        strokeLayer([createLine([worstFrom, worstTo], 'hot', 1.4, 1)], 'pulse', 0.5),
-        spriteLayer(
-          [
-            createDot(worstFrom[0], worstFrom[1], 2.4, 'hot', 1),
-            createDot(worstTo[0], worstTo[1], 2.4, 'hot', 1)
-          ],
-          0.5
+        createStrokeLayer([createPath([worstFrom, worstTo], 'hot', 1.4, 1)], {
+          ...STROKE_DEFAULTS,
+          animation: 'pulse',
+          speed: 0.5
+        }),
+        createSpriteLayer(
+          [createDot(worstFrom, 'hot', 2.4, 1), createDot(worstTo, 'hot', 2.4, 1)],
+          {pulse: 0.5}
         )
       ];
     }
@@ -3616,8 +3793,8 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
 
   'track-similarity-search': {
     parameters: [
-      slider('threshold', 'Threshold', 2, 30, 1, 11, 'px'),
-      slider('top', 'Top k', 1, 6, 1, 3)
+      createSlider('threshold', 'Threshold', 2, 30, 1, 11, 'px'),
+      createSlider('top', 'Top k', 1, 6, 1, 3)
     ],
     build: ({fork, p}) => {
       const count = 24;
@@ -3653,9 +3830,9 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
       const best = new Set(survivors.slice(0, Math.round(p.top)));
       const pruned = routes.filter(route => route.pruned);
       return [
-        strokeLayer(
+        createStrokeLayer(
           pruned.map(route =>
-            createLine(
+            createPath(
               closeRing([
                 [12, route.minimumY],
                 [148, route.minimumY],
@@ -3666,48 +3843,37 @@ export const RECIPES_TRAJECTORIES_PREVIEWS: Record<string, EntryPreview> = {
               0.3,
               0.3
             )
-          )
+          ),
+          STROKE_DEFAULTS
         ),
-        strokeLayer(
+        createStrokeLayer(
           routes
             .filter(route => !route.pruned && !survivors.includes(route))
-            .map(route => createLine(route.points, 'dim', 0.4, 0.35))
+            .map(route => createPath(route.points, 'dim', 0.4, 0.35)),
+          STROKE_DEFAULTS
         ),
-        strokeLayer(pruned.map(route => createLine(route.points, 'dim', 0.3, 0.2))),
-        strokeLayer(
+        createStrokeLayer(
+          pruned.map(route => createPath(route.points, 'dim', 0.3, 0.2)),
+          STROKE_DEFAULTS
+        ),
+        createStrokeLayer(
           survivors
             .filter(route => !best.has(route))
-            .map(route => createLine(route.points, 'primary', 0.8, 0.7)),
-          'flow',
-          0.2,
-          1.2
+            .map(route => createPath(route.points, 'primary', 0.8, 0.7)),
+          {...STROKE_DEFAULTS, animation: 'flow', speed: 0.2, trail: 1.2}
         ),
-        strokeLayer(
+        createStrokeLayer(
           survivors
             .filter(route => best.has(route))
-            .map(route => createLine(route.points, 'hot', 1.3, 0.95)),
-          'flow',
-          0.3,
-          1.4
+            .map(route => createPath(route.points, 'hot', 1.3, 0.95)),
+          {...STROKE_DEFAULTS, animation: 'flow', speed: 0.3, trail: 1.4}
         ),
-        strokeLayer([createLine(query, 'warm', 1.6, 1)], 'pulse', 0.4)
+        createStrokeLayer([createPath(query, 'warm', 1.6, 1)], {
+          ...STROKE_DEFAULTS,
+          animation: 'pulse',
+          speed: 0.4
+        })
       ];
     }
   }
 };
-
-function getSegmentDistanceLocal(
-  point: Point,
-  start: Point,
-  end: Point
-): {value: number; point: Point} {
-  const dx = end[0] - start[0];
-  const dy = end[1] - start[1];
-  const amount = clamp(
-    ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (dx * dx + dy * dy || 1),
-    0,
-    1
-  );
-  const nearest: Point = [start[0] + dx * amount, start[1] + dy * amount];
-  return {value: getDistance(point, nearest), point: nearest};
-}

@@ -9,6 +9,7 @@ picture answers the reader. One run is about 30 to 80 lines.
 src/gpu/runs/
   define-run.ts    defineOperationRun(spec), layer descriptors, RunBuilder
   inputs.ts        seeded input generators and upload helpers
+  record-demo.ts   shared by the computation-record runs: a recorded relaxation, graph boxes, small multiples
   layers.ts        luma.gl layers the demo kit lacks (polygons, typed edges, charts)
   registry.ts      getRunScene / getRunParameters / hasRun, by entry id
   harness.ts       browser side of the verification harness
@@ -84,6 +85,38 @@ run. Writing buffers is cheap; **prefer per-frame props**: the operation re-runs
 Props that the operation fixes at construction (a kernel, a method, `maximumIterations`) are
 compile-time; list their parameter ids in `rebuildOn` and read them from `values` inside `build`.
 Without an `update`, every parameter change rebuilds. The graph runs once per change, not per frame.
+
+**`afterRun`** (optional, async) is for operations whose output is not a buffer the graph wrote but
+something read back from it or recorded about it: a snapshot arena, a described command graph, a CPU
+summary from a readback ring. It runs after every run (the first one included) with
+`{device, compiled, inputs, outputs, values, upload, allocate}` and returns any value, which `draw`
+receives as `extra`. Draw it by uploading CPU data with `state.upload(id, format, typedArray)` (same
+formats as `builder.upload`) and putting the returned `RunBuffer`s in `extra`. Those buffers belong to
+that result and are destroyed when the next one replaces it, so create them inside `afterRun`, every
+time. The framework drops the result of a run that a newer run or a rebuild superseded, keeps the
+previous `extra` until the new one is ready, and the harness `settle()` waits for it. Runs without
+`afterRun` are unchanged (`extra` is `undefined`).
+
+```ts
+defineOperationRun({
+  build(builder, inputs, values) {
+    // Resources that must be cleaned up with the build (arena, readback ring): hand them over.
+    const arena = builder.own(new GPUSnapshotArena(builder.device, {slots, capacity: values.capacity}));
+    // ... add the operation and a GPUSnapshotTap to builder.graph ...
+    return {outputs: {arena}};          // no `update`: every slider rebuilds, so each run has a fresh arena
+  },
+  async afterRun({outputs, upload}) {
+    const captures = await outputs.arena.read();             // async readback of what the run did
+    return {frames: upload('frames', 'float32', flatten(captures))};
+  },
+  draw: ({extra}) => [{layer: 'chart', kind: 'bars', values: extra.frames}]
+});
+```
+
+`builder.own(resource)` hands any object with `destroy()` to the framework; it is destroyed with the
+build's buffers on rebuild and on destroy. A stateful resource that a run consumes (an arena that
+`read()` closes) needs a rebuild per run, so leave `update` out. Examples: the six
+`computation-*` and `snapshot-*` runs and `region-statistics-readback`.
 
 **`draw`** lists layers in paint order: input context first, then the operation's output. Use a
 function when layers depend on `values` (ranges, counts, which ramp).

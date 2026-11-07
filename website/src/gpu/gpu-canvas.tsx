@@ -39,6 +39,15 @@ export type GpuCanvasProps = {
   className?: string;
   /** Forward pointer position to the scene. */
   interactive?: boolean;
+  /**
+   * Element that receives pointer events. `canvas` (default) listens on the canvas itself. `card`
+   * listens on the enclosing `.card`, whose stretched title link covers the canvas; the position is
+   * still reported in canvas pixels, and null while the pointer is over the card but off the canvas.
+   * Touch is ignored on cards (a tap navigates) and keyboard focus sends the canvas center.
+   */
+  pointerSurface?: 'canvas' | 'card';
+  /** Show the "move pointer" chip on interactive canvases. */
+  hint?: boolean;
   /** Render a slider strip under the canvas, one slider per scene parameter. */
   controls?: boolean;
   /** The scene's parameters, known at render time so sliders appear in the prerendered HTML. */
@@ -77,7 +86,9 @@ export function GpuCanvas({
   className,
   interactive = false,
   controls = false,
-  parameters
+  parameters,
+  pointerSurface = 'canvas',
+  hint = true
 }: GpuCanvasProps): ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -294,35 +305,72 @@ export function GpuCanvas({
     });
     motionQuery.addEventListener('change', rebuild);
 
+    // A still frame (reduced motion) has no loop, so a pointer change schedules one frame.
+    let pointerFrameHandle = 0;
+    const sendPointer = (position: [number, number] | null) => {
+      if (!instance?.setPointer) return;
+      instance.setPointer(position);
+      if (motionQuery.matches && isVisible && !pointerFrameHandle) {
+        pointerFrameHandle = requestAnimationFrame(() => {
+          pointerFrameHandle = 0;
+          if (!isDestroyed && isVisible) renderFrame(0);
+        });
+      }
+    };
+
+    const isCardSurface = pointerSurface === 'card';
+    const surface: HTMLElement = isCardSurface
+      ? (container.closest<HTMLElement>('.card') ?? container)
+      : container;
+
     const handlePointerMove = (event: PointerEvent) => {
+      if (isCardSurface && event.pointerType === 'touch') return;
       const bounds = container.getBoundingClientRect();
       const ratio = window.devicePixelRatio || 1;
-      instance?.setPointer?.([
-        (event.clientX - bounds.left) * ratio,
-        (event.clientY - bounds.top) * ratio
-      ]);
+      const x = event.clientX - bounds.left;
+      const y = event.clientY - bounds.top;
+      if (isCardSurface && (x < 0 || y < 0 || x > bounds.width || y > bounds.height)) {
+        sendPointer(null);
+        return;
+      }
+      sendPointer([x * ratio, y * ratio]);
     };
-    const handlePointerLeave = () => instance?.setPointer?.(null);
+    const handlePointerLeave = () => sendPointer(null);
+    // Keyboard users get the effect at the canvas center when the card's link takes visible focus.
+    const handleFocusIn = (event: FocusEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.matches(':focus-visible')) return;
+      const [width, height] = getSize();
+      sendPointer([width / 2, height / 2]);
+    };
+    const handleFocusOut = () => sendPointer(null);
     if (forwardsPointer) {
-      container.addEventListener('pointermove', handlePointerMove);
-      container.addEventListener('pointerdown', handlePointerMove);
-      container.addEventListener('pointerleave', handlePointerLeave);
+      surface.addEventListener('pointermove', handlePointerMove);
+      surface.addEventListener('pointerdown', handlePointerMove);
+      surface.addEventListener('pointerleave', handlePointerLeave);
+      if (isCardSurface) {
+        surface.addEventListener('focusin', handleFocusIn);
+        surface.addEventListener('focusout', handleFocusOut);
+      }
     }
 
     return () => {
       isDestroyed = true;
       stopLoop();
+      cancelAnimationFrame(pointerFrameHandle);
       intersectionObserver.disconnect();
       resizeObserver.disconnect();
       themeObserver.disconnect();
       motionQuery.removeEventListener('change', rebuild);
-      container.removeEventListener('pointermove', handlePointerMove);
-      container.removeEventListener('pointerdown', handlePointerMove);
-      container.removeEventListener('pointerleave', handlePointerLeave);
+      surface.removeEventListener('pointermove', handlePointerMove);
+      surface.removeEventListener('pointerdown', handlePointerMove);
+      surface.removeEventListener('pointerleave', handlePointerLeave);
+      surface.removeEventListener('focusin', handleFocusIn);
+      surface.removeEventListener('focusout', handleFocusOut);
       applyParametersRef.current = null;
       releaseResources();
     };
-  }, [scene, seed, forwardsPointer]);
+  }, [scene, seed, forwardsPointer, pointerSurface]);
 
   // The backend label only makes sense while the canvas is live.
   useEffect(() => {
@@ -374,7 +422,7 @@ export function GpuCanvas({
           ...FADE
         }}
       />
-      {forwardsPointer && isReady ? (
+      {forwardsPointer && hint && isReady ? (
         <span className="gpu-canvas-hint" aria-hidden="true">
           move pointer
         </span>

@@ -5,14 +5,6 @@ import type {GpuSceneParameter} from '../../../types';
 
 // tieKeys is an optional compile-time input of GPUAdjacencyMatrixOrder.
 export const parameters: GpuSceneParameter[] = [
-  {
-    id: 'tieKeys',
-    label: 'tieKeys',
-    min: 0,
-    max: 1,
-    step: 1,
-    default: 1,
-    options: ['none', 'degree']
-  },
+  {id: 'resolution', label: 'resolution', min: 16, max: 128, step: 16, default: 128},
   {id: 'communities', label: 'Data: communities', min: 2, max: 8, step: 1, default: 5}
 ];
