@@ -14,7 +14,7 @@ import type {
   GPUSpatialAnalysisOperatorQuery
 } from './spatial-analysis-ontology';
 
-const DOCUMENTATION = 'docs/api-reference/experimental/gpu-spatial-analysis/operators.md';
+const DOCUMENTATION = 'docs/api/gpu-spatial-analysis/operators.md';
 const TEST_ROOT = 'modules/analysis/test/gpu-spatial-analysis';
 
 type OperatorOverride = Partial<
@@ -61,8 +61,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/dasymetric-redistribution.spec.ts',
-    documentation:
-      'docs/api-reference/experimental/gpu-spatial-analysis/dasymetric-redistribution.md',
+    documentation: 'docs/api/gpu-spatial-analysis/dasymetric-redistribution.md',
     contract: 'GPUDasymetricRedistributionRecipeProps'
   },
   GPULocalSpatialHeteroscedasticity: {
@@ -78,7 +77,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'partial',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/spatial-regression/geospatial-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/statistical-expansion.md',
+    documentation: 'docs/api/gpu-spatial-analysis/statistical-expansion.md',
     contract: 'GPULocalSpatialHeteroscedasticityProps'
   },
   GPULOSHResidualPermutationTest: {
@@ -93,8 +92,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/geospatial-expansion/losh-backlog-inference.spec.ts',
-    documentation:
-      'docs/api-reference/experimental/gpu-spatial-analysis/losh-residual-permutation.md',
+    documentation: 'docs/api/gpu-spatial-analysis/losh-residual-permutation.md',
     contract: 'GPULOSHResidualPermutationTestProps'
   },
   GPUMultivariateLocalGeary: {
@@ -110,7 +108,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'partial',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/spatial-regression/geospatial-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/statistical-expansion.md',
+    documentation: 'docs/api/gpu-spatial-analysis/statistical-expansion.md',
     contract: 'GPUMultivariateLocalGearyProps'
   },
   GPUGeneralizedGeographicallyWeightedRegression: {
@@ -126,7 +124,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'partial',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/spatial-regression/geospatial-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/statistical-expansion.md',
+    documentation: 'docs/api/gpu-spatial-analysis/statistical-expansion.md',
     contract: 'GPUGeneralizedGeographicallyWeightedRegressionProps'
   },
   GPUMultiscaleGeographicallyWeightedRegression: {
@@ -142,7 +140,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'partial',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/spatial-regression/geospatial-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/statistical-expansion.md',
+    documentation: 'docs/api/gpu-spatial-analysis/statistical-expansion.md',
     contract: 'GPUMultiscaleGeographicallyWeightedRegressionProps'
   },
   GPUSpatialPanelRegression: {
@@ -158,7 +156,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'partial',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/spatial-regression/geospatial-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/statistical-expansion.md',
+    documentation: 'docs/api/gpu-spatial-analysis/statistical-expansion.md',
     contract: 'GPUSpatialPanelRegressionProps'
   },
   GPUSpatialRegimeRegression: {
@@ -174,7 +172,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'partial',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/spatial-regression/geospatial-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/statistical-expansion.md',
+    documentation: 'docs/api/gpu-spatial-analysis/statistical-expansion.md',
     contract: 'GPUSpatialRegimeRegressionProps'
   },
   GPUConcaveHull: {
@@ -189,7 +187,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['converged'],
     evidence: 'partial',
     tests: 'modules/analysis/test/geospatial-expansion/raster-terrain-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-raster/expansion.md',
+    documentation: 'docs/api/gpu-raster/expansion.md',
     contract: 'GPUConcaveHullProps'
   },
   GPUGroupConcaveHull: {
@@ -204,7 +202,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['converged'],
     evidence: 'partial',
     tests: 'modules/analysis/test/geospatial-expansion/raster-terrain-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-raster/expansion.md',
+    documentation: 'docs/api/gpu-raster/expansion.md',
     contract: 'GPUGroupConcaveHullProps'
   },
   GPUConstrainedDelaunayTriangulation: {
@@ -219,7 +217,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['converged'],
     evidence: 'partial',
     tests: 'modules/analysis/test/geospatial-expansion/raster-terrain-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-raster/expansion.md',
+    documentation: 'docs/api/gpu-raster/expansion.md',
     contract: 'GPUConstrainedDelaunayTriangulationProps'
   },
   GPUH3CellIdentities: {
@@ -234,7 +232,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: [],
     evidence: 'partial',
     tests: 'modules/analysis/test/geospatial-expansion/network-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-network/expansion.md',
+    documentation: 'docs/api/gpu-network/expansion.md',
     contract: 'GPUH3CellIdentitiesProps'
   },
   GPUBoundedFacilityAllocation: {
@@ -249,7 +247,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/geospatial-expansion/network-expansion.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-network/expansion.md',
+    documentation: 'docs/api/gpu-network/expansion.md',
     contract: 'GPUBoundedFacilityAllocationProps'
   },
   addZonalDistributionRecipe: {
@@ -273,7 +271,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/expansion-recipes.md',
+    documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPUZonalDistributionRecipeProps'
   },
   addRasterZonalDistributionRecipe: {
@@ -297,7 +295,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/expansion-recipes.md',
+    documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPURasterZonalDistributionRecipeProps'
   },
   addInterpolationDiagnosticsRecipe: {
@@ -321,7 +319,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/expansion-recipes.md',
+    documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPUInterpolationDiagnosticsRecipeProps'
   },
   addExposureByZoneRecipe: {
@@ -345,7 +343,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/expansion-recipes.md',
+    documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPUExposureByZoneRecipeProps'
   },
   addRegionalRasterChangeRecipe: {
@@ -369,7 +367,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/expansion-recipes.md',
+    documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPURegionalRasterChangeRecipeProps'
   },
   addDrainageNetworkRecipe: {
@@ -393,7 +391,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/expansion-recipes.md',
+    documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPUDrainageNetworkRecipeProps'
   },
   addLocalVariabilityRecipe: {
@@ -417,7 +415,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/expansion-recipes.md',
+    documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPULocalVariabilityRecipeProps'
   },
   addCellFlowTopologyRecipe: {
@@ -441,7 +439,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-network/expansion.md',
+    documentation: 'docs/api/gpu-network/expansion.md',
     contract: 'GPUCellFlowTopologyRecipeProps'
   },
   addSurfacePreparationRecipe: {
@@ -465,7 +463,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['invalidCount', 'overflow'],
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-spatial-analysis/expansion-recipes.md',
+    documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
     contract: 'GPUSurfacePreparationRecipeProps'
   },
   GPULonLatPolygonPreparation: {
@@ -510,7 +508,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPUTerrainPeakProminenceOutput',
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-terrain/terrain-features/terrain-peak-prominence.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-terrain/operators.md'
+    documentation: 'docs/api/gpu-terrain/operators.md'
   },
   GPUParameterBuffer: {
     inputs: [],

@@ -85,6 +85,6 @@ Antimeridian wrapping is left to the consumer, which must wrap `center longitude
 
 ## Related pages
 
-- [GPU Spatial Analysis](/docs/api-reference/experimental/gpu-spatial-analysis)
+- [GPU Spatial Analysis](/docs/api/gpu-spatial-analysis)
 - [luma.gl GPU Project](https://luma.gl/docs/api-reference/experimental/gpu-project)
 - [luma.gl geospatial kernels](https://luma.gl/docs/api-reference/experimental/geospatial)

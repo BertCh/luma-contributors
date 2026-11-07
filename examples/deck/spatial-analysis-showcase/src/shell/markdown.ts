@@ -146,7 +146,7 @@ md.renderer.rules['link_open'] = (tokens, index, options, env, self) => {
 
 const DOCS_SITE = 'https://luma.gl/docs/api-reference/experimental';
 
-/** Route of a bundled doc for a path such as `/docs/api-reference/experimental/gpu-network`. */
+/** Route of a bundled doc for a path such as `/docs/api/gpu-network`. */
 function resolveKnownDoc(path: string): string | null {
   const clean = path.replace(/\.md$/, '');
   const tail = clean.split('/').slice(-2).join('/').toLowerCase();

@@ -13,7 +13,7 @@ type CoverageFamily = {
   documentation: string;
 };
 
-const DOCUMENTATION_ROOT = 'docs/api-reference/experimental/gpu-spatial-analysis';
+const DOCUMENTATION_ROOT = 'docs/api/gpu-spatial-analysis';
 const TEST_ROOT = 'modules/analysis/test/gpu-spatial-analysis';
 
 /** Bounded implementations, with numerical evidence kept distinct from full backlog completion. */
@@ -41,7 +41,7 @@ const COVERAGE_FAMILIES: readonly CoverageFamily[] = [
       }
     },
     tests: `${TEST_ROOT}/trajectory-estimation/gpu-trajectory-estimation.spec.ts`,
-    documentation: 'docs/api-reference/experimental/gpu-network/network-movement-coverage.md'
+    documentation: 'docs/api/gpu-network/network-movement-coverage.md'
   },
   {
     capability: {
@@ -82,7 +82,7 @@ const COVERAGE_FAMILIES: readonly CoverageFamily[] = [
       }
     },
     tests: `${TEST_ROOT}/geometry-refinement/geometry-refinement.spec.ts`,
-    documentation: `docs/api-reference/experimental/gpu-geometry-refinement.md`
+    documentation: `docs/api/gpu-geometry-refinement.md`
   },
   {
     capability: {

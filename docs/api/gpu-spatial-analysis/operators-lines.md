@@ -602,7 +602,7 @@ graph.add(new GPULineSplit({
 graph.add(new GPULineMerge({positions, lineOffsets, output: {chainOffsets, positions: merged, status: {count}}}));
 ```
 
-`GPUNetworkNoding` in [GPU Network](/docs/api-reference/experimental/gpu-network) builds a routable
+`GPUNetworkNoding` in [GPU Network](/docs/api/gpu-network) builds a routable
 network from the pieces.
 
 #### How it computes

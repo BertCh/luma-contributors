@@ -30,8 +30,7 @@ export const NESTED_VALIDATION_OPERATOR_OVERRIDE = {
     contract: 'GPUNestedInterpolationValidationProps',
     tests:
       'modules/analysis/test/gpu-spatial-analysis/spatial-regression/spatial-validation-advanced.spec.ts',
-    documentation:
-      'docs/api-reference/experimental/gpu-spatial-analysis/spatial-validation-advanced.md',
+    documentation: 'docs/api/gpu-spatial-analysis/spatial-validation-advanced.md',
     evidence: 'partial' as const
   }
 };

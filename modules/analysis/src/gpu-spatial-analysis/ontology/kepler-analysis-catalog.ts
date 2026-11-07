@@ -8,7 +8,7 @@ import type {
 } from './spatial-analysis-ontology';
 
 const TEST_ROOT = 'modules/analysis/test/gpu-spatial-analysis';
-const DOCUMENTATION_ROOT = 'docs/api-reference/experimental/gpu-spatial-analysis';
+const DOCUMENTATION_ROOT = 'docs/api/gpu-spatial-analysis';
 
 /** Discovery keeps bounded numerical contracts separate from upstream API parity. */
 export const KEPLER_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] = [

@@ -46,7 +46,7 @@ compatible; otherwise construction throws.
 
 This is the one 2SFCA/3SFCA kernel. Over a network cost matrix, turn the matrix into weights with
 `GPUNetworkCostWeights`, or use the `catchment` option of
-[`GPUNetworkAccessibility`](/docs/api-reference/experimental/gpu-network), which composes the two.
+[`GPUNetworkAccessibility`](/docs/api/gpu-network), which composes the two.
 
 #### How it computes
 

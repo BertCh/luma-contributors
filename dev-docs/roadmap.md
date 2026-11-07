@@ -173,7 +173,7 @@ Raster base classes, exact percentile, wide counters, 4K+ partitioning and FFT c
 
 | ID | Item | Current limit | Pri | Source |
 | --- | --- | --- | --- | --- |
-| EC03 | Sparse resistance connectivity | **Lost in the split.** `addResistanceConnectivityRecipe` solves at most 256 vertices and 65,536 edges (`landscape-ecology/resistance-connectivity.ts:34,37`; iterations at most 4,096). The branch had `addSparseResistanceConnectivityRecipe`, `addSparseResistanceComponents`, `addSerialSparseResistanceComponents` and `GPURasterResistanceProps` on the non-public `GPUJacobiPCG`; none of them exist here. The comment at `:33` still says "use the general sparse solver for larger systems". User docs (`docs/api-reference/experimental/gpu-spatial-analysis/landscape-ecology.md`, `urban-ecology-lenses.md`) still describe the sparse path. Steps: (1) fix the comment and docs now; (2) restore on public APIs (own CG or Jacobi-PCG in `landscape-ecology/`) or ask luma.gl to export `GPUJacobiPCG`; (3) re-run the Circuitscape golden comparisons | H | `archive/geospatial-coverage-parallel-implementation.md` (EC03) |
+| EC03 | Sparse resistance connectivity | **Lost in the split.** `addResistanceConnectivityRecipe` solves at most 256 vertices and 65,536 edges (`landscape-ecology/resistance-connectivity.ts:34,37`; iterations at most 4,096). The branch had `addSparseResistanceConnectivityRecipe`, `addSparseResistanceComponents`, `addSerialSparseResistanceComponents` and `GPURasterResistanceProps` on the non-public `GPUJacobiPCG`; none of them exist here. The comment at `:33` still says "use the general sparse solver for larger systems". User docs (`docs/api/gpu-spatial-analysis/landscape-ecology.md`, `urban-ecology-lenses.md`) still describe the sparse path. Steps: (1) fix the comment and docs now; (2) restore on public APIs (own CG or Jacobi-PCG in `landscape-ecology/`) or ask luma.gl to export `GPUJacobiPCG`; (3) re-run the Circuitscape golden comparisons | H | `archive/geospatial-coverage-parallel-implementation.md` (EC03) |
 | GE01 / GE08 / UR01-UR05 | Capacity limits: nesting above 64; straight skeleton above 1,024 vertices; urban recipe capacities | Bounded by contract | L | parallel record |
 | EC02 | High patch-count behaviour is unmeasured | Not measured | L | parallel record (EC02) |
 | EC04 | Other segregation statistics and nulls | Not implemented | L | parallel record (EC04) |
@@ -240,7 +240,7 @@ The archived documents say the following. These statements are out of date or wr
 | SCC and centrality notes in the follow-up document | SCC is capped at 1,024 vertices here; centrality still unrolls rounds (NW-CENT) |
 | KG03 exact natural breaks limited to 1,024 rows | Recompute mode reaches 8,192 rows (`gpu-class-breaks.ts:127-129`); materialized storage is 1,024 |
 | Computation-visualization roadmap: GPU selection backend is an interface only | `GPUCrossfilterSelectionBackend` exists in lenses |
-| Roadmap and matrix paths `modules/graph/src/...`, `docs/api-reference/experimental/*` | Dead. Code is in `modules/analysis/src/<directory>`; entry points are `@luma-contributors/analysis/<directory>` |
+| Roadmap and matrix paths `modules/graph/src/...`, `docs/api/*` | Dead. Code is in `modules/analysis/src/<directory>`; entry points are `@luma-contributors/analysis/<directory>` |
 
 ## 5. Out of scope: belongs in luma.gl
 

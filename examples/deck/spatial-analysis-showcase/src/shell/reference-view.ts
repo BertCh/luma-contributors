@@ -32,9 +32,7 @@ export async function renderReference(root: HTMLElement, entry: string | null): 
   root.replaceChildren(h('div', {class: 'page-loading'}, 'Loading reference…'));
   const [index] = await Promise.all([loadReferenceIndex(), loadReferenceLensTwins()]);
   // Reuse reference-index's loaded page markdown; no second raw-doc glob.
-  setLensCatalogPages(
-    index.docs.map(doc => ({path: `api-reference/experimental/${doc.path}`, text: doc.markdown}))
-  );
+  setLensCatalogPages(index.docs.map(doc => ({path: `api/${doc.path}`, text: doc.markdown})));
   const anchor = readReferenceAnchor();
   if (entry && anchor) {
     const doc = index.docs.find(candidate => candidate.id === entry);

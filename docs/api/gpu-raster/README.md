@@ -45,7 +45,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 See [Running contributors](../gpu-spatial-analysis/concepts.md#running-contributors) for the compile, encode
 and submit pattern every analysis entry shares.
 
-The [operations reference](/docs/api-reference/experimental/gpu-raster/operations) indexes the pages.
+The [operations reference](/docs/api/gpu-raster/operations) indexes the pages.
 
 ## Catalog
 

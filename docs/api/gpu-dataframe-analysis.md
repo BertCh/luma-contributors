@@ -1436,7 +1436,7 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300 /* UTC-5 */, 0 /* Mon
 
 - [GPU Dataframe](https://luma.gl/docs/api-reference/experimental/gpu-dataframe)
 - [Indexes and joins](https://luma.gl/docs/api-reference/experimental/gpu-dataframe-indexes-joins)
-- [GPU Spatial Analysis contributors](/docs/api-reference/experimental/gpu-spatial-analysis)
+- [GPU Spatial Analysis contributors](/docs/api/gpu-spatial-analysis)
 
 ## `GPUCrossVariogram`
 

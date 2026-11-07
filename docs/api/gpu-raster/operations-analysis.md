@@ -26,16 +26,16 @@ recompiling.
 - `GPUIsolines` and `GPUIsobands` extract several levels at once, order segments
   deterministically, and can stitch polylines or filled bands. Use `GPURasterContours` for a single
   level of raw marching-squares segments, and `GPUTerrainContours` (see
-  [GPU Terrain](/docs/api-reference/experimental/gpu-terrain)) for elevation levels with one overflow flag.
+  [GPU Terrain](/docs/api/gpu-terrain)) for elevation levels with one overflow flag.
 - `GPURasterStretch` computes linear, percentile, and equalization stretches together with a colormap
   lookup and statistics row, using integer atomics only. Use `GPURasterContrast` for a
   calibrated, nodata-aware contrast or gamma that keeps the scalar domain, and `GPURasterHistogram`
   when you only need the histogram.
 - `GPURasterZonalStatistics` reduces a raster band over a pre-rasterized grid of zone IDs. Use
-  `GPUZonalStatistics` from [GPU Spatial Analysis](/docs/api-reference/experimental/gpu-spatial-analysis) when the input
+  `GPUZonalStatistics` from [GPU Spatial Analysis](/docs/api/gpu-spatial-analysis) when the input
   is points and polygon features instead of a raster.
 - `GPUDistanceField` and `GPUCostDistance` are the Euclidean and friction-weighted surfaces. Use
-  [GPU Network](/docs/api-reference/experimental/gpu-network) reachability when travel follows a
+  [GPU Network](/docs/api/gpu-network) reachability when travel follows a
   road network rather than a grid.
 
 ## Quick start
@@ -1405,6 +1405,6 @@ An exact min/max mip chain (Tevs et al. 2008 maximum mipmaps) for conservative r
 
 ## Related pages
 
-- [GPURaster operations reference](/docs/api-reference/experimental/gpu-raster/operations)
-- [GPU Terrain](/docs/api-reference/experimental/gpu-terrain)
+- [GPURaster operations reference](/docs/api/gpu-raster/operations)
+- [GPU Terrain](/docs/api/gpu-terrain)
 - [GPU Core](https://luma.gl/docs/api-reference/experimental/gpu-core)

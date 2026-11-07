@@ -12,7 +12,7 @@ import {describe, expect, it} from 'vitest';
 // and each entry barrel is the union of its subdirectory indexes.
 
 const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../src');
-const DOCS_ROOT = resolve(SOURCE_ROOT, '../../../docs/api-reference/experimental');
+const DOCS_ROOT = resolve(SOURCE_ROOT, '../../../docs/api');
 
 /** Shared layers that every analysis entry may import. They import no analysis entry. */
 const SHARED_LAYERS = ['analysis-core'] as const;

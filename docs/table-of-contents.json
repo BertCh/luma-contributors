@@ -3,139 +3,137 @@
     "type": "category",
     "label": "@luma-contributors/analysis",
     "items": [
-      "api-reference/experimental/README",
-      "api-reference/experimental/analysis-catalog",
-      "api-reference/experimental/gpu-spatial-analysis-cross-reference",
+      "api/README",
+      "api/analysis-catalog",
+      "api/gpu-spatial-analysis-cross-reference",
       {
         "type": "category",
         "label": "Spatial analysis",
         "items": [
-          "api-reference/experimental/gpu-spatial-analysis/README",
-          "api-reference/experimental/gpu-spatial-analysis/concepts",
-          "api-reference/experimental/gpu-spatial-analysis/spatial-frames",
-          "api-reference/experimental/gpu-spatial-analysis/operators",
+          "api/gpu-spatial-analysis/README",
+          "api/gpu-spatial-analysis/concepts",
+          "api/gpu-spatial-analysis/spatial-frames",
+          "api/gpu-spatial-analysis/operators",
           {
             "type": "category",
             "label": "Operator Families",
             "items": [
-              "api-reference/experimental/gpu-spatial-analysis/operators-weights",
-              "api-reference/experimental/gpu-spatial-analysis/operators-statistics",
-              "api-reference/experimental/gpu-spatial-analysis/operators-dynamics",
-              "api-reference/experimental/gpu-spatial-analysis/operators-accessibility",
-              "api-reference/experimental/gpu-spatial-analysis/operators-joins",
-              "api-reference/experimental/gpu-spatial-analysis/operators-validity",
-              "api-reference/experimental/gpu-spatial-analysis/operators-density",
-              "api-reference/experimental/gpu-spatial-analysis/operators-cells",
-              "api-reference/experimental/gpu-spatial-analysis/operators-lines",
-              "api-reference/experimental/gpu-spatial-analysis/operators-geometry",
-              "api-reference/experimental/gpu-spatial-analysis/operators-regression",
-              "api-reference/experimental/gpu-spatial-analysis/recipes"
+              "api/gpu-spatial-analysis/operators-weights",
+              "api/gpu-spatial-analysis/operators-statistics",
+              "api/gpu-spatial-analysis/operators-dynamics",
+              "api/gpu-spatial-analysis/operators-accessibility",
+              "api/gpu-spatial-analysis/operators-joins",
+              "api/gpu-spatial-analysis/operators-validity",
+              "api/gpu-spatial-analysis/operators-density",
+              "api/gpu-spatial-analysis/operators-cells",
+              "api/gpu-spatial-analysis/operators-lines",
+              "api/gpu-spatial-analysis/operators-geometry",
+              "api/gpu-spatial-analysis/operators-regression",
+              "api/gpu-spatial-analysis/recipes"
             ]
           },
-          "api-reference/experimental/gpu-spatial-analysis/statistical-expansion",
-          "api-reference/experimental/gpu-spatial-analysis/quantile-lisa",
-          "api-reference/experimental/gpu-spatial-analysis/gpu-dorling-cartogram",
-          "api-reference/experimental/gpu-spatial-analysis/rate-mapping",
-          "api-reference/experimental/gpu-spatial-analysis/adaptive-generalized-gwr",
-          "api-reference/experimental/gpu-spatial-analysis/panel-fixed-effects",
-          "api-reference/experimental/gpu-spatial-analysis/losh-residual-permutation",
-          "api-reference/experimental/gpu-spatial-analysis/expansion-recipes",
-          "api-reference/experimental/gpu-spatial-analysis/dasymetric-redistribution",
-          "api-reference/experimental/gpu-spatial-analysis/expansion-lenses",
-          "api-reference/experimental/gpu-spatial-analysis/coverage-expansion",
-          "api-reference/experimental/gpu-spatial-analysis/global-coordinates",
-          "api-reference/experimental/gpu-spatial-analysis/interpolation-expansion",
-          "api-reference/experimental/gpu-spatial-analysis/coverage-statistics",
-          "api-reference/experimental/gpu-spatial-analysis/spatial-validation-advanced",
-          "api-reference/experimental/gpu-spatial-analysis/point-process",
-          "api-reference/experimental/gpu-spatial-analysis/urban-morphology",
-          "api-reference/experimental/gpu-spatial-analysis/landscape-ecology",
-          "api-reference/experimental/gpu-spatial-analysis/urban-ecology-lenses",
-          "api-reference/experimental/gpu-spatial-analysis/geometry-refinement-lenses",
-          "api-reference/experimental/gpu-spatial-analysis/interpolation-lenses",
-          "api-reference/experimental/gpu-spatial-analysis/movement-coverage",
-          "api-reference/experimental/gpu-geometry-refinement"
+          "api/gpu-spatial-analysis/statistical-expansion",
+          "api/gpu-spatial-analysis/quantile-lisa",
+          "api/gpu-spatial-analysis/gpu-dorling-cartogram",
+          "api/gpu-spatial-analysis/rate-mapping",
+          "api/gpu-spatial-analysis/adaptive-generalized-gwr",
+          "api/gpu-spatial-analysis/panel-fixed-effects",
+          "api/gpu-spatial-analysis/losh-residual-permutation",
+          "api/gpu-spatial-analysis/expansion-recipes",
+          "api/gpu-spatial-analysis/dasymetric-redistribution",
+          "api/gpu-spatial-analysis/expansion-lenses",
+          "api/gpu-spatial-analysis/coverage-expansion",
+          "api/gpu-spatial-analysis/global-coordinates",
+          "api/gpu-spatial-analysis/interpolation-expansion",
+          "api/gpu-spatial-analysis/coverage-statistics",
+          "api/gpu-spatial-analysis/spatial-validation-advanced",
+          "api/gpu-spatial-analysis/point-process",
+          "api/gpu-spatial-analysis/urban-morphology",
+          "api/gpu-spatial-analysis/landscape-ecology",
+          "api/gpu-spatial-analysis/urban-ecology-lenses",
+          "api/gpu-spatial-analysis/geometry-refinement-lenses",
+          "api/gpu-spatial-analysis/interpolation-lenses",
+          "api/gpu-spatial-analysis/movement-coverage",
+          "api/gpu-geometry-refinement"
         ]
       },
       {
         "type": "category",
         "label": "Network",
         "items": [
-          "api-reference/experimental/gpu-network/README",
-          "api-reference/experimental/gpu-network/concepts",
-          "api-reference/experimental/gpu-network/operators",
-          "api-reference/experimental/gpu-network/alternative-routes",
-          "api-reference/experimental/gpu-network/expansion",
-          "api-reference/experimental/gpu-network/network-movement-coverage",
-          "api-reference/experimental/gpu-network/network-movement-benchmarks",
-          "api-reference/experimental/gpu-network/point-process"
+          "api/gpu-network/README",
+          "api/gpu-network/concepts",
+          "api/gpu-network/operators",
+          "api/gpu-network/alternative-routes",
+          "api/gpu-network/expansion",
+          "api/gpu-network/network-movement-coverage",
+          "api/gpu-network/network-movement-benchmarks",
+          "api/gpu-network/point-process"
         ]
       },
       {
         "type": "category",
         "label": "Terrain",
         "items": [
-          "api-reference/experimental/gpu-terrain/README",
-          "api-reference/experimental/gpu-terrain/concepts",
-          "api-reference/experimental/gpu-terrain/operators",
-          "api-reference/experimental/gpu-terrain/expansion-lenses",
-          "api-reference/experimental/gpu-terrain/terrain-processing"
+          "api/gpu-terrain/README",
+          "api/gpu-terrain/concepts",
+          "api/gpu-terrain/operators",
+          "api/gpu-terrain/expansion-lenses",
+          "api/gpu-terrain/terrain-processing"
         ]
       },
       {
         "type": "category",
         "label": "Raster analysis",
         "items": [
-          "api-reference/experimental/gpu-raster/README",
-          "api-reference/experimental/gpu-raster/operations",
+          "api/gpu-raster/README",
+          "api/gpu-raster/operations",
           {
             "type": "category",
             "label": "Operation Families",
             "items": [
-              "api-reference/experimental/gpu-raster/operations-analysis",
-              "api-reference/experimental/gpu-raster/operations-statistics",
-              "api-reference/experimental/gpu-raster/operations-regions-contours"
+              "api/gpu-raster/operations-analysis"
             ]
           },
-          "api-reference/experimental/gpu-raster/expansion",
-          "api-reference/experimental/gpu-raster/fill-nodata",
-          "api-reference/experimental/gpu-raster/tile-reprojection",
-          "api-reference/experimental/gpu-raster/fractional-zonal-distribution",
-          "api-reference/experimental/gpu-raster/fractional-categorical-statistics",
-          "api-reference/experimental/gpu-raster/focal-pairs",
-          "api-reference/experimental/gpu-raster/spectral-indices",
-          "api-reference/experimental/gpu-raster/expansion-lenses",
-          "api-reference/experimental/gpu-raster/remote-sensing"
+          "api/gpu-raster/expansion",
+          "api/gpu-raster/fill-nodata",
+          "api/gpu-raster/tile-reprojection",
+          "api/gpu-raster/fractional-zonal-distribution",
+          "api/gpu-raster/fractional-categorical-statistics",
+          "api/gpu-raster/focal-pairs",
+          "api/gpu-raster/spectral-indices",
+          "api/gpu-raster/expansion-lenses",
+          "api/gpu-raster/remote-sensing"
         ]
       },
       {
         "type": "category",
         "label": "Dataframe analysis",
         "items": [
-          "api-reference/experimental/gpu-dataframe-analysis",
-          "api-reference/experimental/variable-standardization"
+          "api/gpu-dataframe-analysis",
+          "api/variable-standardization"
         ]
       },
       {
         "type": "category",
         "label": "Geospatial",
         "items": [
-          "api-reference/experimental/geospatial"
+          "api/geospatial"
         ]
       },
       {
         "type": "category",
         "label": "Point cloud analysis",
         "items": [
-          "api-reference/experimental/pointcloud-analysis"
+          "api/pointcloud-analysis"
         ]
       },
       {
         "type": "category",
         "label": "Computation records and views",
         "items": [
-          "api-reference/experimental/computation-record",
-          "api-reference/experimental/computation-views"
+          "api/computation-record",
+          "api/computation-views"
         ]
       }
     ]

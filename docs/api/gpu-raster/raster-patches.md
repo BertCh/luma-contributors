@@ -86,5 +86,5 @@ Removes patches smaller than a pixel threshold from a patch label raster.
 
 ## Related pages
 
-- [GPURaster analysis contributors](/docs/api-reference/experimental/gpu-raster/operations-analysis)
+- [GPURaster analysis contributors](/docs/api/gpu-raster/operations-analysis)
 - [luma.gl GPU Raster](https://luma.gl/docs/api-reference/experimental/gpu-raster)

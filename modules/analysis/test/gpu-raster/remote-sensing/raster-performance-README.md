@@ -73,4 +73,4 @@ These bounded, structured workloads demonstrate measured phases and resident upd
 remaining raster row. They do not establish worst-case scaling, all option combinations, noisy-scene
 registration accuracy, ill-conditioned unmixing throughput, full BFAST, or cross-device performance.
 Correctness against upstream fixtures and larger boundary tests remains separate evidence in the
-[remote-sensing contract](../../../../../docs/api-reference/experimental/gpu-raster/remote-sensing.md).
+[remote-sensing contract](../../../../../docs/api/gpu-raster/remote-sensing.md).

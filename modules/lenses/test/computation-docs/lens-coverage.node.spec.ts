@@ -66,10 +66,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   {
     entry: 'gpu-dataframe',
     barrel: 'modules/analysis/src/dataframe-analysis/index.ts',
-    docs: [
-      'docs/api-reference/experimental/gpu-dataframe-analysis.md',
-      'docs/api-reference/experimental/variable-standardization.md'
-    ],
+    docs: ['docs/api/gpu-dataframe-analysis.md', 'docs/api/variable-standardization.md'],
     loadPack: async () =>
       (await import('../../src/gpu-dataframe/computation-pack/index')).createDataFramePackData(),
     pending: GPU_DATAFRAME_PENDING
@@ -77,7 +74,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   {
     entry: 'gpu-spatial-analysis',
     barrel: 'modules/analysis/src/gpu-spatial-analysis/index.ts',
-    docs: ['docs/api-reference/experimental/gpu-spatial-analysis'],
+    docs: ['docs/api/gpu-spatial-analysis'],
     requireVariableKinds: true,
     // Chunked variants run the whole-CSR kernels once per chunk and are verified equal to them, so they
     // are documented (slot below the whole operator) but have no scenario, pack operator or lens of their own.
@@ -100,7 +97,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   {
     entry: 'gpu-network',
     barrel: 'modules/analysis/src/gpu-network/index.ts',
-    docs: ['docs/api-reference/experimental/gpu-network'],
+    docs: ['docs/api/gpu-network'],
     loadPack: async () =>
       (await import('../../src/gpu-network/computation-pack/network-pack-data'))
         .GPU_NETWORK_PACK_DATA,
@@ -109,7 +106,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   {
     entry: 'gpu-raster',
     barrel: 'modules/analysis/src/raster-analysis/index.ts',
-    docs: ['docs/api-reference/experimental/gpu-raster'],
+    docs: ['docs/api/gpu-raster'],
     loadPack: async () =>
       (await import('../../src/gpu-raster/computation-pack/index')).getRasterViewPack(),
     pending: GPU_RASTER_PENDING
@@ -117,7 +114,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   {
     entry: 'gpu-terrain',
     barrel: 'modules/analysis/src/gpu-terrain/index.ts',
-    docs: ['docs/api-reference/experimental/gpu-terrain'],
+    docs: ['docs/api/gpu-terrain'],
     loadPack: async () =>
       (await import('../../src/gpu-terrain/computation-pack/index')).getTerrainViewPack(),
     pending: GPU_TERRAIN_PENDING
@@ -450,7 +447,7 @@ describe('lens coverage contract', () => {
 
   for (const entry of SLOT_ENTRIES) {
     it(`${entry} has exactly one slot for every contributor and recipe`, () => {
-      const directory = join(DOCS_ROOT, 'api-reference/experimental', entry);
+      const directory = join(DOCS_ROOT, 'api', entry);
       const elements = listEntryElements(`modules/analysis/src/${entry}/index.ts`);
       expect(elements.contributors.length).toBeGreaterThan(0);
       expect(

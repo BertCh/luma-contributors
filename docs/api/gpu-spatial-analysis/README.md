@@ -9,7 +9,7 @@ releases without a deprecation period.
 
 The `@luma-contributors/analysis/gpu-spatial-analysis` entry point is the analysis layer above luma.gl's
 GPU spatial primitives. It does not reimplement them. It composes the
-[geospatial kernels](/docs/api-reference/experimental/geospatial) (projection, distances,
+[geospatial kernels](/docs/api/geospatial) (projection, distances,
 point-in-polygon, `GPUGridIndex`, `GPUPointSpatialQuery`) and the GPU Core primitives (sort, scan,
 compaction, hash and grid indexes, `GPUBVH`, segmented reductions) into higher-level workflows:
 spatial weights and their algebra, statistics computed on those weights, predicate and nearest
@@ -72,7 +72,7 @@ contributors by task; the [operators index](./operators.md) lists them all.
 | [Cross-reference](#cross-reference) | turf, PostGIS, GeoPandas, PySAL, QGIS and ArcGIS tools mapped to contributors |
 
 Contributors for networks, rasters and dataframe columns live in their own entries:
-[GPU Network](/docs/api-reference/experimental/gpu-network),
+[GPU Network](/docs/api/gpu-network),
 [GPU Raster](https://luma.gl/docs/api-reference/experimental/gpu-raster/operations-regions-contours) and
 [GPU Dataframe](https://luma.gl/docs/api-reference/experimental/gpu-dataframe-analysis).
 
@@ -84,7 +84,7 @@ One figure per contributor, each drawn from a recorded GPU run on real data; cli
 
 ## Cross-reference
 
-See the [task-organized cross-reference](/docs/api-reference/experimental/gpu-spatial-analysis-cross-reference).
+See the [task-organized cross-reference](/docs/api/gpu-spatial-analysis-cross-reference).
 
 Contributors live in `@luma-contributors/analysis/gpu-spatial-analysis` unless the entry says
 `(network)`, `(raster)` or `(dataframe)`, meaning `gpu-network`, `gpu-raster` and `gpu-dataframe`.
@@ -311,9 +311,9 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 
 ## See also
 
-- [Geospatial kernels](/docs/api-reference/experimental/geospatial) for the projection, distance, point-in-polygon, grid-index and point-query primitives these contributors compose
+- [Geospatial kernels](/docs/api/geospatial) for the projection, distance, point-in-polygon, grid-index and point-query primitives these contributors compose
 - [GPUCommandGraph](https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-command-graph)
-- [GPU Network](/docs/api-reference/experimental/gpu-network) and [GPU Terrain](/docs/api-reference/experimental/gpu-terrain) for the network and elevation analysis contributors
+- [GPU Network](/docs/api/gpu-network) and [GPU Terrain](/docs/api/gpu-terrain) for the network and elevation analysis contributors
 - [GPU Dataframe analysis contributors](https://luma.gl/docs/api-reference/experimental/gpu-dataframe-analysis) for the column statistics, joins, and time filters the spatial contributors consume
 - [GPUGridIndex](https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-grid-index)
 

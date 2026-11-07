@@ -7,19 +7,19 @@ import {parseFrontMatter, renderMarkdown, setLinkIndex, slugify} from '../shell/
 /** Docs bundled into the Reference section, loaded on first use. */
 const DOC_LOADERS = import.meta.glob(
   [
-    '../../../../../docs/api-reference/experimental/gpu-spatial-analysis/*.md',
-    '../../../../../docs/api-reference/experimental/gpu-spatial-analysis-cross-reference.md',
-    '../../../../../docs/api-reference/experimental/gpu-network/*.md',
-    '../../../../../docs/api-reference/experimental/gpu-terrain/*.md',
-    '../../../../../docs/api-reference/experimental/gpu-dataframe-analysis.md',
-    '../../../../../docs/api-reference/experimental/gpu-raster/operations-analysis.md',
-    '../../../../../docs/api-reference/experimental/gpu-graph.md',
-    '../../../../../docs/api-reference/experimental/gpu-graph-topology.md',
-    '../../../../../docs/api-reference/experimental/gpu-graph-metrics.md',
-    '../../../../../docs/api-reference/experimental/gpu-graph-connectivity.md',
-    '../../../../../docs/api-reference/experimental/gpu-graph-traversal.md',
-    '../../../../../docs/api-reference/experimental/gpu-graph-layouts.md',
-    '../../../../../docs/api-reference/experimental/gpu-graph-operations.md'
+    '../../../../../docs/api/gpu-spatial-analysis/*.md',
+    '../../../../../docs/api/gpu-spatial-analysis-cross-reference.md',
+    '../../../../../docs/api/gpu-network/*.md',
+    '../../../../../docs/api/gpu-terrain/*.md',
+    '../../../../../docs/api/gpu-dataframe-analysis.md',
+    '../../../../../docs/api/gpu-raster/operations-analysis.md',
+    '../../../../../docs/api/gpu-graph.md',
+    '../../../../../docs/api/gpu-graph-topology.md',
+    '../../../../../docs/api/gpu-graph-metrics.md',
+    '../../../../../docs/api/gpu-graph-connectivity.md',
+    '../../../../../docs/api/gpu-graph-traversal.md',
+    '../../../../../docs/api/gpu-graph-layouts.md',
+    '../../../../../docs/api/gpu-graph-operations.md'
   ],
   {query: '?raw', import: 'default'}
 ) as Record<string, () => Promise<string>>;
@@ -193,7 +193,7 @@ const DOC_DEFINITIONS = [
 /** One heading-delimited part of a doc. */
 export type ReferenceSection = {
   docId: string;
-  /** Page path relative to docs/api-reference/experimental. */
+  /** Page path relative to docs/api. */
   docPath: string;
   /** Heading text without the leading `#`s. */
   heading: string;
@@ -211,7 +211,7 @@ export type ReferenceSection = {
 /** One bundled doc. */
 export type ReferenceDoc = {
   id: string;
-  /** Page path relative to docs/api-reference/experimental. */
+  /** Page path relative to docs/api. */
   path: string;
   title: string;
   entryPoint: string;

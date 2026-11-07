@@ -48,7 +48,7 @@ export type GPUSpatialPanelRegressionProps = {
  * and pooled AK diagnostics are then NaN; covariance uses n - entities - predictors - 1 degrees.
  * Inference is homoskedastic, without entity clustering or serial-correlation correction.
  * Pooled mode is directly comparable to spreg.GM_Lag on block-diagonal weights.
- * See docs/api-reference/experimental/gpu-spatial-analysis/panel-fixed-effects.md.
+ * See docs/api/gpu-spatial-analysis/panel-fixed-effects.md.
  */
 export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
   readonly id: string;

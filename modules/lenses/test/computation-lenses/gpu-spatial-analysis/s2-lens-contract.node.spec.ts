@@ -90,7 +90,7 @@ type S2Family = keyof typeof S2_ELEMENTS;
 
 const SOURCE_ROOT = join(REPOSITORY_ROOT, 'modules/analysis/src');
 const SPATIAL_ROOT = join(SOURCE_ROOT, 'gpu-spatial-analysis');
-const PAGES_ROOT = join(DOCS_ROOT, 'api-reference/experimental/gpu-spatial-analysis');
+const PAGES_ROOT = join(DOCS_ROOT, 'api/gpu-spatial-analysis');
 
 function listTypeScriptFiles(directory: string): string[] {
   return readdirSync(directory).flatMap(name => {

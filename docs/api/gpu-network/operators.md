@@ -705,16 +705,16 @@ omitting it accepts that truncation unchecked.
   space. The default `lastBand` is `breakCount - 1`, so unreached space gets no triangles.
 - **Cell path.** Nodes with cost at most `cellCostLimit` are keyed to H3 or Quadbin cells
   (`GPUCellAggregation`, or `GPUPointToCell` then `GPUCellAggregation`) and outlined with
-  [`GPUCellSetOutline`](/docs/api-reference/experimental/gpu-spatial-analysis/operators-cells#gpucellsetoutline).
+  [`GPUCellSetOutline`](/docs/api/gpu-spatial-analysis/operators-cells#gpucellsetoutline).
   Positions must be longitude and latitude. `cellOutline.rings` (same options as
   `GPUCellSetOutline` `rings`: `vertexTolerance`, `normalizeWinding`, `output`) chains the outline into
   closed isochrone rings with shells, holes, shell assignment and an optional polygon layout
-  ([`GPUSegmentRingAssembly`](/docs/api-reference/experimental/gpu-spatial-analysis/operators-cells#gpusegmentringassembly)).
+  ([`GPUSegmentRingAssembly`](/docs/api/gpu-spatial-analysis/operators-cells#gpusegmentringassembly)).
   One run is one cost limit, so bands need one run each. The `polygons` output plugs into
   `GPUPointInPolygonJoin` for "is this demand point inside the isochrone", which
   `addDriveTimeCatchmentRecipe` wires as `isochrones.joinDemand`. The recipe is exported from this
   entry (`@luma-contributors/analysis/gpu-network`) and documented with the other recipes in
-  [spatial analysis](/docs/api-reference/experimental/gpu-spatial-analysis).
+  [spatial analysis](/docs/api/gpu-spatial-analysis).
   For the recipe's `maximumSnapDistance`, no warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](../gpu-spatial-analysis/concepts.md#precision-of-longitudelatitude-positions).
 - **Parameters.** Per-frame values are packed with
   `getGPUNetworkIsochronesParameterValues({breakCount, extent, bufferRadius, walkCostPerUnit,
@@ -733,7 +733,7 @@ omitting it accepts that truncation unchecked.
   `raster.output.status` and `cellOutline.output.status`. `raster.output.pixelFacilities` (minimum mode, at most 255
   sources; the pixel word keeps the top 24 cost bits, relative precision 2^-15) and
   `raster.output.triangleFacilities` label the raster path, and `raster.rings` writes band rings
-  ([`GPUIsobandRings`](/docs/api-reference/experimental/gpu-raster/operations-analysis#gpuisolines-and-gpuisobands)).
+  ([`GPUIsobandRings`](/docs/api/gpu-raster/operations-analysis#gpuisolines-and-gpuisobands)).
   On the cell path `cellOutline.byFacility` with `cellFacilities` gives each cell the facility of its
   cheapest node and outlines with groups, so rings never mix facilities (Quadbin is keyed through
   `GPUPointToCell`).
@@ -819,7 +819,7 @@ Split raw centrelines at their intersections, merge end points within a toleranc
 Maximum: `intersectionCapacity` is at most `getGPUNetworkNodingMaximumIntersectionCapacity(device)` (1048576 on a default device), a quarter of `getGPULineSplitMaximumPieceBound(device)`.
 
 Builds a routable network from raw linestrings. `GPULineSplit` pieces
-(see [GPU Spatial Analysis](/docs/api-reference/experimental/gpu-spatial-analysis/operators-lines#gpulinesplit-and-gpulinemerge))
+(see [GPU Spatial Analysis](/docs/api/gpu-spatial-analysis/operators-lines#gpulinesplit-and-gpulinemerge))
 are the edges. Their end points are snapped by a per-frame `tolerance` (a one-row `float32` view; integer
 grid cells `floor((x - origin) / tolerance)` counted from the minimum corner of the live end points, so UTM
 northings keep exact cells; 0 means exact), deduplicated by a stable two-pass `GPUSort`, and the node ID

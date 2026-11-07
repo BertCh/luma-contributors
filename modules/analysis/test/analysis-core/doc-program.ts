@@ -12,7 +12,7 @@ import typescript from 'typescript';
 // map `@luma.gl/*` package names to `modules/*/src`) with optional in-memory files.
 
 export const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-export const DOCS_ROOT = join(REPOSITORY_ROOT, 'docs/api-reference/experimental');
+export const DOCS_ROOT = join(REPOSITORY_ROOT, 'docs/api');
 
 /**
  * The analysis doc pages, relative to `DOCS_ROOT`. Docs describe only this library's entries;
