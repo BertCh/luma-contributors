@@ -561,7 +561,7 @@ export default defineScene<BixiBundlesOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUEdgeBundling, getGPUEdgeBundlingParameterValues} from '@luma-contributors/analysis/gpu-network';
 import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 

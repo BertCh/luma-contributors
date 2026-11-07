@@ -14,7 +14,6 @@ export const TERRAIN_HYDROLOGY_OPERATORS: RasterOperatorTable = {
     variables: {
       dem: 'elevation',
       flowFilledElevation: 'elevation',
-      flowFillRelaxation: 'elevation',
       flowDirections: 'category',
       flowCellClasses: 'category',
       flowAccumulation: 'measure',

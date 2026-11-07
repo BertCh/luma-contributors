@@ -4,7 +4,13 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, GPUMask, type CompiledGPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUMask,
+  type CompiledGPUCommandGraph,
+  type GraphDataView,
+  type GraphVectorView
+} from '@luma.gl/graph/gpu-core';
 import {
   buildKeplerStreamedPointWeights,
   getKeplerMaximumBindingElements,

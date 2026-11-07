@@ -4,8 +4,17 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {getGPUTimeWindowFilterParameterValues, GPUTimeWindowFilter, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  getGPUTimeWindowFilterParameterValues,
+  GPUTimeWindowFilter,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

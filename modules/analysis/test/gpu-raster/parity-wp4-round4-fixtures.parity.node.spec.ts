@@ -29,9 +29,13 @@ it('WP4 round4 independent references retain versions, raw-source hashes and byt
     expect(fixture.versions.numpy).toBeTruthy();
     expect(Buffer.byteLength(JSON.stringify(fixture))).toBeLessThanOrEqual(1_500_000);
     for (const source of fixture.sources)
-      expect(createHash('sha256').update(readFileSync(source.path)).digest('hex')).toBe(
-        source.sha256
-      );
+      expect(
+        createHash('sha256')
+          .update(
+            readFileSync(source.path.replace('modules/graph/test/', 'modules/analysis/test/'))
+          )
+          .digest('hex')
+      ).toBe(source.sha256);
   }
   expect(arithmeticCases.slice(0, 4).reduce((sum, scene) => sum + scene.length, 0)).toBe(512 * 512);
   expect(pyramidCases.slice(0, 2).map(scene => scene.width * scene.height)).toEqual([
@@ -42,9 +46,11 @@ it('WP4 round4 independent references retain versions, raw-source hashes and byt
 
 it('Chicago has exactly one shared-edge crossing within half an f32 ULP of a pixel centre', () => {
   for (const source of centreAmbiguities.sources) {
-    expect(createHash('sha256').update(readFileSync(source.path)).digest('hex')).toBe(
-      source.sha256
-    );
+    expect(
+      createHash('sha256')
+        .update(readFileSync(source.path.replace('modules/graph/test/', 'modules/analysis/test/')))
+        .digest('hex')
+    ).toBe(source.sha256);
   }
   expect(centreAmbiguities.cells).toHaveLength(1);
   const cell = centreAmbiguities.cells[0];

@@ -14,7 +14,7 @@
     "value": "200"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPURipleyDistanceFunctions</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{nearestDistance}{d_i}=\\min_{j\\ne i}\\term{pairDistance}{d_{ij}},\\quad \\term{g}{G(r)}=\\frac{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{r}]\\mathbf{1}[\\term{nearestDistance}{d_i}\\leq\\term{radii}{r}]}{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{r}]},\\quad \\term{f}{F(r)}=\\frac{\\term{referenceHits}{\\#\\{u:b_u\\geq r,d_u\\leq r\\}}}{\\term{referenceEligible}{\\#\\{u:b_u\\geq r\\}}},\\quad \\term{j}{J(r)}=\\frac{1-\\term{g}{G(r)}}{1-\\term{f}{F(r)}}</pre><p class=\"lens-ascii\">border: G=#events(b&gt;=r and NN&lt;=r)/#events(b&gt;=r); F=#references(b&gt;=r and NN&lt;=r)/#references(b&gt;=r); J=(1-G)/(1-F).</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{nearestDistance}{d_i}=\\min_{j\\ne i}\\term{pairDistance}{d_{ij}},\\quad \\term{g}{0.818}=\\frac{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{200}]\\mathbf{1}[\\term{nearestDistance}{d_i}\\leq\\term{radii}{200}]}{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{200}]},\\quad \\term{f}{0.0501807}=\\frac{\\term{referenceHits}{\\#\\{u:b_u\\geq r,d_u\\leq r\\}}}{\\term{referenceEligible}{\\#\\{u:b_u\\geq r\\}}},\\quad \\term{j}{0.191615}=\\frac{1-\\term{g}{0.818}}{1-\\term{f}{0.0501807}}</pre><p class=\"lens-ascii\">border: G=#events(b&gt;=r and NN&lt;=r)/#events(b&gt;=r); F=#references(b&gt;=r and NN&lt;=r)/#references(b&gt;=r); J=(1-G)/(1-F).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-g-pairs\" data-value=\"nearestDistance\">nearestDistance · intermediate · nearestDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-g-pairs\" data-value=\"pairDistance\">pairDistance · intermediate · pairDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-g-pairs\" data-value=\"borderDistance\">borderDistance · intermediate · borderDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"radii\">radii · output · radii<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"g\">g · output · g<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"f\">f · output · f<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"j\">j · output · j<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-f-reference\" data-value=\"referenceHits\">referenceHits · intermediate · referenceAccumulators</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"referenceEligible\">referenceEligible · intermediate · denominator</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPURipleyDistanceFunctions</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{nearestDistance}{d_i}=\\min_{j\\ne i}\\term{pairDistance}{d_{ij}},\\quad \\term{g}{G(r)}=\\frac{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{r}]\\mathbf{1}[\\term{nearestDistance}{d_i}\\leq\\term{radii}{r}]}{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{r}]},\\quad \\term{f}{F(r)}=\\frac{\\term{referenceHits}{\\#\\{u:b_u\\geq r,d_u\\leq r\\}}}{\\term{referenceEligible}{\\#\\{u:b_u\\geq r\\}}},\\quad \\term{j}{J(r)}=\\frac{1-\\term{g}{G(r)}}{1-\\term{f}{F(r)}}</pre><p class=\"lens-ascii\">border: G=#events(b&gt;=r and NN&lt;=r)/#events(b&gt;=r); F=#references(b&gt;=r and NN&lt;=r)/#references(b&gt;=r); J=(1-G)/(1-F).</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{nearestDistance}{d_i}=\\min_{j\\ne i}\\term{pairDistance}{d_{ij}},\\quad \\term{g}{0.818}=\\frac{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{200}]\\mathbf{1}[\\term{nearestDistance}{d_i}\\leq\\term{radii}{200}]}{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{200}]},\\quad \\term{f}{0.0501807}=\\frac{\\term{referenceHits}{\\#\\{u:b_u\\geq r,d_u\\leq r\\}}}{\\term{referenceEligible}{\\#\\{u:b_u\\geq r\\}}},\\quad \\term{j}{0.191615}=\\frac{1-\\term{g}{0.818}}{1-\\term{f}{0.0501807}}</pre><p class=\"lens-ascii\">border: G=#events(b&gt;=r and NN&lt;=r)/#events(b&gt;=r); F=#references(b&gt;=r and NN&lt;=r)/#references(b&gt;=r); J=(1-G)/(1-F).</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"nearestDistance\">nearestDistance · intermediate · unknown — wgsl nearestDistance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pairDistance\">pairDistance · intermediate · unknown — wgsl pairDistance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"borderDistance\">borderDistance · intermediate · unknown — wgsl borderDistance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"radii\">radii · output · unknown — wgsl radii not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"g\">g · output · unknown — wgsl g not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"f\">f · output · unknown — wgsl f not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"j\">j · output · unknown — wgsl j not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"referenceHits\">referenceHits · intermediate · unknown — wgsl referenceAccumulators not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"referenceEligible\">referenceEligible · intermediate · unknown — wgsl denominator not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,63 +30,63 @@
       [
         "nearestDistance",
         "intermediate",
-        "nearestDistance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "pairDistance",
         "intermediate",
-        "pairDistance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "borderDistance",
         "intermediate",
-        "borderDistance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "radii",
         "output",
-        "radii",
+        "unknown",
         "200",
         "readback"
       ],
       [
         "g",
         "output",
-        "g",
+        "unknown",
         "0.8180000185966492",
         "readback"
       ],
       [
         "f",
         "output",
-        "f",
+        "unknown",
         "0.05018065124750137",
         "readback"
       ],
       [
         "j",
         "output",
-        "j",
+        "unknown",
         "0.19161537289619446",
         "readback"
       ],
       [
         "referenceHits",
         "intermediate",
-        "referenceAccumulators",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "referenceEligible",
         "intermediate",
-        "denominator",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -123,12 +123,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:41.806Z",
-    "runId": "run-3a1dcea5",
+    "date": "2026-11-07T14:55:16.018Z",
+    "runId": "run-09aa0cab",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-3a1dcea5",
+    "runId": "run-09aa0cab",
     "rung": "formula",
     "bindings": {
       "entity": 0

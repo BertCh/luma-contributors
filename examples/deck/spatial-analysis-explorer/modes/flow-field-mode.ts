@@ -25,8 +25,30 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {getGPULineIntegralConvolutionParameterValues, getGPULineIntegralConvolutionUint32ParameterValues, getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues, getGPUStreamlinesParameterValues, getGPUStreamlinesUint32ParameterValues, GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH, GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH, GPU_STREAMLINES_PARAMETER_LENGTH, GPU_STREAMLINES_UINT32_PARAMETER_LENGTH, GPULineIntegralConvolution, GPUParticleAdvection, GPUStreamlines, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  getGPULineIntegralConvolutionParameterValues,
+  getGPULineIntegralConvolutionUint32ParameterValues,
+  getGPUParticleAdvectionParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
+  getGPUStreamlinesParameterValues,
+  getGPUStreamlinesUint32ParameterValues,
+  GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
+  GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH,
+  GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
+  GPU_STREAMLINES_PARAMETER_LENGTH,
+  GPU_STREAMLINES_UINT32_PARAMETER_LENGTH,
+  GPULineIntegralConvolution,
+  GPUParticleAdvection,
+  GPUStreamlines,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {SpatialAnalysisTerrain} from '../spatial-analysis-data';
 import type {

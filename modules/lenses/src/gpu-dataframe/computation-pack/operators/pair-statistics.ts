@@ -66,8 +66,8 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       pairCounts: {level: 'ratio', extent: 'extensive'}
     },
     sourceFiles: [
-      'modules/analysis/src/gpu-dataframe/pair-statistics/gpu-variogram.ts',
-      'modules/analysis/src/gpu-dataframe/pair-statistics/pair-histogram.ts'
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-variogram.ts',
+      'modules/analysis/src/dataframe-analysis/pair-statistics/pair-histogram.ts'
     ]
   },
   /**
@@ -119,7 +119,9 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       pairCounts: {level: 'ratio', extent: 'extensive'}
     },
     metadata: {pCorrection: 'none'},
-    sourceFiles: ['modules/analysis/src/gpu-dataframe/pair-statistics/gpu-spatial-correlogram.ts']
+    sourceFiles: [
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-spatial-correlogram.ts'
+    ]
   },
   /**
    * Primary: default isotropic K and derived L. Ordered non-self pairs at d<=r; annulus is
@@ -171,7 +173,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       l: {level: 'ratio', extent: 'intensive'},
       pairCounts: {level: 'ratio', extent: 'extensive'}
     },
-    sourceFiles: ['modules/analysis/src/gpu-dataframe/pair-statistics/gpu-ripley.ts']
+    sourceFiles: ['modules/analysis/src/dataframe-analysis/pair-statistics/gpu-ripley.ts']
   },
   /**
    * Primary: default border-corrected G/F/J. G uses nearest OTHER event; F uses nearest event
@@ -225,7 +227,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       j: {level: 'ratio', extent: 'intensive'}
     },
     sourceFiles: [
-      'modules/analysis/src/gpu-dataframe/pair-statistics/gpu-ripley-distance-functions.ts'
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-ripley-distance-functions.ts'
     ]
   },
   /**
@@ -290,8 +292,8 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
     },
     metadata: {pCorrection: 'none'},
     sourceFiles: [
-      'modules/analysis/src/gpu-dataframe/pair-statistics/gpu-ripley-envelope.ts',
-      'modules/analysis/src/gpu-dataframe/pair-statistics/gpu-ripley.ts'
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-ripley-envelope.ts',
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-ripley.ts'
     ]
   },
   /**
@@ -351,7 +353,9 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       pValue: {level: 'ratio', extent: 'intensive'}
     },
     metadata: {pCorrection: 'none'},
-    sourceFiles: ['modules/analysis/src/gpu-dataframe/pair-statistics/gpu-point-pattern-indices.ts']
+    sourceFiles: [
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-point-pattern-indices.ts'
+    ]
   },
   /** Signed cross-semivariance; unordered complete-case pairs, spatial bins with final edge included. */
   GPUCrossVariogram: {
@@ -373,7 +377,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
     guards: ['coordinate-model'],
     choices: ['lagCount', 'maximumDistance', 'edgeCorrection'],
     variables: {pairCounts: {level: 'ratio', extent: 'extensive'}, status: {level: 'nominal'}},
-    sourceFiles: ['modules/analysis/src/gpu-dataframe/pair-statistics/gpu-cross-variogram.ts']
+    sourceFiles: ['modules/analysis/src/dataframe-analysis/pair-statistics/gpu-cross-variogram.ts']
   },
   /** Signed cross-semivariance over spatial-major space-time bins, complete-case masking. */
   GPUSpaceTimeVariogram: {
@@ -394,7 +398,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
     guards: ['coordinate-model'],
     choices: ['lagCount', 'maximumDistance', 'edgeCorrection'],
     variables: {pairCounts: {level: 'ratio', extent: 'extensive'}, status: {level: 'nominal'}},
-    sourceFiles: ['modules/analysis/src/gpu-dataframe/pair-statistics/gpu-cross-variogram.ts']
+    sourceFiles: ['modules/analysis/src/dataframe-analysis/pair-statistics/gpu-cross-variogram.ts']
   },
   /** Rectangular translation-corrected cross-type K; supplied intensity uses inverse-intensity normalization. Pair correlation is annular, mark correlation uses product marks. */
   GPUMarkedPointStatistics: {
@@ -417,7 +421,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
     choices: ['lagCount', 'maximumDistance', 'edgeCorrection'],
     variables: {pairCounts: {level: 'ratio', extent: 'extensive'}, status: {level: 'nominal'}},
     sourceFiles: [
-      'modules/analysis/src/gpu-dataframe/pair-statistics/gpu-marked-point-statistics.ts'
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-marked-point-statistics.ts'
     ]
   }
 };

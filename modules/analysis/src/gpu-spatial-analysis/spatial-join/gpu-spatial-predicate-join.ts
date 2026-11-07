@@ -30,6 +30,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import {
+  captureGraphCommandNodes,
   validateCompactOutput,
   validateGraphViewsBelongToGraph,
   validatePowerOfTwo,
@@ -1235,21 +1236,21 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       });
       nodes.push(robustDispatch.updateNode);
       nodes.push(
-        ...new GPUPairwisePointInPolygon({
-          id: `${id}-classify`,
-          queryPositions: robust.pairPoints,
-          positions: polygonGeometry.positions,
-          featureOffsets: robust.pairGeometryOffsets,
-          polygonOffsets: polygonGeometry.polygonOffsets,
-          ringOffsets: polygonGeometry.ringOffsets,
-          output: robust.pairClassifications
+        ...captureGraphCommandNodes(graph, () =>
+          new GPUPairwisePointInPolygon({
+            id: `${id}-classify`,
+            points: robust.pairPoints,
+            polygonPositions: polygonGeometry.positions,
+            geometryOffsets: robust.pairGeometryOffsets,
+            polygonOffsets: polygonGeometry.polygonOffsets,
+            ringOffsets: polygonGeometry.ringOffsets,
+            output: robust.pairClassifications
+          }).addToGraph(graph)
+        ).map(node => {
+          // GPUPairwisePointInPolygon declares compute passes only.
+          assert(node.type === 'compute');
+          return {...node, condition: robustDispatch.condition};
         })
-          .getCommandNodes(graph)
-          .map(node => {
-            // GPUPairwisePointInPolygon declares compute passes only.
-            assert(node.type === 'compute');
-            return {...node, condition: robustDispatch.condition};
-          })
       );
     }
 

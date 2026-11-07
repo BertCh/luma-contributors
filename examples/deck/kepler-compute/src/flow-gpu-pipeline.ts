@@ -27,7 +27,21 @@ import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {Buffer, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {alignGraphVectorViews, createTransientView, getBoundedDispatchLayout, getBoundedInvocationIndexSource, getViewBinding, getViewElementOffset, GPUCommandGraph, GPUGather, GPUGroupAggregation, GPUScan, GPUSort, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  alignGraphVectorViews,
+  createTransientView,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  getViewBinding,
+  getViewElementOffset,
+  GPUCommandGraph,
+  GPUGather,
+  GPUGroupAggregation,
+  GPUScan,
+  GPUSort,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import type * as arrow from 'apache-arrow';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {

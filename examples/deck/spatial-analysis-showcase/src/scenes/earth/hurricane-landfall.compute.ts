@@ -18,7 +18,13 @@ import {
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import type {Buffer} from '@luma.gl/core';
-import {GPUDistanceField, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPU_DISTANCE_FIELD_NONE, getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPUDistanceField,
+  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
+  GPU_DISTANCE_FIELD_NONE,
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {

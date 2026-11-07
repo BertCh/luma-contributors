@@ -11,7 +11,7 @@ import {
   readPointCloudAttribute,
   writePointCloudAttribute
 } from './pointcloud-attribute';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {validateGraphOutputsDisjointFromInputs} from '../analysis-core/kernels/gpu-contributor-utils';
 
 type AttributeFormat = 'float32' | 'float32x2' | 'float32x3' | 'float32x4';
@@ -118,7 +118,7 @@ export class GPUPointCloudVoxelMerge {
       counts.length
     );
     nodes.push(
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-clear`,
         length: counts.length,
         inputs: {},
@@ -141,7 +141,7 @@ export class GPUPointCloudVoxelMerge {
 
     if (previousAttributeCount && previousAttributeMean)
       nodes.push(
-        ...getSpatialOperationNodes(graph, {
+        ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-attribute-clear`,
           length: counts.length,
           inputs: {},
@@ -169,7 +169,7 @@ export class GPUPointCloudVoxelMerge {
         ? status
         : createTransientView(graph, `${this.id}-status-${partIndex}`, 'uint32', counts.length);
       nodes.push(
-        ...getSpatialOperationNodes(graph, {
+        ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-metadata-${partIndex}`,
           length: counts.length,
           inputs: {
@@ -184,7 +184,7 @@ export class GPUPointCloudVoxelMerge {
         })
       );
       nodes.push(
-        ...getSpatialOperationNodes(graph, {
+        ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-centroid-${partIndex}`,
           length: counts.length,
           inputs: {
@@ -215,7 +215,7 @@ export class GPUPointCloudVoxelMerge {
               counts.length * components
             );
         nodes.push(
-          ...getSpatialOperationNodes(graph, {
+          ...getPointCloudKernelNodes(graph, {
             id: `${this.id}-attribute-${partIndex}`,
             length: counts.length,
             inputs: {

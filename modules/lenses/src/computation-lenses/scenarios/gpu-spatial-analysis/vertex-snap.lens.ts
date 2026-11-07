@@ -34,7 +34,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUVertexSnap',
           datasets: [data.id, areas.id],
-          retain: ['snappedParks', 'referenceRows'],
           keySpaces: [
             {
               id: 'vertex',

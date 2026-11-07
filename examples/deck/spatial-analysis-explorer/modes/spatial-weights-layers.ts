@@ -13,7 +13,12 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
-import {GPUCommandGraph, GPUReadbackRing, GPUReduction, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  GPUReduction,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {
   GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT,
   GPUSpatialLag,

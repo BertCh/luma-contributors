@@ -47,7 +47,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.nearest-feature-join',
           element: 'GPUNearestFeatureJoin',
           datasets: ['s2-chicago-north-nature', 's2-chicago-north-facilities'],
-          retain: ['neighborIds', 'neighborDistances', 'neighborCounts', 'joinOverflow'],
           keySpaces,
           relations: [
             {

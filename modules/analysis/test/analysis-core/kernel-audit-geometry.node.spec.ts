@@ -4,8 +4,9 @@
 
 import {expect, it} from 'vitest';
 import {COVERAGE_GEOMETRY_CASES} from './kernel-audit/cases-coverage-geometry';
+import {selectAnalysisCases} from './kernel-audit/analysis-contributors';
 import {auditKernelCase} from './kernel-audit/kernel-audit-runner';
 
-it.each(COVERAGE_GEOMETRY_CASES)('$exportName: $name', auditCase => {
+it.each(selectAnalysisCases(COVERAGE_GEOMETRY_CASES))('$exportName: $name', auditCase => {
   expect(auditKernelCase(auditCase).findings).toEqual([]);
 });

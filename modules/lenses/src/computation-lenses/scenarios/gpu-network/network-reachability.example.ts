@@ -23,6 +23,20 @@ export type NetworkReachabilityExampleInput = {
   costBreaks: GraphDataView<'float32'>;
   localIterations?: number;
   structureOnly?: boolean;
+  /** Adds observation nodes after the contributor and before compilation. */
+  beforeCompile?: (built: {
+    output: NetworkReachabilityOutput;
+    commandNodes: readonly GPUCommandNode[];
+  }) => void;
+};
+
+/** Output views of the reachability example. */
+export type NetworkReachabilityOutput = {
+  costs: GraphDataView<'float32'>;
+  bands: GraphDataView<'uint32'>;
+  predecessors: GraphDataView<'uint32'>;
+  bandCounts: GraphDataView<'uint32'>;
+  status: {converged: GraphDataView<'uint32'>; iterationCount: GraphDataView<'uint32'>};
 };
 
 /** Builds the same public contributor shown in the card; submission belongs to the lens. */
@@ -56,6 +70,7 @@ export async function runExample(_device: Device, input: NetworkReachabilityExam
   // Null devices cannot create compute pipelines, so structure-only builds skip compilation callbacks.
   const commandNodes = reachability.getCommandNodes(graph);
   graph.add(input.structureOnly ? commandNodes.map(withoutCompilation) : commandNodes);
+  input.beforeCompile?.({output, commandNodes});
   const compiled = input.structureOnly ? graph.compile() : await graph.compileAsync();
   return {compiled, commandNodes, reachability, costs, bands, predecessors, output};
 }

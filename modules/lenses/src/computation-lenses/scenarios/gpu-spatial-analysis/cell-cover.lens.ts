@@ -38,16 +38,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellCover',
           datasets: [data.id],
-          retain: [
-            'featureIds',
-            'count',
-            'requiredCount',
-            'overflow',
-            'candidateOverflow',
-            'boundaries',
-            'boundariesCenters',
-            'boundariesOffsets'
-          ],
           keySpaces: [
             {id: 'cell', label: 'covering cell', size: CELL_CAPACITY, indexSpace: '1d'},
             {id: 'vertex', label: 'area ring vertex', size: vertexCount, indexSpace: '1d'},

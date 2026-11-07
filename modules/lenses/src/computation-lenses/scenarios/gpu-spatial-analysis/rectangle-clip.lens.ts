@@ -39,14 +39,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPURectangleClip',
           datasets: [data.id],
-          retain: [
-            'clipped',
-            'clippedOffsets',
-            'sourceLineIndices',
-            'count',
-            'lineCount',
-            'overflow'
-          ],
           keySpaces: [
             {id: 'clippedLine', label: 'clipped line', size: lineCapacity, indexSpace: '1d'},
             {id: 'vertex', label: 'road vertex', size: vertexCount, indexSpace: '1d'},

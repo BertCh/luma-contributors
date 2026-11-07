@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-graph.graph-modularity-optimization",
   "viewId": "formula-card",
-  "caption": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "description": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "llms": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.\n\n- bound symbols: 2/3\n- compute passes were not coalesced as in production\n- 5967 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Each round every vertex v scores moving from its community c to each neighboring community c2 (or one unused singleton): gain = ((w(v,c2)-w(v,c)) out + in)/T - resolution*(kin_v/T*(Sout_c2-(Sout_c-kout_v))/T + kout_v/T*(Sin_c2-(Sin_c-kin_v))…",
+  "description": "Formula Each round every vertex v scores moving from its community c to each neighboring community c2 (or one unused singleton): gain = ((w(v,c2)-w(v,c)) out + in)/T - resolution*(kin_v/T*(Sout_c2-(Sout_c-kout_v))/T + kout_v/T*(Sin_c2-(Sin_c-kin_v))…",
+  "llms": "Formula Each round every vertex v scores moving from its community c to each neighboring community c2 (or one unused singleton): gain = ((w(v,c2)-w(v,c)) out + in)/T - resolution*(kin_v/T*(Sout_c2-(Sout_c-kout_v))/T + kout_v/T*(Sin_c2-(Sin_c-kin_v))/T), T = total edge weight (doubled for undirected), in = out for undirected graphs. Only moves with gain > minimumGain count; the single largest gain in the graph (lowest vertex id on ties) is applied, one move per round. Overflow, invalid labels or weights publish 0xffffffff communities and zero modularity. The final score is the GPUGraphAlgorithmsModularity pass.\n\n- bound symbols: 0/10\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/3"
+    "value": "0/10"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.scan</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})</pre><p class=\"lens-ascii\">y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-optimization-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-optimization-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"y\">y · output · outputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"heads\">heads · input · unknown — wgsl segmentFlags not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-optimization-compiled:rail-topology-forward-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-optimization-compiled:rail-topology-forward-scan-level-1-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-optimization-compiled:rail-topology-forward-scan-level-0-add-offsets\">add-offsets</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-graph.modularity-optimization-move-gain</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{gain}{\\Delta Q}_{v\\to c&#39;}=\\frac{(\\term{outgoingWeight}{w_{v,c&#39;}}-\\term{currentOutgoingWeight}{w_{v,c}})+(\\term{incomingWeight}{w_{c&#39;,v}}-\\term{currentIncomingWeight}{w_{c,v}})}{\\term{total}{T}}\n-\\term{resolution}{\\gamma}\\Big[\\frac{\\term{vertexStatistics}{k^{\\mathrm{in}}_v}}{T}\\,\\frac{\\term{candidateStatistics}{\\Sigma^{\\mathrm{out}}_{c&#39;}}-(\\term{currentStatistics}{\\Sigma^{\\mathrm{out}}_{c}}-k^{\\mathrm{out}}_v)}{T}\n+\\frac{k^{\\mathrm{out}}_v}{T}\\,\\frac{\\Sigma^{\\mathrm{in}}_{c&#39;}-(\\Sigma^{\\mathrm{in}}_{c}-k^{\\mathrm{in}}_v)}{T}\\Big]</pre><p class=\"lens-ascii\">Each round every vertex v scores moving from its community c to each neighboring community c2 (or one unused singleton): gain = ((w(v,c2)-w(v,c)) out + in)/T - resolution*(kin_v/T*(Sout_c2-(Sout_c-kout_v))/T + kout_v/T*(Sin_c2-(Sin_c-kin_v))/T), T = total edge weight (doubled for undirected), in = out for undirected graphs. Only moves with gain &gt; minimumGain count; the single largest gain in the graph (lowest vertex id on ties) is applied, one move per round. Overflow, invalid labels or weights publish 0xffffffff communities and zero modularity. The final score is the GPUGraphAlgorithmsModularity pass.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gain\">modularity gain of a move · intermediate · unknown — wgsl gain not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"outgoingWeight\">weight from v into candidate community · input · unknown — wgsl outgoingWeight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"currentOutgoingWeight\">weight from v into its own community · input · unknown — wgsl currentOutgoingWeight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"incomingWeight\">weight from candidate community into v · input · unknown — wgsl incomingWeight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"currentIncomingWeight\">weight from own community into v · input · unknown — wgsl currentIncomingWeight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"total\">total edge weight · constant · unknown — wgsl total not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"resolution\">resolution · parameter · unknown — wgsl RESOLUTION not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"vertexStatistics\">vertex strengths (out, in) · input · unknown — wgsl vertexStatistics not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"candidateStatistics\">candidate community volumes · input · unknown — wgsl candidateStatistics not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"currentStatistics\">own community volumes · input · unknown — wgsl currentStatistics not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -27,21 +27,70 @@
     ],
     "rows": [
       [
-        "x",
+        "modularity gain of a move",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight from v into candidate community",
         "input",
-        "inputValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "y",
-        "output",
-        "outputValues",
+        "weight from v into its own community",
+        "input",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "heads",
+        "weight from candidate community into v",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight from own community into v",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "total edge weight",
+        "constant",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "resolution",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "vertex strengths (out, in)",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "candidate community volumes",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "own community volumes",
         "input",
         "unknown",
         "—",
@@ -51,26 +100,33 @@
     "provenance": [
       "metadata",
       "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
       "metadata"
     ]
   },
   "formula": {
-    "tex": "\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})",
-    "ascii": "y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.",
+    "tex": "\\term{gain}{\\Delta Q}_{v\\to c'}=\\frac{(\\term{outgoingWeight}{w_{v,c'}}-\\term{currentOutgoingWeight}{w_{v,c}})+(\\term{incomingWeight}{w_{c',v}}-\\term{currentIncomingWeight}{w_{c,v}})}{\\term{total}{T}}\n-\\term{resolution}{\\gamma}\\Big[\\frac{\\term{vertexStatistics}{k^{\\mathrm{in}}_v}}{T}\\,\\frac{\\term{candidateStatistics}{\\Sigma^{\\mathrm{out}}_{c'}}-(\\term{currentStatistics}{\\Sigma^{\\mathrm{out}}_{c}}-k^{\\mathrm{out}}_v)}{T}\n+\\frac{k^{\\mathrm{out}}_v}{T}\\,\\frac{\\Sigma^{\\mathrm{in}}_{c'}-(\\Sigma^{\\mathrm{in}}_{c}-k^{\\mathrm{in}}_v)}{T}\\Big]",
+    "ascii": "Each round every vertex v scores moving from its community c to each neighboring community c2 (or one unused singleton): gain = ((w(v,c2)-w(v,c)) out + in)/T - resolution*(kin_v/T*(Sout_c2-(Sout_c-kout_v))/T + kout_v/T*(Sin_c2-(Sin_c-kin_v))/T), T = total edge weight (doubled for undirected), in = out for undirected graphs. Only moves with gain > minimumGain count; the single largest gain in the graph (lowest vertex id on ties) is applied, one move per round. Overflow, invalid labels or weights publish 0xffffffff communities and zero modularity. The final score is the GPUGraphAlgorithmsModularity pass.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:43.044Z",
-    "runId": "run-9c4765fb",
+    "date": "2026-11-07T14:55:16.427Z",
+    "runId": "run-d13f476c",
     "observerEffects": [
       "compute passes were not coalesced as in production",
-      "5967 observation taps inserted",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-9c4765fb",
+    "runId": "run-d13f476c",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

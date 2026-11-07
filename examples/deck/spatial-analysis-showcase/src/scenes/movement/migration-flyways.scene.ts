@@ -337,7 +337,7 @@ export default defineScene<MigrationFlywaysOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPULineDensity, GPUTrajectoryResample, GPUTrackSimilarity, getGPULineDensityParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';

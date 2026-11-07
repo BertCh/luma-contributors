@@ -38,9 +38,8 @@ function createPeakSnapProps(): GPUTerrainPeakSnapProps {
   return {
     id: 'datum-peak-snap',
     grid,
-    elevation: makeGPURasterBand(makeView('elevation', 'float32', 16), grid, {
-      verticalDatum: 'EPSG:5773'
-    }),
+    elevation: makeGPURasterBand(makeView('elevation', 'float32', 16), grid),
+    elevationVerticalDatum: 'EPSG:5773',
     candidates: makeView('candidates', 'float32x2', 2),
     candidateHeights: makeView('candidate-heights', 'float32', 2),
     parameters: makeView('parameters', 'float32', 8),
@@ -88,7 +87,7 @@ it('GPUTerrainPeakSnap accepts matching or undeclared vertical datums', () => {
       () =>
         new GPUTerrainPeakSnap({
           ...props,
-          elevation: {...props.elevation, verticalDatum},
+          elevationVerticalDatum: verticalDatum,
           candidateVerticalDatum
         })
     ).not.toThrow();

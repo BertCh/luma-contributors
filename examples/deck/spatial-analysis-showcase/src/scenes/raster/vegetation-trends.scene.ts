@@ -353,9 +353,9 @@ export default defineScene<VegetationTrendsOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUChangeDetection, getGPUChangeDetectionParameterValues}
-  from '@luma-contributors/analysis/gpu-raster';
+  from '@luma.gl/graph/gpu-raster';
 
 // slices: float32, cell-major (cell * 16 + date), NaN = cloud or no data
 const graph = new GPUCommandGraph(device, {id: 'trends'});

@@ -24,14 +24,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.group-geometry',
           element: 'GPUGroupGeometry',
           datasets: ['s2-chicago-north-nature'],
-          retain: [
-            'labels',
-            'counts',
-            'groupBounds',
-            'meanCenters',
-            'medoidIndices',
-            'standardDistances'
-          ],
           keySpaces: [
             {id: 'observation', label: 'observation', size: points.count, indexSpace: '1d'},
             {id: 'group', label: 'cluster slot', size: GROUP_GEOMETRY_GROUP_COUNT, indexSpace: '1d'}

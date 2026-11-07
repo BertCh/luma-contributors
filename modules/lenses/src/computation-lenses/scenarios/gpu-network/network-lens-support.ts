@@ -45,7 +45,7 @@ export const NETWORK_KEY_SPACES: readonly GPUComputationKeySpace[] = [
 
 /** Constructs an explicit observation graph with retained transients. */
 export function createNetworkLensGraph(device: Device, id: string, retain: readonly string[]) {
-  return new NetworkLensGraph(device, {id, recording: {retain: [...retain]}});
+  return new NetworkLensGraph(device, {id}, new Set(retain));
 }
 
 /** Uploads a packed, caller-owned input with copy access for honest geometry readback. */
@@ -260,9 +260,16 @@ export function assembleNetworkLensRecord(
 
 // COPY_SRC is an observation-only allocation choice. Production frontier declarations stay unchanged.
 class NetworkLensGraph extends GPUCommandGraph {
+  readonly observed: ReadonlySet<string>;
+
+  constructor(device: Device, props: {id: string}, observed: ReadonlySet<string>) {
+    super(device, props);
+    this.observed = observed;
+  }
+
   override createTransientBuffer(descriptor: GraphBufferDescriptor): GraphBufferHandle {
     return super.createTransientBuffer(
-      this.recording?.retain?.includes(descriptor.id)
+      this.observed.has(descriptor.id)
         ? {...descriptor, usage: descriptor.usage | Buffer.COPY_SRC}
         : descriptor
     );

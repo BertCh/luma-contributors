@@ -5,6 +5,7 @@
 import {assert, type Device} from '@luma.gl/core';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   describeGPUGraphScenario,
   getGPUGraphCaptureView,
   recordGPUGraphScenario,
@@ -35,11 +36,8 @@ async function buildScenario(device: Device): Promise<GPUGraphScenarioRecordOpti
       scenarioId: 'gpu-graph.graph-connected-components',
       element: 'GPUGraphAlgorithmsConnectedComponents',
       fixture,
-      compiled: fixture.commandGraph.compile(),
+      ...compileGPUGraphScenario(fixture, outputCaptures),
       outputCaptures,
-      iterationFrames: [
-        {name: 'connected-components', loopId: 'gpu-graph-connected-components-iterations'}
-      ],
       choices: [{stage: 'parameters', name: 'iterations', value: 32, sweepable: true}],
       highlight: {
         capture: 'connected-components',
@@ -86,9 +84,13 @@ export async function describeStructure(device: Device) {
     return describeGPUGraphScenario(options);
   } finally {
     try {
-      options.compiled.destroy();
+      options.snapshot.arena.destroy();
     } finally {
-      options.fixture.destroy();
+      try {
+        options.compiled.destroy();
+      } finally {
+        options.fixture.destroy();
+      }
     }
   }
 }

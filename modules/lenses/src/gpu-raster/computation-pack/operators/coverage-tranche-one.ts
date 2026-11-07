@@ -6,7 +6,7 @@ import type {RasterOperatorEntry, RasterOperatorTable} from '../types';
 
 const CELL = {kind: 'cell', label: 'grid cell', indexSpace: '2d'} as const;
 const ZONE = {kind: 'zone', label: 'source zone', indexSpace: '1d'} as const;
-const SOURCE_ROOT = 'modules/analysis/src/gpu-raster';
+const SOURCE_ROOT = 'modules/analysis/src/raster-analysis';
 
 function makeSpectralEntry(
   name: string,

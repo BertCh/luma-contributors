@@ -193,7 +193,7 @@ export type GPUTrajectoryMetricsProps = GPUTrajectoryGeometryFields & {
  *   (`(speed_i - speed_{i-1}) / deltaTime_i`, 0 without a previous step in the track). They are
  *   0 for the first row of a track, so a drawn segment takes the value of its end row.
  *
- * Composition: one per-row step kernel, `GPUSegmentedReduction` for lengths, maximum speeds and
+ * Composition: one per-row step kernel, a per-segment reduction kernel for lengths, maximum speeds and
  * centroid sums, one per-track finalize kernel, and for stops `GPUCompaction` of run starts and
  * ends, a per-run qualify kernel, a stable compaction of qualifying runs, gather kernels that fill
  * the bounded outputs, `GPUGroupAggregation` for per-track stop counts, and one publish kernel
@@ -406,7 +406,6 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     ]);
     const rowCount = props.positions.length;
     const trackCount = props.trackOffsets.length - 1;
-    const maximumSegmentCount = graph.device.limits.maxComputeWorkgroupsPerDimension;
     const hasStops = Boolean(stops || output.trackStopCounts);
     const nodes: GPUCommandNode<Parameters>[] = [];
     const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
@@ -466,32 +465,24 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         : undefined);
     if (stepDistances && trackLengths) {
       nodes.push(
-        ...getSegmentedReductionNodes(
-          graph,
-          {
-            id: `${id}-track-lengths`,
-            input: stepDistances,
-            segmentOffsets: props.trackOffsets,
-            output: trackLengths,
-            operation: 'sum'
-          },
-          maximumSegmentCount
-        )
+        ...getSegmentedReductionNodes(graph, {
+          id: `${id}-track-lengths`,
+          input: stepDistances,
+          segmentOffsets: props.trackOffsets,
+          output: trackLengths,
+          operation: 'sum'
+        })
       );
     }
     if (stepSpeeds && output.maximumSpeeds) {
       nodes.push(
-        ...getSegmentedReductionNodes(
-          graph,
-          {
-            id: `${id}-maximum-speeds`,
-            input: stepSpeeds,
-            segmentOffsets: props.trackOffsets,
-            output: output.maximumSpeeds,
-            operation: 'max'
-          },
-          maximumSegmentCount
-        )
+        ...getSegmentedReductionNodes(graph, {
+          id: `${id}-maximum-speeds`,
+          input: stepSpeeds,
+          segmentOffsets: props.trackOffsets,
+          output: output.maximumSpeeds,
+          operation: 'max'
+        })
       );
     }
     if (output.trackDurations || output.averageSpeeds) {
@@ -594,28 +585,20 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
           xs,
           ys
         }),
-        ...getSegmentedReductionNodes(
-          graph,
-          {
-            id: `${id}-centroid-sums-x`,
-            input: xs,
-            segmentOffsets: centroidOffsets,
-            output: sumsX,
-            operation: 'sum'
-          },
-          maximumSegmentCount
-        ),
-        ...getSegmentedReductionNodes(
-          graph,
-          {
-            id: `${id}-centroid-sums-y`,
-            input: ys,
-            segmentOffsets: centroidOffsets,
-            output: sumsY,
-            operation: 'sum'
-          },
-          maximumSegmentCount
-        )
+        ...getSegmentedReductionNodes(graph, {
+          id: `${id}-centroid-sums-x`,
+          input: xs,
+          segmentOffsets: centroidOffsets,
+          output: sumsX,
+          operation: 'sum'
+        }),
+        ...getSegmentedReductionNodes(graph, {
+          id: `${id}-centroid-sums-y`,
+          input: ys,
+          segmentOffsets: centroidOffsets,
+          output: sumsY,
+          operation: 'sum'
+        })
       );
       centroidSums = {sumsX, sumsY};
     }

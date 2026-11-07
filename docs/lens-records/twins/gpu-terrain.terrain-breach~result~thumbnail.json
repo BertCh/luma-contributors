@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-breach: elevation → cutDepth.",
   "description": "Result of gpu-terrain.terrain-breach: elevation → cutDepth. cells: 9. values read back from the GPU run. input elevation: 9 cells.",
-  "llms": "Result of gpu-terrain.terrain-breach: elevation → cutDepth\n\n- cells: 9\n- input elevation: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-breach: elevation → cutDepth\n\n- cells: 9\n- input elevation: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "9"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:10.073Z",
-    "runId": "run-f0287a92",
+    "date": "2026-11-07T14:55:29.922Z",
+    "runId": "run-dbed960b",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-f0287a92",
+    "runId": "run-dbed960b",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -9,8 +9,6 @@ import fixture0input from '../../oracles/fixtures/parity-wp3-network-analysis-sy
 import fixture0reverse from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-reverse.json?raw';
 import fixture0degree from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-degree.json?raw';
 import fixture0inDegree from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-inDegree.json?raw';
-import fixture0coreNumber from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-coreNumber.json?raw';
-import fixture0pageRank from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-pageRank.json?raw';
 import fixture0components from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-components.json?raw';
 import fixture0zero from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-zero.json?raw';
 import fixture0outgoing from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-outgoing.json?raw';
@@ -22,8 +20,6 @@ import fixture1input from '../../oracles/fixtures/parity-wp3-network-analysis-sy
 import fixture1reverse from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-reverse.json?raw';
 import fixture1degree from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-degree.json?raw';
 import fixture1inDegree from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-inDegree.json?raw';
-import fixture1coreNumber from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-coreNumber.json?raw';
-import fixture1pageRank from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-pageRank.json?raw';
 import fixture1components from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-components.json?raw';
 import fixture1zero from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-zero.json?raw';
 import fixture1outgoing from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-outgoing.json?raw';
@@ -35,8 +31,6 @@ import fixture2input from '../../oracles/fixtures/parity-wp3-network-analysis-is
 import fixture2reverse from '../../oracles/fixtures/parity-wp3-network-analysis-isolates-reverse.json?raw';
 import fixture2degree from '../../oracles/fixtures/parity-wp3-network-analysis-isolates-degree.json?raw';
 import fixture2inDegree from '../../oracles/fixtures/parity-wp3-network-analysis-isolates-inDegree.json?raw';
-import fixture2coreNumber from '../../oracles/fixtures/parity-wp3-network-analysis-isolates-coreNumber.json?raw';
-import fixture2pageRank from '../../oracles/fixtures/parity-wp3-network-analysis-isolates-pageRank.json?raw';
 import fixture2components from '../../oracles/fixtures/parity-wp3-network-analysis-isolates-components.json?raw';
 import fixture2zero from '../../oracles/fixtures/parity-wp3-network-analysis-isolates-zero.json?raw';
 import fixture2outgoing from '../../oracles/fixtures/parity-wp3-network-analysis-isolates-outgoing.json?raw';
@@ -48,8 +42,6 @@ import fixture3input from '../../oracles/fixtures/parity-wp3-network-analysis-ch
 import fixture3reverse from '../../oracles/fixtures/parity-wp3-network-analysis-chicago-reverse.json?raw';
 import fixture3degree from '../../oracles/fixtures/parity-wp3-network-analysis-chicago-degree.json?raw';
 import fixture3inDegree from '../../oracles/fixtures/parity-wp3-network-analysis-chicago-inDegree.json?raw';
-import fixture3coreNumber from '../../oracles/fixtures/parity-wp3-network-analysis-chicago-coreNumber.json?raw';
-import fixture3pageRank from '../../oracles/fixtures/parity-wp3-network-analysis-chicago-pageRank.json?raw';
 import fixture3components from '../../oracles/fixtures/parity-wp3-network-analysis-chicago-components.json?raw';
 import fixture3zero from '../../oracles/fixtures/parity-wp3-network-analysis-chicago-zero.json?raw';
 import fixture3outgoing from '../../oracles/fixtures/parity-wp3-network-analysis-chicago-outgoing.json?raw';
@@ -72,7 +64,7 @@ export type AnalysisInput = {
 export type AnalysisMetric = {
   case: string;
   reference: string;
-  metric: 'degree' | 'inDegree' | 'coreNumber' | 'pageRank' | 'components';
+  metric: 'degree' | 'inDegree' | 'components';
   values: number[];
   normalized: number[];
   extent: number[];
@@ -108,13 +100,7 @@ export const analysisFixtures: AnalysisFixture[] = [
   {
     input: JSON.parse(fixture0input),
     reverse: JSON.parse(fixture0reverse),
-    metrics: [
-      fixture0degree,
-      fixture0inDegree,
-      fixture0coreNumber,
-      fixture0pageRank,
-      fixture0components
-    ].map(value => JSON.parse(value)),
+    metrics: [fixture0degree, fixture0inDegree, fixture0components].map(value => JSON.parse(value)),
     neighborhoods: [
       fixture0zero,
       fixture0outgoing,
@@ -127,13 +113,7 @@ export const analysisFixtures: AnalysisFixture[] = [
   {
     input: JSON.parse(fixture1input),
     reverse: JSON.parse(fixture1reverse),
-    metrics: [
-      fixture1degree,
-      fixture1inDegree,
-      fixture1coreNumber,
-      fixture1pageRank,
-      fixture1components
-    ].map(value => JSON.parse(value)),
+    metrics: [fixture1degree, fixture1inDegree, fixture1components].map(value => JSON.parse(value)),
     neighborhoods: [
       fixture1zero,
       fixture1outgoing,
@@ -146,13 +126,7 @@ export const analysisFixtures: AnalysisFixture[] = [
   {
     input: JSON.parse(fixture2input),
     reverse: JSON.parse(fixture2reverse),
-    metrics: [
-      fixture2degree,
-      fixture2inDegree,
-      fixture2coreNumber,
-      fixture2pageRank,
-      fixture2components
-    ].map(value => JSON.parse(value)),
+    metrics: [fixture2degree, fixture2inDegree, fixture2components].map(value => JSON.parse(value)),
     neighborhoods: [
       fixture2zero,
       fixture2outgoing,
@@ -165,13 +139,7 @@ export const analysisFixtures: AnalysisFixture[] = [
   {
     input: JSON.parse(fixture3input),
     reverse: JSON.parse(fixture3reverse),
-    metrics: [
-      fixture3degree,
-      fixture3inDegree,
-      fixture3coreNumber,
-      fixture3pageRank,
-      fixture3components
-    ].map(value => JSON.parse(value)),
+    metrics: [fixture3degree, fixture3inDegree, fixture3components].map(value => JSON.parse(value)),
     neighborhoods: [
       fixture3zero,
       fixture3outgoing,

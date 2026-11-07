@@ -4,8 +4,22 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUTemporalReductionParameterValues, getGPUTimeWindowFilterParameterValues, GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH, GPU_TEMPORAL_REDUCTION_WORD_PARAMETER_LENGTH, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUTemporalReduction, GPUTimeWindowFilter, getGPUTemporalReductionWordParameterValues, getInt64TimeWords} from '@luma-contributors/analysis/dataframe-analysis';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  getGPUTemporalReductionParameterValues,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
+  GPU_TEMPORAL_REDUCTION_WORD_PARAMETER_LENGTH,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  GPUTemporalReduction,
+  GPUTimeWindowFilter,
+  getGPUTemporalReductionWordParameterValues,
+  getInt64TimeWords
+} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';

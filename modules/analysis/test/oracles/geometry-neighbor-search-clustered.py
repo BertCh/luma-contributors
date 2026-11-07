@@ -34,7 +34,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GENERATOR = 'modules/graph/test/oracles/geometry-neighbor-search-clustered.py'
+GENERATOR = 'modules/analysis/test/oracles/geometry-neighbor-search-clustered.py'
 BOUNDS = [0, 0, 2047, 2047]
 KS = (1, 4, 32)
 

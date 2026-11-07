@@ -44,7 +44,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellGeometry',
           datasets: [data.id],
-          retain: ['cells', 'centers', 'boundaries', 'vertexCounts'],
           keySpaces: [
             {id: 'cell', label: 'cell (one per place)', size: placeCount, indexSpace: '1d'},
             {

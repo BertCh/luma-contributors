@@ -11,9 +11,7 @@ import {
   type GPUTrajectoryMetricsOutput,
   type GPUTrajectoryMetricsProps
 } from '../../../src/gpu-spatial-analysis/trajectory-analysis/index';
-import {getSegmentedReductionNodes} from '../../../src/gpu-spatial-analysis/trajectory-analysis/trajectory-metrics-kernels';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-import {countDistinctPipelines} from '../../utils/gpu-contributor-test-utils';
 
 let uniqueIndex = 0;
 const unique = (id: string) => `${id}-${uniqueIndex++}`;
@@ -226,25 +224,6 @@ it('GPUTrajectoryMetrics validates props', () => {
   device.destroy();
 });
 
-it('getSegmentedReductionNodes chunks segments above the dispatch limit', () => {
-  const device = createNullWebGPUDevice();
-  const graph = new GPUCommandGraph(device);
-  const options = {
-    id: 'reduce',
-    input: createTransientView(graph, 'input', 'float32', 20),
-    segmentOffsets: createTransientView(graph, 'segments', 'uint32', 11),
-    output: createTransientView(graph, 'sums', 'float32', 10),
-    operation: 'sum' as const
-  };
-  expect(getSegmentedReductionNodes(graph, options, 10).map(node => node.id)).toEqual(['reduce']);
-  expect(getSegmentedReductionNodes(graph, options, 4).map(node => node.id)).toEqual([
-    'reduce-chunk-0',
-    'reduce-chunk-1',
-    'reduce-chunk-2'
-  ]);
-  device.destroy();
-});
-
 it('GPUTrajectoryMetrics validates word and double-single timestamp inputs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -309,31 +288,6 @@ it('GPUTrajectoryMetrics splits step and qualify kernels only for double-single 
     expect(ids).not.toContain('trajectory-metrics-steps-runs');
     expect(ids).not.toContain('trajectory-metrics-run-qualify-tracks');
   }
-  device.destroy();
-});
-
-it('getSegmentedReductionNodes chunks share one pipeline however many there are', () => {
-  const device = createNullWebGPUDevice();
-  const graph = new GPUCommandGraph(device);
-  const countPipelines = (segmentCount: number) => {
-    const nodes = getSegmentedReductionNodes(
-      graph,
-      {
-        id: `reduce-${segmentCount}`,
-        input: createTransientView(graph, unique('input'), 'float32', segmentCount * 2),
-        segmentOffsets: createTransientView(graph, unique('segments'), 'uint32', segmentCount + 1),
-        output: createTransientView(graph, unique('sums'), 'float32', segmentCount),
-        operation: 'sum'
-      },
-      // Not a multiple of 64: the stride must round down so chunk offsets stay 256-byte aligned.
-      100
-    );
-    return {nodeCount: nodes.length, pipelines: countDistinctPipelines(nodes)};
-  };
-  const three = countPipelines(250);
-  const four = countPipelines(350);
-  expect(four.nodeCount).toBeGreaterThan(three.nodeCount);
-  expect(four.pipelines).toBe(three.pipelines);
   device.destroy();
 });
 

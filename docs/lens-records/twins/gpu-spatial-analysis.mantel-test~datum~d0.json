@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.mantel-test",
   "viewId": "datum-receipt",
-  "caption": "Receipt of permutation (0: observed) 0. statistics: -0.0146567327901721. values read back from the GPU run. mantel-test: 1 quantities.",
-  "description": "Receipt of permutation (0: observed) 0. statistics: -0.0146567327901721. values read back from the GPU run. mantel-test: 1 quantities.",
-  "llms": "Receipt of permutation (0: observed) 0\n\n- statistics: -0.0146567327901721\n- mantel-test: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of permutation (0: observed) 0. statistics: -0.0146567327901721. values read back from the GPU run. result: 1 quantities.",
+  "description": "Receipt of permutation (0: observed) 0. statistics: -0.0146567327901721. values read back from the GPU run. result: 1 quantities.",
+  "llms": "Receipt of permutation (0: observed) 0\n\n- statistics: -0.0146567327901721\n- result: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "statistics",
     "value": "-0.0146567327901721"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of permutation (0: observed) 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"mantel-test\"><tr><th scope=\"rowgroup\" colspan=\"5\">mantel-test</th></tr><tr data-provenance=\"readback\"><td>mantel-test</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-mantel-test-snapshots-statistics-0\">statistics</button></td><td>-0.0146567327901721</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of permutation (0: observed) 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-mantel-test-snapshots-statistics-0\" title=\"gpu-spatial-analysis-mantel-test-snapshot-tap\">statistics</button></td><td>-0.0146567327901721</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,7 +28,7 @@
     ],
     "rows": [
       [
-        "mantel-test",
+        "result",
         "statistics",
         "-0.0146567327901721",
         "0",
@@ -63,12 +63,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:33.872Z",
-    "runId": "run-40844b92",
+    "date": "2026-11-07T14:55:24.487Z",
+    "runId": "run-8154f0bc",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-40844b92",
+    "runId": "run-8154f0bc",
     "rung": "datum",
     "bindings": {
       "entity": 0

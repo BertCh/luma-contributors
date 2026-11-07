@@ -9,7 +9,7 @@ with the TypeScript generators by statistics-regression-scenes.node.spec.ts) and
 fixtures/statistics-gwr.json, consumed through
 test/gpu-spatial-analysis/spatial-regression/gwr-mgwr-inference-reference.ts by the GWR inference
 specs. Run with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-gwr.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-gwr.py
 in a venv with numpy and mgwr (versions are recorded in the fixture; it takes about a minute).
 
 All fits are `constant = True` bisquare unless stated. Planar scene: 144 rows, 2 predictors (k = 3).

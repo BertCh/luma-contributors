@@ -433,9 +433,9 @@ export class GPUKeplerTableInspector {
       ]) {
         for (const data of vector.data) buffers.add(getBuffer(data));
       }
-      const accountedBytes =
-        query.compilationStats.physicalTransientResourceBytes +
-        [...buffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
+      // Published compiled queries keep their graph private, so query scratch is not counted here:
+      // this admission is a lower bound on real GPU memory (owned buffers only).
+      const accountedBytes = [...buffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
       if (accountedBytes > reservation.byteLength)
         throw new KeplerAllocationError('memory-budget', {
           message: 'Table sort exceeds its reserved working memory'

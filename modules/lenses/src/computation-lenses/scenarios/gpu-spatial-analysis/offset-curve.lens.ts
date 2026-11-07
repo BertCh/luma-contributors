@@ -34,7 +34,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUOffsetCurve',
           datasets: [data.id],
-          retain: ['offsetCurve', 'offsetCounts'],
           keySpaces: [
             {id: 'vertex', label: 'street vertex', size: vertexCount, indexSpace: '1d'},
             {id: 'road', label: 'road', size: data.lineCount, indexSpace: '1d'},

@@ -36,14 +36,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCoverageSimplification',
           datasets: [data.id],
-          retain: [
-            'simplifiedAreas',
-            'simplifiedOffsets',
-            'outputMask',
-            'topologyStatistics',
-            'overflow',
-            'converged'
-          ],
           keySpaces: [
             {id: 'vertex', label: 'area vertex', size: vertexCount, indexSpace: '1d'},
             {id: 'area', label: 'community area', size: data.featureCount, indexSpace: '1d'},

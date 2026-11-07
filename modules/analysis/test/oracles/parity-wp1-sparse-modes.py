@@ -30,7 +30,7 @@ for integer in [False,True]:
    sums=np.asarray(matrix.sum(axis=1)).ravel();result=matrix.dot(values)
    if normalize:result=np.divide(result,sums[:,None],out=np.zeros_like(result),where=sums[:,None]!=0)
    lag.append(dict(name=f'rectangular-integer={integer}-missing={missing}-normalize={normalize}',reference='scipy.sparse.csr_matrix.dot',n=4,columns=2,integer=integer,normalize=normalize,values=values.ravel(),expected=result.ravel(),**round5.packMatrix(matrix)))
-output=DIRECTORY/'fixtures/parity-wp1-lag-modes.json';output.write_text(json.dumps(round5.clean(dict(generator=Path(__file__).name,command='/private/tmp/claude-501/-Users-robertchristie-Documents-GitHub-deck-gl-master/82c646e8-3e98-44d4-84b8-212745483f4a/scratchpad/eval/venv/bin/python -I modules/graph/test/oracles/parity-wp1-sparse-modes.py',versions={'numpy':np.__version__,'scipy':scipy.__version__},cases=lag)),separators=(',',':'))+'\n')
+output=DIRECTORY/'fixtures/parity-wp1-lag-modes.json';output.write_text(json.dumps(round5.clean(dict(generator=Path(__file__).name,command='/private/tmp/claude-501/-Users-robertchristie-Documents-GitHub-deck-gl-master/82c646e8-3e98-44d4-84b8-212745483f4a/scratchpad/eval/venv/bin/python -I modules/analysis/test/oracles/parity-wp1-sparse-modes.py',versions={'numpy':np.__version__,'scipy':scipy.__version__},cases=lag)),separators=(',',':'))+'\n')
 small=csr_matrix(np.array([[0,1,2,0],[1.0625,0,0,1],[2.5,0,0,1],[0,0,1.125,0]],dtype=float))
 transpose=[]
 for tolerance in [.0625,.125,.5]:
@@ -47,5 +47,5 @@ large=csr_matrix(np.ones((65,65))-np.eye(65))
 neighborhood.append(round5.makeNeighborhood('maximum-64-with-focal-overflow',large,np.arange(65),np.arange(65)%3,[1]*65,False,True,1,64,False,{'source':'65-row complete graph'}))
 round5.writeFixture(DIRECTORY/'fixtures','round8-neighborhood',dict(cases=neighborhood))
 for name in ['round8-transpose','round8-neighborhood']:
- path=DIRECTORY/f'fixtures/parity-wp1-{name}.json';wrapper=json.loads(path.read_text());wrapper['generator']=Path(__file__).name;wrapper['command']='/private/tmp/claude-501/-Users-robertchristie-Documents-GitHub-deck-gl-master/82c646e8-3e98-44d4-84b8-212745483f4a/scratchpad/eval/venv/bin/python -I modules/graph/test/oracles/parity-wp1-sparse-modes.py';path.write_text(json.dumps(wrapper,separators=(',',':'))+'\n')
+ path=DIRECTORY/f'fixtures/parity-wp1-{name}.json';wrapper=json.loads(path.read_text());wrapper['generator']=Path(__file__).name;wrapper['command']='/private/tmp/claude-501/-Users-robertchristie-Documents-GitHub-deck-gl-master/82c646e8-3e98-44d4-84b8-212745483f4a/scratchpad/eval/venv/bin/python -I modules/analysis/test/oracles/parity-wp1-sparse-modes.py';path.write_text(json.dumps(wrapper,separators=(',',':'))+'\n')
 print(output)

@@ -326,6 +326,34 @@ describe('metrics and captures', () => {
       replays: []
     });
   });
+
+  it('accepts published millisecond timings and externally inferred pass indices', () => {
+    const built = createGPUComputationMetrics({
+      runId: record.runId,
+      graph: 'compiled',
+      encoding: metrics.encoding,
+      passIndices: {a: 0, b: 0},
+      timing: {
+        nodes: [
+          {
+            id: 'a',
+            cpuEncodeTimeMilliseconds: 0.1,
+            gpuStartTimeMilliseconds: 10,
+            gpuEndTimeMilliseconds: 12
+          },
+          {
+            id: 'b',
+            cpuEncodeTimeMilliseconds: 0.1,
+            gpuStartTimeMilliseconds: 12,
+            gpuEndTimeMilliseconds: 13
+          }
+        ]
+      }
+    });
+    expect(built.timebase).toBe('ms');
+    expect(built.nodes['a']).toMatchObject({gpuBegin: 0, gpuEnd: 2, passIndex: 0});
+    expect(built.nodes['b']).toMatchObject({gpuBegin: 2, gpuEnd: 3, passIndex: 0});
+  });
   it.each([
     ['metrics[0].schema', 'other'],
     ['metrics[0].runId', 'other'],

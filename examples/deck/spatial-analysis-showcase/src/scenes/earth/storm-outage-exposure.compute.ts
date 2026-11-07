@@ -14,7 +14,12 @@ import {
   STORM_VERIFICATION_RANGE
 } from './storm-data';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUGroupStatistics, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  GPUGroupStatistics,
+  GPUTimeWindowFilter
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPU_EARTH_AUTHALIC_RADIUS_METERS,
   GPULineLengthPerPolygon,

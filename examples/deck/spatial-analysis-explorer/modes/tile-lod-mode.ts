@@ -18,8 +18,21 @@ import {scheduleReadback} from '../readback-scheduling';
 import type {Viewport} from '@deck.gl/core';
 import type {Layer} from '@deck.gl/core';
 import type {CommandEncoder} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {getGPUTileLODQuadtreeTile, getGPUTileLODViewParameterValues, GPU_TILE_LOD_STATISTICS_LENGTH, GPU_TILE_LOD_UNLIMITED, GPU_TILE_LOD_VIEW_LENGTH, GPUTileLODSelection, makeGPUTileLODQuadtree} from '@luma.gl/graph/gpu-tables';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  getGPUTileLODQuadtreeTile,
+  getGPUTileLODViewParameterValues,
+  GPU_TILE_LOD_STATISTICS_LENGTH,
+  GPU_TILE_LOD_UNLIMITED,
+  GPU_TILE_LOD_VIEW_LENGTH,
+  GPUTileLODSelection,
+  makeGPUTileLODQuadtree
+} from '@luma.gl/graph/gpu-tables';
 import {
   validateGPUTilePartitionDescriptor,
   type GPUTilePartitionDescriptor

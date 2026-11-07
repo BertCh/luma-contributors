@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.transition-diagnostics",
   "viewId": "datum-receipt",
-  "caption": "Receipt of state x from class x to class 0. counts: 57. values read back from the GPU run. transition-diagnostics: 1 quantities.",
-  "description": "Receipt of state x from class x to class 0. counts: 57. values read back from the GPU run. transition-diagnostics: 1 quantities.",
-  "llms": "Receipt of state x from class x to class 0\n\n- counts: 57\n- transition-diagnostics: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of state x from class x to class 0. counts: 57. values read back from the GPU run. result: 1 quantities.",
+  "description": "Receipt of state x from class x to class 0. counts: 57. values read back from the GPU run. result: 1 quantities.",
+  "llms": "Receipt of state x from class x to class 0\n\n- counts: 57\n- result: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "counts",
     "value": "57"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of state x from class x to class 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"transition-diagnostics\"><tr><th scope=\"rowgroup\" colspan=\"5\">transition-diagnostics</th></tr><tr data-provenance=\"readback\"><td>transition-diagnostics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-transition-diagnostics-snapshots-counts-0\" title=\"Transition counts from GPUTransitionMatrix, one matrix per state\">counts</button></td><td>57</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of state x from class x to class 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-transition-diagnostics-snapshots-counts-0\" title=\"Transition counts from GPUTransitionMatrix, one matrix per state\">counts</button></td><td>57</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,7 +28,7 @@
     ],
     "rows": [
       [
-        "transition-diagnostics",
+        "result",
         "counts",
         "57",
         "0",
@@ -52,12 +52,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:08.052Z",
-    "runId": "run-e2d83ac0",
+    "date": "2026-11-07T14:55:29.404Z",
+    "runId": "run-dc48e10c",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-e2d83ac0",
+    "runId": "run-dc48e10c",
     "rung": "datum",
     "bindings": {
       "entity": 0

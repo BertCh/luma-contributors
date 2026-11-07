@@ -45,7 +45,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUGeodesicDestination',
           datasets: [data.id],
-          retain: ['destinations', 'finalBearings', 'converged'],
           keySpaces: [{id: 'row', label: 'bearing and distance', size: rowCount, indexSpace: '1d'}],
           choices: {
             spatialContext: 'longitude-latitude, ellipsoidal WGS84, meters',

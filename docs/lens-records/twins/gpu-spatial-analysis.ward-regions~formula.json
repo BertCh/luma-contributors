@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. The contracted graph computes this cost once per unique adjacent region pair and reuses it…",
   "description": "Formula Joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. The contracted graph computes this cost once per unique adjacent region pair and reuses it…",
-  "llms": "Formula Joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. The contracted graph computes this cost once per unique adjacent region pair and reuses it until either region changes. Every tract starts alone with W = 0 and each merge adds its dW, so the final W is the exact within-region sum of squares (standardized units unless standardize is false). sequential merges the cheapest adjacent pair per iteration; mutual-nearest merges every mutually cheapest pair per round, restricted to the remaining target budget, and can stop at a different partition.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. The contracted graph computes this cost once per unique adjacent region pair and reuses it until either region changes. Every tract starts alone with W = 0 and each merge adds its dW, so the final W is the exact within-region sum of squares (standardized units unless standardize is false). sequential merges the cheapest adjacent pair per iteration; mutual-nearest merges every mutually cheapest pair per round, restricted to the remaining target budget, and can stop at a different partition.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>ward-merge-cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{increase}{\\Delta W_{ab}}&amp;=\\frac{\\term{firstCount}{n_a}\\,\\term{secondCount}{n_b}}{n_a+n_b}\\sum_{c}\\term{difference}{(\\bar{x}_{ac}-\\bar{x}_{bc})^2}\\\\\n\\term{objective}{W}&amp;=\\sum_{\\text{merges}}\\Delta W_{ab}\n\\end{aligned}</pre><p class=\"lens-ascii\">Joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. The contracted graph computes this cost once per unique adjacent region pair and reuses it until either region changes. Every tract starts alone with W = 0 and each merge adds its dW, so the final W is the exact within-region sum of squares (standardized units unless standardize is false). sequential merges the cheapest adjacent pair per iteration; mutual-nearest merges every mutually cheapest pair per round, restricted to the remaining target budget, and can stop at a different partition.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-contract-0-costs\" data-value=\"increase\">increase · intermediate · increase</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-contract-0-costs\" data-value=\"firstCount\">firstCount · intermediate · firstCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-contract-0-costs\" data-value=\"secondCount\">secondCount · intermediate · secondCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-contract-0-costs\" data-value=\"difference\">difference · intermediate · difference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-initialize-status\" data-value=\"objective\">objective · output · objective</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>ward-merge-cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{increase}{\\Delta W_{ab}}&amp;=\\frac{\\term{firstCount}{n_a}\\,\\term{secondCount}{n_b}}{n_a+n_b}\\sum_{c}\\term{difference}{(\\bar{x}_{ac}-\\bar{x}_{bc})^2}\\\\\n\\term{objective}{W}&amp;=\\sum_{\\text{merges}}\\Delta W_{ab}\n\\end{aligned}</pre><p class=\"lens-ascii\">Joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. The contracted graph computes this cost once per unique adjacent region pair and reuses it until either region changes. Every tract starts alone with W = 0 and each merge adds its dW, so the final W is the exact within-region sum of squares (standardized units unless standardize is false). sequential merges the cheapest adjacent pair per iteration; mutual-nearest merges every mutually cheapest pair per round, restricted to the remaining target budget, and can stop at a different partition.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"increase\">increase · intermediate · unknown — wgsl increase not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"firstCount\">firstCount · intermediate · unknown — wgsl firstCount not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"secondCount\">secondCount · intermediate · unknown — wgsl secondCount not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"difference\">difference · intermediate · unknown — wgsl difference not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"objective\">objective · output · unknown — wgsl objective not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "increase",
         "intermediate",
-        "increase",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "firstCount",
         "intermediate",
-        "firstCount",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "secondCount",
         "intermediate",
-        "secondCount",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "difference",
         "intermediate",
-        "difference",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "objective",
         "output",
-        "objective",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -77,12 +77,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:08.937Z",
-    "runId": "run-323b2a61",
+    "date": "2026-11-07T14:55:29.630Z",
+    "runId": "run-f4d091bc",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-323b2a61",
+    "runId": "run-f4d091bc",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

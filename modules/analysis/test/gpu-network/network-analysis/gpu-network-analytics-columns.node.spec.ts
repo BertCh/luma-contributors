@@ -76,35 +76,15 @@ it('GPUNetworkAnalyticsColumns schedules algorithms then normalization in a fixe
       extent: importView('degree-extent', 'uint32', 2)
     },
     inDegree: {output: importView('in-degree', 'uint32', NODE_COUNT)},
-    pageRank: {
-      output: importView('page-rank', 'float32', NODE_COUNT),
-      normalized: importView('page-rank-normalized', 'float32', NODE_COUNT),
-      iterationCount: 2,
-      residual: importView('residual', 'float32', 1)
-    },
-    coreNumber: {
-      output: importView('core', 'uint32', NODE_COUNT),
-      maximumIterations: 1,
-      status: {
-        converged: importView('core-converged', 'uint32', 1)
-      },
-      degeneracy: importView('core-degeneracy', 'uint32', 1)
-    },
-    components: {output: importView('components', 'uint32', NODE_COUNT), maximumIterations: 1},
-    communities: {output: importView('communities', 'uint32', NODE_COUNT), maximumIterations: 1}
+    components: {output: importView('components', 'uint32', NODE_COUNT), maximumIterations: 1}
   });
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   const indexOf = (prefix: string) => ids.findIndex(id => id.startsWith(prefix));
   expect(ids[0]).toBe('columns-degree');
   expect(ids[1]).toBe('columns-in-degree');
-  expect(indexOf('columns-page-rank')).toBe(2);
-  expect(indexOf('columns-core-number')).toBeGreaterThan(indexOf('columns-page-rank'));
-  expect(indexOf('columns-components')).toBeGreaterThan(indexOf('columns-core-number'));
-  expect(indexOf('columns-communities')).toBeGreaterThan(indexOf('columns-components'));
-  expect(indexOf('columns-degree-extent')).toBeGreaterThan(indexOf('columns-communities'));
+  expect(indexOf('columns-components')).toBe(2);
+  expect(indexOf('columns-degree-extent')).toBeGreaterThan(indexOf('columns-components'));
   expect(ids).toContain('columns-degree-normalize');
-  expect(ids).toContain('columns-page-rank-normalize');
-  expect(ids.some(id => id.startsWith('columns-page-rank-extent'))).toBe(true);
   expect(ids).not.toContain('columns-in-degree-normalize');
   expect(ids.indexOf('columns-degree-normalize')).toBeGreaterThan(indexOf('columns-degree-extent'));
   device.destroy();
@@ -185,14 +165,12 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
   ).toThrow(/extent requires degree\.normalized/);
   expect(() =>
     create({
-      coreNumber: {
-        output: importView('core', 'uint32', NODE_COUNT),
-        status: {
-          converged: importView('core-converged', 'uint32', 2)
-        }
+      components: {
+        output: importView('cc-status', 'uint32', NODE_COUNT),
+        status: {converged: importView('cc-converged', 'uint32', 2)}
       }
     })
-  ).toThrow(/coreNumber\.status\.converged must contain exactly one row/);
+  ).toThrow(/components\.status\.converged must contain exactly one row/);
 
   // Transient views are accepted: the algorithms bind graph views directly.
   const transient = (name: string, length: number) =>
@@ -219,10 +197,7 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
     /length must equal|separate buffers/
   );
 
-  // gpu-graph validation surfaces from the constructor.
-  expect(() =>
-    create({pageRank: {output: importView('pr', 'float32', NODE_COUNT), damping: 2}})
-  ).toThrow(/damping/);
+  // Iteration validation surfaces from the constructor.
   expect(() =>
     create({
       components: {output: importView('cc', 'uint32', NODE_COUNT), maximumIterations: 0}
@@ -236,15 +211,10 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
   device.destroy();
 });
 
-it('GPUNetworkAnalyticsColumns has no destroy method and validates algorithms eagerly', () => {
+it('GPUNetworkAnalyticsColumns has no destroy method and validates iterations eagerly', () => {
   const device = createNullWebGPUDevice();
   const imports = createImports(device);
-  const contributor = new GPUNetworkAnalyticsColumns(
-    createProps(imports, {pageRank: {output: imports.importView('pr', 'float32', NODE_COUNT)}})
-  );
-  const ids = contributor.getCommandNodes(imports.graph).map(node => node.id);
-  // PageRank reads an overflow word; the exact CSR gets a graph-owned zero word cleared first.
-  expect(ids.indexOf('network-analytics-columns-page-rank-forward-overflow-exact-clear')).toBe(1);
+  const contributor = new GPUNetworkAnalyticsColumns(createProps(imports));
   expect('destroy' in contributor).toBe(false);
 
   const failing = createImports(device);
@@ -252,7 +222,7 @@ it('GPUNetworkAnalyticsColumns has no destroy method and validates algorithms ea
     () =>
       new GPUNetworkAnalyticsColumns(
         createProps(failing, {
-          pageRank: {output: failing.importView('pr', 'float32', NODE_COUNT), iterationCount: 0}
+          components: {output: failing.importView('cc', 'uint32', NODE_COUNT), maximumIterations: 0}
         })
       )
   ).toThrow(/iterations/);

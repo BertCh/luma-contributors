@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.change-detection: nirChangeBefore, nirChangeAfter, swirChangeBefore, swirChangeAfter → swirChangeDifference. cells: 4,096. values read back from the GPU run. input nirChangeBefore: 4096 cells.",
   "description": "Result of gpu-raster.change-detection: nirChangeBefore, nirChangeAfter, swirChangeBefore, swirChangeAfter → swirChangeDifference. cells: 4,096. values read back from the GPU run. input nirChangeBefore: 4096 cells.",
-  "llms": "Result of gpu-raster.change-detection: nirChangeBefore, nirChangeAfter, swirChangeBefore, swirChangeAfter → swirChangeDifference\n\n- cells: 4,096\n- input nirChangeBefore: 4096 cells\n- input nirChangeAfter: 4096 cells\n- input swirChangeBefore: 4096 cells\n- input swirChangeAfter: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.change-detection: nirChangeBefore, nirChangeAfter, swirChangeBefore, swirChangeAfter → swirChangeDifference\n\n- cells: 4,096\n- input nirChangeBefore: 4096 cells\n- input nirChangeAfter: 4096 cells\n- input swirChangeBefore: 4096 cells\n- input swirChangeAfter: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "4,096"
@@ -24,14 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:46.586Z",
-    "runId": "run-81be5783",
+    "date": "2026-11-07T14:55:17.340Z",
+    "runId": "run-f6ef8c4f",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-81be5783",
+    "runId": "run-f6ef8c4f",
     "rung": "result",
     "bindings": {},
     "clauses": [],

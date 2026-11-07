@@ -4,7 +4,27 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {GPUBivariateClassification, GPUClassBreaks, GPUColorScale, GPUColumnProfile, GPUColumnQuantiles, GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH, GPU_CLASS_BREAKS_METHODS, GPU_CLASS_BREAKS_METHOD_CODES, GPU_COLOR_SCALE_PARAMETER_LENGTH, GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT, getGPUBivariateClassificationParameterValues, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, getGPUColumnQuantilesParameterLength, getGPUColumnQuantilesParameterValues, type GPUClassBreaksMethod, type GPUColorScaleType} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  GPUBivariateClassification,
+  GPUClassBreaks,
+  GPUColorScale,
+  GPUColumnProfile,
+  GPUColumnQuantiles,
+  GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH,
+  GPU_CLASS_BREAKS_METHODS,
+  GPU_CLASS_BREAKS_METHOD_CODES,
+  GPU_COLOR_SCALE_PARAMETER_LENGTH,
+  GPU_COLUMN_PROFILE_STATISTIC,
+  GPU_COLUMN_PROFILE_STATISTIC_COUNT,
+  getGPUBivariateClassificationParameterValues,
+  getGPUClassBreaksParameterLength,
+  getGPUClassBreaksParameterValues,
+  getGPUColorScaleParameterValues,
+  getGPUColumnQuantilesParameterLength,
+  getGPUColumnQuantilesParameterValues,
+  type GPUClassBreaksMethod,
+  type GPUColorScaleType
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPU_CLASSIFICATION_FIT_ADAM,
   GPU_CLASSIFICATION_FIT_ADCM,
@@ -14,7 +34,12 @@ import {
   GPUClassAssignment,
   GPUClassificationFit
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {createTransientView, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {getClassCounts} from '../../cartography/breaks';
 import {
   getClassIndexOf,

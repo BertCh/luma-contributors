@@ -10,17 +10,12 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  GPUGraphAlgorithmsStronglyConnectedComponents,
-  GPUGraphAlgorithmsTopologyView
-} from '@luma.gl/graph/gpu-graph-algorithms';
-import {
   type GPUNetworkAdjacency,
   validateGPUNetworkTopology,
   getGPUNetworkTopologyViews
 } from '../../analysis-core/network-topology';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  captureGraphCommandNodes,
   validatePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
@@ -37,11 +32,6 @@ export type GPUNetworkStructureProps = {
   output: {
     /** Lowest vertex ID in each directed strongly connected component. */
     strongComponents?: GraphDataView<'uint32'>;
-    /**
-     * One row, set to one only when every strong component was resolved within the iteration
-     * budget. Only meaningful with the default `'iterative'` strong-component method.
-     */
-    strongComponentsConverged?: GraphDataView<'uint32'>;
     /** One flag per undirected CSR slot; both directions carry the same result. */
     bridges?: GraphDataView<'uint32'>;
     /** One flag per vertex. */
@@ -49,30 +39,14 @@ export type GPUNetworkStructureProps = {
     /** Biconnected edge block ID (lowest CSR slot in the block); invalid slots are 0xffffffff. */
     biconnectedComponents?: GraphDataView<'uint32'>;
   };
-  /**
-   * How `strongComponents` is computed. `'iterative'` runs the O(V) scratch GPU state machine of
-   * `GPUGraphAlgorithmsStronglyConnectedComponents` and has no size limit. `'reachability'` keeps
-   * the original exact O(V(V+E)) work, O(V^2) scratch path for at most 1024 vertices and 65536 CSR
-   * slots, whose result never depends on an iteration budget. `'auto'` (default) uses
-   * `'reachability'` within those caps unless `strongComponentsConverged` or
-   * `strongComponentsIterations` is given, and `'iterative'` otherwise.
-   */
-  strongComponentsMethod?: 'auto' | 'iterative' | 'reachability';
-  /**
-   * State-machine step budget of the `'iterative'` method (default 256, at most 4096). When it is
-   * exhausted before every component is resolved, `strongComponents` publishes `0xffffffff` and
-   * `strongComponentsConverged` stays zero.
-   */
-  strongComponentsIterations?: number;
 };
 
 /** Exact bounded graph structure on GPU-resident CSR. Connectivity ignores weights.
- * SCC uses the exact mutual-reachability path (O(V(V+E)) work, O(V²) scratch) within 1024
- * vertices and the bounded GPU state machine of `GPUGraphAlgorithmsStronglyConnectedComponents`
- * (O(V) scratch, no vertex limit) above that; see `strongComponentsMethod`.
+ * SCC uses the exact mutual-reachability path (O(V(V+E)) work, O(V²) scratch); there is no
+ * large-graph SCC because published luma.gl has no iterative strongly connected components.
  * Undirected resilience uses an iterative Tarjan traversal in one GPU invocation; this bounded
  * fallback is intended for subgraphs, not throughput-oriented giant graphs.
- * Resilience outputs and the reachability SCC path allow at most 1024 vertices and 65536 CSR
+ * All outputs allow at most 1024 vertices and 65536 CSR
  * slots. CSR offsets must be monotonic and within capacity;
  * reverseEdgeSlots must be an involution connecting reversed endpoints.
  */
@@ -80,62 +54,27 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
   readonly id: string;
   readonly nodeCount: number;
   readonly edgeCount: number;
-  private readonly strongComponents?: GPUGraphAlgorithmsStronglyConnectedComponents<
-    GPUGraphAlgorithmsTopologyView,
-    GraphDataView<'uint32'>
-  >;
   constructor(readonly props: GPUNetworkStructureProps) {
     this.id = props.id ?? 'network-structure';
     const shape = validateGPUNetworkTopology(this.id, props.topology);
     this.nodeCount = shape.nodeCount;
     this.edgeCount = shape.edgeCount;
     const {output} = props;
-    const strongComponentsMethod = props.strongComponentsMethod ?? 'auto';
-    const fitsReachability = this.nodeCount <= 1024 && this.edgeCount <= 65536;
-    const isIterative =
-      Boolean(output.strongComponents) &&
-      (strongComponentsMethod === 'iterative' ||
-        (strongComponentsMethod === 'auto' &&
-          (!fitsReachability ||
-            Boolean(output.strongComponentsConverged) ||
-            props.strongComponentsIterations !== undefined)));
     const hasResilienceOutput = Boolean(
       output.bridges || output.articulationPoints || output.biconnectedComponents
     );
-    // Only the iterative strong-component path scales beyond the bounded single-invocation kernels.
-    if (!isIterative || hasResilienceOutput) {
-      validateCapacity(this.id, 'nodeCount', this.nodeCount, 1, 1024);
-      validateCapacity(this.id, 'edgeCount', this.edgeCount, 0, 65536);
-    }
+    validateCapacity(this.id, 'nodeCount', this.nodeCount, 1, 1024);
+    validateCapacity(this.id, 'edgeCount', this.edgeCount, 0, 65536);
     if (!Object.values(output).some(Boolean))
       throw new Error('Network structure requires an output');
     for (const [name, view] of Object.entries(output)) {
       if (!view) continue;
       validatePackedView(view, ['uint32'], `${this.id} ${name}`);
       const length =
-        name === 'strongComponentsConverged'
-          ? 1
-          : name === 'strongComponents' || name === 'articulationPoints'
-            ? this.nodeCount
-            : this.edgeCount;
+        name === 'strongComponents' || name === 'articulationPoints'
+          ? this.nodeCount
+          : this.edgeCount;
       if (view.length !== length) throw new Error('Network structure output length mismatch');
-    }
-    if (output.strongComponentsConverged && !isIterative) {
-      throw new Error('strongComponentsConverged requires the iterative strong-component method');
-    }
-    if (isIterative) {
-      this.strongComponents = new GPUGraphAlgorithmsStronglyConnectedComponents({
-        id: `${this.id}-strong-components`,
-        topology: new GPUGraphAlgorithmsTopologyView({
-          id: `${this.id}-topology`,
-          vertexCount: this.nodeCount,
-          directed: true,
-          forward: {offsets: props.topology.offsets, neighbors: props.topology.neighbors}
-        }),
-        output: output.strongComponents!,
-        iterations: props.strongComponentsIterations,
-        converged: output.strongComponentsConverged
-      });
     }
     if (hasResilienceOutput) {
       if (!props.reverseEdgeSlots)
@@ -170,10 +109,7 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
       {name: 'neighbors', view: topology.neighbors, type: 'u32', access: 'read'}
     ] as const;
     const constants = `const NODE_COUNT: u32 = ${nodeCount}u; const EDGE_COUNT: u32 = ${edgeCount}u; const NONE: u32 = 0xffffffffu;`;
-    if (this.strongComponents) {
-      const {strongComponents} = this;
-      nodes.push(...captureGraphCommandNodes(graph, () => strongComponents.addToGraph(graph)));
-    } else if (output.strongComponents) {
+    if (output.strongComponents) {
       const reachable = createTransientView(
         graph,
         `${id}-reachable`,

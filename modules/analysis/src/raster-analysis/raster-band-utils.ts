@@ -233,3 +233,63 @@ export function getRasterBufferBandNodes<Parameters>(
     nodes
   };
 }
+
+/** Returns a raster parameter local origin, defaulting to zero, or throws if it is not finite. @internal */
+export function readRasterParameterOrigin(
+  label: string,
+  localOrigin: readonly [number, number] | undefined
+): readonly [number, number] {
+  if (!localOrigin) {
+    return [0, 0];
+  }
+  if (!(Number.isFinite(localOrigin[0]) && Number.isFinite(localOrigin[1]))) {
+    throw new Error(`${label} localOrigin must be finite`);
+  }
+  return localOrigin;
+}
+
+/** Throws unless a parameter extent is `[minX, minY, maxX, maxY]` with finite, increasing bounds. @internal */
+export function validateRasterParameterExtent(label: string, extent: readonly number[]): void {
+  const [minX, minY, maxX, maxY] = extent;
+  if (extent.length !== 4 || !extent.every(Number.isFinite) || !(maxX > minX) || !(maxY > minY)) {
+    throw new Error(`${label} extent must be finite with maxX > minX and maxY > minY`);
+  }
+}
+
+/**
+ * Cheap pre-check for focal-pair inputs: an identifier, a 32-bit scalar format, finite scale and
+ * offset, and storage covering the grid. Graph ownership is checked separately when the node is
+ * added to a graph; the published raster primitives validate the remainder.
+ *
+ * @internal
+ */
+export function validateRasterBand(
+  band: GPURasterBand,
+  grid: Pick<GPURasterMetadata, 'width' | 'height'>,
+  label: string
+): void {
+  if (!band.id) {
+    throw new Error(`${label} band requires an identifier`);
+  }
+  if (!['float32', 'uint32', 'sint32'].includes(band.format)) {
+    throw new Error(`${label} format must be float32, uint32 or sint32`);
+  }
+  if (
+    (band.scale !== undefined && !Number.isFinite(band.scale)) ||
+    (band.offset !== undefined && !Number.isFinite(band.offset))
+  ) {
+    throw new Error(`${label} scale and offset must be finite`);
+  }
+  if (band.storage.kind === 'buffer') {
+    if (band.storage.values.length < grid.width * grid.height) {
+      throw new Error(`${label} values must cover the raster grid`);
+    }
+  } else if (band.storage.kind === 'texture') {
+    const {view} = band.storage;
+    if (view.width !== grid.width || view.height !== grid.height) {
+      throw new Error(`${label} texture extent must match the raster grid`);
+    }
+  } else {
+    throw new Error(`${label} storage must be a buffer or texture`);
+  }
+}

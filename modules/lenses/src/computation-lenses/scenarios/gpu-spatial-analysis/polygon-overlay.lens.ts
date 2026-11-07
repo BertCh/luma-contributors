@@ -50,18 +50,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUPolygonOverlay',
           datasets: [data.id, areas.id],
-          retain: [
-            'overlayPositions',
-            'overlayRingOffsets',
-            'overlayCount',
-            'overlayRequiredCount',
-            'overlayOverflow',
-            'overlayCandidateOverflow',
-            'boundaryOperandIds',
-            'boundarySourceFeatureIds',
-            'boundaryCount',
-            'boundaryOverflow'
-          ],
           keySpaces: [
             {id: 'segment', label: 'kept boundary edge', size: capacity.boundary, indexSpace: '1d'},
             {

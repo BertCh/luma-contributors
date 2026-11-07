@@ -27,7 +27,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.lisa-markov',
           element: 'GPULISAMarkov',
           datasets: ['s2-midwest-counties'],
-          retain: ['counts', 'probabilities', 'rowTotals', 'ignored', 'quadrants'],
           keySpaces: [
             {id: 'transition', label: 'from state x to state', size: 25, indexSpace: '1d'},
             {id: 'state', label: 'LISA state (from)', size: 5, indexSpace: '1d'},

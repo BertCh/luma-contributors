@@ -450,7 +450,6 @@ export class GPUKeplerScalarSelection {
         for (const chunk of vector.data) buffers.add(getBuffer(chunk));
       byteLength +=
         [...buffers].reduce((total, buffer) => total + buffer.byteLength, 0) +
-        state.query.compilationStats.physicalTransientResourceBytes +
         (state.time?.accountedResidentByteLength ?? 0);
     }
     return byteLength;

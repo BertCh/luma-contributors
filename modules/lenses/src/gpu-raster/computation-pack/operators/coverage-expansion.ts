@@ -14,7 +14,7 @@ function entry(
     guards: [],
     datumKinds: [CELL],
     sources: (typeof file === 'string' ? [file] : file).map(
-      source => `modules/analysis/src/gpu-raster/remote-sensing/${source}.ts`
+      source => `modules/analysis/src/raster-analysis/remote-sensing/${source}.ts`
     )
   };
 }

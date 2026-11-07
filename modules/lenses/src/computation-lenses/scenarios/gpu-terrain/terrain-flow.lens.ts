@@ -42,9 +42,6 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       {stage: 'iteration', name: 'maximumFillIterations', value: 64, sweepable: true},
       {stage: 'iteration', name: 'maximumAccumulationIterations', value: 16, sweepable: true}
     ],
-    // The filled surface is the part of this element that iterates visibly: the epsilon fill is
-    // a gated relaxation, while pull accumulation finishes in a few rounds.
-    keyFrames: {loop: 'terrain-flow-fill-relax', maximumFrames: 8},
     build: async session => {
       const dem = session.input('dem', 'float32', data.elevation, {
         role: 'input',
@@ -57,13 +54,6 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         role: 'intermediate',
         geometry: 'raster',
         meaning: 'filled elevation (m)'
-      });
-      // The same buffer under a second name keeps one snapshot per relaxation key frame.
-      session.capture('flowFillRelaxation', filledElevation, {
-        role: 'intermediate',
-        geometry: 'raster',
-        meaning: 'filled elevation during relaxation (m)',
-        keyFrames: true
       });
       const flowDirections = session.output('flowDirections', 'uint32', {
         role: 'intermediate',

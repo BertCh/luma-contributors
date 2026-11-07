@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.affine-transform",
   "viewId": "datum-receipt",
-  "caption": "Receipt of park vertex 0. transformedParks: 3449.4765625, 17014.482421875. values read back from the GPU run. affine-transform: 2 quantities.",
-  "description": "Receipt of park vertex 0. transformedParks: 3449.4765625, 17014.482421875. values read back from the GPU run. affine-transform: 2 quantities.",
-  "llms": "Receipt of park vertex 0\n\n- transformedParks: 3449.4765625, 17014.482421875\n- affine-transform: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of park vertex 0. transformedParks: 3449.4765625, 17014.482421875. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of park vertex 0. transformedParks: 3449.4765625, 17014.482421875. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of park vertex 0\n\n- transformedParks: 3449.4765625, 17014.482421875\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "transformedParks",
     "value": "3449.4765625, 17014.482421875"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of park vertex 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"affine-transform\"><tr><th scope=\"rowgroup\" colspan=\"5\">affine-transform</th></tr><tr data-provenance=\"readback\"><td>affine-transform</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-affine-transform-snapshots-positions-0\">positions</button></td><td>3353.739990234375, 17042.130859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>affine-transform</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-affine-transform-snapshots-transformedParks-0\" title=\"park vertices rotated 30 degrees and scaled by 0.6 about each centroid\">transformedParks</button></td><td>3449.4765625, 17014.482421875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of park vertex 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-affine-transform-snapshots-positions-0\" title=\"gpu-spatial-analysis-affine-transform-snapshot-tap\">positions</button></td><td>3353.739990234375, 17042.130859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-affine-transform-snapshots-transformedParks-0\" title=\"park vertices rotated 30 degrees and scaled by 0.6 about each centroid\">transformedParks</button></td><td>3449.4765625, 17014.482421875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,14 +28,14 @@
     ],
     "rows": [
       [
-        "affine-transform",
+        "result",
         "positions",
         "3353.739990234375, 17042.130859375",
         "0",
         "readback"
       ],
       [
-        "affine-transform",
+        "result",
         "transformedParks",
         "3449.4765625, 17014.482421875",
         "0",
@@ -49,12 +49,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:49.960Z",
-    "runId": "run-20eae8f1",
+    "date": "2026-11-07T14:55:18.122Z",
+    "runId": "run-6fcc6b79",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-20eae8f1",
+    "runId": "run-6fcc6b79",
     "rung": "datum",
     "bindings": {
       "entity": 0

@@ -104,15 +104,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.hot-spot-analysis-recipe',
           element: 'addHotSpotAnalysisRecipe',
           datasets: ['s2-chicago-north-nature', 's2-chicago-north-areas'],
-          retain: [
-            'zScores',
-            'pValues',
-            'bins',
-            'neighborCounts',
-            'pointsOutsideStudyArea',
-            'centers',
-            'values'
-          ],
           keySpaces: [
             {id: 'cell', label: 'study cell', size: cellCapacity, indexSpace: '1d'},
             {id: 'observation', label: 'observation', size: observationCount, indexSpace: '1d'},

@@ -11,7 +11,6 @@ export function runNestedInterpolationValidationLens(device: Device) {
     element: 'GPUNestedInterpolationValidation',
     datasets: ['synthetic-nested-validation-twelve-sites'],
     seed: 2,
-    retain: ['selected', 'scores', 'predictions', 'metrics', 'status'],
     keySpaces: [
       {id: 'fold', label: 'Outer fold', size: 2, indexSpace: '1d'},
       {id: 'sample', label: 'Sample', size: 12, indexSpace: '1d'},

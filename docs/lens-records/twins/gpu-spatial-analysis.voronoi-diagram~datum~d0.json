@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.voronoi-diagram",
   "viewId": "datum-receipt",
-  "caption": "Receipt of Voronoi segment 0. siteIds: 0, 1. values read back from the GPU run. voronoi-diagram: 1 quantities.",
-  "description": "Receipt of Voronoi segment 0. siteIds: 0, 1. values read back from the GPU run. voronoi-diagram: 1 quantities.",
-  "llms": "Receipt of Voronoi segment 0\n\n- siteIds: 0, 1\n- voronoi-diagram: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of Voronoi segment 0. siteIds: 0, 1. values read back from the GPU run. result: 1 quantities.",
+  "description": "Receipt of Voronoi segment 0. siteIds: 0, 1. values read back from the GPU run. result: 1 quantities.",
+  "llms": "Receipt of Voronoi segment 0\n\n- siteIds: 0, 1\n- result: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "siteIds",
     "value": "0, 1"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Voronoi segment 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"voronoi-diagram\"><tr><th scope=\"rowgroup\" colspan=\"5\">voronoi-diagram</th></tr><tr data-provenance=\"readback\"><td>voronoi-diagram</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-voronoi-diagram-snapshots-siteIds-0\" title=\"the two place rows whose bisector owns each segment; unwritten slots are unspecified\">siteIds</button></td><td>0, 1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Voronoi segment 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-voronoi-diagram-snapshots-siteIds-0\" title=\"the two place rows whose bisector owns each segment; unwritten slots are unspecified\">siteIds</button></td><td>0, 1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,7 +28,7 @@
     ],
     "rows": [
       [
-        "voronoi-diagram",
+        "result",
         "siteIds",
         "0, 1",
         "0",
@@ -54,12 +54,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:08.584Z",
-    "runId": "run-c9d35d7b",
+    "date": "2026-11-07T14:55:29.538Z",
+    "runId": "run-4f327a26",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-c9d35d7b",
+    "runId": "run-4f327a26",
     "rung": "datum",
     "bindings": {
       "entity": 0

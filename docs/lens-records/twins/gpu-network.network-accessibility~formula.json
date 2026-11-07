@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Inf…",
   "description": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Inf…",
-  "llms": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.\n\n- bound symbols: 5/5\n- compute passes were not coalesced as in production\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.accessibility.gravity</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{gravitySum}{A_j}=\\sum_{i}\\term{weight}{O_i}\\,e^{-\\term{beta}{\\beta}\\,\\term{cost}{c_{ij}}}\\quad\\text{over }c_{ij}\\le\\term{threshold}{T}</pre><p class=\"lens-ascii\">Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 &lt;= cost &lt;= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-accessibility-scores\" data-value=\"gravitySum\">gravity score · output · gravitySum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-cost-matrix-batch-0-relax-0\" data-value=\"weight\">opportunity weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-accessibility-scores\" data-value=\"beta\">decay rate · parameter · beta</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-cost-matrix-batch-0-seed\" data-value=\"cost\">matrix cost · input · cost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-accessibility-scores\" data-value=\"threshold\">cost cutoff · parameter · threshold</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-accessibility-scores\">network-accessibility-scores</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.accessibility.gravity</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{gravitySum}{A_j}=\\sum_{i}\\term{weight}{O_i}\\,e^{-\\term{beta}{\\beta}\\,\\term{cost}{c_{ij}}}\\quad\\text{over }c_{ij}\\le\\term{threshold}{T}</pre><p class=\"lens-ascii\">Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 &lt;= cost &lt;= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gravitySum\">gravity score · output · unknown — wgsl gravitySum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">opportunity weight · input · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"beta\">decay rate · parameter · unknown — wgsl beta not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cost\">matrix cost · input · unknown — wgsl cost not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"threshold\">cost cutoff · parameter · unknown — wgsl threshold not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "gravity score",
         "output",
-        "gravitySum",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "opportunity weight",
         "input",
-        "weight",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "decay rate",
         "parameter",
-        "beta",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "matrix cost",
         "input",
-        "cost",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "cost cutoff",
         "parameter",
-        "threshold",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -77,15 +77,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.650Z",
-    "runId": "run-e583d7a0",
+    "date": "2026-11-07T14:55:16.775Z",
+    "runId": "run-63dabb6b",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-e583d7a0",
+    "runId": "run-63dabb6b",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

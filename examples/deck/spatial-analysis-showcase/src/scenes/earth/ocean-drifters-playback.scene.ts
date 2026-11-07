@@ -365,12 +365,12 @@ export default defineScene<OceanDriftersPlaybackOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUTrajectoryPlayhead, GPULineDensity,
   getGPUTrajectoryPlayheadParameterValues, getGPULineDensityParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
 
 // positions: float32x2 lon/lat, timestamps: float32 days since 1 Jan 2017, trackOffsets: uint32
 const playGraph = new GPUCommandGraph(device, {id: 'playback'});

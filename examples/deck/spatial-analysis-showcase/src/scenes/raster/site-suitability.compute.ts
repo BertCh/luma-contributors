@@ -5,7 +5,25 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {getGPURasterArithmeticParameterValues, getGPURasterCellStatisticsParameterValues, getGPURasterConditionalParameterValues, getGPURasterReclassifyParameterValues, getGPURasterSamplingParameterValues, getGPUWeightedOverlayParameterLength, getGPUWeightedOverlayParameterValues, GPURasterArithmetic, GPURasterCellStatistics, GPURasterConditional, GPURasterReclassify, GPURasterSampling, GPURasterZonalStatistics, GPUWeightedOverlay, makeGPURasterMetadata, GPU_RASTER_SAMPLING_PARAMETER_LENGTH, type GPURasterZonalStatisticsSumOrder} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPURasterArithmeticParameterValues,
+  getGPURasterCellStatisticsParameterValues,
+  getGPURasterConditionalParameterValues,
+  getGPURasterReclassifyParameterValues,
+  getGPURasterSamplingParameterValues,
+  getGPUWeightedOverlayParameterLength,
+  getGPUWeightedOverlayParameterValues,
+  GPURasterArithmetic,
+  GPURasterCellStatistics,
+  GPURasterConditional,
+  GPURasterReclassify,
+  GPURasterSampling,
+  GPURasterZonalStatistics,
+  GPUWeightedOverlay,
+  makeGPURasterMetadata,
+  GPU_RASTER_SAMPLING_PARAMETER_LENGTH,
+  type GPURasterZonalStatisticsSumOrder
+} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {
   getGPUTerrainDerivativesParameterValues,

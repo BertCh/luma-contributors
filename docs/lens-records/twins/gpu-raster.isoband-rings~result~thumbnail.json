@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.isoband-rings: isobandRingsElevation → isobandRingPosition…",
   "description": "Result of gpu-raster.isoband-rings: isobandRingsElevation → isobandRingPositions. polygons: 96. values read back from the GPU run. input isobandRingsElevation: 4096 cells.",
-  "llms": "Result of gpu-raster.isoband-rings: isobandRingsElevation → isobandRingPositions\n\n- polygons: 96\n- input isobandRingsElevation: 4096 cells\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 3800 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.isoband-rings: isobandRingsElevation → isobandRingPositions\n\n- polygons: 96\n- input isobandRingsElevation: 4096 cells\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 3800 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "96"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:47.617Z",
-    "runId": "run-3f73a6c3",
+    "date": "2026-11-07T14:55:17.485Z",
+    "runId": "run-a794d083",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-3f73a6c3",
+    "runId": "run-a794d083",
     "rung": "result",
     "bindings": {},
     "clauses": [],

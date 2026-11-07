@@ -38,7 +38,6 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       {stage: 'support', name: 'cellSizeMode', value: 'uniform', sweepable: false},
       {stage: 'iteration', name: 'maximumIterations', value: 128, sweepable: true}
     ],
-    keyFrames: {loop: 'cost-distance-relax', maximumFrames: 8},
     build: async session => {
       session.input('landscapeElevation', 'float32', terrain.elevation, {
         role: 'context',
@@ -70,8 +69,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       const costs = session.output('costs', 'float32', {
         role: 'output',
         geometry: 'raster',
-        meaning: 'accumulated cost (friction × m)',
-        keyFrames: true
+        meaning: 'accumulated cost (friction × m)'
       });
       const costConverged = session.output(
         'costConverged',

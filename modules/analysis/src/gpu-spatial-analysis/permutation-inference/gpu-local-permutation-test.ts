@@ -852,7 +852,7 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
       neighborLoopWGSL,
       slotWeightWGSL
     };
-    if (graph.recording && isWholeWeights) {
+    if (isWholeWeights) {
       this.replayInputs = {
         kernel: kernelOptions,
         bindings: [

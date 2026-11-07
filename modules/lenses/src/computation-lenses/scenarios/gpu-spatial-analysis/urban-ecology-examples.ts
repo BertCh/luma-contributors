@@ -4,7 +4,7 @@
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-import {createWGSLKernelNode} from '@luma.gl/graph';
+import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import type {S2Uploads, S2CaptureSpec} from './s2-lens-run';
 import {runExample as runStreetProfiles} from './street-profiles-recipe.example';
 import {runExample as runBuildingAdjacency} from './building-adjacency-recipe.example';
@@ -16,8 +16,6 @@ import {runExample as runPatchProximity} from './patch-proximity-recipe.example'
 import {runExample as runResistanceConnectivity} from './resistance-connectivity-recipe.example';
 import {runExample as runSegregationDecomposition} from './segregation-decomposition-recipe.example';
 
-import {runExample as runaddSparseResistanceConnectivityRecipe} from './sparse-resistance-connectivity-recipe.example';
-import {runExample as runaddRasterResistanceConnectivityRecipe} from './raster-resistance-connectivity-recipe.example';
 import {runExample as runaddSegregationCounterfactualRecipe} from './segregation-counterfactual-recipe.example';
 import {runExample as runaddPopulationSupportAlignmentRecipe} from './population-support-alignment-recipe.example';
 
@@ -215,30 +213,6 @@ export async function buildUrbanEcologyScenario(
           ],
           supportId: 'two-aligned-synthetic-zones',
           counterfactualMethod: 'explicit-supplied-counterfactuals'
-        })
-      );
-    case 'addSparseResistanceConnectivityRecipe':
-      return finish(
-        await runaddSparseResistanceConnectivityRecipe(graph, {
-          edges: input('edges', 'uint32x2', [0, 1, 1, 2, 0, 2]),
-          conductances: input('conductances', 'float32', [1, 1, 1]),
-          vertexCount: 3,
-          source: 0,
-          sink: 2,
-          maximumIterations: 4
-        })
-      );
-    case 'addRasterResistanceConnectivityRecipe':
-      return finish(
-        await runaddRasterResistanceConnectivityRecipe(graph, {
-          resistance: input('resistance', 'float32', [1, 1, 1]),
-          width: 3,
-          height: 1,
-          cellSize: [1, 1],
-          connectivity: 4,
-          source: 0,
-          sink: 2,
-          maximumIterations: 4
         })
       );
     case 'addSegregationCounterfactualRecipe':

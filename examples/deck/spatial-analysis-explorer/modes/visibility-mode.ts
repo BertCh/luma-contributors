@@ -24,9 +24,17 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {getGPURasterExtremaPyramidLayout, GPURasterExtremaPyramid, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPURasterExtremaPyramidLayout,
+  GPURasterExtremaPyramid,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUPointHorizonProfileParameterValues,
   getGPUTerrainCurvatureCoefficient,

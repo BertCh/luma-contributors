@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-graph.graph-core-number",
   "viewId": "formula-card",
-  "caption": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "description": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "llms": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.\n\n- bound symbols: 2/3\n- compute passes were not coalesced as in production\n- 285 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Start from the distinct weak-neighbor degree. Each synchronized round replaces output[v] with the largest candidate h <= previous output[v] for which at least h distinct neighbors have output >= h (binary search over h, countSupportingNeighb…",
+  "description": "Formula Start from the distinct weak-neighbor degree. Each synchronized round replaces output[v] with the largest candidate h <= previous output[v] for which at least h distinct neighbors have output >= h (binary search over h, countSupportingNeighb…",
+  "llms": "Formula Start from the distinct weak-neighbor degree. Each synchronized round replaces output[v] with the largest candidate h <= previous output[v] for which at least h distinct neighbors have output >= h (binary search over h, countSupportingNeighbors). Results go to scratch and are published together, so every vertex reads the preceding round. Converged when no vertex changed; otherwise values are upper bounds.\n\n- bound symbols: 0/4\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/3"
+    "value": "0/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.scan</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})</pre><p class=\"lens-ascii\">y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-core-number-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-core-number-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"y\">y · output · outputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"heads\">heads · input · unknown — wgsl segmentFlags not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-core-number-compiled:rail-topology-forward-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-core-number-compiled:rail-topology-forward-scan-level-1-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-core-number-compiled:rail-topology-forward-scan-level-0-add-offsets\">add-offsets</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-graph.core-number-h-index</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{core}{c}^{(k+1)}_v=\\max\\{\\term{candidate}{h}\\le c^{(k)}_v:\\ \\term{supporters}{S}_v(h)\\ge h\\},\\quad\n\\term{supporters}{S}_v(h)=\\#\\{u\\in N(v):\\ \\term{neighborCore}{c}^{(k)}_u\\ge h\\},\\quad\nc^{(0)}_v=|N(v)|</pre><p class=\"lens-ascii\">Start from the distinct weak-neighbor degree. Each synchronized round replaces output[v] with the largest candidate h &lt;= previous output[v] for which at least h distinct neighbors have output &gt;= h (binary search over h, countSupportingNeighbors). Results go to scratch and are published together, so every vertex reads the preceding round. Converged when no vertex changed; otherwise values are upper bounds.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"core\">core estimate · output · unknown — wgsl output not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"candidate\">candidate core · index · unknown — wgsl candidate not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"supporters\">supporting neighbors · intermediate · unknown — wgsl supporters not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"neighborCore\">neighbor estimate · input · unknown — wgsl neighborCore not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -27,21 +27,28 @@
     ],
     "rows": [
       [
-        "x",
-        "input",
-        "inputValues",
-        "—",
-        "metadata"
-      ],
-      [
-        "y",
+        "core estimate",
         "output",
-        "outputValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "heads",
+        "candidate core",
+        "index",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "supporting neighbors",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "neighbor estimate",
         "input",
         "unknown",
         "—",
@@ -51,26 +58,27 @@
     "provenance": [
       "metadata",
       "metadata",
+      "metadata",
       "metadata"
     ]
   },
   "formula": {
-    "tex": "\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})",
-    "ascii": "y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.",
+    "tex": "\\term{core}{c}^{(k+1)}_v=\\max\\{\\term{candidate}{h}\\le c^{(k)}_v:\\ \\term{supporters}{S}_v(h)\\ge h\\},\\quad\n\\term{supporters}{S}_v(h)=\\#\\{u\\in N(v):\\ \\term{neighborCore}{c}^{(k)}_u\\ge h\\},\\quad\nc^{(0)}_v=|N(v)|",
+    "ascii": "Start from the distinct weak-neighbor degree. Each synchronized round replaces output[v] with the largest candidate h <= previous output[v] for which at least h distinct neighbors have output >= h (binary search over h, countSupportingNeighbors). Results go to scratch and are published together, so every vertex reads the preceding round. Converged when no vertex changed; otherwise values are upper bounds.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:42.815Z",
-    "runId": "run-969ca370",
+    "date": "2026-11-07T14:55:16.300Z",
+    "runId": "run-e3d82bfa",
     "observerEffects": [
       "compute passes were not coalesced as in production",
-      "285 observation taps inserted",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-969ca370",
+    "runId": "run-e3d82bfa",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

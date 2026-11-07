@@ -12,7 +12,11 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {GPUSegmentIntersection} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

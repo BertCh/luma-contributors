@@ -6,7 +6,15 @@ import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import type {DynamicBuffer} from '@luma.gl/engine';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {addGPUCommandNodes, createTransientView, GPUCommandGraph, GPUReduction, type GraphBufferHandle, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {
+  addGPUCommandNodes,
+  createTransientView,
+  GPUCommandGraph,
+  GPUReduction,
+  type GraphBufferHandle,
+  type GraphDataView,
+  type GraphVectorView
+} from '@luma.gl/graph/gpu-core';
 import {GPUVariableStandardization} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   estimateKeplerResidentRowCacheByteLength,

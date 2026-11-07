@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Texture, type Device} from '@luma.gl/core';
-import {FlowParticleSimulation, isFlowParticleSimulationSupported, type FlowParticleStepResult} from '@luma.gl/graph/experimental/simulation';
+import {
+  FlowParticleSimulation,
+  isFlowParticleSimulationSupported,
+  type FlowParticleStepResult
+} from '@luma.gl/graph/experimental/simulation';
 import {FlowParticleLayer, type FlowParticleLayerProps} from '@deck.gl-community/gpu-layers';
 import type {FlowFieldGrid} from './flow-field-grid';
 import type {FlowFieldGpuGrid} from './flow-field-gpu';

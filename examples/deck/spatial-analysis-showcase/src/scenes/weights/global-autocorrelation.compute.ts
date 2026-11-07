@@ -4,7 +4,15 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {getGPUSpatialCorrelogramParameterValues, GPU_SPATIAL_CORRELOGRAM_NO_BAND, GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH, GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH, GPUSpatialCorrelogram, type GPUSpatialCorrelogramBandMode, type GPUSpatialCorrelogramVarianceAssumption} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUSpatialCorrelogramParameterValues,
+  GPU_SPATIAL_CORRELOGRAM_NO_BAND,
+  GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
+  GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH,
+  GPUSpatialCorrelogram,
+  type GPUSpatialCorrelogramBandMode,
+  type GPUSpatialCorrelogramVarianceAssumption
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUPermutationParameterValues,
   GPU_GLOBAL_JOIN_COUNT_FIELD,

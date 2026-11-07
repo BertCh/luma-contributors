@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-graph.graph-modularity",
   "viewId": "formula-card",
-  "caption": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "description": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "llms": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.\n\n- bound symbols: 2/3\n- 7 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Edges accumulate per community label c: internal L_c (weight of edges with both ends in c), outgoing and incoming volumes d_c (an undirected edge adds its weight to both end communities, so V = sum of volumes = 2W). contribution[c] = factor*…",
+  "description": "Formula Edges accumulate per community label c: internal L_c (weight of edges with both ends in c), outgoing and incoming volumes d_c (an undirected edge adds its weight to both end communities, so V = sum of volumes = 2W). contribution[c] = factor*…",
+  "llms": "Formula Edges accumulate per community label c: internal L_c (weight of edges with both ends in c), outgoing and incoming volumes d_c (an undirected edge adds its weight to both end communities, so V = sum of volumes = 2W). contribution[c] = factor*L_c/V - resolution*outgoing_c/V*incoming_c/V with factor 2 for undirected and 1 for directed graphs (incoming = outgoing when undirected); Q = sum of contributions via a GPU sum reduction. Invalid labels or weights, or zero total weight, publish zero score and contributions.\n\n- bound symbols: 0/7\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/3"
+    "value": "0/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.scan</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})</pre><p class=\"lens-ascii\">y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"y\">y · output · outputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"heads\">heads · input · unknown — wgsl segmentFlags not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-compiled:rail-topology-forward-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-compiled:rail-topology-forward-scan-level-1-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-modularity-compiled:rail-topology-forward-scan-level-0-add-offsets\">add-offsets</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-graph.modularity-contribution</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{contribution}{Q_c}=2\\,\\frac{\\term{internal}{L_c}}{\\term{volume}{V}}-\\term{resolution}{\\gamma}\\,\\frac{\\term{outgoing}{d_c}}{V}\\,\\frac{\\term{incoming}{d_c}}{V},\\qquad\n\\term{score}{Q}=\\sum_c\\term{contribution}{Q_c}</pre><p class=\"lens-ascii\">Edges accumulate per community label c: internal L_c (weight of edges with both ends in c), outgoing and incoming volumes d_c (an undirected edge adds its weight to both end communities, so V = sum of volumes = 2W). contribution[c] = factor*L_c/V - resolution*outgoing_c/V*incoming_c/V with factor 2 for undirected and 1 for directed graphs (incoming = outgoing when undirected); Q = sum of contributions via a GPU sum reduction. Invalid labels or weights, or zero total weight, publish zero score and contributions.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"contribution\">community contribution · output · unknown — wgsl contribution not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"internal\">internal edge weight · input · unknown — wgsl internal not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"volume\">total volume · constant · unknown — wgsl volume not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"resolution\">resolution · parameter · unknown — wgsl RESOLUTION not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"outgoing\">outgoing volume · input · unknown — wgsl outgoing not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"incoming\">incoming volume · input · unknown — wgsl incoming not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"score\">modularity score · output · unknown — wgsl output not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -27,22 +27,50 @@
     ],
     "rows": [
       [
-        "x",
-        "input",
-        "inputValues",
-        "—",
-        "metadata"
-      ],
-      [
-        "y",
+        "community contribution",
         "output",
-        "outputValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "heads",
+        "internal edge weight",
         "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "total volume",
+        "constant",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "resolution",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "outgoing volume",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "incoming volume",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "modularity score",
+        "output",
         "unknown",
         "—",
         "metadata"
@@ -51,25 +79,30 @@
     "provenance": [
       "metadata",
       "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
       "metadata"
     ]
   },
   "formula": {
-    "tex": "\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})",
-    "ascii": "y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.",
+    "tex": "\\term{contribution}{Q_c}=2\\,\\frac{\\term{internal}{L_c}}{\\term{volume}{V}}-\\term{resolution}{\\gamma}\\,\\frac{\\term{outgoing}{d_c}}{V}\\,\\frac{\\term{incoming}{d_c}}{V},\\qquad\n\\term{score}{Q}=\\sum_c\\term{contribution}{Q_c}",
+    "ascii": "Edges accumulate per community label c: internal L_c (weight of edges with both ends in c), outgoing and incoming volumes d_c (an undirected edge adds its weight to both end communities, so V = sum of volumes = 2W). contribution[c] = factor*L_c/V - resolution*outgoing_c/V*incoming_c/V with factor 2 for undirected and 1 for directed graphs (incoming = outgoing when undirected); Q = sum of contributions via a GPU sum reduction. Invalid labels or weights, or zero total weight, publish zero score and contributions.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:42.949Z",
-    "runId": "run-ac307b87",
+    "date": "2026-11-07T14:55:16.368Z",
+    "runId": "run-cc322278",
     "observerEffects": [
-      "7 observation taps inserted",
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-ac307b87",
+    "runId": "run-cc322278",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

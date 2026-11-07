@@ -14,7 +14,7 @@
     "value": "357.6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUGroupStatistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{m2}{M_2}=\\max\\left(\\term{momentSums}{S_2-S_1^2/n},0\\right),\\quad \\term{m2}{M_2}\\leftarrow0\\ \\text{if }\\term{m2}{M_2}\\leq2^{-19}\\term{momentSums}{S_2},\\quad \\term{variances}{v}=\\frac{\\term{m2}{M_2}}{\\term{counts}{n}-\\mathbf{1}[\\term{sampleVariance}{\\mathrm{sample}}]}</pre><p class=\"lens-ascii\">d=x-mean0; M2=max(sum(d*d)-sum(d)^2/n,0), snapped to 0 if &lt;=2^-19*sum(d*d); variance=M2/(n-(variance==sample)).</p></div><div class=\"lens-worked-example\"><h4>Entity 34</h4><div><pre class=\"lens-tex\">\\term{m2}{M_2}=\\max\\left(\\term{momentSums}{S_2-S_1^2/n},0\\right),\\quad \\term{m2}{M_2}\\leftarrow0\\ \\text{if }\\term{m2}{M_2}\\leq2^{-19}\\term{momentSums}{S_2},\\quad \\term{variances}{357.647}=\\frac{\\term{m2}{M_2}}{\\term{counts}{10}-\\mathbf{1}[\\term{sampleVariance}{\\mathrm{sample}}]}</pre><p class=\"lens-ascii\">d=x-mean0; M2=max(sum(d*d)-sum(d)^2/n,0), snapped to 0 if &lt;=2^-19*sum(d*d); variance=M2/(n-(variance==sample)).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.group-statistics-compiled:group-statistics-c0-finish-moments\" data-value=\"m2\">m2 · intermediate · m2</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.group-statistics-compiled:group-statistics-c0-moments\" data-value=\"momentSums\">momentSums · intermediate · momentSums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.group-statistics-compiled:group-statistics-c0-finish-moments\" data-value=\"variances\">variances · output · variancesOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.group-statistics-compiled:group-statistics-groups\" data-value=\"counts\">counts · output · countsOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.group-statistics-compiled:group-statistics-c0-finish-moments\" data-value=\"sampleVariance\">sampleVariance · constant · SAMPLE_VARIANCE</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUGroupStatistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{m2}{M_2}=\\max\\left(\\term{momentSums}{S_2-S_1^2/n},0\\right),\\quad \\term{m2}{M_2}\\leftarrow0\\ \\text{if }\\term{m2}{M_2}\\leq2^{-19}\\term{momentSums}{S_2},\\quad \\term{variances}{v}=\\frac{\\term{m2}{M_2}}{\\term{counts}{n}-\\mathbf{1}[\\term{sampleVariance}{\\mathrm{sample}}]}</pre><p class=\"lens-ascii\">d=x-mean0; M2=max(sum(d*d)-sum(d)^2/n,0), snapped to 0 if &lt;=2^-19*sum(d*d); variance=M2/(n-(variance==sample)).</p></div><div class=\"lens-worked-example\"><h4>Entity 34</h4><div><pre class=\"lens-tex\">\\term{m2}{M_2}=\\max\\left(\\term{momentSums}{S_2-S_1^2/n},0\\right),\\quad \\term{m2}{M_2}\\leftarrow0\\ \\text{if }\\term{m2}{M_2}\\leq2^{-19}\\term{momentSums}{S_2},\\quad \\term{variances}{357.647}=\\frac{\\term{m2}{M_2}}{\\term{counts}{10}-\\mathbf{1}[\\term{sampleVariance}{\\mathrm{sample}}]}</pre><p class=\"lens-ascii\">d=x-mean0; M2=max(sum(d*d)-sum(d)^2/n,0), snapped to 0 if &lt;=2^-19*sum(d*d); variance=M2/(n-(variance==sample)).</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"m2\">m2 · intermediate · unknown — wgsl m2 not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"momentSums\">momentSums · intermediate · unknown — wgsl momentSums not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"variances\">variances · output · unknown — wgsl variancesOut not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"counts\">counts · output · unknown — wgsl countsOut not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sampleVariance\">sampleVariance · constant · unknown — wgsl SAMPLE_VARIANCE not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,35 +30,35 @@
       [
         "m2",
         "intermediate",
-        "m2",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "momentSums",
         "intermediate",
-        "momentSums",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "variances",
         "output",
-        "variancesOut",
+        "unknown",
         "357.6466369628906",
         "readback"
       ],
       [
         "counts",
         "output",
-        "countsOut",
+        "unknown",
         "10",
         "readback"
       ],
       [
         "sampleVariance",
         "constant",
-        "SAMPLE_VARIANCE",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -78,12 +78,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:41.187Z",
-    "runId": "run-ec274132",
+    "date": "2026-11-07T14:55:15.872Z",
+    "runId": "run-20d7cb83",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-ec274132",
+    "runId": "run-20d7cb83",
     "rung": "formula",
     "bindings": {
       "entity": 34

@@ -35,7 +35,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUGeometryOrientation',
           datasets: [data.id],
-          retain: ['orientedParks', 'reversedRings'],
           keySpaces: [
             {id: 'park', label: 'park (one ring each)', size: data.featureCount, indexSpace: '1d'},
             {

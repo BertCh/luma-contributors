@@ -10,7 +10,12 @@
 
 import {Buffer, type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
-import {getViewBinding, getViewElementOffset, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  getViewBinding,
+  getViewElementOffset,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {escapeHtml, formatCompact, getPackedColorCss} from './classification-layers';
 

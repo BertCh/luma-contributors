@@ -4,7 +4,11 @@
 
 import {Buffer, type Device, type Texture} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPURasterZonalStatistics, makeGPURasterBand, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPURasterZonalStatistics,
+  makeGPURasterBand,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterBand} from '@luma.gl/graph/gpu-raster';
 import type {RasterBandGpuResource} from './raster-band-model';
 import {

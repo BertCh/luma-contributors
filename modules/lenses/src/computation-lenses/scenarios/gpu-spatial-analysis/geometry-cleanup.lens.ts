@@ -32,14 +32,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUGeometryCleanup',
           datasets: [data.id],
-          retain: [
-            'cleanedParks',
-            'cleanedRingOffsets',
-            'cleanedCount',
-            'cleanedOverflow',
-            'cleanedRequiredCount',
-            'collapsedCount'
-          ],
           keySpaces: [
             {
               id: 'vertex',

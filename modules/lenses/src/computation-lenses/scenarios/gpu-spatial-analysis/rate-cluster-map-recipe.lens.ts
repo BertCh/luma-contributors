@@ -28,7 +28,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.rate-cluster-map-recipe',
           element: 'addRateClusterMapRecipe',
           datasets: ['s2-chicago-north-tracts'],
-          retain: ['standardizedRates', 'zScores', 'quadrants', 'adjustedPValues', 'significant'],
           keySpaces,
           choices: {
             criterion: 'queen',

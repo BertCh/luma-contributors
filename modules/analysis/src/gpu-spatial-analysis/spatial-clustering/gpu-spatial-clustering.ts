@@ -29,7 +29,6 @@ import {
   createSpatialClusteringBoxCountsNode,
   createSpatialClusteringBoxKeysNode,
   createSpatialClusteringCellGatherNode,
-  createSpatialClusteringGridBoundsNode,
   createSpatialClusteringGridPositionsNode,
   createSpatialClusteringCentroidsNode,
   createSpatialClusteringCoreNode,
@@ -482,7 +481,6 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       return nodes;
     }
 
-    const gridBounds = createTransientView(graph, `${id}-grid-bounds`, 'float32', 4);
     const gridPositions = createTransientView(graph, `${id}-grid-positions`, 'float32x2', rows);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
     const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
@@ -510,13 +508,6 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     };
 
     nodes.push(
-      createSpatialClusteringGridBoundsNode<Parameters>(graph, {
-        id: `${id}-grid-bounds`,
-        parameters,
-        gridSize,
-        geographicRadius,
-        gridBounds
-      }),
       createSpatialClusteringGridPositionsNode<Parameters>(graph, {
         id: `${id}-grid-positions`,
         positions,
@@ -531,7 +522,6 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         positions: gridPositions,
         gridSize: [gridSize[0], gridSize[1]],
         bounds: [0, 0, 1, 1],
-        boundsBuffer: gridBounds,
         cellOffsets,
         objectIds: sortedRows,
         count: gridCount,

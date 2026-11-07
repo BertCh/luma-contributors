@@ -34,7 +34,7 @@ import {
   getGPUPermutationParameterValues,
   getGPUSpatialAutocorrelationParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {createWGSLKernelNode} from '@luma.gl/graph';
+import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import {type S2Uploads, type S2CaptureSpec} from './s2-lens-run';
 const reference = {
   zones: [0, 0, 0, 1, 1, 1, 2, 2],

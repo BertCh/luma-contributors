@@ -4,7 +4,12 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, GPUClassBreaks, type GPUClassBreaksMethod} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUClassBreaksParameterLength,
+  getGPUClassBreaksParameterValues,
+  GPUClassBreaks,
+  type GPUClassBreaksMethod
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUSpatialAutocorrelationParameterValues,
   GPU_LISA_MARKOV_STATE_COUNT,

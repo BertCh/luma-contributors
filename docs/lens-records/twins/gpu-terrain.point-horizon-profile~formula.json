@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula March the exact power-of-two distance lattice; keep tBest=max(hr/d-c*d) over valid bilinear relative heights, ending at the first out-of-grid footprint or distance cap. Skyline angle=atanAccurate(tBest)*180/pi. No valid samples give tangent=…",
   "description": "Formula March the exact power-of-two distance lattice; keep tBest=max(hr/d-c*d) over valid bilinear relative heights, ending at the first out-of-grid footprint or distance cap. Skyline angle=atanAccurate(tBest)*180/pi. No valid samples give tangent=…",
-  "llms": "Formula March the exact power-of-two distance lattice; keep tBest=max(hr/d-c*d) over valid bilinear relative heights, ending at the first out-of-grid footprint or distance cap. Skyline angle=atanAccurate(tBest)*180/pi. No valid samples give tangent=-3.4028234663852886e38 and angle=-90 degrees; invalid observer or projection-tag mismatch gives NaN. Output index=observer*azimuthSpan+bin.\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula March the exact power-of-two distance lattice; keep tBest=max(hr/d-c*d) over valid bilinear relative heights, ending at the first out-of-grid footprint or distance cap. Skyline angle=atanAccurate(tBest)*180/pi. No valid samples give tangent=-3.4028234663852886e38 and angle=-90 degrees; invalid observer or projection-tag mismatch gives NaN. Output index=observer*azimuthSpan+bin.\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.point-horizon-profile.maximum</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{tangent}{t_*}=\\max_{\\term{distance}{d}\\in L}\\left(\\frac{\\term{relative}{h-h_0}}{d}-\\term{curvature}{c}d\\right),\\quad\\term{angle}{\\alpha}=\\frac{180}{\\pi}\\arctan(t_*)</pre><p class=\"lens-ascii\">March the exact power-of-two distance lattice; keep tBest=max(hr/d-c*d) over valid bilinear relative heights, ending at the first out-of-grid footprint or distance cap. Skyline angle=atanAccurate(tBest)*180/pi. No valid samples give tangent=-3.4028234663852886e38 and angle=-90 degrees; invalid observer or projection-tag mismatch gives NaN. Output index=observer*azimuthSpan+bin.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-profile-compiled:point-horizon-profile-march-0\" data-value=\"tangent\">maximum tangent · output · tangentOutput</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-profile-compiled:point-horizon-profile-march-0\" data-value=\"distance\">sample distance · intermediate · d</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-profile-compiled:point-horizon-profile-march-0\" data-value=\"relative\">height relative to eye · input · hr</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-profile-compiled:point-horizon-profile-march-0\" data-value=\"curvature\">curvature · parameter · curvature</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-profile-compiled:point-horizon-profile-skyline-angle\" data-value=\"angle\">skyline angle · output · skylineAngleOutput</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.point-horizon-profile.maximum</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{tangent}{t_*}=\\max_{\\term{distance}{d}\\in L}\\left(\\frac{\\term{relative}{h-h_0}}{d}-\\term{curvature}{c}d\\right),\\quad\\term{angle}{\\alpha}=\\frac{180}{\\pi}\\arctan(t_*)</pre><p class=\"lens-ascii\">March the exact power-of-two distance lattice; keep tBest=max(hr/d-c*d) over valid bilinear relative heights, ending at the first out-of-grid footprint or distance cap. Skyline angle=atanAccurate(tBest)*180/pi. No valid samples give tangent=-3.4028234663852886e38 and angle=-90 degrees; invalid observer or projection-tag mismatch gives NaN. Output index=observer*azimuthSpan+bin.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"tangent\">maximum tangent · output · unknown — wgsl tangentOutput not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distance\">sample distance · intermediate · unknown — wgsl d not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"relative\">height relative to eye · input · unknown — wgsl hr not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"curvature\">curvature · parameter · unknown — wgsl curvature not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"angle\">skyline angle · output · unknown — wgsl skylineAngleOutput not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "maximum tangent",
         "output",
-        "tangentOutput",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "sample distance",
         "intermediate",
-        "d",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "height relative to eye",
         "input",
-        "hr",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "curvature",
         "parameter",
-        "curvature",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "skyline angle",
         "output",
-        "skylineAngleOutput",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -89,14 +89,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.522Z",
-    "runId": "run-ad247c2d",
+    "date": "2026-11-07T14:55:29.777Z",
+    "runId": "run-10800867",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-ad247c2d",
+    "runId": "run-10800867",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

@@ -1,4 +1,3 @@
-// luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
@@ -84,7 +83,24 @@ export {toGraphvizDOT} from './export-graphviz-dot';
 export {printGPUComputationGraph, printGPUComputationRecord} from './print-computation-record';
 export {GPUSnapshotArena} from './gpu-snapshot-arena';
 export type {GPUSnapshotSlot, GPUSnapshotLabel} from './gpu-snapshot-arena';
-export {captureGPUCommandGraph} from './capture-command-graph';
-export type {CaptureGPUCommandGraphProps, GPUCommandGraphCapture} from './capture-command-graph';
+export {GPUSnapshotTap} from './gpu-snapshot-tap';
+export type {GPUSnapshotTapProps} from './gpu-snapshot-tap';
+export {GPUComputationRecorder} from './computation-recorder';
+export type {
+  GPUComputationRecorderProps,
+  GPUComputationRecordedNode,
+  GPUComputationRecordedResource
+} from './computation-recorder';
+export {
+  describeGPUCommandGraph,
+  describeGPUCommandGraphEncoding,
+  getGPUCommandGraphPassIndices
+} from './describe-command-graph';
+export type {
+  GPUCommandGraphDescription,
+  DescribeGPUCommandGraphOptions
+} from './describe-command-graph';
+export {createGPUKernelAnnotation, getGPUElementType} from './create-kernel-annotation';
+export type {GPUKernelAnnotationProps} from './create-kernel-annotation';
 export {GPUTransferMask} from './gpu-transfer-mask';
 export type {GPUTransferMaskProps, GPUTransferMaskRelation} from './gpu-transfer-mask';

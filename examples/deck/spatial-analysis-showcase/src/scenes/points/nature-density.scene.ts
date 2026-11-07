@@ -488,7 +488,7 @@ export default defineScene<NatureDensityOptions>({
       grid: {coarse: '[100, 62]', medium: '[160, 100]', fine: '[240, 150]'},
       hexagon: {coarse: '[48, 36]', medium: '[72, 52]', fine: '[110, 80]'}
     };
-    return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+    return `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'nature-density'});

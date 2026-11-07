@@ -6,7 +6,7 @@
 Writes fixtures/distribution-mapclassify-fit.json next to this script, consumed (through
 test/gpu-spatial-analysis/distribution-dynamics/mapclassify-fit-fixture.ts) by
 gpu-classification-fit.spec.ts. Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/distribution-mapclassify-fit.py
+    <venv>/bin/python -I modules/analysis/test/oracles/distribution-mapclassify-fit.py
 in a venv with numpy and mapclassify (versions are recorded in the fixture).
 
 Scene: numpy `default_rng(42)`, 200 values rounded to float32 (the GPU reads the same numbers): 120
@@ -88,7 +88,7 @@ for name, classifier in {
     }
 
 fixture = {
-    'generator': 'modules/graph/test/oracles/distribution-mapclassify-fit.py',
+    'generator': 'modules/analysis/test/oracles/distribution-mapclassify-fit.py',
     'versions': {
         'python': platform.python_version(),
         'numpy': np.__version__,

@@ -9,7 +9,11 @@
  */
 
 import type {Buffer} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {

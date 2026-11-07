@@ -27,7 +27,12 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH, GPUPolygonRasterization, getGPUPolygonRasterizationParameterValues, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+  GPUPolygonRasterization,
+  getGPUPolygonRasterizationParameterValues,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPU_GRID_GENERATOR_PARAMETER_LENGTH,
   GPUArealInterpolation,

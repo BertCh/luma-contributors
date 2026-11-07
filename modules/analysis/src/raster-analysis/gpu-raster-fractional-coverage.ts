@@ -12,7 +12,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUPolygonGeometryFields} from '../analysis-core/contracts/index';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   GPUPolygonTriangulation,
   getPolygonTriangulationIndexCount
@@ -171,7 +171,7 @@ for(var polygon=features[featuresOffset+zone];polygon<features[featuresOffset+zo
 export type GPURasterFractionalZonalStatisticsProps = {
   id?: string;
   grid: GPURasterMetadata;
-  input: import('./types').GPURasterBufferBand;
+  input: GPURasterBufferBand;
   zoneCount: number;
   coverage: Pick<
     GPURasterFractionalCoverageProps['output'],

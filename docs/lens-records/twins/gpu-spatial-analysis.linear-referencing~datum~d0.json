@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.linear-referencing",
   "viewId": "datum-receipt",
-  "caption": "Receipt of place 0. footPoints: 3696.408203125, 10259.4462890625. values read back from the GPU run. linear-referencing: 5 quantities.",
-  "description": "Receipt of place 0. footPoints: 3696.408203125, 10259.4462890625. values read back from the GPU run. linear-referencing: 5 quantities.",
-  "llms": "Receipt of place 0\n\n- footPoints: 3696.408203125, 10259.4462890625\n- linear-referencing: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of place 0. footPoints: 3696.408203125, 10259.4462890625. values read back from the GPU run. result: 5 quantities.",
+  "description": "Receipt of place 0. footPoints: 3696.408203125, 10259.4462890625. values read back from the GPU run. result: 5 quantities.",
+  "llms": "Receipt of place 0\n\n- footPoints: 3696.408203125, 10259.4462890625\n- result: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "footPoints",
     "value": "3696.408203125, 10259.4462890625"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of place 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"linear-referencing\"><tr><th scope=\"rowgroup\" colspan=\"5\">linear-referencing</th></tr><tr data-provenance=\"readback\"><td>linear-referencing</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-places-0\" title=\"first 40 Overture places in dataset order\">places</button></td><td>3696.409912109375, 10259.349609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>linear-referencing</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-lineIndices-0\" title=\"nearest road index (zero-based); 0xffffffff means unmatched\">lineIndices</button></td><td>91</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>linear-referencing</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-measures-0\" title=\"distance along nearest road in m\">measures</button></td><td>87.94116973876953</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>linear-referencing</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-distances-0\" title=\"distance to nearest road in m; -1 means unmatched\">distances</button></td><td>0.09684500843286514</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>linear-referencing</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-footPoints-0\">footPoints</button></td><td>3696.408203125, 10259.4462890625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of place 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-places-0\" title=\"first 40 Overture places in dataset order\">places</button></td><td>3696.409912109375, 10259.349609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-lineIndices-0\" title=\"nearest road index (zero-based); 0xffffffff means unmatched\">lineIndices</button></td><td>91</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-measures-0\" title=\"distance along nearest road in m\">measures</button></td><td>87.94116973876953</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-distances-0\" title=\"distance to nearest road in m; -1 means unmatched\">distances</button></td><td>0.09684500843286514</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-linear-referencing-snapshots-footPoints-0\" title=\"gpu-spatial-analysis-linear-referencing-snapshot-tap\">footPoints</button></td><td>3696.408203125, 10259.4462890625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,35 +28,35 @@
     ],
     "rows": [
       [
-        "linear-referencing",
+        "result",
         "places",
         "3696.409912109375, 10259.349609375",
         "0",
         "readback"
       ],
       [
-        "linear-referencing",
+        "result",
         "lineIndices",
         "91",
         "0",
         "readback"
       ],
       [
-        "linear-referencing",
+        "result",
         "measures",
         "87.94116973876953",
         "0",
         "readback"
       ],
       [
-        "linear-referencing",
+        "result",
         "distances",
         "0.09684500843286514",
         "0",
         "readback"
       ],
       [
-        "linear-referencing",
+        "result",
         "footPoints",
         "3696.408203125, 10259.4462890625",
         "0",
@@ -86,12 +86,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:30.616Z",
-    "runId": "run-14abd629",
+    "date": "2026-11-07T14:55:23.862Z",
+    "runId": "run-9a167ddf",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-14abd629",
+    "runId": "run-9a167ddf",
     "rung": "datum",
     "bindings": {
       "entity": 0

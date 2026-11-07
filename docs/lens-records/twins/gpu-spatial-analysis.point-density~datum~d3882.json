@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.point-density",
   "viewId": "datum-receipt",
-  "caption": "Receipt of 125 m cell, rows from south 3882. counts: 10. values read back from the GPU run. point-density: 1 quantities.",
-  "description": "Receipt of 125 m cell, rows from south 3882. counts: 10. values read back from the GPU run. point-density: 1 quantities.",
-  "llms": "Receipt of 125 m cell, rows from south 3882\n\n- counts: 10\n- point-density: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of 125 m cell, rows from south 3882. counts: 10. values read back from the GPU run. result: 1 quantities.",
+  "description": "Receipt of 125 m cell, rows from south 3882. counts: 10. values read back from the GPU run. result: 1 quantities.",
+  "llms": "Receipt of 125 m cell, rows from south 3882\n\n- counts: 10\n- result: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "counts",
     "value": "10"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of 125 m cell, rows from south 3882</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"point-density\"><tr><th scope=\"rowgroup\" colspan=\"5\">point-density</th></tr><tr data-provenance=\"readback\"><td>point-density</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-point-density-snapshots-counts-0\">counts</button></td><td>10</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.point-density</h4><div><pre class=\"lens-tex\">\\term{field}{v_c}=\\term{count}{n_c}=\\sum_{\\term{point}{i}\\,\\in\\,\\term{cell}{C_c}}1</pre><p class=\"lens-ascii\">v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of 125 m cell, rows from south 3882</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-point-density-snapshots-counts-0\" title=\"gpu-spatial-analysis-point-density-snapshot-tap\">counts</button></td><td>10</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,7 +28,7 @@
     ],
     "rows": [
       [
-        "point-density",
+        "result",
         "counts",
         "10",
         "0",
@@ -63,12 +63,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:42.880Z",
-    "runId": "run-bc3fc1eb",
+    "date": "2026-11-07T14:55:25.606Z",
+    "runId": "run-80d19100",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-bc3fc1eb",
+    "runId": "run-80d19100",
     "rung": "datum",
     "bindings": {
       "entity": 3882

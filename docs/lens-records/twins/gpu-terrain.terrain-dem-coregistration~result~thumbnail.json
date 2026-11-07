@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask…",
   "description": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume. values: 3. values read back from the GPU run. input reference: 9 cells.",
-  "llms": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume\n\n- values: 3\n- input reference: 9 cells\n- input moving: 9 cells\n- input stableMask: 9 cells\n- input differenceVariance: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume\n\n- values: 3\n- input reference: 9 cells\n- input moving: 9 cells\n- input stableMask: 9 cells\n- input differenceVariance: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "values",
     "value": "3"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:10.526Z",
-    "runId": "run-4cbb465f",
+    "date": "2026-11-07T14:55:30.044Z",
+    "runId": "run-02f408f5",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-4cbb465f",
+    "runId": "run-02f408f5",
     "rung": "result",
     "bindings": {},
     "clauses": [],

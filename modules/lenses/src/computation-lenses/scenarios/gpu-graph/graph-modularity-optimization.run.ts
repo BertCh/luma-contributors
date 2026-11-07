@@ -5,6 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   describeGPUGraphScenario,
   getGPUGraphCaptureView,
   recordGPUGraphScenario,
@@ -48,11 +49,8 @@ async function buildScenario(device: Device): Promise<GPUGraphScenarioRecordOpti
       scenarioId: 'gpu-graph.graph-modularity-optimization',
       element: 'GPUGraphAlgorithmsModularityOptimization',
       fixture,
-      compiled: fixture.commandGraph.compile(),
+      ...compileGPUGraphScenario(fixture, outputCaptures),
       outputCaptures,
-      iterationFrames: [
-        {name: 'modularity-optimization', loopId: 'gpu-graph-modularity-optimization-iterations'}
-      ],
       choices: [
         {stage: 'parameters', name: 'seedIterations', value: 16, sweepable: true},
         {stage: 'parameters', name: 'iterations', value: 64, sweepable: true},
@@ -90,9 +88,13 @@ export async function describeStructure(device: Device) {
     return describeGPUGraphScenario(options);
   } finally {
     try {
-      options.compiled.destroy();
+      options.snapshot.arena.destroy();
     } finally {
-      options.fixture.destroy();
+      try {
+        options.compiled.destroy();
+      } finally {
+        options.fixture.destroy();
+      }
     }
   }
 }

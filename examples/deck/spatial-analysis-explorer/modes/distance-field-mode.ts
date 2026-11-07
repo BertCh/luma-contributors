@@ -3,7 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {getGPUDistanceFieldParameterValues, makeGPURasterMetadata, GPU_DISTANCE_FIELD_NONE, GPUDistanceField, type GPUDistanceFieldMode} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata,
+  GPU_DISTANCE_FIELD_NONE,
+  GPUDistanceField,
+  type GPUDistanceFieldMode
+} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {

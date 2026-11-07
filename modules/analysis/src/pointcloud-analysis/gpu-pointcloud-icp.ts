@@ -7,7 +7,7 @@ import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {getPlaneMomentsSource, getPlaneSolveSource} from './pointcloud-plane-icp';
 import {createPointCloudGridIndex, type PointCloudGrid} from './pointcloud-grid-index';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {
   GPU_POINT_CLOUD_MAXIMUM_BRUTE_FORCE_WORK,
   getPointCloudAbsoluteTransform,
@@ -142,7 +142,7 @@ export class GPUPointCloudICP {
       blockCount * (pointToPlane ? 45 : 18)
     );
     const initial = this.localInitialTransform;
-    const nodes = getSpatialOperationNodes(graph, {
+    const nodes = getPointCloudKernelNodes(graph, {
       id: `${this.id}-initialize`,
       length: 1,
       inputs: {},
@@ -176,7 +176,7 @@ for(var slot=readOffsets(cell);slot<readOffsets(cell+1u);slot++){let candidate=r
         ? `min(1.0,${Math.fround(robust.scale)}/max(sqrt(distanceSquared),1e-30))`
         : `pow(max(0.0,1.0-distanceSquared/${Math.fround(robust.scale ** 2)}),2.0)`;
     const correspondence = (iteration: number) =>
-      getSpatialOperationNodes(graph, {
+      getPointCloudKernelNodes(graph, {
         id: `${this.id}-match-${iteration}`,
         length: source.length,
         inputs: {
@@ -201,7 +201,7 @@ writeMatches(index,nearest);writeWeights(index,weight);${matchIds ? 'writeMatchI
     for (let iteration = 0; iteration < this.iterations; iteration++) {
       nodes.push(...correspondence(iteration));
       nodes.push(
-        ...getSpatialOperationNodes(graph, {
+        ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-moments-${iteration}`,
           length: blockCount,
           inputs: {
@@ -231,7 +231,7 @@ for(var column=0u;column<3u;column++){for(var row=0u;row<3u;row++){writeMoments(
         })
       );
       nodes.push(
-        ...getSpatialOperationNodes(graph, {
+        ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-solve-${iteration}`,
           length: 1,
           inputs: {moments, state: states[iteration % 2]},
@@ -310,7 +310,7 @@ writeHistory(${iteration}u,vec3f(f32(count),residual,step));`
     nodes.push(...correspondence(this.iterations));
     if (matchIds)
       nodes.push(
-        ...getSpatialOperationNodes(graph, {
+        ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-final-plane-mask`,
           length: source.length,
           inputs: {weights, matchIds, targetNormals: this.props.targetNormals!},
@@ -319,7 +319,7 @@ writeHistory(${iteration}u,vec3f(f32(count),residual,step));`
         })
       );
     nodes.push(
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-publish`,
         length: 1,
         inputs: {state: states[this.iterations % 2]},

@@ -359,7 +359,7 @@ export default defineScene<WildfireSeasonsOptions>({
   snippet: state => `import {
   getGPUTimeWindowFilterParameterValues,
   GPUTimeWindowFilter
-} from '@luma-contributors/analysis/gpu-dataframe';
+} from '@luma.gl/graph/gpu-dataframe';
 import {GPUGeometryMeasures} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // Perimeter dates are float32 days since 2020-01-01 (exact below 2^24).

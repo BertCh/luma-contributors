@@ -806,7 +806,7 @@ preparedGraph.add(new GPUGeometryMeasures({
 // Inspect overflow before displaying results. Clamp latitudes only in the display kernel.
 `;
 
-    const measures = `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+    const measures = `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUGeometryMeasures, GPUShapeDescriptors, GPULabelPoint,
   GPUGeometryValidity, GPUContiguityWeights, GPUMapColoring

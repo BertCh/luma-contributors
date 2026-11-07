@@ -8,7 +8,12 @@
  */
 
 import type {Buffer} from '@luma.gl/core';
-import {getGPUPolygonRasterizationParameterValues, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH, GPUPolygonRasterization, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUPolygonRasterizationParameterValues,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+  GPUPolygonRasterization,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer, submitGraph} from '../../engine/graph-buffers';
 import type {SpatialAnalysisResources} from '../../engine/resources';

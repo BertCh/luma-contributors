@@ -21,7 +21,11 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer, Texture, type CommandEncoder} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphTextureView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphTextureView
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUTerrainDerivativesParameterValues,
   getGPUTerrainPeakSnapParameterValues,
@@ -44,7 +48,12 @@ import {
   GPUTerrainSpikeRepair,
   GPUTerrainSummits
 } from '@luma-contributors/analysis/gpu-terrain';
-import {getGPURasterProfileParameterValues, GPU_RASTER_PROFILE_PARAMETER_LENGTH, GPURasterProfile, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPURasterProfileParameterValues,
+  GPU_RASTER_PROFILE_PARAMETER_LENGTH,
+  GPURasterProfile,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {

@@ -58,13 +58,18 @@ test('native Group By preserves null groups, first occurrence, all-row counts an
       'key-validity',
       'uint32',
       new Uint32Array([1, 1, 0, 1, 1, 1, 0]),
-      [3, 4]
+      [2, 0, 5]
     );
     const sourceValues = new Float32Array([4, NaN, 8, 6, NaN, 2, 12]);
     if (variant === 'nonfinite-input') sourceValues[0] = Infinity;
     if (variant === 'overflow-output') sourceValues[0] = sourceValues[3] = 3.4028234663852886e38;
-    const values = input('value', 'float32', sourceValues, [3, 4]);
-    const validity = input('value-validity', 'uint32', new Uint32Array([1, 0, 1, 1, 0, 1, 1]), [7]);
+    const values = input('value', 'float32', sourceValues, [2, 0, 5]);
+    const validity = input(
+      'value-validity',
+      'uint32',
+      new Uint32Array([1, 0, 1, 1, 0, 1, 1]),
+      [2, 0, 5]
+    );
     const keys = output('keys', 'uint32');
     const keyValid = output('key-valid', 'uint32');
     const firstRows = output('first', 'uint32');
@@ -122,9 +127,9 @@ test('native Group By preserves null groups, first occurrence, all-row counts an
         status
       }
     });
-    const plan = graph.planResources();
-    expect(plan).toBeDefined();
     const compiled = graph.compile();
+    // Scratch is reported by the published compiled graph, not by a pre-compile plan.
+    expect(compiled.stats.physicalTransientResourceBytes).toBeGreaterThan(0);
     try {
       submitGraph(device, compiled);
       const diagnostics = Array.from(await readUint32(statusBuffer));

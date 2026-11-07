@@ -11,13 +11,6 @@ import {
 } from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {
-  hashGPUComputationText,
-  type GPUComputationAttributes,
-  type GPUComputationDatumBinding,
-  type GPUComputationLoopCoordinate,
-  type GPUComputationNodeAnnotation
-} from '@luma-contributors/analysis/computation-record';
-import {
   createGPUComputeCommandNode,
   createTransientView,
   getBoundedDispatchLayout,
@@ -36,9 +29,19 @@ import {
   type GraphTextureView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCompactOutput} from './gpu-contributor-types';
-import {setGPUComputeDispatchWorkgroups} from '@luma.gl/graph/gpu-core';
 
 const DEFAULT_WORKGROUP_SIZE = 256;
+
+/** Free-form descriptive metadata accepted (and ignored) by the kernel-node helpers. @internal */
+export type WGSLKernelRecordMetadata = {
+  label?: string;
+  namespace?: string;
+  derivedFrom?: readonly string[];
+  datum?: unknown;
+  loop?: unknown;
+  formula?: string;
+  attrs?: Readonly<Record<string, unknown>>;
+};
 
 /** GPU-written dispatch and its update node for a runtime active-item count. @internal */
 export type WGSLActiveCountDispatch<Parameters> = {
@@ -286,23 +289,11 @@ export type WGSLKernelProps<Parameters> = {
   operation: string;
   /** Optional implementation variant reported in the workload estimate. */
   variant?: string;
-  /** Computation-record metadata; used only when the graph records (`graph.recording`). */
-  record?: {
-    /** Display label. */
-    label?: string;
-    /** Namespace below the graph's active record scopes. */
-    namespace?: string;
-    /** Abstract graph nodes realized by this kernel. */
-    derivedFrom?: readonly string[];
-    /** Mapping of invocations to a data key space. */
-    datum?: GPUComputationDatumBinding;
-    /** Unrolled loop coordinate. */
-    loop?: GPUComputationLoopCoordinate;
-    /** Formula reference identifier. */
-    formula?: string;
-    /** Additional recorded attributes. */
-    attrs?: GPUComputationAttributes;
-  };
+  /**
+   * Computation-record metadata. Ignored: published `GPUCommandGraph` has no recording hooks.
+   * Retained so call sites keep their descriptive labels.
+   */
+  record?: WGSLKernelRecordMetadata;
   /** Storage bindings in `@binding` order. At most 8 for the WebGPU default limit. */
   bindings: readonly WGSLKernelBinding[];
   /**
@@ -461,52 +452,6 @@ fn main(
       writeByteLength += byteLength;
     }
   }
-  let annotation: GPUComputationNodeAnnotation | undefined;
-  if (graph.recording) {
-    const hash = hashGPUComputationText(source);
-    annotation = {
-      ...Object.fromEntries(
-        Object.entries(props.record ?? {}).filter(([, value]) => value !== undefined)
-      ),
-      op: props.operation,
-      source: {
-        id: `wgsl:${hash}`,
-        language: 'wgsl',
-        moduleId: props.variant ? `${props.operation}/${props.variant}` : props.operation,
-        hash,
-        bodyHash: hashGPUComputationText(props.body),
-        entryPoint: 'main',
-        text: source,
-        constants: {
-          ...props.constants,
-          INVOCATION_COUNT: props.invocationCount,
-          WGSL_KERNEL_DISPATCH_X: layout.x,
-          WGSL_KERNEL_DISPATCH_Y: layout.y
-        }
-      },
-      workgroupSize: [workgroupSize, 1, 1],
-      dispatch: {
-        workgroups: [layout.x, layout.y, layout.z],
-        invocationCount: props.invocationCount,
-        indirect: props.condition?.source === 'gpu'
-      },
-      bindings: [
-        ...props.bindings.map(binding => ({
-          name: binding.name,
-          resource: binding.view.buffer.id,
-          access: binding.access,
-          elementType: binding.type,
-          elementOffset: getViewElementOffset(binding.view),
-          length: binding.view.length
-        })),
-        ...textures.map(binding => ({
-          name: binding.name,
-          resource: binding.texture.texture.id,
-          access: 'sampled' as const
-        }))
-      ]
-    };
-  }
   const node = createGPUComputeCommandNode<Parameters>({
     id: props.id,
     resources,
@@ -558,7 +503,6 @@ fn main(
       let resolvedBuffers: Buffer[] = [];
       let resolvedTextureViews: TextureView[] = [];
       let resolvedBindings: Record<string, Binding> = {};
-      let bindGroupCacheKey = {};
       return {
         encode: ({computePass, getBuffer, getTextureView}) => {
           const nextBuffers = props.bindings.map(binding => getBuffer(binding.view));
@@ -581,11 +525,9 @@ fn main(
             for (const [index, binding] of textures.entries()) {
               resolvedBindings[binding.name] = nextTextureViews[index]!;
             }
-            bindGroupCacheKey = {};
           }
           kernel.dispatch(computePass, {
             bindings: resolvedBindings,
-            _bindGroupCacheKeys: {0: bindGroupCacheKey},
             x: layout.x,
             y: layout.y,
             z: layout.z
@@ -595,10 +537,7 @@ fn main(
       };
     }
   });
-  if (annotation) node.annotation = annotation;
-  return props.condition
-    ? node
-    : setGPUComputeDispatchWorkgroups(node, [layout.x, layout.y, layout.z]);
+  return node;
 }
 
 /** Returns the WGSL sampled-texture type of one texture binding. */

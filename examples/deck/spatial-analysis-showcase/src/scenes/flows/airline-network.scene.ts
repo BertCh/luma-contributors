@@ -844,11 +844,11 @@ export default defineScene<AirlineNetworkOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUGraphAlgorithmsData, GPUGraphAlgorithmsTopology, GPUGraphAlgorithmsDegree, GPUGraphAlgorithmsPageRank, GPUGraphAlgorithmsLabelPropagation,
   GPUGraphAlgorithmsModularity, GPUGraphAlgorithmsModularityOptimization, GPUGraphAlgorithmsForceLayout
-} from '@luma-contributors/analysis/gpu-graph-algorithms';
+} from '@luma.gl/graph/gpu-graph-algorithms';
 
 // OpenFlights pairs: an undirected graph over borrowed GPU columns.
 const graph = new GPUGraphAlgorithmsData({vertexCount, sourceVertices, targetVertices, directed: false});

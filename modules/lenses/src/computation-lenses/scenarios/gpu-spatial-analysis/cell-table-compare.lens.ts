@@ -61,19 +61,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellTableCompare',
           datasets: [data.id],
-          retain: [
-            'cells',
-            'presence',
-            'before',
-            'after',
-            'delta',
-            'zScore',
-            'count',
-            'overflow',
-            'boundaries',
-            'boundariesCenters',
-            'boundariesOffsets'
-          ],
           keySpaces: [
             {id: 'cell', label: 'union cell', size: capacity, indexSpace: '1d'},
             {

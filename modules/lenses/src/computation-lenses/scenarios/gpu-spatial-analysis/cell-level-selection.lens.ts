@@ -47,15 +47,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellLevelSelection',
           datasets: [data.id],
-          retain: [
-            'level1Cells',
-            'level1Counts',
-            'levelCounts',
-            'selectedCount',
-            'selectedFirstRow',
-            'boundaries',
-            'boundariesCenters'
-          ],
           keySpaces: [
             {id: 'cell', label: 'zoom-17 cell', size: activeCapacity, indexSpace: '1d'},
             {id: 'place', label: 'place', size: data.pointCount, indexSpace: '1d'},

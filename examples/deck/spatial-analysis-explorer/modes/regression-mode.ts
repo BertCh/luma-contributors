@@ -35,7 +35,18 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUSpatialWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {getGPUCompositeScoreParameterValues, getGPUInequalityParameterValues, GPUCompositeScore, GPUInequality, GPU_COMPOSITE_SCORE_PARAMETER_LENGTH, GPU_INEQUALITY_GLOBAL_SUMMARY, GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH, GPU_INEQUALITY_PARAMETER_LENGTH, type GPUCompositeScoreAggregation, type GPUCompositeScoreScaler} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUCompositeScoreParameterValues,
+  getGPUInequalityParameterValues,
+  GPUCompositeScore,
+  GPUInequality,
+  GPU_COMPOSITE_SCORE_PARAMETER_LENGTH,
+  GPU_INEQUALITY_GLOBAL_SUMMARY,
+  GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
+  GPU_INEQUALITY_PARAMETER_LENGTH,
+  type GPUCompositeScoreAggregation,
+  type GPUCompositeScoreScaler
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   type GPUGeographicallyWeightedRegressionBandwidthMode,
   type GPUGeographicallyWeightedRegressionKernel,

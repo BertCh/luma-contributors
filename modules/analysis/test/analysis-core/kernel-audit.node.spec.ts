@@ -6,12 +6,14 @@ import {readdirSync, readFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, it} from 'vitest';
-import * as geospatial from '@luma.gl/graph/geospatial';
-import * as dataframe from '@luma.gl/graph/gpu-dataframe';
-import * as network from '../../src/gpu-network/index';
-import * as raster from '@luma.gl/graph/gpu-raster';
-import * as spatialAnalysis from '../../src/gpu-spatial-analysis/index';
-import * as terrain from '../../src/gpu-terrain/index';
+import * as publishedDataframe from '@luma.gl/graph/gpu-dataframe';
+import * as publishedGeospatial from '@luma.gl/graph/geospatial';
+import * as publishedRaster from '@luma.gl/graph/gpu-raster';
+import {
+  ANALYSIS_BARRELS,
+  getAnalysisContributors,
+  getContributorNames
+} from './kernel-audit/analysis-contributors';
 import {KERNEL_AUDIT_CASES} from './kernel-audit/kernel-audit-cases';
 import {KERNEL_AUDIT_REJECTIONS} from './kernel-audit/kernel-audit-rejections';
 import {auditWGSLModule} from './kernel-audit/kernel-audit-wgsl';
@@ -24,23 +26,27 @@ import {auditWGSLModule} from './kernel-audit/kernel-audit-wgsl';
 // self-compares, const-expression non-finite bitcasts and calls to undeclared functions. These
 // are exactly the shader-creation errors that `wgsl_reflect` accepts and Dawn rejects.
 
-/** Analysis entry barrels, as published. */
-const BARRELS: Readonly<Record<string, Record<string, unknown>>> = {
-  geospatial,
-  'gpu-dataframe': dataframe,
-  'gpu-raster': raster,
-  'gpu-terrain': terrain,
-  'gpu-spatial-analysis': spatialAnalysis,
-  'gpu-network': network
-};
-
 /**
  * Contributors the audit cannot build, with the reason. Keep it empty: a contributor that needs
  * real inputs gets a fake view in its case instead.
  */
 const CHUNKED_WEIGHTS_AUDIT =
   'chunked weights take a caller-built chunk list per chunk count; weights7-chunked-weights-operations.node.spec.ts parses every kernel and checks the storage-binding limit across 1 to 16 chunks';
+const NOT_YET_AUDITED =
+  'moved from luma.gl graph into analysis during the upstream-first split and has no kernel-audit case yet; add one to kernel-audit/ and remove this skip';
 const SKIPPED_CONTRIBUTORS: Readonly<Record<string, string>> = {
+  GPUDatumGridTransform: NOT_YET_AUDITED,
+  GPUPointBuffer: NOT_YET_AUDITED,
+  GPUPointCloudChange: NOT_YET_AUDITED,
+  GPUPointCloudFeatures: NOT_YET_AUDITED,
+  GPUPointCloudGround: NOT_YET_AUDITED,
+  GPUPointCloudICP: NOT_YET_AUDITED,
+  GPUPointCloudNeighborhoods: NOT_YET_AUDITED,
+  GPUPointCloudSMRF: NOT_YET_AUDITED,
+  GPUPointCloudStatisticalFilter: NOT_YET_AUDITED,
+  GPUPointCloudSurfaces: NOT_YET_AUDITED,
+  GPUPointCloudHeight: NOT_YET_AUDITED,
+  GPUPointCloudVoxelMerge: NOT_YET_AUDITED,
   GPUChunkedSpatialWeightsAlgebra: CHUNKED_WEIGHTS_AUDIT,
   GPUChunkedSpatialWeightsTranspose: CHUNKED_WEIGHTS_AUDIT,
   GPUChunkedSpatialWeightsTransform: CHUNKED_WEIGHTS_AUDIT,
@@ -48,28 +54,16 @@ const SKIPPED_CONTRIBUTORS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Public contributors: classes with `getCommandNodes` (rule 21) or the older `addToGraph`
- * (upstream raster operations), and `add*Recipe` functions. `GPUDataFrame` queries are not
- * graph contributors (they compile against real device buffers) and are audited by their own specs.
+ * Contributors owned by published `@luma.gl/graph`. Legacy audit cases that name them are skipped:
+ * they audit luma.gl code, not this package.
  */
-function getPublicContributors(): Map<string, string> {
-  const contributors = new Map<string, string>();
-  for (const [entry, barrel] of Object.entries(BARRELS)) {
-    for (const [name, value] of Object.entries(barrel)) {
-      if (typeof value !== 'function') continue;
-      const prototype = (value as {prototype?: object}).prototype;
-      const methods = prototype ? Object.getOwnPropertyNames(prototype) : [];
-      const isContributor =
-        methods.includes('getCommandNodes') ||
-        methods.includes('addToGraph') ||
-        /^add\w+Recipe$/.test(name);
-      if (isContributor && !contributors.has(name)) contributors.set(name, entry);
-    }
-  }
-  return contributors;
-}
+const PUBLISHED_CONTRIBUTORS = getContributorNames({
+  geospatial: publishedGeospatial,
+  'gpu-dataframe': publishedDataframe,
+  'gpu-raster': publishedRaster
+});
 
-const contributors = getPublicContributors();
+const contributors = getAnalysisContributors();
 const cases = Object.values(KERNEL_AUDIT_CASES).flat();
 
 describe('kernel audit checks', () => {
@@ -135,7 +129,7 @@ var<workgroup> table: array<Pair, GROUP * 32u>;`;
 });
 
 const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../src');
-const AUDITED_SOURCE_DIRECTORIES = [...Object.keys(BARRELS), 'utils', 'analysis-core'];
+const AUDITED_SOURCE_DIRECTORIES = [...Object.keys(ANALYSIS_BARRELS), 'analysis-core'];
 
 function listSourceFiles(directory: string): string[] {
   return readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
@@ -179,7 +173,7 @@ describe('kernel audit coverage', () => {
     const stale = [
       ...cases.map(auditCase => auditCase.exportName),
       ...Object.keys(SKIPPED_CONTRIBUTORS)
-    ].filter(name => !contributors.has(name));
+    ].filter(name => !contributors.has(name) && !PUBLISHED_CONTRIBUTORS.has(name));
     expect([...new Set(stale)], 'cases or skips naming no public contributor').toEqual([]);
     const labels = cases.map(auditCase => `${auditCase.exportName} ${auditCase.name}`);
     expect(labels.length, 'duplicate case labels').toBe(new Set(labels).size);

@@ -46,7 +46,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUDelaunayTessellation',
           datasets: [data.id],
-          retain: ['count', 'requiredCount', 'overflow', 'duplicateCount', 'triangleCorners'],
           keySpaces: [
             {id: 'triangle', label: 'Delaunay triangle', size: triangleCapacity, indexSpace: '1d'},
             {id: 'place', label: 'place (every 4th)', size: siteCount, indexSpace: '1d'}

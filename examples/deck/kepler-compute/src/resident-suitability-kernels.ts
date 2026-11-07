@@ -4,7 +4,18 @@
 
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {alignGraphVectorViews, createGPUComputeCommandNode, getBoundedDispatchLayout, getBoundedInvocationIndexSource, getViewBinding, getViewElementOffset, type GPUCommandGraph, type GPUCommandNode, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {
+  alignGraphVectorViews,
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  getViewBinding,
+  getViewElementOffset,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView,
+  type GraphVectorView
+} from '@luma.gl/graph/gpu-core';
 import type {ResidentSuitabilityColumnFormat} from './resident-suitability-plan';
 
 const WORKGROUP_SIZE = 256;

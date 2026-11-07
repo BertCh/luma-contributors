@@ -39,7 +39,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.pair-gather',
           element: 'GPUPairGather',
           datasets: ['s2-chicago-north-parks', 's2-chicago-north-tracts'],
-          retain: ['tractMatches', 'parkRows', 'tractRows', 'joinedAreas', 'rowCount', 'overflow'],
           keySpaces,
           relations: [
             {

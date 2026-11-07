@@ -25,12 +25,6 @@ export function runTrajectoryCoverage(device: Device, kind: TrajectoryCoverageKi
     scenarioId: `gpu-spatial-analysis.${kind}`,
     element,
     datasets: [`synthetic-${kind}-v1`],
-    retain:
-      kind === 'trajectory-kalman'
-        ? ['filteredState', 'filteredCovariance', 'smoothedState', 'smoothedCovariance', 'status']
-        : kind === 'trajectory-restriction'
-          ? ['clippedPositions', 'intervals', 'status', 'relationships']
-          : ['distance', 'lowerBound', 'matched', 'status'],
     metadata: {
       coordinateModel: 'projected',
       crs: 'synthetic local Cartesian metres',

@@ -55,7 +55,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.straight-line-catchments-recipe',
           element: 'addStraightLineCatchmentsRecipe',
           datasets: ['s2-chicago-north-facilities', 's2-chicago-north-nature'],
-          retain: ['allocation', 'distances', 'cellCounts', 'valueCounts', 'sums', 'means'],
           keySpaces: [
             {
               id: 'cell',

@@ -45,14 +45,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineChunk',
           datasets: [data.id],
-          retain: [
-            'chunks',
-            'outputOffsets',
-            'sourceLineIndices',
-            'count',
-            'lineCount',
-            'overflow'
-          ],
           keySpaces: [
             {id: 'piece', label: 'piece', size: lineCapacity, indexSpace: '1d'},
             {

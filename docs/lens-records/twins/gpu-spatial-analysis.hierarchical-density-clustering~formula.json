@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Pieces of the pipeline, not the whole procedure: core distance = distance to the minimumSamples-th nearest point (the point counts as its own first neighbour); mutual reachability d_mr(a, b) = max(core(a), core(b), |x_a - x_b|); the minimum…",
   "description": "Formula Pieces of the pipeline, not the whole procedure: core distance = distance to the minimumSamples-th nearest point (the point counts as its own first neighbour); mutual reachability d_mr(a, b) = max(core(a), core(b), |x_a - x_b|); the minimum…",
-  "llms": "Formula Pieces of the pipeline, not the whole procedure: core distance = distance to the minimumSamples-th nearest point (the point counts as its own first neighbour); mutual reachability d_mr(a, b) = max(core(a), core(b), |x_a - x_b|); the minimum spanning tree over d_mr gives the single-linkage dendrogram, which is condensed to clusters of at least minimumClusterSize points. Stability S(C) = sum over points p of C of (lambda_p - lambda_birth(C)) with lambda = 1 / distance. Excess-of-mass selection keeps a cluster when its stability exceeds the summed stability of its selected descendants; every other point is noise (0xffffffff).\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Pieces of the pipeline, not the whole procedure: core distance = distance to the minimumSamples-th nearest point (the point counts as its own first neighbour); mutual reachability d_mr(a, b) = max(core(a), core(b), |x_a - x_b|); the minimum spanning tree over d_mr gives the single-linkage dendrogram, which is condensed to clusters of at least minimumClusterSize points. Stability S(C) = sum over points p of C of (lambda_p - lambda_birth(C)) with lambda = 1 / distance. Excess-of-mass selection keeps a cluster when its stability exceeds the summed stability of its selected descendants; every other point is noise (0xffffffff).\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>hdbscan-mutual-reachability</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{coreDistance}{d_{\\mathrm{core}}(a)}&amp;=\\text{distance to the } \\term{minimumSamples}{s}\\text{-th nearest point, itself counted}\\\\\n\\term{mutual}{d_{\\mathrm{mr}}(a,b)}&amp;=\\max\\bigl(d_{\\mathrm{core}}(a),\\ d_{\\mathrm{core}}(b),\\ \\lVert x_a-x_b\\rVert\\bigr)\\\\\n\\term{stability}{S(C)}&amp;=\\sum_{p\\in C}\\bigl(\\lambda_p-\\term{birth}{\\lambda_{\\mathrm{birth}}(C)}\\bigr),\\qquad \\lambda=1/d\n\\end{aligned}</pre><p class=\"lens-ascii\">Pieces of the pipeline, not the whole procedure: core distance = distance to the minimumSamples-th nearest point (the point counts as its own first neighbour); mutual reachability d_mr(a, b) = max(core(a), core(b), |x_a - x_b|); the minimum spanning tree over d_mr gives the single-linkage dendrogram, which is condensed to clusters of at least minimumClusterSize points. Stability S(C) = sum over points p of C of (lambda_p - lambda_birth(C)) with lambda = 1 / distance. Excess-of-mass selection keeps a cluster when its stability exceeds the summed stability of its selected descendants; every other point is noise (0xffffffff).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-compiled:hierarchical-density-clustering-init\" data-value=\"coreDistance\">coreDistance · intermediate · coreDistances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-compiled:hierarchical-density-clustering-init\" data-value=\"minimumSamples\">minimumSamples · parameter · MINIMUM_SAMPLES</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-compiled:hierarchical-density-clustering-search-0\" data-value=\"mutual\">mutual · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-compiled:hierarchical-density-clustering-contributions\" data-value=\"stability\">stability · intermediate · contributions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-compiled:hierarchical-density-clustering-cluster-info\" data-value=\"birth\">birth · intermediate · birth</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>hdbscan-mutual-reachability</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{coreDistance}{d_{\\mathrm{core}}(a)}&amp;=\\text{distance to the } \\term{minimumSamples}{s}\\text{-th nearest point, itself counted}\\\\\n\\term{mutual}{d_{\\mathrm{mr}}(a,b)}&amp;=\\max\\bigl(d_{\\mathrm{core}}(a),\\ d_{\\mathrm{core}}(b),\\ \\lVert x_a-x_b\\rVert\\bigr)\\\\\n\\term{stability}{S(C)}&amp;=\\sum_{p\\in C}\\bigl(\\lambda_p-\\term{birth}{\\lambda_{\\mathrm{birth}}(C)}\\bigr),\\qquad \\lambda=1/d\n\\end{aligned}</pre><p class=\"lens-ascii\">Pieces of the pipeline, not the whole procedure: core distance = distance to the minimumSamples-th nearest point (the point counts as its own first neighbour); mutual reachability d_mr(a, b) = max(core(a), core(b), |x_a - x_b|); the minimum spanning tree over d_mr gives the single-linkage dendrogram, which is condensed to clusters of at least minimumClusterSize points. Stability S(C) = sum over points p of C of (lambda_p - lambda_birth(C)) with lambda = 1 / distance. Excess-of-mass selection keeps a cluster when its stability exceeds the summed stability of its selected descendants; every other point is noise (0xffffffff).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"coreDistance\">coreDistance · intermediate · unknown — wgsl coreDistances not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"minimumSamples\">minimumSamples · parameter · unknown — wgsl MINIMUM_SAMPLES not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mutual\">mutual · intermediate · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"stability\">stability · intermediate · unknown — wgsl contributions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"birth\">birth · intermediate · unknown — wgsl birth not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "coreDistance",
         "intermediate",
-        "coreDistances",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "minimumSamples",
         "parameter",
-        "MINIMUM_SAMPLES",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "mutual",
         "intermediate",
-        "weight",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "stability",
         "intermediate",
-        "contributions",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "birth",
         "intermediate",
-        "birth",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -90,12 +90,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:23.193Z",
-    "runId": "run-c85eff1c",
+    "date": "2026-11-07T14:55:22.448Z",
+    "runId": "run-197e6e91",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-c85eff1c",
+    "runId": "run-197e6e91",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

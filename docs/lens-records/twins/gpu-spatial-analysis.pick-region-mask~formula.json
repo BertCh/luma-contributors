@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula m_r = 1 when some pair k < min(count, K) of the pick result has objectIndex o_k = r and batchIndex b_k = b (any batch when no filter is set); otherwise 0. Duplicate picks write the same 1, negative or out-of-range indices are ignored, and th…",
   "description": "Formula m_r = 1 when some pair k < min(count, K) of the pick result has objectIndex o_k = r and batchIndex b_k = b (any batch when no filter is set); otherwise 0. Duplicate picks write the same 1, negative or out-of-range indices are ignored, and th…",
-  "llms": "Formula m_r = 1 when some pair k < min(count, K) of the pick result has objectIndex o_k = r and batchIndex b_k = b (any batch when no filter is set); otherwise 0. Duplicate picks write the same 1, negative or out-of-range indices are ignored, and the overflow word is copied as 0 or 1.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula m_r = 1 when some pair k < min(count, K) of the pick result has objectIndex o_k = r and batchIndex b_k = b (any batch when no filter is set); otherwise 0. Duplicate picks write the same 1, negative or out-of-range indices are ignored, and the overflow word is copied as 0 or 1.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>pick-region-mask</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{outputMask}{m_r}=\\begin{cases}1&amp;\\exists\\,k&lt;\\min(\\term{count}{c},\\term{pairCapacity}{K}):\\ \\term{objectIndex}{o_k}=r\\ \\wedge\\ \\term{batchIndex}{b_k}=b\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">m_r = 1 when some pair k &lt; min(count, K) of the pick result has objectIndex o_k = r and batchIndex b_k = b (any batch when no filter is set); otherwise 0. Duplicate picks write the same 1, negative or out-of-range indices are ignored, and the overflow word is copied as 0 or 1.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.pick-region-mask-compiled:pick-region-mask-scatter\" data-value=\"outputMask\">outputMask · output · outputMask</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.pick-region-mask-compiled:pick-region-mask-overflow\" data-value=\"count\">pick count · input · result</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.pick-region-mask-compiled:pick-region-mask-scatter\" data-value=\"pairCapacity\">pairCapacity · parameter · PAIR_CAPACITY</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.pick-region-mask-compiled:pick-region-mask-scatter\" data-value=\"objectIndex\">objectIndex · input · objectIndex</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.pick-region-mask-compiled:pick-region-mask-scatter\" data-value=\"batchIndex\">batchIndex · parameter · batchIndex</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>pick-region-mask</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{outputMask}{m_r}=\\begin{cases}1&amp;\\exists\\,k&lt;\\min(\\term{count}{c},\\term{pairCapacity}{K}):\\ \\term{objectIndex}{o_k}=r\\ \\wedge\\ \\term{batchIndex}{b_k}=b\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">m_r = 1 when some pair k &lt; min(count, K) of the pick result has objectIndex o_k = r and batchIndex b_k = b (any batch when no filter is set); otherwise 0. Duplicate picks write the same 1, negative or out-of-range indices are ignored, and the overflow word is copied as 0 or 1.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"outputMask\">outputMask · output · unknown — wgsl outputMask not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">pick count · input · unknown — wgsl result not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pairCapacity\">pairCapacity · parameter · unknown — wgsl PAIR_CAPACITY not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"objectIndex\">objectIndex · input · unknown — wgsl objectIndex not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"batchIndex\">batchIndex · parameter · unknown — wgsl batchIndex not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "outputMask",
         "output",
-        "outputMask",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "pick count",
         "input",
-        "result",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "pairCapacity",
         "parameter",
-        "PAIR_CAPACITY",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "objectIndex",
         "input",
-        "objectIndex",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "batchIndex",
         "parameter",
-        "batchIndex",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -77,12 +77,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:42.831Z",
-    "runId": "run-258278de",
+    "date": "2026-11-07T14:55:25.587Z",
+    "runId": "run-c64b67e0",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-258278de",
+    "runId": "run-c64b67e0",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

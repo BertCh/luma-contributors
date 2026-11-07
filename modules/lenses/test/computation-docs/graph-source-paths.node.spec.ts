@@ -16,7 +16,7 @@ it('every modules/analysis/src path cited by lens packs and scenarios exists', (
   for (const file of readdirSync(PACKAGE_SOURCE_ROOT, {recursive: true, encoding: 'utf8'})) {
     if (!file.endsWith('.ts')) continue;
     const source = readFileSync(join(PACKAGE_SOURCE_ROOT, file), 'utf8');
-    for (const [path] of source.matchAll(/modules\/graph\/src\/[A-Za-z0-9_./-]+\.[a-z]+/g)) {
+    for (const [path] of source.matchAll(/modules\/analysis\/src\/[A-Za-z0-9_./-]+\.[a-z]+/g)) {
       checkedCount++;
       if (!existsSync(join(REPOSITORY_ROOT, path))) missing.push(`${file}: ${path}`);
     }

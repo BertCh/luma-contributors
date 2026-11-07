@@ -4,7 +4,17 @@
 
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {createGPUComputeCommandNode, getBoundedDispatchLayout, getBoundedInvocationIndexSource, getViewBinding, getViewElementOffset, type GPUBoundedDispatchLayout, type GPUCommandGraph, type GPUCommandNode, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  getViewBinding,
+  getViewElementOffset,
+  type GPUBoundedDispatchLayout,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {getGPUSpatialJoinCapacityPlan} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {ResidentJoinColumnFormat} from './resident-join-plan';
 import type {ResidentSpatialJoinGpuTechnique} from './resident-spatial-join-plan';

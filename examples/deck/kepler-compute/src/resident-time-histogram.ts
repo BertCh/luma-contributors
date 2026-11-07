@@ -5,7 +5,13 @@
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, GPUHistogram, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUHistogram,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {TIME_WORDS_WGSL, getInt64TimeWords} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   convertKeplerTimeInstant,

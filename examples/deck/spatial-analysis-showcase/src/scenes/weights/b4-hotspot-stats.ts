@@ -12,7 +12,12 @@ import {
   type GPUInferenceAlternative,
   type GPUParameterBuffer
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUCommandGraph, GPUHistogram, GPUReduction, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUHistogram,
+  GPUReduction,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {
   HOT_SPOTS_GI_BIN_COUNT,
   HOT_SPOTS_GI_HISTOGRAM_EDGES,

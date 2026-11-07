@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-contours: dem → contourVertices1700. points: 15,876. values read back from the GPU run. input dem: 4096 cells.",
   "description": "Result of gpu-terrain.terrain-contours: dem → contourVertices1700. points: 15,876. values read back from the GPU run. input dem: 4096 cells.",
-  "llms": "Result of gpu-terrain.terrain-contours: dem → contourVertices1700\n\n- points: 15,876\n- input dem: 4096 cells\n- Planar coordinates (unit unknown); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-contours: dem → contourVertices1700\n\n- points: 15,876\n- input dem: 4096 cells\n- Planar coordinates (unit unknown); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "15,876"
@@ -24,14 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:10.332Z",
-    "runId": "run-c8d14304",
+    "date": "2026-11-07T14:55:29.973Z",
+    "runId": "run-74962407",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-c8d14304",
+    "runId": "run-74962407",
     "rung": "result",
     "bindings": {},
     "clauses": [],

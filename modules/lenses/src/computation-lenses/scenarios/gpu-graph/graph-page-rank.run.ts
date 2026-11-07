@@ -5,6 +5,7 @@
 import {assert, type Device} from '@luma.gl/core';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   describeGPUGraphScenario,
   getGPUGraphCaptureView,
   recordGPUGraphScenario,
@@ -36,9 +37,8 @@ async function buildScenario(device: Device): Promise<GPUGraphScenarioRecordOpti
       scenarioId: 'gpu-graph.graph-page-rank',
       element: 'GPUGraphAlgorithmsPageRank',
       fixture,
-      compiled: fixture.commandGraph.compile(),
+      ...compileGPUGraphScenario(fixture, outputCaptures),
       outputCaptures,
-      iterationFrames: [{name: 'page-rank', loopId: 'gpu-graph-page-rank-iterations'}],
       choices: [
         {stage: 'parameters', name: 'damping', value: 0.85, sweepable: true},
         {stage: 'parameters', name: 'iterations', value: 40, sweepable: true}
@@ -79,9 +79,13 @@ export async function describeStructure(device: Device) {
     return describeGPUGraphScenario(options);
   } finally {
     try {
-      options.compiled.destroy();
+      options.snapshot.arena.destroy();
     } finally {
-      options.fixture.destroy();
+      try {
+        options.compiled.destroy();
+      } finally {
+        options.fixture.destroy();
+      }
     }
   }
 }

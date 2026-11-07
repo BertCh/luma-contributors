@@ -341,10 +341,10 @@ export default defineScene<ChangeOfSupportOptions>({
     ];
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUPolygonRasterizationParameterValues, makeGPURasterMetadata
-} from '@luma-contributors/analysis/gpu-raster';
+} from '@luma.gl/graph/gpu-raster';
 import {
   addChangeOfSupportRecipe, GPUGridGenerator, GPUPycnophylactic
 } from '@luma-contributors/analysis/gpu-spatial-analysis';

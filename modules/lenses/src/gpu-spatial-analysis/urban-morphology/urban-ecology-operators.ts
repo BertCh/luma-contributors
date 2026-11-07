@@ -300,51 +300,6 @@ export const URBAN_ECOLOGY_OPERATORS: SpatialFamilyOperators = {
       supportAlignment: 'caller-explicit'
     }
   },
-  addSparseResistanceConnectivityRecipe: {
-    family: 'recipes',
-    descriptor: {scope: 'global', reduction: 'sum'},
-    variables: {
-      potentials: 'score',
-      currents: 'score',
-      diagnostics: 'score',
-      status: 'category',
-      components: 'category',
-      residual: 'score'
-    },
-    stages: ['support', 'operator'],
-    datumKinds: [{kind: 'unit', label: 'analysis unit', indexSpace: '1d'}],
-    guards: [],
-    choices: [],
-    formula: {
-      formula: 'none',
-      reason:
-        'Sparse Jacobi-preconditioned resistance with a true-current certificate. Construction, status and numerical outputs are recorded in the caller graph; no implicit host readback.'
-    },
-    metadata: {execution: 'graph-native', reference: 'explicit-domain-contract'}
-  },
-  addRasterResistanceConnectivityRecipe: {
-    family: 'recipes',
-    descriptor: {scope: 'global', reduction: 'sum'},
-    variables: {
-      resistance: 'measure',
-      conductances: 'measure',
-      potentials: 'score',
-      currents: 'score',
-      diagnostics: 'score',
-      status: 'category',
-      currentDensity: 'score'
-    },
-    stages: ['support', 'operator'],
-    datumKinds: [{kind: 'unit', label: 'analysis unit', indexSpace: '1d'}],
-    guards: [],
-    choices: [],
-    formula: {
-      formula: 'none',
-      reason:
-        'Raster resistance converted to physical neighbor conductance. Construction, status and numerical outputs are recorded in the caller graph; no implicit host readback.'
-    },
-    metadata: {execution: 'graph-native', reference: 'explicit-domain-contract'}
-  },
   addSegregationCounterfactualRecipe: {
     family: 'recipes',
     descriptor: {scope: 'global', reduction: 'sum'},

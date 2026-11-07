@@ -44,8 +44,8 @@ export const RASTER_REGIONS_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/analysis/src/gpu-raster/raster-patches/gpu-raster-patch-metrics.ts',
-      'modules/analysis/src/gpu-raster/raster-patches/patch-labels.ts'
+      'modules/analysis/src/raster-analysis/raster-patches/gpu-raster-patch-metrics.ts',
+      'modules/analysis/src/raster-analysis/raster-patches/patch-labels.ts'
     ]
   },
   GPURasterSieve: {
@@ -81,8 +81,8 @@ export const RASTER_REGIONS_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/analysis/src/gpu-raster/raster-patches/gpu-raster-sieve.ts',
-      'modules/analysis/src/gpu-raster/raster-patches/patch-labels.ts'
+      'modules/analysis/src/raster-analysis/raster-patches/gpu-raster-sieve.ts',
+      'modules/analysis/src/raster-analysis/raster-patches/patch-labels.ts'
     ]
   },
   GPURasterExtremaPyramid: {
@@ -113,6 +113,6 @@ export const RASTER_REGIONS_OPERATORS: RasterOperatorTable = {
         {id: 'child', role: 'input', label: 'child maximum', binding: 'wgsl:tileMaximum'}
       ]
     },
-    sources: ['modules/analysis/src/gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid.ts']
+    sources: ['modules/analysis/src/raster-analysis/raster-pyramid/gpu-raster-extrema-pyramid.ts']
   }
 };

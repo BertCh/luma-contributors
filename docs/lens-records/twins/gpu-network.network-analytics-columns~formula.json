@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula normalized = highest > lowest ? (raw - lowest) / (highest - lowest) : 0, in f32. lowest and highest are the two words of the extent reduction (minimum, maximum of the raw column over all nodes); a column with a single value (no range) normal…",
   "description": "Formula normalized = highest > lowest ? (raw - lowest) / (highest - lowest) : 0, in f32. lowest and highest are the two words of the extent reduction (minimum, maximum of the raw column over all nodes); a column with a single value (no range) normal…",
-  "llms": "Formula normalized = highest > lowest ? (raw - lowest) / (highest - lowest) : 0, in f32. lowest and highest are the two words of the extent reduction (minimum, maximum of the raw column over all nodes); a column with a single value (no range) normalizes to 0 for every node. The raw degree is the outgoing CSR row length from the degree algorithm.\n\n- bound symbols: 4/4\n- compute passes were not coalesced as in production\n- lens twin: transients degree, normalized, extent retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula normalized = highest > lowest ? (raw - lowest) / (highest - lowest) : 0, in f32. lowest and highest are the two words of the extent reduction (minimum, maximum of the raw column over all nodes); a column with a single value (no range) normalizes to 0 for every node. The raw degree is the outgoing CSR row length from the degree algorithm.\n\n- bound symbols: 0/4\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients degree, normalized, extent retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "4/4"
+    "value": "0/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.analytics.normalize</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{normalized}{s}=\\begin{cases}(\\term{degree}{x}-\\term{lowest}{a})/(\\term{highest}{b}-\\term{lowest}{a})&amp;\\term{highest}{b}&gt;\\term{lowest}{a}\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">normalized = highest &gt; lowest ? (raw - lowest) / (highest - lowest) : 0, in f32. lowest and highest are the two words of the extent reduction (minimum, maximum of the raw column over all nodes); a column with a single value (no range) normalizes to 0 for every node. The raw degree is the outgoing CSR row length from the degree algorithm.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-analytics-columns-compiled:network-analytics-columns-degree-normalize\" data-value=\"normalized\">scaled degree · output · normalized</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-analytics-columns-compiled:network-analytics-columns-degree-normalize\" data-value=\"degree\">raw column value · input · raw</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-analytics-columns-compiled:network-analytics-columns-degree-normalize\" data-value=\"lowest\">column minimum · intermediate · lowest</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-analytics-columns-compiled:network-analytics-columns-degree-normalize\" data-value=\"highest\">column maximum · intermediate · highest</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-analytics-columns-compiled:network-analytics-columns-degree-normalize\">network-analytics-columns-degree-normalize</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.analytics.normalize</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{normalized}{s}=\\begin{cases}(\\term{degree}{x}-\\term{lowest}{a})/(\\term{highest}{b}-\\term{lowest}{a})&amp;\\term{highest}{b}&gt;\\term{lowest}{a}\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">normalized = highest &gt; lowest ? (raw - lowest) / (highest - lowest) : 0, in f32. lowest and highest are the two words of the extent reduction (minimum, maximum of the raw column over all nodes); a column with a single value (no range) normalizes to 0 for every node. The raw degree is the outgoing CSR row length from the degree algorithm.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"normalized\">scaled degree · output · unknown — wgsl normalized not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"degree\">raw column value · input · unknown — wgsl raw not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lowest\">column minimum · intermediate · unknown — wgsl lowest not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"highest\">column maximum · intermediate · unknown — wgsl highest not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,28 +29,28 @@
       [
         "scaled degree",
         "output",
-        "normalized",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "raw column value",
         "input",
-        "raw",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "column minimum",
         "intermediate",
-        "lowest",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "column maximum",
         "intermediate",
-        "highest",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -69,15 +69,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.687Z",
-    "runId": "run-90405ee3",
+    "date": "2026-11-07T14:55:16.786Z",
+    "runId": "run-d7ca28ec",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients degree, normalized, extent retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-90405ee3",
+    "runId": "run-d7ca28ec",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

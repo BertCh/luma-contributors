@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-tiled-flow: tile0Fractions, tile0Runoff, tile0Str…",
   "description": "Result of gpu-terrain.terrain-tiled-flow: tile0Fractions, tile0Runoff, tile0Streams, tile1Fractions, tile1Runoff, tile1Streams → tile1Accumulation. cells: 9. values read back from the GPU run. input tile0Fractions: 72 values.",
-  "llms": "Result of gpu-terrain.terrain-tiled-flow: tile0Fractions, tile0Runoff, tile0Streams, tile1Fractions, tile1Runoff, tile1Streams → tile1Accumulation\n\n- cells: 9\n- input tile0Fractions: 72 values\n- input tile0Runoff: 9 cells\n- input tile0Streams: 9 cells\n- input tile1Fractions: 72 values\n- input tile1Runoff: 9 cells\n- input tile1Streams: 9 cells\n- Planar coordinates (m); uniform scale.\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-tiled-flow: tile0Fractions, tile0Runoff, tile0Streams, tile1Fractions, tile1Runoff, tile1Streams → tile1Accumulation\n\n- cells: 9\n- input tile0Fractions: 72 values\n- input tile0Runoff: 9 cells\n- input tile0Streams: 9 cells\n- input tile1Fractions: 72 values\n- input tile1Runoff: 9 cells\n- input tile1Streams: 9 cells\n- Planar coordinates (m); uniform scale.\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "9"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:12.040Z",
-    "runId": "run-8a985fff",
+    "date": "2026-11-07T14:55:30.506Z",
+    "runId": "run-a69dcb78",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-8a985fff",
+    "runId": "run-a69dcb78",
     "rung": "result",
     "bindings": {},
     "clauses": [],

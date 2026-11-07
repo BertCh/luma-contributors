@@ -58,7 +58,9 @@ export const INDICATORS_OPERATORS: DataFrameFamilyOperators = {
       score: {level: 'interval', extent: 'intensive'},
       scaled: {level: 'interval', extent: 'intensive'}
     },
-    sourceFiles: ['modules/analysis/src/gpu-dataframe/composite-indicators/gpu-composite-score.ts']
+    sourceFiles: [
+      'modules/analysis/src/dataframe-analysis/composite-indicators/gpu-composite-score.ts'
+    ]
   },
   /**
    * Primary: weighted empirical Gini from the sorted Lorenz trapezoids (no n/(n-1) correction).
@@ -116,8 +118,8 @@ export const INDICATORS_OPERATORS: DataFrameFamilyOperators = {
       lorenzKnots: {level: 'ratio', extent: 'intensive'}
     },
     sourceFiles: [
-      'modules/analysis/src/gpu-dataframe/composite-indicators/inequality-wgsl.ts',
-      'modules/analysis/src/gpu-dataframe/composite-indicators/gpu-inequality.ts'
+      'modules/analysis/src/dataframe-analysis/composite-indicators/inequality-wgsl.ts',
+      'modules/analysis/src/dataframe-analysis/composite-indicators/gpu-inequality.ts'
     ]
   }
 };

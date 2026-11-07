@@ -7,7 +7,7 @@
   "viewId": "buffer-strip",
   "caption": "Buffer viewshedVisibility (4096 u32). max: 1. values read back from the GPU run. min 0.",
   "description": "Buffer viewshedVisibility (4096 u32). max: 1. values read back from the GPU run. min 0.",
-  "llms": "Buffer viewshedVisibility (4096 u32)\n\n- max: 1\n- min 0\n- \n- 0 NaN, 0 Inf\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Buffer viewshedVisibility (4096 u32)\n\n- max: 1\n- min 0\n- \n- 0 NaN, 0 Inf\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max",
     "value": "1"
@@ -31,14 +31,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:12.156Z",
-    "runId": "run-a2f0bea0",
+    "date": "2026-11-07T14:55:30.543Z",
+    "runId": "run-152a3caf",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-a2f0bea0",
+    "runId": "run-152a3caf",
     "rung": "datum",
     "bindings": {},
     "clauses": [],

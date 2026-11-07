@@ -1,4 +1,4 @@
-// luma.gl
+// luma.gl contributors
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
@@ -12,11 +12,3 @@ export {requireTestDevice} from './require-test-device';
 
 // Internals that dependent packages' tests exercise directly.
 export {importGraphBuffer} from '../analysis-core/kernels/gpu-contributor-utils';
-export {addGPUQueryPredicatePass} from '@luma-contributors/analysis/testing';
-export {
-  createGPUDataFrameExpressionFormulas,
-  describeGPUDataFrameQueryIntent,
-  describeGPUDataFrameQueryShaderPlan,
-  type GPUDataFrameQueryDescriptionInput
-} from '../_pending/gpu-dataframe/gpu-query-describe';
-export {makeGPUQueryExpressionShaderPlan} from '@luma-contributors/analysis/testing';

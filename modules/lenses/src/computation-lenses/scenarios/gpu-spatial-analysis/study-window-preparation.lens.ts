@@ -31,7 +31,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.study-window-preparation',
           element: 'GPUStudyWindowPreparation',
           datasets: ['s2-chicago-north-areas'],
-          retain: ['summary'],
           keySpaces: [
             {
               id: 'summaryField',

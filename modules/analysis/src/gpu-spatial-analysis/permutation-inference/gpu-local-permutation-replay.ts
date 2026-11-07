@@ -92,8 +92,7 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const inputs = props.test.replayInputs;
-    // Replay is opt-in instrumentation and requires the test to have been lowered first.
-    assert(graph.recording && inputs);
+    assert(inputs); // replay requires the test to have been lowered first
     const reads = [...inputs.bindings.map(binding => binding.view), inputs.observedRaw, props.row];
     validateGraphViewsBelongToGraph(id, graph, [...reads, ...Object.values(props.output)]);
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), reads);

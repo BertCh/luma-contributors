@@ -700,9 +700,9 @@ export type GPUComputationCaptures = {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Record metadata attached to a command node while a graph records (`GPUCommandGraph` created
- * with `recording`). Production graphs never carry it. `describe()` copies it onto the compiled
- * graph node, moving `source` into the deduplicated source table.
+ * Record metadata an analysis operator hands to `GPUComputationRecorder.recordNode` while it builds
+ * a command graph. Production graphs never create a recorder. `describeGPUCommandGraph` copies it
+ * onto the compiled graph node, moving `source` into the deduplicated source table.
  */
 export type GPUComputationNodeAnnotation = {
   /** Display label. */
@@ -736,7 +736,7 @@ export type GPUComputationNodeAnnotation = {
   attrs?: GPUComputationAttributes;
 };
 
-/** One scope pushed with `GPUCommandGraph.withRecordScope`, stamped on nodes added inside it. */
+/** One scope pushed with `GPUComputationRecorder.withScope`, stamped on nodes recorded inside it. */
 export type GPUComputationRecordScope = {
   /** Namespace segment appended to the enclosing path, such as `scan` or `level-0`. */
   namespace?: string;

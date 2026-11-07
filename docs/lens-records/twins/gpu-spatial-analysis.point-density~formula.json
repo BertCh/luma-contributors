@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.point-density",
   "viewId": "formula-card",
-  "caption": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area. bound symbols: 3/4. structure metadata only.",
-  "description": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area. bound symbols: 3/4. structure metadata only.",
-  "llms": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area.\n\n- bound symbols: 3/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area. bound symbols: 0/4. structure metadata only.",
+  "description": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area. bound symbols: 0/4. structure metadata only.",
+  "llms": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area.\n\n- bound symbols: 0/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "3/4"
+    "value": "0/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.point-density</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{field}{v_c}=\\term{count}{n_c}=\\sum_{\\term{point}{i}\\,\\in\\,\\term{cell}{C_c}}1</pre><p class=\"lens-ascii\">v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-density-compiled:point-density-finalize\" data-value=\"field\">v_c · output · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-density-compiled:point-density-finalize\" data-value=\"count\">n_c · intermediate · counts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-density-compiled:point-density-counts-output-0-input-0-global\" data-value=\"point\">point i · input · positions</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cell\">cell C_c · parameter · unknown — wgsl gridSize not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-density-compiled:point-density-finalize\">point-density-finalize</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.point-density</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{field}{v_c}=\\term{count}{n_c}=\\sum_{\\term{point}{i}\\,\\in\\,\\term{cell}{C_c}}1</pre><p class=\"lens-ascii\">v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"field\">v_c · output · unknown — wgsl values not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">n_c · intermediate · unknown — wgsl counts not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"point\">point i · input · unknown — wgsl positions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cell\">cell C_c · parameter · unknown — wgsl gridSize not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "v_c",
         "output",
-        "values",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "n_c",
         "intermediate",
-        "counts",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "point i",
         "input",
-        "positions",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -91,12 +91,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:42.880Z",
-    "runId": "run-bc3fc1eb",
+    "date": "2026-11-07T14:55:25.606Z",
+    "runId": "run-80d19100",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-bc3fc1eb",
+    "runId": "run-80d19100",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

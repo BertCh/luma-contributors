@@ -6,7 +6,7 @@ import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {GPUSort} from '@luma.gl/graph/gpu-core';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
 export type PointCloudGrid = {
   origin: readonly [number, number, number];
@@ -40,7 +40,7 @@ export function createPointCloudGridIndex<Parameters>(
     ? `vec3f((position.xy-vec2f(${grid.origin.slice(0, 2).map(Math.fround).join(',')}))/${Math.fround(grid.cellSize)},0.0)`
     : `(position-vec3f(${grid.origin.map(Math.fround).join(',')}))/${Math.fround(grid.cellSize)}`;
   const inside = `all(coordinate>=vec3f(0.0))&&all(coordinate<vec3f(${grid.dimensions.map(value => `${value}.0`).join(',')}))`;
-  const nodes = getSpatialOperationNodes(graph, {
+  const nodes = getPointCloudKernelNodes(graph, {
     id: `${id}-keys`,
     length: positions.length,
     inputs: {positions},
@@ -59,7 +59,7 @@ export function createPointCloudGridIndex<Parameters>(
     }).getCommandNodes(graph)
   );
   nodes.push(
-    ...getSpatialOperationNodes(graph, {
+    ...getPointCloudKernelNodes(graph, {
       id: `${id}-offsets`,
       length: cells + 1,
       inputs: {sortedKeys},

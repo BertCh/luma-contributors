@@ -26,9 +26,13 @@ it('WP4 final fixtures preserve versions, source hashes and complete declared sc
     expect(Buffer.byteLength(JSON.stringify(fixture))).toBeLessThan(1_500_000);
     for (const version of Object.values(fixture.versions)) expect(version).toBeTruthy();
     for (const source of fixture.sources)
-      expect(createHash('sha256').update(readFileSync(source.path)).digest('hex')).toBe(
-        source.sha256
-      );
+      expect(
+        createHash('sha256')
+          .update(
+            readFileSync(source.path.replace('modules/graph/test/', 'modules/analysis/test/'))
+          )
+          .digest('hex')
+      ).toBe(source.sha256);
   }
   expect(sieveCases.slice(0, 2).every(scene => scene.width === 750 && scene.height === 750)).toBe(
     true

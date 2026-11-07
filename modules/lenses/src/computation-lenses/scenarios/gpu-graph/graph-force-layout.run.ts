@@ -5,6 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   describeGPUGraphScenario,
   getGPUGraphCaptureView,
   recordGPUGraphScenario,
@@ -42,9 +43,8 @@ async function buildScenario(device: Device): Promise<GPUGraphScenarioRecordOpti
       scenarioId: 'gpu-graph.graph-force-layout',
       element: 'GPUGraphAlgorithmsForceLayout',
       fixture,
-      compiled: fixture.commandGraph.compile(),
+      ...compileGPUGraphScenario(fixture, outputCaptures),
       outputCaptures,
-      iterationFrames: [{name: 'force-layout', loopId: 'gpu-graph-force-layout-iterations'}],
       choices: [
         {stage: 'parameters', name: 'iterationsPerFrame', value: 100, sweepable: true},
         {stage: 'parameters', name: 'repulsion', value: 5, sweepable: true},
@@ -71,9 +71,13 @@ export async function describeStructure(device: Device) {
     return describeGPUGraphScenario(options);
   } finally {
     try {
-      options.compiled.destroy();
+      options.snapshot.arena.destroy();
     } finally {
-      options.fixture.destroy();
+      try {
+        options.compiled.destroy();
+      } finally {
+        options.fixture.destroy();
+      }
     }
   }
 }

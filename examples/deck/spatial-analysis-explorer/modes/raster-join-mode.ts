@@ -20,8 +20,19 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {getGPUPolygonRasterizationParameterValues, GPU_POLYGON_RASTERIZATION_NO_ZONE, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH, GPUPolygonRasterization, GPURasterJoin, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  getGPUPolygonRasterizationParameterValues,
+  GPU_POLYGON_RASTERIZATION_NO_ZONE,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+  GPUPolygonRasterization,
+  GPURasterJoin,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {GPUPointInPolygonJoin} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {

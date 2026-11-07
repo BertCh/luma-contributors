@@ -53,7 +53,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.pycnophylactic',
           element: 'GPUPycnophylactic',
           datasets: ['s2-chicago-north-tracts'],
-          retain: ['mass', 'converged', 'iterationCount', 'invalidCount', 'rasterOverflow'],
           keySpaces,
           choices: {
             kernel: 'rook',

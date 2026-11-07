@@ -16,7 +16,12 @@ import {
 import {makeArrowTableFromGPUAnalyticsTable} from '@luma.gl/graph/arrow';
 import {Buffer} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {CompiledGPUDataFrameGlobalSort, CompiledGPUDataFrameGroupedAggregation, CompiledGPUDataFrameJoin, GPUDataFrame} from '@luma.gl/graph/gpu-dataframe';
+import {
+  CompiledGPUDataFrameGlobalSort,
+  CompiledGPUDataFrameGroupedAggregation,
+  CompiledGPUDataFrameJoin,
+  GPUDataFrame
+} from '@luma.gl/graph/gpu-dataframe';
 import {GPUCommandGraph, GPUGather, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUSQLContext, type GPUSQLQuery} from '@luma.gl/graph/gpu-sql';
 import {

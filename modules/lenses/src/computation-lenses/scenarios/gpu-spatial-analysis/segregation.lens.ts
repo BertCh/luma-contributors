@@ -37,7 +37,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.segregation',
           element: 'GPUSegregation',
           datasets: ['s2-chicago-north-tracts'],
-          retain: ['indices', 'localTheil', 'localEntropy'],
           keySpaces,
           choices: {groupCount: GROUP_FIELDS.length, spatialScales: 'aspatial'},
           async build(graph, uploads) {

@@ -19,7 +19,6 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.composite-score';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['score', 'columnStatistics'];
 const INDICATOR_NAMES = ['poverty150Pct', 'unemployedPct', 'uninsuredPct', 'noVehiclePct'] as const;
 const STATISTIC_NAMES = ['columnMinimum', 'columnMaximum', 'columnMean', 'columnStandardDeviation'];
 
@@ -83,11 +82,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
       row * INDICATOR_NAMES.length
     );
   }
-  const graph = createDataFrameLensGraph<undefined>(
-    device,
-    'gpu-dataframe-composite-score',
-    RETAINED
-  );
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-composite-score');
   const example = await runExample(device, {graph, tracts: {indicators}});
   try {
     options?.signal?.throwIfAborted();

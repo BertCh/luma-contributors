@@ -5,7 +5,16 @@
 import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUDistanceFieldParameterValues, getGPUPolygonRasterizationParameterValues, GPUDistanceField, GPUPolygonRasterization, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH, GPURasterZonalStatistics, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUDistanceFieldParameterValues,
+  getGPUPolygonRasterizationParameterValues,
+  GPUDistanceField,
+  GPUPolygonRasterization,
+  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+  GPURasterZonalStatistics,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,

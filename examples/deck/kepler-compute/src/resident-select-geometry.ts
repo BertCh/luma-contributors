@@ -5,7 +5,10 @@
 import * as arrow from 'apache-arrow';
 import type {Feature, Geometry} from 'geojson';
 import type {KeplerDatasetRegistry, KeplerSourceRow} from '@luma-contributors/kepler';
-import {getGeoArrowRowViewFromArrowVector, makeArrowVectorFromGeoArrowColumn} from '@luma.gl/graph/arrow';
+import {
+  getGeoArrowRowViewFromArrowVector,
+  makeArrowVectorFromGeoArrowColumn
+} from '@luma.gl/graph/arrow';
 import type {GeoArrowEncoding} from '@math.gl/geospatial/geoarrow';
 import {parseWKB, visitWKB} from '@math.gl/geospatial';
 import {cellToBoundary} from 'h3-js';

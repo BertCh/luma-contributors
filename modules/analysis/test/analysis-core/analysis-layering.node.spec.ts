@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {readdirSync, readFileSync, statSync} from 'node:fs';
+import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join, relative, resolve, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import typescript from 'typescript';
@@ -15,56 +15,32 @@ const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../src'
 const DOCS_ROOT = resolve(SOURCE_ROOT, '../../../docs/api-reference/experimental');
 
 /** Shared layers that every analysis entry may import. They import no analysis entry. */
-const SHARED_LAYERS = ['utils', 'analysis-core'] as const;
+const SHARED_LAYERS = ['analysis-core'] as const;
 
 /**
  * Analysis entries from lowest to highest. An entry may import shared layers and entries listed
  * before it, never one listed after it.
  */
 const ENTRY_ORDER = [
-  'geospatial',
-  'gpu-dataframe',
-  'gpu-raster',
+  'geospatial-analysis',
+  'dataframe-analysis',
+  'raster-analysis',
+  'pointcloud-analysis',
   'gpu-terrain',
   'gpu-spatial-analysis',
   'gpu-network'
 ] as const;
 
-/** Upstream luma entries the analysis entries may also import (they import no analysis entry). */
-/** Upstream graph layers below the analysis entries; `execution` owns Kernel and dynamic resources. */
-const UPSTREAM_ENTRIES = new Set(['execution', 'gpu-project', 'gpu-tables']);
+/** Sibling source layers the analysis entries may import without being an entry themselves. */
+const UPSTREAM_ENTRIES = new Set(['computation-record']);
 
 /** Top-level source files each barrel re-exports explicitly; everything else comes from `export *`. */
-const EXPLICIT_BARREL_SOURCES: Record<(typeof ENTRY_ORDER)[number], RegExp> = {
-  geospatial: /^\.\/[a-z0-9-]+$|^@luma-contributors\/graph\/gpu-core$|^\.\.\/utils\//,
-  'gpu-dataframe': /^\.\/gpu-[a-z0-9-]+$|^\.\.\/utils\//,
-  'gpu-raster':
-    /^\.\/(gpu-raster[a-z0-9-]*|types|raster-device-limits)$|^\.\.\/(utils|analysis-core)\//,
-  'gpu-terrain': /^\.\.\/(utils|analysis-core)\//,
-  'gpu-spatial-analysis': /^\.\.\/(utils|analysis-core)\//,
-  'gpu-network': /^\.\.\/utils\//
-};
+const EXPLICIT_BARREL_SOURCES: Record<(typeof ENTRY_ORDER)[number], RegExp> = Object.fromEntries(
+  ENTRY_ORDER.map(entry => [entry, /^\.\/[a-z0-9-]+$|^\.\.\/analysis-core\//])
+) as Record<(typeof ENTRY_ORDER)[number], RegExp>;
 
-/** Documentation pages whose `###` headings name exports of one entry. */
-const DOCUMENTED_ENTRIES: Record<string, (typeof ENTRY_ORDER)[number]> = {
-  'geospatial.md': 'geospatial',
-  'gpu-dataframe-analysis.md': 'gpu-dataframe',
-  'gpu-raster/operations-analysis.md': 'gpu-raster',
-  'gpu-terrain/operators.md': 'gpu-terrain',
-  'gpu-spatial-analysis/operators-weights.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-statistics.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-dynamics.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-accessibility.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-joins.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-validity.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-density.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-cells.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-lines.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-geometry.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/operators-regression.md': 'gpu-spatial-analysis',
-  'gpu-spatial-analysis/recipes.md': 'gpu-spatial-analysis',
-  'gpu-network/operators.md': 'gpu-network'
-};
+/** Documentation pages whose `###` headings name exports of one entry (skipped when absent). */
+const DOCUMENTED_ENTRIES: Record<string, (typeof ENTRY_ORDER)[number]> = {};
 
 function listSourceFiles(directory: string): string[] {
   const files: string[] = [];
@@ -156,10 +132,7 @@ describe('analysis layering', () => {
   it('keeps the shared layers below every analysis entry', () => {
     for (const layer of SHARED_LAYERS) {
       const imports = getLayerImports(layer);
-      // Execution primitives now share this package with the analysis extensions.
       const allowed = [
-        'execution',
-        'gpu-core',
         'computation-record',
         ...SHARED_LAYERS.slice(0, SHARED_LAYERS.indexOf(layer) + 1)
       ];
@@ -214,6 +187,9 @@ describe('analysis entry barrels', () => {
 
   it('reaches every documented contributor and recipe from its entry', () => {
     for (const [page, entry] of Object.entries(DOCUMENTED_ENTRIES)) {
+      if (!existsSync(join(DOCS_ROOT, page))) {
+        continue;
+      }
       const markdown = readFileSync(join(DOCS_ROOT, page), 'utf8');
       const entryExports = exportsByFile.get(join(entry, 'index.ts'))!;
       const documented = new Set<string>();

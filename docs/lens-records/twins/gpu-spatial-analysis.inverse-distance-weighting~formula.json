@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact…",
   "description": "Formula z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact…",
-  "llms": "Formula z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.inverse-distance-weighting</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{\\hat z(u)}=\\frac{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{sample}{z_i}\\,\\term{distance}{d_i}^{-\\term{power}{p}}}{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{distance}{d_i}^{-\\term{power}{p}}}</pre><p class=\"lens-ascii\">z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"result\">predicted rainfall · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"sample\">station rainfall · input · sampleValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"distance\">distance to cell centre · intermediate · distanceSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"power\">distance power · parameter · power</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"neighbors\">nearest samples within radius · intermediate · nearRows</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\">inverse-distance-weighting-gather</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.inverse-distance-weighting</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{\\hat z(u)}=\\frac{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{sample}{z_i}\\,\\term{distance}{d_i}^{-\\term{power}{p}}}{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{distance}{d_i}^{-\\term{power}{p}}}</pre><p class=\"lens-ascii\">z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"result\">predicted rainfall · output · unknown — wgsl valuesOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sample\">station rainfall · input · unknown — wgsl sampleValues not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distance\">distance to cell centre · intermediate · unknown — wgsl distanceSquared not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"power\">distance power · parameter · unknown — wgsl power not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"neighbors\">nearest samples within radius · intermediate · unknown — wgsl nearRows not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "predicted rainfall",
         "output",
-        "valuesOut",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "station rainfall",
         "input",
-        "sampleValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "distance to cell centre",
         "intermediate",
-        "distanceSquared",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "distance power",
         "parameter",
-        "power",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "nearest samples within radius",
         "intermediate",
-        "nearRows",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -90,12 +90,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:25.764Z",
-    "runId": "run-849303e9",
+    "date": "2026-11-07T14:55:22.849Z",
+    "runId": "run-f500989c",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-849303e9",
+    "runId": "run-f500989c",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of zone (supernode) 1. groupCentroid: -87.62772369384766, 41.87467575073242. values read back from the GPU run. summary: 2 quantities.",
   "description": "Receipt of zone (supernode) 1. groupCentroid: -87.62772369384766, 41.87467575073242. values read back from the GPU run. summary: 2 quantities.",
-  "llms": "Receipt of zone (supernode) 1\n\n- groupCentroid: -87.62772369384766, 41.87467575073242\n- summary: 2 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of zone (supernode) 1\n\n- groupCentroid: -87.62772369384766, 41.87467575073242\n- summary: 2 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "groupCentroid",
     "value": "-87.62772369384766, 41.87467575073242"
@@ -49,15 +49,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.867Z",
-    "runId": "run-9606a591",
+    "date": "2026-11-07T14:55:16.823Z",
+    "runId": "run-db52577f",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-9606a591",
+    "runId": "run-db52577f",
     "rung": "datum",
     "bindings": {
       "entity": 1

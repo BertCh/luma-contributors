@@ -14,7 +14,7 @@
     "value": "1"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUTimeWindowFilter</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{outputMask}{\\mathrm{keep}}=\\mathbf{1}[\\term{start}{s}\\leq\\term{timestamps}{t}\\leq\\term{end}{e}]</pre><p class=\"lens-ascii\">keep=1[start &lt;= t &lt;= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask.</p></div><div class=\"lens-worked-example\"><h4>Entity 513</h4><div><pre class=\"lens-tex\">\\term{outputMask}{1}=\\mathbf{1}[\\term{start}{s}\\leq\\term{timestamps}{\\left(13085845\\right)}\\leq\\term{end}{e}]</pre><p class=\"lens-ascii\">keep=1[start &lt;= t &lt;= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.time-window-filter-compiled:time-window-filter-classify\" data-value=\"outputMask\">outputMask · output · outputMask<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.time-window-filter-compiled:time-window-filter-classify\" data-value=\"start\">start · parameter · windowStartHigh</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.time-window-filter-compiled:time-window-filter-classify\" data-value=\"timestamps\">timestamps · input · startHigh<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.time-window-filter-compiled:time-window-filter-classify\" data-value=\"end\">end · parameter · windowEndHigh</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUTimeWindowFilter</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{outputMask}{\\mathrm{keep}}=\\mathbf{1}[\\term{start}{s}\\leq\\term{timestamps}{t}\\leq\\term{end}{e}]</pre><p class=\"lens-ascii\">keep=1[start &lt;= t &lt;= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask.</p></div><div class=\"lens-worked-example\"><h4>Entity 513</h4><div><pre class=\"lens-tex\">\\term{outputMask}{1}=\\mathbf{1}[\\term{start}{s}\\leq\\term{timestamps}{\\left(13085845\\right)}\\leq\\term{end}{e}]</pre><p class=\"lens-ascii\">keep=1[start &lt;= t &lt;= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask.</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"outputMask\">outputMask · output · unknown — wgsl outputMask not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"start\">start · parameter · unknown — wgsl windowStartHigh not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"timestamps\">timestamps · input · unknown — wgsl startHigh not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"end\">end · parameter · unknown — wgsl windowEndHigh not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,28 +30,28 @@
       [
         "outputMask",
         "output",
-        "outputMask",
+        "unknown",
         "1",
         "readback"
       ],
       [
         "start",
         "parameter",
-        "windowStartHigh",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "timestamps",
         "input",
-        "startHigh",
+        "unknown",
         "13085845",
         "readback"
       ],
       [
         "end",
         "parameter",
-        "windowEndHigh",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -70,12 +70,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:42.443Z",
-    "runId": "run-d593151a",
+    "date": "2026-11-07T14:55:16.194Z",
+    "runId": "run-f888b55c",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-d593151a",
+    "runId": "run-f888b55c",
     "rung": "formula",
     "bindings": {
       "entity": 513

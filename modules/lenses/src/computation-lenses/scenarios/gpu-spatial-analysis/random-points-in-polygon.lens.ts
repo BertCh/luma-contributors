@@ -33,15 +33,6 @@ defineLensScenario({
           element: 'GPURandomPointsInPolygon',
           datasets: ['s2-chicago-north-areas'],
           seed: 2026,
-          retain: [
-            'points',
-            'source-ids',
-            'count',
-            'overflow',
-            'required-count',
-            'slot-counts',
-            'failed-count'
-          ],
           keySpaces: [
             {id: 'feature', label: 'community area', size: featureCount, indexSpace: '1d'},
             {id: 'point', label: 'sample slot', size: capacity, indexSpace: '1d'},

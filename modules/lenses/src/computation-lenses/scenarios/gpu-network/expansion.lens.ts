@@ -106,14 +106,11 @@ function createScenario(kind: ExpansionKind): NetworkElementScenario {
       ) => createTransientView(graph, name, format, length, Buffer.STORAGE | Buffer.COPY_SRC);
       if (kind === 'network-structure') {
         const strongComponents = view('strongComponents', 'uint32', 4);
-        const strongComponentsConverged = view('strongComponentsConverged', 'uint32', 1);
         await runStructure(context.device, graph, {
           topology,
-          output: {strongComponents, strongComponentsConverged},
-          // The four-node diamond resolves in a few state-machine steps.
-          strongComponentsIterations: 8
+          output: {strongComponents}
         });
-        return {views: {...topology, strongComponents, strongComponentsConverged}};
+        return {views: {...topology, strongComponents}};
       }
       if (kind === 'alternative-routes') {
         const output = {

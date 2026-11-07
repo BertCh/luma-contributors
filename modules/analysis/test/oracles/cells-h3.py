@@ -8,7 +8,7 @@ Writes fixtures/cell-indexing-h3.json next to this script, consumed by
 test/gpu-spatial-analysis/cell-indexing/gpu-point-to-cell.spec.ts ('GPUPointToCell H3 equals h3-py
 away from cell edges'). Cell cover and rollup fixtures come from geometry-properties.py
 (cell-cover-h3.json, cell-rollup.json). Run with
-    <venv>/bin/python -I modules/graph/test/oracles/cells-h3.py
+    <venv>/bin/python -I modules/analysis/test/oracles/cells-h3.py
 in a venv with numpy and h3 >= 4 (versions are recorded in the fixture).
 
 Points (float32 longitude / latitude, exactly what the GPU reads): equal-area random points (seed

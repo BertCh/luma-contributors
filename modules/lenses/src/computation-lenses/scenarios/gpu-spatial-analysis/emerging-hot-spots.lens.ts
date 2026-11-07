@@ -31,16 +31,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.emerging-hot-spots',
           element: 'GPUEmergingHotSpots',
           datasets: ['s2-chicago-north-nature'],
-          retain: [
-            'giZScores',
-            'adjustedPValues',
-            'trendZ',
-            'trendP',
-            'trendS',
-            'category',
-            'hotSliceCount',
-            'coldSliceCount'
-          ],
           keySpaces: [
             {
               id: 'cell',

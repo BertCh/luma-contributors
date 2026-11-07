@@ -34,7 +34,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.kernel-density',
           element: 'GPUKernelDensity',
           datasets: ['s2-chicago-north-nature'],
-          retain: ['density'],
           keySpaces: [
             {
               id: 'cell',

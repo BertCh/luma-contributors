@@ -6,7 +6,7 @@
 Writes fixtures/statistics-ward.json next to this script, consumed by
 test/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions.spec.ts and
 ward-mutual-nearest.node.spec.ts. Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-ward.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-ward.py
 in a venv with numpy, scipy and scikit-learn (versions are recorded in the fixture).
 
 Scenes (raw values, `standardize: false`; labels are canonical: the smallest row of each cluster):

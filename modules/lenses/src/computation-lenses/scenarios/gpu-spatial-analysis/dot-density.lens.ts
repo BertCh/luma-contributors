@@ -36,15 +36,6 @@ defineLensScenario({
           element: 'GPUDotDensity',
           datasets: ['s2-chicago-north-tracts'],
           seed: 2026,
-          retain: [
-            'points',
-            'source-ids',
-            'count',
-            'overflow',
-            'required-count',
-            'slot-counts',
-            'failed-count'
-          ],
           keySpaces: [
             {id: 'feature', label: 'census tract', size: featureCount, indexSpace: '1d'},
             {id: 'point', label: 'sample slot', size: capacity, indexSpace: '1d'},

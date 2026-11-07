@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {readFileSync} from 'node:fs';
-import {build} from 'esbuild';
 import {parsePROJString, type CRSDefinition} from '@math.gl/geospatial/crs';
 import {projectionEngine} from '@math.gl/geospatial/projection';
 import {describe, expect, it, vi} from 'vitest';
@@ -43,30 +41,6 @@ const geographic = {
 } as const satisfies CRSDefinition;
 
 describe('optional CRS planner', () => {
-  it('keeps math.gl and proj4 out of the execution entry point bundle', async () => {
-    const result = await build({
-      stdin: {
-        contents:
-          "import {compileProjectionProgram} from './modules/analysis/src/gpu-project/index'; export {compileProjectionProgram};",
-        resolveDir: process.cwd()
-      },
-      bundle: true,
-      write: false,
-      metafile: true,
-      format: 'esm',
-      platform: 'browser',
-      external: ['@luma.gl/*', '@luma-contributors/*']
-    });
-    expect(Object.keys(result.metafile!.inputs).some(path => /@math.gl|proj4/.test(path))).toBe(
-      false
-    );
-    const packageJson = JSON.parse(
-      readFileSync(new URL('../../package.json', import.meta.url), 'utf8')
-    );
-    expect(packageJson.exports['./gpu-project/crs'].types).toBe('./dist/gpu-project/crs.d.ts');
-    expect(packageJson.dependencies['@math.gl/geospatial']).toBeDefined();
-  });
-
   it('lowers a public math.gl AST with signed axes, unit changes, and inverse affine stages', () => {
     const result = requireReady(
       planProjectionPipeline({

@@ -63,7 +63,6 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         timeDependent: false
       }
     ],
-    keyFrames: {loop: 'terrain-spike-repair-components-iterations', maximumFrames: 8},
     build: async session => {
       // Inject +900 m at (column,row) = (20,20), (32,32), (44,44).
       const elevation = data.elevation.slice();
@@ -89,8 +88,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       session.capture('repairedElevation', repairedElevation, {
         role: 'output',
         geometry: 'raster',
-        meaning: 'repaired elevation (m); unavailable until component labelling completes',
-        keyFrames: true
+        meaning: 'repaired elevation (m); unavailable until component labelling completes'
       });
       const repairValidity = session.output('repairValidity', 'uint32', {
         role: 'intermediate',

@@ -4,7 +4,7 @@
 
 import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
 export type GPUPointCloudFeaturesProps = {
   id?: string;
@@ -50,7 +50,7 @@ export class GPUPointCloudFeatures {
       viewpoint,
       covariance
     } = this.props;
-    return getSpatialOperationNodes(graph, {
+    return getPointCloudKernelNodes(graph, {
       id: this.id,
       length: counts.length,
       inputs: {positions, indices, counts},

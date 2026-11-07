@@ -56,11 +56,15 @@ export const ANALYSIS_ENTRIES = [
   '@luma-contributors/analysis/gpu-spatial-analysis',
   '@luma-contributors/analysis/gpu-network',
   '@luma-contributors/analysis/gpu-terrain',
-  '@luma-contributors/analysis/gpu-raster',
-  '@luma-contributors/analysis/gpu-dataframe',
-  '@luma-contributors/analysis/geospatial',
-  '@luma-contributors/analysis/gpu-tables',
-  '@luma-contributors/analysis/gpu-core',
+  '@luma-contributors/analysis/raster-analysis',
+  '@luma-contributors/analysis/dataframe-analysis',
+  '@luma-contributors/analysis/geospatial-analysis',
+  '@luma-contributors/analysis/pointcloud-analysis',
+  '@luma.gl/graph/gpu-raster',
+  '@luma.gl/graph/gpu-dataframe',
+  '@luma.gl/graph/geospatial',
+  '@luma.gl/graph/gpu-tables',
+  '@luma.gl/graph/gpu-core',
   '@luma.gl/core'
 ] as const;
 

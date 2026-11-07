@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,7 +14,7 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../analysis-core/kernels/wgsl-kernel-nodes';
-import {assertRasterStorageBindingFits} from '@luma.gl/graph/gpu-raster';
+import {validateGPUStorageBindingByteLength} from '../analysis-core/kernels/gpu-contributor-utils';
 import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import type {GPURasterWatershedSegmentationProps} from './gpu-raster-watershed-segmentation';
 
@@ -66,7 +67,14 @@ export function getRasterWatershedForestNodes<Parameters>(
     props.output.labels,
     props.output.status.converged
   ]) {
-    assertRasterStorageBindingFits(graph.device, view, id);
+    // The published binding range already accounts for storage-offset alignment.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'binding',
+      getViewBindingRange(view).size,
+      'split the raster'
+    );
   }
   const declarations = `const WIDTH: u32 = ${props.grid.width}u;
 const HEIGHT: u32 = ${props.grid.height}u;

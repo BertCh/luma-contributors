@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-graph.graph-spatial-force-layout",
   "viewId": "formula-card",
-  "caption": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "description": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "llms": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.\n\n- bound symbols: 2/3\n- compute passes were not coalesced as in production\n- 5034 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Each iteration rebuilds a uniform grid index from current positions (cell offsets, vertex ids, per-cell mean position). For vertex v: F = -GRAVITY*p + REPULSION*(exact all-pairs terms over vertices in cells within NEAR_CELL_RADIUS (Chebyshev…",
+  "description": "Formula Each iteration rebuilds a uniform grid index from current positions (cell offsets, vertex ids, per-cell mean position). For vertex v: F = -GRAVITY*p + REPULSION*(exact all-pairs terms over vertices in cells within NEAR_CELL_RADIUS (Chebyshev…",
+  "llms": "Formula Each iteration rebuilds a uniform grid index from current positions (cell offsets, vertex ids, per-cell mean position). For vertex v: F = -GRAVITY*p + REPULSION*(exact all-pairs terms over vertices in cells within NEAR_CELL_RADIUS (Chebyshev) of v's cell, plus for every other occupied cell whose squared diagonal < THETA^2 * |p-center|^2, one monopole: mass*(p-center)/max(|p-center|^2, MINIMUM_DISTANCE_SQUARED)) + ATTRACTION*sum over forward CSR neighbors (q-p), plus reverse CSR neighbors when a reverse topology is supplied (incident edges). Cells that are neither near nor accepted are visited vertex by vertex, so THETA=0 is exact. Velocity = (velocity + F*TIME_STEP)*DAMPING capped to MAX_VELOCITY, then position += velocity*TIME_STEP. Out-of-bounds positions or index overflow freeze positions and clear velocities.\n\n- bound symbols: 0/11\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/3"
+    "value": "0/11"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.scan</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})</pre><p class=\"lens-ascii\">y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"y\">y · output · outputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"heads\">heads · input · unknown — wgsl segmentFlags not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:rail-topology-forward-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-0-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:rail-topology-forward-scan-level-1-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:rail-topology-forward-scan-level-0-add-offsets\">add-offsets</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-1-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-2-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-3-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-4-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-5-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-6-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-7-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-8-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-9-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-10-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-11-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-12-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-13-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-14-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-15-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-16-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-17-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-18-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-19-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-20-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-21-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-22-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-23-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-24-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-25-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-26-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-27-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-28-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-29-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-30-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-31-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-32-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-33-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-34-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-35-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-36-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-37-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-38-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-39-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-40-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-41-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-42-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-43-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-44-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-45-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-46-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-47-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-48-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-49-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-50-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-51-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-52-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-53-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-54-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-55-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-56-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-57-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-58-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-59-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-60-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-61-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-62-index-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-spatial-force-layout-compiled:gpu-graph-spatial-force-layout-iteration-63-index-scan-level-0-scan\">level-scan</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-graph.spatial-force-layout-step</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{force}{F}_v=-\\term{gravity}{g}\\,\\term{position}{p}_v+\\term{repulsion}{R}\\Big[\\sum_{u\\in\\mathrm{near}(v)}\\frac{\\term{position}{p}_v-\\term{position}{p}_u}{\\max(\\lVert \\term{position}{p}_v-\\term{position}{p}_u\\rVert^2,\\term{epsilon}{\\varepsilon})}+\\sum_{c\\in\\mathrm{far}(v)}\\term{mass}{m_c}\\frac{\\term{position}{p}_v-\\term{center}{\\bar p_c}}{\\max(\\lVert \\term{position}{p}_v-\\bar p_c\\rVert^2,\\varepsilon)}\\Big]+\\term{attraction}{A}\\sum_{u\\in\\term{neighbors}{N(v)}}(p_u-p_v);\\qquad c\\in\\mathrm{far}(v)\\iff \\operatorname{cheb}(c,\\mathrm{cell}(v))&gt;\\term{nearRadius}{r}\\ \\wedge\\ d_{\\mathrm{cell}}^2&lt;\\term{theta}{\\theta}^2\\,\\lVert p_v-\\bar p_c\\rVert^2</pre><p class=\"lens-ascii\">Each iteration rebuilds a uniform grid index from current positions (cell offsets, vertex ids, per-cell mean position). For vertex v: F = -GRAVITY*p + REPULSION*(exact all-pairs terms over vertices in cells within NEAR_CELL_RADIUS (Chebyshev) of v&#39;s cell, plus for every other occupied cell whose squared diagonal &lt; THETA^2 * |p-center|^2, one monopole: mass*(p-center)/max(|p-center|^2, MINIMUM_DISTANCE_SQUARED)) + ATTRACTION*sum over forward CSR neighbors (q-p), plus reverse CSR neighbors when a reverse topology is supplied (incident edges). Cells that are neither near nor accepted are visited vertex by vertex, so THETA=0 is exact. Velocity = (velocity + F*TIME_STEP)*DAMPING capped to MAX_VELOCITY, then position += velocity*TIME_STEP. Out-of-bounds positions or index overflow freeze positions and clear velocities.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"force\">net force · intermediate · unknown — wgsl force not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gravity\">gravity · parameter · unknown — wgsl GRAVITY not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"position\">position · output · unknown — wgsl positions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"repulsion\">repulsion · parameter · unknown — wgsl REPULSION not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"epsilon\">minimum squared distance · constant · unknown — wgsl MINIMUM_DISTANCE_SQUARED not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mass\">vertices in the far cell · input · unknown — wgsl mass not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"center\">far cell center of mass · input · unknown — wgsl center not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"attraction\">attraction · parameter · unknown — wgsl ATTRACTION not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"neighbors\">CSR neighbors · input · unknown — wgsl forwardNeighbors not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"nearRadius\">near-cell radius · parameter · unknown — wgsl NEAR_CELL_RADIUS not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"theta\">opening criterion · parameter · unknown — wgsl THETA not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -27,22 +27,78 @@
     ],
     "rows": [
       [
-        "x",
-        "input",
-        "inputValues",
+        "net force",
+        "intermediate",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "y",
+        "gravity",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "position",
         "output",
-        "outputValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "heads",
+        "repulsion",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "minimum squared distance",
+        "constant",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "vertices in the far cell",
         "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "far cell center of mass",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "attraction",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "CSR neighbors",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "near-cell radius",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "opening criterion",
+        "parameter",
         "unknown",
         "—",
         "metadata"
@@ -51,26 +107,34 @@
     "provenance": [
       "metadata",
       "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
       "metadata"
     ]
   },
   "formula": {
-    "tex": "\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})",
-    "ascii": "y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.",
+    "tex": "\\term{force}{F}_v=-\\term{gravity}{g}\\,\\term{position}{p}_v+\\term{repulsion}{R}\\Big[\\sum_{u\\in\\mathrm{near}(v)}\\frac{\\term{position}{p}_v-\\term{position}{p}_u}{\\max(\\lVert \\term{position}{p}_v-\\term{position}{p}_u\\rVert^2,\\term{epsilon}{\\varepsilon})}+\\sum_{c\\in\\mathrm{far}(v)}\\term{mass}{m_c}\\frac{\\term{position}{p}_v-\\term{center}{\\bar p_c}}{\\max(\\lVert \\term{position}{p}_v-\\bar p_c\\rVert^2,\\varepsilon)}\\Big]+\\term{attraction}{A}\\sum_{u\\in\\term{neighbors}{N(v)}}(p_u-p_v);\\qquad c\\in\\mathrm{far}(v)\\iff \\operatorname{cheb}(c,\\mathrm{cell}(v))>\\term{nearRadius}{r}\\ \\wedge\\ d_{\\mathrm{cell}}^2<\\term{theta}{\\theta}^2\\,\\lVert p_v-\\bar p_c\\rVert^2",
+    "ascii": "Each iteration rebuilds a uniform grid index from current positions (cell offsets, vertex ids, per-cell mean position). For vertex v: F = -GRAVITY*p + REPULSION*(exact all-pairs terms over vertices in cells within NEAR_CELL_RADIUS (Chebyshev) of v's cell, plus for every other occupied cell whose squared diagonal < THETA^2 * |p-center|^2, one monopole: mass*(p-center)/max(|p-center|^2, MINIMUM_DISTANCE_SQUARED)) + ATTRACTION*sum over forward CSR neighbors (q-p), plus reverse CSR neighbors when a reverse topology is supplied (incident edges). Cells that are neither near nor accepted are visited vertex by vertex, so THETA=0 is exact. Velocity = (velocity + F*TIME_STEP)*DAMPING capped to MAX_VELOCITY, then position += velocity*TIME_STEP. Out-of-bounds positions or index overflow freeze positions and clear velocities.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:43.332Z",
-    "runId": "run-6d090660",
+    "date": "2026-11-07T14:55:16.514Z",
+    "runId": "run-20fedf0e",
     "observerEffects": [
       "compute passes were not coalesced as in production",
-      "5034 observation taps inserted",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-6d090660",
+    "runId": "run-20fedf0e",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

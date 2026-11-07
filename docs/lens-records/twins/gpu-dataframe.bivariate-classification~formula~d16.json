@@ -14,7 +14,7 @@
     "value": "8"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUBivariateClassification</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{classIds}{c}=\\term{classY}{c_y}\\term{classCountX}{k_x}+\\term{classX}{c_x}</pre><p class=\"lens-ascii\">classIds=classY*classCountX+classX; each axis counts inner edges &lt;= value; NaN/masked rows are 0xffffffff.</p></div><div class=\"lens-worked-example\"><h4>Entity 16</h4><div><pre class=\"lens-tex\">\\term{classIds}{8}=\\term{classY}{c_y}\\term{classCountX}{k_x}+\\term{classX}{c_x}</pre><p class=\"lens-ascii\">classIds=classY*classCountX+classX; each axis counts inner edges &lt;= value; NaN/masked rows are 0xffffffff.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.bivariate-classification-compiled:bivariate-classification-classify\" data-value=\"classIds\">classIds · output · classes<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.bivariate-classification-compiled:bivariate-classification-classify\" data-value=\"classY\">classY · intermediate · classY</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.bivariate-classification-compiled:bivariate-classification-classify\" data-value=\"classCountX\">classCountX · parameter · classCountX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.bivariate-classification-compiled:bivariate-classification-classify\" data-value=\"classX\">classX · intermediate · classX</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUBivariateClassification</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{classIds}{c}=\\term{classY}{c_y}\\term{classCountX}{k_x}+\\term{classX}{c_x}</pre><p class=\"lens-ascii\">classIds=classY*classCountX+classX; each axis counts inner edges &lt;= value; NaN/masked rows are 0xffffffff.</p></div><div class=\"lens-worked-example\"><h4>Entity 16</h4><div><pre class=\"lens-tex\">\\term{classIds}{8}=\\term{classY}{c_y}\\term{classCountX}{k_x}+\\term{classX}{c_x}</pre><p class=\"lens-ascii\">classIds=classY*classCountX+classX; each axis counts inner edges &lt;= value; NaN/masked rows are 0xffffffff.</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"classIds\">classIds · output · unknown — wgsl classes not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"classY\">classY · intermediate · unknown — wgsl classY not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"classCountX\">classCountX · parameter · unknown — wgsl classCountX not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"classX\">classX · intermediate · unknown — wgsl classX not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,28 +30,28 @@
       [
         "classIds",
         "output",
-        "classes",
+        "unknown",
         "8",
         "readback"
       ],
       [
         "classY",
         "intermediate",
-        "classY",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "classCountX",
         "parameter",
-        "classCountX",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "classX",
         "intermediate",
-        "classX",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -81,12 +81,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:39.165Z",
-    "runId": "run-12a42d43",
+    "date": "2026-11-07T14:55:15.649Z",
+    "runId": "run-e99b8cb1",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-12a42d43",
+    "runId": "run-e99b8cb1",
     "rung": "formula",
     "bindings": {
       "entity": 16

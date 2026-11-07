@@ -19,7 +19,11 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUSegregationLayout,

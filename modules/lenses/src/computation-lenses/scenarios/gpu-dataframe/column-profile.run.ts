@@ -18,7 +18,6 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.column-profile';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['statistics', 'histograms'];
 const COLUMN_NAMES = [
   'poverty150Pct',
   'uninsuredPct',
@@ -71,11 +70,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   const dataset = await loadDataFrameLensData('f-chicago-tracts');
   const toFloat32 = (values: readonly (number | null)[]) =>
     Float32Array.from(values, value => value ?? NaN);
-  const graph = createDataFrameLensGraph<undefined>(
-    device,
-    'gpu-dataframe-column-profile',
-    RETAINED
-  );
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-column-profile');
   const example = await runExample(device, {
     graph,
     tracts: {

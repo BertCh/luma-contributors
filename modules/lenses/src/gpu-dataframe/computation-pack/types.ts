@@ -11,7 +11,6 @@ import type {DataFrameAnalysisStage} from './stages';
 
 /** Operator family; one `operators/<family>.ts` file each. */
 export type DataFrameFamily =
-  | 'queries'
   | 'classification'
   | 'temporal'
   | 'groups-joins'

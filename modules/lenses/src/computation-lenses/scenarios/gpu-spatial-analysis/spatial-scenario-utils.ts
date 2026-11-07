@@ -4,8 +4,8 @@
 
 import {assert, Buffer, type Device} from '@luma.gl/core';
 import {
-  captureGPUCommandGraph,
   createGPUComputationCaptures,
+  describeGPUCommandGraph,
   createGPUComputationRecord,
   getGPUComputationAdapter,
   validateGPUComputationRecord,
@@ -20,35 +20,19 @@ import {
   type GPUCommandGraphEncodeOptions,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {
+  addLensViewSnapshot,
+  LensCommandGraph,
+  readLensViewSnapshot,
+  submitLensGraph
+} from '../../lens-view-snapshot';
 import {createSpatialChoice} from '../../../gpu-spatial-analysis/computation-pack/choices';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import type {SpatialOperatorEntry} from '../../../gpu-spatial-analysis/computation-pack/types';
 
-/**
- * Creates an explicit observation graph that retains the transients named in `retain`. The list is
- * kept by reference and read at compile time, so ids pushed after the example has built the graph
- * (but before compilation) are retained too.
- */
-export function createSpatialRecordingGraph(
-  device: Device,
-  id: string,
-  retain: readonly string[]
-): GPUCommandGraph {
-  return new GPUCommandGraph(device, {id, recording: {retain}});
-}
-
-/**
- * Ids of the graph-owned (transient) buffers behind `views`, for a recording graph's `retain` list.
- * Imported uploads are caller-owned and read back directly, so retaining them is an error.
- */
-export function getRetainedViewIds(views: Readonly<Record<string, GraphDataView>>): string[] {
-  return [
-    ...new Set(
-      Object.values(views)
-        .filter(view => view.buffer.transient)
-        .map(view => view.buffer.id)
-    )
-  ];
+/** Creates an explicit observation graph whose transients can all be snapshotted. */
+export function createSpatialRecordingGraph(device: Device, id: string): GPUCommandGraph {
+  return new LensCommandGraph(device, {id});
 }
 
 /** Uploads a packed input for both computation and provenance-preserving readback. Caller destroys it. */
@@ -164,9 +148,13 @@ export type SpatialScenarioRun = {
 export async function runSpatialScenario(
   props: SpatialScenarioRun
 ): Promise<GPUComputationRecordWithSidecars> {
+  const snapshot = addLensViewSnapshot(props.graph, props.graph.device, {
+    id: props.id,
+    views: props.views
+  });
   const compiled = props.graph.compile();
   try {
-    const description = compiled.describe();
+    const description = describeGPUCommandGraph(compiled);
     const record = createGPUComputationRecord({
       id: props.id,
       adapter: getGPUComputationAdapter(props.graph.device),
@@ -191,13 +179,13 @@ export async function runSpatialScenario(
       ]
     });
     assertValidLensRecord(record);
-    const captured = await captureGPUCommandGraph(compiled, {
-      encodeOptions: props.encodeOptions,
-      views: props.views,
-      at: 'end',
-      maximumSnapshots: 1,
-      runId: record.runId
-    });
+    submitLensGraph(props.graph.device, compiled, props.encodeOptions);
+    const captured = {
+      captures: await readLensViewSnapshot(snapshot, {
+        graphId: description.graph.id,
+        runId: record.runId
+      })
+    };
     // Capacity failure must not produce a plausible-looking figure from truncated weights.
     const overflow = captured.captures.find(capture => capture.name === 'weightsOverflow');
     if (overflow && overflow.values[0] !== 0)
@@ -414,8 +402,7 @@ export async function runTractWeightsScenario(props: {
     input: TractWeightsExampleInput
   ): Promise<SpatialWeightsExampleExecution>;
 }): Promise<GPUComputationRecordWithSidecars> {
-  const retained: string[] = [];
-  const graph = new GPUCommandGraph(props.device, {id: props.id, recording: {retain: retained}});
+  const graph = new LensCommandGraph(props.device, {id: props.id});
   const count = props.count ?? props.tracts.count;
   const geometry = uploadChicagoTractPolygons(graph, props.tracts, count);
   const values = uploadSpatialView(
@@ -448,7 +435,6 @@ export async function runTractWeightsScenario(props: {
       searchParameters: searchParameters.view,
       colorParameters: colorParameters.view
     });
-    retained.push(...getRetainedViewIds(execution.views));
     const polygons = {verticesCapture: 'vertices', offsetsCapture: 'ringOffsets'};
     const tags: Record<string, SpatialCaptureTag> = {
       vertices: {role: 'intermediate', keySpace: 'vertex'},
@@ -602,7 +588,7 @@ export type TractCaptureTag = Omit<SpatialCaptureTag, 'keySpace' | 'polygons'> &
 export type TractStatisticsExecution = {
   encodeOptions?: SpatialScenarioRun['encodeOptions'];
   weights?: GPUSpatialWeights;
-  /** Every view to read back, by capture name; transient ones are retained automatically. */
+  /** Every view to read back, by capture name; every transient is observable. */
   views: Readonly<Record<string, GraphDataView>>;
   tags: Readonly<Record<string, TractCaptureTag>>;
   /** Extra key spaces of non-tract captures (summary fields, permutations). */
@@ -634,8 +620,7 @@ export async function runTractStatisticsScenario(props: {
     ) => GraphDataView<Format>;
   }): Promise<TractStatisticsExecution>;
 }): Promise<GPUComputationRecordWithSidecars> {
-  const retained: string[] = [];
-  const graph = new GPUCommandGraph(props.device, {id: props.id, recording: {retain: retained}});
+  const graph = new LensCommandGraph(props.device, {id: props.id});
   const geometry = uploadChicagoTractPolygons(graph, props.tracts);
   const uploads: {destroy(): void}[] = [];
   const upload: Parameters<typeof props.execute>[0]['upload'] = (name, data, format) => {
@@ -651,7 +636,6 @@ export async function runTractStatisticsScenario(props: {
       ])
     );
     const execution = await props.execute({graph, polygons: geometry.polygons, columns, upload});
-    retained.push(...getRetainedViewIds(execution.views));
     const count = props.tracts.count;
     const vertexCount = geometry.views.vertices.length;
     const slotCount = execution.weights?.neighbors.length;

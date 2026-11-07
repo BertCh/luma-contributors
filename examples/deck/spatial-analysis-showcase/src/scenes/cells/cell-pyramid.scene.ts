@@ -543,7 +543,7 @@ graph.add(new GPUCellRollup({
 }));`;
     }
     if (state.view === 'classes') {
-      return `import {GPUClassBreaks, GPUColorScale} from '@luma-contributors/analysis/gpu-dataframe';
+      return `import {GPUClassBreaks, GPUColorScale} from '@luma.gl/graph/gpu-dataframe';
 
 // Cell table to a value column and an occupied-row mask (adapter node, as in the hot-spot recipe).
 addCellTableColumnsNode(graph, 'classes', {counts, ${state.classValue === 'confirmed' ? 'sumValues' : ''}}, {values, mask});

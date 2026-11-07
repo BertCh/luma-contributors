@@ -166,6 +166,46 @@ it('resident explorer preserves half-open intervals, bounded maximum-category pl
   }
 });
 
+it('resident explorer keeps dead rows filtered after clearAll in the main and domain-scoped filters', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) throw new Error('WebGPU is required');
+  const value = makeVector(device, 'float32', [new Float32Array([5, 15, 25, 35])]);
+  // Liveness masks are strictly 0/1: the published crossfilter has no external-mask dimension.
+  const liveMask = makeVector(device, 'uint32', [new Uint32Array([1, 0, 1, 1])]);
+  const explorer = new GPUResidentExplorer({
+    device,
+    columns: {value},
+    dimensions: [{id: 'value', kind: 'range', column: 'value'}],
+    liveMask,
+    domains: [
+      {id: 'selected', column: 'value'},
+      {id: 'global', column: 'value', dimensions: []}
+    ]
+  });
+  try {
+    submit(device, explorer);
+    expect(await explorer.readSummary()).toMatchObject({
+      selectedCount: 3,
+      domains: {selected: [5, 35], global: [5, 35]}
+    });
+    explorer.setRange('value', 10, 30);
+    submit(device, explorer);
+    expect((await explorer.readSummary())?.selectedCount).toBe(1);
+    explorer.clearAll();
+    submit(device, explorer);
+    // Row 1 is dead: clearing every dimension must not resurrect it.
+    expect(await explorer.readSummary()).toMatchObject({
+      selectedCount: 3,
+      domains: {selected: [5, 35], global: [5, 35]}
+    });
+    expect((await explorer.readPage(0, 4))?.sourceRowIndices).toEqual(new Uint32Array([0, 2, 3]));
+  } finally {
+    explorer.destroy();
+    value.destroy();
+    liveMask.destroy();
+  }
+});
+
 it('resident explorer bounds concurrent readback and releases failed construction allocations', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) throw new Error('WebGPU is required');

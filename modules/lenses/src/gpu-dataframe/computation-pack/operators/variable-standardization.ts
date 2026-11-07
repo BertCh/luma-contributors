@@ -32,7 +32,7 @@ export const VARIABLE_STANDARDIZATION_OPERATORS: DataFrameFamilyOperators = {
       output: {level: 'interval', extent: 'intensive'}
     },
     sourceFiles: [
-      'modules/analysis/src/gpu-dataframe/variable-standardization/gpu-variable-standardization.ts'
+      'modules/analysis/src/dataframe-analysis/variable-standardization/gpu-variable-standardization.ts'
     ]
   }
 };

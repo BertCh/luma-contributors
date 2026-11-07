@@ -7,8 +7,22 @@ import {trackDeferredOperation} from './tracked-operations';
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import type {Layer} from '@deck.gl/core';
 import {GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-import {createTransientView, GPUCommandGraph, GPUMask, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {GPUColorScale, GPUColumnProfile, GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT, getGPUColorScaleParameterValues, packGPUColor, type GPUVariableStandardizationMethod} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  createTransientView,
+  GPUCommandGraph,
+  GPUMask,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUColorScale,
+  GPUColumnProfile,
+  GPU_COLUMN_PROFILE_STATISTIC,
+  GPU_COLUMN_PROFILE_STATISTIC_COUNT,
+  getGPUColorScaleParameterValues,
+  packGPUColor,
+  type GPUVariableStandardizationMethod
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {GPUParameterBuffer} from '@luma.gl/graph/gpu-dataframe';
 import {
   addKeplerAnalysisRecipe,

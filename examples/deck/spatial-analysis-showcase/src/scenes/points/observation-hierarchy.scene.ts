@@ -45,7 +45,7 @@ function getClusterLegend(labels: number[], hasNoise: boolean, complete: boolean
 
 function getSnippet(state: ObservationHierarchyOptions): string {
   if (state.algorithm === 'hdbscan') {
-    return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+    return `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUHierarchicalDensityClustering} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'northerly-hdbscan'});
@@ -66,7 +66,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
   minimumClusterSize: ${Number(state.minimumClusterSize)},
   predecessorCorrection: ${state.predecessorCorrection},`
       : `extractionDistance: ${Number(state.extractionDistance)},`;
-  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  return `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUOPTICS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'northerly-optics'});

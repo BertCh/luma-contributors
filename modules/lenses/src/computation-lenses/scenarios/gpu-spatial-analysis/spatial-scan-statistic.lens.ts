@@ -38,13 +38,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.spatial-scan-statistic',
           element: 'GPUSpatialScanStatistic',
           datasets: ['s2-midwest-counties', 's2-midwest-county-shapes'],
-          retain: [
-            'clusterIndices',
-            'clusterStatistics',
-            'statistics',
-            'summary',
-            'zoneStatistics'
-          ],
           seed: 1,
           keySpaces,
           choices: {

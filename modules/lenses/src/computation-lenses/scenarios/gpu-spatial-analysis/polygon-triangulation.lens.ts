@@ -43,7 +43,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUPolygonTriangulation',
           datasets: [data.id],
-          retain: ['triangleIndices', 'valid', 'triangleCount', 'triangleOffsets', 'triangles'],
           keySpaces: [
             {id: 'park', label: 'park', size: data.featureCount, indexSpace: '1d'},
             {id: 'vertex', label: 'park vertex', size: vertexCount, indexSpace: '1d'},

@@ -4,7 +4,11 @@
 
 import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {getGPUChangeDetectionParameterValues, GPUChangeDetection, GPU_CHANGE_DETECTION_PARAMETER_LENGTH} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUChangeDetectionParameterValues,
+  GPUChangeDetection,
+  GPU_CHANGE_DETECTION_PARAMETER_LENGTH
+} from '@luma-contributors/analysis/raster-analysis';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import type {RampName} from '../../engine/ramps';
 import {createSeededRandom} from '../../engine/projection';

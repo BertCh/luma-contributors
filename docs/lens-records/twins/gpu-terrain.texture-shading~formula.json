@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail)…",
   "description": "Formula T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail)…",
-  "llms": "Formula T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail); output in metres times gain, NaN at an invalid centre\n\n- bound symbols: 3/7\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail); output in metres times gain, NaN at an invalid centre\n\n- bound symbols: 0/7\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "3/7"
+    "value": "0/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.texture-shading.band-pyramid</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{textureShade}{T} = \\term{gain}{g}\\sum_{k=0}^{K-1}\\term{levelWeights}{w_k}\\,\\big(\\term{previousValue}{G_{k-1}} - \\term{currentValue}{G_k}\\big),\\quad w_k = 2^{-k\\,\\term{detail}{\\alpha}},\\ \\ G_{-1} = z,\\ \\ G_k = z * \\mathcal{N}\\!\\left(0,\\,\\sigma_k^2\\right),\\ \\ \\sigma_k = \\term{baseSigma}{\\sigma_0}\\,2^k</pre><p class=\"lens-ascii\">T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail); output in metres times gain, NaN at an invalid centre</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-texture-shading-compiled:texture-shading-finalize\" data-value=\"textureShade\">T · output · textureShade</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gain\">g · parameter · unknown — wgsl gain not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"levelWeights\">w_k · parameter · unknown — wgsl levelWeights not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-texture-shading-compiled:texture-shading-level-0-accumulate\" data-value=\"previousValue\">G_(k-1) · intermediate · previousValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-texture-shading-compiled:texture-shading-level-0-accumulate\" data-value=\"currentValue\">G_k · intermediate · currentValue</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"detail\">α · parameter · unknown — wgsl detail not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"baseSigma\">σ_0 · parameter · unknown — wgsl baseSigma not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.texture-shading.band-pyramid</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{textureShade}{T} = \\term{gain}{g}\\sum_{k=0}^{K-1}\\term{levelWeights}{w_k}\\,\\big(\\term{previousValue}{G_{k-1}} - \\term{currentValue}{G_k}\\big),\\quad w_k = 2^{-k\\,\\term{detail}{\\alpha}},\\ \\ G_{-1} = z,\\ \\ G_k = z * \\mathcal{N}\\!\\left(0,\\,\\sigma_k^2\\right),\\ \\ \\sigma_k = \\term{baseSigma}{\\sigma_0}\\,2^k</pre><p class=\"lens-ascii\">T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail); output in metres times gain, NaN at an invalid centre</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"textureShade\">T · output · unknown — wgsl textureShade not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gain\">g · parameter · unknown — wgsl gain not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"levelWeights\">w_k · parameter · unknown — wgsl levelWeights not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"previousValue\">G_(k-1) · intermediate · unknown — wgsl previousValue not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"currentValue\">G_k · intermediate · unknown — wgsl currentValue not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"detail\">α · parameter · unknown — wgsl detail not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"baseSigma\">σ_0 · parameter · unknown — wgsl baseSigma not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,7 +29,7 @@
       [
         "T",
         "output",
-        "textureShade",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -50,14 +50,14 @@
       [
         "G_(k-1)",
         "intermediate",
-        "previousValue",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "G_k",
         "intermediate",
-        "currentValue",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -93,14 +93,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:12.426Z",
-    "runId": "run-7c7011dc",
+    "date": "2026-11-07T14:55:30.640Z",
+    "runId": "run-e64e6a80",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-7c7011dc",
+    "runId": "run-e64e6a80",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

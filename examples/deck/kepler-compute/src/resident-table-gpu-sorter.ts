@@ -5,8 +5,19 @@
 import {Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUDataFrame, column, literal, type CompiledGPUDataFrameGlobalSort, type GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
+import {
+  GPUCommandGraph,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUDataFrame,
+  column,
+  literal,
+  type CompiledGPUDataFrameGlobalSort,
+  type GPUDataFrameQueryParameters
+} from '@luma.gl/graph/gpu-dataframe';
 import {GPUTable} from '@luma.gl/graph/gpu-tables';
 import type {
   KeplerArrowDataset,

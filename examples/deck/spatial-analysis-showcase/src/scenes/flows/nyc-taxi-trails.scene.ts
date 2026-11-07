@@ -117,8 +117,8 @@ function getLegends(
 
 function getSnippet(state: NycTaxiTrailsOptions): string {
   const trailSeconds = state.trailMinutes * 60;
-  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
-import {GPUTimeWindowFilter} from '@luma-contributors/analysis/gpu-dataframe';
+  return `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUTimeWindowFilter} from '@luma.gl/graph/gpu-dataframe';
 import {GPUTrajectoryPlayhead} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPURoseStatistic} from '@luma-contributors/analysis/gpu-spatial-analysis';
 

@@ -21,7 +21,12 @@
 
 import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUClassBreaks, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, type GPUClassBreaksMethod} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  GPUClassBreaks,
+  getGPUClassBreaksParameterLength,
+  getGPUClassBreaksParameterValues,
+  type GPUClassBreaksMethod
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUSpatialAutocorrelationParameterValues,

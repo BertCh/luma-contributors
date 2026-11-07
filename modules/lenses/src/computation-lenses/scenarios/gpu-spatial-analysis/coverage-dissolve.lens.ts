@@ -51,14 +51,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCoverageDissolve',
           datasets: [data.id],
-          retain: [
-            'dissolved',
-            'dissolvedOffsets',
-            'ringLabels',
-            'ringCount',
-            'overflow',
-            'boundarySegmentCount'
-          ],
           keySpaces: [
             {id: 'area', label: 'community area', size: data.featureCount, indexSpace: '1d'},
             {id: 'vertex', label: 'area vertex', size: vertexCount, indexSpace: '1d'},

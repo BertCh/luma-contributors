@@ -8,16 +8,12 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUGraphAlgorithmsConnectedComponents,
-  GPUGraphAlgorithmsTopologyView
-} from '@luma.gl/graph/gpu-graph-algorithms';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {createMaskedWeakComponentNodes} from '../network-masked-weak-components';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createLoadBalancedSegmentSumNodes} from '../../analysis-core/kernels/load-balanced-for-each';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  captureGraphCommandNodes,
   validateCapacity,
   validatePackedView,
   validateGraphOutputsDisjointFromInputs,
@@ -249,9 +245,9 @@ const MAXIMUM_PRIVATE_HISTOGRAM_WORDS = 1024;
  * scatter over the live slots rather than a reverse CSR. The live row length, in-degree and slot
  * counts therefore come from the same pass that builds the masked neighbors.
  *
- * Components run `GPUGraphAlgorithmsConnectedComponents` over a `GPUGraphAlgorithmsTopologyView` of a graph-owned masked
- * copy of the neighbors (dead slots become `0xffffffff`), so masked nodes are isolated and excluded
- * from counts.
+ * Components run a bounded minimum-label propagation over a graph-owned masked copy of the
+ * neighbors (dead slots become `0xffffffff`), so masked nodes are isolated and excluded from
+ * counts. Published luma.gl connected components only accept physical GPU topology, not graph views.
  *
  * Modularity uses exact `u32` atomic sums (intra-community slots and per-label degree sums) and a
  * two-stage f32 finish (per-workgroup partials, then one workgroup over the partials) in a fixed
@@ -512,19 +508,15 @@ ${slotCounters.declarations}`,
 
     // Weak components over the masked adjacency.
     nodes.push(
-      ...captureGraphCommandNodes(graph, () => {
-        const topology = new GPUGraphAlgorithmsTopologyView({
-          id: `${id}-topology`,
-          vertexCount: nodeCount,
-          forward: {offsets, neighbors: masked}
-        });
-        new GPUGraphAlgorithmsConnectedComponents({
-          id: `${id}-components`,
-          topology,
-          output: labels,
-          iterations: props.maximumComponentIterations,
-          converged
-        }).addToGraph(graph);
+      ...createMaskedWeakComponentNodes<Parameters>(graph, {
+        id: `${id}-components`,
+        operation,
+        nodeCount,
+        offsets,
+        neighbors: masked,
+        labels,
+        converged,
+        iterations: props.maximumComponentIterations ?? 32
       })
     );
 

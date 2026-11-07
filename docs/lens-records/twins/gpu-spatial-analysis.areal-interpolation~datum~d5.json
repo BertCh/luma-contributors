@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.areal-interpolation",
   "viewId": "datum-receipt",
-  "caption": "Receipt of areas 5. areaPopulation: 95392.3203125. values read back from the GPU run. spatial-lag: 3 quantities.",
-  "description": "Receipt of areas 5. areaPopulation: 95392.3203125. values read back from the GPU run. spatial-lag: 3 quantities.",
-  "llms": "Receipt of areas 5\n\n- areaPopulation: 95392.3203125\n- spatial-lag: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of areas 5. areaPopulation: 95392.3203125. values read back from the GPU run. result: 3 quantities.",
+  "description": "Receipt of areas 5. areaPopulation: 95392.3203125. values read back from the GPU run. result: 3 quantities.",
+  "llms": "Receipt of areas 5\n\n- areaPopulation: 95392.3203125\n- result: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "areaPopulation",
     "value": "95392.3203125"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of areas 5</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"spatial-lag\"><tr><th scope=\"rowgroup\" colspan=\"5\">spatial-lag</th></tr><tr data-provenance=\"readback\"><td>spatial-lag</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-areal-interpolation-snapshots-areas-0\" title=\"context\">areas</button></td><td>2522.878662109375, 4243.4287109375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>spatial-lag</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-areal-interpolation-snapshots-resultAreas-0\">resultAreas</button></td><td>2522.878662109375, 4243.4287109375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>spatial-lag</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-areal-interpolation-snapshots-areaPopulation-0\">areaPopulation</button></td><td>95392.3203125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of areas 5</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-areal-interpolation-snapshots-areas-0\" title=\"context\">areas</button></td><td>2522.878662109375, 4243.4287109375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-areal-interpolation-snapshots-resultAreas-0\" title=\"gpu-spatial-analysis-areal-interpolation-snapshot-tap\">resultAreas</button></td><td>2522.878662109375, 4243.4287109375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-areal-interpolation-snapshots-areaPopulation-0\" title=\"gpu-spatial-analysis-areal-interpolation-snapshot-tap\">areaPopulation</button></td><td>95392.3203125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,21 +28,21 @@
     ],
     "rows": [
       [
-        "spatial-lag",
+        "result",
         "areas",
         "2522.878662109375, 4243.4287109375",
         "0",
         "readback"
       ],
       [
-        "spatial-lag",
+        "result",
         "resultAreas",
         "2522.878662109375, 4243.4287109375",
         "0",
         "readback"
       ],
       [
-        "spatial-lag",
+        "result",
         "areaPopulation",
         "95392.3203125",
         "0",
@@ -79,12 +79,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:50.559Z",
-    "runId": "run-49c4c1de",
+    "date": "2026-11-07T14:55:18.185Z",
+    "runId": "run-62d71dae",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-49c4c1de",
+    "runId": "run-62d71dae",
     "rung": "datum",
     "bindings": {
       "entity": 5

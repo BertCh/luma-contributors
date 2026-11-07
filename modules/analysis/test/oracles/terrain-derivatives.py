@@ -42,7 +42,7 @@ from rasterio.transform import Affine
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE_DIR = os.path.join(HERE, 'fixtures')
-GENERATOR = 'modules/graph/test/oracles/terrain-derivatives.py'
+GENERATOR = 'modules/analysis/test/oracles/terrain-derivatives.py'
 WIDTH, HEIGHT = 17, 13
 EPS32 = 2.0 ** -24  # float32 unit roundoff
 

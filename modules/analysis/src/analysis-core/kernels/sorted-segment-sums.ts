@@ -5,7 +5,6 @@
 import {assert} from '@luma.gl/core';
 import {
   createTransientView,
-  GPUSegmentedReduction,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandGraphNodeCondition,
@@ -18,13 +17,6 @@ import {getSortedSegmentOffsetNodes} from './sorted-segment-offsets';
 
 /** Threads per segment-sum workgroup; shared with kernels that reuse the tree reduction. @internal */
 export const SEGMENT_WORKGROUP_SIZE = 256;
-
-/**
- * Largest segment count that {@link createSegmentSumNode} hands to upstream `GPUSegmentedReduction`.
- * Upstream dispatches one workgroup per segment along x with no 3D bounding, so it is limited by
- * `maxComputeWorkgroupsPerDimension` (65535 under the WebGPU core limits).
- */
-const MAXIMUM_UPSTREAM_SEGMENT_COUNT = 65535;
 
 /** Module-scope WGSL declarations for the workgroup partial sums used by {@link getSegmentTreeSumWGSL}. @internal */
 export const SEGMENT_PARTIAL_SUMS_WGSL = `var<workgroup> partialSums: array<f32, ${SEGMENT_WORKGROUP_SIZE}>;`;
@@ -213,28 +205,16 @@ export function getSortedSegmentSumNodes<Parameters>(
 /**
  * Sums each segment of `input` with one 256-thread workgroup: a strided per-thread partial sum
  * followed by a fixed binary tree. The order depends only on the segment bounds, so the result is
- * bitwise reproducible.
+ * bitwise reproducible. Segments are workgroups of a bounded 3D dispatch, so the segment count is
+ * not limited, and `end` is clamped to `input.length`. The segment count is always a build-time
+ * number here; there is no indirect (GPU-only count) variant.
  *
- * Implementation choice, made at graph build time. Upstream `GPUSegmentedReduction` (`sum`) has
- * the same lane-strided accumulation and tree order, hence bit-identical f32 results (empty
- * segments give 0, NaN propagates), and is used when all of these hold:
- * - `offsetsWithinInput` is set: the caller guarantees every offset is at most `input.length`,
- *   because upstream does not clamp `end` the way this kernel does;
- * - `0 < segmentCount <= 65535`, the x-dimension workgroup limit of upstream's unbounded dispatch;
- * - `segmentOffsets.length == segmentCount + 1` and `output.length == segmentCount`;
- * - all three views are packed, uint32-aligned, and `output` has its own buffer.
+ * With a `condition` (the sums of an unrolled loop with a data-dependent exit skip converged
+ * rounds) the node is gated. An indirect condition supplies the dispatch dimensions of the node,
+ * so its triple must hold the layout of {@link getSegmentSumDispatchShape}.
  *
- * Otherwise (including any caller whose offsets are not known to be within the input, such as
- * GPU-computed block offsets) the local kernel runs: segments are workgroups of a bounded 3D
- * dispatch, so the count is not limited, and `end` is clamped to `input.length`. The segment count
- * is always a build-time number here; there is no indirect (GPU-only count) variant.
- *
- * With a `condition` (library rule 13: the sums of an unrolled loop with a data-dependent exit
- * skip converged rounds) the node always uses the local kernel, because upstream
- * `GPUSegmentedReduction` cannot take a node condition. The kernel and the upstream path give
- * bit-identical results, so the condition never changes values. An indirect condition supplies
- * the dispatch dimensions of the node, so its triple must hold the layout of
- * {@link getSegmentSumDispatchShape}.
+ * `offsetsWithinInput` and `implementation` are accepted for call-site stability and ignored:
+ * published luma.gl does not export `GPUSegmentedReduction`, so the local kernel always runs.
  *
  * @internal
  */
@@ -248,57 +228,21 @@ export function createSegmentSumNode<Parameters>(
     input: GraphDataView<'float32'>;
     segmentOffsets: GraphDataView<'uint32'>;
     output: GraphDataView<'float32'>;
-    /** True when the caller guarantees every offset is at most `input.length`. Enables upstream. */
+    /** Ignored; retained for call-site stability. */
     offsetsWithinInput?: boolean;
-    /** Force an implementation; `'auto'` (default) follows the rules above. For tests. */
+    /** Ignored; retained for call-site stability. */
     implementation?: 'auto' | 'kernel';
-    /** GPU-state gate of the node; forces the local kernel implementation. */
+    /** GPU-state gate of the node. */
     condition?: GPUCommandGraphNodeCondition<Parameters>;
     /** Resources the `condition` reads (for example the `'indirect'` use of its dispatch buffer). */
     extraResources?: readonly GraphBufferUse[];
   }
 ): GPUCommandNode<Parameters> {
-  // The offsets and output views must cover every segment; the kernel and upstream read and
+  // The offsets and output views must cover every segment; the kernel reads and
   // write `segmentCount + 1` offsets and `segmentCount` sums without bounds checks of their own.
   assert(props.segmentOffsets.length >= props.segmentCount + 1);
   assert(props.output.length >= props.segmentCount);
-  if (props.implementation !== 'kernel' && !props.condition && canUseUpstreamSegmentSum(props)) {
-    const [node] = new GPUSegmentedReduction({
-      id: props.id,
-      input: props.input,
-      segmentOffsets: props.segmentOffsets,
-      output: props.output,
-      operation: 'sum'
-    }).getCommandNodes(graph);
-    return node as GPUCommandNode<Parameters>;
-  }
   return createSegmentSumKernelNode(graph, props);
-}
-
-function isPackedAlignedView(view: GraphDataView): boolean {
-  return view.byteStride === 4 && view.rowByteLength === 4 && view.byteOffset % 4 === 0;
-}
-
-function canUseUpstreamSegmentSum(props: {
-  segmentCount: number;
-  input: GraphDataView<'float32'>;
-  segmentOffsets: GraphDataView<'uint32'>;
-  output: GraphDataView<'float32'>;
-  offsetsWithinInput?: boolean;
-}): boolean {
-  const {segmentCount, input, segmentOffsets, output} = props;
-  return (
-    props.offsetsWithinInput === true &&
-    segmentCount > 0 &&
-    segmentCount <= MAXIMUM_UPSTREAM_SEGMENT_COUNT &&
-    segmentOffsets.length === segmentCount + 1 &&
-    output.length === segmentCount &&
-    isPackedAlignedView(input) &&
-    isPackedAlignedView(segmentOffsets) &&
-    isPackedAlignedView(output) &&
-    output.buffer !== input.buffer &&
-    output.buffer !== segmentOffsets.buffer
-  );
 }
 
 function createSegmentSumKernelNode<Parameters>(

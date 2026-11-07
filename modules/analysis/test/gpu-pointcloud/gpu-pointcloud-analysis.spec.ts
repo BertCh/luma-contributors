@@ -136,7 +136,7 @@ it('3D neighborhoods expose truncation, stable ties and collinear degeneracy', a
   }
 });
 
-it('statistical filtering retains original rows and voxel centroids differ from samples', async () => {
+it('statistical filtering retains original rows and voxel downsampling keeps minimum-ID representatives', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = makeSpatialFixture(device);
@@ -173,10 +173,6 @@ it('statistical filtering retains original rows and voxel centroids differ from 
     const representatives = fixture.view('uint32', new Uint32Array(2));
     const voxelCounts = fixture.view('uint32', new Uint32Array(2));
     const samples = fixture.view('float32x3', new Float32Array(6));
-    const centroids = fixture.view('float32x3', new Float32Array(6));
-    const values = fixture.view('float32', new Float32Array([2, 4, 6, NaN]));
-    const attributeMeans = fixture.view('float32', new Float32Array(2));
-    const attributeCounts = fixture.view('uint32', new Uint32Array(2));
     fixture.graph.add(
       new GPUPointCloudVoxelDownsample({
         positions: positions.view,
@@ -185,9 +181,7 @@ it('statistical filtering retains original rows and voxel centroids differ from 
         gridSize: [2, 1, 1],
         representatives: representatives.view,
         counts: voxelCounts.view,
-        output: samples.view,
-        centroids: centroids.view,
-        attribute: {values: values.view, means: attributeMeans.view, counts: attributeCounts.view}
+        output: samples.view
       })
     );
     await fixture.run();
@@ -195,15 +189,11 @@ it('statistical filtering retains original rows and voxel centroids differ from 
     expect(await readIntegers(mask.buffer)).toEqual([1, 1, 1, 0]);
     expect(await readIntegers(representatives.buffer)).toEqual([0, 0xffffffff]);
     expect(await readFloats(samples.buffer)).toEqual([0, 0, 0, 0, 0, 0]);
-    expect(await readFloats(centroids.buffer)).toEqual([1, 0, 0, 0, 0, 0]);
     positions.buffer.write(new Float32Array(12));
     await fixture.run();
     expect(await readFloats(means.buffer)).toEqual([0, 0, 0, 0]);
     expect(await readIntegers(mask.buffer)).toEqual([1, 1, 1, 1]);
     expect(await readIntegers(voxelCounts.buffer)).toEqual([4, 0]);
-    expect(await readIntegers(attributeCounts.buffer)).toEqual([3, 0]);
-    expect(await readFloats(attributeMeans.buffer)).toEqual([4, 0]);
-    expect(await readFloats(centroids.buffer)).toEqual([0, 0, 0, 0, 0, 0]);
   } finally {
     fixture.destroy();
   }

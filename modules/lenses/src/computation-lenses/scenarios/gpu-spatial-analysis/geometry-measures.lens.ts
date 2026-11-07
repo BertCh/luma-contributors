@@ -30,7 +30,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUGeometryMeasures',
           datasets: [data.id],
-          retain: ['lengths'],
           keySpaces: [
             {id: 'road', label: 'road', size: data.lineCount, indexSpace: '1d'},
             {id: 'vertex', label: 'vertex', size: data.positionsLonLat.length / 2, indexSpace: '1d'}

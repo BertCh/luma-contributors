@@ -202,9 +202,8 @@ export default defineScene<MigrationSeasonOptions>({
     }
   ],
 
-  snippet:
-    state => `import {GPUCommandGraph, DrawCommandBuffer} from '@luma-contributors/analysis/gpu-core';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
+  snippet: state => `import {GPUCommandGraph, DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
 import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // 1. Every track interpolated at the playhead, on the GPU (positions: lng/lat degrees, timestamps: float32 s of the year)

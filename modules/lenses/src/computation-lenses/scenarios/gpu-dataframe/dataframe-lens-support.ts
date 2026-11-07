@@ -17,12 +17,19 @@ import {
   type GPUComputationRelation
 } from '@luma-contributors/analysis/computation-record';
 import {
-  captureGPUCommandGraph,
+  describeGPUCommandGraph,
   type GPUAnalysisChoice,
+  type GPUCommandGraphDescription,
   type GPUComputationCaptureGeometry,
   type GPUComputationFormulaRef
 } from '@luma-contributors/analysis/computation-record';
-import type {CompiledGPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  addLensViewSnapshot,
+  LensCommandGraph,
+  readLensViewSnapshot,
+  submitLensGraph
+} from '../../lens-view-snapshot';
 import {getDataFrameOperatorEntry} from '../../../gpu-dataframe/computation-pack/index';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import {type GPUComputationAxis} from '@luma-contributors/analysis/computation-record';
@@ -67,13 +74,12 @@ export async function loadDataFrameLensData(
   }
 }
 
-/** Creates a source-recording graph, optionally retaining named transient resources. */
+/** Creates the command graph a dataframe lens authors its example into. */
 export function createDataFrameLensGraph<Parameters = void>(
   device: Device,
-  id: string,
-  retain?: readonly string[]
+  id: string
 ): GPUCommandGraph<Parameters> {
-  return new GPUCommandGraph<Parameters>(device, {id, recording: {sourceText: true, retain}});
+  return new LensCommandGraph<Parameters>(device, {id});
 }
 
 /** Reads fixed-width scalar/vector chunks in source order, respecting offsets and row stride. */
@@ -163,37 +169,46 @@ export type PairStatisticsCaptureSpec = {
 };
 
 /**
- * Executes a compiled one-pass graph once and copies the requested views at the end of the run.
- * The capture adds one submission after the run (observer effect); values are `gpu-readback`.
+ * Adds an end-of-run snapshot tap to the authored graph, compiles and runs it once, and returns the
+ * tagged readbacks with the compiled graph description. The tap adds one copy node (observer
+ * effect); values are `gpu-readback`. The compiled graph is released before returning.
  */
 export async function capturePairStatisticsViews(
-  compiled: CompiledGPUCommandGraph<undefined>,
+  device: Device,
+  graph: GPUCommandGraph<undefined>,
   graphId: string,
   specs: Readonly<Record<string, PairStatisticsCaptureSpec>>
-): Promise<GPUComputationCapture[]> {
+): Promise<{captures: GPUComputationCapture[]; description: GPUCommandGraphDescription}> {
   const names = Object.keys(specs);
-  const captured = await captureGPUCommandGraph(compiled, {
-    encodeOptions: {parameters: undefined},
+  const snapshot = addLensViewSnapshot(graph, device, {
+    id: graph.id,
     views: Object.fromEntries(names.map(name => [name, specs[name].view])),
     elementTypes: Object.fromEntries(
       names.flatMap(name => {
         const elementType = specs[name].elementType;
         return elementType ? [[name, elementType]] : [];
       })
-    ),
-    at: 'end',
-    graphId
+    )
   });
-  return captured.captures.map(capture => {
-    const spec = specs[capture.name];
-    return {
-      ...capture,
-      role: spec.role,
-      keySpace: spec.keySpace,
-      ...(spec.geometry && {geometry: spec.geometry}),
-      ...(spec.meaning && {meaning: spec.meaning})
-    };
-  });
+  const compiled = graph.compile();
+  try {
+    const description = describeGPUCommandGraph(compiled, {graphId, domain: 'gpu-dataframe'});
+    submitLensGraph(device, compiled, {parameters: undefined});
+    const readback = await readLensViewSnapshot(snapshot, {graphId});
+    const captures = readback.map(capture => {
+      const spec = specs[capture.name];
+      return {
+        ...capture,
+        role: spec.role,
+        keySpace: spec.keySpace,
+        ...(spec.geometry && {geometry: spec.geometry}),
+        ...(spec.meaning && {meaning: spec.meaning})
+      };
+    });
+    return {captures, description};
+  } finally {
+    compiled.destroy();
+  }
 }
 
 /** Returns the curated pack formula of an element, or none when the pack declares it procedural. */
@@ -247,10 +262,13 @@ export async function runDataFrameContributorLens(
   props: DataFrameContributorLensProps
 ): Promise<GPUComputationRecordWithSidecars> {
   const graphId = `${props.scenarioId}-compiled`;
-  const compiled = props.graph.compile();
-  try {
-    const description = compiled.describe({graphId, domain: 'gpu-dataframe'});
-    const readback = await capturePairStatisticsViews(compiled, graphId, props.specs);
+  {
+    const {captures: readback, description} = await capturePairStatisticsViews(
+      device,
+      props.graph,
+      graphId,
+      props.specs
+    );
     const snapshots = props.deriveCaptures ? props.deriveCaptures(readback) : readback;
     const datumSpace = props.keySpaces.find(keySpace => keySpace.id === props.datumKeySpace);
     const axes: GPUComputationAxis[] = [
@@ -280,8 +298,6 @@ export async function runDataFrameContributorLens(
     const captures = createGPUComputationCaptures({runId: record.runId, snapshots: [...snapshots]});
     assertValidLensSidecars(record, {captures});
     return {...record, captures};
-  } finally {
-    compiled.destroy();
   }
 }
 

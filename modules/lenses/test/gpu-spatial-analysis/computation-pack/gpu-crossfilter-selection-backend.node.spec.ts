@@ -10,7 +10,7 @@ import type {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
 import {GPUCrossfilterSelectionBackend} from '../../../src/computation-views/coordinator/gpu-crossfilter-selection-backend';
 import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
-function makeFixture(keyCount = 8, useHook = false) {
+function makeFixture(keyCount = 8) {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device, {id: 'backend-test'});
   const buffers: Buffer[] = [];
@@ -37,21 +37,16 @@ function makeFixture(keyCount = 8, useHook = false) {
     graph,
     mask: output.view,
     dimensions: [
-      {id: 'external', kind: 'external', mask: input.view},
+      {id: 'brush', kind: 'range', input: input.view},
       {id: 'range', kind: 'range', input: input.view}
     ],
-    views: [{id: 'exclude-map', kind: 'mask', dimension: 'external', output: output.view}],
+    views: [{id: 'exclude-map', kind: 'mask', dimension: 'brush', output: output.view}],
     getDimensionMask: vi.fn(() => input.view),
     getViewMask: vi.fn(() => undefined),
-    setExternalActive: vi.fn(),
-    invalidate: vi.fn(),
     setRange: vi.fn(),
     clear: vi.fn()
   } as unknown as GPUCrossfilter;
-  const writeMask = vi.fn();
-  const keySpaces = {
-    row: {keyCount, dimensions: {map: 'external', chart: 'range'}, ...(useHook ? {writeMask} : {})}
-  };
+  const keySpaces = {row: {keyCount, dimensions: {map: 'brush', chart: 'range'}}};
   const backend = new GPUCrossfilterSelectionBackend({crossfilter, keySpaces, minimumKeyCount: 0});
   return {
     device,
@@ -64,7 +59,6 @@ function makeFixture(keyCount = 8, useHook = false) {
     submit,
     compiled,
     importValues,
-    writeMask,
     cleanup: () => {
       backend.destroy();
       buffers.forEach(buffer => buffer.destroy());
@@ -74,20 +68,17 @@ function makeFixture(keyCount = 8, useHook = false) {
 }
 
 describe('GPUCrossfilterSelectionBackend', () => {
-  test('maps source clauses, uploads u32 flags, excludes own dimension, and advances generations', () => {
+  test('maps source clauses to range dimensions, excludes own dimension, and advances generations', () => {
     const fixture = makeFixture();
-    const {backend, crossfilter, input} = fixture;
-    const write = vi.spyOn(input.buffer, 'write');
+    const {backend, crossfilter} = fixture;
     try {
       backend.setClause({
         source: 'map',
         keySpace: 'row',
-        label: 'rows',
-        predicate: {kind: 'keys', keys: [1, 4, 4]}
+        label: 'range',
+        predicate: {kind: 'range', field: 'value', range: [1, 4]}
       });
-      expect(write).toHaveBeenCalledWith(new Uint32Array([0, 1, 0, 0, 1, 0, 0, 0]), 0);
-      expect(crossfilter.setExternalActive).toHaveBeenCalledWith('external', true);
-      expect(crossfilter.invalidate).toHaveBeenCalledWith('external');
+      expect(crossfilter.setRange).toHaveBeenCalledWith('brush', [1, 4]);
       const mask = backend.getMask('row');
       expect(mask.buffer).toBe(fixture.output.view);
       expect(mask.generation).toBe(1);
@@ -102,10 +93,9 @@ describe('GPUCrossfilterSelectionBackend', () => {
         predicate: {kind: 'range', field: 'value', range: [2, 6]}
       });
       expect(crossfilter.setRange).toHaveBeenCalledWith('range', [2, 6]);
-      expect(crossfilter.setExternalActive).toHaveBeenCalledTimes(1);
       expect(backend.getMask('row').generation).toBe(2);
       backend.clearSource('map');
-      expect(crossfilter.setExternalActive).toHaveBeenLastCalledWith('external', false);
+      expect(crossfilter.clear).toHaveBeenCalledWith('brush');
       backend.clearSource('chart');
       expect(crossfilter.clear).toHaveBeenCalledWith('range');
       expect(backend.getMask('row').generation).toBe(4);
@@ -115,8 +105,8 @@ describe('GPUCrossfilterSelectionBackend', () => {
     }
   });
 
-  test('delegates writes, enforces the default budget and reports unsupported requests', () => {
-    const fixture = makeFixture(8, true);
+  test('enforces the default budget and reports unsupported requests', () => {
+    const fixture = makeFixture(8);
     const {backend, crossfilter} = fixture;
     try {
       const defaultBackend = new GPUCrossfilterSelectionBackend({
@@ -131,13 +121,6 @@ describe('GPUCrossfilterSelectionBackend', () => {
       expect(defaultBackend.accepts('small', 65536)).toBe(false);
       expect(defaultBackend.accepts('missing', 65537)).toBe(false);
       expect(defaultBackend.accepts('large', Infinity)).toBe(false);
-      backend.setClause({
-        source: 'map',
-        keySpace: 'row',
-        label: 'one',
-        predicate: {kind: 'keys', keys: [2]}
-      });
-      expect(fixture.writeMask).toHaveBeenCalledWith('row', [2], 'map');
       expect(() =>
         backend.setClause({source: 'map', keySpace: 'row', label: 'all', predicate: {kind: 'all'}})
       ).toThrow(/Unsupported all/);
@@ -157,14 +140,6 @@ describe('GPUCrossfilterSelectionBackend', () => {
           predicate: {kind: 'keys', keys: [2]}
         })
       ).toThrow(/No crossfilter dimension/);
-      expect(() =>
-        backend.setClause({
-          source: 'map',
-          keySpace: 'row',
-          label: 'bad key',
-          predicate: {kind: 'keys', keys: [8]}
-        })
-      ).toThrow(/outside/);
       expect(() => backend.getMask('missing')).toThrow(/Unknown selection key space/);
       expect(() => backend.getMask('row', {excludeSource: 'missing'})).toThrow(/No self-excluding/);
       backend.destroy();
@@ -191,7 +166,7 @@ describe('GPUCrossfilterSelectionBackend', () => {
       crossfilter: fixture.crossfilter,
       minimumKeyCount: 0,
       keySpaces: {
-        row: {keyCount: 3, dimensions: {map: 'external'}},
+        row: {keyCount: 3, dimensions: {map: 'brush'}},
         group: {keyCount: 2, dimensions: {}}
       },
       relations: {groups: {from: 'row', to: 'group', transfer, output: target.view}}

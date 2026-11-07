@@ -26,7 +26,11 @@
  * (32 px to the full tile, compile-time like the algorithm); the sweep wins at large radii.
  */
 
-import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPULocalDominanceParameterValues,
   getGPUMultiScaleReliefParameterValues,

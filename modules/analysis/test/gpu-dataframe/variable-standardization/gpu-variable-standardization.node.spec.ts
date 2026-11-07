@@ -41,20 +41,7 @@ it.each(
 )('GPUVariableStandardization %s composes shared reductions and parseable elementwise WGSL', method => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const chunks = [2, 3].map((length, index) =>
-    createTransientView(graph, `values-${index}`, 'float32', length)
-  );
-  const values = new GraphVectorView({
-    id: 'values',
-    name: 'values',
-    format: 'float32',
-    length: 5,
-    valueLength: 5,
-    stride: 1,
-    byteStride: 4,
-    rowByteLength: 4,
-    data: chunks
-  });
+  const values = createTransientView(graph, 'values', 'float32', 5);
   const output = createTransientView(graph, 'output', 'float32', 5);
   const mask = createTransientView(graph, 'mask', 'uint32', 5);
   const contributor = new GPUVariableStandardization({values, output, mask, method});
@@ -98,7 +85,7 @@ it('GPUVariableStandardization validates topology, format and ownership', () => 
   });
   expect(
     () => new GPUVariableStandardization({values, output: overlapping, method: 'mad'})
-  ).toThrow(/overlap/);
+  ).toThrow(/single chunk/);
   const otherGraph = new GPUCommandGraph(device);
   const foreign = createTransientView(otherGraph, 'foreign', 'float32', 3);
   expect(() =>

@@ -6,7 +6,13 @@ import {ResidentSpatialJoinPointReprojector} from './resident-spatial-join-repro
 import {Buffer, type CommandEncoder, type Fence} from '@luma.gl/core';
 import type {PreparedPolygonTopologySource} from '@luma.gl/engine/arrow';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUGather,
+  type CompiledGPUCommandGraph,
+  type GraphDataView,
+  type GraphVectorView
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUSpatialJoinPrepared,
   GPUSpatialPredicateJoin

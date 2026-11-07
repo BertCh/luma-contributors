@@ -21,6 +21,9 @@ import {
   type KeplerSpatialSelection
 } from './prepare-spatial-selection';
 
+/** Bytes of the private five-word control state owned by each published `GPUCrossfilterSelection`. */
+const SELECTION_CONTROL_BYTE_LENGTH = 20;
+
 export type GPUKeplerSpatialSelectionProps = {
   device: Device;
   id?: string;
@@ -269,8 +272,8 @@ export class GPUKeplerSpatialSelection {
       });
       this.maskSelection.setRange([0, 0]);
       this.maskSelection.addToGraph(this.graph);
-      this.plannedTransientByteLength =
-        this.graph.planResources().stats.physicalTransientResourceBytes;
+      // Published graphs report transient bytes only after compilation, so scratch is counted
+      // from the first encode and admission here covers owned buffers only.
       props.admitMemory?.(this.workingMemoryByteLength);
     } catch (error) {
       this.maskSelection?.destroy();
@@ -287,7 +290,7 @@ export class GPUKeplerSpatialSelection {
     if (this.released) return 0;
     return (
       [...new Set(this.ownedBuffers)].reduce((total, buffer) => total + buffer.byteLength, 0) +
-      (this.maskSelection?.getControlView().buffer.byteLength ?? 0) +
+      (this.maskSelection ? SELECTION_CONTROL_BYTE_LENGTH : 0) +
       this.plannedTransientByteLength
     );
   }
@@ -325,7 +328,10 @@ export class GPUKeplerSpatialSelection {
     if (commandEncoder.device !== this.device) {
       throw new Error('Spatial selection encoder belongs to another device');
     }
-    this.compiled ??= this.graph.compile();
+    if (!this.compiled) {
+      this.compiled = this.graph.compile();
+      this.plannedTransientByteLength = this.compiled.stats.physicalTransientResourceBytes;
+    }
     // Each recorded pass retains its geometry even if later updates precede queue submission.
     this.device.writeBufferViaCommandEncoder(
       commandEncoder,

@@ -27,25 +27,7 @@ defineLensScenario({
     const tracts = await loadChicagoTracts();
     return {
       async run(device) {
-        const retained = [
-          'localI',
-          'adjustedPValues',
-          'pValues',
-          'quadrants',
-          'spatialLag',
-          'zScores',
-          'neighborCounts',
-          'globalStatistics',
-          'weightsRowOffsets',
-          'weightsNeighbors',
-          'weightsValues',
-          'weightsOverflow'
-        ];
-        const graph = utilities.createSpatialRecordingGraph(
-          device,
-          'chicago-local-moran',
-          retained
-        );
+        const graph = utilities.createSpatialRecordingGraph(device, 'chicago-local-moran');
         const uploads: {destroy(): void}[] = [];
         const upload: typeof utilities.uploadSpatialView = (...arguments_) => {
           const uploaded = utilities.uploadSpatialView(...arguments_);

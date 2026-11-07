@@ -28,7 +28,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.minimum-clearance',
           element: 'GPUMinimumClearance',
           datasets: ['s2-chicago-north-parks'],
-          retain: ['clearances', 'vertexIds'],
           keySpaces,
           choices: {outputs: 'clearances, vertexIds'},
           async build(graph, uploads) {

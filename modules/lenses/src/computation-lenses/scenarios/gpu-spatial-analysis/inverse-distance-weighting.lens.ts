@@ -34,7 +34,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.inverse-distance-weighting',
           element: 'GPUInverseDistanceWeighting',
           datasets: ['s2-helene-rain'],
-          retain: ['rainfall', 'counts'],
           keySpaces: [
             {
               id: 'cell',

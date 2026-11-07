@@ -58,13 +58,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.catchment-accessibility',
           element: 'GPUCatchmentAccessibility',
           datasets: ['s2-chicago-north-facilities', 's2-chicago-north-tracts'],
-          retain: [
-            'accessibility',
-            'ratios',
-            'reachableFacilities',
-            'facilityOverflow',
-            'tractOverflow'
-          ],
           keySpaces,
           choices: {method: '2sfca', radius: 2000, weightKind: 'binary'},
           async build(graph, uploads) {

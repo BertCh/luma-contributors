@@ -35,9 +35,13 @@ it('WP4 round5 independent fixtures preserve versions, hashes, size limits and c
     expect(fixture.versions.numpy).toBeTruthy();
     expect(Buffer.byteLength(JSON.stringify(fixture))).toBeLessThan(1_500_000);
     for (const source of fixture.sources)
-      expect(createHash('sha256').update(readFileSync(source.path)).digest('hex')).toBe(
-        source.sha256
-      );
+      expect(
+        createHash('sha256')
+          .update(
+            readFileSync(source.path.replace('modules/graph/test/', 'modules/analysis/test/'))
+          )
+          .digest('hex')
+      ).toBe(source.sha256);
   }
   expect(statisticsCases.slice(0, 8).reduce((sum, scene) => sum + scene.cellCount, 0)).toBe(
     512 * 512

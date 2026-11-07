@@ -17,8 +17,6 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.inequality';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['gini', 'counts', 'mean', 'lorenzKnots', 'globalSummary'];
-
 /** Executes the recorded inequality indices once and reads inputs and outputs from GPU buffers. */
 export async function run(device: Device, options?: {signal?: AbortSignal}) {
   options?.signal?.throwIfAborted();
@@ -28,7 +26,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   // Zone ids are zero based, so community area 1 is zone 0.
   const zoneIds = Uint32Array.from(communityArea, area => area - 1);
   const zoneCount = Math.max(...communityArea);
-  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-inequality', RETAINED);
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-inequality');
   const example = await runExample(device, {
     graph,
     tracts: {perCapitaIncome: income, population: Float32Array.from(population), zoneIds},

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.drive-time-catchment-recipe: facilityPositions → catchmen…",
   "description": "Result of gpu-network.drive-time-catchment-recipe: facilityPositions → catchment-demand. points: 100. values read back from the GPU run. input facilityPositions: 4 points.",
-  "llms": "Result of gpu-network.drive-time-catchment-recipe: facilityPositions → catchment-demand\n\n- points: 100\n- input facilityPositions: 4 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 100 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients drive-time-catchment-demand-times, drive-time-catchment-demand-bands, drive-time-catchment-band-keys, drive-time-catchment-band-counts, drive-time-catchment-service-area-converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.drive-time-catchment-recipe: facilityPositions → catchment-demand\n\n- points: 100\n- input facilityPositions: 4 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 100 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients drive-time-catchment-demand-times, drive-time-catchment-demand-bands, drive-time-catchment-band-keys, drive-time-catchment-band-counts, drive-time-catchment-service-area-converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "100"
@@ -19,15 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.018Z",
-    "runId": "run-90295232",
+    "date": "2026-11-07T14:55:16.686Z",
+    "runId": "run-45ca3f03",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients drive-time-catchment-demand-times, drive-time-catchment-demand-bands, drive-time-catchment-band-keys, drive-time-catchment-band-counts, drive-time-catchment-service-area-converged retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-90295232",
+    "runId": "run-45ca3f03",
     "rung": "result",
     "bindings": {},
     "clauses": [],

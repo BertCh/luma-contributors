@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert, type Device} from '@luma.gl/core';
+import type {Device} from '@luma.gl/core';
 import {
-  captureGPUCommandGraph,
   createGPUComputationCaptures,
+  describeGPUCommandGraph,
   createGPUComputationMetrics,
   createGPUComputationRecord,
   getGPUComputationAdapter,
@@ -22,6 +22,12 @@ import {
 import type {CompiledGPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUVector, GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {GPU_CORE_FORMULAS} from '../../../computation-views/packs/gpu-core/formulas';
+import {
+  addLensViewSnapshot,
+  readLensViewSnapshot,
+  submitLensGraph,
+  type LensViewSnapshot
+} from '../../lens-view-snapshot';
 import {GPU_GRAPH_FORMULAS} from './computation-pack';
 import {
   createRailGraphFixture,
@@ -77,21 +83,15 @@ export type GPUGraphOutputCapture = {
   geometry?: GPUComputationCapture['geometry'];
 };
 
-/** One evolving column, optionally captured from an explicitly retained transient view. */
-export type GPUGraphIterationFrames = {
-  name: string;
-  view?: GraphDataView;
-  loopId?: string;
-};
-
 /** Inputs shared by recording and structural inspection of a compiled scenario. */
 export type GPUGraphScenarioRecordOptions = {
   scenarioId: string;
   element: string;
   fixture: RailGraphFixture;
   compiled: CompiledGPUCommandGraph<void>;
+  /** Snapshot tap compiled into the graph; read after the graph was submitted. */
+  snapshot: LensViewSnapshot;
   outputCaptures: Readonly<Record<string, GPUGraphOutputCapture>>;
-  iterationFrames?: readonly GPUGraphIterationFrames[];
   /** Key spaces kernels bind beyond stations and edges, such as breadth-first seeds. */
   extraKeySpaces?: readonly GPUComputationKeySpace[];
   choices: readonly GPUAnalysisChoice[];
@@ -107,18 +107,21 @@ export type GPUGraphScenarioRecordOptions = {
   ) => readonly GPUComputationSeries[];
 };
 
-/** Selects zero-based completed rounds, preserving the final round within an eight-frame budget. */
-export function selectGPUGraphIterations(iterations: readonly number[]): number[] {
-  const available = [...new Set(iterations)].sort((first, second) => first - second);
-  if (!available.length) return [];
-  const final = available[available.length - 1];
-  const selected = available.filter(
-    iteration =>
-      iteration === 0 ||
-      iteration === 1 ||
-      (iteration > 0 && Number.isInteger(Math.log2(iteration)))
-  );
-  return [...new Set([...selected.filter(iteration => iteration !== final).slice(0, 7), final])];
+/**
+ * Adds the end-of-run snapshot tap for the inputs and outputs of a scenario and compiles the graph.
+ * Call it once, after the example was authored and before any other compilation.
+ */
+export function compileGPUGraphScenario(
+  fixture: RailGraphFixture,
+  outputCaptures: Readonly<Record<string, GPUGraphOutputCapture>>
+): {compiled: CompiledGPUCommandGraph<void>; snapshot: LensViewSnapshot} {
+  const views = getInputViews(fixture);
+  for (const [name, output] of Object.entries(outputCaptures)) views[name] = output.view;
+  const snapshot = addLensViewSnapshot(fixture.commandGraph, fixture.device, {
+    id: fixture.commandGraph.id,
+    views
+  });
+  return {compiled: fixture.commandGraph.compile(), snapshot};
 }
 
 function getInputViews(fixture: RailGraphFixture): Record<string, GraphDataView> {
@@ -146,10 +149,10 @@ function getInputViews(fixture: RailGraphFixture): Record<string, GraphDataView>
 export function describeGPUGraphScenario(
   options: GPUGraphScenarioRecordOptions
 ): GPUComputationRecord {
-  const {fixture, compiled, element, iterationFrames} = options;
+  const {fixture, compiled, element} = options;
   const inputs = getInputViews(fixture);
   const formula = GPU_GRAPH_FORMULAS[element];
-  const description = compiled.describe({domain: 'gpu-graph', label: element});
+  const description = describeGPUCommandGraph(compiled, {domain: 'gpu-graph', label: element});
   // Topology lowers to GPUScan passes whose annotations refer to the core pack's formula.
   // Preserve those references and reuse their canonical definitions alongside this element.
   const referencedFormulas = new Set(description.graph.nodes.map(node => node.formula));
@@ -185,19 +188,6 @@ export function describeGPUGraphScenario(
       ],
       axes: [
         {id: 'entity', label: 'station', kind: 'data', keySpace: 'vertex'},
-        ...(iterationFrames?.length
-          ? [
-              {
-                id: 'iteration',
-                label: 'iteration',
-                kind: 'execution' as const,
-                size: Math.max(
-                  0,
-                  ...description.graph.nodes.map(node => (node.loop?.iteration ?? -1) + 1)
-                )
-              }
-            ]
-          : []),
         ...(options.series
           ? [{id: 'publication', label: 'final publication', kind: 'execution' as const, size: 1}]
           : [])
@@ -209,32 +199,21 @@ export function describeGPUGraphScenario(
   });
 }
 
-/** Runs one observation graph, retains deterministic key frames, validates, then releases ownership. */
+/** Runs one observation graph, snapshots the final values, validates, then releases ownership. */
 export async function recordGPUGraphScenario(
   options: GPUGraphScenarioRecordOptions
 ): Promise<GPUComputationRecordWithSidecars> {
-  const {fixture, compiled, outputCaptures, iterationFrames = []} = options;
+  const {fixture, compiled, outputCaptures} = options;
   try {
     const record = describeGPUGraphScenario(options);
     const graph = record.graphs[0];
-    const views = getInputViews(fixture);
-    for (const [name, output] of Object.entries(outputCaptures)) views[name] = output.view;
-    for (const frame of iterationFrames) {
-      const view = frame.view ?? outputCaptures[frame.name]?.view;
-      // Each requested iteration series must identify a real, capturable GPU view.
-      assert(view);
-      views[`iteration:${frame.name}`] = view;
-    }
-    const stepped = iterationFrames.length > 0;
-    const observed = await captureGPUCommandGraph(compiled, {
-      encodeOptions: {parameters: undefined, coalesceComputePasses: !stepped},
-      views,
-      at: stepped ? 'step' : 'end',
-      runId: record.runId,
-      graphId: graph.id
+    submitLensGraph(fixture.device, compiled, {parameters: undefined});
+    const observed = await readLensViewSnapshot(options.snapshot, {
+      graphId: graph.id,
+      runId: record.runId
     });
     const finalCaptures: Record<string, GPUComputationCapture> = {};
-    for (const capture of observed.captures) finalCaptures[capture.name] = capture;
+    for (const capture of observed) finalCaptures[capture.name] = capture;
     const snapshots: GPUComputationCapture[] = [];
     for (const name of ['csr-offsets', 'csr-neighbors', 'station-positions']) {
       snapshots.push({
@@ -263,39 +242,7 @@ export async function recordGPUGraphScenario(
         role: 'intermediate' as const
       };
       finalCaptures[name] = final;
-      const frames = iterationFrames.find(frame => frame.name === name);
-      if (frames) {
-        const lastNodeByIteration = new Map<number, string>();
-        for (const node of graph.nodes) {
-          if (
-            node.op === options.element &&
-            node.loop &&
-            (!frames.loopId || node.loop.id === frames.loopId)
-          ) {
-            lastNodeByIteration.set(node.loop.iteration, node.id);
-          }
-        }
-        const selected = selectGPUGraphIterations([...lastNodeByIteration.keys()]);
-        // Missing recording annotations must fail, never produce plausible invented frames.
-        assert(selected.length > 0);
-        for (const iteration of selected) {
-          const afterNode = lastNodeByIteration.get(iteration);
-          const capture = observed.captures.find(
-            candidate => candidate.name === `iteration:${name}` && candidate.afterNode === afterNode
-          );
-          assert(capture);
-          snapshots.push({
-            ...capture,
-            id: `${name}-${iteration}`,
-            name,
-            iteration,
-            keySpace: output.keySpace,
-            role: 'intermediate'
-          });
-        }
-      } else {
-        snapshots.push(final);
-      }
+      snapshots.push(final);
       if (output.stationValues) {
         const positions = finalCaptures['station-positions'];
         snapshots.push({
@@ -330,12 +277,12 @@ export async function recordGPUGraphScenario(
         // captureGPUCommandGraph exposes no timings: an empty timing table is honest, not zero timings.
         timing: {nodes: []},
         encoding: {
-          coalesced: !stepped,
+          // The snapshot tap is one copy node, which ends compute-pass coalescing.
+          coalesced: false,
           timestamped: false,
-          // Count actual snapshot copies, including frames discarded from the compact sidecar.
-          taps: observed.snapshotCount * Object.keys(views).length,
+          taps: 1,
           lensTwin: true,
-          retained: fixture.commandGraph.recording?.retain ?? []
+          retained: []
         },
         series: options.series?.(finalCaptures)
       })
@@ -348,9 +295,14 @@ export async function recordGPUGraphScenario(
     return {...record, metrics, captures};
   } finally {
     try {
-      compiled.destroy();
+      // Frees the arena when submission or readback failed before readLensViewSnapshot ran.
+      options.snapshot.arena.destroy();
     } finally {
-      fixture.destroy();
+      try {
+        compiled.destroy();
+      } finally {
+        fixture.destroy();
+      }
     }
   }
 }

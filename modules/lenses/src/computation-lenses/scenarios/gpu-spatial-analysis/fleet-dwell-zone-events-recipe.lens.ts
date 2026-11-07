@@ -40,7 +40,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'addFleetDwellZoneEventsRecipe',
           datasets: [data.id, zones.id],
-          retain: ['zoneVisits', 'zoneDwell', 'fleet-dwell-zone-events-event-overflow'],
           keySpaces: [
             {id: 'zone', label: 'anchorage', size: zones.featureCount, indexSpace: '1d'},
             {id: 'track', label: 'vessel track', size: data.trackCount, indexSpace: '1d'},

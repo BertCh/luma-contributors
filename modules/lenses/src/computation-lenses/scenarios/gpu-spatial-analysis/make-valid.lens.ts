@@ -35,15 +35,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUMakeValid',
           datasets: [data.id],
-          retain: [
-            'polygonCount',
-            'polygonRequiredCount',
-            'polygonOverflow',
-            'polygonCandidateOverflow',
-            'polygonSourceIds',
-            'polygonPositions',
-            'polygonRingOffsets'
-          ],
           keySpaces: [
             {id: 'face', label: 'kept face', size: RING_CAPACITY, indexSpace: '1d'},
             {

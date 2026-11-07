@@ -52,16 +52,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUSharedPaths',
           datasets: [data.id],
-          retain: [
-            'sharedPaths',
-            'runOffsets',
-            'leftLineIds',
-            'rightLineIds',
-            'forward',
-            'count',
-            'overflow',
-            'uncertainCount'
-          ],
           keySpaces: [
             {id: 'run', label: 'run', size: intersectionCapacity, indexSpace: '1d'},
             {

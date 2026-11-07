@@ -105,10 +105,7 @@ const SPATIAL_FILES = listTypeScriptFiles(SPATIAL_ROOT).map(path => ({
   path,
   text: readFileSync(path, 'utf8')
 }));
-const SHARED_SOURCE_TEXT = [
-  ...listTypeScriptFiles(join(SOURCE_ROOT, 'utils')),
-  ...listTypeScriptFiles(join(SOURCE_ROOT, 'analysis-core'))
-]
+const SHARED_SOURCE_TEXT = listTypeScriptFiles(join(SOURCE_ROOT, 'analysis-core'))
   .map(path => readFileSync(path, 'utf8'))
   .join('\n');
 

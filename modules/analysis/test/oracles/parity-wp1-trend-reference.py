@@ -117,7 +117,7 @@ def main():
             cases[case['name']] = identities[identity]
     payload = json.dumps(dict(cases=cases, templates=templates, probes=probes), separators=(',', ':')).encode()
     output = dict(generator=Path(__file__).name,
-                  command=f'{sys.executable} -I modules/graph/test/oracles/parity-wp1-trend-reference.py',
+                  command=f'{sys.executable} -I modules/analysis/test/oracles/parity-wp1-trend-reference.py',
                   versions={'numpy': numpy.__version__, 'scipy': scipy.__version__},
                   sourceSha256=sources, encoding='zlib+base64',
                   sha256=hashlib.sha256(payload).hexdigest(),

@@ -362,7 +362,7 @@ export default defineScene<StreetDensityOptions>({
     return [marker !== null && marker !== undefined ? {...legend, marker} : legend];
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPULineDensity, GPULineLengthPerPolygon, getGPULineDensityParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';

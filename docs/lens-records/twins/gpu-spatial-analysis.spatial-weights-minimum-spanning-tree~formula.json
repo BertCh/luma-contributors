@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant…",
   "description": "Formula Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant…",
-  "llms": "Formula Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant column becomes 0). The tree T minimizes the total cost of a spanning forest; ties break on the lower-row CSR slot, so the forest is unique.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant column becomes 0). The tree T minimizes the total cost of a spanning forest; ties break on the lower-row CSR slot, so the forest is unique.\n\n- bound symbols: 0/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "4/4"
+    "value": "0/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>minimum-spanning-tree-cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{standardized}{z_{ic}}&amp;=\\frac{x_{ic}-\\bar{x}_c}{\\term{deviation}{s_c}}\\\\\n\\term{cost}{d_{ij}}&amp;=\\sum_{c}\\term{delta}{(z_{ic}-z_{jc})^2},\\qquad T=\\arg\\min_{\\text{spanning forest}}\\sum_{(i,j)\\in T}d_{ij}\n\\end{aligned}</pre><p class=\"lens-ascii\">Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant column becomes 0). The tree T minimizes the total cost of a spanning forest; ties break on the lower-row CSR slot, so the forest is unique.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-minimum-spanning-tree-compiled:minimum-spanning-tree-standardize\" data-value=\"standardized\">standardized · intermediate · scaled</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-minimum-spanning-tree-compiled:minimum-spanning-tree-standardize\" data-value=\"deviation\">deviation · intermediate · deviation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-minimum-spanning-tree-compiled:minimum-spanning-tree-slot-costs\" data-value=\"cost\">cost · output · cost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-minimum-spanning-tree-compiled:minimum-spanning-tree-standardize\" data-value=\"delta\">delta · intermediate · delta</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>minimum-spanning-tree-cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{standardized}{z_{ic}}&amp;=\\frac{x_{ic}-\\bar{x}_c}{\\term{deviation}{s_c}}\\\\\n\\term{cost}{d_{ij}}&amp;=\\sum_{c}\\term{delta}{(z_{ic}-z_{jc})^2},\\qquad T=\\arg\\min_{\\text{spanning forest}}\\sum_{(i,j)\\in T}d_{ij}\n\\end{aligned}</pre><p class=\"lens-ascii\">Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant column becomes 0). The tree T minimizes the total cost of a spanning forest; ties break on the lower-row CSR slot, so the forest is unique.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"standardized\">standardized · intermediate · unknown — wgsl scaled not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"deviation\">deviation · intermediate · unknown — wgsl deviation not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cost\">cost · output · unknown — wgsl cost not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"delta\">delta · intermediate · unknown — wgsl delta not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,28 +29,28 @@
       [
         "standardized",
         "intermediate",
-        "scaled",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "deviation",
         "intermediate",
-        "deviation",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "cost",
         "output",
-        "cost",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "delta",
         "intermediate",
-        "delta",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -69,12 +69,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:03.372Z",
-    "runId": "run-10ce2862",
+    "date": "2026-11-07T14:55:28.717Z",
+    "runId": "run-49930433",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-10ce2862",
+    "runId": "run-49930433",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

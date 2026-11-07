@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Label phase, after the cost search: on every tight edge u->v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fi…",
   "description": "Formula Label phase, after the cost search: on every tight edge u->v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fi…",
-  "llms": "Formula Label phase, after the cost search: on every tight edge u->v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fixpoint is the smallest facility row among all facilities that reach v at its minimum cost, independent of thread order. Unreached nodes keep NONE (0xffffffff).\n\n- bound symbols: 1/4\n- compute passes were not coalesced as in production\n- lens twin: transients costs, bands, predecessors, bandCounts, converged, iterationCount, reachability-queued-round, reachability-control retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown) · single-hop.",
+  "llms": "Formula Label phase, after the cost search: on every tight edge u->v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fixpoint is the smallest facility row among all facilities that reach v at its minimum cost, independent of thread order. Unreached nodes keep NONE (0xffffffff).\n\n- bound symbols: 0/4\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients costs, bands, predecessors, bandCounts, converged, iterationCount, reachability-queued-round, reachability-control retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown) · single-hop.",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "1/4"
+    "value": "0/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.service-areas.label</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{labels}{L}[\\term{targetNode}{v}]\\leftarrow\\min\\bigl(\\term{labels}{L}[\\term{targetNode}{v}],\\ \\term{sourceLabel}{\\ell_u}\\bigr)\\quad\\text{over tight edges }u\\to v:\\ \\term{tight}{c_u+w_{uv}=c_v}</pre><p class=\"lens-ascii\">Label phase, after the cost search: on every tight edge u-&gt;v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fixpoint is the smallest facility row among all facilities that reach v at its minimum cost, independent of thread order. Unreached nodes keep NONE (0xffffffff).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"labels\">facility row per node · output · unknown — wgsl labels not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-reachability-compiled:reachability-seed\" data-value=\"targetNode\">edge target v · intermediate · targetNode</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sourceLabel\">label of the edge source u · intermediate · unknown — wgsl sourceLabel not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"tight\">tight-edge bit · input · unknown — wgsl tightBits not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple · single-hop</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.service-areas.label</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{labels}{L}[\\term{targetNode}{v}]\\leftarrow\\min\\bigl(\\term{labels}{L}[\\term{targetNode}{v}],\\ \\term{sourceLabel}{\\ell_u}\\bigr)\\quad\\text{over tight edges }u\\to v:\\ \\term{tight}{c_u+w_{uv}=c_v}</pre><p class=\"lens-ascii\">Label phase, after the cost search: on every tight edge u-&gt;v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fixpoint is the smallest facility row among all facilities that reach v at its minimum cost, independent of thread order. Unreached nodes keep NONE (0xffffffff).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"labels\">facility row per node · output · unknown — wgsl labels not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"targetNode\">edge target v · intermediate · unknown — wgsl targetNode not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sourceLabel\">label of the edge source u · intermediate · unknown — wgsl sourceLabel not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"tight\">tight-edge bit · input · unknown — wgsl tightBits not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple · single-hop</p></section>",
     "width": 640,
     "height": 0
   },
@@ -36,7 +36,7 @@
       [
         "edge target v",
         "intermediate",
-        "targetNode",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -69,16 +69,17 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:46.113Z",
+    "date": "2026-11-07T14:55:17.145Z",
     "variant": "single-hop",
-    "runId": "run-298ea746",
+    "runId": "run-b72e7aac",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients costs, bands, predecessors, bandCounts, converged, iterationCount, reachability-queued-round, reachability-control retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-298ea746",
+    "runId": "run-b72e7aac",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

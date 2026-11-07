@@ -31,18 +31,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUTrajectoryClosestApproach',
           datasets: [data.id],
-          retain: [
-            'pairTracks',
-            'pairCount',
-            'pairOverflow',
-            'pairPartners',
-            'minimumDistances',
-            'closestTimes',
-            'firstTimes',
-            'durations',
-            'entryOverflow',
-            'hitOverflow'
-          ],
           keySpaces: [
             {id: 'pair', label: 'track pair', size: pairCapacity, indexSpace: '1d'},
             {id: 'track', label: 'vessel track', size: data.trackCount, indexSpace: '1d'}

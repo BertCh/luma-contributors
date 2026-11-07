@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-graph.graph-breadth-first-search: csr-offsets, csr-neighbors, sta…",
   "description": "Result of gpu-graph.graph-breadth-first-search: csr-offsets, csr-neighbors, station-positions → hop-distance-stations. points: 485. values read back from the GPU run. input csr-offsets: 485 nodes.",
-  "llms": "Result of gpu-graph.graph-breadth-first-search: csr-offsets, csr-neighbors, station-positions → hop-distance-stations\n\n- points: 485\n- input csr-offsets: 485 nodes\n- input csr-neighbors: 1411 values\n- input station-positions: 970 values\n- Simple equirectangular projection (x scaled by cos 52.04°); not equal-area.\n- 485 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1411 values, 16 shown\n- 970 values, 16 shown\n- 485 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 215 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-graph.graph-breadth-first-search: csr-offsets, csr-neighbors, station-positions → hop-distance-stations\n\n- points: 485\n- input csr-offsets: 485 nodes\n- input csr-neighbors: 1411 values\n- input station-positions: 970 values\n- Simple equirectangular projection (x scaled by cos 52.04°); not equal-area.\n- 485 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1411 values, 16 shown\n- 970 values, 16 shown\n- 485 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "485"
@@ -19,16 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:42.742Z",
-    "runId": "run-089e0418",
+    "date": "2026-11-07T14:55:16.270Z",
+    "runId": "run-2a8ea970",
     "observerEffects": [
       "compute passes were not coalesced as in production",
-      "215 observation taps inserted",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-089e0418",
+    "runId": "run-2a8ea970",
     "rung": "result",
     "bindings": {},
     "clauses": [],

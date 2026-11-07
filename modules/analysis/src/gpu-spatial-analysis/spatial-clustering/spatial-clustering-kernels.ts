@@ -215,49 +215,8 @@ function getGridBindings(views: SpatialClusteringGridViews): WGSLKernelBinding[]
 }
 
 /**
- * Writes the `[minX, minY, maxX, maxY]` domain `GPUGridIndex` reads at run time: the per-frame
- * lattice extended to `COLUMNS x ROWS` whole cells, or NaN (so nothing is indexed) when the
- * parameters are invalid. @internal
- */
-export function createSpatialClusteringGridBoundsNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    parameters: GraphDataView<'float32'>;
-    gridSize: readonly [number, number];
-    /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
-    geographicRadius?: number;
-    gridBounds: GraphDataView<'float32'>;
-  }
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: props.id,
-    operation: OPERATION,
-    variant: 'grid-bounds',
-    bindings: [
-      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-      {name: 'gridBounds', view: props.gridBounds, type: 'f32', access: 'read_write'}
-    ],
-    invocationCount: 1,
-    declarations: getSpatialClusteringSharedWGSL(
-      props.gridSize[0],
-      props.gridSize[1],
-      props.geographicRadius
-    ),
-    body: `let lattice = readLattice();
-  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  gridBounds[gridBoundsOffset] = select(invalid, lattice.minimumX, lattice.valid);
-  gridBounds[gridBoundsOffset + 1u] = select(invalid, lattice.minimumY, lattice.valid);
-  gridBounds[gridBoundsOffset + 2u] = select(invalid,
-    max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)), lattice.valid);
-  gridBounds[gridBoundsOffset + 3u] = select(invalid,
-    max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)), lattice.valid);`
-  });
-}
-
-/**
- * Copies every valid point and writes NaN for excluded ones, which `GPUGridIndex` ignores. The
- * index domain is wider than the valid extent, so it cannot reject them itself. Also writes the
+ * Writes every valid point normalized onto the unit grid domain and NaN for excluded ones, which
+ * `GPUGridIndex` ignores. Also writes the
  * identity row IDs used when compacting. @internal
  */
 export function createSpatialClusteringGridPositionsNode<Parameters>(
@@ -294,8 +253,12 @@ export function createSpatialClusteringGridPositionsNode<Parameters>(
   let y = positions[positionsOffset + index * 2u + 1u];
   let valid = isPointValid(lattice, x, y);
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, x, valid);
-  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, y, valid);
+  // The published grid index takes a literal [0, 1] domain, so positions are normalized onto the
+  // lattice extended to COLUMNS x ROWS whole cells.
+  let width = max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)) - lattice.minimumX;
+  let height = max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)) - lattice.minimumY;
+  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, (x - lattice.minimumX) / width, valid);
+  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, (y - lattice.minimumY) / height, valid);
   rowIds[rowIdsOffset + index] = index;`
   });
 }

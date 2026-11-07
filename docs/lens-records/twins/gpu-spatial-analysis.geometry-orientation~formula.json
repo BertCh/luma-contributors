@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula For a vertex i in ring [s,e), p'[i]=p[s+e-1-i] when the ring flag is 1, otherwise p'[i]=p[i]. Reverse mode flags every ring; orient-polygons flags a winding mismatch using exact orientation at the lexicographic extreme and nearest distinct n…",
   "description": "Formula For a vertex i in ring [s,e), p'[i]=p[s+e-1-i] when the ring flag is 1, otherwise p'[i]=p[i]. Reverse mode flags every ring; orient-polygons flags a winding mismatch using exact orientation at the lexicographic extreme and nearest distinct n…",
-  "llms": "Formula For a vertex i in ring [s,e), p'[i]=p[s+e-1-i] when the ring flag is 1, otherwise p'[i]=p[i]. Reverse mode flags every ring; orient-polygons flags a winding mismatch using exact orientation at the lexicographic extreme and nearest distinct neighbours, leaving zero or uncertain winding unchanged. Vertices outside rings pass through.\n\n- bound symbols: 5/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula For a vertex i in ring [s,e), p'[i]=p[s+e-1-i] when the ring flag is 1, otherwise p'[i]=p[i]. Reverse mode flags every ring; orient-polygons flags a winding mismatch using exact orientation at the lexicographic extreme and nearest distinct neighbours, leaving zero or uncertain winding unchanged. Vertices outside rings pass through.\n\n- bound symbols: 0/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/6"
+    "value": "0/6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.geometry-orientation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{p&#39;_i}=\\begin{cases}\\term{positions}{p_{s+e-1-i}}&amp;\\term{flag}{f_r}=1,\\ \\term{start}{s}\\le\\term{index}{i}&lt;\\term{end}{e}\\\\\\term{positions}{p_i}&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">For a vertex i in ring [s,e), p&#39;[i]=p[s+e-1-i] when the ring flag is 1, otherwise p&#39;[i]=p[i]. Reverse mode flags every ring; orient-polygons flags a winding mismatch using exact orientation at the lexicographic extreme and nearest distinct neighbours, leaving zero or uncertain winding unchanged. Vertices outside rings pass through.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-geometry-orientation-compiled:geometry-orientation-reverse\" data-value=\"output\">Oriented vertices · output · outputPositions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-geometry-orientation-compiled:geometry-orientation-orientation\" data-value=\"positions\">Input vertices · input · positions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-geometry-orientation-compiled:geometry-orientation-orientation\" data-value=\"flag\">Exact winding decision / reversedRings · intermediate · ringFlags</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-geometry-orientation-compiled:geometry-orientation-orientation\" data-value=\"start\">Ring start · intermediate · start</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-geometry-orientation-compiled:geometry-orientation-orientation\" data-value=\"end\">Clamped ring end · intermediate · end</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">Vertex row · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.geometry-orientation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{p&#39;_i}=\\begin{cases}\\term{positions}{p_{s+e-1-i}}&amp;\\term{flag}{f_r}=1,\\ \\term{start}{s}\\le\\term{index}{i}&lt;\\term{end}{e}\\\\\\term{positions}{p_i}&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">For a vertex i in ring [s,e), p&#39;[i]=p[s+e-1-i] when the ring flag is 1, otherwise p&#39;[i]=p[i]. Reverse mode flags every ring; orient-polygons flags a winding mismatch using exact orientation at the lexicographic extreme and nearest distinct neighbours, leaving zero or uncertain winding unchanged. Vertices outside rings pass through.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"output\">Oriented vertices · output · unknown — wgsl outputPositions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"positions\">Input vertices · input · unknown — wgsl positions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"flag\">Exact winding decision / reversedRings · intermediate · unknown — wgsl ringFlags not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"start\">Ring start · intermediate · unknown — wgsl start not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"end\">Clamped ring end · intermediate · unknown — wgsl end not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">Vertex row · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "Oriented vertices",
         "output",
-        "outputPositions",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Input vertices",
         "input",
-        "positions",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Exact winding decision / reversedRings",
         "intermediate",
-        "ringFlags",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Ring start",
         "intermediate",
-        "start",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Clamped ring end",
         "intermediate",
-        "end",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -85,12 +85,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:19.170Z",
-    "runId": "run-ae546c7e",
+    "date": "2026-11-07T14:55:21.887Z",
+    "runId": "run-84ffefcd",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-ae546c7e",
+    "runId": "run-84ffefcd",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

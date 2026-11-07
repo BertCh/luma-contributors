@@ -28,7 +28,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.group-convex-hull',
           element: 'GPUGroupConvexHull',
           datasets: ['s2-chicago-north-nature'],
-          retain: ['labels', 'vertexPositions', 'offsets', 'counts', 'sizes', 'overflow'],
           keySpaces: [
             {id: 'observation', label: 'observation', size: points.count, indexSpace: '1d'},
             {

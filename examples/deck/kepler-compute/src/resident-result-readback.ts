@@ -4,7 +4,10 @@
 
 import {Buffer} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import {prepareArrowTableForGPUAnalytics, type PreparedArrowAnalyticsTable} from '@luma.gl/graph/arrow';
+import {
+  prepareArrowTableForGPUAnalytics,
+  type PreparedArrowAnalyticsTable
+} from '@luma.gl/graph/arrow';
 import type {KeplerComputeSession} from '@luma-contributors/kepler';
 import * as arrow from 'apache-arrow';
 

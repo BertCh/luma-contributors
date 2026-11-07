@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence. cells: 64. values read back from the GPU run. input profileValues: 64 cells.",
   "description": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence. cells: 64. values read back from the GPU run. input profileValues: 64 cells.",
-  "llms": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence\n\n- cells: 64\n- input profileValues: 64 cells\n- Planar coordinates (unit unknown); uniform scale.\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence\n\n- cells: 64\n- input profileValues: 64 cells\n- Planar coordinates (unit unknown); uniform scale.\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "64"
@@ -36,14 +36,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.641Z",
-    "runId": "run-4c5e725b",
+    "date": "2026-11-07T14:55:29.805Z",
+    "runId": "run-6d9b6821",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-4c5e725b",
+    "runId": "run-6d9b6821",
     "rung": "result",
     "bindings": {},
     "clauses": [],

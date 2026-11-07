@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-rang…",
   "description": "Formula S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-rang…",
-  "llms": "Formula S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-range, nonself slots. Fixed-order reductions.\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-range, nonself slots. Fixed-order reductions.\n\n- bound symbols: 0/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "7/7"
+    "value": "0/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-weights-summary</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{sum}{S_0}=\\sum_{ij}\\term{weight}{w_{ij}},\\quad\\term{pairs}{S_1}=\\frac12\\sum_{ij}(\\term{weight}{w_{ij}}+\\term{reverse}{w_{ji}})^2,\\quad\\term{rows}{S_2}=\\sum_i(\\term{row}{r_i}+\\term{column}{c_i})^2</pre><p class=\"lens-ascii\">S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-range, nonself slots. Fixed-order reductions.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-blocks\" data-value=\"sum\">sum · output · s0</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-rows\" data-value=\"pairs\">pairs · output · s1</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-blocks\" data-value=\"rows\">rows · output · s2</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-rows\" data-value=\"weight\">weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-rows\" data-value=\"reverse\">reverse · intermediate · reverse</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-rows\" data-value=\"row\">row · intermediate · rowSums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-column-sums\" data-value=\"column\">column · intermediate · columnSums</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-weights-summary</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{sum}{S_0}=\\sum_{ij}\\term{weight}{w_{ij}},\\quad\\term{pairs}{S_1}=\\frac12\\sum_{ij}(\\term{weight}{w_{ij}}+\\term{reverse}{w_{ji}})^2,\\quad\\term{rows}{S_2}=\\sum_i(\\term{row}{r_i}+\\term{column}{c_i})^2</pre><p class=\"lens-ascii\">S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-range, nonself slots. Fixed-order reductions.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sum\">sum · output · unknown — wgsl s0 not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pairs\">pairs · output · unknown — wgsl s1 not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"rows\">rows · output · unknown — wgsl s2 not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">weight · input · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"reverse\">reverse · intermediate · unknown — wgsl reverse not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"row\">row · intermediate · unknown — wgsl rowSums not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"column\">column · intermediate · unknown — wgsl columnSums not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,49 +29,49 @@
       [
         "sum",
         "output",
-        "s0",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "pairs",
         "output",
-        "s1",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "rows",
         "output",
-        "s2",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "weight",
         "input",
-        "weight",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "reverse",
         "intermediate",
-        "reverse",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "row",
         "intermediate",
-        "rowSums",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "column",
         "intermediate",
-        "columnSums",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -104,12 +104,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:03.402Z",
-    "runId": "run-f40ddb56",
+    "date": "2026-11-07T14:55:28.735Z",
+    "runId": "run-2208cd2e",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-f40ddb56",
+    "runId": "run-2208cd2e",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

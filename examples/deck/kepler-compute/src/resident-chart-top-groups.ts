@@ -5,7 +5,12 @@
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import type {ResidentCategorySummary} from './resident-chart-bins';
 
 /** Groups kept beside the "Other" bucket (native chart point cap 1,000 = 999 + Other). */

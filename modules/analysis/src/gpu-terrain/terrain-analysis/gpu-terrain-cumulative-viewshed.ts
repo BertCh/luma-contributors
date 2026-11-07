@@ -102,6 +102,8 @@ export type GPUTerrainCumulativeViewshedProps = {
   heightReference?: GPUTerrainHeightReference;
   /** Vertical datum of absolute observer heights; requires `heightReference: 'absolute'`. */
   observerVerticalDatum?: string;
+  /** Declared vertical datum of `elevation`; published raster bands carry no datum metadata. */
+  elevationVerticalDatum?: string;
   /** Observers as `[column, row]` in pixel-center index space; fractional values allowed. */
   observers: GraphDataView<'float32x2'>;
   /**
@@ -188,7 +190,7 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     assertCompatibleGPUVerticalDatums(
       id,
       props.observerVerticalDatum,
-      props.elevation.verticalDatum
+      props.elevationVerticalDatum
     );
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);

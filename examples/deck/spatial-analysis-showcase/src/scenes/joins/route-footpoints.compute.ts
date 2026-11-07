@@ -3,7 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPUHaversineDistance, GPUPointSpatialQuery, GPUPairwisePointDistance, GPUPairwisePointInPolygon, GPUPairwisePointLinestringNearest, GPUPairwisePointSegmentDistance, GPU_POINT_IN_POLYGON_CLASSIFICATION} from '@luma.gl/graph/geospatial';
+import {
+  GPUHaversineDistance,
+  GPUPointSpatialQuery,
+  GPUPairwisePointDistance,
+  GPUPairwisePointInPolygon,
+  GPUPairwisePointLinestringNearest,
+  GPUPairwisePointSegmentDistance,
+  GPU_POINT_IN_POLYGON_CLASSIFICATION
+} from '@luma.gl/graph/geospatial';
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';

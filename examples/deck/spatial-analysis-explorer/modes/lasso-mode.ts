@@ -14,7 +14,13 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer, Viewport} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, GPUGridIndex, type CompiledGPUCommandGraph, type GPUGridIndexView, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUGridIndex,
+  type CompiledGPUCommandGraph,
+  type GPUGridIndexView,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   type GPULocalFrame,
   getGPURegionStatisticsSummaryLength,

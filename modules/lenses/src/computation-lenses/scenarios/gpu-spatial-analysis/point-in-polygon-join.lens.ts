@@ -38,7 +38,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.point-in-polygon-join',
           element: 'GPUPointInPolygonJoin',
           datasets: ['s2-chicago-north-nature', 's2-chicago-north-tracts'],
-          retain: ['tractIds', 'featureCounts', 'overflow', 'uncertainCount'],
           keySpaces,
           relations: [
             {

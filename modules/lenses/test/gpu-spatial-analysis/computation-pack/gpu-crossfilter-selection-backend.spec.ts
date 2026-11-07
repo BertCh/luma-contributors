@@ -3,20 +3,23 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUTransferMask} from '@luma-contributors/analysis/computation-record';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {expect, test} from 'vitest';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
+import {GPUTransferMask} from '@luma-contributors/analysis/computation-record';
+import {expect, test} from 'vitest';
 import {GPUCrossfilterSelectionBackend} from '../../../src/computation-views/coordinator/gpu-crossfilter-selection-backend';
 
-// Written for the main session: never run this browser/GPU spec in an S1 worker.
-test('GPU selection uploads external flags, transfers CSR counts, and reads packed nonzero counts', async () => {
+test('GPU range selection filters rows, transfers CSR counts and reads packed nonzero counts', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;
   const graph = new GPUCommandGraph(device, {id: 'selection-backend'});
   const buffers: Buffer[] = [];
-  function importValues(id: string, values: Uint32Array) {
+  function importValues<Format extends 'float32' | 'uint32'>(
+    id: string,
+    values: Float32Array | Uint32Array,
+    format: Format
+  ) {
     const buffer = device!.createBuffer({
       id,
       data: values,
@@ -27,28 +30,18 @@ test('GPU selection uploads external flags, transfers CSR counts, and reads pack
       {id, byteLength: buffer.byteLength, usage: buffer.usage},
       buffer
     );
-    return {buffer, view: graph.createDataView(handle, {format: 'uint32', length: values.length})};
+    return {buffer, view: graph.createDataView(handle, {format, length: values.length})};
   }
-  const external = importValues('external', new Uint32Array(3));
-  const selected = importValues('selected', new Uint32Array(3));
-  const groups = importValues('groups', new Uint32Array(2));
-  const offsets = importValues('offsets', new Uint32Array([0, 2, 3, 4]));
-  const neighbors = importValues('neighbors', new Uint32Array([0, 1, 0, 1]));
-  const ownCount = importValues('own-count', new Uint32Array(1));
+  // Row 0 maps to groups 0 and 1, row 1 to group 0 and row 2 to group 1; row values are 0, 5, 10.
+  const values = importValues('values', new Float32Array([0, 5, 10]), 'float32');
+  const selected = importValues('selected', new Uint32Array(3), 'uint32');
+  const groups = importValues('groups', new Uint32Array(2), 'uint32');
+  const offsets = importValues('offsets', new Uint32Array([0, 2, 3, 4]), 'uint32');
+  const neighbors = importValues('neighbors', new Uint32Array([0, 1, 0, 1]), 'uint32');
   const crossfilter = new GPUCrossfilter(graph, {
-    id: 'spatial-brush',
-    dimensions: [{kind: 'external', id: 'brush', mask: external.view}],
-    outputMask: selected.view,
-    skipUnchangedDimensions: true,
-    views: [
-      {
-        id: 'map',
-        kind: 'count',
-        dimension: 'brush',
-        includeOwnSelection: false,
-        output: ownCount.view
-      }
-    ]
+    id: 'range-brush',
+    dimensions: [{kind: 'range', id: 'brush', input: values.view}],
+    outputMask: selected.view
   });
   crossfilter.addToGraph();
   const transfer = new GPUTransferMask({
@@ -76,26 +69,33 @@ test('GPU selection uploads external flags, transfers CSR counts, and reads pack
       source: 'map',
       keySpace: 'row',
       label: 'two rows',
-      predicate: {kind: 'keys', keys: [0, 2]}
+      predicate: {kind: 'range', field: 'value', range: [4, 11]}
     });
     const source = backend.getMask('row');
     expect(source.buffer).toBe(selected.view);
-    expect(await read(selected.buffer)).toEqual([1, 0, 1]);
+    expect(await read(selected.buffer)).toEqual([0, 1, 1]);
     expect(backend.transferMask(source, 'groups').buffer).toBe(groups.view);
-    expect(await read(groups.buffer)).toEqual([1, 2]);
+    expect(await read(groups.buffer)).toEqual([1, 1]);
     expect(await backend.readCounts()).toEqual({row: 2, group: 2});
-    expect(backend.getMask('row', {excludeSource: 'map'}).keyCount).toBe(3);
-    expect(await read(ownCount.buffer)).toEqual([3]);
     backend.setClause({
       source: 'map',
       keySpace: 'row',
       label: 'one row',
-      predicate: {kind: 'keys', keys: [1]}
+      predicate: {kind: 'range', field: 'value', range: [-1, 1]}
     });
-    expect(await backend.readCounts()).toEqual({row: 1, group: 1});
-    expect(await read(groups.buffer)).toEqual([1, 0]);
+    expect(await backend.readCounts()).toEqual({row: 1, group: 2});
+    expect(await read(groups.buffer)).toEqual([1, 1]);
     backend.clearSource('map');
     expect(await backend.readCounts()).toEqual({row: 3, group: 2});
+    // Explicit key sets are not supported by the published crossfilter.
+    expect(() =>
+      backend.setClause({
+        source: 'map',
+        keySpace: 'row',
+        label: 'keys',
+        predicate: {kind: 'keys', keys: [0]}
+      })
+    ).toThrow(/Unsupported keys/);
   } finally {
     backend.destroy();
     crossfilter.destroy();

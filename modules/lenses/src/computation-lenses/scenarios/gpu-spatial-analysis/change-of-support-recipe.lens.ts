@@ -42,15 +42,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.change-of-support-recipe',
           element: 'addChangeOfSupportRecipe',
           datasets: ['s2-chicago-north-tracts', 's2-chicago-north-areas'],
-          retain: [
-            'areaCounts',
-            'areaMeans',
-            'sourceAreas',
-            'sourceTransferredFractions',
-            'overflow',
-            'requiredCount',
-            'invalidCount'
-          ],
           keySpaces,
           choices: {cellSize: CELL_SIZE, denominator: 'zone'},
           async build(graph, uploads) {

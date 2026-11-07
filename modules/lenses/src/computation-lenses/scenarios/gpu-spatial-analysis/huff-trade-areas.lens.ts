@@ -56,16 +56,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.huff-trade-areas',
           element: 'GPUHuffTradeAreas',
           datasets: ['s2-chicago-north-parks', 's2-chicago-north-tracts'],
-          retain: [
-            'tradeArea',
-            'tradeAreaProbability',
-            'probabilities',
-            'expectedDemand',
-            'tractOffsets',
-            'tractNeighbors',
-            'tractOverflow',
-            'parkOverflow'
-          ],
           keySpaces,
           choices: {distanceDecay: 'inverse-distance', power: 2, radius: 2500, exponent: 1},
           async build(graph, uploads) {

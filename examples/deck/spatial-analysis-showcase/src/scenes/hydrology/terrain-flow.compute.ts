@@ -4,7 +4,13 @@
 
 import type {Layer} from '@deck.gl/core';
 import {toRadians} from '@math.gl/core';
-import {getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues, GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH, GPUParticleAdvection} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUParticleAdvectionParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
+  GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
+  GPUParticleAdvection
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUTerrainDerivativesParameterValues,
   getGPUTerrainFlowFieldParameterValues,

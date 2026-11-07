@@ -8,8 +8,6 @@ import {expect, it} from 'vitest';
 import {
   addSegregationCounterfactualRecipe,
   addPopulationSupportAlignmentRecipe,
-  addSparseResistanceConnectivityRecipe,
-  addRasterResistanceConnectivityRecipe,
   addLandscapeMetricsRecipe,
   addPatchProximityRecipe,
   addSegregationDecompositionRecipe
@@ -67,79 +65,6 @@ async function expectClose(
       );
   });
 }
-
-it('sparse Jacobi-PCG crosses the old vertex cap with certified current conservation', async () => {
-  const fixture = await createFixture('sparse-resistance-large');
-  try {
-    const count = 300;
-    // Parallel two-edge routes give an independently known one-ohm network regardless of size.
-    const edges: number[] = [];
-    const conductances: number[] = [];
-    for (let vertex = 1; vertex < count - 1; vertex++) {
-      edges.push(0, vertex, vertex, count - 1);
-      conductances.push(2 / (count - 2), 2 / (count - 2));
-    }
-    const result = addSparseResistanceConnectivityRecipe(fixture.graph, {
-      edges: fixture.input('edges', Uint32Array.from(edges), 'uint32x2', edges.length / 2),
-      conductances: fixture.input(
-        'conductances',
-        Float32Array.from(conductances),
-        'float32',
-        conductances.length
-      ),
-      vertexCount: count,
-      source: 0,
-      sink: count - 1,
-      maximumIterations: 8,
-      tolerance: 1e-4
-    });
-    const diagnostics = publish(fixture, 'diagnostics', result.outputs.diagnostics);
-    const status = publish(fixture, 'status', result.status);
-    const potentials = publish(fixture, 'potentials', result.outputs.potentials);
-    fixture.run();
-    expect((await fixture.readUint32(status, 4))[0]).toBe(1);
-    const actual = await fixture.readFloat32(diagnostics, 4);
-    expect(actual[0]).toBeCloseTo(1, 3);
-    expect(actual[1]).toBeLessThan(1e-4);
-    expect(actual[2]).toBeCloseTo(1, 3);
-    const voltages = await fixture.readFloat32(potentials, count);
-    expect(voltages[150]).toBeCloseTo(0.5, 3);
-    expect(voltages[count - 1]).toBe(0);
-  } finally {
-    fixture.destroy();
-  }
-});
-
-it('raster conductance adapter preserves anisotropic edge length and barriers', async () => {
-  const fixture = await createFixture('raster-resistance');
-  try {
-    const result = addRasterResistanceConnectivityRecipe(fixture.graph, {
-      resistance: fixture.input(
-        'resistance',
-        new Float32Array([1, 1, 1, NaN, NaN, NaN]),
-        'float32',
-        6
-      ),
-      width: 3,
-      height: 2,
-      cellSize: [2, 1],
-      connectivity: 4,
-      source: 0,
-      sink: 2,
-      maximumIterations: 8,
-      tolerance: 1e-4
-    });
-    const diagnostics = publish(fixture, 'diagnostics', result.outputs.diagnostics);
-    const potentials = publish(fixture, 'potentials', result.outputs.potentials);
-    const density = publish(fixture, 'current-density', result.outputs.currentDensity);
-    fixture.run();
-    expect((await fixture.readFloat32(diagnostics, 4))[0]).toBeCloseTo(4, 4);
-    expect((await fixture.readFloat32(potentials, 6))[3]).toBeNaN();
-    await expectClose(fixture, density, [0.5, 0.5, 0.5, NaN, NaN, NaN]);
-  } finally {
-    fixture.destroy();
-  }
-});
 
 it('vertex-event isovist captures a narrow obstacle missed by uniform angular rays', async () => {
   const fixture = await createFixture('vertex-isovist');
@@ -495,79 +420,6 @@ it('enclosure holes are preserved against direct momepy reference', async () => 
         }
       expect(Math.abs(area)).toBeCloseTo(reference.holedTessellation.areas[building], 2);
     }
-  } finally {
-    fixture.destroy();
-  }
-});
-
-it('sparse electrical solve matches SciPy with heterogeneous parallel edges and ungrounded components', async () => {
-  const fixture = await createFixture('sparse-scipy');
-  try {
-    const oracle = reference.sparseResistance;
-    const result = addSparseResistanceConnectivityRecipe(fixture.graph, {
-      edges: fixture.input(
-        'edges',
-        Uint32Array.from(oracle.edges),
-        'uint32x2',
-        oracle.edges.length / 2
-      ),
-      conductances: fixture.input(
-        'conductances',
-        Float32Array.from(oracle.conductances),
-        'float32',
-        oracle.conductances.length
-      ),
-      vertexCount: 9,
-      source: 0,
-      sink: 5,
-      maximumIterations: 24,
-      tolerance: 1e-5
-    });
-    const potentials = publish(fixture, 'potentials', result.outputs.potentials);
-    const currents = publish(fixture, 'currents', result.outputs.currents);
-    const status = publish(fixture, 'status', result.status);
-    fixture.run();
-    expect((await fixture.readUint32(status, 4))[0]).toBe(1);
-    await expectClose(
-      fixture,
-      potentials,
-      oracle.potentials.map(value => value ?? NaN)
-    );
-    await expectClose(
-      fixture,
-      currents,
-      oracle.currents.map(value => value ?? NaN)
-    );
-  } finally {
-    fixture.destroy();
-  }
-});
-it.each([
-  {weight: -1, iterations: 4, reachable: 0, invalid: 1},
-  {weight: 0, iterations: 4, reachable: 0, invalid: 0},
-  {weight: 1, iterations: 1, reachable: 1, invalid: 0}
-])('sparse certificate rejects invalid, disconnected or exhausted solves $weight', async ({
-  weight,
-  iterations,
-  reachable,
-  invalid
-}) => {
-  const fixture = await createFixture('sparse-failure');
-  try {
-    const result = addSparseResistanceConnectivityRecipe(fixture.graph, {
-      edges: fixture.input('edges', new Uint32Array([0, 1, 1, 2, 2, 3]), 'uint32x2', 3),
-      conductances: fixture.input('conductances', new Float32Array([weight, 2, 3]), 'float32', 3),
-      vertexCount: 4,
-      source: 0,
-      sink: 3,
-      maximumIterations: iterations,
-      tolerance: 1e-5
-    });
-    const status = publish(fixture, 'status', result.status);
-    const diagnostics = publish(fixture, 'diagnostics', result.outputs.diagnostics);
-    fixture.run();
-    expect(await fixture.readUint32(status, 4)).toEqual([0, iterations, reachable, invalid]);
-    expect((await fixture.readFloat32(diagnostics, 4))[0]).toBeNaN();
   } finally {
     fixture.destroy();
   }

@@ -15,22 +15,12 @@ function createViews() {
   return {graph, view};
 }
 
-it('GPUNetworkStructure iterative strong components have no node cap but bounded paths keep theirs', () => {
-  const {graph, view} = createViews();
+it('GPUNetworkStructure bounds reachability strong components and resilience outputs', () => {
+  const {view} = createViews();
   const nodeCount = 5000;
   const topology = {offsets: view(nodeCount + 1), neighbors: view(8000)};
-  const structure = new GPUNetworkStructure({
-    topology,
-    output: {strongComponents: view(nodeCount), strongComponentsConverged: view(1)}
-  });
-  expect(structure.getCommandNodes(graph).length).toBeGreaterThan(0);
   expect(
-    () =>
-      new GPUNetworkStructure({
-        topology,
-        output: {strongComponents: view(nodeCount)},
-        strongComponentsMethod: 'reachability'
-      })
+    () => new GPUNetworkStructure({topology, output: {strongComponents: view(nodeCount)}})
   ).toThrow();
   expect(
     () =>
@@ -42,30 +32,27 @@ it('GPUNetworkStructure iterative strong components have no node cap but bounded
   ).toThrow();
 });
 
-it('GPUNetworkStructure validates the strong-component status and budget', () => {
-  const {view} = createViews();
+it('GPUNetworkStructure accepts strong components within the reachability bound', () => {
+  const {graph, view} = createViews();
   const topology = {offsets: view(5), neighbors: view(6)};
+  const structure = new GPUNetworkStructure({topology, output: {strongComponents: view(4)}});
+  expect(structure.getCommandNodes(graph).length).toBeGreaterThan(0);
+});
+
+it('GPUNetworkStructure rejects strong components above 1024 vertices or 65536 slots', () => {
+  const {view} = createViews();
   expect(
     () =>
       new GPUNetworkStructure({
-        topology,
-        output: {strongComponents: view(4), strongComponentsConverged: view(2)}
+        topology: {offsets: view(1026), neighbors: view(10)},
+        output: {strongComponents: view(1025)}
       })
   ).toThrow();
   expect(
     () =>
       new GPUNetworkStructure({
-        topology,
-        output: {strongComponents: view(4)},
-        strongComponentsIterations: 5000
-      })
-  ).toThrow();
-  expect(
-    () =>
-      new GPUNetworkStructure({
-        topology,
-        output: {strongComponents: view(4), strongComponentsConverged: view(1)},
-        strongComponentsMethod: 'reachability'
+        topology: {offsets: view(5), neighbors: view(65537)},
+        output: {strongComponents: view(4)}
       })
   ).toThrow();
 });

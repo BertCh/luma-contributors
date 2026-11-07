@@ -28,7 +28,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.coverage-validity',
           element: 'GPUCoverageValidity',
           datasets: ['s2-chicago-north-tracts'],
-          retain: ['segmentFlags', 'featureInvalidCounts', 'isValid', 'invalidCount'],
           keySpaces,
           choices: {gapWidth: 1},
           async build(graph, uploads) {

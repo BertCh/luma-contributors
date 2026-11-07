@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula z_i = (p_i - b) / sqrt(v_i); p_i = e_i / n_i; b = sum e / sum n; a = sum n_i (p_i - b)^2 / sum n - b / (sum n / m); v_i = a + b / n_i, or b / n_i where that is negative. Sums run over the m valid rows only (unmasked, finite e >= 0, finite n…",
   "description": "Formula z_i = (p_i - b) / sqrt(v_i); p_i = e_i / n_i; b = sum e / sum n; a = sum n_i (p_i - b)^2 / sum n - b / (sum n / m); v_i = a + b / n_i, or b / n_i where that is negative. Sums run over the m valid rows only (unmasked, finite e >= 0, finite n…",
-  "llms": "Formula z_i = (p_i - b) / sqrt(v_i); p_i = e_i / n_i; b = sum e / sum n; a = sum n_i (p_i - b)^2 / sum n - b / (sum n / m); v_i = a + b / n_i, or b / n_i where that is negative. Sums run over the m valid rows only (unmasked, finite e >= 0, finite n > 0). a is not clamped: a negative a is kept wherever v_i stays non-negative. Rows that are not valid, or whose v_i is not positive, are NaN.\n\n- bound symbols: 11/12\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula z_i = (p_i - b) / sqrt(v_i); p_i = e_i / n_i; b = sum e / sum n; a = sum n_i (p_i - b)^2 / sum n - b / (sum n / m); v_i = a + b / n_i, or b / n_i where that is negative. Sums run over the m valid rows only (unmasked, finite e >= 0, finite n > 0). a is not clamped: a negative a is kept wherever v_i stays non-negative. Rows that are not valid, or whose v_i is not positive, are NaN.\n\n- bound symbols: 0/12\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "11/12"
+    "value": "0/12"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>assuncao-reis-standardization</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{standardizedRates}{z_i}&amp;=\\frac{\\term{rate}{p_i}-\\term{mean}{b}}{\\sqrt{\\term{variance}{v_i}}},\n&amp;\\term{rate}{p_i}&amp;=\\frac{e_i}{\\term{population}{n_i}},\n&amp;\\term{mean}{b}&amp;=\\frac{\\term{eventSum}{\\sum e}}{\\term{populationSum}{\\sum n}}\\\\\n\\term{variance}{v_i}&amp;=\\begin{cases}\\term{rawVariance}{a+b/n_i}&amp;\\text{if }a+b/n_i\\ge 0\\\\\\term{poissonVariance}{b/n_i}&amp;\\text{otherwise}\\end{cases},\n&amp;\\term{priorVariance}{a}&amp;=\\frac{\\term{squareSum}{\\sum n_i(p_i-b)^2}}{\\sum n}-\\frac{b}{\\sum n/\\term{count}{m}}\n\\end{aligned}</pre><p class=\"lens-ascii\">z_i = (p_i - b) / sqrt(v_i); p_i = e_i / n_i; b = sum e / sum n; a = sum n_i (p_i - b)^2 / sum n - b / (sum n / m); v_i = a + b / n_i, or b / n_i where that is negative. Sums run over the m valid rows only (unmasked, finite e &gt;= 0, finite n &gt; 0). a is not clamped: a negative a is kept wherever v_i stays non-negative. Rows that are not valid, or whose v_i is not positive, are NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-standardize\" data-value=\"standardizedRates\">standardizedRates · output · standardizedRates</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-standardize\" data-value=\"rate\">rate · intermediate · rate</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-standardize\" data-value=\"mean\">pooled rate · intermediate · mean</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-variance-reduce\" data-value=\"variance\">variance · intermediate · variance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-totals-blocks\" data-value=\"population\">population · input · population</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-totals-reduce\" data-value=\"eventSum\">eventSum · intermediate · total_events</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-totals-reduce\" data-value=\"populationSum\">populationSum · intermediate · total_population</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-standardize\" data-value=\"rawVariance\">rawVariance · intermediate · rawVariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-standardize\" data-value=\"poissonVariance\">poissonVariance · intermediate · poissonVariance</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"priorVariance\">priorVariance · intermediate · unknown — wgsl priorVariance not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-variance-reduce\" data-value=\"squareSum\">squareSum · intermediate · total_square</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.assuncao-reis-standardization-compiled:assuncao-reis-standardization-totals-reduce\" data-value=\"count\">valid row count · intermediate · count</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>assuncao-reis-standardization</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{standardizedRates}{z_i}&amp;=\\frac{\\term{rate}{p_i}-\\term{mean}{b}}{\\sqrt{\\term{variance}{v_i}}},\n&amp;\\term{rate}{p_i}&amp;=\\frac{e_i}{\\term{population}{n_i}},\n&amp;\\term{mean}{b}&amp;=\\frac{\\term{eventSum}{\\sum e}}{\\term{populationSum}{\\sum n}}\\\\\n\\term{variance}{v_i}&amp;=\\begin{cases}\\term{rawVariance}{a+b/n_i}&amp;\\text{if }a+b/n_i\\ge 0\\\\\\term{poissonVariance}{b/n_i}&amp;\\text{otherwise}\\end{cases},\n&amp;\\term{priorVariance}{a}&amp;=\\frac{\\term{squareSum}{\\sum n_i(p_i-b)^2}}{\\sum n}-\\frac{b}{\\sum n/\\term{count}{m}}\n\\end{aligned}</pre><p class=\"lens-ascii\">z_i = (p_i - b) / sqrt(v_i); p_i = e_i / n_i; b = sum e / sum n; a = sum n_i (p_i - b)^2 / sum n - b / (sum n / m); v_i = a + b / n_i, or b / n_i where that is negative. Sums run over the m valid rows only (unmasked, finite e &gt;= 0, finite n &gt; 0). a is not clamped: a negative a is kept wherever v_i stays non-negative. Rows that are not valid, or whose v_i is not positive, are NaN.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"standardizedRates\">standardizedRates · output · unknown — wgsl standardizedRates not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"rate\">rate · intermediate · unknown — wgsl rate not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mean\">pooled rate · intermediate · unknown — wgsl mean not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"variance\">variance · intermediate · unknown — wgsl variance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"population\">population · input · unknown — wgsl population not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"eventSum\">eventSum · intermediate · unknown — wgsl total_events not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"populationSum\">populationSum · intermediate · unknown — wgsl total_population not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"rawVariance\">rawVariance · intermediate · unknown — wgsl rawVariance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"poissonVariance\">poissonVariance · intermediate · unknown — wgsl poissonVariance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"priorVariance\">priorVariance · intermediate · unknown — wgsl priorVariance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"squareSum\">squareSum · intermediate · unknown — wgsl total_square not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">valid row count · intermediate · unknown — wgsl count not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,63 +29,63 @@
       [
         "standardizedRates",
         "output",
-        "standardizedRates",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "rate",
         "intermediate",
-        "rate",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "pooled rate",
         "intermediate",
-        "mean",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "variance",
         "intermediate",
-        "variance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "population",
         "input",
-        "population",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "eventSum",
         "intermediate",
-        "total_events",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "populationSum",
         "intermediate",
-        "total_population",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "rawVariance",
         "intermediate",
-        "rawVariance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "poissonVariance",
         "intermediate",
-        "poissonVariance",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -99,14 +99,14 @@
       [
         "squareSum",
         "intermediate",
-        "total_square",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "valid row count",
         "intermediate",
-        "count",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -153,12 +153,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:50.691Z",
-    "runId": "run-d87461ea",
+    "date": "2026-11-07T14:55:18.223Z",
+    "runId": "run-f50c1fc0",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-d87461ea",
+    "runId": "run-f50c1fc0",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

@@ -17,8 +17,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   const dataset = await loadDataFrameLensData('f-chicago-tracts');
   const graph = createDataFrameLensGraph<undefined>(
     device,
-    'gpu-dataframe-variable-standardization',
-    ['output']
+    'gpu-dataframe-variable-standardization'
   );
   const example = await runExample(device, {
     graph,

@@ -43,7 +43,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellAggregation',
           datasets: [data.id],
-          retain: ['cells', 'counts', 'cellCount', 'boundaries', 'boundariesCenters'],
           keySpaces: [
             {id: 'cell', label: 'cell', size: capacity, indexSpace: '1d'},
             {id: 'place', label: 'place', size: data.pointCount, indexSpace: '1d'},

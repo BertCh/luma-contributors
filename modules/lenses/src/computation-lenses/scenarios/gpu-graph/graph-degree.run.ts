@@ -5,6 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   describeGPUGraphScenario,
   getGPUGraphCaptureView,
   recordGPUGraphScenario,
@@ -19,18 +20,19 @@ async function buildScenario(device: Device): Promise<GPUGraphScenarioRecordOpti
     example: runExample
   });
   try {
+    const outputCaptures = {
+      'out-degree': {
+        view: getGPUGraphCaptureView(fixture, 'out-degree', outputs.outDegrees),
+        keySpace: 'vertex',
+        stationValues: true
+      }
+    };
     return {
       scenarioId: 'gpu-graph.graph-degree',
       element: 'GPUGraphAlgorithmsDegree',
       fixture,
-      compiled: fixture.commandGraph.compile(),
-      outputCaptures: {
-        'out-degree': {
-          view: getGPUGraphCaptureView(fixture, 'out-degree', outputs.outDegrees),
-          keySpace: 'vertex',
-          stationValues: true
-        }
-      },
+      ...compileGPUGraphScenario(fixture, outputCaptures),
+      outputCaptures,
       choices: [
         {
           stage: 'parameters',
@@ -59,9 +61,13 @@ export async function describeStructure(device: Device) {
     return describeGPUGraphScenario(options);
   } finally {
     try {
-      options.compiled.destroy();
+      options.snapshot.arena.destroy();
     } finally {
-      options.fixture.destroy();
+      try {
+        options.compiled.destroy();
+      } finally {
+        options.fixture.destroy();
+      }
     }
   }
 }

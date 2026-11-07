@@ -5,8 +5,17 @@
 import {assert, Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, createTransientView, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUCalendarBuckets, getGPUCalendarBucketsParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  GPUCommandGraph,
+  createTransientView,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCalendarBuckets,
+  getGPUCalendarBucketsParameterValues
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 import type {GPUKeplerTimeUnit} from '@luma-contributors/kepler';
 import type {ResidentCalendarInterval} from './resident-chart-plan';

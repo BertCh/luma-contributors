@@ -7,7 +7,7 @@ Writes fixtures/network-statistics.json next to this script (consumed by
 test/gpu-network/network-statistics/network-statistics-reference.node.spec.ts, which checks the
 TypeScript statistics oracle against it, and by the 'networkx references' case of
 gpu-network-statistics.spec.ts). Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/network-statistics.py
+    <venv>/bin/python -I modules/analysis/test/oracles/network-statistics.py
 in a venv with numpy and networkx (versions are recorded in the fixture).
 
 Reference: on a simple networkx Graph (undirected) or DiGraph (directed), with self-loops:

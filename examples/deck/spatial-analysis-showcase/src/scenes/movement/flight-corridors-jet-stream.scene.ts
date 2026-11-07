@@ -197,7 +197,7 @@ export default defineScene<FlightSpeedContrastOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUTrajectoryMetrics} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // positions: float32x2 longitude/latitude degrees, spatialContext great-circle (meters),

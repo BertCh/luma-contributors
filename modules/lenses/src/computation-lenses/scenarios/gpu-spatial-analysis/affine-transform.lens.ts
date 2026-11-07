@@ -32,7 +32,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUAffineTransform',
           datasets: [data.id],
-          retain: ['transformedParks'],
           keySpaces: [
             {
               id: 'vertex',

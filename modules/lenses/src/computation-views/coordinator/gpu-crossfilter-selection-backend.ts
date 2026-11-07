@@ -19,8 +19,6 @@ import type {GPUSelectionBackend, GPUSelectionMaskHandle} from './gpu-selection-
 export type GPUCrossfilterSelectionKeySpace = {
   keyCount: number;
   dimensions: Record<string, string>;
-  /** Writes the mapped external dimension. The optional source disambiguates multiple brushes. */
-  writeMask?: (keySpace: KeySpaceId, keys: readonly number[], source?: string) => void;
 };
 
 /** Fixed GPUTransferMask binding; output must be persistent and belong to the crossfilter graph. */
@@ -88,7 +86,7 @@ export class GPUCrossfilterSelectionBackend implements GPUSelectionBackend {
     );
   }
 
-  /** Uploads explicit keys or updates a range dimension; unsupported predicate/dimension pairs throw. */
+  /** Updates a range dimension; explicit keys and other predicate/dimension pairs throw. */
   setClause(clause: SelectionClause): void {
     this.assertAvailable();
     const space = this.getSpace(clause.keySpace);
@@ -98,21 +96,14 @@ export class GPUCrossfilterSelectionBackend implements GPUSelectionBackend {
     );
     if (!dimension)
       throw new Error(`No crossfilter dimension for source ${clause.source} in ${clause.keySpace}`);
-    if (clause.predicate.kind === 'keys' && dimension.kind === 'external') {
-      const keys = clause.predicate.keys;
-      if (keys.some(key => !Number.isInteger(key) || key < 0 || key >= space.keyCount))
-        throw new Error(`Selection keys outside ${clause.keySpace}`);
-      if (space.writeMask) space.writeMask(clause.keySpace, keys, clause.source);
-      else this.writeKeys(this.props.crossfilter.getDimensionMask(dimensionId), keys);
-      this.props.crossfilter.setExternalActive(dimensionId, true);
-    } else if (clause.predicate.kind === 'range' && dimension.kind === 'range') {
+    if (clause.predicate.kind === 'range' && dimension.kind === 'range') {
       this.props.crossfilter.setRange(dimensionId, clause.predicate.range);
     } else {
+      // Explicit key sets need an external dimension, which the published crossfilter lacks.
       throw new Error(
         `Unsupported ${clause.predicate.kind} predicate for ${dimension.kind} dimension ${dimensionId}`
       );
     }
-    this.props.crossfilter.invalidate(dimensionId);
     this.generation++;
   }
 
@@ -124,13 +115,8 @@ export class GPUCrossfilterSelectionBackend implements GPUSelectionBackend {
         space.dimensions[source] ? [space.dimensions[source]] : []
       )
     )) {
-      const dimension = this.props.crossfilter.dimensions.find(
-        candidate => candidate.id === dimensionId
-      );
-      if (dimension?.kind === 'external')
-        this.props.crossfilter.setExternalActive(dimensionId, false);
-      else this.props.crossfilter.clear(dimensionId);
-      this.props.crossfilter.invalidate(dimensionId);
+      // Fail loudly for an unknown dimension: the crossfilter rejects it.
+      this.props.crossfilter.clear(dimensionId);
       this.generation++;
     }
   }
@@ -226,22 +212,6 @@ export class GPUCrossfilterSelectionBackend implements GPUSelectionBackend {
         'GPU selection handles require persistent masks; set outputMask or skipUnchangedDimensions'
       );
     return mask;
-  }
-
-  private writeKeys(mask: GPUCrossfilterMask, keys: readonly number[]): void {
-    const chunks = mask instanceof GraphVectorView ? mask.chunks.map(chunk => chunk.data) : [mask];
-    const selected = new Set(keys);
-    let firstKey = 0;
-    for (const chunk of chunks) {
-      const buffer = chunk.buffer.defaultBuffer;
-      if (!(buffer instanceof Buffer) || chunk.byteStride !== 4)
-        throw new Error('External selection needs imported packed buffers or a writeMask hook');
-      const values = new Uint32Array(chunk.length);
-      for (let index = 0; index < values.length; index++)
-        values[index] = selected.has(firstKey + index) ? 1 : 0;
-      buffer.write(values, chunk.byteOffset);
-      firstKey += chunk.length;
-    }
   }
 
   private getAllRows(keySpace: string): GraphDataView<'uint32'> {

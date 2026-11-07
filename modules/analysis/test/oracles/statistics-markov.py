@@ -7,7 +7,7 @@ LISA_Markov) and the esda local Moran quadrants they are built on.
 Writes fixtures/statistics-markov.json next to this script, consumed (through
 test/gpu-spatial-analysis/distribution-dynamics/markov-giddy-fixture.ts) by
 gpu-distribution-dynamics.spec.ts and transition-diagnostics.node.spec.ts. Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-markov.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-markov.py
 in a venv with numpy, scipy, giddy, esda and libpysal (versions are recorded in the fixture).
 
 Scenes:
@@ -309,7 +309,7 @@ scene_c2 = {
 }
 
 fixture = {
-    'generator': 'modules/graph/test/oracles/statistics-markov.py',
+    'generator': 'modules/analysis/test/oracles/statistics-markov.py',
     'versions': {
         'python': platform.python_version(),
         'numpy': np.__version__,

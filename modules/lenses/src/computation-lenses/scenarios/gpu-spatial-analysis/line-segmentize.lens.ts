@@ -34,14 +34,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineSegmentize',
           datasets: [data.id],
-          retain: [
-            'densified',
-            'outputOffsets',
-            'sourceLineIndices',
-            'count',
-            'lineCount',
-            'overflow'
-          ],
           keySpaces: [
             {id: 'road', label: 'road', size: lineCapacity, indexSpace: '1d'},
             {

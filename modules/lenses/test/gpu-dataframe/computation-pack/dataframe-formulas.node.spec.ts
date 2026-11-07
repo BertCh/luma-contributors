@@ -110,7 +110,7 @@ describe('dataframe curated analysis formulas', () => {
     expect(ENTRIES.map(([name]) => name).sort()).toEqual([...EXPECTED_ELEMENTS].sort());
     expect(new Set(ENTRIES.map(([name]) => name)).size).toBe(22);
     const publicEntry = readPublicExportSources(
-      resolve(ROOT, 'modules/analysis/src/gpu-dataframe/index.ts')
+      resolve(ROOT, 'modules/analysis/src/dataframe-analysis/index.ts')
     );
     for (const name of EXPECTED_ELEMENTS) {
       expect(publicEntry).toMatch(new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from`));

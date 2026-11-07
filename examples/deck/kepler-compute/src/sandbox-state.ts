@@ -17,7 +17,10 @@ import {
   type KeplerSessionExplorer,
   type KeplerSelectionExport
 } from '@luma-contributors/kepler';
-import {prepareArrowTableForGPUAnalytics, type PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
+import {
+  prepareArrowTableForGPUAnalytics,
+  type PrepareArrowTableForGPUAnalyticsOptions
+} from '@luma.gl/graph/arrow';
 import {
   preparePackedPolygonContiguityTopology,
   POLYGON_CONTIGUITY_PREPARATION_BYTES

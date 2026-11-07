@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.raster-join: joinPoints, joinZones → joinedPoints. points: 2,473. values read back from the GPU run. input joinPoints: 2473 points.",
   "description": "Result of gpu-raster.raster-join: joinPoints, joinZones → joinedPoints. points: 2,473. values read back from the GPU run. input joinPoints: 2473 points.",
-  "llms": "Result of gpu-raster.raster-join: joinPoints, joinZones → joinedPoints\n\n- points: 2,473\n- input joinPoints: 2473 points\n- input joinZones: 4096 cells\n- Planar coordinates (m); uniform scale.\n- 2473 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 120 m\n- 2473 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.raster-join: joinPoints, joinZones → joinedPoints\n\n- points: 2,473\n- input joinPoints: 2473 points\n- input joinZones: 4096 cells\n- Planar coordinates (m); uniform scale.\n- 2473 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 120 m\n- 2473 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "2,473"
@@ -24,14 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:48.525Z",
-    "runId": "run-40b36eaa",
+    "date": "2026-11-07T14:55:17.852Z",
+    "runId": "run-bda3e446",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-40b36eaa",
+    "runId": "run-bda3e446",
     "rung": "result",
     "bindings": {},
     "clauses": [],

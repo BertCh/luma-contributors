@@ -30,77 +30,66 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   });
   const [minX, minY, maxX, maxY] = dataset.studyWindow;
   const studyWindow = [minX, minY, maxX, maxY] as const;
-  const graph = createDataFrameLensGraph<undefined>(device, SCENARIO_ID, [
-    'k',
-    'l',
-    'lMinusR',
-    'radii',
-    'pairCounts'
-  ]);
+  const graph = createDataFrameLensGraph<undefined>(device, SCENARIO_ID);
   const example = await runExample(device, {graph, observations: {positions}, studyWindow});
   try {
     options?.signal?.throwIfAborted();
-    const compiled = graph.compile();
-    try {
-      const graphId = `${SCENARIO_ID}-compiled`;
-      const captures = await capturePairStatisticsViews(compiled, graphId, {
-        positions: {
-          view: example.positions,
-          role: 'input',
-          keySpace: 'point',
-          geometry: {kind: 'points', coordinateModel: 'projected', unit: 'm'}
-        },
-        radii: {view: example.radii, role: 'output', keySpace: 'radius', meaning: 'Metres.'},
-        k: {
-          view: example.k,
-          role: 'output',
-          keySpace: 'radius',
-          meaning: 'Edge-corrected K in square metres; NaN where undefined.'
-        },
-        l: {view: example.l, role: 'output', keySpace: 'radius', meaning: 'sqrt(K / pi), metres.'},
-        lMinusR: {
-          view: example.lMinusR,
-          role: 'output',
-          keySpace: 'radius',
-          meaning: 'L(r) - r: zero under complete spatial randomness.'
-        },
-        pairCounts: {
-          view: example.pairCounts,
-          role: 'output',
-          keySpace: 'radius',
-          meaning: 'Uncorrected ordered pairs in the annulus ending at the radius.'
-        }
-      });
-      return createDataFrameLensRecord({
-        scenarioId: SCENARIO_ID,
-        device,
-        graphs: [compiled.describe({graphId, domain: 'gpu-dataframe'})],
-        formulas: getDataFrameElementFormulas('GPURipley'),
-        keySpaces: [
-          {id: 'point', label: 'Observation', size: x.length, indexSpace: '1d'},
-          {id: 'radius', label: 'Radius (200 m)', size: RADIUS_COUNT, indexSpace: '1d'}
-        ],
-        choices: [
-          createDataFrameChoice('filter', 'coordinateModel', 'projected', {
-            alternatives: ['projected', 'geographic']
-          }),
-          createDataFrameChoice('filter', 'studyWindow', 'rectangle'),
-          createDataFrameChoice('filter', 'bounds', studyWindow.join(',')),
-          createDataFrameChoice('aggregate', 'maximumDistance', MAXIMUM_DISTANCE, {
-            unit: 'm',
-            sweepable: true
-          }),
-          createDataFrameChoice('aggregate', 'radiusCount', RADIUS_COUNT, {sweepable: true}),
-          createDataFrameChoice('aggregate', 'edgeCorrection', 'isotropic', {
-            alternatives: Object.keys(GPU_RIPLEY_EDGE_CORRECTION),
-            sweepable: true
-          })
-        ],
-        captures
-      });
-    } finally {
-      compiled.destroy();
-    }
+    const graphId = `${SCENARIO_ID}-compiled`;
+    const {captures, description} = await capturePairStatisticsViews(device, graph, graphId, {
+      positions: {
+        view: example.positions,
+        role: 'input',
+        keySpace: 'point',
+        geometry: {kind: 'points', coordinateModel: 'projected', unit: 'm'}
+      },
+      radii: {view: example.radii, role: 'output', keySpace: 'radius', meaning: 'Metres.'},
+      k: {
+        view: example.k,
+        role: 'output',
+        keySpace: 'radius',
+        meaning: 'Edge-corrected K in square metres; NaN where undefined.'
+      },
+      l: {view: example.l, role: 'output', keySpace: 'radius', meaning: 'sqrt(K / pi), metres.'},
+      lMinusR: {
+        view: example.lMinusR,
+        role: 'output',
+        keySpace: 'radius',
+        meaning: 'L(r) - r: zero under complete spatial randomness.'
+      },
+      pairCounts: {
+        view: example.pairCounts,
+        role: 'output',
+        keySpace: 'radius',
+        meaning: 'Uncorrected ordered pairs in the annulus ending at the radius.'
+      }
+    });
+    return createDataFrameLensRecord({
+      scenarioId: SCENARIO_ID,
+      device,
+      graphs: [description],
+      formulas: getDataFrameElementFormulas('GPURipley'),
+      keySpaces: [
+        {id: 'point', label: 'Observation', size: x.length, indexSpace: '1d'},
+        {id: 'radius', label: 'Radius (200 m)', size: RADIUS_COUNT, indexSpace: '1d'}
+      ],
+      choices: [
+        createDataFrameChoice('filter', 'coordinateModel', 'projected', {
+          alternatives: ['projected', 'geographic']
+        }),
+        createDataFrameChoice('filter', 'studyWindow', 'rectangle'),
+        createDataFrameChoice('filter', 'bounds', studyWindow.join(',')),
+        createDataFrameChoice('aggregate', 'maximumDistance', MAXIMUM_DISTANCE, {
+          unit: 'm',
+          sweepable: true
+        }),
+        createDataFrameChoice('aggregate', 'radiusCount', RADIUS_COUNT, {sweepable: true}),
+        createDataFrameChoice('aggregate', 'edgeCorrection', 'isotropic', {
+          alternatives: Object.keys(GPU_RIPLEY_EDGE_CORRECTION),
+          sweepable: true
+        })
+      ],
+      captures
+    });
   } finally {
     example.parameters.destroy();
     example.buffers.forEach(buffer => buffer.destroy());

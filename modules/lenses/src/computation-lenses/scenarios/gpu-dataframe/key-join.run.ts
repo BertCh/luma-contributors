@@ -14,7 +14,6 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.key-join';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['joinedPoverty', 'rightRows', 'matchCounts', 'matched'];
 const NO_MATCH = 0xffffffff;
 
 /**
@@ -47,7 +46,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
     loadDataFrameLensData('f-chicago-nature')
   ]);
   const poverty = Float32Array.from(tracts.columns.poverty150Pct, value => value ?? NaN);
-  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-key-join', RETAINED);
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-key-join');
   const example = await runExample(device, {
     graph,
     observations: {tract: Uint32Array.from(nature.columns.tract)},

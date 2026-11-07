@@ -7,7 +7,7 @@
   "viewId": "gpu-core-array-result",
   "caption": "Read captured inputs into recorded array outputs.",
   "description": "Read captured inputs into recorded array outputs. max orderSample: 1,000. values read back from the GPU run. 1 output panels from the recorded run.",
-  "llms": "Read captured inputs into recorded array outputs\n\n- max orderSample: 1,000\n- 1 output panels from the recorded run\n- sampleNodes: 12 captured values (8 shown)\n- groupsSample: 12 captured values (8 shown)\n- orderSample: 12 captured values (8 shown)\n- compute passes were not coalesced as in production\n- lens twin: transients order retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max orderSample: 1,000\n- 1 output panels from the recorded run\n- sampleNodes: 12 captured values (8 shown)\n- groupsSample: 12 captured values (8 shown)\n- orderSample: 12 captured values (8 shown)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients order retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max orderSample",
     "value": "1,000"
@@ -19,15 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:43.784Z",
-    "runId": "run-db6eb264",
+    "date": "2026-11-07T14:55:16.648Z",
+    "runId": "run-8da14b65",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients order retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-db6eb264",
+    "runId": "run-8da14b65",
     "rung": "result",
     "bindings": {},
     "clauses": [],

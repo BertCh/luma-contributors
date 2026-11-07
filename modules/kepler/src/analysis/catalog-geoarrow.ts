@@ -8,7 +8,6 @@ import type {
   GeoArrowGeometryValue,
   GeoArrowList
 } from '@math.gl/geospatial/geoarrow';
-import {makeCPUVectorFromGeoArrowColumn} from '@luma.gl/graph/gpu-project/geoarrow';
 import type {CatalogPosition} from './catalog-geojson';
 
 /** Encodes one row family of GeoJSON-like coordinates into a Float32 interleaved XY GeoArrow column. */
@@ -71,16 +70,16 @@ export function readGeoArrowMultiLineString(column: GeoArrowColumn): {
   };
 }
 
-/** Packed arrays of a `geoarrow.multipoint` column, read through the upstream CPUVector adapter. */
+/** Packed arrays of a `geoarrow.multipoint` column, read straight from the GeoArrow list. */
 export function readGeoArrowMultiPoint(column: GeoArrowColumn): {
   positions: Float32Array;
   featureOffsets: Uint32Array;
 } {
-  const data = makeCPUVectorFromGeoArrowColumn(column).data[0];
-  const offsets = data.valueOffsets as Int32Array;
+  const features = column.chunks[0] as GeoArrowList;
+  const featureOffsets = getUint32Offsets(features);
   return {
-    positions: new Float32Array(data.buffer, data.byteOffset, data.valueLength * 2),
-    featureOffsets: new Uint32Array(offsets.buffer, offsets.byteOffset, offsets.length)
+    positions: getInterleavedPositions(features.child, featureOffsets[featureOffsets.length - 1]),
+    featureOffsets
   };
 }
 

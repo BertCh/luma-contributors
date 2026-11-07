@@ -12,7 +12,7 @@ Fixture written (relative to modules/graph/test/gpu-spatial-analysis):
   geometry-measures/fixtures/hole-rules.json
 
 Usage, from the repository root:
-  python3 -I modules/graph/test/oracles/geometry-hole-rules.py
+  python3 -I modules/analysis/test/oracles/geometry-hole-rules.py
 
 Needs shapely >= 2.0 and numpy. Versions and tolerances are recorded in the fixture.
 """
@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.join(
     HERE, '..', 'gpu-spatial-analysis', 'geometry-measures', 'fixtures', 'hole-rules.json'
 )
-GENERATOR = 'modules/graph/test/oracles/geometry-hole-rules.py'
+GENERATOR = 'modules/analysis/test/oracles/geometry-hole-rules.py'
 
 
 def square(x, y, size, clockwise):

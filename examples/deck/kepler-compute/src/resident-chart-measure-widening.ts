@@ -30,9 +30,7 @@ export async function widenResidentChartMeasure(props: {
   let evaluator: GPUVectorEvaluator | undefined;
   try {
     // Lazy import keeps the gpgpu operation graph out of unrelated chart module loads.
-    const {castData, GPUVectorEvaluator} = await import(
-      '@luma.gl/graph/gpu-simple-graph'
-    );
+    const {castData, GPUVectorEvaluator} = await import('@luma.gl/graph/gpu-simple-graph');
     await assertExactFloat32IntegerRange(session.device, vector);
     evaluator = GPUVectorEvaluator.fromGPUVector(vector).mapGPUData(chunk =>
       castData(chunk, {inputFormat: vector.format, outputFormat: 'float32'})

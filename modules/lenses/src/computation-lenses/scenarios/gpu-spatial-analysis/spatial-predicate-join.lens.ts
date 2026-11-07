@@ -39,7 +39,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.spatial-predicate-join',
           element: 'GPUSpatialPredicateJoin',
           datasets: ['s2-chicago-north-parks', 's2-chicago-north-tracts'],
-          retain: ['tractMatches'],
           keySpaces,
           relations: [
             {

@@ -121,7 +121,7 @@ function createFixture(
 
 it.each(
   methods
-)('GPUVariableStandardization %s matches independent definitions across chunks and repeated frames', async method => {
+)('GPUVariableStandardization %s matches independent definitions and repeated frames', async method => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const scenes = [
@@ -141,11 +141,10 @@ it.each(
       scenes.filter(values => values.length !== 12)
     ]) {
       const whole = createFixture(device, group[0], method, false, variance);
-      const chunked = createFixture(device, group[0], method, true, variance);
       try {
         for (const values of [...group, group[0]]) {
           const reference = standardizeReference(values, method, whole.mask, variance);
-          for (const result of [await whole.run(values), await chunked.run(values)]) {
+          for (const result of [await whole.run(values)]) {
             for (let row = 0; row < values.length; row++) {
               if (!Number.isFinite(Math.fround(reference[row])))
                 expect(Number.isNaN(result[row])).toBe(true);
@@ -158,11 +157,10 @@ it.each(
           }
         }
         const zeroMask = group[0].map(() => 0);
-        expect((await chunked.run(group[0], zeroMask)).every(Number.isNaN)).toBe(true);
-        expect((await chunked.run(group[0])).some(Number.isFinite)).toBe(true);
+        expect((await whole.run(group[0], zeroMask)).every(Number.isNaN)).toBe(true);
+        expect((await whole.run(group[0])).some(Number.isFinite)).toBe(true);
       } finally {
         whole.destroy();
-        chunked.destroy();
       }
     }
   }

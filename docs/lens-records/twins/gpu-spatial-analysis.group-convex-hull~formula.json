@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Predicate of the monotone chain, not the chain: coordinates are snapped to an integer lattice q = floor(s (p - p_min) + 1/2) with one power-of-two scale s so the data extent spans 2^29 steps, and orient(a, b, c) = sign((b_x - a_x)(c_y - a_y)…",
   "description": "Formula Predicate of the monotone chain, not the chain: coordinates are snapped to an integer lattice q = floor(s (p - p_min) + 1/2) with one power-of-two scale s so the data extent spans 2^29 steps, and orient(a, b, c) = sign((b_x - a_x)(c_y - a_y)…",
-  "llms": "Formula Predicate of the monotone chain, not the chain: coordinates are snapped to an integer lattice q = floor(s (p - p_min) + 1/2) with one power-of-two scale s so the data extent spans 2^29 steps, and orient(a, b, c) = sign((b_x - a_x)(c_y - a_y) - (b_y - a_y)(c_x - a_x)) is evaluated exactly with emulated 64-bit integers. Rows are sorted by (label, x, y); the chain pops the last vertex while orient <= 0, so collinear points are never hull vertices. The vertices returned are the original float32 positions, counter-clockwise from the smallest (x, y).\n\n- bound symbols: 3/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Predicate of the monotone chain, not the chain: coordinates are snapped to an integer lattice q = floor(s (p - p_min) + 1/2) with one power-of-two scale s so the data extent spans 2^29 steps, and orient(a, b, c) = sign((b_x - a_x)(c_y - a_y) - (b_y - a_y)(c_x - a_x)) is evaluated exactly with emulated 64-bit integers. Rows are sorted by (label, x, y); the chain pops the last vertex while orient <= 0, so collinear points are never hull vertices. The vertices returned are the original float32 positions, counter-clockwise from the smallest (x, y).\n\n- bound symbols: 0/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "3/3"
+    "value": "0/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>convex-hull-orientation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{lattice}{q_i}&amp;=\\lfloor \\term{scale}{s}\\,(p_i-p_{\\min})+\\tfrac{1}{2}\\rfloor\\\\\n\\term{orientation}{\\operatorname{orient}(a,b,c)}&amp;=\\operatorname{sign}\\bigl((b_x-a_x)(c_y-a_y)-(b_y-a_y)(c_x-a_x)\\bigr)\n\\end{aligned}</pre><p class=\"lens-ascii\">Predicate of the monotone chain, not the chain: coordinates are snapped to an integer lattice q = floor(s (p - p_min) + 1/2) with one power-of-two scale s so the data extent spans 2^29 steps, and orient(a, b, c) = sign((b_x - a_x)(c_y - a_y) - (b_y - a_y)(c_x - a_x)) is evaluated exactly with emulated 64-bit integers. Rows are sorted by (label, x, y); the chain pops the last vertex while orient &lt;= 0, so collinear points are never hull vertices. The vertices returned are the original float32 positions, counter-clockwise from the smallest (x, y).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-group-convex-hull-compiled:group-convex-hull-quantize\" data-value=\"lattice\">lattice · intermediate · latticeX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-group-convex-hull-compiled:spatial-clustering-grid-index-count-0-0\" data-value=\"scale\">scale · parameter · scale</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-group-convex-hull-compiled:group-convex-hull-filter-rows\" data-value=\"orientation\">orientation · output · orientationOfPoints</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>convex-hull-orientation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{lattice}{q_i}&amp;=\\lfloor \\term{scale}{s}\\,(p_i-p_{\\min})+\\tfrac{1}{2}\\rfloor\\\\\n\\term{orientation}{\\operatorname{orient}(a,b,c)}&amp;=\\operatorname{sign}\\bigl((b_x-a_x)(c_y-a_y)-(b_y-a_y)(c_x-a_x)\\bigr)\n\\end{aligned}</pre><p class=\"lens-ascii\">Predicate of the monotone chain, not the chain: coordinates are snapped to an integer lattice q = floor(s (p - p_min) + 1/2) with one power-of-two scale s so the data extent spans 2^29 steps, and orient(a, b, c) = sign((b_x - a_x)(c_y - a_y) - (b_y - a_y)(c_x - a_x)) is evaluated exactly with emulated 64-bit integers. Rows are sorted by (label, x, y); the chain pops the last vertex while orient &lt;= 0, so collinear points are never hull vertices. The vertices returned are the original float32 positions, counter-clockwise from the smallest (x, y).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lattice\">lattice · intermediate · unknown — wgsl latticeX not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"scale\">scale · parameter · unknown — wgsl scale not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"orientation\">orientation · output · unknown — wgsl orientationOfPoints not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "lattice",
         "intermediate",
-        "latticeX",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "scale",
         "parameter",
-        "scale",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "orientation",
         "output",
-        "orientationOfPoints",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -74,12 +74,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:21.880Z",
-    "runId": "run-7dcb16e3",
+    "date": "2026-11-07T14:55:22.258Z",
+    "runId": "run-69a82b27",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-7dcb16e3",
+    "runId": "run-69a82b27",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

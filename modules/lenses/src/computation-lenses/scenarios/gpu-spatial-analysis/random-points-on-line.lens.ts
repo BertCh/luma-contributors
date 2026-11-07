@@ -33,7 +33,6 @@ defineLensScenario({
           element: 'GPURandomPointsOnLine',
           datasets: ['s2-chicago-north-roads'],
           seed: 2026,
-          retain: ['points', 'source-ids', 'count', 'overflow', 'required-count', 'fractions'],
           keySpaces: [
             {id: 'point', label: 'sample slot', size: capacity, indexSpace: '1d'},
             {id: 'feature', label: 'road edge', size: featureCount, indexSpace: '1d'},

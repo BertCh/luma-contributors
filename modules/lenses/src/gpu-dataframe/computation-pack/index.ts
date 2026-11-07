@@ -13,7 +13,6 @@ import type {OperatorDescriptor} from '../../computation-views/types';
 import {getDataFrameGuards} from './guards';
 import {DATAFRAME_ANALYSIS_STAGES} from './stages';
 import type {DataFrameFamilyOperators, DataFrameOperatorEntry} from './types';
-import {QUERIES_OPERATORS} from './operators/queries';
 import {CLASSIFICATION_OPERATORS} from './operators/classification';
 import {TEMPORAL_OPERATORS} from './operators/temporal';
 import {GROUPS_JOINS_OPERATORS} from './operators/groups-joins';
@@ -33,7 +32,6 @@ export const DATAFRAME_COMPUTATION_PACK_ID = 'gpu-dataframe';
 export const DATAFRAME_FAMILY_OPERATORS: readonly DataFrameFamilyOperators[] = [
   VARIABLE_STANDARDIZATION_OPERATORS,
   VARIOGRAM_FITTING_OPERATORS,
-  QUERIES_OPERATORS,
   CLASSIFICATION_OPERATORS,
   TEMPORAL_OPERATORS,
   GROUPS_JOINS_OPERATORS,

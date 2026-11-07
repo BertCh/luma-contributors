@@ -41,17 +41,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUZoneEvents',
           datasets: [data.id, zones.id],
-          retain: [
-            'eventTracks',
-            'eventCount',
-            'eventOverflow',
-            'eventZones',
-            'eventTypes',
-            'eventTimes',
-            'dwellTimes',
-            'visitCounts',
-            'trackEventCounts'
-          ],
           keySpaces: [
             {id: 'track', label: 'vessel track', size: data.trackCount, indexSpace: '1d'},
             {id: 'fix', label: 'AIS fix', size: data.timestamps.length, indexSpace: '1d'},

@@ -4,8 +4,8 @@
 
 import {assert, type Device, type Buffer} from '@luma.gl/core';
 import {
-  captureGPUCommandGraph,
   createGPUComputationCaptures,
+  describeGPUCommandGraph,
   createGPUComputationMetrics,
   type GPUComputationCapture,
   type GPUComputationRecordWithSidecars
@@ -26,6 +26,12 @@ import {
   uploadNetworkView
 } from './network-lens-support';
 import {assertValidLensSidecars} from '../../validate-lens-record';
+import {
+  addLensViewSnapshot,
+  readLensViewSnapshot,
+  submitLensGraph,
+  type LensViewSnapshot
+} from '../../lens-view-snapshot';
 
 /** Fixed round budget: the single-hop proof must converge or fail visibly. */
 export const NETWORK_REACHABILITY_MAXIMUM_ITERATIONS = 256;
@@ -48,6 +54,7 @@ async function buildScenario(device: Device, chained: boolean, structureOnly: bo
   const data = loadChicagoLoopRoads();
   const ownedBuffers: Buffer[] = [];
   let compiled: CompiledGPUCommandGraph | undefined;
+  const taps: {snapshot?: LensViewSnapshot} = {};
   try {
     const topology = uploadNetworkTopology(device, graph, data, {weights: 'travelTimeSeconds'});
     ownedBuffers.push(...topology.ownedBuffers);
@@ -82,10 +89,28 @@ async function buildScenario(device: Device, chained: boolean, structureOnly: bo
       activeIterations: activeIterations.view,
       costBreaks: costBreaks.view,
       ...(chained ? {} : {localIterations: 1}),
-      structureOnly
+      structureOnly,
+      beforeCompile: ({output, commandNodes}) => {
+        taps.snapshot = addLensViewSnapshot(graph, device, {
+          id: scenarioId,
+          views: {
+            costs: output.costs,
+            bands: output.bands,
+            predecessors: output.predecessors,
+            bandCounts: output.bandCounts,
+            converged: output.status.converged,
+            iterationCount: output.status.iterationCount,
+            queuedRound: findNetworkResource(commandNodes, `${contributorId}-queued-round`),
+            control: findNetworkResource(commandNodes, `${contributorId}-control`),
+            offsets: topology.offsets,
+            neighbors: topology.neighbors,
+            nodePositions: topology.nodePositions
+          }
+        });
+      }
     });
     compiled = example.compiled;
-    const description = compiled.describe({domain: 'gpu-network'});
+    const description = describeGPUCommandGraph(compiled, {domain: 'gpu-network'});
     const localIterations = example.reachability.localIterations;
     const record = assembleNetworkLensRecord(device, {
       id: scenarioId,
@@ -102,7 +127,7 @@ async function buildScenario(device: Device, chained: boolean, structureOnly: bo
               maximumIterations: NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
               observation: chained
                 ? 'end capture only'
-                : 'step capture splits queue submissions; replay uses the same compiled graph'
+                : 'end capture only; per-round frames need taps authored between rounds'
             }
           }
         }
@@ -137,8 +162,11 @@ async function buildScenario(device: Device, chained: boolean, structureOnly: bo
         relations: createNetworkRelations(topology, `${contributorId}-queues`)
       }
     });
-    return {example, compiled, record, topology, activeIterations, data, ownedBuffers};
+    // The example invokes beforeCompile exactly once, before it compiles.
+    assert(taps.snapshot);
+    return {example, compiled, snapshot: taps.snapshot, record, data, ownedBuffers};
   } catch (error) {
+    taps.snapshot?.arena.destroy();
     compiled?.destroy();
     for (const buffer of ownedBuffers) buffer.destroy();
     throw error;
@@ -169,44 +197,7 @@ export function makeReachabilityStamp(
   };
 }
 
-/**
- * Selects seeded state and executed relax prefixes as log-spaced key frames: rounds 0, 1, 2 and
- * every power of two, plus the final state. Rounds that only repeat the final state are dropped.
- * Other executed rounds are not captured (the record size budget); each kept frame says so in its
- * meaning, and the per-node last-improved stamp still records exactly when every node settled.
- */
-export function selectReachabilitySnapshots(
-  captures: readonly GPUComputationCapture[],
-  iterationCount: number
-): GPUComputationCapture[] {
-  const snapshots = captures
-    .flatMap(capture => {
-      if (capture.name !== 'costs') return [];
-      const match = /^reachability-relax-(\d+)$/.exec(capture.afterNode ?? '');
-      const iteration =
-        capture.afterNode === 'reachability-seed' ? 0 : match ? Number(match[1]) + 1 : -1;
-      return iteration >= 0 && iteration <= iterationCount
-        ? [{...capture, id: `costs-round-${iteration}`, iteration, keySpace: 'node'}]
-        : [];
-    })
-    .sort((left, right) => left.iteration - right.iteration);
-  const final = snapshots.at(-1);
-  if (!final) return snapshots;
-  while (snapshots.length > 2) {
-    const previous = snapshots[snapshots.length - 2];
-    if (!Array.from(previous.values).every((value, index) => Object.is(value, final.values[index])))
-      break;
-    snapshots.splice(snapshots.length - 2, 1);
-  }
-  const isKeyFrame = (iteration: number) =>
-    iteration <= 2 || (iteration & (iteration - 1)) === 0 || iteration === final.iteration;
-  const keyFrames = snapshots.filter(snapshot => isKeyFrame(snapshot.iteration));
-  if (keyFrames.length === snapshots.length) return snapshots;
-  const meaning = `key frame: rounds 0, 1, 2, powers of two and the final round ${final.iteration} were captured; the ${snapshots.length - keyFrames.length} other executed rounds were not`;
-  return keyFrames.map(snapshot => ({...snapshot, meaning}));
-}
-
-/** Runs either proof variant; all values are real GPU readbacks, with explicit GPU replay provenance. */
+/** Runs either proof variant; all values are real GPU readbacks, as end-of-run GPU readbacks. */
 export async function runReachabilityScenario(
   device: Device,
   chained: boolean,
@@ -214,43 +205,21 @@ export async function runReachabilityScenario(
 ): Promise<GPUComputationRecordWithSidecars> {
   options?.signal?.throwIfAborted();
   const built = await buildScenario(device, chained, false);
-  const {compiled, example, topology, record, data, activeIterations} = built;
+  const {compiled, record, data} = built;
   try {
-    const {output, commandNodes} = example;
-    const views = {
-      costs: output.costs,
-      bands: output.bands,
-      predecessors: output.predecessors,
-      bandCounts: output.bandCounts,
-      converged: output.status.converged,
-      iterationCount: output.status.iterationCount,
-      queuedRound: findNetworkResource(commandNodes, `${contributorId}-queued-round`),
-      control: findNetworkResource(commandNodes, `${contributorId}-control`),
-      offsets: topology.offsets,
-      neighbors: topology.neighbors,
-      nodePositions: topology.nodePositions
-    };
-    const captured = await captureGPUCommandGraph(compiled, {
-      at: chained ? 'end' : 'step',
-      encodeOptions: {parameters: undefined, coalesceComputePasses: false},
-      views
-    });
+    submitLensGraph(device, compiled, {parameters: undefined, coalesceComputePasses: false});
+    const captured = await readLensViewSnapshot(built.snapshot, {graphId: record.graphs[0].id});
     options?.signal?.throwIfAborted();
-    const final = (name: string) => getNetworkFinalCapture(captured.captures, name);
+    const final = (name: string) => getNetworkFinalCapture(captured, name);
     if (final('converged').values[0] === 0)
       throw new Error('Network reachability did not converge within maximumIterations = 256');
     const iterationCount = final('iterationCount').values[0];
-    // In step mode, read the stamps right after the last relax round, before the tie phase can push.
-    const lastRelax = `${contributorId}-relax-${NETWORK_REACHABILITY_MAXIMUM_ITERATIONS - 1}`;
-    const relaxedStamps = captured.captures.find(
-      capture => capture.name === 'queuedRound' && capture.afterNode === lastRelax
-    );
     const stamp = makeReachabilityStamp(
-      relaxedStamps ? {...relaxedStamps, id: 'queuedRound'} : final('queuedRound'),
+      final('queuedRound'),
       NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
       chained
     );
-    const snapshots = chained ? [] : selectReachabilitySnapshots(captured.captures, iterationCount);
+    const snapshots: GPUComputationCapture[] = [];
     snapshots.push(
       ...[
         'costs',
@@ -268,7 +237,7 @@ export async function runReachabilityScenario(
           : {})
       }))
     );
-    snapshots.push(...captureInputGeometry(captured.captures, [data.startNode]));
+    snapshots.push(...captureInputGeometry(captured, [data.startNode]));
     const positions = final('nodePositions');
     snapshots.push({
       ...positions,
@@ -280,41 +249,17 @@ export async function runReachabilityScenario(
       meaning:
         'output: all nodes coloured by final travel time; +Infinity is no data, including beyond the displayed bands'
     });
-    const replays: GPUComputationCapture[] = [];
-    if (!chained) {
-      const rounds = Array.from(stamp.values)
-        .filter(
-          (value, node) => Number.isFinite(value) && Number.isFinite(final('costs').values[node])
-        )
-        .sort((left, right) => left - right);
-      const replayRound = rounds[Math.max(0, Math.ceil(rounds.length / 2) - 1)];
-      activeIterations.buffer.write(Uint32Array.of(replayRound));
-      const replay = await captureGPUCommandGraph(compiled, {
-        at: 'end',
-        encodeOptions: {parameters: undefined, coalesceComputePasses: false},
-        views: {costs: output.costs}
-      });
-      replays.push({
-        ...getNetworkFinalCapture(replay.captures, 'costs'),
-        id: `costs-replay-${replayRound}`,
-        provenance: 'gpu-replay',
-        keySpace: 'node',
-        iteration: replayRound,
-        meaning: 'replay: the same compiled graph re-run with activeIterations = k'
-      });
-    }
     const captures = createGPUComputationCaptures({
       runId: record.runId,
       snapshots,
-      stamps: [stamp],
-      replays
+      stamps: [stamp]
     });
     const metrics = [
       createGPUComputationMetrics({
         runId: record.runId,
         graph: record.graphs[0].id,
         timing: {nodes: []},
-        encoding: {coalesced: false, timestamped: false, taps: 0, lensTwin: true, retained},
+        encoding: {coalesced: false, timestamped: false, taps: 1, lensTwin: true, retained},
         series: [
           {
             name: 'frontier-size',
@@ -329,6 +274,7 @@ export async function runReachabilityScenario(
     assertValidLensSidecars(record, result);
     return result;
   } finally {
+    built.snapshot.arena.destroy();
     compiled.destroy();
     for (const buffer of built.ownedBuffers) buffer.destroy();
   }
@@ -340,12 +286,13 @@ export async function describeReachabilityStructure(device: Device, chained: boo
   try {
     return built.record;
   } finally {
+    built.snapshot.arena.destroy();
     built.compiled.destroy();
     for (const buffer of built.ownedBuffers) buffer.destroy();
   }
 }
 
-/** Captures the single-hop wavefront proof and a separately labelled limited replay. */
+/** Captures the single-hop wavefront proof as end-of-run readbacks. */
 export async function run(device: Device, options?: {signal?: AbortSignal}) {
   return runReachabilityScenario(device, false, options);
 }

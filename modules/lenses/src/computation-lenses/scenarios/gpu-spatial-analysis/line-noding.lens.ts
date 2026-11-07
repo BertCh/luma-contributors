@@ -33,14 +33,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineNoding',
           datasets: [data.id],
-          retain: [
-            'sourceFeatureIds',
-            'sourceEdgeIds',
-            'count',
-            'requiredCount',
-            'overflow',
-            'candidateOverflow'
-          ],
           keySpaces: [
             {id: 'segment', label: 'noded segment', size: SEGMENT_CAPACITY, indexSpace: '1d'},
             {

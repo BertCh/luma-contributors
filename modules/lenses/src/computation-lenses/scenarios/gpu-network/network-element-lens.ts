@@ -4,8 +4,8 @@
 
 import {assert, Buffer, type Device} from '@luma.gl/core';
 import {
-  captureGPUCommandGraph,
   createGPUComputationCaptures,
+  describeGPUCommandGraph,
   createGPUComputationMetrics,
   type GPUAnalysisChoice,
   type GPUComputationCapture,
@@ -32,6 +32,12 @@ import {
   uploadNetworkView
 } from './network-lens-support';
 import {assertValidLensSidecars} from '../../validate-lens-record';
+import {
+  addLensViewSnapshot,
+  readLensViewSnapshot,
+  submitLensGraph,
+  type LensViewSnapshot
+} from '../../lens-view-snapshot';
 
 /** The prepared Chicago Loop road extract, or a deterministic transformation of it. */
 export type NetworkRoads = ReturnType<typeof loadChicagoLoopRoads>;
@@ -77,8 +83,6 @@ export type NetworkElementScenario = {
    * the roads is uploaded, read back or related, and `context.topology` is undefined.
    */
   withoutRoads?: boolean;
-  /** Snapshot boundary of the observation run. Defaults to `end`; `step` keeps one frame per node. */
-  at?: 'end' | 'step';
   /** Seed recorded with the run (a start node or similar). */
   seed: number;
   /** Dataset version recorded with the run. Defaults to the Chicago Loop roads version. */
@@ -110,7 +114,7 @@ export type NetworkElementScenario = {
   ): Promise<{views: Readonly<Record<string, GraphDataView | GraphBufferHandle>>}>;
   /**
    * Input and output captures from final readbacks; throws when a status readback says the run
-   * failed. `captured` holds every readback frame of the run (several per view when `at` is `step`).
+   * failed. `captured` holds the end-of-run readback of every view.
    */
   capture(
     final: NetworkFinalReader,
@@ -126,14 +130,17 @@ class ElementLensGraph extends GPUCommandGraph {
   /** Every transient by id, so a scenario can observe a contributor's own scratch resource. */
   readonly transients = new Map<string, GraphBufferHandle>();
 
+  readonly observed: ReadonlySet<string>;
+
   constructor(device: Device, id: string, retain: readonly string[], structureOnly: boolean) {
-    super(device, {id, recording: {retain: [...retain]}});
+    super(device, {id});
+    this.observed = new Set(retain);
     this.structureOnly = structureOnly;
   }
 
   override createTransientBuffer(descriptor: GraphBufferDescriptor): GraphBufferHandle {
     const handle = super.createTransientBuffer(
-      this.recording?.retain?.includes(descriptor.id)
+      this.observed.has(descriptor.id)
         ? {...descriptor, usage: descriptor.usage | Buffer.COPY_SRC}
         : descriptor
     );
@@ -171,6 +178,7 @@ async function buildNetworkElement(
   const data = scenario.prepareRoads?.(loadChicagoLoopRoads()) ?? loadChicagoLoopRoads();
   const ownedBuffers: Buffer[] = [];
   let compiled: CompiledGPUCommandGraph | undefined;
+  let snapshot: LensViewSnapshot | undefined;
   try {
     const topology = scenario.withoutRoads
       ? undefined
@@ -195,9 +203,21 @@ async function buildNetworkElement(
       }
     };
     const {views} = await scenario.build(context);
+    const {topology: roadTopology} = context;
+    snapshot = addLensViewSnapshot(graph, device, {
+      id: scenario.id,
+      views: {
+        ...views,
+        ...(roadTopology && {
+          offsets: roadTopology.offsets,
+          neighbors: roadTopology.neighbors,
+          nodePositions: roadTopology.nodePositions
+        })
+      }
+    });
     compiled = structureOnly ? graph.compile() : await graph.compileAsync();
     const own = scenario.formulas.map(id => NETWORK_FORMULA_REFS[id]);
-    const description = compiled.describe({domain: 'gpu-network'});
+    const description = describeGPUCommandGraph(compiled, {domain: 'gpu-network'});
     const graphs = [
       {
         ...description,
@@ -233,8 +253,9 @@ async function buildNetworkElement(
         ]
       }
     });
-    return {compiled, record, context, views, ownedBuffers};
+    return {compiled, record, context, snapshot, ownedBuffers};
   } catch (error) {
+    snapshot?.arena.destroy();
     compiled?.destroy();
     for (const buffer of ownedBuffers) buffer.destroy();
     throw error;
@@ -244,6 +265,7 @@ async function buildNetworkElement(
 /** Builds the scenario graph without executing it; works on `createNullWebGPUDevice()`. */
 export async function describeNetworkElement(device: Device, scenario: NetworkElementScenario) {
   const built = await buildNetworkElement(device, scenario, true);
+  built.snapshot.arena.destroy();
   built.compiled.destroy();
   for (const buffer of built.ownedBuffers) buffer.destroy();
   return built.record;
@@ -258,26 +280,16 @@ export async function recordNetworkElement(
   device: Device,
   scenario: NetworkElementScenario
 ): Promise<GPUComputationRecordWithSidecars> {
-  const {compiled, record, context, views, ownedBuffers} = await buildNetworkElement(
+  const {compiled, record, context, snapshot, ownedBuffers} = await buildNetworkElement(
     device,
     scenario,
     false
   );
   try {
     const {topology} = context;
-    const captured = await captureGPUCommandGraph(compiled, {
-      at: scenario.at ?? 'end',
-      encodeOptions: {parameters: undefined, coalesceComputePasses: false},
-      views: {
-        ...views,
-        ...(topology && {
-          offsets: topology.offsets,
-          neighbors: topology.neighbors,
-          nodePositions: topology.nodePositions
-        })
-      }
-    });
-    const final: NetworkFinalReader = name => getNetworkFinalCapture(captured.captures, name);
+    submitLensGraph(device, compiled, {parameters: undefined, coalesceComputePasses: false});
+    const captured = await readLensViewSnapshot(snapshot, {graphId: record.graphs[0].id});
+    const final: NetworkFinalReader = name => getNetworkFinalCapture(captured, name);
     const hasRoadContext = topology && scenario.roadContext !== false;
     const roadContext: GPUComputationCapture[] = hasRoadContext
       ? [
@@ -304,7 +316,7 @@ export async function recordNetworkElement(
       : [];
     const snapshots: GPUComputationCapture[] = [
       ...roadContext,
-      ...scenario.capture(final, context, captured.captures)
+      ...scenario.capture(final, context, captured)
     ];
     const captures = createGPUComputationCaptures({runId: record.runId, snapshots});
     const metrics = [
@@ -315,7 +327,7 @@ export async function recordNetworkElement(
         encoding: {
           coalesced: false,
           timestamped: false,
-          taps: 0,
+          taps: 1,
           lensTwin: true,
           retained: scenario.retain
         }
@@ -325,6 +337,7 @@ export async function recordNetworkElement(
     assertValidLensSidecars(record, result);
     return result;
   } finally {
+    snapshot.arena.destroy();
     compiled.destroy();
     for (const buffer of ownedBuffers) buffer.destroy();
   }

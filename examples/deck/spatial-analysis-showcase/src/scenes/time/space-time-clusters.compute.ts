@@ -4,7 +4,11 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUTemporalReductionParameterValues, GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH, GPUTemporalReduction} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUTemporalReductionParameterValues,
+  GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
+  GPUTemporalReduction
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUSpaceTimeParameterValues,

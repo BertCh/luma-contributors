@@ -60,17 +60,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.areal-interpolation',
           element: 'GPUArealInterpolation',
           datasets: ['s2-chicago-north-tracts', 's2-chicago-north-areas'],
-          retain: [
-            'areaPopulation',
-            'transferredFractions',
-            'weightOffsets',
-            'weightNeighbors',
-            'weightValues',
-            'overlapAreas',
-            'pairOverflow',
-            'tractRasterOverflow',
-            'areaRasterOverflow'
-          ],
           keySpaces,
           choices: {
             mode: 'extensive',

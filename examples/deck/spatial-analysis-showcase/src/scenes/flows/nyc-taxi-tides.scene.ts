@@ -105,7 +105,7 @@ function getLegends(state: NycTaxiTidesOptions, data: TideData): LegendSpec[] {
 }
 
 function getSnippet(state: NycTaxiTidesOptions): string {
-  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  return `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
 
 // departures gate on the pickup time, arrivals on the dropoff time: same trips, two graphs

@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or g…",
   "description": "Formula For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or g…",
-  "llms": "Formula For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or great-circle. These are discrete hits only, and scratch overflow may make H incomplete.\n\n- bound symbols: 5/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or great-circle. These are discrete hits only, and scratch overflow may make H incomplete.\n\n- bound symbols: 0/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/6"
+    "value": "0/6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-encounters</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{count}{C}=|\\term{hits}{H}|,\\quad \\term{minimum}{d_{\\min}}=\\min_{\\term{index}{k}\\in\\term{hits}{H}}\\term{distances}{d_k},\\quad \\term{first}{k_0}=\\min\\term{hits}{H}</pre><p class=\"lens-ascii\">For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or great-circle. These are discrete hits only, and scratch overflow may make H incomplete.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-reduce-statistics\" data-value=\"count\">count · output · bucketCounts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-reduce-statistics\" data-value=\"minimum\">minimum · output · minimumDistances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-reduce-statistics\" data-value=\"first\">first · output · firstBuckets</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-sorted-hits\" data-value=\"hits\">Sorted bucket run for one pair · input · sortedBuckets</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-sorted-hits\" data-value=\"distances\">distances · input · sortedDistances</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-encounters</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{count}{C}=|\\term{hits}{H}|,\\quad \\term{minimum}{d_{\\min}}=\\min_{\\term{index}{k}\\in\\term{hits}{H}}\\term{distances}{d_k},\\quad \\term{first}{k_0}=\\min\\term{hits}{H}</pre><p class=\"lens-ascii\">For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or great-circle. These are discrete hits only, and scratch overflow may make H incomplete.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">count · output · unknown — wgsl bucketCounts not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"minimum\">minimum · output · unknown — wgsl minimumDistances not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"first\">first · output · unknown — wgsl firstBuckets not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"hits\">Sorted bucket run for one pair · input · unknown — wgsl sortedBuckets not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distances\">distances · input · unknown — wgsl sortedDistances not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "count",
         "output",
-        "bucketCounts",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "minimum",
         "output",
-        "minimumDistances",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "first",
         "output",
-        "firstBuckets",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Sorted bucket run for one pair",
         "input",
-        "sortedBuckets",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "distances",
         "input",
-        "sortedDistances",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -98,12 +98,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:07.582Z",
-    "runId": "run-6a0b83d2",
+    "date": "2026-11-07T14:55:29.320Z",
+    "runId": "run-200f851f",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-6a0b83d2",
+    "runId": "run-200f851f",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

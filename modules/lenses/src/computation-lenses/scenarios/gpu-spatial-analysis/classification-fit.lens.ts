@@ -37,15 +37,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.classification-fit',
           element: 'GPUClassificationFit',
           datasets: ['s2-midwest-counties', 's2-midwest-county-shapes'],
-          retain: [
-            'breaks',
-            'classes',
-            'counts',
-            'medians',
-            'absoluteDeviations',
-            'squaredDeviations',
-            'summary'
-          ],
           keySpaces,
           choices: {method: 'quantile', classCount: 5},
           async build(graph, uploads) {

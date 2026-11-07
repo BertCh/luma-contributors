@@ -307,10 +307,12 @@ export type GPUPointHorizonModelOptions = {
   heightReference?: GPUPointHorizonHeightReference;
   /**
    * Vertical datum of absolute observer heights. Requires `heightReference: 'absolute'` and is
-   * checked against `elevation.verticalDatum` when both are declared. The library never converts;
+   * checked against `elevationVerticalDatum` when both are declared. The library never converts;
    * see the gpu-terrain documentation's "Heights and datums" section.
    */
   observerVerticalDatum?: string;
+  /** Declared vertical datum of the elevation band. Published raster bands carry no datum metadata. */
+  elevationVerticalDatum?: string;
   /** Sample traversal. Defaults to `'pyramid'`. */
   traversal?: GPUPointHorizonTraversal;
   /**
@@ -386,7 +388,11 @@ export function validatePointHorizonVerticalDatum(
   if (options.observerVerticalDatum !== undefined && heightReference === 'ground') {
     throw new Error(`${id} observerVerticalDatum needs heightReference absolute`);
   }
-  assertCompatibleGPUVerticalDatums(id, options.observerVerticalDatum, elevation.verticalDatum);
+  assertCompatibleGPUVerticalDatums(
+    id,
+    options.observerVerticalDatum,
+    options.elevationVerticalDatum
+  );
 }
 
 /**

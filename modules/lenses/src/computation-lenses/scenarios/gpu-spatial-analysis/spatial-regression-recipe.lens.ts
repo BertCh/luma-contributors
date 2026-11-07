@@ -37,7 +37,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.spatial-regression-recipe',
           element: 'addSpatialRegressionRecipe',
           datasets: ['s2-chicago-north-tracts'],
-          retain: ['coefficients', 'residuals', 'fitted', 'tests', 'decision', 'moranZScores'],
           keySpaces,
           choices: {criterion: 'queen', transform: 'row', significanceLevel: 0.05},
           async build(graph, uploads) {

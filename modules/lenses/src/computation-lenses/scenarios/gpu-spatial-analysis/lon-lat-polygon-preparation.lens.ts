@@ -57,18 +57,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULonLatPolygonPreparation',
           datasets: [data.id],
-          retain: [
-            'prepared',
-            'preparedFeatureOffsets',
-            'preparedPolygonOffsets',
-            'preparedRingOffsets',
-            'ringFlags',
-            'count',
-            'overflow',
-            'requiredCount',
-            'invalidCount',
-            'approximation'
-          ],
           keySpaces: [
             {id: 'ring', label: 'input ring', size: ringCount, indexSpace: '1d'},
             {id: 'vertex', label: 'zone vertex', size: vertexCount, indexSpace: '1d'},

@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getRasterLocalOrigin} from '@luma.gl/graph/gpu-raster';
-import {validateParameterTarget, validateRasterGrid} from '../raster-band-utils';
+import {
+  readRasterParameterOrigin,
+  validateParameterTarget,
+  validateRasterGrid
+} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
 /** Number of float32 elements in a {@link GPURasterSampling} parameter view. */
@@ -78,7 +81,7 @@ function packSamplingParameters(
   if (noDataPolicy !== 'strict' && noDataPolicy !== 'renormalize') {
     throw new Error(`${name} noDataPolicy ${noDataPolicy} is not supported`);
   }
-  const [localOriginX, localOriginY] = getRasterLocalOrigin(name, settings.localOrigin);
+  const [localOriginX, localOriginY] = readRasterParameterOrigin(name, settings.localOrigin);
   target.fill(0, 0, GPU_RASTER_SAMPLING_PARAMETER_LENGTH);
   target[0] = minX - localOriginX;
   target[1] = minY - localOriginY;

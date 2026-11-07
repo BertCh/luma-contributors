@@ -40,14 +40,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUBufferSurface',
           datasets: [data.id],
-          retain: [
-            'bufferPositions',
-            'bufferRingOffsets',
-            'bufferCount',
-            'bufferRequiredCount',
-            'bufferOverflow',
-            'bufferCandidateOverflow'
-          ],
           keySpaces: [
             {id: 'ring', label: 'buffer ring', size: capacity.rings, indexSpace: '1d'},
             {

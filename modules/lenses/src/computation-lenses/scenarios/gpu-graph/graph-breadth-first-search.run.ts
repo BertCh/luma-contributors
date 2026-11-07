@@ -10,6 +10,7 @@ import {
 } from '@luma-contributors/analysis/computation-record';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   describeGPUGraphScenario,
   getGPUGraphCaptureView,
   recordGPUGraphScenario,
@@ -26,24 +27,24 @@ async function buildScenario(device: Device): Promise<GPUGraphScenarioRecordOpti
     example: runExample
   });
   try {
+    const outputCaptures = {
+      'hop-distance': {
+        view: getGPUGraphCaptureView(fixture, 'hop-distance', outputs.hops),
+        keySpace: 'vertex',
+        stationValues: true
+      }
+    };
     return {
       scenarioId: 'gpu-graph.graph-breadth-first-search',
       element: 'GPUGraphAlgorithmsBreadthFirstSearch',
       fixture,
-      compiled: fixture.commandGraph.compile(),
-      outputCaptures: {
-        'hop-distance': {
-          view: getGPUGraphCaptureView(fixture, 'hop-distance', outputs.hops),
-          keySpace: 'vertex',
-          stationValues: true
-        }
-      },
+      ...compileGPUGraphScenario(fixture, outputCaptures),
+      outputCaptures,
       // The kernels bind seed rows and compact frontier slots besides stations.
       extraKeySpaces: [
         {id: 'seed', label: 'seed', size: 1},
         {id: 'frontier', label: 'frontier slot', size: fixture.stations.vertexCount}
       ],
-      iterationFrames: [{name: 'hop-distance', loopId: 'gpu-graph-breadth-first-search-depths'}],
       choices: [
         {stage: 'parameters', name: 'maxDepth', value: 16, sweepable: true},
         {
@@ -111,9 +112,13 @@ export async function describeStructure(device: Device) {
     return describeGPUGraphScenario(options);
   } finally {
     try {
-      options.compiled.destroy();
+      options.snapshot.arena.destroy();
     } finally {
-      options.fixture.destroy();
+      try {
+        options.compiled.destroy();
+      } finally {
+        options.fixture.destroy();
+      }
     }
   }
 }

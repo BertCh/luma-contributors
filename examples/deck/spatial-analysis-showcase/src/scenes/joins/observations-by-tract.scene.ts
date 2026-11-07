@@ -482,7 +482,7 @@ export default defineScene<ObservationsByTractOptions>({
     ];
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUPointInPolygonJoin,
   GPUSpatialJoinPrepared,

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-stream-order: flowDirections, flowStreams → strea…",
   "description": "Result of gpu-terrain.terrain-stream-order: flowDirections, flowStreams → streamOrder. cells: 4,096. values read back from the GPU run. input flowDirections: 4096 cells.",
-  "llms": "Result of gpu-terrain.terrain-stream-order: flowDirections, flowStreams → streamOrder\n\n- cells: 4,096\n- input flowDirections: 4096 cells\n- input flowStreams: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 9 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-stream-order: flowDirections, flowStreams → streamOrder\n\n- cells: 4,096\n- input flowDirections: 4096 cells\n- input flowStreams: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 9 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "4,096"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:11.848Z",
-    "runId": "run-ed7f8039",
+    "date": "2026-11-07T14:55:30.456Z",
+    "runId": "run-40065554",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-ed7f8039",
+    "runId": "run-40065554",
     "rung": "result",
     "bindings": {},
     "clauses": [],

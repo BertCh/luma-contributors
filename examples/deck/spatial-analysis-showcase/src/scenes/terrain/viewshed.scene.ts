@@ -564,9 +564,8 @@ export default defineScene<ViewshedOptions>({
 
   legends: getLegends,
 
-  snippet:
-    state => `import {GPUCommandGraph, GPUHistogram} from '@luma-contributors/analysis/gpu-core';
-import {GPURasterExtremaPyramid} from '@luma-contributors/analysis/gpu-raster';
+  snippet: state => `import {GPUCommandGraph, GPUHistogram} from '@luma.gl/graph/gpu-core';
+import {GPURasterExtremaPyramid} from '@luma.gl/graph/gpu-raster';
 import {
   GPUTerrainViewshed,
   GPUTerrainLineOfSight,

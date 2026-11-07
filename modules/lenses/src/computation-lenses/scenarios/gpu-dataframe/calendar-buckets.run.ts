@@ -14,7 +14,6 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.calendar-buckets';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['month', 'weekday', 'hour', 'hourWeekdayCounts'];
 /** 2023-01-01T00:00 in epoch milliseconds, the origin of the dataset's `timestamp` seconds. */
 const EPOCH_2023_MILLISECONDS = Date.UTC(2023, 0, 1);
 
@@ -26,11 +25,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   const epochMilliseconds = BigInt64Array.from(dataset.columns.timestamp, seconds =>
     BigInt(EPOCH_2023_MILLISECONDS + seconds * 1000)
   );
-  const graph = createDataFrameLensGraph<undefined>(
-    device,
-    'gpu-dataframe-calendar-buckets',
-    RETAINED
-  );
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-calendar-buckets');
   const example = await runExample(device, {graph, observations: {epochMilliseconds}});
   try {
     options?.signal?.throwIfAborted();

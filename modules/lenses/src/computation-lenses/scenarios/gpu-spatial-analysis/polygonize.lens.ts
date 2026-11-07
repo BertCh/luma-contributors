@@ -32,16 +32,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUPolygonize',
           datasets: [data.id],
-          retain: [
-            'nodedCount',
-            'edgeClasses',
-            'polygonCount',
-            'polygonRequiredCount',
-            'polygonOverflow',
-            'polygonCandidateOverflow',
-            'polygonPositions',
-            'polygonRingOffsets'
-          ],
           keySpaces: [
             {id: 'segment', label: 'noded segment', size: SEGMENT_CAPACITY, indexSpace: '1d'},
             {

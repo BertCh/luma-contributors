@@ -4,7 +4,13 @@
 
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPURasterEVI, GPURasterNBR, GPURasterNDWI, GPURasterSAVI, GPURasterSpectralUnmixing} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPURasterEVI,
+  GPURasterNBR,
+  GPURasterNDWI,
+  GPURasterSAVI,
+  GPURasterSpectralUnmixing
+} from '@luma-contributors/analysis/raster-analysis';
 import {GPURasterNDVI, type GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';

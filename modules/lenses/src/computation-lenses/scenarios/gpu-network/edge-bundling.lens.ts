@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {
   describeNetworkElement,
   recordNetworkElement,
@@ -22,17 +21,14 @@ const scenarioId = 'gpu-network.edge-bundling';
 const flows = CHICAGO_OD_FLOWS.annual;
 const POINTS_PER_EDGE = 16;
 const MAXIMUM_ITERATIONS = 8;
-/** Completed iterations kept as frames: the straight start, then rounds 1, 2 and 4 (the final state is the output). */
-const FRAME_ITERATIONS = [0, 1, 2, 4];
 
 const scenario: NetworkElementScenario = {
   id: scenarioId,
   weights: 'lengthMeters',
   withoutRoads: true,
-  at: 'step',
   seed: 0,
   datasetVersion: `${CONSTRUCTION_DATASETS.odFlows.id}-v1`,
-  retain: ['edge-bundling-work', 'bundledPaths', 'bundleOffsets'],
+  retain: ['bundledPaths', 'bundleOffsets'],
   formulas: [],
   keySpaces: getKeySpaces([
     {id: 'flow', label: 'origin-destination row', size: flows.trips.length},
@@ -83,44 +79,17 @@ const scenario: NetworkElementScenario = {
         originZones,
         destinationZones,
         bundledPaths: example.paths,
-        bundleOffsets: example.lineOffsets,
-        // The in-place work buffer holds the path control points between iterations.
-        bundleWork: context.graph.createDataView(context.findTransient('edge-bundling-work'), {
-          format: 'float32x2',
-          length: flows.trips.length * POINTS_PER_EDGE
-        })
+        bundleOffsets: example.lineOffsets
       }
     };
   },
-  capture(final, _context, captured) {
+  capture(final) {
     const offsets = final('bundleOffsets');
     const lineGeometry = {
       kind: 'lines' as const,
       coordinateModel: 'geographic' as const,
       offsetsCapture: 'bundleOffsets'
     };
-    // Work state after the initialize node (iteration 0) and after each update node (iteration k + 1).
-    const frames = FRAME_ITERATIONS.map((iteration): GPUComputationCapture => {
-      const afterNode =
-        iteration === 0 ? 'edge-bundling-initialize' : `edge-bundling-update-${iteration - 1}`;
-      const frame = captured.find(
-        capture => capture.name === 'bundleWork' && capture.afterNode === afterNode
-      );
-      // The observation run kept a frame after every node.
-      if (!frame) throw new Error(`Edge bundling: no readback after ${afterNode}`);
-      return {
-        ...frame,
-        id: `bundledPaths-iteration-${iteration}`,
-        name: 'bundledPaths',
-        iteration,
-        role: 'output',
-        meaning:
-          iteration === 0
-            ? 'output: straight subdivision before the first iteration'
-            : `output: path control points after ${iteration} density iterations (key frame; the other rounds are not recorded)`,
-        geometry: lineGeometry
-      };
-    });
     const zones = final('zonePositions');
     const origins = final('originZones');
     const destinations = final('destinationZones');
@@ -157,7 +126,6 @@ const scenario: NetworkElementScenario = {
         meaning: 'derived: flow k spans vertices 2k to 2k + 2 of the straight input lines'
       },
       offsets,
-      ...frames,
       {
         ...final('bundledPaths'),
         role: 'output',

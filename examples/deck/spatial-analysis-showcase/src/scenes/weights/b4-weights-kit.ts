@@ -15,7 +15,12 @@ import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-an
  */
 
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
-import {GPUCommandGraph, GPUReadbackRing, GPUReduction, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  GPUReduction,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {
   GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT,
   GPUSpatialLag,

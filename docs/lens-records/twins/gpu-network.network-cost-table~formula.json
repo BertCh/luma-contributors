@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Table admission, after the cutoff search of one source row: isIncluded = isFiniteBits(cost) && cost >= 0, where cost is the f32 reachability fixpoint searched with the cost limit. Unreached nodes are +Infinity and are not stored; the source…",
   "description": "Formula Table admission, after the cutoff search of one source row: isIncluded = isFiniteBits(cost) && cost >= 0, where cost is the f32 reachability fixpoint searched with the cost limit. Unreached nodes are +Infinity and are not stored; the source…",
-  "llms": "Formula Table admission, after the cutoff search of one source row: isIncluded = isFiniteBits(cost) && cost >= 0, where cost is the f32 reachability fixpoint searched with the cost limit. Unreached nodes are +Infinity and are not stored; the source itself is stored at cost 0. Included targets are packed in ascending node order by an inclusive scan, so slot order is fixed; entries past the capacity are dropped and reported by the overflow status. This is the admission rule, not a second shortest-path formula.\n\n- bound symbols: 2/2\n- compute passes were not coalesced as in production\n- lens twin: transients tableOffsets, tableTargets, tableCosts, overflow, requiredCount, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Table admission, after the cutoff search of one source row: isIncluded = isFiniteBits(cost) && cost >= 0, where cost is the f32 reachability fixpoint searched with the cost limit. Unreached nodes are +Infinity and are not stored; the source itself is stored at cost 0. Included targets are packed in ascending node order by an inclusive scan, so slot order is fixed; entries past the capacity are dropped and reported by the overflow status. This is the admission rule, not a second shortest-path formula.\n\n- bound symbols: 0/2\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients tableOffsets, tableTargets, tableCosts, overflow, requiredCount, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/2"
+    "value": "0/2"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.cost-table.admission</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{isIncluded}{I}=\\mathbf{1}\\bigl[\\operatorname{finite}(\\term{cost}{c})\\wedge \\term{cost}{c}\\ge 0\\bigr]</pre><p class=\"lens-ascii\">Table admission, after the cutoff search of one source row: isIncluded = isFiniteBits(cost) &amp;&amp; cost &gt;= 0, where cost is the f32 reachability fixpoint searched with the cost limit. Unreached nodes are +Infinity and are not stored; the source itself is stored at cost 0. Included targets are packed in ascending node order by an inclusive scan, so slot order is fixed; entries past the capacity are dropped and reported by the overflow status. This is the admission rule, not a second shortest-path formula.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-cost-table-compiled:network-cost-table-batch-0-fill\" data-value=\"isIncluded\">entry is stored · output · isIncluded</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-cost-table-compiled:network-cost-table-batch-0-seeds\" data-value=\"cost\">network cost from the source · input · cost</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-cost-table-compiled:network-cost-table-batch-0-fill\">network-cost-table-batch-0-fill</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-cost-table-compiled:network-cost-table-batch-1-fill\">network-cost-table-batch-1-fill</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.cost-table.admission</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{isIncluded}{I}=\\mathbf{1}\\bigl[\\operatorname{finite}(\\term{cost}{c})\\wedge \\term{cost}{c}\\ge 0\\bigr]</pre><p class=\"lens-ascii\">Table admission, after the cutoff search of one source row: isIncluded = isFiniteBits(cost) &amp;&amp; cost &gt;= 0, where cost is the f32 reachability fixpoint searched with the cost limit. Unreached nodes are +Infinity and are not stored; the source itself is stored at cost 0. Included targets are packed in ascending node order by an inclusive scan, so slot order is fixed; entries past the capacity are dropped and reported by the overflow status. This is the admission rule, not a second shortest-path formula.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"isIncluded\">entry is stored · output · unknown — wgsl isIncluded not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cost\">network cost from the source · input · unknown — wgsl cost not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,14 +29,14 @@
       [
         "entry is stored",
         "output",
-        "isIncluded",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "network cost from the source",
         "input",
-        "cost",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -53,15 +53,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.973Z",
-    "runId": "run-c20a823a",
+    "date": "2026-11-07T14:55:16.861Z",
+    "runId": "run-2018431d",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients tableOffsets, tableTargets, tableCosts, overflow, requiredCount, converged retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-c20a823a",
+    "runId": "run-2018431d",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

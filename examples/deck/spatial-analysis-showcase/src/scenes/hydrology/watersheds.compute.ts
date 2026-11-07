@@ -21,7 +21,12 @@ import {
   GPUTerrainWatersheds,
   type GPUTerrainFlowRouting
 } from '@luma-contributors/analysis/gpu-terrain';
-import {GPUCommandGraph, GPUHistogram, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUHistogram,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {

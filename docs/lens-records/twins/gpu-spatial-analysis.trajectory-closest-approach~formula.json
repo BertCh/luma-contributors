@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distanc…",
   "description": "Formula On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distanc…",
-  "llms": "Formula On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distance. Track-pair output takes the minimum over hit segment pairs, earliest time on ties, and sums their encounter durations; times are relative to the lower track start.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distance. Track-pair output takes the minimum over hit segment pairs, earliest time on ties, and sums their encounter durations; times are relative to the lower track start.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-closest-approach</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{closest}{\\tau_*}=\\begin{cases}\\operatorname{clamp}(-\\term{separation}{D}\\cdot\\term{velocity}{V}/\\lVert\\term{velocity}{V}\\rVert^2,0,\\term{span}{T})&amp;\\lVert\\term{velocity}{V}\\rVert&gt;0\\\\0&amp;\\text{otherwise}\\end{cases},\\quad \\term{nearest}{d_*}=\\lVert\\term{separation}{D}+\\term{velocity}{V}\\term{closest}{\\tau_*}\\rVert</pre><p class=\"lens-ascii\">On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distance. Track-pair output takes the minimum over hit segment pairs, earliest time on ties, and sums their encounter durations; times are relative to the lower track start.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"closest\">Segment-pair closest time offset · output · closest</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"nearest\">Segment-pair minimum distance, packed hit word 4 · output · hits</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"separation\">separation · input · separationStart</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"velocity\">velocity · input · velocity</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"span\">span · input · span</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-closest-approach</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{closest}{\\tau_*}=\\begin{cases}\\operatorname{clamp}(-\\term{separation}{D}\\cdot\\term{velocity}{V}/\\lVert\\term{velocity}{V}\\rVert^2,0,\\term{span}{T})&amp;\\lVert\\term{velocity}{V}\\rVert&gt;0\\\\0&amp;\\text{otherwise}\\end{cases},\\quad \\term{nearest}{d_*}=\\lVert\\term{separation}{D}+\\term{velocity}{V}\\term{closest}{\\tau_*}\\rVert</pre><p class=\"lens-ascii\">On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distance. Track-pair output takes the minimum over hit segment pairs, earliest time on ties, and sums their encounter durations; times are relative to the lower track start.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"closest\">Segment-pair closest time offset · output · unknown — wgsl closest not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"nearest\">Segment-pair minimum distance, packed hit word 4 · output · unknown — wgsl hits not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"separation\">separation · input · unknown — wgsl separationStart not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"velocity\">velocity · input · unknown — wgsl velocity not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"span\">span · input · unknown — wgsl span not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "Segment-pair closest time offset",
         "output",
-        "closest",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Segment-pair minimum distance, packed hit word 4",
         "output",
-        "hits",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "separation",
         "input",
-        "separationStart",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "velocity",
         "input",
-        "velocity",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "span",
         "input",
-        "span",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -90,12 +90,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:07.330Z",
-    "runId": "run-afdb90a4",
+    "date": "2026-11-07T14:55:29.279Z",
+    "runId": "run-620e25b7",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-afdb90a4",
+    "runId": "run-620e25b7",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

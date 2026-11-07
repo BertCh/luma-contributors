@@ -3,8 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
-// GPUSegmentedReduction is not re-exported from the gpu-core index yet.
-import {GPUSegmentedReduction, type GPUSegmentedReductionOperation} from '@luma.gl/graph/gpu-core';
+import {
+  createSegmentReductionNode,
+  type SegmentReductionOperation
+} from '../shared/segment-reduction';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -858,54 +860,22 @@ export type SegmentedReductionNodesProps = {
   input: GraphDataView<'float32'>;
   segmentOffsets: GraphDataView<'uint32'>;
   output: GraphDataView<'float32'>;
-  operation: GPUSegmentedReductionOperation;
+  operation: SegmentReductionOperation;
 };
 
-/**
- * Builds `GPUSegmentedReduction` nodes, splitting the segments into chunks of at most
- * `maximumSegmentCount` because the primitive dispatches one workgroup per segment without 3D
- * folding. Chunks are sub-views of the same offset and output buffers, strided in multiples of 64
- * rows so their binding offsets are 256-byte aligned.
- *
- * @param maximumSegmentCount Normally `maxComputeWorkgroupsPerDimension`.
- * @internal
- */
+/** Builds the per-segment reduction node for one trajectory quantity. @internal */
 export function getSegmentedReductionNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: SegmentedReductionNodesProps,
-  maximumSegmentCount: number
+  props: SegmentedReductionNodesProps
 ): readonly GPUCommandNode<Parameters>[] {
-  const segmentCount = props.output.length;
-  if (segmentCount <= maximumSegmentCount) {
-    return new GPUSegmentedReduction({...props}).getCommandNodes(graph);
-  }
-  // Kernels bake each binding's `(byteOffset % 256) / 4`, so a stride of whole 64-element blocks
-  // keeps every chunk at element offset 0 and all chunks on one pipeline (library rule 12). Limits
-  // below 64 only occur in tests.
-  const chunkStride =
-    maximumSegmentCount >= 64 ? Math.floor(maximumSegmentCount / 64) * 64 : maximumSegmentCount;
-  const nodes: GPUCommandNode<Parameters>[] = [];
-  for (let first = 0, chunkIndex = 0; first < segmentCount; first += chunkStride, chunkIndex++) {
-    const length = Math.min(chunkStride, segmentCount - first);
-    const offsets = graph.createDataView(props.segmentOffsets.buffer, {
-      format: 'uint32',
-      length: length + 1,
-      byteOffset: props.segmentOffsets.byteOffset + first * 4
-    });
-    const output = graph.createDataView(props.output.buffer, {
-      format: 'float32',
-      length,
-      byteOffset: props.output.byteOffset + first * 4
-    });
-    nodes.push(
-      ...new GPUSegmentedReduction({
-        id: `${props.id}-chunk-${chunkIndex}`,
-        input: props.input,
-        segmentOffsets: offsets,
-        output,
-        operation: props.operation
-      }).getCommandNodes(graph)
-    );
-  }
-  return nodes;
+  return [
+    createSegmentReductionNode<Parameters>(graph, {
+      id: props.id,
+      operation: OPERATION,
+      input: props.input,
+      segmentOffsets: props.segmentOffsets,
+      output: props.output,
+      reduction: props.operation
+    })
+  ];
 }

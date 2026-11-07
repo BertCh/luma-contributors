@@ -37,7 +37,7 @@ export function extractLensExample(sourceText: string): LensExample {
   };
 }
 
-/** Lists imports outside the public core, engine, gpgpu, graph and experimental entry points. */
+/** Lists imports outside the published @luma.gl core, engine and graph entry points and the analysis and lenses entry points. */
 export function findNonPublicImports(sourceText: string): string[] {
   // Tokenize comments and strings first so commented imports and quoted code are ignored.
   const tokens = [
@@ -57,10 +57,10 @@ export function findNonPublicImports(sourceText: string): string[] {
     if (!specifier || !/^["'`]/.test(specifier)) continue;
     const name = specifier.slice(1, -1);
     const publicEntry =
-      /^@luma\.gl\/(?:core|engine|gpgpu|graph)$/.test(name) ||
-      /^@luma\.gl\/(?:gpgpu|graph|experimental)\/[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(name) ||
-      /^@luma-contributors\/(?:graph|lenses)$/.test(name) ||
-      /^@luma-contributors\/graph\/[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(name);
+      /^@luma\.gl\/(?:core|engine|graph)$/.test(name) ||
+      /^@luma\.gl\/(?:core|engine|graph)\/[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(name) ||
+      /^@luma-contributors\/(?:analysis|lenses)$/.test(name) ||
+      /^@luma-contributors\/(?:analysis|lenses)\/[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(name);
     if (!publicEntry || /\/(?:src|dist|test)(?:\/|$)/.test(name)) imports.push(name);
   }
   return [...new Set(imports)];

@@ -24,7 +24,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.spatial-clustering',
           element: 'GPUSpatialClustering',
           datasets: ['s2-chicago-north-nature'],
-          retain: ['labels', 'coreFlags', 'clusterCount'],
           keySpaces: [
             {id: 'observation', label: 'observation', size: points.count, indexSpace: '1d'},
             {id: 'status', label: 'run status', size: 1, indexSpace: '1d'}

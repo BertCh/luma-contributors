@@ -8,7 +8,6 @@ import {
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/graph/gpu-core';
-import {assertRasterStorageBindingFits} from '@luma.gl/graph/gpu-raster';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
@@ -227,6 +226,14 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
       output.values,
       output.outputValidity
     ]);
+    // Both outputs store four bytes per pixel and bind whole: fail early when the raster exceeds
+    // the device storage binding limit instead of surfacing a device validation error.
+    if (
+      props.grid.width * props.grid.height * 4 >
+      graph.device.limits.maxStorageBufferBindingSize
+    ) {
+      throw new Error(`${id} output exceeds the device storage binding limit`);
+    }
     if (props.input.texture) {
       if (props.input.texture.texture.graph !== graph) {
         throw new Error(`${id} views must belong to the target graph`);
@@ -327,12 +334,6 @@ fn applySeaClamp(height: f32) -> f32 {
   ): GPUCommandNode<Parameters> {
     const {id, props} = this;
     const {output} = props;
-    assertRasterStorageBindingFits(graph.device, output.values, `${id} output.values`);
-    assertRasterStorageBindingFits(
-      graph.device,
-      output.outputValidity,
-      `${id} output.outputValidity`
-    );
     return createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-decode`,
       operation: 'GPUTerrainRGBDecode',

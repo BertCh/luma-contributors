@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of ranked zone-pair flow 0. flowCounts: 3. values read back from the GPU run. assignment: 2 quantities.",
   "description": "Receipt of ranked zone-pair flow 0. flowCounts: 3. values read back from the GPU run. assignment: 2 quantities.",
-  "llms": "Receipt of ranked zone-pair flow 0\n\n- flowCounts: 3\n- assignment: 2 quantities\n- summary: 2 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients flowKeys, flowOriginZones, flowDestinationZones, flowCounts, flowWeights, flowCount, flowOverflow, flowRequiredCount, flowPairOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of ranked zone-pair flow 0\n\n- flowCounts: 3\n- assignment: 2 quantities\n- summary: 2 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients flowKeys, flowOriginZones, flowDestinationZones, flowCounts, flowWeights, flowCount, flowOverflow, flowRequiredCount, flowPairOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "flowCounts",
     "value": "3"
@@ -65,15 +65,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.366Z",
-    "runId": "run-ee6dcb38",
+    "date": "2026-11-07T14:55:16.730Z",
+    "runId": "run-98e924e3",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients flowKeys, flowOriginZones, flowDestinationZones, flowCounts, flowWeights, flowCount, flowOverflow, flowRequiredCount, flowPairOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-ee6dcb38",
+    "runId": "run-98e924e3",
     "rung": "datum",
     "bindings": {
       "entity": 0

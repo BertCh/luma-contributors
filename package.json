@@ -21,7 +21,9 @@
     "verify-package-exports": "node scripts/verify-package-exports.mjs",
     "typecheck-tests": "tsc -p tsconfig.json --noEmit",
     "test-benchmarks": "LUMA_CONTRIBUTORS_BENCHMARKS=true vitest run --project headless",
-    "check-upstream-first": "node scripts/check-upstream-first.mjs"
+    "check-upstream-first": "node scripts/check-upstream-first.mjs",
+    "typecheck-watch": "mkdir -p .typecheck && tsc -p tsconfig.check-src.json --noEmit --watch --preserveWatchOutput --pretty false > .typecheck/watch.log 2>&1",
+    "typecheck-status": "node scripts/typecheck-status.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.8",

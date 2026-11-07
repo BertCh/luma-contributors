@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getRasterLocalOrigin} from '@luma.gl/graph/gpu-raster';
-import {validateParameterTarget} from '../raster-band-utils';
+import {readRasterParameterOrigin, validateParameterTarget} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
 /** Number of float32 values read from `GPUDistanceFieldProps.parameters`. */
@@ -76,7 +75,10 @@ export function getGPUDistanceFieldParameterValues(
   }
   // Point pixels are addressed at their centers; the kernels want the outer corner.
   const cornerShift = grid.pixelInterpretation === 'point' ? -0.5 : 0;
-  const [localOriginX, localOriginY] = getRasterLocalOrigin('Distance field', settings.localOrigin);
+  const [localOriginX, localOriginY] = readRasterParameterOrigin(
+    'Distance field',
+    settings.localOrigin
+  );
   target.fill(0, 0, GPU_DISTANCE_FIELD_PARAMETER_LENGTH);
   target[0] = originX + stepX * cornerShift - localOriginX;
   target[1] = originY + stepY * cornerShift - localOriginY;

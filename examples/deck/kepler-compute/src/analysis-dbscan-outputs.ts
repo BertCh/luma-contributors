@@ -5,7 +5,13 @@
 import {Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import {createTransientView, getViewBinding, getViewElementOffset, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  getViewBinding,
+  getViewElementOffset,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import type {
   KeplerComputeSession,

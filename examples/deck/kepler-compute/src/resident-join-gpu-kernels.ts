@@ -4,7 +4,12 @@
 
 import type {Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {getBoundedDispatchLayout, getBoundedInvocationIndexSource, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {RESIDENT_JOIN_NO_KEY, RESIDENT_JOIN_NO_ROW} from './resident-join-plan';
 import type {ResidentJoinKeyMode} from './resident-join-gpu-reference';
 

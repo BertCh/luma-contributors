@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.flow-aggregation: recordLines → rankedFlowLines.",
   "description": "Result of gpu-network.flow-aggregation: recordLines → rankedFlowLines. lines: 32. values read back from the GPU run. input recordLines: 450 lines.",
-  "llms": "Result of gpu-network.flow-aggregation: recordLines → rankedFlowLines\n\n- lines: 32\n- input recordLines: 450 lines\n- Simple equirectangular projection (x scaled by cos 41.87°); not equal-area.\n- 34 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 900 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 64 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients flowKeys, flowOriginZones, flowDestinationZones, flowCounts, flowWeights, flowCount, flowOverflow, flowRequiredCount, flowPairOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.flow-aggregation: recordLines → rankedFlowLines\n\n- lines: 32\n- input recordLines: 450 lines\n- Simple equirectangular projection (x scaled by cos 41.87°); not equal-area.\n- 34 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 900 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 64 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients flowKeys, flowOriginZones, flowDestinationZones, flowCounts, flowWeights, flowCount, flowOverflow, flowRequiredCount, flowPairOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "32"
@@ -19,15 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.366Z",
-    "runId": "run-ee6dcb38",
+    "date": "2026-11-07T14:55:16.730Z",
+    "runId": "run-98e924e3",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients flowKeys, flowOriginZones, flowDestinationZones, flowCounts, flowWeights, flowCount, flowOverflow, flowRequiredCount, flowPairOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-ee6dcb38",
+    "runId": "run-98e924e3",
     "rung": "result",
     "bindings": {},
     "clauses": [],

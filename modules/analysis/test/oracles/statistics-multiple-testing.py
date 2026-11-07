@@ -7,7 +7,7 @@ Writes fixtures/statistics-multiple-testing.json next to this script, consumed (
 test/gpu-spatial-analysis/multiple-testing/multiple-testing-fixtures.ts) by
 gpu-multiple-testing-adjustment.spec.ts and gpu-multiple-testing-adjustment.node.spec.ts. Run from
 anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-multiple-testing.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-multiple-testing.py
 in a venv with numpy and statsmodels (versions are recorded in the fixture).
 
 Scenes (p-value families; NaN = untested row, which stays NaN and is excluded from the family):

@@ -38,7 +38,7 @@ it.each(
     const compiled = harness.graph.compile();
     try {
       for (const {view} of harness.captures.values()) {
-        expect(compiled.getPhysicalBuffer(view).byteLength).toBeGreaterThanOrEqual(view.length * 4);
+        expect(view.buffer.byteLength).toBeGreaterThanOrEqual(view.length * 4);
       }
     } finally {
       compiled.destroy();

@@ -45,17 +45,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellPyramid',
           datasets: [data.id],
-          retain: [
-            'level0Cells',
-            'level0Counts',
-            'level2Cells',
-            'level2Counts',
-            'levelCounts',
-            'finestBoundaries',
-            'finestBoundariesCenters',
-            'boundaries',
-            'boundariesCenters'
-          ],
           keySpaces: [
             {id: 'cell', label: 'zoom-16 cell', size: coarsestCapacity, indexSpace: '1d'},
             {id: 'finestCell', label: 'zoom-18 cell', size: finestCapacity, indexSpace: '1d'},

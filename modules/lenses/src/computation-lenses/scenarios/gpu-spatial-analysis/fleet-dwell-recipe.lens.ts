@@ -52,17 +52,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.fleet-dwell-recipe',
           element: 'addFleetDwellRecipe',
           datasets: ['s3-ny-harbor-ais', 's3-ny-harbor-zones'],
-          retain: [
-            'stopTracks',
-            'stopCentroids',
-            'stopDurations',
-            'stopCount',
-            'stopOverflow',
-            'stopZones',
-            'zoneStopCounts',
-            'zoneDwell',
-            'zoneLongestDwell'
-          ],
           keySpaces,
           choices: {stopSpeedThreshold: 0.5, stopMinimumDuration: 300},
           async build(graph, uploads) {

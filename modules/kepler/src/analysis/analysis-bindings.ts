@@ -4,11 +4,11 @@
 
 import {
   createTransientView,
-  getGraphVectorData,
   GraphVectorView,
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {getKeplerVectorChunks} from '../aggregation/kepler-vector-chunks';
 import {
   GPUClassBreaks,
   GPUVariableStandardization,
@@ -152,7 +152,7 @@ function createOutputColumn<Parameters>(
 ): GPUVariableStandardizationProps['output'] {
   if (!(input instanceof GraphVectorView))
     return createTransientView(graph, id, 'float32', input.length);
-  const data: GraphDataView<'float32'>[] = getGraphVectorData(input).map((chunk, index) =>
+  const data: GraphDataView<'float32'>[] = getKeplerVectorChunks(input).map((chunk, index) =>
     createTransientView(graph, `${id}-${index}`, 'float32', chunk.length)
   );
   return new GraphVectorView({

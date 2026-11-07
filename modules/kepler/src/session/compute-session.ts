@@ -6,13 +6,15 @@ import type {CommandEncoder, Device} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   makeGPUAnalyticsTableFromArrowTable,
+  type GPUAnalyticsTableFromArrowTableResult
+} from '@luma.gl/graph/arrow';
+import {
   makeGPUTimeVectorFromPreparedArrowColumn,
   prepareArrowTableForGPUAnalytics,
-  type GPUAnalyticsTableFromArrowTableResult,
   type GPUTimeVectorFromPreparedArrowColumn,
   type PreparedArrowAnalyticsTable,
   type PrepareArrowTableForGPUAnalyticsOptions
-} from '@luma.gl/graph/arrow';
+} from '@luma-contributors/analysis/analysis-core';
 import type {Data, Table} from 'apache-arrow';
 import {
   makeAdoptedArrowAnalytics,

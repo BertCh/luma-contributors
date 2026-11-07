@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area…",
   "description": "Formula Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area…",
-  "llms": "Formula Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area pixels). Equal heights count as high; flat or invalid-corner cells emit nothing; saddle pairing uses the asymptotic determinant with high-diagonal tie; counts clamp to capacity and overflow reports truncation.\n\n- bound symbols: 0/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area pixels). Equal heights count as high; flat or invalid-corner cells emit nothing; saddle pairing uses the asymptotic determinant with high-diagonal tie; counts clamp to capacity and overflow reports truncation.\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
     "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-contours.interpolation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{fraction}{u}=\\operatorname{clamp}\\!\\left(\\frac{\\term{level}{\\ell}-\\term{first}{h_a}}{\\term{second}{h_b}-\\term{first}{h_a}},0,1\\right),\\quad \\term{vertices}{p}=p_a+u(p_b-p_a)</pre><p class=\"lens-ascii\">Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area pixels). Equal heights count as high; flat or invalid-corner cells emit nothing; saddle pairing uses the asymptotic determinant with high-diagonal tie; counts clamp to capacity and overflow reports truncation.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"fraction\">u · intermediate · unknown — wgsl directNumerator not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"level\">level · parameter · unknown — wgsl contourLevel not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"first\">first height · input · unknown — wgsl first not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"second\">second height · input · unknown — wgsl second not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"vertices\">position · output · unknown — wgsl outputVertices not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-contours.interpolation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{fraction}{u}=\\operatorname{clamp}\\!\\left(\\frac{\\term{level}{\\ell}-\\term{first}{h_a}}{\\term{second}{h_b}-\\term{first}{h_a}},0,1\\right),\\quad \\term{vertices}{p}=p_a+u(p_b-p_a)</pre><p class=\"lens-ascii\">Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area pixels). Equal heights count as high; flat or invalid-corner cells emit nothing; saddle pairing uses the asymptotic determinant with high-diagonal tie; counts clamp to capacity and overflow reports truncation.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"fraction\">u · intermediate · unbound — no binding declared</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"level\">level · parameter · unbound — no binding declared</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"first\">first height · input · unbound — no binding declared</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"second\">second height · input · unbound — no binding declared</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"vertices\">position · output · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "u",
         "intermediate",
-        "unknown",
+        "unbound",
         "—",
         "metadata"
       ],
       [
         "level",
         "parameter",
-        "unknown",
+        "unbound",
         "—",
         "metadata"
       ],
       [
         "first height",
         "input",
-        "unknown",
+        "unbound",
         "—",
         "metadata"
       ],
       [
         "second height",
         "input",
-        "unknown",
+        "unbound",
         "—",
         "metadata"
       ],
       [
         "position",
         "output",
-        "unknown",
+        "unbound",
         "—",
         "metadata"
       ]
@@ -77,14 +77,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:10.332Z",
-    "runId": "run-c8d14304",
+    "date": "2026-11-07T14:55:29.973Z",
+    "runId": "run-74962407",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-c8d14304",
+    "runId": "run-74962407",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

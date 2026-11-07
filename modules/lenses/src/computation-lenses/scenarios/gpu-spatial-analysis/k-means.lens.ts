@@ -25,15 +25,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.k-means',
           element: 'GPUKMeans',
           datasets: ['s2-chicago-north-nature'],
-          retain: [
-            'labels',
-            'centers',
-            'sizes',
-            'squaredDistances',
-            'inertia',
-            'iterationCount',
-            'converged'
-          ],
           seed: 3,
           keySpaces: [
             {id: 'observation', label: 'observation', size: points.count, indexSpace: '1d'},

@@ -37,7 +37,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellMeasures',
           datasets: [data.id],
-          retain: ['areas', 'perimeters', 'pentagons', 'boundaries', 'boundariesCenters'],
           keySpaces: [
             {id: 'cell', label: 'cell (one per place)', size: cellCount, indexSpace: '1d'},
             {

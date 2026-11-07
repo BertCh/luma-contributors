@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces.",
   "description": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces. rows: 48. values read back from the GPU run. input patchLabels: 4096 cells.",
-  "llms": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces\n\n- rows: 48\n- input patchLabels: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 45 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces\n\n- rows: 48\n- input patchLabels: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 45 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "48"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:48.685Z",
-    "runId": "run-31742123",
+    "date": "2026-11-07T14:55:17.891Z",
+    "runId": "run-1f2baf8f",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-31742123",
+    "runId": "run-1f2baf8f",
     "rung": "result",
     "bindings": {},
     "clauses": [],

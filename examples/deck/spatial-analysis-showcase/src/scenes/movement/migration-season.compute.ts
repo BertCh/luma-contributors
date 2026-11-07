@@ -4,7 +4,11 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  GPUTimeWindowFilter
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUTrajectoryPlayheadParameterValues,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,

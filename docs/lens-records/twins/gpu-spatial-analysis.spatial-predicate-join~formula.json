@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.spatial-predicate-join",
   "viewId": "formula-card",
-  "caption": "Formula intersects iff at least one interior/interior, interior/boundary, boundary/interior, boundary/boundary DE-9IM cell is nonempty (T******** OR *T******* OR ***T***** OR ****T****). bound symbols: 2/2. structure metadata only.",
-  "description": "Formula intersects iff at least one interior/interior, interior/boundary, boundary/interior, boundary/boundary DE-9IM cell is nonempty (T******** OR *T******* OR ***T***** OR ****T****). bound symbols: 2/2. structure metadata only.",
-  "llms": "Formula intersects iff at least one interior/interior, interior/boundary, boundary/interior, boundary/boundary DE-9IM cell is nonempty (T******** OR *T******* OR ***T***** OR ****T****).\n\n- bound symbols: 2/2\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula intersects iff at least one interior/interior, interior/boundary, boundary/interior, boundary/boundary DE-9IM cell is nonempty (T******** OR *T******* OR ***T***** OR ****T****). bound symbols: 0/2. structure metadata only.",
+  "description": "Formula intersects iff at least one interior/interior, interior/boundary, boundary/interior, boundary/boundary DE-9IM cell is nonempty (T******** OR *T******* OR ***T***** OR ****T****). bound symbols: 0/2. structure metadata only.",
+  "llms": "Formula intersects iff at least one interior/interior, interior/boundary, boundary/interior, boundary/boundary DE-9IM cell is nonempty (T******** OR *T******* OR ***T***** OR ****T****).\n\n- bound symbols: 0/2\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/2"
+    "value": "0/2"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.spatial-predicate-join</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hit}{\\operatorname{intersects}} = [\\term{matrix}{M_{II}}\\ne F\\;\\lor\\;\\term{matrix}{M_{IB}}\\ne F\\;\\lor\\;\\term{matrix}{M_{BI}}\\ne F\\;\\lor\\;\\term{matrix}{M_{BB}}\\ne F]</pre><p class=\"lens-ascii\">intersects iff at least one interior/interior, interior/boundary, boundary/interior, boundary/boundary DE-9IM cell is nonempty (T******** OR *T******* OR ***T***** OR ****T****).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-predicate-join-compiled:spatial-predicate-join-mask\" data-value=\"hit\">intersects · output · relateMatches</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-predicate-join-compiled:spatial-predicate-join-mask\" data-value=\"matrix\">DE-9IM cell · intermediate · m</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-predicate-join-compiled:spatial-predicate-join-mask\">spatial-predicate-join-mask</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.spatial-predicate-join</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hit}{\\operatorname{intersects}} = [\\term{matrix}{M_{II}}\\ne F\\;\\lor\\;\\term{matrix}{M_{IB}}\\ne F\\;\\lor\\;\\term{matrix}{M_{BI}}\\ne F\\;\\lor\\;\\term{matrix}{M_{BB}}\\ne F]</pre><p class=\"lens-ascii\">intersects iff at least one interior/interior, interior/boundary, boundary/interior, boundary/boundary DE-9IM cell is nonempty (T******** OR *T******* OR ***T***** OR ****T****).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"hit\">intersects · output · unknown — wgsl relateMatches not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"matrix\">DE-9IM cell · intermediate · unknown — wgsl m not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,14 +29,14 @@
       [
         "intersects",
         "output",
-        "relateMatches",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "DE-9IM cell",
         "intermediate",
-        "m",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -66,12 +66,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:01.435Z",
-    "runId": "run-7a111d3e",
+    "date": "2026-11-07T14:55:28.431Z",
+    "runId": "run-ef3523d1",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-7a111d3e",
+    "runId": "run-ef3523d1",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

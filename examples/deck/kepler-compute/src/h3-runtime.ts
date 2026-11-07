@@ -4,8 +4,24 @@
 
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {GPUData, GPUVector, getGPUVectorFormatInfo, type GPUVectorFormat, type VertexList} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, GraphVectorView, GPUGather, GPUMask, createTransientView, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUData,
+  GPUVector,
+  getGPUVectorFormatInfo,
+  type GPUVectorFormat,
+  type VertexList
+} from '@luma.gl/graph/gpu-data';
+import {
+  GPUCommandGraph,
+  GraphVectorView,
+  GPUGather,
+  GPUMask,
+  createTransientView,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   prepareGeometrySource,
   makeGeometryGPUVectors,

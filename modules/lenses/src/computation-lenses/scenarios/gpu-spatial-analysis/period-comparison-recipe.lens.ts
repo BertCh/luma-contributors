@@ -38,7 +38,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.period-comparison-recipe',
           element: 'addPeriodComparisonRecipe',
           datasets: ['s2-chicago-north-nature'],
-          retain: ['delta', 'zScore', 'classIndices', 'colors', 'count', 'overflow'],
           keySpaces: [
             {id: 'cell', label: 'union cell row', size: 2048, indexSpace: '1d'},
             {id: 'spring', label: 'spring observation', size: spring.length / 2, indexSpace: '1d'},

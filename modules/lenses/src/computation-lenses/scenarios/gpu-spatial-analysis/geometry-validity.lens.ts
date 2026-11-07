@@ -28,7 +28,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.geometry-validity',
           element: 'GPUGeometryValidity',
           datasets: ['s2-chicago-north-parks'],
-          retain: ['mask', 'overflow', 'intersectionCount'],
           keySpaces,
           choices: {orientation: 'ignore', ringClosure: 'implicit', intersectionCapacity: 4096},
           async build(graph, uploads) {

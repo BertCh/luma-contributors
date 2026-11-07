@@ -5,9 +5,10 @@
 import {expect, test} from 'vitest';
 import * as spatialAnalysis from '@luma-contributors/analysis/gpu-spatial-analysis';
 import * as network from '@luma-contributors/analysis/gpu-network';
-import * as geometryContributors from '@luma.gl/graph/gpu-geometry';
-import * as dataframeContributors from '@luma.gl/graph/gpu-dataframe';
-import * as rasterContributors from '@luma.gl/graph/gpu-raster';
+import * as geometryContributors from '@luma-contributors/analysis/geospatial-analysis';
+import * as dataframeContributors from '@luma-contributors/analysis/dataframe-analysis';
+import * as rasterContributors from '@luma-contributors/analysis/raster-analysis';
+import * as publishedRasterContributors from '@luma.gl/graph/gpu-raster';
 import {
   KEPLER_CATALOG_BINDINGS,
   getCatalogBinding,
@@ -446,12 +447,15 @@ test('every GPU contributor a binding names exists as an export of the graph pac
     ...spatialAnalysis,
     ...network,
     ...geometryContributors,
+    ...publishedRasterContributors,
     ...rasterContributors,
     ...dataframeContributors
   } as Record<string, unknown>;
+  const missing: string[] = [];
   for (const binding of KEPLER_CATALOG_BINDINGS)
     for (const name of binding.gpuContributorNames)
-      expect(typeof exports[name], `${binding.id} dispatches ${name}`).toBe('function');
+      if (typeof exports[name] !== 'function') missing.push(`${binding.id}:${name}`);
+  expect(missing).toEqual([]);
 });
 
 test('bindings declare their engine honestly and GPU-only operations carry no CPU engine', () => {

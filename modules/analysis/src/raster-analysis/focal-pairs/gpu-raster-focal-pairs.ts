@@ -11,10 +11,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {validateRasterBand} from '@luma.gl/graph/gpu-raster';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
+  validateRasterBand,
   validateRasterBandBelongsToGraph,
   validateRasterBuffersDistinct,
   validateRasterGrid

@@ -33,18 +33,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUTrajectoryMetrics',
           datasets: [data.id],
-          retain: [
-            'trackLengths',
-            'trackDurations',
-            'averageSpeeds',
-            'maximumSpeeds',
-            'trackStopCounts',
-            'stopTracks',
-            'stopCount',
-            'stopOverflow',
-            'stopCentroids',
-            'stopDurations'
-          ],
           keySpaces: [
             {id: 'track', label: 'vessel track', size: data.trackCount, indexSpace: '1d'},
             {id: 'fix', label: 'AIS fix', size: data.timestamps.length, indexSpace: '1d'},

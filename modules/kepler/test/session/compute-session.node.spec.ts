@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {prepareArrowTableForGPUAnalytics} from '@luma.gl/graph/arrow';
+import {prepareArrowTableForGPUAnalytics} from '@luma-contributors/analysis/analysis-core';
 import {NullDevice} from '@luma.gl/core/test-utils';
 import * as arrow from 'apache-arrow';
 import {expect, test, vi} from 'vitest';

@@ -7,7 +7,7 @@ for the rate-cluster map recipe.
 Writes fixtures/statistics-rate-cluster-recipe.json next to this script, consumed (through
 test/gpu-spatial-analysis/recipes/rate-cluster-esda-reference.ts) by rate-cluster-map-recipe.spec.ts.
 Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-rate-cluster-recipe.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-rate-cluster-recipe.py
 in a venv with numpy, esda, libpysal and statsmodels (versions are recorded in the fixture).
 
 Scenes:

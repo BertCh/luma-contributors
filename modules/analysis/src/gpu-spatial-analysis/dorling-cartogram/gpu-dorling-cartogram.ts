@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  GPU_GRID_COORDINATE_WGSL,
   GPUGridIndex,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -28,6 +27,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createTiledWGSLKernelNodes} from '../../analysis-core/kernels/wgsl-kernel-tiles';
+import {BIN_INDEX_WGSL} from '../shared/bin-index-wgsl';
 import {GET_SPATIAL_NAN_WGSL, IS_SPATIAL_FINITE_WGSL} from '../shared/spatial-wgsl-point-helpers';
 
 const REDUCTION_WORKGROUP_SIZE = 256;
@@ -296,6 +296,9 @@ if (lane == 0u) {
     const gridBounds = neighborGrid
       ? createTransientView(graph, `${id}-grid-bounds`, 'float32', 4)
       : undefined;
+    const gridUnitPositions = neighborGrid
+      ? createTransientView(graph, `${id}-grid-unit-positions`, 'float32x2', Math.max(rows, 1))
+      : undefined;
     const gridCellOffsets = neighborGrid
       ? createTransientView(graph, `${id}-grid-cell-offsets`, 'uint32', gridCellCount + 1)
       : undefined;
@@ -310,9 +313,9 @@ if (lane == 0u) {
       : undefined;
     const gridDeclarations = `${declarations}
 const GRID_SIDE: u32 = ${gridSide}u;
-${GPU_GRID_COORDINATE_WGSL}
+${BIN_INDEX_WGSL}
 fn getGridCell(value: f32, minimum: f32, maximum: f32) -> u32 {
-  return getGridCoordinate(clamp(value, minimum, maximum), minimum, maximum, GRID_SIDE);
+  return getBinIndex(value, minimum, maximum, GRID_SIDE);
 }`;
     const gridBindings: WGSLKernelBinding[] = neighborGrid
       ? [
@@ -383,12 +386,32 @@ if (lane == 0u) {
   gridBounds[gridBoundsOffset + 2u] = high.x; gridBounds[gridBoundsOffset + 3u] = high.y;
 }`
         }),
+        // The published grid index takes a literal [0, 1] domain, so centers are normalized by the
+        // data-dependent bounds first; NaN centers stay NaN and are ignored by the index.
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-grid-unit-positions-${step}`,
+          operation: 'GPUDorlingCartogram',
+          variant: 'grid-unit-positions',
+          invocationCount: rows,
+          declarations,
+          bindings: [
+            {name: 'centers', view: centers, type: 'f32', access: 'read'},
+            {name: 'gridBounds', view: gridBounds!, type: 'f32', access: 'read'},
+            {name: 'gridUnitPositions', view: gridUnitPositions!, type: 'f32', access: 'read_write'}
+          ],
+          body: `let minimum = vec2f(gridBounds[gridBoundsOffset], gridBounds[gridBoundsOffset + 1u]);
+  let maximum = vec2f(gridBounds[gridBoundsOffset + 2u], gridBounds[gridBoundsOffset + 3u]);
+  let center = vec2f(centers[centersOffset + index * 2u], centers[centersOffset + index * 2u + 1u]);
+  let size = maximum - minimum;
+  let unit = select((center - minimum) / size, vec2f(0.0) * center, size <= vec2f(0.0));
+  gridUnitPositions[gridUnitPositionsOffset + index * 2u] = unit.x;
+  gridUnitPositions[gridUnitPositionsOffset + index * 2u + 1u] = unit.y;`
+        }),
         ...new GPUGridIndex({
           id: `${id}-grid-index-${step}`,
-          positions: centers,
+          positions: gridUnitPositions!,
           gridSize: [gridSide, gridSide],
           bounds: [0, 0, 1, 1],
-          boundsBuffer: gridBounds!,
           cellOffsets: gridCellOffsets!,
           objectIds: gridObjectIds!,
           count: gridCount!,

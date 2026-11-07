@@ -20,8 +20,6 @@ const elements = [
   'addPatchProximityRecipe',
   'addResistanceConnectivityRecipe',
   'addSegregationDecompositionRecipe',
-  'addSparseResistanceConnectivityRecipe',
-  'addRasterResistanceConnectivityRecipe',
   'addSegregationCounterfactualRecipe',
   'addPopulationSupportAlignmentRecipe'
 ];
@@ -50,14 +48,6 @@ for (const element of elements)
       );
     };
     switch (element) {
-      case 'addSparseResistanceConnectivityRecipe':
-        expect(read('status')[0]).toBe(1);
-        expect(read('output-diagnostics')[0]).toBeCloseTo(2 / 3, 4);
-        break;
-      case 'addRasterResistanceConnectivityRecipe':
-        expect(read('status')[0]).toBe(1);
-        expect(read('output-diagnostics')[0]).toBeCloseTo(2, 4);
-        break;
       case 'addSegregationCounterfactualRecipe':
         expect(read('output-decomposition')[0]).toBeCloseTo(-0.8, 4);
         expect(read('output-decomposition')[3]).toBeCloseTo(0, 5);

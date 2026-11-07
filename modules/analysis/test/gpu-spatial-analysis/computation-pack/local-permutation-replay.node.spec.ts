@@ -83,10 +83,9 @@ describe('GPULocalPermutationReplay', () => {
     }
   });
 
-  it('requires a recording graph and a lowered test', () => {
+  it('requires a lowered test', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const test = createReplayTest(graph);
-    test.getCommandNodes(graph);
     const replay = new GPULocalPermutationReplay({
       test,
       row: createTransientView(graph, 'row', 'uint32', 1),

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.polygon-rasterization: perimeterPositions → polygonZones.",
   "description": "Result of gpu-raster.polygon-rasterization: perimeterPositions → polygonZones. cells: 4,096. values read back from the GPU run. input perimeterPositions: 3 polygons.",
-  "llms": "Result of gpu-raster.polygon-rasterization: perimeterPositions → polygonZones\n\n- cells: 4,096\n- input perimeterPositions: 3 polygons\n- Planar coordinates (m); uniform scale.\n- 64 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 120 m\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.polygon-rasterization: perimeterPositions → polygonZones\n\n- cells: 4,096\n- input perimeterPositions: 3 polygons\n- Planar coordinates (m); uniform scale.\n- 64 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 120 m\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "4,096"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:48.079Z",
-    "runId": "run-5ad30eb1",
+    "date": "2026-11-07T14:55:17.581Z",
+    "runId": "run-59aba619",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-5ad30eb1",
+    "runId": "run-59aba619",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -1992,7 +1992,7 @@
   }
  ],
  "provenance": {
-  "generator": "modules/graph/test/oracles/geometry-cleanup.py",
+  "generator": "modules/analysis/test/oracles/geometry-cleanup.py",
   "shapely": "2.2.0",
   "numpy": "2.5.4",
   "tolerance": {

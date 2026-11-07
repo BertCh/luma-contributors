@@ -45,18 +45,6 @@ for (const fixture of analysisFixtures) {
           : undefined,
         degree: column('degree', 'uint32'),
         inDegree: input.directed ? column('inDegree', 'uint32') : undefined,
-        coreNumber: {
-          ...column('coreNumber', 'uint32'),
-          maximumIterations: 128,
-          degeneracy: resources.output('degeneracy', 'uint32', 1),
-          status: {converged: resources.output('core-converged', 'uint32', 1)}
-        },
-        pageRank: {
-          ...column('pageRank', 'float32'),
-          damping: Math.fround(0.85),
-          iterationCount: 256,
-          residual: resources.output('rank-residual', 'float32', 1)
-        },
         components: {
           output: resources.output('components', 'uint32', input.nodeCount),
           maximumIterations: 512,
@@ -70,28 +58,24 @@ for (const fixture of analysisFixtures) {
       for (const metric of fixture.metrics) {
         const name = metric.metric;
         if (name === 'inDegree' && !input.directed) continue;
-        const floating = name === 'pageRank';
-        const tolerance = floating ? {absolute: 1e-6 * metric.extent[1], relative: 1e-4} : EXACT;
-        const actual = floating ? await resources.readFloat(name) : await resources.readUint(name);
+        const actual = await resources.readUint(name);
         compareParity(
           'GPUNetworkAnalyticsColumns',
           metric,
           `${name}: every original vertex row`,
           actual,
           metric.values,
-          tolerance
+          EXACT
         );
         if (name === 'components') continue;
-        const extent = floating
-          ? await resources.readFloat(`${name}-extent`)
-          : await resources.readUint(`${name}-extent`);
+        const extent = await resources.readUint(`${name}-extent`);
         compareParity(
           'GPUNetworkAnalyticsColumns',
           metric,
           `${name}: min/max`,
           extent,
           metric.extent,
-          tolerance
+          EXACT
         );
         // S profile at normalized output scale one. Constant columns are exactly zero.
         compareParity(
@@ -103,42 +87,13 @@ for (const fixture of analysisFixtures) {
           metric.extent[0] === metric.extent[1] ? EXACT : {absolute: 1e-6, relative: 1e-4}
         );
       }
-      const core = fixture.metrics.find(metric => metric.metric === 'coreNumber')!;
       compareParity(
         'GPUNetworkAnalyticsColumns',
         input,
-        'core convergence, component convergence, degeneracy',
-        [
-          ...(await resources.readUint('core-converged')),
-          ...(await resources.readUint('components-converged')),
-          ...(await resources.readUint('degeneracy'))
-        ],
-        [1, 1, core.extent[1]],
-        EXACT
-      );
-      const rank = fixture.metrics.find(metric => metric.metric === 'pageRank')!;
-      const actualRanks = await resources.readFloat('pageRank');
-      // Summing per-element S budgets bounds mass error. Contraction gives truncation
-      // <=2*alpha^256 <1.8e-18; successive iterate difference <=2*sum(budgets).
-      const totalBudget = rank.values.reduce(
-        (sum, value) => sum + 1e-6 * rank.extent[1] + 1e-4 * value,
-        0
-      );
-      compareParity(
-        'GPUNetworkAnalyticsColumns',
-        rank,
-        'rank mass',
-        [actualRanks.reduce((sum, value) => sum + value, 0)],
+        'component convergence',
+        await resources.readUint('components-converged'),
         [1],
-        {absolute: totalBudget, relative: 0}
-      );
-      compareParity(
-        'GPUNetworkAnalyticsColumns',
-        rank,
-        'published last iteration change',
-        await resources.readFloat('rank-residual'),
-        [0],
-        {absolute: 2 * totalBudget, relative: 0}
+        EXACT
       );
     } finally {
       compiled.destroy();

@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.nearest-feature-join",
   "viewId": "datum-receipt",
-  "caption": "Receipt of observation 0. neighborCounts: 1. values read back from the GPU run. nearest-feature-join: 5 quantities.",
-  "description": "Receipt of observation 0. neighborCounts: 1. values read back from the GPU run. nearest-feature-join: 5 quantities.",
-  "llms": "Receipt of observation 0\n\n- neighborCounts: 1\n- nearest-feature-join: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of observation 0. neighborCounts: 1. values read back from the GPU run. result: 5 quantities.",
+  "description": "Receipt of observation 0. neighborCounts: 1. values read back from the GPU run. result: 5 quantities.",
+  "llms": "Receipt of observation 0\n\n- neighborCounts: 1\n- result: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "neighborCounts",
     "value": "1"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"nearest-feature-join\"><tr><th scope=\"rowgroup\" colspan=\"5\">nearest-feature-join</th></tr><tr data-provenance=\"readback\"><td>nearest-feature-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-observations-0\">observations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>nearest-feature-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-resultObservations-0\">resultObservations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>nearest-feature-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-neighborIds-0\">neighborIds</button></td><td>13</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>nearest-feature-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-neighborDistances-0\">neighborDistances</button></td><td>1816.902587890625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>nearest-feature-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-neighborCounts-0\">neighborCounts</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-observations-0\" title=\"gpu-spatial-analysis-nearest-feature-join-snapshot-tap\">observations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-resultObservations-0\" title=\"gpu-spatial-analysis-nearest-feature-join-snapshot-tap\">resultObservations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-neighborIds-0\" title=\"gpu-spatial-analysis-nearest-feature-join-snapshot-tap\">neighborIds</button></td><td>13</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-neighborDistances-0\" title=\"gpu-spatial-analysis-nearest-feature-join-snapshot-tap\">neighborDistances</button></td><td>1816.902587890625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-join-snapshots-neighborCounts-0\" title=\"gpu-spatial-analysis-nearest-feature-join-snapshot-tap\">neighborCounts</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,35 +28,35 @@
     ],
     "rows": [
       [
-        "nearest-feature-join",
+        "result",
         "observations",
         "4595.29931640625, 597.4959106445312",
         "0",
         "readback"
       ],
       [
-        "nearest-feature-join",
+        "result",
         "resultObservations",
         "4595.29931640625, 597.4959106445312",
         "0",
         "readback"
       ],
       [
-        "nearest-feature-join",
+        "result",
         "neighborIds",
         "13",
         "0",
         "readback"
       ],
       [
-        "nearest-feature-join",
+        "result",
         "neighborDistances",
         "1816.902587890625",
         "0",
         "readback"
       ],
       [
-        "nearest-feature-join",
+        "result",
         "neighborCounts",
         "1",
         "0",
@@ -86,12 +86,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:35.669Z",
-    "runId": "run-3d82c73e",
+    "date": "2026-11-07T14:55:24.862Z",
+    "runId": "run-4a03051e",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-3d82c73e",
+    "runId": "run-4a03051e",
     "rung": "datum",
     "bindings": {
       "entity": 0

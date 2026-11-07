@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula x_0 is the output pixel centre; x_s for s = 1..L follows the normalised field forward and for s = -1..-L backward, each step an RK2 midpoint step of stepLength output pixels along sign * v / |v|, with v bilinearly sampled from the field. A d…",
   "description": "Formula x_0 is the output pixel centre; x_s for s = 1..L follows the normalised field forward and for s = -1..-L backward, each step an RK2 midpoint step of stepLength output pixels along sign * v / |v|, with v bilinearly sampled from the field. A d…",
-  "llms": "Formula x_0 is the output pixel centre; x_s for s = 1..L follows the normalised field forward and for s = -1..-L backward, each step an RK2 midpoint step of stepLength output pixels along sign * v / |v|, with v bilinearly sampled from the field. A direction stops early at the field or output edge, NaN data, or speed zero or below minimumSpeed; only visited pixels join both sums. The noise N is white noise per output pixel, Philox keyed (seed, column, row). With period > 0 the window is multiplied by 0.5 * (1 + cos(2 pi (s / period - phase))); this run is static (period 0). A pixel whose centre has no field data is NaN. Direction is taken in the field space, so a lon/lat field with a lon/lat output step follows streamlines in degrees.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula x_0 is the output pixel centre; x_s for s = 1..L follows the normalised field forward and for s = -1..-L backward, each step an RK2 midpoint step of stepLength output pixels along sign * v / |v|, with v bilinearly sampled from the field. A direction stops early at the field or output edge, NaN data, or speed zero or below minimumSpeed; only visited pixels join both sums. The noise N is white noise per output pixel, Philox keyed (seed, column, row). With period > 0 the window is multiplied by 0.5 * (1 + cos(2 pi (s / period - phase))); this run is static (period 0). A pixel whose centre has no field data is NaN. Direction is taken in the field space, so a lon/lat field with a lon/lat output step follows streamlines in degrees.\n\n- bound symbols: 0/4\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "4/4"
+    "value": "0/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.line-integral-convolution.hann</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{value}{I}=\\frac{\\sum_{s=-L}^{L}\\term{window}{w_s}\\,\\term{noise}{N}(x_s)}{\\sum_{s=-L}^{L}w_s},\\quad w_s=\\tfrac12\\Bigl(1+\\cos\\frac{\\pi s}{\\term{stepCount}{L}+1}\\Bigr)</pre><p class=\"lens-ascii\">x_0 is the output pixel centre; x_s for s = 1..L follows the normalised field forward and for s = -1..-L backward, each step an RK2 midpoint step of stepLength output pixels along sign * v / |v|, with v bilinearly sampled from the field. A direction stops early at the field or output edge, NaN data, or speed zero or below minimumSpeed; only visited pixels join both sums. The noise N is white noise per output pixel, Philox keyed (seed, column, row). With period &gt; 0 the window is multiplied by 0.5 * (1 + cos(2 pi (s / period - phase))); this run is static (period 0). A pixel whose centre has no field data is NaN. Direction is taken in the field space, so a lon/lat field with a lon/lat output step follows streamlines in degrees.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-line-integral-convolution-compiled:line-integral-convolution-convolve\" data-value=\"value\">LIC value · output · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-line-integral-convolution-compiled:line-integral-convolution-convolve\" data-value=\"window\">weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-line-integral-convolution-compiled:line-integral-convolution-noise\" data-value=\"noise\">white noise · input · noise</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-line-integral-convolution-compiled:line-integral-convolution-convolve\" data-value=\"stepCount\">steps per direction · parameter · STEP_COUNT</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.line-integral-convolution.hann</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{value}{I}=\\frac{\\sum_{s=-L}^{L}\\term{window}{w_s}\\,\\term{noise}{N}(x_s)}{\\sum_{s=-L}^{L}w_s},\\quad w_s=\\tfrac12\\Bigl(1+\\cos\\frac{\\pi s}{\\term{stepCount}{L}+1}\\Bigr)</pre><p class=\"lens-ascii\">x_0 is the output pixel centre; x_s for s = 1..L follows the normalised field forward and for s = -1..-L backward, each step an RK2 midpoint step of stepLength output pixels along sign * v / |v|, with v bilinearly sampled from the field. A direction stops early at the field or output edge, NaN data, or speed zero or below minimumSpeed; only visited pixels join both sums. The noise N is white noise per output pixel, Philox keyed (seed, column, row). With period &gt; 0 the window is multiplied by 0.5 * (1 + cos(2 pi (s / period - phase))); this run is static (period 0). A pixel whose centre has no field data is NaN. Direction is taken in the field space, so a lon/lat field with a lon/lat output step follows streamlines in degrees.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"value\">LIC value · output · unknown — wgsl values not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"window\">weight · intermediate · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"noise\">white noise · input · unknown — wgsl noise not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"stepCount\">steps per direction · parameter · unknown — wgsl STEP_COUNT not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,28 +29,28 @@
       [
         "LIC value",
         "output",
-        "values",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "weight",
         "intermediate",
-        "weight",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "white noise",
         "input",
-        "noise",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "steps per direction",
         "parameter",
-        "STEP_COUNT",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -69,14 +69,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:47.946Z",
-    "runId": "run-69769756",
+    "date": "2026-11-07T14:55:17.547Z",
+    "runId": "run-50b9b918",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-69769756",
+    "runId": "run-50b9b918",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

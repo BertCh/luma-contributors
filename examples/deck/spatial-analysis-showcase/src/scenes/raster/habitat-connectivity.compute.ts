@@ -4,9 +4,21 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUElementwise, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPURasterConnectedComponents, GPURasterDenseComponents, GPURasterErosion} from '@luma.gl/graph/gpu-raster';
-import {GPURasterPatchMetrics, GPURasterWalkingCost, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPUElementwise,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPURasterConnectedComponents,
+  GPURasterDenseComponents,
+  GPURasterErosion
+} from '@luma.gl/graph/gpu-raster';
+import {
+  GPURasterPatchMetrics,
+  GPURasterWalkingCost,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {addRasterResistanceConnectivityRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   addLandscapeMetricsRecipe,

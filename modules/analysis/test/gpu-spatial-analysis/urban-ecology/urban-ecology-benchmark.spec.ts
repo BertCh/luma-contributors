@@ -6,7 +6,6 @@ import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {
-  addSparseResistanceConnectivityRecipe,
   addPatchProximityRecipe,
   addLandscapeMetricsRecipe
 } from '../../../src/gpu-spatial-analysis/landscape-ecology/index';
@@ -33,7 +32,6 @@ it.skipIf(!enabled)(
       })
     );
     for (const workload of [
-      ...[1026, 8194, 65538].map(size => ({kind: 'sparse-resistance', size})),
       ...[32, 128, 256].map(size => ({kind: 'patch-proximity', size})),
       ...[32, 128, 256].map(size => ({kind: 'landscape-metrics', size}))
     ]) {
@@ -43,28 +41,7 @@ it.skipIf(!enabled)(
         const start = performance.now();
         let inputBytes = 0;
         let source;
-        if (workload.kind === 'sparse-resistance') {
-          const count = workload.size;
-          const edges = new Uint32Array((count - 2) * 4);
-          const conductances = new Float32Array((count - 2) * 2).fill(2 / (count - 2));
-          for (let vertex = 1; vertex < count - 1; vertex++)
-            edges.set([0, vertex, vertex, count - 1], (vertex - 1) * 4);
-          inputBytes = edges.byteLength + conductances.byteLength;
-          source = addSparseResistanceConnectivityRecipe(fixture.graph, {
-            edges: fixture.input('edges', edges, 'uint32x2', edges.length / 2),
-            conductances: fixture.input(
-              'conductances',
-              conductances,
-              'float32',
-              conductances.length
-            ),
-            vertexCount: count,
-            source: 0,
-            sink: count - 1,
-            maximumIterations: 8,
-            tolerance: 1e-4
-          }).outputs.diagnostics;
-        } else if (workload.kind === 'landscape-metrics') {
+        if (workload.kind === 'landscape-metrics') {
           const side = workload.size;
           const labels = Uint32Array.from({length: side * side}, (_, cell) =>
             cell % side < side / 2 ? 0 : 1
@@ -154,10 +131,7 @@ it.skipIf(!enabled)(
         const readStart = performance.now();
         const certificate = await fixture.readFloat32(output, source.length * 4);
         const readbackMilliseconds = performance.now() - readStart;
-        if (workload.kind === 'sparse-resistance') {
-          expect(certificate[0]).toBeCloseTo(1, 3);
-          expect(certificate[1]).toBeLessThan(1e-4);
-        } else if (workload.kind === 'landscape-metrics') {
+        if (workload.kind === 'landscape-metrics') {
           const side = workload.size;
           const cells = (side * side) / 2;
           const squareSide = Math.floor(Math.sqrt(cells));

@@ -14,7 +14,7 @@
     "value": "55,678,548"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPURipley</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\frac{1}{\\max(\\term{circleFraction}{f_{ij}},1/\\term{weightCap}{100})},\\quad \\term{k}{\\widehat K(r)}=\\frac{\\term{area}{A}}{\\term{count}{n}(\\term{count}{n}-1)}\\sum_{\\text{ordered }i\\ne j}\\term{weight}{w_{ij}}\\mathbf{1}[\\term{pairDistance}{d_{ij}}\\leq\\term{radii}{r}],\\quad \\term{l}{L(r)}=\\sqrt{\\term{k}{\\widehat K(r)}/\\pi}</pre><p class=\"lens-ascii\">isotropic: w=min(1/circleFraction,100); K(r)=A*sum_{i!=j}(w_ij*1[d_ij&lt;=r])/(n*(n-1)); L=sqrt(K/pi); weights quantized at 2^17.</p></div><div class=\"lens-worked-example\"><h4>Entity 4</h4><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\frac{1}{\\max(\\term{circleFraction}{f_{ij}},1/\\term{weightCap}{100})},\\quad \\term{k}{55678548}=\\frac{\\term{area}{A}}{\\term{count}{n}(\\term{count}{n}-1)}\\sum_{\\text{ordered }i\\ne j}\\term{weight}{w_{ij}}\\mathbf{1}[\\term{pairDistance}{d_{ij}}\\leq\\term{radii}{1000}],\\quad \\term{l}{4209.87}=\\sqrt{\\term{k}{55678548}/\\pi}</pre><p class=\"lens-ascii\">isotropic: w=min(1/circleFraction,100); K(r)=A*sum_{i!=j}(w_ij*1[d_ij&lt;=r])/(n*(n-1)); L=sqrt(K/pi); weights quantized at 2^17.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-histogram-pairs\" data-value=\"weight\">weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-histogram-pairs\" data-value=\"circleFraction\">circleFraction · intermediate · inside</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-histogram-pairs\" data-value=\"weightCap\">weightCap · constant · WEIGHT_CAP</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-finish\" data-value=\"k\">k · output · k<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-finish\" data-value=\"area\">area · intermediate · area</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-finish\" data-value=\"count\">count · intermediate · n</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-histogram-pairs\" data-value=\"pairDistance\">pairDistance · intermediate · pairDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-derive\" data-value=\"radii\">radii · output · radii<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-compiled:ripley-derive\" data-value=\"l\">l · output · l<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPURipley</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\frac{1}{\\max(\\term{circleFraction}{f_{ij}},1/\\term{weightCap}{100})},\\quad \\term{k}{\\widehat K(r)}=\\frac{\\term{area}{A}}{\\term{count}{n}(\\term{count}{n}-1)}\\sum_{\\text{ordered }i\\ne j}\\term{weight}{w_{ij}}\\mathbf{1}[\\term{pairDistance}{d_{ij}}\\leq\\term{radii}{r}],\\quad \\term{l}{L(r)}=\\sqrt{\\term{k}{\\widehat K(r)}/\\pi}</pre><p class=\"lens-ascii\">isotropic: w=min(1/circleFraction,100); K(r)=A*sum_{i!=j}(w_ij*1[d_ij&lt;=r])/(n*(n-1)); L=sqrt(K/pi); weights quantized at 2^17.</p></div><div class=\"lens-worked-example\"><h4>Entity 4</h4><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\frac{1}{\\max(\\term{circleFraction}{f_{ij}},1/\\term{weightCap}{100})},\\quad \\term{k}{55678548}=\\frac{\\term{area}{A}}{\\term{count}{n}(\\term{count}{n}-1)}\\sum_{\\text{ordered }i\\ne j}\\term{weight}{w_{ij}}\\mathbf{1}[\\term{pairDistance}{d_{ij}}\\leq\\term{radii}{1000}],\\quad \\term{l}{4209.87}=\\sqrt{\\term{k}{55678548}/\\pi}</pre><p class=\"lens-ascii\">isotropic: w=min(1/circleFraction,100); K(r)=A*sum_{i!=j}(w_ij*1[d_ij&lt;=r])/(n*(n-1)); L=sqrt(K/pi); weights quantized at 2^17.</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">weight · intermediate · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"circleFraction\">circleFraction · intermediate · unknown — wgsl inside not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weightCap\">weightCap · constant · unknown — wgsl WEIGHT_CAP not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"k\">k · output · unknown — wgsl k not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"area\">area · intermediate · unknown — wgsl area not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">count · intermediate · unknown — wgsl n not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pairDistance\">pairDistance · intermediate · unknown — wgsl pairDistance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"radii\">radii · output · unknown — wgsl radii not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"l\">l · output · unknown — wgsl l not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,63 +30,63 @@
       [
         "weight",
         "intermediate",
-        "weight",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "circleFraction",
         "intermediate",
-        "inside",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "weightCap",
         "constant",
-        "WEIGHT_CAP",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "k",
         "output",
-        "k",
+        "unknown",
         "55678548",
         "readback"
       ],
       [
         "area",
         "intermediate",
-        "area",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "count",
         "intermediate",
-        "n",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "pairDistance",
         "intermediate",
-        "pairDistance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "radii",
         "output",
-        "radii",
+        "unknown",
         "1000",
         "readback"
       ],
       [
         "l",
         "output",
-        "l",
+        "unknown",
         "4209.873046875",
         "readback"
       ]
@@ -123,12 +123,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:41.708Z",
-    "runId": "run-b3a8bce1",
+    "date": "2026-11-07T14:55:15.998Z",
+    "runId": "run-35dc08bb",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-b3a8bce1",
+    "runId": "run-35dc08bb",
     "rung": "formula",
     "bindings": {
       "entity": 4

@@ -46,6 +46,7 @@ for (const operator of ['viewshed', 'line-of-sight', 'cumulative-viewshed'] as c
       options: {
         heightReference?: GPUTerrainHeightReference;
         observerVerticalDatum?: string;
+        elevationVerticalDatum?: string;
         elevation?: typeof common.elevation;
       } = {}
     ) => {
@@ -76,16 +77,24 @@ for (const operator of ['viewshed', 'line-of-sight', 'cumulative-viewshed'] as c
           `${operator} observerVerticalDatum needs heightReference absolute`
         );
       }
-      const elevation = {...common.elevation, verticalDatum: 'EPSG:3855'};
+      const elevationVerticalDatum = 'EPSG:3855';
       expect(() =>
-        create({heightReference: 'absolute', observerVerticalDatum: 'ellipsoidal', elevation})
+        create({
+          heightReference: 'absolute',
+          observerVerticalDatum: 'ellipsoidal',
+          elevationVerticalDatum
+        })
       ).toThrow(
         `${operator} observer heights are ellipsoidal but elevation is EPSG:3855; convert to one vertical datum first`
       );
       expect(() =>
-        create({heightReference: 'absolute', observerVerticalDatum: ' epsg:3855 ', elevation})
+        create({
+          heightReference: 'absolute',
+          observerVerticalDatum: ' epsg:3855 ',
+          elevationVerticalDatum
+        })
       ).not.toThrow();
-      expect(() => create({heightReference: 'absolute', elevation})).not.toThrow();
+      expect(() => create({heightReference: 'absolute', elevationVerticalDatum})).not.toThrow();
       expect(() =>
         create({heightReference: 'absolute', observerVerticalDatum: 'ellipsoidal'})
       ).not.toThrow();

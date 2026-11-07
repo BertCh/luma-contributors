@@ -16,7 +16,13 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, GPUCOOToCSR, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  GPUCOOToCSR,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {
   GPU_NETWORK_REACHABILITY_NONE,
   GPUNetworkAnalyticsColumns,

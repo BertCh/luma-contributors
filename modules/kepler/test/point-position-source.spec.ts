@@ -5,7 +5,7 @@
 import * as arrow from 'apache-arrow';
 import {expect, test} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {prepareArrowTableForGPUAnalytics} from '@luma.gl/graph/arrow';
+import {prepareArrowTableForGPUAnalytics} from '@luma-contributors/analysis/analysis-core';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {

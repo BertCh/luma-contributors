@@ -8,7 +8,6 @@ import {
   GPUDatumGridTransform,
   GPU_DATUM_GRID_TRANSFORM_STATUS
 } from '../../src/geospatial-analysis/gpu-datum-grid-transform';
-import * as projectionExports from '@luma.gl/graph/gpu-project';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources
@@ -22,7 +21,6 @@ it('GPU_DATUM_GRID_TRANSFORM_STATUS exposes the documented status bits', () => {
     nodata: 4,
     inverseExhausted: 8
   });
-  expect(projectionExports.GPU_DATUM_GRID_TRANSFORM_STATUS).toBe(GPU_DATUM_GRID_TRANSFORM_STATUS);
 });
 
 it('GPUDatumGridTransform kernels write the named status values', () => {

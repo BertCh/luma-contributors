@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.fleet-dwell-zone-events-recipe: anchorages → dwe…",
   "description": "Result of gpu-spatial-analysis.fleet-dwell-zone-events-recipe: anchorages → dwellAnchorages. polygons: 13. values read back from the GPU run. input anchorages: 13 polygons.",
-  "llms": "Result of gpu-spatial-analysis.fleet-dwell-zone-events-recipe: anchorages → dwellAnchorages\n\n- polygons: 13\n- input anchorages: 13 polygons\n- Planar coordinates (m); uniform scale.\n- 771 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 88 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 88 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- transients fleet-dwell-zone-events-event-overflow allocated with COPY_SRC for observation\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.fleet-dwell-zone-events-recipe: anchorages → dwellAnchorages\n\n- polygons: 13\n- input anchorages: 13 polygons\n- Planar coordinates (m); uniform scale.\n- 771 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 88 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 88 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "13"
@@ -19,14 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:17.155Z",
-    "runId": "run-6730eef1",
-    "observerEffects": [
-      "transients fleet-dwell-zone-events-event-overflow allocated with COPY_SRC for observation"
-    ]
+    "date": "2026-11-07T14:55:21.395Z",
+    "runId": "run-eb2c6f8f",
+    "observerEffects": []
   },
   "state": {
-    "runId": "run-6730eef1",
+    "runId": "run-eb2c6f8f",
     "rung": "result",
     "bindings": {},
     "clauses": [],

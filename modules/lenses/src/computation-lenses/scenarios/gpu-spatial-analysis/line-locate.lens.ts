@@ -38,15 +38,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineLocate',
           datasets: [data.id, places.id],
-          retain: [
-            'footPoints',
-            'lineIndices',
-            'measures',
-            'distances',
-            'overflow',
-            'locatedPlaces',
-            'statuses'
-          ],
           keySpaces: [
             {id: 'place', label: 'place', size: placeCount, indexSpace: '1d'},
             {id: 'road', label: 'road', size: data.lineCount, indexSpace: '1d'},

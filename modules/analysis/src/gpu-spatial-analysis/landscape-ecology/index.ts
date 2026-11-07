@@ -11,11 +11,6 @@ export type {GPUResistanceConnectivityProps} from './resistance-connectivity';
 export {addSegregationDecompositionRecipe} from './segregation-decomposition';
 export type {GPUSegregationDecompositionProps} from './segregation-decomposition';
 export {
-  addSparseResistanceConnectivityRecipe,
-  addRasterResistanceConnectivityRecipe
-} from './sparse-resistance';
-export type {GPURasterResistanceProps} from './sparse-resistance';
-export {
   addSegregationCounterfactualRecipe,
   addPopulationSupportAlignmentRecipe
 } from './segregation-counterfactual';

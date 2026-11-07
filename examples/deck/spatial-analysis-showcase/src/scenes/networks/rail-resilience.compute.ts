@@ -11,7 +11,11 @@ import {
   GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,
   getGPUNetworkAccessibilityParameterValues
 } from '@luma-contributors/analysis/gpu-network';
-import {GPUCommandGraph, GPUElementwise, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUElementwise,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';

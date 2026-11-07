@@ -8,7 +8,7 @@
   "viewId": "buffer-strip",
   "caption": "Buffer licValues (12288 f32). max: 0.7971. values read back from the GPU run. min 0.20086416602134705.",
   "description": "Buffer licValues (12288 f32). max: 0.7971. values read back from the GPU run. min 0.20086416602134705.",
-  "llms": "Buffer licValues (12288 f32)\n\n- max: 0.7971\n- min 0.20086416602134705\n- \n- 0 NaN, 0 Inf\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Buffer licValues (12288 f32)\n\n- max: 0.7971\n- min 0.20086416602134705\n- \n- 0 NaN, 0 Inf\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max",
     "value": "0.7971"
@@ -20,14 +20,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:47.946Z",
-    "runId": "run-69769756",
+    "date": "2026-11-07T14:55:17.547Z",
+    "runId": "run-50b9b918",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-69769756",
+    "runId": "run-50b9b918",
     "rung": "datum",
     "bindings": {
       "entity": 6208

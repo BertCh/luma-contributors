@@ -27,8 +27,7 @@ defineLensScenario({
     const {width, height} = data;
     return {
       async run(device) {
-        const retained: string[] = [];
-        const graph = utilities.createSpatialRecordingGraph(device, SCENARIO_ID, retained);
+        const graph = utilities.createSpatialRecordingGraph(device, SCENARIO_ID);
         const elevation = utilities.uploadSpatialView(
           graph,
           'elevation',
@@ -40,7 +39,6 @@ defineLensScenario({
           const views = {elevation: elevation.view, ...execution.views};
           // Retain the example's transients by buffer id (capture names are not resource ids;
           // the uploaded elevation is imported, not transient).
-          retained.push(...utilities.getRetainedViewIds(execution.views));
           const raster = {
             kind: 'raster' as const,
             shape: [width, height] as const,

@@ -447,7 +447,14 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     const geodesic = spatialContext.coordinateSpace === 'longitude-latitude';
     // Sphere radius in the context's length unit.
     const sphereRadius = getGPUGreatCircleRadius(spatialContext);
-    const latticeWGSL = getNeighborSearchLatticeWGSL(mode, gridSize, sphereRadius);
+    const latticeWGSL = `${getNeighborSearchLatticeWGSL(mode, gridSize, sphereRadius)}
+// The published grid index takes a literal [0, 1] domain, so grid positions are normalized onto the
+// lattice extended to COLUMNS x ROWS whole cells.
+fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
+  let width = max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)) - lattice.minimumX;
+  let height = max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)) - lattice.minimumY;
+  return vec2f((x - lattice.minimumX) / width, (y - lattice.minimumY) / height);
+}`;
     const radiusLoop = geodesic ? getGeodesicRadiusNeighborLoopWGSL : getRadiusNeighborLoopWGSL;
     const crossJoin = Boolean(queryPositions);
     const queryBinding: WGSLKernelBinding[] = queryPositions
@@ -473,7 +480,6 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     // Grid-only scratch is one element when the grid is not used.
     const gridSized = (length: number) => (useGrid ? length : 1);
 
-    const gridBounds = createTransientView(graph, `${id}-grid-bounds`, 'float32', gridSized(4));
     const gridPositions = createTransientView(
       graph,
       `${id}-grid-positions`,
@@ -519,31 +525,6 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       : createTransientView(graph, `${id}-query-count`, 'uint32', 1);
 
     const nodes: GPUCommandNode<Parameters>[] = [
-      // The upstream grid index takes its domain from a buffer, so the per-frame lattice (cells at
-      // least `radius` wide in radius mode) becomes bounds extended to COLUMNS x ROWS whole cells.
-      ...(useGrid
-        ? [
-            createWGSLKernelNode<Parameters>(graph, {
-              id: `${id}-grid-bounds`,
-              operation: OPERATION,
-              variant: 'grid-bounds',
-              bindings: [
-                {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-                {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read_write'}
-              ],
-              invocationCount: 1,
-              declarations: latticeWGSL,
-              body: `let lattice = readLattice();
-  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  gridBounds[gridBoundsOffset] = select(invalid, lattice.minimumX, lattice.valid);
-  gridBounds[gridBoundsOffset + 1u] = select(invalid, lattice.minimumY, lattice.valid);
-  gridBounds[gridBoundsOffset + 2u] = select(invalid,
-    max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)), lattice.valid);
-  gridBounds[gridBoundsOffset + 3u] = select(invalid,
-    max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)), lattice.valid);`
-            })
-          ]
-        : []),
       // The grid index has no mask and its domain is wider than the valid extent, so excluded
       // targets become NaN points, which it ignores. The BVH build treats a NaN point as an empty
       // box, so this one array carries target validity (mask, finite, bounds) into both structures.
@@ -566,8 +547,9 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
   let y = positions[positionsOffset + index * 2u + 1u];
   let included = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y);
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, x, included);
-  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, y, included);`
+  ${useGrid ? 'let unit = getGridUnitPosition(lattice, x, y);' : 'let unit = vec2f(x, y);'}
+  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, unit.x, included);
+  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, unit.y, included);`
       }),
       // Buckets targets into the lattice: `cellOffsets` and `sortedRows` (target rows by cell, in
       // unspecified order within a cell; every consumer below is order independent or sorts).
@@ -577,7 +559,6 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
             positions: gridPositions,
             gridSize: [gridSize[0], gridSize[1]],
             bounds: [0, 0, 1, 1],
-            boundsBuffer: gridBounds,
             cellOffsets,
             objectIds: sortedRows,
             count: gridCount,
@@ -664,8 +645,9 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
   ${readQueryWGSL('index')}
   let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y);
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  queryGridPositions[queryGridPositionsOffset + index * 2u] = select(invalid, x, included);
-  queryGridPositions[queryGridPositionsOffset + index * 2u + 1u] = select(invalid, y, included);`
+  let unit = getGridUnitPosition(lattice, x, y);
+  queryGridPositions[queryGridPositionsOffset + index * 2u] = select(invalid, unit.x, included);
+  queryGridPositions[queryGridPositionsOffset + index * 2u + 1u] = select(invalid, unit.y, included);`
         }),
         // Only the cell order of the queries is used; the cell offsets are scratch.
         ...new GPUGridIndex({
@@ -673,7 +655,6 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
           positions: queryGridPositions,
           gridSize: [gridSize[0], gridSize[1]],
           bounds: [0, 0, 1, 1],
-          boundsBuffer: gridBounds,
           cellOffsets: createTransientView(
             graph,
             `${id}-query-cell-offsets`,

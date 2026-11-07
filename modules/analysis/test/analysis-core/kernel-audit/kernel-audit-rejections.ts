@@ -10,7 +10,6 @@ import {GEOMETRY_LINES_REJECTIONS} from './rejections-geometry-lines';
 import {NETWORK_REJECTIONS} from './rejections-network';
 import {POINTS_AND_REGIONS_REJECTIONS} from './rejections-points-and-regions';
 import {RASTER_REJECTIONS} from './rejections-raster';
-import {RASTER_OPERATIONS_REJECTIONS} from './rejections-raster-operations';
 import {STATISTICS_REJECTIONS} from './rejections-statistics';
 import {TERRAIN_REJECTIONS} from './rejections-terrain';
 
@@ -25,7 +24,6 @@ export type {KernelAuditRejection} from './kernel-audit-rejection-type';
 export const KERNEL_AUDIT_REJECTIONS: readonly KernelAuditRejection[] = [
   ...DATAFRAME_REJECTIONS,
   ...RASTER_REJECTIONS,
-  ...RASTER_OPERATIONS_REJECTIONS,
   ...TERRAIN_REJECTIONS,
   ...NETWORK_REJECTIONS,
   ...STATISTICS_REJECTIONS,

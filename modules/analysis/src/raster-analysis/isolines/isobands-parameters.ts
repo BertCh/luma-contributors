@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from '../raster-band-utils';
-import {getRasterLocalOrigin, validateRasterExtent} from '@luma.gl/graph/gpu-raster';
+import {
+  readRasterParameterOrigin,
+  validateParameterTarget,
+  validateRasterParameterExtent
+} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
 /** Number of float32 elements in a {@link GPUIsobands} parameter view. */
@@ -72,9 +75,9 @@ export function getGPUIsobandsParameterValues(
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
     throw new Error('getGPUIsobandsParameterValues grid width and height must be positive');
   }
-  validateRasterExtent('Isobands', settings.extent);
+  validateRasterParameterExtent('Isobands', settings.extent);
   const [minX, minY, maxX, maxY] = settings.extent;
-  const [originX, originY] = getRasterLocalOrigin('Isobands', settings.localOrigin);
+  const [originX, originY] = readRasterParameterOrigin('Isobands', settings.localOrigin);
   target[0] = settings.breakCount;
   target[1] = firstBand;
   target[2] = lastBand;

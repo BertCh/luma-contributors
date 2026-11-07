@@ -20,7 +20,12 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import {
   GPUCellLevelSelection,

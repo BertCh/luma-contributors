@@ -3,7 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import {GPUColumnProfile, GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT, GPUVariableStandardization} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  GPUColumnProfile,
+  GPU_COLUMN_PROFILE_STATISTIC,
+  GPU_COLUMN_PROFILE_STATISTIC_COUNT,
+  GPUVariableStandardization
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';

@@ -25,7 +25,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.hierarchical-density-clustering',
           element: 'GPUHierarchicalDensityClustering',
           datasets: ['s2-chicago-north-nature'],
-          retain: ['labels', 'coreDistances', 'clusterCount'],
           keySpaces: [
             {id: 'observation', label: 'observation', size: points.count, indexSpace: '1d'},
             {id: 'status', label: 'run status', size: 1, indexSpace: '1d'}

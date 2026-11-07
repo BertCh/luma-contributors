@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import {GPUColumnProfile, GPU_COLUMN_PROFILE_STATISTIC} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  GPUColumnProfile,
+  GPU_COLUMN_PROFILE_STATISTIC
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUSinusoidalProjection} from '@luma.gl/graph/geospatial';
 import {GraphSwap} from '../../engine/graph-swap';

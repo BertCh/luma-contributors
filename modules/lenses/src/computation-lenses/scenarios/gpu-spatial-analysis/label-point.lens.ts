@@ -29,7 +29,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULabelPoint',
           datasets: [data.id],
-          retain: ['labelPoints', 'inscribedRadii', 'degenerate'],
           keySpaces: [
             {id: 'park', label: 'park', size: data.featureCount, indexSpace: '1d'},
             {

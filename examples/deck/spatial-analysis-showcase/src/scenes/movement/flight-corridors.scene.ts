@@ -467,12 +467,12 @@ export default defineScene<FlightCorridorsOptions>({
       : [])
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUTrajectoryPlayhead, GPULineDensity,
   getGPUTrajectoryPlayheadParameterValues, getGPULineDensityParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
 
 // lngLat: float32x2 degrees, altitude: float32 metres, timestamps: float32 seconds, trackOffsets: uint32
 const playGraph = new GPUCommandGraph(device, {id: 'playhead'});

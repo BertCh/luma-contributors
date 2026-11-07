@@ -30,7 +30,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineMerge',
           datasets: [data.id],
-          retain: ['mergedRoads', 'chainOffsets', 'lineChains', 'count'],
           keySpaces: [
             {id: 'road', label: 'road', size: data.lineCount, indexSpace: '1d'},
             {

@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.isobands: isobandsElevation → isobandsTriangles. polygons: 5,000. values read back from the GPU run. input isobandsElevation: 4096 cells.",
   "description": "Result of gpu-raster.isobands: isobandsElevation → isobandsTriangles. polygons: 5,000. values read back from the GPU run. input isobandsElevation: 4096 cells.",
-  "llms": "Result of gpu-raster.isobands: isobandsElevation → isobandsTriangles\n\n- polygons: 5,000\n- input isobandsElevation: 4096 cells\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 15000 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.isobands: isobandsElevation → isobandsTriangles\n\n- polygons: 5,000\n- input isobandsElevation: 4096 cells\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 15000 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "5,000"
@@ -24,14 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:47.741Z",
-    "runId": "run-d333ea3b",
+    "date": "2026-11-07T14:55:17.504Z",
+    "runId": "run-20df5566",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-d333ea3b",
+    "runId": "run-20df5566",
     "rung": "result",
     "bindings": {},
     "clauses": [],

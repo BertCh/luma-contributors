@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_ge…",
   "description": "Formula H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_ge…",
-  "llms": "Formula H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_geometric + NOAA refraction (default on); daylight = alt_geometric > threshold (-0.833); NaN azimuth and altitude and daylight 0 for non-finite coordinates or |lat| > 90; dec and E (equation of time) from the NOAA Julian-century series\n\n- bound symbols: 7/7\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_geometric + NOAA refraction (default on); daylight = alt_geometric > threshold (-0.833); NaN azimuth and altitude and daylight 0 for non-finite coordinates or |lat| > 90; dec and E (equation of time) from the NOAA Julian-century series\n\n- bound symbols: 0/7\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "7/7"
+    "value": "0/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.solar-position.noaa</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hourAngle}{H} = \\frac{(\\term{minutesUTC}{m} + \\term{equationOfTime}{E} + 4\\,\\term{longitude}{\\lambda}) \\bmod 1440}{4} - 180^\\circ,\\quad \\sin \\term{geometricAltitude}{\\alpha_g} = \\sin\\term{latitude}{\\varphi}\\,\\sin\\term{declination}{\\delta} + \\cos\\varphi\\cos\\delta\\cos H</pre><p class=\"lens-ascii\">H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_geometric + NOAA refraction (default on); daylight = alt_geometric &gt; threshold (-0.833); NaN azimuth and altitude and daylight 0 for non-finite coordinates or |lat| &gt; 90; dec and E (equation of time) from the NOAA Julian-century series</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"hourAngle\">H · intermediate · hourAngleDegrees</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"minutesUTC\">m · input · minutesUTC</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"equationOfTime\">E · intermediate · equationOfTime</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"longitude\">λ · input · longitude</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"geometricAltitude\">α_g · output · geometricAltitude</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"latitude\">φ · input · latitude</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"declination\">δ · intermediate · declination</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.solar-position.noaa</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hourAngle}{H} = \\frac{(\\term{minutesUTC}{m} + \\term{equationOfTime}{E} + 4\\,\\term{longitude}{\\lambda}) \\bmod 1440}{4} - 180^\\circ,\\quad \\sin \\term{geometricAltitude}{\\alpha_g} = \\sin\\term{latitude}{\\varphi}\\,\\sin\\term{declination}{\\delta} + \\cos\\varphi\\cos\\delta\\cos H</pre><p class=\"lens-ascii\">H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_geometric + NOAA refraction (default on); daylight = alt_geometric &gt; threshold (-0.833); NaN azimuth and altitude and daylight 0 for non-finite coordinates or |lat| &gt; 90; dec and E (equation of time) from the NOAA Julian-century series</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"hourAngle\">H · intermediate · unknown — wgsl hourAngleDegrees not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"minutesUTC\">m · input · unknown — wgsl minutesUTC not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"equationOfTime\">E · intermediate · unknown — wgsl equationOfTime not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"longitude\">λ · input · unknown — wgsl longitude not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"geometricAltitude\">α_g · output · unknown — wgsl geometricAltitude not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"latitude\">φ · input · unknown — wgsl latitude not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"declination\">δ · intermediate · unknown — wgsl declination not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,49 +29,49 @@
       [
         "H",
         "intermediate",
-        "hourAngleDegrees",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "m",
         "input",
-        "minutesUTC",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "E",
         "intermediate",
-        "equationOfTime",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "λ",
         "input",
-        "longitude",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "α_g",
         "output",
-        "geometricAltitude",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "φ",
         "input",
-        "latitude",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "δ",
         "intermediate",
-        "declination",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -93,14 +93,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.925Z",
-    "runId": "run-3d748df4",
+    "date": "2026-11-07T14:55:29.874Z",
+    "runId": "run-42bafb53",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-3d748df4",
+    "runId": "run-42bafb53",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

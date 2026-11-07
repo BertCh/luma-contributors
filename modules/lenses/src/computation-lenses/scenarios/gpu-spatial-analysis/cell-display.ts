@@ -35,7 +35,7 @@ export const CELL_DISPLAY_TABLE_HEADROOM = 8;
  * figure (cell ids carry no coordinates). The stride is the family's vertex count (6 for H3
  * hexagons, 4 for Quadbin), so every row is a complete ring and no zero-filled slot is drawn; H3
  * cells that cross an icosahedron edge or are pentagons would be truncated, and the Chicago window
- * has none. Transient ids are `name` (boundaries) and `${name}Centers`; list both in `retain`.
+ * has none. Transient ids are `name` (boundaries) and `${name}Centers`.
  * Rows past the occupied cells decode the empty key to zeros, so draw only the occupied prefix
  * with display offsets.
  */
@@ -74,7 +74,7 @@ export function addCellBoundaries(
  * zero-filled buffer with one spare row so the scan also yields the final offset. Every valid cell
  * must have `vertexCount` vertices (6 for non-pentagon H3 hexagons, 4 for Quadbin), as in
  * {@link addCellBoundaries}. Transient ids are `name` (boundaries), `${name}Centers` and
- * `${name}Offsets`; list all three in `retain`.
+ * `${name}Offsets`.
  */
 export function addCellBoundariesWithOffsets(
   graph: GPUCommandGraph<undefined>,

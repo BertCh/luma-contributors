@@ -5,7 +5,7 @@
 import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createPointCloudGridIndex} from './pointcloud-grid-index';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
 export type PointCloudRasterGrid = {
   origin: readonly [number, number];
@@ -81,7 +81,7 @@ export class GPUPointCloudSurfaces {
     );
     return [
       ...indexed.nodes,
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: this.id,
         length: terrain.length,
         inputs: {
@@ -201,7 +201,7 @@ for(var row=max(0,center.y-${reach});row<=min(${grid.height - 1},center.y+${reac
 let valid=exact||(support>=${interpolation.minimumSupport ?? 1}u&&totalWeight>0.0);
 if(!exact&&totalWeight>0.0){elevation=meanElevation;}if(!valid){writeStatus(index,2u);return;}`;
     }
-    return getSpatialOperationNodes(graph, {
+    return getPointCloudKernelNodes(graph, {
       id: this.id,
       length: positions.length,
       inputs: {positions, terrain, coverage},

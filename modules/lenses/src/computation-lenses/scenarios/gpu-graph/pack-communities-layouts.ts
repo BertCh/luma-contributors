@@ -22,24 +22,6 @@ const formulas: Record<string, GPUComputationFormulaRef | ViewPackNoFormula> = {
       {id: 'neighbors', role: 'input', label: 'CSR neighbors', binding: 'wgsl:neighbors'}
     ]
   },
-  GPUGraphAlgorithmsStronglyConnectedComponents: {
-    id: 'gpu-graph.strongly-connected-components-color-back',
-    derivation: 'curated',
-    tex: String.raw`\term{color}{k}_u\leftarrow\min\big(\term{color}{k}_u,\ \term{color}{k}_v\big)\ \forall u\in\term{neighbors}{N(v)}\ \text{until fixed},\qquad
-\term{label}{c}_v=\term{color}{k}_v\ \text{if}\ v\leadsto\term{color}{k}_v\ \text{within colour class}\ \term{color}{k}_v`,
-    ascii:
-      'Initialize color[v]=v and label[v]=unresolved. Repeat a GPU state machine: (1) trim, vertices with no active in-neighbour or no active out-neighbour become singleton components label[v]=v; (2) colour, propagate the minimum colour along forward edges between active vertices until no colour changes; (3) back, mark every active vertex with a forward edge to a marked vertex of the same colour, seeded at each colour root v with color[v]=v, until nothing is newly marked; (4) finalize, marked vertices publish label[v]=color[v] (the lowest vertex id of their strong component) and the rest reset color[v]=v. Stop when no vertex is active. Running out of steps publishes 0xffffffff.',
-    symbols: [
-      {
-        id: 'color',
-        role: 'intermediate',
-        label: 'propagated minimum colour',
-        binding: 'wgsl:color'
-      },
-      {id: 'label', role: 'output', label: 'component label', binding: 'wgsl:output'},
-      {id: 'neighbors', role: 'input', label: 'CSR neighbors', binding: 'wgsl:neighbors'}
-    ]
-  },
   GPUGraphAlgorithmsLabelPropagation: {
     id: 'gpu-graph.label-propagation-vote',
     derivation: 'curated',
@@ -207,12 +189,6 @@ export const COMMUNITIES_LAYOUTS_PACK: {
       scopeSecondary: 'global',
       reduction: 'argmin'
     },
-    // Minimum-colour propagation and backward reachability from each colour root.
-    GPUGraphAlgorithmsStronglyConnectedComponents: {
-      scope: 'focal',
-      scopeSecondary: 'frontier',
-      reduction: 'argmin'
-    },
     // Majority vote over the closed neighborhood.
     GPUGraphAlgorithmsLabelPropagation: {scope: 'focal', reduction: 'mode'},
     // One best move per round: a global extremum over per-vertex candidate gains.
@@ -236,8 +212,6 @@ export const COMMUNITIES_LAYOUTS_PACK: {
   variableKinds: {
     'connected-components': {level: 'nominal'},
     'connected-components-converged': {level: 'nominal'},
-    'strongly-connected-components': {level: 'nominal'},
-    'strongly-connected-components-converged': {level: 'nominal'},
     'label-propagation': {level: 'nominal'},
     'label-propagation-converged': {level: 'nominal'},
     'modularity-seed': {level: 'nominal'},
@@ -258,9 +232,6 @@ export const COMMUNITIES_LAYOUTS_PACK: {
     'connected-components': 'iteration',
     'connected-components-stations': 'publication',
     'connected-components-converged': 'publication',
-    'strongly-connected-components': 'iteration',
-    'strongly-connected-components-stations': 'publication',
-    'strongly-connected-components-converged': 'publication',
     'label-propagation': 'iteration',
     'label-propagation-stations': 'publication',
     'label-propagation-converged': 'publication',

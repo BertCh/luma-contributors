@@ -54,7 +54,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUGridGenerator',
           datasets: [places.id, areas.id],
-          retain: ['cellCorners', 'centers', 'intersects'],
           keySpaces: [
             {
               id: 'cell',

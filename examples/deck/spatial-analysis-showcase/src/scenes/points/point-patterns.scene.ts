@@ -597,7 +597,7 @@ export default defineScene<PointPatternOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUStudyWindowPreparation, GPURandomPointsInPolygon,
   getGPUDotDensityParameterValues
@@ -606,7 +606,7 @@ import {
   GPURipley, GPURipleyDistanceFunctions, GPUPointPatternIndices,
   getGPURipleyParameterValues, getGPURipleyDistanceFunctionsParameterValues,
   getGPUPointPatternIndicesParameterValues
-} from '@luma-contributors/analysis/gpu-dataframe';
+} from '@luma.gl/graph/gpu-dataframe';
 
 // Project points AND polygon columns with one Lambert equal-area frame.
 // Each graph imports its own views of those buffers.

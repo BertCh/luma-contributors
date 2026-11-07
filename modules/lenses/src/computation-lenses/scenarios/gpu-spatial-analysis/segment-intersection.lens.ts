@@ -29,15 +29,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.segment-intersection',
           element: 'GPUSegmentIntersection',
           datasets: ['s2-chicago-north-roads'],
-          retain: [
-            'leftIds',
-            'rightIds',
-            'kinds',
-            'count',
-            'overflow',
-            'requiredCount',
-            'uncertainCount'
-          ],
           keySpaces: [
             {id: 'pair', label: 'segment pair', size: PAIR_CAPACITY, indexSpace: '1d'},
             {id: 'vertex', label: 'road vertex', size: projected.length / 2, indexSpace: '1d'},

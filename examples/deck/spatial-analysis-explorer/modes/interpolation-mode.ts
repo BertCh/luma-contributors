@@ -24,7 +24,12 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUFocalStatisticsParameterValues,
   getGPUInverseDistanceWeightingParameterValues,
@@ -39,7 +44,14 @@ import {
   GPU_KRIGING_PARAMETER_LENGTH,
   GPUKriging
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {fitVariogramModel, getGPUVariogramParameterValues, GPU_VARIOGRAM_PARAMETER_LENGTH, GPUVariogram, type VariogramModel, type VariogramModelType} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  fitVariogramModel,
+  getGPUVariogramParameterValues,
+  GPU_VARIOGRAM_PARAMETER_LENGTH,
+  GPUVariogram,
+  type VariogramModel,
+  type VariogramModelType
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {GPUTerrainContours} from '@luma-contributors/analysis/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';

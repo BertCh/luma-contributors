@@ -54,7 +54,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUVoronoiDiagram',
           datasets: [data.id],
-          retain: ['triangleCount', 'siteIds', 'count', 'requiredCount', 'overflow'],
           keySpaces: [
             {id: 'segment', label: 'Voronoi segment', size: segmentCapacity, indexSpace: '1d'},
             {id: 'place', label: 'place (every 4th)', size: siteCount, indexSpace: '1d'}

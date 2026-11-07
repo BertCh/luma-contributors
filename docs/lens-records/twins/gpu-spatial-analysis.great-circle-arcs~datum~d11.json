@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.great-circle-arcs",
   "viewId": "datum-receipt",
-  "caption": "Receipt of route from ORD 11. arcSources: 11. values read back from the GPU run. great-circle-arcs: 2 quantities.",
-  "description": "Receipt of route from ORD 11. arcSources: 11. values read back from the GPU run. great-circle-arcs: 2 quantities.",
-  "llms": "Receipt of route from ORD 11\n\n- arcSources: 11\n- great-circle-arcs: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of route from ORD 11. arcSources: 11. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of route from ORD 11. arcSources: 11. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of route from ORD 11\n\n- arcSources: 11\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "arcSources",
     "value": "11"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of route from ORD 11</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"great-circle-arcs\"><tr><th scope=\"rowgroup\" colspan=\"5\">great-circle-arcs</th></tr><tr data-provenance=\"readback\"><td>great-circle-arcs</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-great-circle-arcs-snapshots-targets-0\" title=\"40 destination airports of the busiest routes touching ORD\">targets</button></td><td>-73.77890014648438, 40.639801025390625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>great-circle-arcs</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-great-circle-arcs-snapshots-arcSources-0\" title=\"source route index (zero-based) of each output arc\">arcSources</button></td><td>11</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of route from ORD 11</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-great-circle-arcs-snapshots-targets-0\" title=\"40 destination airports of the busiest routes touching ORD\">targets</button></td><td>-73.77890014648438, 40.639801025390625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-great-circle-arcs-snapshots-arcSources-0\" title=\"source route index (zero-based) of each output arc\">arcSources</button></td><td>11</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,14 +28,14 @@
     ],
     "rows": [
       [
-        "great-circle-arcs",
+        "result",
         "targets",
         "-73.77890014648438, 40.639801025390625",
         "0",
         "readback"
       ],
       [
-        "great-circle-arcs",
+        "result",
         "arcSources",
         "11",
         "0",
@@ -49,12 +49,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:20.772Z",
-    "runId": "run-dbacf017",
+    "date": "2026-11-07T14:55:22.120Z",
+    "runId": "run-af4732f9",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-dbacf017",
+    "runId": "run-af4732f9",
     "rung": "datum",
     "bindings": {
       "entity": 11

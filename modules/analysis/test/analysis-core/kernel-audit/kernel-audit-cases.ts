@@ -22,10 +22,8 @@ import {BACKLOG_CASES} from './cases-backlog';
 import {COVERAGE_TRANCHE_ONE_CASES} from './cases-coverage-tranche-one';
 import {EXPANSION_CASES} from './cases-expansion';
 import type {KernelAuditCase} from './kernel-audit-context';
-import {GEOSPATIAL_CASES} from './cases-geospatial';
 import {DATAFRAME_CASES} from './cases-dataframe';
 import {RASTER_CASES} from './cases-raster';
-import {RASTER_OPERATIONS_CASES} from './cases-raster-operations';
 import {TERRAIN_CASES} from './cases-terrain';
 import {NETWORK_CASES} from './cases-network';
 import {STATISTICS_CASES} from './cases-statistics';
@@ -51,14 +49,12 @@ export const KERNEL_AUDIT_CASES: Readonly<Record<string, readonly KernelAuditCas
   backlog: BACKLOG_CASES,
   'coverage-tranche-one': COVERAGE_TRANCHE_ONE_CASES,
   expansion: EXPANSION_CASES,
-  geospatial: GEOSPATIAL_CASES,
   dataframe: [
     ...DATAFRAME_CASES,
     ...VARIABLE_STANDARDIZATION_AUDIT_CASES,
     ...EXACT_NATURAL_BREAKS_AUDIT_CASES
   ],
   raster: RASTER_CASES,
-  'raster-operations': RASTER_OPERATIONS_CASES,
   terrain: TERRAIN_CASES,
   network: NETWORK_CASES,
   statistics: STATISTICS_CASES,

@@ -73,16 +73,6 @@ registerS2LensScenarios(
   },
   [
     {
-      id: 'gpu-spatial-analysis.sparse-resistance-connectivity-recipe',
-      element: 'addSparseResistanceConnectivityRecipe',
-      title: 'Sparse Jacobi-preconditioned resistance with a true-current certificate'
-    },
-    {
-      id: 'gpu-spatial-analysis.raster-resistance-connectivity-recipe',
-      element: 'addRasterResistanceConnectivityRecipe',
-      title: 'Raster resistance converted to physical neighbor conductance'
-    },
-    {
       id: 'gpu-spatial-analysis.segregation-counterfactual-recipe',
       element: 'addSegregationCounterfactualRecipe',
       title: 'Empirical-quantile population counterfactuals and Shapley components'

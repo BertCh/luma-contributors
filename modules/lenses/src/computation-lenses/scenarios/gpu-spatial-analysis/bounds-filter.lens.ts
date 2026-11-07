@@ -46,7 +46,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.bounds-filter',
           element: 'GPUBoundsFilter',
           datasets: ['s2-chicago-north-nature', 's2-chicago-north-parks'],
-          retain: ['selected', 'ids', 'count', 'overflow'],
           keySpaces,
           choices: {mode: 'within'},
           async build(graph, uploads) {

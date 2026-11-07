@@ -7,7 +7,6 @@ import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUCommandGraph,
   GPUMask,
-  GPUSegmentedReduction,
   createTransientVectorView,
   type CompiledGPUCommandGraph,
   type GraphVectorView
@@ -17,6 +16,7 @@ import {
   type KeplerDatasetRegistry,
   type KeplerMemoryReservation
 } from '../runtime/dataset-registry';
+import {addKeplerLinearKernel} from '../analysis/analysis-scaling';
 import {GPUKeplerSpatialSelection} from './gpu-spatial-selection';
 import {
   prepareKeplerSpatialSelection,
@@ -686,16 +686,27 @@ export class GPUKeplerSelectionScopes {
           }
           rowMask = transient();
           const offsets = graph.importGPUVector(`offsets-${sequence++}`, geometry.rowOffsets);
-          for (const [index, output] of rowMask.data.entries())
-            graph.add(
-              new GPUSegmentedReduction({
-                id: `multipoint-any-${sequence++}`,
-                input: pointMask.data[index],
-                segmentOffsets: offsets.data[index],
-                output,
-                operation: 'max'
-              })
+          for (const [index, output] of rowMask.data.entries()) {
+            if (output.length === 0) continue;
+            // Row accepts when any of its vertices is accepted (segmented maximum of 0/1 flags).
+            addKeplerLinearKernel(
+              graph,
+              `multipoint-any-${sequence++}`,
+              output.length,
+              [
+                {name: 'pointMask', view: pointMask.data[index]},
+                {name: 'segmentOffsets', view: offsets.data[index]},
+                {name: 'output', view: output, write: true}
+              ],
+              `let segmentStart = segmentOffsets[segmentOffsetsOffset + index];
+let segmentEnd = segmentOffsets[segmentOffsetsOffset + index + 1u];
+var accepted = 0u;
+for (var position = segmentStart; position < segmentEnd; position++) {
+  if (pointMask[pointMaskOffset + position] != 0u) { accepted = 1u; break; }
+}
+output[outputOffset + index] = accepted;`
             );
+          }
           if (geometry.validity) {
             const valid = transient();
             compose([rowMask, importMask(geometry.validity)], valid);
@@ -757,12 +768,18 @@ export class GPUKeplerSelectionScopes {
         importMask(mask)
       );
     }
-    const plannedBytes = graph.planResources().stats.physicalTransientResourceBytes;
-    this.checkAdditionalMemory(plannedBytes);
     let compiled: CompiledGPUCommandGraph;
     try {
       compiled = graph.compile();
     } catch (error) {
+      this.settleReservation();
+      throw error;
+    }
+    try {
+      // Published graphs report transient bytes only after compilation, so admit and release on failure.
+      this.checkAdditionalMemory(compiled.stats.physicalTransientResourceBytes);
+    } catch (error) {
+      compiled.destroy();
       this.settleReservation();
       throw error;
     }

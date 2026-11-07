@@ -396,7 +396,7 @@ export default defineScene<CalendarPatternsOptions>({
   getGPUCalendarBucketsParameterValues, getGPUTimeWindowFilterWordParameterValues,
   getGPUTimeZoneTransitionTable,
   GPUCalendarBuckets, GPUGroupStatistics, GPUTimeWindowFilter
-} from '@luma-contributors/analysis/gpu-dataframe';
+} from '@luma.gl/graph/gpu-dataframe';
 
 // 1. exact Int64 time window, plus a group mask as an extra predicate
 graph.add(new GPUTimeWindowFilter({

@@ -442,12 +442,12 @@ export default defineScene<EmergingHotSpotsOptions>({
     }
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   addSpaceTimeHotSpotsRecipe,
   GPUEmergingHotSpots, GPUNeighborSearch
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTemporalReduction} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUTemporalReduction} from '@luma.gl/graph/gpu-dataframe';
 
 const hotSpotSettings = {
   radius: ${state.radius}, temporalWindow: ${state.temporalWindow}, confidenceLevel: ${state.confidence},

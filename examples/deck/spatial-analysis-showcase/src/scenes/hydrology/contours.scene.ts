@@ -434,11 +434,11 @@ export default defineScene<ContoursOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUIsolines, GPUIsobands, GPUIsobandRings,
   getGPUIsolinesParameterValues, getGPUIsobandsParameterValues
-} from '@luma-contributors/analysis/gpu-raster';
+} from '@luma.gl/graph/gpu-raster';
 
 const graph = new GPUCommandGraph(device, {id: 'contours'});
 graph.add(new GPUIsobands({

@@ -5,6 +5,7 @@
 import {assert, type Device} from '@luma.gl/core';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   describeGPUGraphScenario,
   getGPUGraphCaptureView,
   recordGPUGraphScenario,
@@ -35,11 +36,8 @@ async function buildScenario(device: Device): Promise<GPUGraphScenarioRecordOpti
       scenarioId: 'gpu-graph.graph-label-propagation',
       element: 'GPUGraphAlgorithmsLabelPropagation',
       fixture,
-      compiled: fixture.commandGraph.compile(),
+      ...compileGPUGraphScenario(fixture, outputCaptures),
       outputCaptures,
-      iterationFrames: [
-        {name: 'label-propagation', loopId: 'gpu-graph-label-propagation-iterations'}
-      ],
       choices: [{stage: 'parameters', name: 'iterations', value: 16, sweepable: true}],
       series: captures => [
         {
@@ -67,9 +65,13 @@ export async function describeStructure(device: Device) {
     return describeGPUGraphScenario(options);
   } finally {
     try {
-      options.compiled.destroy();
+      options.snapshot.arena.destroy();
     } finally {
-      options.fixture.destroy();
+      try {
+        options.compiled.destroy();
+      } finally {
+        options.fixture.destroy();
+      }
     }
   }
 }

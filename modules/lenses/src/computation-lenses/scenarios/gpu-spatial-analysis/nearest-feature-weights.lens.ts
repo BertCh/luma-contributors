@@ -54,17 +54,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.nearest-feature-weights',
           element: 'GPUNearestFeatureWeights',
           datasets: ['s2-chicago-north-nature', 's2-chicago-north-facilities'],
-          retain: [
-            'neighborIds',
-            'neighborDistances',
-            'neighborCounts',
-            'joinOverflow',
-            'offsets',
-            'neighbors',
-            'weights',
-            'distances',
-            'overflow'
-          ],
           keySpaces,
           relations: [
             {

@@ -48,7 +48,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.rose-statistic',
           element: 'GPURoseStatistic',
           datasets: ['s2-chicago-north-roads'],
-          retain: ['summary', 'bins'],
           keySpaces: [
             {id: 'segment', label: 'street segment', size: count, indexSpace: '1d'},
             {id: 'summary', label: 'rose summary word', size: 5, indexSpace: '1d'},

@@ -69,6 +69,11 @@
       "types": "./dist/geospatial-analysis/index.d.ts",
       "import": "./dist/geospatial-analysis/index.js",
       "require": "./dist/geospatial-analysis/index.cjs"
+    },
+    "./analysis-core": {
+      "types": "./dist/analysis-core/index.d.ts",
+      "import": "./dist/analysis-core/index.js",
+      "require": "./dist/analysis-core/index.cjs"
     }
   },
   "files": [

@@ -4,14 +4,28 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {getGPUCostDistanceParameterValues, getGPUDistanceFieldParameterValues, GPU_COST_DISTANCE_NONE, GPU_COST_DISTANCE_PARAMETER_LENGTH, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPUCostDistance, GPUCostDistancePath, GPUDistanceField, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUCostDistanceParameterValues,
+  getGPUDistanceFieldParameterValues,
+  GPU_COST_DISTANCE_NONE,
+  GPU_COST_DISTANCE_PARAMETER_LENGTH,
+  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
+  GPUCostDistance,
+  GPUCostDistancePath,
+  GPUDistanceField,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
   GPUTerrainDerivatives
 } from '@luma-contributors/analysis/gpu-terrain';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {

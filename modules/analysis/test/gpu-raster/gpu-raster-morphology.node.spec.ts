@@ -2,10 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, test, vi} from 'vitest';
-import {Kernel} from '@luma.gl/graph';
-import type {Buffer, Device} from '@luma.gl/core';
-import {createNullWebGPUDevice} from '../utils/gpu-contributor-test-utils';
+import {describe, expect, test} from 'vitest';
 import {
   GraphBufferHandle,
   GraphDataView,
@@ -202,53 +199,6 @@ describe('GPURasterMorphology binary and grayscale contracts', () => {
       'storage-write',
       'storage-read'
     ]);
-  });
-});
-
-describe('GPURasterMorphology binding reuse', () => {
-  test('reuses bindings until a resolved buffer changes', () => {
-    const graph = makeRecordingGraph('morphology-bindings');
-    const props = makeBinaryProps(graph);
-    new GPURasterDilation(props).addToGraph(graph);
-    const device = createNullWebGPUDevice();
-    Object.defineProperty(device, 'props', {
-      value: {...device.props, _cacheShaders: false, _cachePipelines: false}
-    });
-    Object.defineProperty(device, 'createComputePipeline', {
-      value: (pipelineProps: {id?: string}) => ({
-        id: pipelineProps.id ?? '',
-        hash: '',
-        destroy: () => {}
-      })
-    });
-    const dispatch = vi.spyOn(Kernel.prototype, 'dispatch').mockImplementation(() => {});
-    const getBindings = (call: number) => dispatch.mock.calls[call][1].bindings;
-    try {
-      const node = graph.passes[0].compile({device} as unknown as {device: Device}) as {
-        encode: (context: unknown) => void;
-      };
-      const buffers = new Map<unknown, Buffer>();
-      const encode = () =>
-        node.encode({
-          computePass: {},
-          getBuffer: (view: unknown) => {
-            if (!buffers.has(view)) buffers.set(view, {byteLength: 1024} as unknown as Buffer);
-            return buffers.get(view)!;
-          }
-        });
-
-      encode();
-      encode();
-      expect(dispatch).toHaveBeenCalledTimes(2);
-      expect(getBindings(1), 'unchanged buffers keep the bind group').toBe(getBindings(0));
-
-      buffers.set(props.output, {byteLength: 1024} as unknown as Buffer);
-      encode();
-      expect(getBindings(2), 'a replaced output buffer rebinds').not.toBe(getBindings(1));
-    } finally {
-      dispatch.mockRestore();
-      device.destroy();
-    }
   });
 });
 

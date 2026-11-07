@@ -47,17 +47,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellRollup',
           datasets: [data.id],
-          retain: [
-            'sourceCells',
-            'sourceCounts',
-            'cells',
-            'counts',
-            'cellCount',
-            'sourceBoundaries',
-            'sourceBoundariesCenters',
-            'boundaries',
-            'boundariesCenters'
-          ],
           keySpaces: [
             {id: 'cell', label: 'parent cell', size: parentCapacity, indexSpace: '1d'},
             {id: 'sourceCell', label: 'source cell', size: sourceCapacity, indexSpace: '1d'},

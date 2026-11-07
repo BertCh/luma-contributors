@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so…",
   "description": "Formula Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so…",
-  "llms": "Formula Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so a first radius of 0 contributes nothing). MSRM = verticalExaggeration * (d_n - d_i) / (n - i), which equals the mean of consecutive filter differences (mean_i - mean_n)/(n - i). Invalid centres give NaN. In geographic or web-mercator mode each radius k^s becomes k^s * resolution ground metres, converted to a rectangle of at least one pixel per axis.\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so a first radius of 0 contributes nothing). MSRM = verticalExaggeration * (d_n - d_i) / (n - i), which equals the mean of consecutive filter differences (mean_i - mean_n)/(n - i). Invalid centres give NaN. In geographic or web-mercator mode each radius k^s becomes k^s * resolution ground metres, converted to a rectangle of at least one pixel per axis.\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.multi-scale-relief.telescoped</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{relief}{\\mathrm{MSRM}} = \\term{exaggeration}{v}\\,\\frac{\\term{coarse}{d_n} - \\term{fine}{d_i}}{\\term{scaleCount}{n - i}},\\quad d_k = z_c - \\overline{z}_{k^s}</pre><p class=\"lens-ascii\">Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so a first radius of 0 contributes nothing). MSRM = verticalExaggeration * (d_n - d_i) / (n - i), which equals the mean of consecutive filter differences (mean_i - mean_n)/(n - i). Invalid centres give NaN. In geographic or web-mercator mode each radius k^s becomes k^s * resolution ground metres, converted to a rectangle of at least one pixel per axis.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-anchor-select\" data-value=\"relief\">MSRM · output · value</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-combine\" data-value=\"exaggeration\">v · parameter · settings</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-combine\" data-value=\"coarse\">coarsest deviation · intermediate · coarseValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-combine\" data-value=\"fine\">finest deviation · intermediate · fineValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-combine\" data-value=\"scaleCount\">n - i · constant · SCALE_COUNT</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.multi-scale-relief.telescoped</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{relief}{\\mathrm{MSRM}} = \\term{exaggeration}{v}\\,\\frac{\\term{coarse}{d_n} - \\term{fine}{d_i}}{\\term{scaleCount}{n - i}},\\quad d_k = z_c - \\overline{z}_{k^s}</pre><p class=\"lens-ascii\">Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so a first radius of 0 contributes nothing). MSRM = verticalExaggeration * (d_n - d_i) / (n - i), which equals the mean of consecutive filter differences (mean_i - mean_n)/(n - i). Invalid centres give NaN. In geographic or web-mercator mode each radius k^s becomes k^s * resolution ground metres, converted to a rectangle of at least one pixel per axis.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"relief\">MSRM · output · unknown — wgsl value not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"exaggeration\">v · parameter · unknown — wgsl settings not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"coarse\">coarsest deviation · intermediate · unknown — wgsl coarseValue not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"fine\">finest deviation · intermediate · unknown — wgsl fineValue not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"scaleCount\">n - i · constant · unknown — wgsl SCALE_COUNT not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "MSRM",
         "output",
-        "value",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "v",
         "parameter",
-        "settings",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "coarsest deviation",
         "intermediate",
-        "coarseValue",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "finest deviation",
         "intermediate",
-        "fineValue",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "n - i",
         "constant",
-        "SCALE_COUNT",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -89,14 +89,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.464Z",
-    "runId": "run-a0243edd",
+    "date": "2026-11-07T14:55:29.762Z",
+    "runId": "run-f5f97e3d",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-a0243edd",
+    "runId": "run-f5f97e3d",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

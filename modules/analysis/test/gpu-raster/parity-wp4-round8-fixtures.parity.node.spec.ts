@@ -36,9 +36,15 @@ for (const name of names) {
     expect(fixture.versions.python).toBeTruthy();
     expect(fixture.versions.numpy).toBeTruthy();
     if (fixture.source)
-      expect(createHash('sha256').update(readFileSync(fixture.source.path)).digest('hex')).toBe(
-        fixture.source.sha256
-      );
+      expect(
+        createHash('sha256')
+          .update(
+            readFileSync(
+              fixture.source.path.replace('modules/graph/test/', 'modules/analysis/test/')
+            )
+          )
+          .digest('hex')
+      ).toBe(fixture.source.sha256);
     expect((fixture.cases ?? fixture.frames).length).toBeGreaterThan(0);
   });
 }

@@ -5,13 +5,11 @@
 import type {Device} from '@luma.gl/core';
 import {GPUData, GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {GPURecordBatch, GPUTable} from '@luma.gl/graph/gpu-tables';
-import {getGPUPartitionMemoryPlan} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {makeGPUAnalyticsTableFromArrowTable} from '@luma.gl/graph/arrow';
 import {
-  getGPUPartitionDescriptorFromArrowTable,
-  makeGPUAnalyticsTableFromArrowTable,
   makeGPUTimeVectorFromPreparedArrowColumn,
   type PreparedArrowAnalyticsTable
-} from '@luma.gl/graph/arrow';
+} from '@luma-contributors/analysis/analysis-core';
 import {Data, DataType, RecordBatch, Table} from 'apache-arrow';
 import type {KeplerArrowDataset} from './compute-session';
 import type {GPUResidentScalarFormat} from '../exploration/gpu-resident-explorer';
@@ -197,8 +195,6 @@ export function makeArrowStreamSnapshot(parts: readonly ArrowStreamPart[]): Kepl
     );
   for (const name of Object.keys(first.analytics.nullCounts))
     nullCounts[name] = parts.flatMap(part => part.analytics.nullCounts[name] ?? []);
-  const partitioning = getGPUPartitionDescriptorFromArrowTable(source);
-  const bytesPerRow = table.schema.fields.reduce((sum, field) => sum + (field.nullable ? 8 : 4), 0);
   return {
     source,
     prepared,
@@ -208,9 +204,7 @@ export function makeArrowStreamSnapshot(parts: readonly ArrowStreamPart[]): Kepl
       table: gpuTable,
       validity,
       dictionaries: last.prepared.dictionaries,
-      nullCounts,
-      partitioning,
-      partitionMemory: getGPUPartitionMemoryPlan(partitioning, bytesPerRow)
+      nullCounts
     },
     retainedArrayBufferBytes: parts.reduce((sum, part) => sum + part.retainedArrayBufferBytes, 0),
     uploadedBufferBytes: parts.reduce((sum, part) => sum + part.uploadedBufferBytes, 0)

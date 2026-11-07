@@ -20,8 +20,20 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {makeGPURasterMetadata, getGPUCostDistanceParameterValues, GPU_COST_DISTANCE_NONE, GPU_COST_DISTANCE_PARAMETER_LENGTH, GPUCostDistance, GPUCostDistancePath} from '@luma-contributors/analysis/raster-analysis';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  makeGPURasterMetadata,
+  getGPUCostDistanceParameterValues,
+  GPU_COST_DISTANCE_NONE,
+  GPU_COST_DISTANCE_PARAMETER_LENGTH,
+  GPUCostDistance,
+  GPUCostDistancePath
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,

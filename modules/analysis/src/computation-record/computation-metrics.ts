@@ -15,11 +15,17 @@ import type {
   GPUComputationNodeMetrics
 } from './computation-record-types';
 
-/** Structural subset of GPUCommandGraphTimingReport; no gpu-core dependency. */
+/**
+ * Structural subset of the published `GPUCommandGraphTimingReport`, so it can be passed directly.
+ * `gpuStartTimeMilliseconds`/`gpuEndTimeMilliseconds` produce a `ms` timebase; the nanosecond
+ * fields remain for timings measured outside luma.gl. Do not mix the two in one report.
+ */
 export type GPUComputationTimingInput = {
   nodes: readonly {
     id: string;
     cpuEncodeTimeMilliseconds: number;
+    gpuStartTimeMilliseconds?: number;
+    gpuEndTimeMilliseconds?: number;
     gpuBeginNanoseconds?: number;
     gpuEndNanoseconds?: number;
     passIndex?: number;
@@ -36,24 +42,32 @@ export function createGPUComputationMetrics(props: {
   adapter?: GPUComputationAdapter;
   series?: readonly GPUComputationSeries[];
   counters?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  /** Node id to physical pass index, from `getGPUCommandGraphPassIndices`. */
+  passIndices?: Readonly<Record<string, number>>;
 }): GPUComputationMetrics {
+  const milliseconds = props.timing.nodes.some(node => node.gpuStartTimeMilliseconds !== undefined);
+  const getBegin = (node: GPUComputationTimingInput['nodes'][number]) =>
+    milliseconds ? node.gpuStartTimeMilliseconds : node.gpuBeginNanoseconds;
+  const getEnd = (node: GPUComputationTimingInput['nodes'][number]) =>
+    milliseconds ? node.gpuEndTimeMilliseconds : node.gpuEndNanoseconds;
   let origin = Infinity;
   for (const node of props.timing.nodes) {
-    if (node.gpuBeginNanoseconds !== undefined) origin = Math.min(origin, node.gpuBeginNanoseconds);
+    const begin = getBegin(node);
+    if (begin !== undefined) origin = Math.min(origin, begin);
   }
   const nodes: Record<string, GPUComputationNodeMetrics> = Object.fromEntries(
     props.timing.nodes.map(node => {
       const outcome = node.condition?.outcome;
+      const begin = getBegin(node);
+      const end = getEnd(node);
+      const passIndex = node.passIndex ?? props.passIndices?.[node.id];
       return [
         node.id,
         {
           cpuEncodeMs: node.cpuEncodeTimeMilliseconds,
-          ...(node.gpuBeginNanoseconds !== undefined && {
-            gpuBegin: node.gpuBeginNanoseconds - origin
-          }),
-          ...(node.gpuBeginNanoseconds !== undefined &&
-            node.gpuEndNanoseconds !== undefined && {gpuEnd: node.gpuEndNanoseconds - origin}),
-          ...(node.passIndex !== undefined && {passIndex: node.passIndex}),
+          ...(begin !== undefined && {gpuBegin: begin - origin}),
+          ...(begin !== undefined && end !== undefined && {gpuEnd: end - origin}),
+          ...(passIndex !== undefined && {passIndex}),
           ...(node.condition !== undefined && {
             outcome:
               outcome === 'skipped'
@@ -71,7 +85,7 @@ export function createGPUComputationMetrics(props: {
     schema: GPU_COMPUTATION_METRICS_SCHEMA,
     runId: props.runId,
     graph: props.graph,
-    timebase: 'ns',
+    timebase: milliseconds ? 'ms' : 'ns',
     encoding: props.encoding,
     nodes,
     ...(props.adapter !== undefined && {adapter: props.adapter}),

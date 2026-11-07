@@ -43,7 +43,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULocalFrameProjection',
           datasets: [data.id],
-          retain: ['projectedRoads', 'validity'],
           keySpaces: [
             {id: 'vertex', label: 'vertex', size: data.positionsLonLat.length / 2, indexSpace: '1d'}
           ],

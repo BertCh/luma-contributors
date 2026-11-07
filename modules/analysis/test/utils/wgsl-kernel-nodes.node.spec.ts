@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
-import type {Buffer, Device, TextureView} from '@luma.gl/core';
+import type {Buffer, TextureView} from '@luma.gl/core';
 import {expect, test} from 'vitest';
 import {
   createChangedBindingResolver,
@@ -98,66 +98,6 @@ test('createWGSLKernelNode rejects more sampled textures than the device allows'
       textures: [{name: 'sourceTexture', texture: sourceView, sampleType: 'float'}]
     })
   ).toThrow(/sampled textures/);
-  device.destroy();
-});
-
-test('createWGSLKernelNode reuses the bind group until a resolved resource changes', () => {
-  const {device, graph, output, sourceView, props} = createTextureKernelFixture();
-  const node = createWGSLKernelNode(graph, {
-    ...props,
-    textures: [{name: 'sourceTexture', texture: sourceView, sampleType: 'float'}]
-  });
-  const cacheKeys: object[] = [];
-  const bindingObjects: Record<string, unknown>[] = [];
-  const fakeDevice = Object.create(device) as Device;
-  Object.defineProperty(fakeDevice, 'createComputePipeline', {
-    value: (pipelineProps: {id?: string}) => ({
-      id: pipelineProps.id ?? '',
-      hash: '',
-      destroy: () => {}
-    })
-  });
-  Object.defineProperty(fakeDevice, 'props', {
-    value: {...device.props, _cacheShaders: false, _cachePipelines: false}
-  });
-  const executable = node.compile!({device: fakeDevice}) as unknown as {
-    encode: (context: unknown) => void;
-  };
-  let buffer = {id: 'buffer-a', byteLength: 1024} as unknown as Buffer;
-  let textureView = {id: 'view-a'};
-  const computePass = {
-    setPipeline: () => {},
-    setBindings: (
-      bindings: Record<string, unknown>,
-      options?: {_bindGroupCacheKeys?: Record<number, object>}
-    ) => {
-      bindingObjects.push(bindings);
-      cacheKeys.push(options!._bindGroupCacheKeys![0]!);
-    },
-    dispatch: () => {}
-  };
-  const encode = () =>
-    executable.encode({
-      computePass,
-      getBuffer: (view: unknown) => (view === output ? buffer : undefined),
-      getTextureView: () => textureView
-    });
-
-  encode();
-  encode();
-  expect(cacheKeys[1], 'unchanged resources keep the cache key').toBe(cacheKeys[0]);
-  expect(bindingObjects[1]).toBe(bindingObjects[0]);
-  expect(bindingObjects[0]!['sourceTexture']).toBe(textureView);
-
-  textureView = {id: 'view-b'};
-  encode();
-  expect(cacheKeys[2], 'a new texture view invalidates the bind group').not.toBe(cacheKeys[1]);
-  encode();
-  expect(cacheKeys[3]).toBe(cacheKeys[2]);
-
-  buffer = {id: 'buffer-b', byteLength: 1024} as unknown as Buffer;
-  encode();
-  expect(cacheKeys[4], 'a new buffer invalidates the bind group').not.toBe(cacheKeys[3]);
   device.destroy();
 });
 

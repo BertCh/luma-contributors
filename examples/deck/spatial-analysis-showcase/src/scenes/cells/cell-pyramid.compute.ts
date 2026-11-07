@@ -23,8 +23,21 @@
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, GPUClassBreaks, GPUColorScale, packGPUColor, type GPUClassBreaksMethod} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  getGPUClassBreaksParameterLength,
+  getGPUClassBreaksParameterValues,
+  getGPUColorScaleParameterValues,
+  GPUClassBreaks,
+  GPUColorScale,
+  packGPUColor,
+  type GPUClassBreaksMethod
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addPeriodComparisonRecipe,
   GPUCellLevelSelection,

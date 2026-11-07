@@ -5,9 +5,7 @@
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {addKeplerLinearKernel as addKernel} from '../analysis/analysis-scaling';
 import {
-  alignGraphVectorViews,
   createTransientView,
-  getGraphVectorData,
   GraphVectorView,
   GPUGroupAggregation,
   GPUGather,
@@ -16,6 +14,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {zipKeplerVectorChunks, getKeplerVectorChunks} from './kepler-vector-chunks';
 import type {KeplerDatasetReference} from '../recipes/analysis-recipe';
 
 /** Per-graph limits. Larger group-bys run as several passes (see kepler-group-by-passes.ts). */
@@ -123,8 +122,8 @@ export function parseKeplerGroupBySettings(
 /**
  * Pre-admit outputs and graph construction before allocation. chunkCount is the TOTAL number of
  * input chunks across key, key validity, and all distinct numeric columns/validity. After authoring,
- * resize the reservation using graph.planResources() BEFORE compile; this estimate does not replace
- * the planner or include borrowed sources, CPU metadata, pipeline/driver storage or result readback.
+ * compile and compare compiled.stats.physicalTransientResourceBytes with the reservation; this estimate
+ * does not replace the compiled statistics or include borrowed sources, CPU metadata, pipeline/driver storage or result readback.
  */
 export function getKeplerGroupByMemoryEstimate(props: {
   rowCount: number;
@@ -206,7 +205,7 @@ export function addKeplerGroupBy<Parameters>(
   ) => {
     if (input.length !== rowCount || input.format !== format)
       throw new Error('Group By source columns must align');
-    for (const view of getGraphVectorData(input)) {
+    for (const view of getKeplerVectorChunks(input)) {
       validatePackedView(view, [format], id);
       if (view.buffer.graph !== graph)
         throw new Error('Group By views must belong to the current graph');
@@ -272,7 +271,7 @@ denseKeys[denseKeysOffset + index] = index;
 if (index == 0u) { diagnostics[diagnosticsOffset] = 0u; diagnostics[diagnosticsOffset + 1u] = 0u; diagnostics[diagnosticsOffset + 2u] = 0u; diagnostics[diagnosticsOffset + 3u] = 0u; }`
   );
   let sourceOffset = 0;
-  const keySpans = alignGraphVectorViews(graph, [
+  const keySpans = zipKeplerVectorChunks([
     props.key,
     props.keyValidity ?? props.key,
     normalizedKeys
@@ -345,11 +344,7 @@ if (occupied) { atomicAdd(&diagnostics[diagnosticsOffset + 3u], 1u); }`
       'uint32',
       capacity
     );
-    const spans = alignGraphVectorViews(graph, [
-      column.values,
-      column.validity ?? normalizedKeys,
-      mask
-    ]);
+    const spans = zipKeplerVectorChunks([column.values, column.validity ?? normalizedKeys, mask]);
     for (const [spanIndex, [values, validity, destination]] of spans.entries()) {
       addKernel(
         graph,
@@ -478,7 +473,7 @@ function createUint32Scratch<Parameters>(
   id: string,
   template: ScalarColumn<'uint32'> | ScalarColumn<'float32'>
 ): GraphVectorView<'uint32'> {
-  const data = getGraphVectorData(template).map((chunk, index) =>
+  const data = getKeplerVectorChunks(template).map((chunk, index) =>
     createTransientView(graph, `${id}-${index}`, 'uint32', chunk.length)
   );
   return new GraphVectorView({

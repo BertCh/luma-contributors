@@ -4,7 +4,13 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUPolygonRasterizationParameterValues, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH, GPUPolygonRasterization, GPURasterJoin, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUPolygonRasterizationParameterValues,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+  GPUPolygonRasterization,
+  GPURasterJoin,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {GPUPointInPolygonJoin} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';

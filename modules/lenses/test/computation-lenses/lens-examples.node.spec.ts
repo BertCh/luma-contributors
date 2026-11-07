@@ -50,27 +50,27 @@ describe('lens example mechanism', () => {
     expect(
       findNonPublicImports(`import type {Device} from '@luma.gl/core';
       import {Model} from '@luma.gl/engine';
-      import '@luma.gl/gpgpu';
-      import {GPUData} from '@luma-contributors/analysis/gpu-data';
+      import '@luma.gl/graph';
+      import {GPUData} from '@luma.gl/graph/gpu-data';
       export {Result} from '@luma-contributors/analysis/computation-record';
-      const module = import('@luma-contributors/analysis/gpu-raster');`)
+      const module = import('@luma.gl/graph/gpu-raster');`)
     ).toEqual([]);
     expect(
       findNonPublicImports(`import './local';
-      import type {Hidden} from '@luma.gl/experimental/src/private';
-      export * from '@luma.gl/gpgpu/dist/index';
-      import('@luma.gl/gpgpu/test/fixture');
+      import type {Hidden} from '@luma.gl/graph/src/private';
+      export * from '@luma.gl/graph/dist/index';
+      import('@luma.gl/graph/test/fixture');
       import {readFile} from 'node:fs';
-      import '@luma.gl/experimental';
+      import '@luma.gl/gpgpu';
       import '/absolute';
       const local = require('../private');`)
     ).toEqual([
       './local',
-      '@luma.gl/experimental/src/private',
-      '@luma.gl/gpgpu/dist/index',
-      '@luma.gl/gpgpu/test/fixture',
+      '@luma.gl/graph/src/private',
+      '@luma.gl/graph/dist/index',
+      '@luma.gl/graph/test/fixture',
       'node:fs',
-      '@luma.gl/experimental',
+      '@luma.gl/gpgpu',
       '/absolute',
       '../private'
     ]);

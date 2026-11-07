@@ -11,7 +11,13 @@
  */
 
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
-import {GPUCommandGraph, GPUElementwise, GPUHistogram, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUElementwise,
+  GPUHistogram,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUPermutationParameterValues,

@@ -5,12 +5,10 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {GPUTable} from '@luma.gl/graph/gpu-tables';
-import {getGPUPartitionMemoryPlan} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  getGPUPartitionDescriptorFromArrowTable,
   type PreparedArrowAnalyticsTable,
   type PrepareArrowTableForGPUAnalyticsOptions
-} from '@luma.gl/graph/arrow';
+} from '@luma-contributors/analysis/analysis-core';
 import {DataType, Precision, type Table} from 'apache-arrow';
 import type {GPUResidentColumns} from '../exploration/gpu-resident-explorer';
 import type {KeplerDatasetRequest, KeplerMemoryReservation} from '../runtime/dataset-registry';
@@ -179,16 +177,10 @@ export function makeAdoptedArrowAnalytics(
       field.metadata = new Map(arrowField.metadata);
     }
   }
-  const partitioning = getGPUPartitionDescriptorFromArrowTable(prepared.table);
   return {
     table,
     validity: borrowedValidity,
     dictionaries: {...prepared.dictionaries},
-    nullCounts,
-    partitioning,
-    partitionMemory: getGPUPartitionMemoryPlan(
-      partitioning,
-      fields.reduce((bytes, field) => bytes + 4 + (field.nullable ? 4 : 0), 0)
-    )
+    nullCounts
   };
 }

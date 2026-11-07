@@ -45,7 +45,7 @@ export const RASTER_ZONES_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/analysis/src/gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics.ts'
+      'modules/analysis/src/raster-analysis/raster-zonal-statistics/gpu-raster-zonal-statistics.ts'
     ]
   },
   GPUPolygonRasterization: {
@@ -73,8 +73,8 @@ export const RASTER_ZONES_OPERATORS: RasterOperatorTable = {
         'Edge crossings per raster row are sorted and paired into even-odd column spans that cells fill with an atomic minimum; the result has no per-cell closed form.'
     },
     sources: [
-      'modules/analysis/src/gpu-raster/polygon-rasterization/gpu-polygon-rasterization.ts',
-      'modules/analysis/src/gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts'
+      'modules/analysis/src/raster-analysis/polygon-rasterization/gpu-polygon-rasterization.ts',
+      'modules/analysis/src/raster-analysis/polygon-rasterization/polygon-rasterization-parameters.ts'
     ]
   },
   GPURasterJoin: {
@@ -111,8 +111,8 @@ export const RASTER_ZONES_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/analysis/src/gpu-raster/polygon-rasterization/gpu-raster-join.ts',
-      'modules/analysis/src/gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts'
+      'modules/analysis/src/raster-analysis/polygon-rasterization/gpu-raster-join.ts',
+      'modules/analysis/src/raster-analysis/polygon-rasterization/polygon-rasterization-parameters.ts'
     ]
   }
 };

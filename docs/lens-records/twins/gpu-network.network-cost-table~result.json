@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.network-cost-table: start-intersection → table-row-targets. points: 16. values read back from the GPU run. input start-intersection: 1 points.",
   "description": "Result of gpu-network.network-cost-table: start-intersection → table-row-targets. points: 16. values read back from the GPU run. input start-intersection: 1 points.",
-  "llms": "Result of gpu-network.network-cost-table: start-intersection → table-row-targets\n\n- points: 16\n- input start-intersection: 1 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 1 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 16 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients tableOffsets, tableTargets, tableCosts, overflow, requiredCount, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.network-cost-table: start-intersection → table-row-targets\n\n- points: 16\n- input start-intersection: 1 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 1 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 16 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients tableOffsets, tableTargets, tableCosts, overflow, requiredCount, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "16"
@@ -24,15 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.973Z",
-    "runId": "run-c20a823a",
+    "date": "2026-11-07T14:55:16.861Z",
+    "runId": "run-2018431d",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients tableOffsets, tableTargets, tableCosts, overflow, requiredCount, converged retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-c20a823a",
+    "runId": "run-2018431d",
     "rung": "result",
     "bindings": {},
     "clauses": [],

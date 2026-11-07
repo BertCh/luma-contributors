@@ -6,7 +6,7 @@
 Writes fixtures/dataframe-time-zones.json next to this script (consumed by
 test/gpu-dataframe/calendar-buckets/time-zone-reference.node.spec.ts and the 'time zone table'
 cases of gpu-calendar-buckets.spec.ts). Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/dataframe-time-zones.py
+    <venv>/bin/python -I modules/analysis/test/oracles/dataframe-time-zones.py
 Only the standard library (zoneinfo, datetime) is used. zoneinfo reads the system tz database
 (or the `tzdata` package), whose release is recorded in the fixture; Node's Intl uses the ICU data
 bundled with V8, which may be another release, so the node spec states what it asserts exactly.

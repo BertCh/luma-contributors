@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility. rows: 12. values read back from the GPU run. input dem: 4096 cells.",
   "description": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility. rows: 12. values read back from the GPU run. input dem: 4096 cells.",
-  "llms": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility\n\n- rows: 12\n- input dem: 4096 cells\n- input horizonObservers: 12 rows\n- input horizonTargets: 48 rows\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility\n\n- rows: 12\n- input dem: 4096 cells\n- input horizonObservers: 12 rows\n- input horizonTargets: 48 rows\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "12"
@@ -36,14 +36,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.584Z",
-    "runId": "run-597a7200",
+    "date": "2026-11-07T14:55:29.791Z",
+    "runId": "run-9405a787",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-597a7200",
+    "runId": "run-9405a787",
     "rung": "result",
     "bindings": {},
     "clauses": [],

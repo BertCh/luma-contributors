@@ -5,7 +5,11 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, getBoundedDispatchLayout, getBoundedInvocationIndexSource} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource
+} from '@luma.gl/graph/gpu-core';
 import {WIDE_NUMERIC_WGSL_HELPERS} from './wide-numeric-gpu-wgsl';
 
 export type WideNumericKernelProps = {

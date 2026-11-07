@@ -34,15 +34,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUShapeDescriptors',
           datasets: [data.id],
-          retain: [
-            'areas',
-            'perimeters',
-            'polsbyPopper',
-            'elongation',
-            'orientation',
-            'convexity',
-            'sliver'
-          ],
           keySpaces: [
             {id: 'park', label: 'park', size: data.featureCount, indexSpace: '1d'},
             {

@@ -4,7 +4,14 @@
 
 import {assert, Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {createTransientView, getBoundedDispatchLayout, getBoundedInvocationIndexSource, validatePackedView, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  validatePackedView,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import type {GPUKeplerTimeUnit} from '@luma-contributors/kepler';
 
 /**

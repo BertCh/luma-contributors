@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of network node 648. groups: 4. values read back from the GPU run. representation: 1 quantities.",
   "description": "Receipt of network node 648. groups: 4. values read back from the GPU run. representation: 1 quantities.",
-  "llms": "Receipt of network node 648\n\n- groups: 4\n- representation: 1 quantities\n- assignment: 1 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients order retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of network node 648\n\n- groups: 4\n- representation: 1 quantities\n- assignment: 1 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients order retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "groups",
     "value": "4"
@@ -49,15 +49,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:43.784Z",
-    "runId": "run-db6eb264",
+    "date": "2026-11-07T14:55:16.648Z",
+    "runId": "run-8da14b65",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients order retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-db6eb264",
+    "runId": "run-8da14b65",
     "rung": "datum",
     "bindings": {
       "entity": 648

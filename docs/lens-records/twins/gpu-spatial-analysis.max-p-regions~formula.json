@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i >= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest wi…",
   "description": "Formula Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i >= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest wi…",
-  "llms": "Formula Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i >= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest within-region sum of squares W = sum over r of sum over i in r of |x_i - mean_r|^2 (standardized units unless standardize is false), then the lowest start index. Regions grow one tract per round, so p is a heuristic maximum, not a proof.\n\n- bound symbols: 3/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i >= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest within-region sum of squares W = sum over r of sum over i in r of |x_i - mean_r|^2 (standardized units unless standardize is false), then the lowest start index. Regions grow one tract per round, so p is a heuristic maximum, not a proof.\n\n- bound symbols: 0/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "3/3"
+    "value": "0/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>max-p-objective</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\text{maximize } p\\quad&amp;\\text{subject to}\\quad \\term{regionTotal}{\\sum_{i\\in r}e_i}\\ge\\term{threshold}{T}\\text{ for every region }r\\\\\n\\term{objective}{W}&amp;=\\sum_{r}\\sum_{i\\in r}\\lVert x_i-\\bar{x}_r\\rVert^2\n\\end{aligned}</pre><p class=\"lens-ascii\">Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i &gt;= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest within-region sum of squares W = sum over r of sum over i in r of |x_i - mean_r|^2 (standardized units unless standardize is false), then the lowest start index. Regions grow one tract per round, so p is a heuristic maximum, not a proof.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.max-p-regions-compiled:max-p-regions-pack-extensive\" data-value=\"regionTotal\">regionTotal · intermediate · extensive</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.max-p-regions-compiled:max-p-regions-pack-extensive\" data-value=\"threshold\">threshold · parameter · threshold</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.max-p-regions-compiled:max-p-regions-publish\" data-value=\"objective\">objective · output · withinSquares</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>max-p-objective</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\text{maximize } p\\quad&amp;\\text{subject to}\\quad \\term{regionTotal}{\\sum_{i\\in r}e_i}\\ge\\term{threshold}{T}\\text{ for every region }r\\\\\n\\term{objective}{W}&amp;=\\sum_{r}\\sum_{i\\in r}\\lVert x_i-\\bar{x}_r\\rVert^2\n\\end{aligned}</pre><p class=\"lens-ascii\">Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i &gt;= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest within-region sum of squares W = sum over r of sum over i in r of |x_i - mean_r|^2 (standardized units unless standardize is false), then the lowest start index. Regions grow one tract per round, so p is a heuristic maximum, not a proof.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"regionTotal\">regionTotal · intermediate · unknown — wgsl extensive not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"threshold\">threshold · parameter · unknown — wgsl threshold not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"objective\">objective · output · unknown — wgsl withinSquares not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "regionTotal",
         "intermediate",
-        "extensive",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "threshold",
         "parameter",
-        "threshold",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "objective",
         "output",
-        "withinSquares",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -61,12 +61,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:34.518Z",
-    "runId": "run-e7cad20a",
+    "date": "2026-11-07T14:55:24.617Z",
+    "runId": "run-638fe6b6",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-e7cad20a",
+    "runId": "run-638fe6b6",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

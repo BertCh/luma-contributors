@@ -596,8 +596,8 @@ export default defineScene<QuakePlateBoundariesOptions>({
 
   snippet: state => `import {
   GPUDistanceField, getGPUDistanceFieldParameterValues, makeGPURasterMetadata
-} from '@luma-contributors/analysis/gpu-raster';
-import {GPUGroupStatistics} from '@luma-contributors/analysis/gpu-dataframe';
+} from '@luma.gl/graph/gpu-raster';
+import {GPUGroupStatistics} from '@luma.gl/graph/gpu-dataframe';
 
 // Seeds: points along the PB2002 steps every 0.8 cells, family id as the seed id.
 distanceGraph.add(new GPUDistanceField({

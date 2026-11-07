@@ -5,7 +5,11 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {getGPURasterConditionalParameterValues, GPURasterConditional, GPURasterTemporal} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPURasterConditionalParameterValues,
+  GPURasterConditional,
+  GPURasterTemporal
+} from '@luma-contributors/analysis/raster-analysis';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import type {RampName} from '../../engine/ramps';
 import {SpatialAnalysisResources, formatCount} from '../../engine/resources';

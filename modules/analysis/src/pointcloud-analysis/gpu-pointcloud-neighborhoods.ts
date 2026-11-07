@@ -6,7 +6,7 @@ import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createPointCloudGridIndex} from './pointcloud-grid-index';
 import type {GPUCommandNode} from '@luma.gl/graph/gpu-core';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
 export type GPUPointCloudNeighborhoodsProps = {
   id?: string;
@@ -133,7 +133,7 @@ for (var depth=lower.z; depth<=upper.z; depth++) {
       endCandidates = '} } } }';
     }
     nodes.push(
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: this.id,
         length: counts.length,
         ...(cooperative

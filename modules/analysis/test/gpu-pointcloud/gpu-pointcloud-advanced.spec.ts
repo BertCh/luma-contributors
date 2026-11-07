@@ -13,7 +13,6 @@ import {
   GPUPointCloudICP,
   GPUPointCloudChange
 } from '@luma-contributors/analysis/pointcloud-analysis';
-import {GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
 import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-utils';
 import pdalOracle from './fixtures/pdal-pointcloud.json';
 import changeOracle from './fixtures/change.json';
@@ -54,50 +53,6 @@ it('owned rows with full halos reproduce monolithic neighborhoods and flag insuf
     rows.buffer.write(new Uint32Array([3, 1, 99]));
     await fixture.run();
     expect((await readIntegers(status.buffer))[2] & 1).toBe(1);
-  } finally {
-    fixture.destroy();
-  }
-});
-
-it('indexed voxel vector means exclude nonfinite whole vectors and preserve sampled source IDs', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const fixture = makeSpatialFixture(device);
-  try {
-    const positions = fixture.view(
-      'float32x3',
-      new Float32Array([0.1, 0.1, 0.1, 0.3, 0.3, 0.3, 0.5, 0.5, 0.5, 1.2, 0, 0])
-    );
-    const values = fixture.view(
-      'float32x3',
-      new Float32Array([1, 2, 3, 3, 4, 5, NaN, 100, 200, 7, 8, 9])
-    );
-    const representatives = fixture.view('uint32', new Uint32Array(2));
-    const counts = fixture.view('uint32', new Uint32Array(2));
-    const output = fixture.view('float32x3', new Float32Array(6));
-    const centroids = fixture.view('float32x3', new Float32Array(6));
-    const means = fixture.view('float32x3', new Float32Array(6));
-    const support = fixture.view('uint32', new Uint32Array(2));
-    fixture.graph.add(
-      new GPUPointCloudVoxelDownsample({
-        positions: positions.view,
-        origin: [0, 0, 0],
-        gridSize: [2, 1, 1],
-        voxelSize: 1,
-        representatives: representatives.view,
-        counts: counts.view,
-        output: output.view,
-        centroids: centroids.view,
-        attribute: {values: values.view, means: means.view, counts: support.view}
-      })
-    );
-    await fixture.run();
-    expect(await readIntegers(representatives.buffer)).toEqual([0, 3]);
-    expect(await readIntegers(support.buffer)).toEqual([2, 1]);
-    expect(await readFloats(means.buffer)).toEqual([2, 3, 4, 7, 8, 9]);
-    (await readFloats(centroids.buffer))
-      .slice(0, 3)
-      .forEach(value => expect(value).toBeCloseTo(0.3, 6));
   } finally {
     fixture.destroy();
   }
@@ -420,72 +375,52 @@ it('correlated surface-change confidence matches independent SciPy pairwise cova
   }
 });
 
-it.each([
-  2, 4
-] as const)('packed vec%i attributes retain every component through voxel reduction and merge', async components => {
+it('voxel merge combines hand-built centroid and packed vec2 attribute parts', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = makeSpatialFixture(device);
   try {
-    const positions = fixture.view('float32x3', new Float32Array([0, 0, 0, 0.2, 0.2, 0.2]));
-    const values = fixture.view(
-      'float32',
-      new Float32Array(Array.from({length: components * 2}, (_, index) => index + 1)),
-      16
-    );
-    const means = fixture.view('float32', new Float32Array(components), 16);
-    const mergedMeans = fixture.view('float32', new Float32Array(components), 16);
-    const format = components === 2 ? 'float32x2' : 'float32x4';
-    const valuesView = fixture.graph.createDataView(values.view.buffer, {
-      format,
-      length: 2,
-      byteOffset: 16
-    });
-    const meansView = fixture.graph.createDataView(means.view.buffer, {
-      format,
-      length: 1,
-      byteOffset: 16
-    });
-    const mergedMeansView = fixture.graph.createDataView(mergedMeans.view.buffer, {
-      format,
-      length: 1,
-      byteOffset: 16
-    });
-    const counts = fixture.view('uint32', new Uint32Array(1));
-    const attributeCounts = fixture.view('uint32', new Uint32Array(1));
-    const representatives = fixture.view('uint32', new Uint32Array(1));
-    const centroids = fixture.view('float32x3', new Float32Array(3));
-    const output = fixture.view('float32x3', new Float32Array(3));
+    const makePart = (
+      count: number,
+      centroid: number[],
+      mean: number[],
+      attributeCount: number
+    ) => {
+      const counts = fixture.view('uint32', new Uint32Array([count]));
+      const centroids = fixture.view('float32x3', new Float32Array(centroid));
+      const representatives = fixture.view('uint32', new Uint32Array([0]));
+      const means = fixture.view('float32', new Float32Array(mean), 16);
+      const meansView = fixture.graph.createDataView(means.view.buffer, {
+        format: 'float32x2',
+        length: 1,
+        byteOffset: 16
+      });
+      const attributeCounts = fixture.view('uint32', new Uint32Array([attributeCount]));
+      return {counts, centroids, representatives, meansView, attributeCounts};
+    };
+    const first = makePart(1, [0, 0, 0], [1, 2], 1);
+    const second = makePart(3, [4, 4, 4], [5, 6], 1);
     const mergedCounts = fixture.view('uint32', new Uint32Array(1));
-    const mergedAttributeCounts = fixture.view('uint32', new Uint32Array(1));
-    const mergedRepresentatives = fixture.view('uint32', new Uint32Array(1));
     const mergedCentroids = fixture.view('float32x3', new Float32Array(3));
+    const mergedRepresentatives = fixture.view('uint32', new Uint32Array(1));
+    const mergedAttributeCounts = fixture.view('uint32', new Uint32Array(1));
+    const mergedMeans = fixture.view('float32', new Float32Array(2), 16);
+    const mergedMeansView = fixture.graph.createDataView(mergedMeans.view.buffer, {
+      format: 'float32x2',
+      length: 1,
+      byteOffset: 16
+    });
     const status = fixture.view('uint32', new Uint32Array(1));
-    fixture.graph.add(
-      new GPUPointCloudVoxelDownsample({
-        positions: positions.view,
-        origin: [0, 0, 0],
-        gridSize: [1, 1, 1],
-        voxelSize: 1,
-        counts: counts.view,
-        representatives: representatives.view,
-        centroids: centroids.view,
-        output: output.view,
-        attribute: {values: valuesView, means: meansView, counts: attributeCounts.view}
-      })
-    );
     fixture.graph.add(
       new GPUPointCloudVoxelMerge({
         partitionPolicy: 'disjoint-owned-rows',
-        parts: [
-          {
-            counts: counts.view,
-            centroids: centroids.view,
-            representatives: representatives.view,
-            sourceRowOffset: 7,
-            attribute: {means: meansView, counts: attributeCounts.view}
-          }
-        ],
+        parts: [first, second].map((part, index) => ({
+          counts: part.counts.view,
+          centroids: part.centroids.view,
+          representatives: part.representatives.view,
+          sourceRowOffset: index * 10,
+          attribute: {means: part.meansView, counts: part.attributeCounts.view}
+        })),
         counts: mergedCounts.view,
         centroids: mergedCentroids.view,
         representatives: mergedRepresentatives.view,
@@ -494,12 +429,12 @@ it.each([
       })
     );
     await fixture.run();
-    expect(await readFloats(mergedMeans.buffer, 16)).toEqual(
-      Array.from({length: components}, (_, component) => component + 1 + components / 2)
-    );
-    expect(await readIntegers(mergedCounts.buffer)).toEqual([2]);
-    expect(await readIntegers(mergedRepresentatives.buffer)).toEqual([7]);
+    expect(await readIntegers(mergedCounts.buffer)).toEqual([4]);
+    expect(await readIntegers(mergedRepresentatives.buffer)).toEqual([0]);
     expect(await readIntegers(status.buffer)).toEqual([0]);
+    expect(await readIntegers(mergedAttributeCounts.buffer)).toEqual([2]);
+    expect(await readFloats(mergedCentroids.buffer)).toEqual([3, 3, 3]);
+    expect(await readFloats(mergedMeans.buffer, 16)).toEqual([3, 4]);
   } finally {
     fixture.destroy();
   }

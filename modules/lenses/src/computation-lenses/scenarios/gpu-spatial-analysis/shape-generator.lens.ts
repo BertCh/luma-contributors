@@ -47,7 +47,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUShapeGenerator',
           datasets: [data.id],
-          retain: ['circleVertices', 'circleOffsets', 'vertexCount'],
           keySpaces: [
             {id: 'place', label: 'place (every 12th)', size: centerCount, indexSpace: '1d'},
             {id: 'vertex', label: 'circle vertex', size: vertexCapacity, indexSpace: '1d'},

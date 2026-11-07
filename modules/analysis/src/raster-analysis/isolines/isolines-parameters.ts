@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from '../raster-band-utils';
-import {getRasterLocalOrigin, validateRasterExtent} from '@luma.gl/graph/gpu-raster';
+import {
+  readRasterParameterOrigin,
+  validateParameterTarget,
+  validateRasterParameterExtent
+} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
 /** Number of float32 elements in a {@link GPUIsolines} parameter view. */
@@ -61,9 +64,9 @@ export function getGPUIsolinesParameterValues(
   if (!Number.isSafeInteger(levelCount) || levelCount < 0) {
     throw new Error('Isolines levelCount must be a non-negative integer');
   }
-  validateRasterExtent('Isolines', extent);
+  validateRasterParameterExtent('Isolines', extent);
   const [minX, minY, maxX, maxY] = extent;
-  const [originX, originY] = getRasterLocalOrigin('Isolines', settings.localOrigin);
+  const [originX, originY] = readRasterParameterOrigin('Isolines', settings.localOrigin);
   target.fill(0, 0, GPU_ISOLINES_PARAMETER_LENGTH);
   target[0] = levelCount;
   target[1] = minX - originX;

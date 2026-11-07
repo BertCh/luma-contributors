@@ -29,9 +29,9 @@ const ALLOWLIST_PATH = resolve(
 
 const ANALYSIS_LAYERS = [
   'analysis-core',
-  'geospatial',
-  'gpu-dataframe',
-  'gpu-raster',
+  'geospatial-analysis',
+  'dataframe-analysis',
+  'raster-analysis',
   'gpu-terrain',
   'gpu-spatial-analysis',
   'gpu-network'
@@ -106,7 +106,7 @@ const VOCABULARY_RULES: Record<string, VocabularyRule> = {
   'raster grid': {
     canonical: 'grid: GPURasterMetadata',
     matches: (name, _typeText, layer) =>
-      (layer === 'gpu-raster' || layer === 'gpu-terrain') &&
+      (layer === 'raster-analysis' || layer === 'gpu-terrain') &&
       ['width', 'height', 'cellSize'].includes(name)
   },
   'seed starts': {

@@ -183,3 +183,21 @@ it('GPUTerrainRGBDecode texture input is a linear WGSL kernel node with a sample
   expect(source).not.toContain('global_invocation_id');
   device.destroy();
 });
+
+it('GPUTerrainRGBDecode rejects outputs above the device storage binding limit', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const limit = device.limits.maxStorageBufferBindingSize;
+  const pixelCount = Math.floor(limit / 4) + 1;
+  const decode = new GPUTerrainRGBDecode({
+    grid: makeGPURasterMetadata({width: pixelCount, height: 1}),
+    encoding: 'terrarium',
+    input: {buffer: createTransientView(graph, 'big-words', 'uint32', pixelCount)},
+    output: {
+      values: createTransientView(graph, 'big-values', 'float32', pixelCount),
+      outputValidity: createTransientView(graph, 'big-validity', 'uint32', pixelCount)
+    }
+  });
+  expect(() => decode.getCommandNodes(graph)).toThrow(/storage binding limit/);
+  device.destroy();
+});

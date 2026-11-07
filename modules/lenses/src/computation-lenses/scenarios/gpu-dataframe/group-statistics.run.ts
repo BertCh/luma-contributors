@@ -13,8 +13,6 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.group-statistics';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['groupKeys', 'groupRows', 'counts', 'means', 'variances', 'medians'];
-
 /** Executes the recorded grouped statistics once and reads inputs and outputs from GPU buffers. */
 export async function run(device: Device, options?: {signal?: AbortSignal}) {
   options?.signal?.throwIfAborted();
@@ -22,11 +20,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   const communityArea = Uint32Array.from(dataset.columns.communityArea);
   const poverty = Float32Array.from(dataset.columns.poverty150Pct, value => value ?? NaN);
   const groupCount = new Set(communityArea).size;
-  const graph = createDataFrameLensGraph<undefined>(
-    device,
-    'gpu-dataframe-group-statistics',
-    RETAINED
-  );
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-group-statistics');
   const example = await runExample(device, {
     graph,
     tracts: {communityArea, poverty150Pct: poverty},

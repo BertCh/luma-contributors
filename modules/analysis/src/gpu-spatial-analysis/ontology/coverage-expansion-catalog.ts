@@ -264,7 +264,7 @@ const COVERAGE_FAMILIES: readonly CoverageFamily[] = [
       domain: 'regional-analysis',
       stage: 'analyze',
       summary:
-        'Class and landscape summaries, patch core/proximity, grounded resistance/current maps and common-support segregation decomposition.',
+        'Class and landscape summaries, patch core/proximity, grounded small-network resistance/current maps and common-support segregation decomposition.',
       inputs: ['surface', 'regions', 'network', 'attributes'],
       outputs: ['attributes', 'summary'],
       coordinateModels: ['grid', 'topological'],
@@ -273,14 +273,12 @@ const COVERAGE_FAMILIES: readonly CoverageFamily[] = [
         'addLandscapeMetricsRecipe',
         'addPatchProximityRecipe',
         'addResistanceConnectivityRecipe',
-        'addSparseResistanceConnectivityRecipe',
-        'addRasterResistanceConnectivityRecipe',
         'addSegregationDecompositionRecipe',
         'addSegregationCounterfactualRecipe',
         'addPopulationSupportAlignmentRecipe'
       ],
       limitation:
-        'Global tile IDs and resident halo-free support enable patch reconciliation. Sparse Jacobi-PCG exposes convergence and disconnected support; raster conductance, quantile counterfactuals, ID alignment and paired randomization have explicit contracts. Scaling evidence covers 65,538 vertices and 65,536 cells, not all conditioning regimes.',
+        'Global tile IDs and resident halo-free support enable patch reconciliation. Quantile counterfactuals, ID alignment and paired randomization have explicit contracts. Sparse Jacobi-PCG and raster resistance are not provided because published luma.gl does not export a PCG solver.',
       evidence: {
         representativeSourceRows: 65538,
         transientMemory: 'solver-matrix',

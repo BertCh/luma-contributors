@@ -27,9 +27,13 @@ it('WP4 round6 fixtures preserve sources, versions, full extents and exact-sum c
     expect(Buffer.byteLength(JSON.stringify(fixture))).toBeLessThan(1_500_000);
     for (const version of Object.values(fixture.versions)) expect(version).toBeTruthy();
     for (const source of fixture.sources)
-      expect(createHash('sha256').update(readFileSync(source.path)).digest('hex')).toBe(
-        source.sha256
-      );
+      expect(
+        createHash('sha256')
+          .update(
+            readFileSync(source.path.replace('modules/graph/test/', 'modules/analysis/test/'))
+          )
+          .digest('hex')
+      ).toBe(source.sha256);
   }
   expect(joinCases[0].pointCount).toBe(43557);
   for (const scene of joinCases) {

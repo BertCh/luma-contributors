@@ -194,11 +194,13 @@ export type GPUTerrainPeakSnapProps = {
   candidateHeights?: GraphDataView<'float32'>;
   /**
    * Vertical datum of `candidateHeights`, for example a catalogue in a national datum. Requires
-   * `candidateHeights` and is checked against `elevation.verticalDatum` when both are declared;
+   * `candidateHeights` and is checked against `elevationVerticalDatum` when both are declared;
    * the library never converts. Geoid offsets up to about ±100 m exceed the default
    * `maximumHeightChange` of 80.
    */
   candidateVerticalDatum?: string;
+  /** Declared vertical datum of `elevation`; published raster bands carry no datum metadata. */
+  elevationVerticalDatum?: string;
   /**
    * Optional per-candidate search radius in ground metres, one per candidate. Non-finite or
    * non-positive entries fall back to the parameters radius. A distance-dependent rule such as
@@ -257,7 +259,7 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
     assertCompatibleGPUVerticalDatums(
       id,
       props.candidateVerticalDatum,
-      props.elevation.verticalDatum,
+      props.elevationVerticalDatum,
       'candidate'
     );
     const {output} = props;

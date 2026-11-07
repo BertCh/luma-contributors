@@ -8,3 +8,4 @@ coverage-*/
 !.yarn/plugins
 .DS_Store
 .playwright-artifacts/
+.typecheck/

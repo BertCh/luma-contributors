@@ -34,6 +34,9 @@ import {
 } from '@luma.gl/graph/gpu-dataframe';
 import {GPUTable} from '@luma.gl/graph/gpu-tables';
 
+/** Crossfilter dimension that keeps dead rows out of every linked view. */
+const LIVE_DIMENSION_ID = 'kepler-live-mask';
+
 export type GPUResidentScalarFormat = 'float32' | 'uint32' | 'sint32';
 export type GPUResidentColumns = Readonly<Record<string, GPUVector<GPUResidentScalarFormat>>>;
 export type GPUResidentDimension =
@@ -126,6 +129,7 @@ export class GPUResidentExplorer {
   private readonly domainPredicates = new Map<string, PredicateState>();
   private readonly vectors: GPUVector[] = [];
   private readonly domainFilters: GPUCrossfilter[] = [];
+  private readonly hasLiveMask: boolean;
   private readonly domainBuffers = new Map<
     string,
     {buffer: Buffer; format: GPUResidentScalarFormat}
@@ -159,6 +163,7 @@ export class GPUResidentExplorer {
       ])
     );
     this.validity = {...props.validity};
+    this.hasLiveMask = Boolean(props.liveMask);
     this.dimensions = props.dimensions.map(dimension => ({...dimension}));
     this.datasetRevision = props.datasetRevision ?? 1;
     this.maximumPageSize = props.maximumPageSize ?? 256;
@@ -195,10 +200,12 @@ export class GPUResidentExplorer {
       }
       const dimensions: GPUCrossfilterDimension[] = this.dimensions.map(dimension => {
         if (dimension.kind === 'external') {
+          // Published crossfilter has no external-mask kind: a caller-written 0/1 mask is a
+          // range dimension over that mask, active as [1, 1] and bypassed when cleared.
           return {
             id: dimension.id,
-            kind: 'external',
-            mask: graph.importGPUVector(dimension.id, dimension.mask)
+            kind: 'range',
+            input: graph.importGPUVector(dimension.id, dimension.mask)
           };
         }
         const predicate = createPredicate(dimension);
@@ -208,10 +215,18 @@ export class GPUResidentExplorer {
         this.predicates.set(dimension.id, {query, parameters: {}});
         return {
           id: dimension.id,
-          kind: 'external',
-          mask: graph.importGPUVector(dimension.id, query.selectionMask)
+          kind: 'range',
+          input: graph.importGPUVector(dimension.id, query.selectionMask)
         };
       });
+      // Liveness is a permanently active dimension, so it intersects every linked view.
+      const liveDimension: GPUCrossfilterDimension | undefined = props.liveMask
+        ? {
+            id: LIVE_DIMENSION_ID,
+            kind: 'range',
+            input: graph.importGPUVector('live', props.liveMask)
+          }
+        : undefined;
       // A neutral dimension keeps an unfiltered dataset valid without synthesizing CPU rows.
       if (!dimensions.length) {
         dimensions.push({
@@ -241,11 +256,11 @@ export class GPUResidentExplorer {
         });
       }
       filter = new GPUCrossfilter(graph, {
-        dimensions,
+        dimensions: liveDimension ? [...dimensions, liveDimension] : dimensions,
         views,
-        outputMask: graph.importGPUVector('selection', this.selectionMask),
-        liveMask: props.liveMask ? graph.importGPUVector('live', props.liveMask) : undefined
+        outputMask: graph.importGPUVector('selection', this.selectionMask)
       });
+      if (liveDimension) filter.setRange(LIVE_DIMENSION_ID, [1, 1]);
       this.filter = filter;
       filter.addToGraph(graph);
       for (const histogram of props.histograms ?? []) {
@@ -289,26 +304,39 @@ export class GPUResidentExplorer {
             );
             scopedFilter = new GPUCrossfilter(graph, {
               id: `domain-scope-${scopes.size}`,
-              dimensions: selectedDimensions.length
-                ? selectedDimensions
-                : [
-                    {
-                      id: 'unfiltered',
-                      kind: 'range',
-                      input: graph.importGPUVector(
-                        `domain-source-${scopes.size}`,
-                        getNeutralSource()
-                      )
-                    }
-                  ],
+              dimensions:
+                selectedDimensions.length || props.liveMask
+                  ? [
+                      ...selectedDimensions,
+                      ...(props.liveMask
+                        ? [
+                            {
+                              id: LIVE_DIMENSION_ID,
+                              kind: 'range' as const,
+                              input: graph.importGPUVector(
+                                `domain-live-${scopes.size}`,
+                                props.liveMask
+                              )
+                            }
+                          ]
+                        : [])
+                    ]
+                  : [
+                      {
+                        id: 'unfiltered',
+                        kind: 'range' as const,
+                        input: graph.importGPUVector(
+                          `domain-source-${scopes.size}`,
+                          getNeutralSource()
+                        )
+                      }
+                    ],
               outputMask: graph.importGPUVector(
                 `domain-mask-${scopes.size}`,
                 this.allocateVector(`domain-mask-${scopes.size}`, sourceChunkLengths)
-              ),
-              liveMask: props.liveMask
-                ? graph.importGPUVector(`domain-live-${scopes.size}`, props.liveMask)
-                : undefined
+              )
             });
+            if (props.liveMask) scopedFilter.setRange(LIVE_DIMENSION_ID, [1, 1]);
             this.domainFilters.push(scopedFilter);
             scopes.set(key, scopedFilter);
             scopedFilter.addToGraph(graph);
@@ -436,9 +464,10 @@ export class GPUResidentExplorer {
     this.setPredicateParameters(id, {enabled: false});
   }
 
+  /** External and live masks must contain strictly 0 or 1; other values are not treated as set. */
   setExternalActive(id: string, active: boolean): void {
     this.requireDimension(id, 'external');
-    this.filter.setExternalActive(id, active);
+    this.setDimensionActive(this.filter, id, active);
     this.updateDomainFilters(id, active);
     this.invalidate();
   }
@@ -454,6 +483,12 @@ export class GPUResidentExplorer {
     this.assertActive();
     this.filter.clearAll();
     for (const scopedFilter of this.domainFilters) scopedFilter.clearAll();
+    // clearAll also bypasses the liveness dimension, which must stay active.
+    if (this.hasLiveMask) {
+      this.filter.setRange(LIVE_DIMENSION_ID, [1, 1]);
+      for (const scopedFilter of this.domainFilters)
+        scopedFilter.setRange(LIVE_DIMENSION_ID, [1, 1]);
+    }
     this.invalidate();
   }
 
@@ -461,7 +496,6 @@ export class GPUResidentExplorer {
   invalidate(): void {
     this.assertActive();
     this.revision++;
-    this.filter.invalidate();
   }
 
   /** Encode before Deck draws; the caller retains submission ownership. */
@@ -478,7 +512,6 @@ export class GPUResidentExplorer {
       return this.revision;
     } catch (error) {
       this.encodedRevision = -1;
-      this.filter.invalidate();
       throw error;
     }
   }
@@ -487,7 +520,6 @@ export class GPUResidentExplorer {
   discardEncoding(): void {
     this.assertActive();
     this.encodedRevision = -1;
-    this.filter.invalidate();
   }
 
   /** Read only the four-byte selected-row count for bounded export preflight. */
@@ -653,9 +685,9 @@ export class GPUResidentExplorer {
    */
   get accountedResidentByteLength(): number {
     const buffers = new Set<Buffer>();
+    // Predicate queries keep their compiled graphs private, so their scratch is not counted: a lower bound.
     let transientBytes = this.compiled.stats.physicalTransientResourceBytes;
     for (const predicate of [...this.predicates.values(), ...this.domainPredicates.values()]) {
-      transientBytes += predicate.query.compilationStats.physicalTransientResourceBytes;
       for (const vector of [
         predicate.query.selectionMask,
         predicate.query.rowIndices,
@@ -824,15 +856,21 @@ export class GPUResidentExplorer {
 
   private setPredicateParameters(id: string, parameters: Record<string, number | boolean>): void {
     this.predicates.get(id)!.parameters = parameters;
-    this.filter.setExternalActive(id, true);
+    this.setDimensionActive(this.filter, id, true);
     this.updateDomainFilters(id, true);
     this.invalidate();
   }
   private updateDomainFilters(id: string, active: boolean): void {
     for (const scopedFilter of this.domainFilters) {
       if (scopedFilter.dimensions.some(dimension => dimension.id === id))
-        scopedFilter.setExternalActive(id, active);
+        this.setDimensionActive(scopedFilter, id, active);
     }
+  }
+
+  /** Every dimension is a 0/1 mask range: active selects [1, 1], inactive bypasses the mask. */
+  private setDimensionActive(filter: GPUCrossfilter, id: string, active: boolean): void {
+    if (active) filter.setRange(id, [1, 1]);
+    else filter.clear(id);
   }
 
   private requireDimension(id: string, kind?: GPUResidentDimension['kind']): GPUResidentDimension {

@@ -48,7 +48,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellGridPath',
           datasets: [data.id],
-          retain: ['distances', 'counts', 'pathCells', 'pathBoundariesCenters'],
           keySpaces: [
             {id: 'pair', label: 'origin/destination pair', size: pairCount, indexSpace: '1d'},
             {

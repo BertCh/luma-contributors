@@ -11,7 +11,11 @@ import {
   GPUTrajectoryMetrics,
   GPU_LINE_DENSITY_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {createAnalysisFrameProjection, projectLngLatToFrame} from '../../engine/analysis-frame';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {

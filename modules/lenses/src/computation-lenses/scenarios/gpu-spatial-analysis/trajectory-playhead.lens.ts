@@ -34,17 +34,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUTrajectoryPlayhead',
           datasets: [data.id],
-          retain: [
-            'currentPositions',
-            'headings',
-            'speeds',
-            'trackStatus',
-            'segmentRows',
-            'segmentFractions',
-            'activeTrackIds',
-            'activeTrackCount',
-            'activeTrackOverflow'
-          ],
           keySpaces: [
             {id: 'track', label: 'vessel track', size: data.trackCount, indexSpace: '1d'},
             {id: 'fix', label: 'AIS fix', size: data.timestamps.length, indexSpace: '1d'}

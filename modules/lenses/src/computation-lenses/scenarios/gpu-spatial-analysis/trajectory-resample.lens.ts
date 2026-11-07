@@ -33,7 +33,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUTrajectoryResample',
           datasets: [data.id],
-          retain: ['samples', 'sampleTimes'],
           keySpaces: [
             {id: 'track', label: 'vessel track', size: data.trackCount, indexSpace: '1d'},
             {id: 'fix', label: 'AIS fix', size: data.timestamps.length, indexSpace: '1d'},

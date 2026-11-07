@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-graph.graph-topology",
   "viewId": "formula-card",
-  "caption": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "description": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "llms": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.\n\n- bound symbols: 2/3\n- 4 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula degrees[v] = accepted edges whose first endpoint is v (source for forward, target for reverse; undirected non-loop edges also count their second endpoint). scannedOffsets = exclusive scan of degrees; offsets[v] = scannedOffsets[v]; offsets[N…",
+  "description": "Formula degrees[v] = accepted edges whose first endpoint is v (source for forward, target for reverse; undirected non-loop edges also count their second endpoint). scannedOffsets = exclusive scan of degrees; offsets[v] = scannedOffsets[v]; offsets[N…",
+  "llms": "Formula degrees[v] = accepted edges whose first endpoint is v (source for forward, target for reverse; undirected non-loop edges also count their second endpoint). scannedOffsets = exclusive scan of degrees; offsets[v] = scannedOffsets[v]; offsets[N] = scannedOffsets[N-1] + degrees[N-1]. Each edge takes slot scannedOffsets[v] + atomicAdd(cursors[v], 1), so neighbor order within a vertex is unspecified. Slots at or beyond the neighbor capacity are dropped and flagged by overflow; offsets stay untruncated.\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/3"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.scan</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})</pre><p class=\"lens-ascii\">y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-topology-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-topology-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"y\">y · output · outputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"heads\">heads · input · unknown — wgsl segmentFlags not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-topology-compiled:rail-topology-forward-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-topology-compiled:topology-forward-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-topology-compiled:rail-topology-forward-scan-level-1-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-topology-compiled:topology-forward-scan-level-1-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-topology-compiled:rail-topology-forward-scan-level-0-add-offsets\">add-offsets</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-topology-compiled:topology-forward-scan-level-0-add-offsets\">add-offsets</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-graph.topology-exclusive-scan</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{offset}{o}_v=\\term{scanned}{s}_v=\\sum_{u&lt;v}\\term{degree}{k}_u,\\quad\n\\term{offset}{o}_{\\term{count}{N}}=\\term{scanned}{s}_{N-1}+\\term{degree}{k}_{N-1},\\quad\n\\mathrm{slot}(e)=\\term{scanned}{s}_v+\\term{cursor}{c}_v</pre><p class=\"lens-ascii\">degrees[v] = accepted edges whose first endpoint is v (source for forward, target for reverse; undirected non-loop edges also count their second endpoint). scannedOffsets = exclusive scan of degrees; offsets[v] = scannedOffsets[v]; offsets[N] = scannedOffsets[N-1] + degrees[N-1]. Each edge takes slot scannedOffsets[v] + atomicAdd(cursors[v], 1), so neighbor order within a vertex is unspecified. Slots at or beyond the neighbor capacity are dropped and flagged by overflow; offsets stay untruncated.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"offset\">CSR offset · output · unknown — wgsl offsets not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"scanned\">scanned offset · intermediate · unknown — wgsl scannedOffsets not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"degree\">accepted degree · intermediate · unknown — wgsl degrees not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cursor\">placement cursor · intermediate · unknown — wgsl cursors not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">vertex count · constant · unknown — wgsl VERTEX_COUNT not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -27,22 +27,36 @@
     ],
     "rows": [
       [
-        "x",
-        "input",
-        "inputValues",
-        "—",
-        "metadata"
-      ],
-      [
-        "y",
+        "CSR offset",
         "output",
-        "outputValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "heads",
-        "input",
+        "scanned offset",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "accepted degree",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "placement cursor",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "vertex count",
+        "constant",
         "unknown",
         "—",
         "metadata"
@@ -51,25 +65,28 @@
     "provenance": [
       "metadata",
       "metadata",
+      "metadata",
+      "metadata",
       "metadata"
     ]
   },
   "formula": {
-    "tex": "\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})",
-    "ascii": "y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.",
+    "tex": "\\term{offset}{o}_v=\\term{scanned}{s}_v=\\sum_{u<v}\\term{degree}{k}_u,\\quad\n\\term{offset}{o}_{\\term{count}{N}}=\\term{scanned}{s}_{N-1}+\\term{degree}{k}_{N-1},\\quad\n\\mathrm{slot}(e)=\\term{scanned}{s}_v+\\term{cursor}{c}_v",
+    "ascii": "degrees[v] = accepted edges whose first endpoint is v (source for forward, target for reverse; undirected non-loop edges also count their second endpoint). scannedOffsets = exclusive scan of degrees; offsets[v] = scannedOffsets[v]; offsets[N] = scannedOffsets[N-1] + degrees[N-1]. Each edge takes slot scannedOffsets[v] + atomicAdd(cursors[v], 1), so neighbor order within a vertex is unspecified. Slots at or beyond the neighbor capacity are dropped and flagged by overflow; offsets stay untruncated.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:43.501Z",
-    "runId": "run-0eb8146e",
+    "date": "2026-11-07T14:55:16.535Z",
+    "runId": "run-635b9be2",
     "observerEffects": [
-      "4 observation taps inserted",
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-0eb8146e",
+    "runId": "run-635b9be2",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

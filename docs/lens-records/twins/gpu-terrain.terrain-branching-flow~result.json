@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport. cells: 9. values read back from the GPU run. input fractions: 72 values.",
   "description": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport. cells: 9. values read back from the GPU run. input fractions: 72 values.",
-  "llms": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport\n\n- cells: 9\n- input fractions: 72 values\n- input injection: 9 cells\n- Planar coordinates (m); uniform scale.\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport\n\n- cells: 9\n- input fractions: 72 values\n- input injection: 9 cells\n- Planar coordinates (m); uniform scale.\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "9"
@@ -24,14 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:10.017Z",
-    "runId": "run-502b2f7b",
+    "date": "2026-11-07T14:55:29.908Z",
+    "runId": "run-b68cd7e4",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-502b2f7b",
+    "runId": "run-b68cd7e4",
     "rung": "result",
     "bindings": {},
     "clauses": [],

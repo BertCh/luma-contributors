@@ -3,9 +3,23 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph, type GPUCommandGraphExecution} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GPUCommandGraphExecution
+} from '@luma.gl/graph/gpu-core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUGraphAlgorithmsData, GPUGraphAlgorithmsCoreNumber, GPUGraphAlgorithmsDegree, GPUGraphAlgorithmsLabelPropagation, GPUGraphAlgorithmsModularity, GPUGraphAlgorithmsModularityOptimization, GPUGraphAlgorithmsPageRank, GPUGraphAlgorithmsTopology, type GPUGraphAlgorithmsAdjacency} from '@luma.gl/graph/gpu-graph-algorithms';
+import {
+  GPUGraphAlgorithmsData,
+  GPUGraphAlgorithmsCoreNumber,
+  GPUGraphAlgorithmsDegree,
+  GPUGraphAlgorithmsLabelPropagation,
+  GPUGraphAlgorithmsModularity,
+  GPUGraphAlgorithmsModularityOptimization,
+  GPUGraphAlgorithmsPageRank,
+  GPUGraphAlgorithmsTopology,
+  type GPUGraphAlgorithmsAdjacency
+} from '@luma.gl/graph/gpu-graph-algorithms';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 

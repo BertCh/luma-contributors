@@ -4,7 +4,17 @@
 
 import type {Layer, Viewport} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {evaluateVariogramModel, fitVariogramModel, getGPUVariogramParameterValues, GPU_VARIOGRAM_PARAMETER_LENGTH, GPUVariogram, GPUVariogramModelFit, type VariogramModel, type VariogramModelType, type VariogramModelWeighting} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  evaluateVariogramModel,
+  fitVariogramModel,
+  getGPUVariogramParameterValues,
+  GPU_VARIOGRAM_PARAMETER_LENGTH,
+  GPUVariogram,
+  GPUVariogramModelFit,
+  type VariogramModel,
+  type VariogramModelType,
+  type VariogramModelWeighting
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUFocalStatisticsParameterValues,

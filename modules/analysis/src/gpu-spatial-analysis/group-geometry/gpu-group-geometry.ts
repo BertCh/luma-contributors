@@ -9,7 +9,6 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
-  GPUSegmentedReduction,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -21,6 +20,7 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createSegmentReductionNode} from '../shared/segment-reduction';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {getSortedSegmentOffsetNodes} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {
@@ -141,7 +141,7 @@ export type GPUGroupGeometryProps = {
  *
  * Labels are validated into one group key per row (noise and out-of-range labels become the
  * excluded key `groupCount`). Rows are stably sorted by that key with `GPUSort`, offsets are lower
- * bounds found by binary search in the sorted keys (no counting atomics or scan), bounds use `GPUSegmentedReduction`, and the centers and the ellipse come from
+ * bounds found by binary search in the sorted keys (no counting atomics or scan), bounds use a per-segment min/max kernel, and the centers and the ellipse come from
  * {@link GPUGeographicDistribution} run on the same keys (two instances when weights are given).
  *
  * ## Medoid
@@ -379,13 +379,14 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
       const reduce = (name: string, input: GraphDataView<'float32'>, operation: 'min' | 'max') => {
         const result = f32(`bounds-${name}`, groupCount);
         nodes.push(
-          ...new GPUSegmentedReduction({
+          createSegmentReductionNode<Parameters>(graph, {
             id: `${id}-bounds-${name}`,
+            operation: OPERATION,
             input,
             segmentOffsets,
             output: result,
-            operation
-          }).getCommandNodes(graph)
+            reduction: operation
+          })
         );
         return result;
       };

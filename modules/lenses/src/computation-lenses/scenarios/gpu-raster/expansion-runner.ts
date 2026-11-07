@@ -17,7 +17,8 @@ import {runExample as runRasterFractionalCoverageExample} from './raster-fractio
 import {runExample as runRasterFractionalZonalStatisticsExample} from './raster-fractional-zonal-statistics.example';
 import {runExample as runTerrainFlowDistanceExample} from '../gpu-terrain/terrain-flow-distance.example';
 import {runExample as runTerrainStreamNetworkExample} from '../gpu-terrain/terrain-stream-network.example';
-import * as raster from '@luma.gl/graph/gpu-raster';
+import type * as raster from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 import {runRasterLens, type RasterLensSession} from './raster-lens-harness';
 import {getRasterOperatorEntries} from '../../../gpu-raster/computation-pack/index';
 import {getTerrainOperatorEntries} from '../../../gpu-terrain/computation-pack/index';
@@ -66,7 +67,7 @@ export async function buildRasterExpansionScenario(
   const validity = () =>
     session.output('validity', 'uint32', {role: 'intermediate', geometry: 'raster'});
   const source = session.input('input', 'float32', [9, 8, 7, 6, NaN, 4, 3, 2, 1]);
-  const band = raster.makeGPURasterBand(source, grid);
+  const band = makeGPURasterBand(source, grid);
   const binary = () => session.input('foreground', 'uint32', [1, 1, 1, 1, 0, 1, 1, 1, 1]);
   switch (element) {
     case 'GPURasterFillNoData':
@@ -155,7 +156,7 @@ export async function buildRasterExpansionScenario(
       await runRasterWalkingCostExample(session.graph, {
         grid,
         elevation: band,
-        friction: raster.makeGPURasterBand(
+        friction: makeGPURasterBand(
           session.input('friction', 'float32', [1, 1, 1, 1, 1, 1, 1, 1, 1]),
           grid
         ),

@@ -99,9 +99,9 @@ function getLegends(
 }
 
 function getSnippet(state: BixiTidesOptions): string {
-  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  return `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
-import {getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
+import {getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
 
 const graph = new GPUCommandGraph(device, {id: 'tides'});
 graph.add(

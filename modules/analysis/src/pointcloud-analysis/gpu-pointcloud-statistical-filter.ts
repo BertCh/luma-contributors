@@ -5,7 +5,7 @@
 import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
 export type GPUPointCloudStatisticalFilterProps = {
   id?: string;
@@ -36,7 +36,7 @@ export class GPUPointCloudStatisticalFilter {
   }
   getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
     const {squaredDistances, counts, capacity, meanDistances, mask} = this.props;
-    const nodes = getSpatialOperationNodes(graph, {
+    const nodes = getPointCloudKernelNodes(graph, {
       id: `${this.id}-means`,
       length: counts.length,
       inputs: {squaredDistances, counts},
@@ -50,7 +50,7 @@ writeMeanDistances(index, select(-1.0, distanceSum / f32(max(support, 1u)), supp
     const moments = createTransientView(graph, `${this.id}-moments`, 'float32x3', blockCount);
     const threshold = createTransientView(graph, `${this.id}-threshold`, 'float32', 1);
     nodes.push(
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-block-statistics`,
         length: blockCount,
         inputs: {meanDistances},
@@ -63,7 +63,7 @@ for (var point = index * 256u; point < min((index + 1u) * 256u, ${counts.length}
 }
 writeMoments(index, vec3f(f32(support), mean, variance));`
       }),
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-global-statistics`,
         length: 1,
         inputs: {moments},
@@ -80,7 +80,7 @@ for (var batchIndex = 0u; batchIndex < ${blockCount}u; batchIndex++) {
 }
 writeThreshold(0u, mean + ${Math.fround(this.props.standardDeviations ?? 2)} * sqrt(max(variance, 0.0)));`
       }),
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-classify`,
         length: counts.length,
         inputs: {meanDistances, threshold},

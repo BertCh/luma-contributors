@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.map-matching: fixes → matchedRuns.",
   "description": "Result of gpu-network.map-matching: fixes → matchedRuns. lines: 10. values read back from the GPU run. input fixes: 3 lines.",
-  "llms": "Result of gpu-network.map-matching: fixes → matchedRuns\n\n- lines: 10\n- input fixes: 3 lines\n- Planar coordinates (unit unknown); uniform scale.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 139 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 135 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.map-matching: fixes → matchedRuns\n\n- lines: 10\n- input fixes: 3 lines\n- Planar coordinates (unit unknown); uniform scale.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 139 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 135 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "10"
@@ -19,15 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.575Z",
-    "runId": "run-5f1d0b6c",
+    "date": "2026-11-07T14:55:16.759Z",
+    "runId": "run-e0aa4a4e",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-5f1d0b6c",
+    "runId": "run-e0aa4a4e",
     "rung": "result",
     "bindings": {},
     "clauses": [],

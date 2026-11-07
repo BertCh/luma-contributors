@@ -80,7 +80,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineLengthPerPolygon',
           datasets: [roads.id, areaDatasetId],
-          retain: ['lengths', 'segmentCounts', 'overflow'],
           keySpaces: [
             {id: 'area', label: 'community area', size: areaCount, indexSpace: '1d'},
             {

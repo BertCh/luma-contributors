@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.cell-rollup",
   "viewId": "datum-receipt",
-  "caption": "Receipt of parent cell 0. counts: 220. values read back from the GPU run. boundaries-geometry: 2 quantities.",
-  "description": "Receipt of parent cell 0. counts: 220. values read back from the GPU run. boundaries-geometry: 2 quantities.",
-  "llms": "Receipt of parent cell 0\n\n- counts: 220\n- boundaries-geometry: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of parent cell 0. counts: 220. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of parent cell 0. counts: 220. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of parent cell 0\n\n- counts: 220\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "counts",
     "value": "220"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of parent cell 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"boundaries-geometry\"><tr><th scope=\"rowgroup\" colspan=\"5\">boundaries-geometry</th></tr><tr data-provenance=\"readback\"><td>boundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-rollup-snapshots-cells-0\" title=\"zoom-16 parent Quadbin cell key as (low, high) uint32 words\">cells</button></td><td>1802502143, 1224944308</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-rollup-snapshots-counts-0\" title=\"places per parent cell (integer sum of its child counts)\">counts</button></td><td>220</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of parent cell 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-rollup-snapshots-cells-0\" title=\"zoom-16 parent Quadbin cell key as (low, high) uint32 words\">cells</button></td><td>1802502143, 1224944308</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-rollup-snapshots-counts-0\" title=\"places per parent cell (integer sum of its child counts)\">counts</button></td><td>220</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,14 +28,14 @@
     ],
     "rows": [
       [
-        "boundaries-geometry",
+        "result",
         "cells",
         "1802502143, 1224944308",
         "0",
         "readback"
       ],
       [
-        "boundaries-geometry",
+        "result",
         "counts",
         "220",
         "0",
@@ -69,12 +69,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:02.943Z",
-    "runId": "run-37451edb",
+    "date": "2026-11-07T14:55:19.812Z",
+    "runId": "run-d61b2aec",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-37451edb",
+    "runId": "run-d61b2aec",
     "rung": "datum",
     "bindings": {
       "entity": 0

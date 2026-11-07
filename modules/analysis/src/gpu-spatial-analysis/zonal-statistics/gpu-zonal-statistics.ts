@@ -282,17 +282,13 @@ export type GPUZonalStatisticsProps = {
    * (`valueCounts`, `sums`, `weightSums`, `means`, `minima`, `maxima` and extents of them).
    * Non-finite values never contribute.
    */
-  values?:
-    | GraphDataView<'float32'>
-    | import('@luma-contributors/analysis/gpu-core').GraphVectorView<'float32'>;
+  values?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /**
    * Per-point weights with the topology of `values`. Requires `values`. With weights, `sums` is
    * `sum(w * v)` and `means` is `sum(w * v) / sum(w)`; a row with a non-finite weight is invalid
    * for every value statistic. Products that overflow float32 are dropped from sums.
    */
-  weights?:
-    | GraphDataView<'float32'>
-    | import('@luma-contributors/analysis/gpu-core').GraphVectorView<'float32'>;
+  weights?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /**
    * Optional per-feature areas (`featureCount` rows). They replace the GPU-computed polygon area
    * and are required for densities with `kind: 'feature-rows'` or a longitude/latitude context.

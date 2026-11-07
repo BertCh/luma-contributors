@@ -14,7 +14,7 @@
     "value": "13.46"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUScalarScale</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{outputValues}{y}=\\term{firstRange}{r_0}(1-\\term{position}{t})+\\term{secondRange}{r_1}\\,\\term{position}{t},\\quad \\term{position}{t}=\\frac{\\term{transformed}{T(x)}-\\term{first}{T(d_0)}}{\\term{second}{T(d_1)}-\\term{first}{T(d_0)}}</pre><p class=\"lens-ascii\">y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0.</p></div><div class=\"lens-worked-example\"><h4>Entity 1</h4><div><pre class=\"lens-tex\">\\term{outputValues}{13.4591}=\\term{firstRange}{r_0}(1-\\term{position}{t})+\\term{secondRange}{r_1}\\,\\term{position}{t},\\quad \\term{position}{t}=\\frac{\\term{transformed}{T(x)}-\\term{first}{T(d_0)}}{\\term{second}{T(d_1)}-\\term{first}{T(d_0)}}</pre><p class=\"lens-ascii\">y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"outputValues\">outputValues · output · outputValues<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"firstRange\">firstRange · input · firstRange</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"secondRange\">secondRange · input · secondRange</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"position\">position · intermediate · position</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"transformed\">transformed · intermediate · transformed</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"first\">first · intermediate · first</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.scalar-scale-compiled:scalar-scale-map\" data-value=\"second\">second · intermediate · second</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUScalarScale</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{outputValues}{y}=\\term{firstRange}{r_0}(1-\\term{position}{t})+\\term{secondRange}{r_1}\\,\\term{position}{t},\\quad \\term{position}{t}=\\frac{\\term{transformed}{T(x)}-\\term{first}{T(d_0)}}{\\term{second}{T(d_1)}-\\term{first}{T(d_0)}}</pre><p class=\"lens-ascii\">y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0.</p></div><div class=\"lens-worked-example\"><h4>Entity 1</h4><div><pre class=\"lens-tex\">\\term{outputValues}{13.4591}=\\term{firstRange}{r_0}(1-\\term{position}{t})+\\term{secondRange}{r_1}\\,\\term{position}{t},\\quad \\term{position}{t}=\\frac{\\term{transformed}{T(x)}-\\term{first}{T(d_0)}}{\\term{second}{T(d_1)}-\\term{first}{T(d_0)}}</pre><p class=\"lens-ascii\">y = r0*(1-t) + r1*t with t = (T(x)-T(d0))/(T(d1)-T(d0)); T is identity (linear), signed sqrt, or log|x| (same-sign domain); point uses t = categoryIndex/(domainCount-1); invalid rows write nullValue with validity 0.</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"outputValues\">outputValues · output · unknown — wgsl outputValues not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"firstRange\">firstRange · input · unknown — wgsl firstRange not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"secondRange\">secondRange · input · unknown — wgsl secondRange not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"position\">position · intermediate · unknown — wgsl position not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"transformed\">transformed · intermediate · unknown — wgsl transformed not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"first\">first · intermediate · unknown — wgsl first not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"second\">second · intermediate · unknown — wgsl second not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,49 +30,49 @@
       [
         "outputValues",
         "output",
-        "outputValues",
+        "unknown",
         "13.459134101867676",
         "readback"
       ],
       [
         "firstRange",
         "input",
-        "firstRange",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "secondRange",
         "input",
-        "secondRange",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "position",
         "intermediate",
-        "position",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "transformed",
         "intermediate",
-        "transformed",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "first",
         "intermediate",
-        "first",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "second",
         "intermediate",
-        "second",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -94,12 +94,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:42.045Z",
-    "runId": "run-a5d413be",
+    "date": "2026-11-07T14:55:16.102Z",
+    "runId": "run-9a73a379",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-a5d413be",
+    "runId": "run-9a73a379",
     "rung": "formula",
     "bindings": {
       "entity": 1

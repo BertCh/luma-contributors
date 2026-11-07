@@ -3,9 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  alignGraphVectorViews,
   createTransientView,
-  getGraphVectorData,
   GPUReduction,
   GraphVectorView,
   type GPUCommandGraph,
@@ -33,14 +31,36 @@ export type GPUVariableStandardizationMethod =
   | 'range-adjust'
   | 'range-standardize';
 
+function getGraphVectorData<Format extends 'float32' | 'uint32'>(
+  column: GraphDataView<Format> | GraphVectorView<Format>
+): readonly GraphDataView<Format>[] {
+  return column instanceof GraphVectorView ? column.data : [column];
+}
+
+/** Borrows a row range of a packed transient view. */
+function sliceView<Format extends 'float32' | 'uint32', Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  view: GraphDataView<Format>,
+  start: number,
+  length: number
+): GraphDataView<Format> {
+  return graph.createDataView(view.buffer, {
+    format: view.format,
+    length,
+    byteOffset: view.byteOffset + start * view.byteStride,
+    byteStride: view.byteStride,
+    rowByteLength: view.rowByteLength
+  });
+}
+
 type Column<Format extends 'float32' | 'uint32'> = GraphDataView<Format> | GraphVectorView<Format>;
 
 /** Topology is fixed; input and mask buffer contents may change between encodings. */
 export type GPUVariableStandardizationProps = {
   id?: string;
-  /** Packed scalar float32 column, optionally chunked. 0 to 2^24 rows. */
+  /** Packed scalar float32 column, a single chunk. 0 to 2^24 rows. */
   values: Column<'float32'>;
-  /** Nonzero includes the row. Chunk boundaries may differ from values and output. */
+  /** Nonzero includes the row. Single chunk. */
   mask?: Column<'uint32'>;
   method: GPUVariableStandardizationMethod;
   /** Z-score convention. Defaults to sample (GeoDa), dividing squared deviations by n - 1. */
@@ -82,6 +102,8 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
       if (!column) continue;
       if (column.length !== props.values.length)
         throw new Error(`${this.id} ${name} length mismatch`);
+      // Published GraphVectorView chunks are not realigned; each column must be a single chunk.
+      if (getGraphVectorData(column).length > 1) throw new Error(`${this.id} ${name} single chunk`);
       for (const chunk of getGraphVectorData(column))
         validatePackedView(chunk, [format], `${this.id} ${name}`);
     }
@@ -116,9 +138,23 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
       ...(props.mask ? getGraphVectorData(props.mask) : [])
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
-    const spans = props.mask
-      ? alignGraphVectorViews(graph, [props.values, props.output, props.mask] as const)
-      : alignGraphVectorViews(graph, [props.values, props.output] as const);
+    // Each column is a single chunk (validated in the constructor), so there is one span.
+    const spans = [
+      [
+        getGraphVectorData(props.values)[0],
+        getGraphVectorData(props.output)[0],
+        props.mask ? getGraphVectorData(props.mask)[0] : undefined
+      ]
+    ] as const;
+    const totalLength = props.values.length;
+    const spanStarts: number[] = [];
+    let spanStart = 0;
+    for (const span of spans) {
+      spanStarts.push(spanStart);
+      spanStart += span[0].length;
+    }
+    const cleanAll = createTransientView(graph, `${id}-clean`, 'float32', totalLength);
+    const validAll = createTransientView(graph, `${id}-valid`, 'uint32', totalLength);
     const cleanChunks: GraphDataView<'float32'>[] = [];
     const validChunks: GraphDataView<'uint32'>[] = [];
     const count = createTransientView(graph, `${id}-count`, 'uint32', 1);
@@ -128,13 +164,8 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
     const needsMean = !props.method.startsWith('range-');
     const needsDispersion = props.method === 'mad' || props.method === 'z-score';
     for (const [spanIndex, [values, , mask]] of spans.entries()) {
-      const clean = createTransientView(
-        graph,
-        `${id}-clean-${spanIndex}`,
-        'float32',
-        values.length
-      );
-      const valid = createTransientView(graph, `${id}-valid-${spanIndex}`, 'uint32', values.length);
+      const clean = sliceView(graph, cleanAll, spanStarts[spanIndex], values.length);
+      const valid = sliceView(graph, validAll, spanStarts[spanIndex], values.length);
       cleanChunks.push(clean);
       validChunks.push(valid);
       const bindings: WGSLKernelBinding[] = [
@@ -158,8 +189,8 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
         })
       );
     }
-    const clean = makeVector(`${id}-clean`, 'float32', cleanChunks);
-    const valid = makeVector(`${id}-valid`, 'uint32', validChunks);
+    const clean = cleanAll;
+    const valid = validAll;
     nodes.push(
       ...new GPUReduction({
         id: `${id}-count`,
@@ -178,14 +209,10 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
       }).getCommandNodes(graph)
     );
     const normalizedChunks: GraphDataView<'float32'>[] = [];
+    const normalizedAll = createTransientView(graph, `${id}-normalized`, 'float32', totalLength);
     if (needsMean) {
       for (const [spanIndex, values] of cleanChunks.entries()) {
-        const normalized = createTransientView(
-          graph,
-          `${id}-normalized-${spanIndex}`,
-          'float32',
-          values.length
-        );
+        const normalized = sliceView(graph, normalizedAll, spanStarts[spanIndex], values.length);
         normalizedChunks.push(normalized);
         nodes.push(
           createWGSLKernelNode(graph, {
@@ -209,22 +236,16 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
       nodes.push(
         ...new GPUReduction({
           id: `${id}-mean-sum`,
-          input: makeVector(`${id}-normalized`, 'float32', normalizedChunks),
+          input: normalizedAll,
           operation: 'sum',
           output: sum
         }).getCommandNodes(graph)
       );
     }
     if (needsDispersion) {
-      const terms: GraphDataView<'float32'>[] = [];
+      const termsAll = createTransientView(graph, `${id}-terms`, 'float32', totalLength);
       for (const [spanIndex, values] of normalizedChunks.entries()) {
-        const term = createTransientView(
-          graph,
-          `${id}-term-${spanIndex}`,
-          'float32',
-          values.length
-        );
-        terms.push(term);
+        const term = sliceView(graph, termsAll, spanStarts[spanIndex], values.length);
         nodes.push(
           createWGSLKernelNode(graph, {
             id: `${id}-center-${spanIndex}`,
@@ -247,7 +268,7 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
       nodes.push(
         ...new GPUReduction({
           id: `${id}-dispersion`,
-          input: makeVector(`${id}-terms`, 'float32', terms),
+          input: termsAll,
           operation: 'sum',
           output: dispersion
         }).getCommandNodes(graph)
@@ -283,25 +304,6 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
     }
     return nodes;
   }
-}
-
-function makeVector<Format extends 'float32' | 'uint32'>(
-  id: string,
-  format: Format,
-  data: readonly GraphDataView<Format>[]
-): GraphVectorView<Format> {
-  const length = data.reduce((total, chunk) => total + chunk.length, 0);
-  return new GraphVectorView({
-    id,
-    name: id,
-    format,
-    length,
-    valueLength: length,
-    stride: 1,
-    byteStride: 4,
-    rowByteLength: 4,
-    data
-  });
 }
 
 function getApplyBody(props: GPUVariableStandardizationProps): string {

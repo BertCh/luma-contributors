@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula X = number of listed spatial pairs (i < j) with |t_i - t_j| <= tau. p = (1 + #{permutations s with X_s >= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1…",
   "description": "Formula X = number of listed spatial pairs (i < j) with |t_i - t_j| <= tau. p = (1 + #{permutations s with X_s >= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1…",
-  "llms": "Formula X = number of listed spatial pairs (i < j) with |t_i - t_j| <= tau. p = (1 + #{permutations s with X_s >= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1) / 2) with T the number of time-close pairs among all n (n - 1) / 2 pairs. Times are permuted over fixed locations (swap-or-not shuffle, fixed seed).\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula X = number of listed spatial pairs (i < j) with |t_i - t_j| <= tau. p = (1 + #{permutations s with X_s >= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1) / 2) with T the number of time-close pairs among all n (n - 1) / 2 pairs. Times are permuted over fixed locations (swap-or-not shuffle, fixed seed).\n\n- bound symbols: 0/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "7/7"
+    "value": "0/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.knox-test</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{x}{X} = \\sum_{(i,j) \\in \\term{pairs}{S}} \\mathbf{1}\\big[\\,\\lvert t_i - t_j \\rvert \\le \\term{threshold}{\\tau}\\,\\big], \\qquad \\term{p}{p} = \\frac{1 + \\term{greater}{\\#\\{s : X_s \\ge X\\}}}{\\term{permutations}{P} + 1}, \\qquad \\term{expected}{E[X]} = \\frac{\\lvert S \\rvert\\, T}{n(n-1)/2}</pre><p class=\"lens-ascii\">X = number of listed spatial pairs (i &lt; j) with |t_i - t_j| &lt;= tau. p = (1 + #{permutations s with X_s &gt;= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1) / 2) with T the number of time-close pairs among all n (n - 1) / 2 pairs. Times are permuted over fixed locations (swap-or-not shuffle, fixed seed).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-reduce\" data-value=\"x\">X · output · statistics</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-pair-mask\" data-value=\"pairs\">S · input · pairMask</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-partials\" data-value=\"threshold\">tau · parameter · threshold</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-summary\" data-value=\"p\">p · output · pGreater</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-summary\" data-value=\"greater\">#{X_s &gt;= X} · intermediate · greater</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-partials\" data-value=\"permutations\">P · parameter · permutations</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-summary\" data-value=\"expected\">E[X] · intermediate · expected</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.knox-test</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{x}{X} = \\sum_{(i,j) \\in \\term{pairs}{S}} \\mathbf{1}\\big[\\,\\lvert t_i - t_j \\rvert \\le \\term{threshold}{\\tau}\\,\\big], \\qquad \\term{p}{p} = \\frac{1 + \\term{greater}{\\#\\{s : X_s \\ge X\\}}}{\\term{permutations}{P} + 1}, \\qquad \\term{expected}{E[X]} = \\frac{\\lvert S \\rvert\\, T}{n(n-1)/2}</pre><p class=\"lens-ascii\">X = number of listed spatial pairs (i &lt; j) with |t_i - t_j| &lt;= tau. p = (1 + #{permutations s with X_s &gt;= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1) / 2) with T the number of time-close pairs among all n (n - 1) / 2 pairs. Times are permuted over fixed locations (swap-or-not shuffle, fixed seed).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"x\">X · output · unknown — wgsl statistics not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pairs\">S · input · unknown — wgsl pairMask not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"threshold\">tau · parameter · unknown — wgsl threshold not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"p\">p · output · unknown — wgsl pGreater not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"greater\">#{X_s &gt;= X} · intermediate · unknown — wgsl greater not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"permutations\">P · parameter · unknown — wgsl permutations not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"expected\">E[X] · intermediate · unknown — wgsl expected not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,49 +29,49 @@
       [
         "X",
         "output",
-        "statistics",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "S",
         "input",
-        "pairMask",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "tau",
         "parameter",
-        "threshold",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "p",
         "output",
-        "pGreater",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "#{X_s >= X}",
         "intermediate",
-        "greater",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "P",
         "parameter",
-        "permutations",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "E[X]",
         "intermediate",
-        "expected",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -115,12 +115,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:26.613Z",
-    "runId": "run-e45b056d",
+    "date": "2026-11-07T14:55:23.135Z",
+    "runId": "run-f0f26b26",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-e45b056d",
+    "runId": "run-f0f26b26",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

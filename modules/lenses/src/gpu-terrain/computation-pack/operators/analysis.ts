@@ -100,39 +100,33 @@ export const TERRAIN_ANALYSIS_OPERATORS: RasterOperatorTable = {
         {
           id: 'fraction',
           role: 'intermediate',
-          label: 'u',
-          binding: 'wgsl:directNumerator'
+          label: 'u'
         },
         {
           id: 'level',
           role: 'parameter',
-          label: 'level',
-          binding: 'wgsl:contourLevel'
+          label: 'level'
         },
         {
           id: 'first',
           role: 'input',
-          label: 'first height',
-          binding: 'wgsl:first'
+          label: 'first height'
         },
         {
           id: 'second',
           role: 'input',
-          label: 'second height',
-          binding: 'wgsl:second'
+          label: 'second height'
         },
         {
           id: 'vertices',
           role: 'output',
-          label: 'position',
-          binding: 'wgsl:outputVertices'
+          label: 'position'
         }
       ]
     },
-    sources: [
-      'modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-contours.ts',
-      'modules/analysis/src/gpu-raster/gpu-raster-contours.ts'
-    ]
+    // The marching-squares kernel is the published GPURasterContours, so its WGSL names cannot be
+    // bound to analysis sources: the symbols above are documented without WGSL bindings.
+    sources: ['modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-contours.ts']
   },
   GPUTerrainViewshed: {
     family: 'analysis',

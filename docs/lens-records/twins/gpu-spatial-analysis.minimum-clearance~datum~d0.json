@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.minimum-clearance",
   "viewId": "datum-receipt",
-  "caption": "Receipt of parks 0. vertexIds: 125. values read back from the GPU run. minimum-clearance: 4 quantities.",
-  "description": "Receipt of parks 0. vertexIds: 125. values read back from the GPU run. minimum-clearance: 4 quantities.",
-  "llms": "Receipt of parks 0\n\n- vertexIds: 125\n- minimum-clearance: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of parks 0. vertexIds: 125. values read back from the GPU run. result: 4 quantities.",
+  "description": "Receipt of parks 0. vertexIds: 125. values read back from the GPU run. result: 4 quantities.",
+  "llms": "Receipt of parks 0\n\n- vertexIds: 125\n- result: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "vertexIds",
     "value": "125"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of parks 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"minimum-clearance\"><tr><th scope=\"rowgroup\" colspan=\"5\">minimum-clearance</th></tr><tr data-provenance=\"readback\"><td>minimum-clearance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-parks-0\">parks</button></td><td>3615.923095703125, 1492.0489501953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>minimum-clearance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-resultParks-0\">resultParks</button></td><td>3615.923095703125, 1492.0489501953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>minimum-clearance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-clearances-0\" title=\"metres; Infinity where a park has no clearance\">clearances</button></td><td>2.2941837310791016</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>minimum-clearance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-vertexIds-0\" title=\"row of the fragile vertex in the uploaded vertices; 0xffffffff when none\">vertexIds</button></td><td>125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of parks 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-parks-0\" title=\"gpu-spatial-analysis-minimum-clearance-snapshot-tap\">parks</button></td><td>3615.923095703125, 1492.0489501953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-resultParks-0\" title=\"gpu-spatial-analysis-minimum-clearance-snapshot-tap\">resultParks</button></td><td>3615.923095703125, 1492.0489501953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-clearances-0\" title=\"metres; Infinity where a park has no clearance\">clearances</button></td><td>2.2941837310791016</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-vertexIds-0\" title=\"row of the fragile vertex in the uploaded vertices; 0xffffffff when none\">vertexIds</button></td><td>125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,28 +28,28 @@
     ],
     "rows": [
       [
-        "minimum-clearance",
+        "result",
         "parks",
         "3615.923095703125, 1492.0489501953125",
         "0",
         "readback"
       ],
       [
-        "minimum-clearance",
+        "result",
         "resultParks",
         "3615.923095703125, 1492.0489501953125",
         "0",
         "readback"
       ],
       [
-        "minimum-clearance",
+        "result",
         "clearances",
         "2.2941837310791016",
         "0",
         "readback"
       ],
       [
-        "minimum-clearance",
+        "result",
         "vertexIds",
         "125",
         "0",
@@ -78,12 +78,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:35.166Z",
-    "runId": "run-b83d782c",
+    "date": "2026-11-07T14:55:24.756Z",
+    "runId": "run-d125108b",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-b83d782c",
+    "runId": "run-d125108b",
     "rung": "datum",
     "bindings": {
       "entity": 0

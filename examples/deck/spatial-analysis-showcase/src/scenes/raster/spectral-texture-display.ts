@@ -4,8 +4,17 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphTextureView} from '@luma.gl/graph/gpu-core';
-import {getGPURasterProfileParameterValues, makeGPURasterMetadata, GPURasterProfile} from '@luma-contributors/analysis/raster-analysis';
-import {GPURasterBufferToTexture, GPURasterContrast, GPURasterHistogram, GPURasterTextureToBuffer} from '@luma.gl/graph/gpu-raster';
+import {
+  getGPURasterProfileParameterValues,
+  makeGPURasterMetadata,
+  GPURasterProfile
+} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPURasterBufferToTexture,
+  GPURasterContrast,
+  GPURasterHistogram,
+  GPURasterTextureToBuffer
+} from '@luma.gl/graph/gpu-raster';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import type {createGraphViewer} from './b16-common';
 

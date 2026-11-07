@@ -14,7 +14,10 @@ import {
   GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUGraphAlgorithmsForceLayout, GPUGraphAlgorithmsSpatialForceLayout} from '@luma.gl/graph/gpu-graph-algorithms';
+import {
+  GPUGraphAlgorithmsForceLayout,
+  GPUGraphAlgorithmsSpatialForceLayout
+} from '@luma.gl/graph/gpu-graph-algorithms';
 import {formatCount, formatOrdinal, liveText} from '../../cartography/live-text';
 import {getProportionalRadius} from '../../cartography/proportional';
 import {fetchGeoJson} from '../../data/loaders';

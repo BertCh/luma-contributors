@@ -54,15 +54,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUSegmentRingAssembly',
           datasets: [data.id],
-          retain: [
-            'ringOffsets',
-            'ringPositions',
-            'ringAreas',
-            'ringIsHole',
-            'ringCount',
-            'overflow',
-            'openSegmentCount'
-          ],
           keySpaces: [
             {id: 'ring', label: 'assembled ring', size: RING_CAPACITY, indexSpace: '1d'},
             {id: 'areaVertex', label: 'area ring vertex', size: vertexCount, indexSpace: '1d'},

@@ -1,5 +1,5 @@
 {
- "generator": "modules/graph/test/oracles/terrain-hydrology.py",
+ "generator": "modules/analysis/test/oracles/terrain-hydrology.py",
  "reference": "pysheds Grid.flowdir (d8) and Grid.accumulation",
  "versions": {
   "python": "3.14.5",

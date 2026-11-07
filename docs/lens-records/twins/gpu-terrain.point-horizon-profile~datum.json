@@ -7,7 +7,7 @@
   "viewId": "buffer-strip",
   "caption": "Buffer pointHorizonTangent (108 f32). max: 0.08482. values read back from the GPU run. min -0.26081156730651855.",
   "description": "Buffer pointHorizonTangent (108 f32). max: 0.08482. values read back from the GPU run. min -0.26081156730651855.",
-  "llms": "Buffer pointHorizonTangent (108 f32)\n\n- max: 0.08482\n- min -0.26081156730651855\n- \n- 0 NaN, 0 Inf\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Buffer pointHorizonTangent (108 f32)\n\n- max: 0.08482\n- min -0.26081156730651855\n- \n- 0 NaN, 0 Inf\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max",
     "value": "0.08482"
@@ -31,14 +31,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.522Z",
-    "runId": "run-ad247c2d",
+    "date": "2026-11-07T14:55:29.777Z",
+    "runId": "run-10800867",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-ad247c2d",
+    "runId": "run-10800867",
     "rung": "datum",
     "bindings": {},
     "clauses": [],

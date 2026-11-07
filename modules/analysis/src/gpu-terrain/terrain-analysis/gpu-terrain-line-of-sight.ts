@@ -244,6 +244,8 @@ export type GPUTerrainLineOfSightProps = {
   heightReference?: GPUTerrainHeightReference;
   /** Vertical datum of absolute observer heights; requires `heightReference: 'absolute'`. */
   observerVerticalDatum?: string;
+  /** Declared vertical datum of `elevation`; published raster bands carry no datum metadata. */
+  elevationVerticalDatum?: string;
   /**
    * One row `[observerColumn, observerRow, targetColumn, targetRow]` per pair, in pixel-center
    * index space; fractional values allowed.
@@ -311,7 +313,7 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
     assertCompatibleGPUVerticalDatums(
       id,
       props.observerVerticalDatum,
-      props.elevation.verticalDatum
+      props.elevationVerticalDatum
     );
     const {output} = props;
     validateRasterGrid(id, props.grid);

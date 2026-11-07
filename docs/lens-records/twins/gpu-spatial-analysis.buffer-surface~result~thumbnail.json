@@ -13,18 +13,18 @@
     "value": "256"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[8849.625,18125.5]]\" role=\"img\" aria-label=\"Result: bufferPositions\"><defs><pattern id=\"lens-gpu-spatial-analysis-buffer-surface-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-buffer-surface-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-buffer-surface-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[1.401298464324817e-45,0],[8849.625,18125.5]]\" role=\"img\" aria-label=\"Result: bufferPositions\"><defs><pattern id=\"lens-gpu-spatial-analysis-buffer-surface-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-buffer-surface-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-buffer-surface-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
     "width": 160,
     "height": 96
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:54.680Z",
-    "runId": "run-b82791e3",
+    "date": "2026-11-07T14:55:18.783Z",
+    "runId": "run-75be304b",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-b82791e3",
+    "runId": "run-75be304b",
     "rung": "result",
     "bindings": {},
     "clauses": [],

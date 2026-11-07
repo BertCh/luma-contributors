@@ -28,7 +28,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.geometry-predicates',
           element: 'GPUGeometryPredicates',
           datasets: ['s2-chicago-north-parks'],
-          retain: ['isSimple', 'numCoordinates', 'numInteriorRings', 'overflow'],
           keySpaces,
           choices: {
             columns: 'isSimple, numCoordinates, numInteriorRings',

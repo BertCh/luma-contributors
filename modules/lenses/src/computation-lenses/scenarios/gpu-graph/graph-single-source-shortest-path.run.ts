@@ -5,6 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   describeGPUGraphScenario,
   getGPUGraphCaptureView,
   recordGPUGraphScenario,
@@ -20,21 +21,19 @@ async function buildScenario(device: Device): Promise<GPUGraphScenarioRecordOpti
     example: runExample
   });
   try {
+    const outputCaptures = {
+      'travel-time': {
+        view: getGPUGraphCaptureView(fixture, 'travel-time', outputs.seconds),
+        keySpace: 'vertex',
+        stationValues: true
+      }
+    };
     return {
       scenarioId: 'gpu-graph.graph-single-source-shortest-path',
       element: 'GPUGraphAlgorithmsSingleSourceShortestPath',
       fixture,
-      compiled: fixture.commandGraph.compile(),
-      outputCaptures: {
-        'travel-time': {
-          view: getGPUGraphCaptureView(fixture, 'travel-time', outputs.seconds),
-          keySpace: 'vertex',
-          stationValues: true
-        }
-      },
-      iterationFrames: [
-        {name: 'travel-time', loopId: 'gpu-graph-single-source-shortest-path-iterations'}
-      ],
+      ...compileGPUGraphScenario(fixture, outputCaptures),
+      outputCaptures,
       choices: [
         {stage: 'parameters', name: 'maxIterations', value: 24, sweepable: true},
         {
@@ -71,9 +70,13 @@ export async function describeStructure(device: Device) {
     return describeGPUGraphScenario(options);
   } finally {
     try {
-      options.compiled.destroy();
+      options.snapshot.arena.destroy();
     } finally {
-      options.fixture.destroy();
+      try {
+        options.compiled.destroy();
+      } finally {
+        options.fixture.destroy();
+      }
     }
   }
 }

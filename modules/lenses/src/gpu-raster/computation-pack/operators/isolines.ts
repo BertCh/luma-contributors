@@ -7,13 +7,13 @@ import type {RasterOperatorTable} from '../types';
 const CELL = {kind: 'cell', label: 'grid cell', indexSpace: '2d'} as const;
 
 const ISOLINE_SOURCES = [
-  'modules/analysis/src/gpu-raster/isolines/gpu-isolines.ts',
-  'modules/analysis/src/gpu-raster/isolines/isolines-utils.ts'
+  'modules/analysis/src/raster-analysis/isolines/gpu-isolines.ts',
+  'modules/analysis/src/raster-analysis/isolines/isolines-utils.ts'
 ] as const;
 
 const ISOBAND_SOURCES = [
-  'modules/analysis/src/gpu-raster/isolines/gpu-isobands.ts',
-  'modules/analysis/src/gpu-raster/isolines/isobands-wgsl.ts'
+  'modules/analysis/src/raster-analysis/isolines/gpu-isobands.ts',
+  'modules/analysis/src/raster-analysis/isolines/isobands-wgsl.ts'
 ] as const;
 
 /** Raster pack entries of the `isolines` family, keyed by exported class name. */
@@ -112,8 +112,8 @@ export const RASTER_ISOLINES_OPERATORS: RasterOperatorTable = {
         'Band boundary edges are hashed, matched and chained into closed rings by pointer jumping; the rings have no closed form.'
     },
     sources: [
-      'modules/analysis/src/gpu-raster/isolines/gpu-isoband-rings.ts',
-      'modules/analysis/src/gpu-raster/isolines/gpu-isobands.ts'
+      'modules/analysis/src/raster-analysis/isolines/gpu-isoband-rings.ts',
+      'modules/analysis/src/raster-analysis/isolines/gpu-isobands.ts'
     ]
   }
 };

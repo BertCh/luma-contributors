@@ -327,9 +327,9 @@ export default defineScene<StormWarningVerificationOptions>({
       : [])
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUSpatialJoinPrepared, GPUSpatialPredicateJoin} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
 
 // reports: points; warnings: polygon versions in an azimuthal-equidistant frame (meters)
 const graph = new GPUCommandGraph(device, {id: 'verify'});

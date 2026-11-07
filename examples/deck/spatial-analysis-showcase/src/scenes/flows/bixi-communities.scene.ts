@@ -26,11 +26,11 @@ const CREDIT = joinCredits(
 const cartouche = (title: string) => ({title: {title}});
 
 function getSnippet(state: BixiCommunitiesOptions): string {
-  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  return `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUGraphAlgorithmsData, GPUGraphAlgorithmsTopology, GPUGraphAlgorithmsLabelPropagation,
   GPUGraphAlgorithmsModularityOptimization, GPUGraphAlgorithmsModularity
-} from '@luma-contributors/analysis/gpu-graph-algorithms';
+} from '@luma.gl/graph/gpu-graph-algorithms';
 
 // Caller-owned vectors: edge columns (rides as weights), CSR, and every output.
 // Edges below ${state.minRides} rides/day, beyond ${state.maxDistanceKm} km or outside the

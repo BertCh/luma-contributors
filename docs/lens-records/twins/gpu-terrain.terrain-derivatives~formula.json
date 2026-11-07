@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula slope = atan(sqrt(p^2 + q^2)) in degrees; p = zFactor * Gx / (8 * dx); q = northSign * zFactor * Gy / (8 * dy); Gx, Gy = 3x3 Sobel sums; aspect = atan2(-p, -q) in [0, 360) (-1 when flat); hillshade = max(0, normalize(-p, -q, 1) . light). bou…",
   "description": "Formula slope = atan(sqrt(p^2 + q^2)) in degrees; p = zFactor * Gx / (8 * dx); q = northSign * zFactor * Gy / (8 * dy); Gx, Gy = 3x3 Sobel sums; aspect = atan2(-p, -q) in [0, 360) (-1 when flat); hillshade = max(0, normalize(-p, -q, 1) . light). bou…",
-  "llms": "Formula slope = atan(sqrt(p^2 + q^2)) in degrees; p = zFactor * Gx / (8 * dx); q = northSign * zFactor * Gy / (8 * dy); Gx, Gy = 3x3 Sobel sums; aspect = atan2(-p, -q) in [0, 360) (-1 when flat); hillshade = max(0, normalize(-p, -q, 1) . light)\n\n- bound symbols: 7/7\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula slope = atan(sqrt(p^2 + q^2)) in degrees; p = zFactor * Gx / (8 * dx); q = northSign * zFactor * Gy / (8 * dy); Gx, Gy = 3x3 Sobel sums; aspect = atan2(-p, -q) in [0, 360) (-1 when flat); hillshade = max(0, normalize(-p, -q, 1) . light)\n\n- bound symbols: 0/7\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "7/7"
+    "value": "0/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-derivatives.horn</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{slope}{\\theta} = \\arctan\\sqrt{p^2 + q^2},\\quad p = \\frac{\\term{zFactor}{\\zeta}\\,\\term{gradientX}{G_x}}{8\\,\\term{groundCell}{\\Delta x}},\\quad q = \\term{northSign}{\\sigma_n}\\,\\frac{\\term{zFactor}{\\zeta}\\,\\term{gradientY}{G_y}}{8\\,\\term{groundCell}{\\Delta y}},\\quad \\term{hillshade}{H} = \\max\\!\\left(0,\\ \\frac{(-p,\\,-q,\\,1)}{\\lVert(-p,\\,-q,\\,1)\\rVert}\\cdot\\hat{\\ell}\\right)</pre><p class=\"lens-ascii\">slope = atan(sqrt(p^2 + q^2)) in degrees; p = zFactor * Gx / (8 * dx); q = northSign * zFactor * Gy / (8 * dy); Gx, Gy = 3x3 Sobel sums; aspect = atan2(-p, -q) in [0, 360) (-1 when flat); hillshade = max(0, normalize(-p, -q, 1) . light)</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-derivatives-compiled:terrain-derivatives-shade\" data-value=\"slope\">θ · output · slopeValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-derivatives-compiled:terrain-derivatives-shade\" data-value=\"hillshade\">H · output · hillshadeValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-derivatives-compiled:terrain-derivatives-shade\" data-value=\"gradientX\">G_x · intermediate · gradientX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-derivatives-compiled:terrain-derivatives-shade\" data-value=\"gradientY\">G_y · intermediate · gradientY</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-derivatives-compiled:terrain-derivatives-shade\" data-value=\"zFactor\">ζ · parameter · zFactor</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-derivatives-compiled:terrain-derivatives-shade\" data-value=\"groundCell\">Δx, Δy · parameter · groundCell</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-derivatives-compiled:terrain-derivatives-shade\" data-value=\"northSign\">σ_n · constant · ROW_NORTH_SIGN</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-derivatives.horn</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{slope}{\\theta} = \\arctan\\sqrt{p^2 + q^2},\\quad p = \\frac{\\term{zFactor}{\\zeta}\\,\\term{gradientX}{G_x}}{8\\,\\term{groundCell}{\\Delta x}},\\quad q = \\term{northSign}{\\sigma_n}\\,\\frac{\\term{zFactor}{\\zeta}\\,\\term{gradientY}{G_y}}{8\\,\\term{groundCell}{\\Delta y}},\\quad \\term{hillshade}{H} = \\max\\!\\left(0,\\ \\frac{(-p,\\,-q,\\,1)}{\\lVert(-p,\\,-q,\\,1)\\rVert}\\cdot\\hat{\\ell}\\right)</pre><p class=\"lens-ascii\">slope = atan(sqrt(p^2 + q^2)) in degrees; p = zFactor * Gx / (8 * dx); q = northSign * zFactor * Gy / (8 * dy); Gx, Gy = 3x3 Sobel sums; aspect = atan2(-p, -q) in [0, 360) (-1 when flat); hillshade = max(0, normalize(-p, -q, 1) . light)</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"slope\">θ · output · unknown — wgsl slopeValues not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"hillshade\">H · output · unknown — wgsl hillshadeValues not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gradientX\">G_x · intermediate · unknown — wgsl gradientX not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gradientY\">G_y · intermediate · unknown — wgsl gradientY not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"zFactor\">ζ · parameter · unknown — wgsl zFactor not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"groundCell\">Δx, Δy · parameter · unknown — wgsl groundCell not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"northSign\">σ_n · constant · unknown — wgsl ROW_NORTH_SIGN not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,49 +29,49 @@
       [
         "θ",
         "output",
-        "slopeValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "H",
         "output",
-        "hillshadeValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "G_x",
         "intermediate",
-        "gradientX",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "G_y",
         "intermediate",
-        "gradientY",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "ζ",
         "parameter",
-        "zFactor",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Δx, Δy",
         "parameter",
-        "groundCell",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "σ_n",
         "constant",
-        "ROW_NORTH_SIGN",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -105,14 +105,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:10.584Z",
-    "runId": "run-5662a2a0",
+    "date": "2026-11-07T14:55:30.056Z",
+    "runId": "run-178f17ae",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-5662a2a0",
+    "runId": "run-178f17ae",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

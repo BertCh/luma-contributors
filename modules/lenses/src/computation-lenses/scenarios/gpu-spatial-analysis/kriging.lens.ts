@@ -34,7 +34,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.kriging',
           element: 'GPUKriging',
           datasets: ['s2-helene-rain'],
-          retain: ['rainfall', 'variance', 'invalid-count', 'uncertain-count'],
           keySpaces: [
             {
               id: 'cell',

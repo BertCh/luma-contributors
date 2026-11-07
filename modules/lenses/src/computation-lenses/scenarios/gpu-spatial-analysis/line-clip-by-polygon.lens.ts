@@ -47,15 +47,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineClipByPolygon',
           datasets: [data.id, areas.id],
-          retain: [
-            'piecePositions',
-            'pieceOffsets',
-            'sourceIds',
-            'count',
-            'vertexCount',
-            'overflow',
-            'uncertainCount'
-          ],
           keySpaces: [
             {id: 'piece', label: 'piece', size: pieceCapacity, indexSpace: '1d'},
             {

@@ -8,7 +8,7 @@ statistics-regression-scenes.node.spec.ts) and writes fixtures/statistics-spatia
 consumed through test/gpu-spatial-analysis/spatial-regression/{spreg-ols-reference,
 spatial-error-gm-reference,spatial-maximum-likelihood-reference}.ts by the OLS, GM error and ML specs.
 Run with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-spatial-regression.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-spatial-regression.py
 in a venv with numpy, scipy, spreg and libpysal (versions are recorded in the fixture). Every fit is
 float64 on the float32 inputs the GPU reads; weights are passed to spreg as `libpysal.weights.W` with
 the exact CSR values (transform 'O'), so both sides see identical inputs.

@@ -38,7 +38,7 @@ export const TEMPORAL_OPERATORS: DataFrameFamilyOperators = {
       fadeWeights: {level: 'ratio', extent: 'intensive'}
     },
     sourceFiles: [
-      'modules/analysis/src/gpu-dataframe/time-window-filter/time-window-classify-node.ts'
+      'modules/analysis/src/dataframe-analysis/time-window-filter/time-window-classify-node.ts'
     ]
   },
   /**
@@ -83,7 +83,9 @@ export const TEMPORAL_OPERATORS: DataFrameFamilyOperators = {
       counts: {level: 'ratio', extent: 'extensive'},
       cellIds: {level: 'nominal'}
     },
-    sourceFiles: ['modules/analysis/src/gpu-dataframe/temporal-reduction/gpu-temporal-reduction.ts']
+    sourceFiles: [
+      'modules/analysis/src/dataframe-analysis/temporal-reduction/gpu-temporal-reduction.ts'
+    ]
   },
   /**
    * Primary: hour-by-weekday counts. Local days use floor division (also before 1970); mod is
@@ -125,6 +127,8 @@ export const TEMPORAL_OPERATORS: DataFrameFamilyOperators = {
       weekday: {level: 'cyclic'},
       hourWeekdayCounts: {level: 'ratio', extent: 'extensive'}
     },
-    sourceFiles: ['modules/analysis/src/gpu-dataframe/calendar-buckets/gpu-calendar-buckets.ts']
+    sourceFiles: [
+      'modules/analysis/src/dataframe-analysis/calendar-buckets/gpu-calendar-buckets.ts'
+    ]
   }
 };

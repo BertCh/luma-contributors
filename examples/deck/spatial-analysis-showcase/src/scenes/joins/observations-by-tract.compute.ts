@@ -4,7 +4,11 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUClassBreaksParameterValues,
+  getGPUColorScaleParameterValues,
+  packGPUColor
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addPointsInPolygonsChoroplethRecipe,
   GPU_SPATIAL_JOIN_NO_FEATURE,

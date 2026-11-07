@@ -14,7 +14,6 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.class-breaks';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['breaks', 'classCount', 'classCounts'];
 const CLASS_COUNT = 5;
 
 /** Executes the recorded class breaks once and reads inputs and outputs from GPU buffers. */
@@ -22,7 +21,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   options?.signal?.throwIfAborted();
   const dataset = await loadDataFrameLensData('f-chicago-tracts');
   const poverty = Float32Array.from(dataset.columns.poverty150Pct, value => value ?? NaN);
-  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-class-breaks', RETAINED);
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-class-breaks');
   const example = await runExample(device, {graph, tracts: {poverty150Pct: poverty}});
   try {
     options?.signal?.throwIfAborted();

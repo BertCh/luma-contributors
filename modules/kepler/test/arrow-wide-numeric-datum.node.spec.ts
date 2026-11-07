@@ -4,8 +4,8 @@
 
 import {expect, test} from 'vitest';
 import * as arrow from 'apache-arrow';
-import {prepareArrowTableForGPUAnalytics} from '../../analysis/src/_pending/arrow/gpu/arrow-analytics-normalization';
-import {convertWideNumericValue} from '../../analysis/src/_pending/arrow/gpu/arrow-analytics-wide-numeric';
+import {prepareArrowTableForGPUAnalytics} from '@luma-contributors/analysis/analysis-core';
+import {convertWideNumericValue} from '@luma-contributors/analysis/analysis-core';
 
 const POLICY = {mode: 'round' as const, maximumAbsoluteError: 1e-6, maximumRelativeError: 2 ** -23};
 

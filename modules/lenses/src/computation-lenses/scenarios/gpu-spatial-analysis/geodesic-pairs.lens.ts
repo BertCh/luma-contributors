@@ -36,7 +36,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUGeodesicPairs',
           datasets: [data.id],
-          retain: ['distances', 'initialBearings', 'midpoints', 'converged'],
           keySpaces: [{id: 'pair', label: 'route from ORD', size: pairCount, indexSpace: '1d'}],
           choices: {
             spatialContext: 'longitude-latitude, ellipsoidal WGS84, meters',

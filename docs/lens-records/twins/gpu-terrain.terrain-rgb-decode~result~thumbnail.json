@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-rgb-decode: terrariumRGBA → decodedElevation.",
   "description": "Result of gpu-terrain.terrain-rgb-decode: terrariumRGBA → decodedElevation. cells: 1,024. values read back from the GPU run. input terrariumRGBA: 1024 cells.",
-  "llms": "Result of gpu-terrain.terrain-rgb-decode: terrariumRGBA → decodedElevation\n\n- cells: 1,024\n- input terrariumRGBA: 1024 cells\n- Planar coordinates (m); uniform scale.\n- 134 categories; 5 largest coloured\n- cell size 20 m\n- Raster pixel grid; origin not recorded\n- cell size 20 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-rgb-decode: terrariumRGBA → decodedElevation\n\n- cells: 1,024\n- input terrariumRGBA: 1024 cells\n- Planar coordinates (m); uniform scale.\n- 134 categories; 5 largest coloured\n- cell size 20 m\n- Raster pixel grid; origin not recorded\n- cell size 20 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "1,024"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:11.520Z",
-    "runId": "run-41e8bc9b",
+    "date": "2026-11-07T14:55:30.364Z",
+    "runId": "run-49f6584b",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-41e8bc9b",
+    "runId": "run-49f6584b",
     "rung": "result",
     "bindings": {},
     "clauses": [],

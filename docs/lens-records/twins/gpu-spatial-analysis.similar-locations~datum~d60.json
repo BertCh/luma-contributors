@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.similar-locations",
   "viewId": "datum-receipt",
-  "caption": "Receipt of Chicago tract 60. ranks: 8. values read back from the GPU run. similar-locations: 3 quantities.",
-  "description": "Receipt of Chicago tract 60. ranks: 8. values read back from the GPU run. similar-locations: 3 quantities.",
-  "llms": "Receipt of Chicago tract 60\n\n- ranks: 8\n- similar-locations: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of Chicago tract 60. ranks: 8. values read back from the GPU run. result: 3 quantities.",
+  "description": "Receipt of Chicago tract 60. ranks: 8. values read back from the GPU run. result: 3 quantities.",
+  "llms": "Receipt of Chicago tract 60\n\n- ranks: 8\n- result: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "ranks",
     "value": "8"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 60</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"similar-locations\"><tr><th scope=\"rowgroup\" colspan=\"5\">similar-locations</th></tr><tr data-provenance=\"readback\"><td>similar-locations</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.similar-locations-snapshots-referenceMask-0\" title=\"The one reference tract (1); every other tract is compared to it\">referenceMask</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>similar-locations</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.similar-locations-snapshots-distances-0\" title=\"Distance to the reference in standardized units; small is similar, the reference is blank\">distances</button></td><td>1.1278207302093506</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>similar-locations</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.similar-locations-snapshots-ranks-0\" title=\"Similarity rank, 0 is the most similar; the reference has none\">ranks</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 60</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.similar-locations-snapshots-referenceMask-0\" title=\"The one reference tract (1); every other tract is compared to it\">referenceMask</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.similar-locations-snapshots-distances-0\" title=\"Distance to the reference in standardized units; small is similar, the reference is blank\">distances</button></td><td>1.1278207302093506</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.similar-locations-snapshots-ranks-0\" title=\"Similarity rank, 0 is the most similar; the reference has none\">ranks</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,21 +28,21 @@
     ],
     "rows": [
       [
-        "similar-locations",
+        "result",
         "referenceMask",
         "0",
         "0",
         "readback"
       ],
       [
-        "similar-locations",
+        "result",
         "distances",
         "1.1278207302093506",
         "0",
         "readback"
       ],
       [
-        "similar-locations",
+        "result",
         "ranks",
         "8",
         "0",
@@ -57,12 +57,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:56.876Z",
-    "runId": "run-5056d686",
+    "date": "2026-11-07T14:55:27.358Z",
+    "runId": "run-730d2709",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-5056d686",
+    "runId": "run-730d2709",
     "rung": "datum",
     "bindings": {
       "entity": 60

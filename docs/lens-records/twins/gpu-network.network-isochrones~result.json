@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.network-isochrones: start-intersection → isochrone-triangles. polygons: 4,622. values read back from the GPU run. input start-intersection: 1 points.",
   "description": "Result of gpu-network.network-isochrones: start-intersection → isochrone-triangles. polygons: 4,622. values read back from the GPU run. input start-intersection: 1 points.",
-  "llms": "Result of gpu-network.network-isochrones: start-intersection → isochrone-triangles\n\n- polygons: 4,622\n- input start-intersection: 1 points\n- Planar coordinates (unit unknown); uniform scale.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 1 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 13866 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.network-isochrones: start-intersection → isochrone-triangles\n\n- polygons: 4,622\n- input start-intersection: 1 points\n- Planar coordinates (unit unknown); uniform scale.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 1 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 13866 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "4,622"
@@ -24,15 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:45.369Z",
-    "runId": "run-cad0081d",
+    "date": "2026-11-07T14:55:16.948Z",
+    "runId": "run-839e5081",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-cad0081d",
+    "runId": "run-839e5081",
     "rung": "result",
     "bindings": {},
     "clauses": [],

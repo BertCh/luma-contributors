@@ -478,7 +478,7 @@ export default defineScene<FlightBundlingOptions>({
   },
   annotations: [],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUEdgeBundling,
   GPU_EDGE_BUNDLING_WORK_BOX_PADDING,

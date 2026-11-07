@@ -27,11 +27,11 @@ const reductions = [
   'solve'
 ];
 
-test('pack merges eight families without duplicates and scopes each element variable kinds', () => {
+test('pack merges seven families without duplicates and scopes each element variable kinds', () => {
   const pack = createDataFramePackData();
   const entries = getDataFrameOperatorEntries();
   expect(pack.id).toBe('gpu-dataframe');
-  expect(DATAFRAME_FAMILY_OPERATORS).toHaveLength(8);
+  expect(DATAFRAME_FAMILY_OPERATORS).toHaveLength(7);
   expect(
     DATAFRAME_FAMILY_OPERATORS.filter(family => 'GPUVariableStandardization' in family)
   ).toHaveLength(1);
@@ -65,7 +65,7 @@ test('pack merges eight families without duplicates and scopes each element vari
   }
   expect(createDataFrameElementPackData('missing').variableKinds).toEqual({});
   expect(
-    createDataFrameElementPackData('GPUDataFrameQuery', {threshold: 1000}).metadata?.['threshold']
+    createDataFrameElementPackData('GPUClassBreaks', {threshold: 1000}).metadata?.['threshold']
   ).toBe(1000);
 });
 
@@ -90,24 +90,4 @@ test('every curated formula has exactly its tagged symbols and real source ident
       );
     }
   }
-});
-
-test('the query card registers a lazy scenario and a short public-API example', async () => {
-  await import('../../../src/computation-lenses/scenarios/gpu-dataframe/index');
-  const {getLensScenario} = await import('../../../src/computation-lenses/registry');
-  const {extractLensExample, findNonPublicImports} = await import(
-    '../../../src/computation-lenses/lens-example'
-  );
-  const scenario = getLensScenario('gpu-dataframe.data-frame-query');
-  expect(scenario?.element).toBe('GPUDataFrameQuery');
-  expect(scenario?.rungs).toEqual(['result', 'datum', 'formula', 'kernel', 'graph']);
-  const example = readFileSync(
-    resolve(
-      'modules/lenses/src/computation-lenses/scenarios/gpu-dataframe/data-frame-query.example.ts'
-    ),
-    'utf8'
-  );
-  expect(extractLensExample(example).lineCount).toBeLessThanOrEqual(25);
-  expect(findNonPublicImports(example)).toEqual([]);
-  expect(example).toContain('return {query, tracts};');
 });

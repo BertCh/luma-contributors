@@ -41,18 +41,17 @@ function checkPointHorizonVerticalDatums(
     overrides: Partial<
       Pick<
         GPUPointHorizonProfileProps,
-        'id' | 'elevation' | 'heightReference' | 'observerVerticalDatum'
+        'id' | 'elevation' | 'elevationVerticalDatum' | 'heightReference' | 'observerVerticalDatum'
       >
     >
   ) => unknown,
   elevation: GPUPointHorizonProfileProps['elevation']
 ) {
   const id = 'datum-horizon';
-  const declaredElevation = {...elevation, verticalDatum: 'EPSG:5773'};
   expect(() =>
     create({
       id,
-      elevation: declaredElevation,
+      elevationVerticalDatum: 'EPSG:5773',
       heightReference: 'absolute',
       observerVerticalDatum: 'ellipsoidal'
     })
@@ -65,7 +64,7 @@ function checkPointHorizonVerticalDatums(
     expect(() =>
       create({
         id,
-        elevation: declaredElevation,
+        elevationVerticalDatum: 'EPSG:5773',
         heightReference,
         observerVerticalDatum: 'EPSG:5773'
       })
@@ -81,12 +80,21 @@ function checkPointHorizonVerticalDatums(
     expect(() =>
       create({
         id,
-        elevation: {...elevation, verticalDatum},
+        elevationVerticalDatum: verticalDatum,
         heightReference: 'absolute',
         observerVerticalDatum
       })
     ).not.toThrow();
   }
+  // A datum stray on the raster band is ignored; only `elevationVerticalDatum` is checked.
+  expect(() =>
+    create({
+      id,
+      elevation: {...elevation, verticalDatum: 'EPSG:5773'} as typeof elevation,
+      heightReference: 'absolute',
+      observerVerticalDatum: 'ellipsoidal'
+    })
+  ).not.toThrow();
 }
 
 it('getGPUPointHorizonDistanceLattice builds the exact power-of-two lattice', () => {

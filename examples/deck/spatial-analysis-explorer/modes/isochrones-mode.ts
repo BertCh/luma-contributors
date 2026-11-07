@@ -19,7 +19,13 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {CommandEncoder} from '@luma.gl/core';
-import {createTransientView, DrawCommandBuffer, GPUCommandGraph, GPUCOOToCSR, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  GPUCOOToCSR,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {
   GPU_SPATIAL_JOIN_NO_FEATURE,
   GPUPointInPolygonJoin

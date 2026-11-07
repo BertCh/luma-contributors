@@ -25,7 +25,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.local-outlier-factor',
           element: 'GPULocalOutlierFactor',
           datasets: ['s2-chicago-north-nature'],
-          retain: ['kDistance', 'density', 'lof', 'outlier', 'outlierCount', 'neighborOverflow'],
           keySpaces: [
             {id: 'observation', label: 'observation', size: points.count, indexSpace: '1d'},
             {id: 'status', label: 'run status', size: 1, indexSpace: '1d'}

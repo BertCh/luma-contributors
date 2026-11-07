@@ -32,16 +32,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineSplit',
           datasets: [data.id],
-          retain: [
-            'piecePositions',
-            'pieceOffsets',
-            'sourceIds',
-            'count',
-            'vertexCount',
-            'overflow',
-            'candidateOverflow',
-            'uncertainCount'
-          ],
           keySpaces: [
             {id: 'piece', label: 'piece', size: pieceCapacity, indexSpace: '1d'},
             {

@@ -472,7 +472,7 @@ export default defineScene<WildfireTerrainOptions>({
   GPUDistanceField,
   GPUPolygonRasterization,
   GPURasterZonalStatistics
-} from '@luma-contributors/analysis/gpu-raster';
+} from '@luma.gl/graph/gpu-raster';
 import {GPUTerrainDerivatives} from '@luma-contributors/analysis/gpu-terrain';
 
 // Polygons in raster space: x east from the grid edge, y south from its north edge (row order).

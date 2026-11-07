@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.zone-events",
   "viewId": "datum-receipt",
-  "caption": "Receipt of vessel track 0. trackEventCounts: 6. values read back from the GPU run. zone-events: 1 quantities.",
-  "description": "Receipt of vessel track 0. trackEventCounts: 6. values read back from the GPU run. zone-events: 1 quantities.",
-  "llms": "Receipt of vessel track 0\n\n- trackEventCounts: 6\n- zone-events: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of vessel track 0. trackEventCounts: 6. values read back from the GPU run. result: 1 quantities.",
+  "description": "Receipt of vessel track 0. trackEventCounts: 6. values read back from the GPU run. result: 1 quantities.",
+  "llms": "Receipt of vessel track 0\n\n- trackEventCounts: 6\n- result: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "trackEventCounts",
     "value": "6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of vessel track 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"zone-events\"><tr><th scope=\"rowgroup\" colspan=\"5\">zone-events</th></tr><tr data-provenance=\"readback\"><td>zone-events</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-zone-events-snapshots-trackEventCounts-0\" title=\"zone entries and exits per track (unclamped)\">trackEventCounts</button></td><td>6</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of vessel track 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-zone-events-snapshots-trackEventCounts-0\" title=\"zone entries and exits per track (unclamped)\">trackEventCounts</button></td><td>6</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,7 +28,7 @@
     ],
     "rows": [
       [
-        "zone-events",
+        "result",
         "trackEventCounts",
         "6",
         "0",
@@ -52,12 +52,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.251Z",
-    "runId": "run-92da10b0",
+    "date": "2026-11-07T14:55:29.722Z",
+    "runId": "run-75ed3d49",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-92da10b0",
+    "runId": "run-75ed3d49",
     "rung": "datum",
     "bindings": {
       "entity": 0

@@ -12,7 +12,7 @@
   "viewId": "gpu-core-array-result",
   "caption": "Read captured inputs into recorded array outputs. max intensity: 1. values read back from the GPU run. 3 output panels from the recorded run.",
   "description": "Read captured inputs into recorded array outputs. max intensity: 1. values read back from the GPU run. 3 output panels from the recorded run.",
-  "llms": "Read captured inputs into recorded array outputs\n\n- max intensity: 1\n- 3 output panels from the recorded run\n- distances: 6 captured values (6 shown)\n- quadratureLengths: 3 captured values (3 shown)\n- intensity: 3 captured values (3 shown)\n- kernelMass: 2 captured values (2 shown)\n- status: 3 captured values (3 shown)\n- compute passes were not coalesced as in production\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max intensity: 1\n- 3 output panels from the recorded run\n- distances: 6 captured values (6 shown)\n- quadratureLengths: 3 captured values (3 shown)\n- intensity: 3 captured values (3 shown)\n- kernelMass: 2 captured values (2 shown)\n- status: 3 captured values (3 shown)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max intensity",
     "value": "1"
@@ -24,15 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:45.603Z",
-    "runId": "run-2de52386",
+    "date": "2026-11-07T14:55:17.001Z",
+    "runId": "run-2e90dded",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-2de52386",
+    "runId": "run-2e90dded",
     "rung": "result",
     "bindings": {},
     "clauses": [],

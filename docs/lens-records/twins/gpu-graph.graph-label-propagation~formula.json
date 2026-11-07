@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-graph.graph-label-propagation",
   "viewId": "formula-card",
-  "caption": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "description": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "llms": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.\n\n- bound symbols: 2/3\n- compute passes were not coalesced as in production\n- 432 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Labels start at the vertex id. Each synchronous round, every vertex counts votes(c) for each candidate label c: one self vote plus one vote per weak neighbor (self-loops skipped; duplicate edges vote separately). It takes the label with most…",
+  "description": "Formula Labels start at the vertex id. Each synchronous round, every vertex counts votes(c) for each candidate label c: one self vote plus one vote per weak neighbor (self-loops skipped; duplicate edges vote separately). It takes the label with most…",
+  "llms": "Formula Labels start at the vertex id. Each synchronous round, every vertex counts votes(c) for each candidate label c: one self vote plus one vote per weak neighbor (self-loops skipped; duplicate edges vote separately). It takes the label with most votes, the lowest label on ties, written to a scratch column and published after the round. Directed graphs also vote through reverse CSR. Overflow publishes 0xffffffff.\n\n- bound symbols: 0/3\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/3"
+    "value": "0/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.scan</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})</pre><p class=\"lens-ascii\">y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-label-propagation-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-label-propagation-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"y\">y · output · outputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"heads\">heads · input · unknown — wgsl segmentFlags not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-label-propagation-compiled:rail-topology-forward-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-label-propagation-compiled:rail-topology-forward-scan-level-1-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-label-propagation-compiled:rail-topology-forward-scan-level-0-add-offsets\">add-offsets</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-graph.label-propagation-vote</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{label}{\\ell}^{(k+1)}_v=\\operatorname*{arg\\,max}_{c\\in\\{\\term{label}{\\ell}^{(k)}_v\\}\\cup\\{\\term{label}{\\ell}^{(k)}_u:\\,u\\in\\term{neighbors}{N(v)}\\}}\\term{votes}{\\mathrm{votes}}_v(c),\\quad\n\\term{votes}{\\mathrm{votes}}_v(c)=[\\term{label}{\\ell}^{(k)}_v=c]+\\sum_{u\\in\\term{neighbors}{N(v)},\\,u\\ne v}[\\term{label}{\\ell}^{(k)}_u=c]</pre><p class=\"lens-ascii\">Labels start at the vertex id. Each synchronous round, every vertex counts votes(c) for each candidate label c: one self vote plus one vote per weak neighbor (self-loops skipped; duplicate edges vote separately). It takes the label with most votes, the lowest label on ties, written to a scratch column and published after the round. Directed graphs also vote through reverse CSR. Overflow publishes 0xffffffff.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"label\">community label · output · unknown — wgsl output not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"neighbors\">CSR neighbors · input · unknown — wgsl forwardNeighbors not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"votes\">votes for a label · intermediate · unknown — wgsl votes not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -27,22 +27,22 @@
     ],
     "rows": [
       [
-        "x",
-        "input",
-        "inputValues",
-        "—",
-        "metadata"
-      ],
-      [
-        "y",
+        "community label",
         "output",
-        "outputValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "heads",
+        "CSR neighbors",
         "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "votes for a label",
+        "intermediate",
         "unknown",
         "—",
         "metadata"
@@ -55,22 +55,22 @@
     ]
   },
   "formula": {
-    "tex": "\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})",
-    "ascii": "y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.",
+    "tex": "\\term{label}{\\ell}^{(k+1)}_v=\\operatorname*{arg\\,max}_{c\\in\\{\\term{label}{\\ell}^{(k)}_v\\}\\cup\\{\\term{label}{\\ell}^{(k)}_u:\\,u\\in\\term{neighbors}{N(v)}\\}}\\term{votes}{\\mathrm{votes}}_v(c),\\quad\n\\term{votes}{\\mathrm{votes}}_v(c)=[\\term{label}{\\ell}^{(k)}_v=c]+\\sum_{u\\in\\term{neighbors}{N(v)},\\,u\\ne v}[\\term{label}{\\ell}^{(k)}_u=c]",
+    "ascii": "Labels start at the vertex id. Each synchronous round, every vertex counts votes(c) for each candidate label c: one self vote plus one vote per weak neighbor (self-loops skipped; duplicate edges vote separately). It takes the label with most votes, the lowest label on ties, written to a scratch column and published after the round. Directed graphs also vote through reverse CSR. Overflow publishes 0xffffffff.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:42.917Z",
-    "runId": "run-a9c42b12",
+    "date": "2026-11-07T14:55:16.346Z",
+    "runId": "run-1f9ef2a4",
     "observerEffects": [
       "compute passes were not coalesced as in production",
-      "432 observation taps inserted",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-a9c42b12",
+    "runId": "run-1f9ef2a4",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

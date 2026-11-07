@@ -8,7 +8,6 @@ import {WgslReflect} from 'wgsl_reflect';
 import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {expect, it} from 'vitest';
 import {
-  addSparseResistanceConnectivityRecipe,
   addSegregationCounterfactualRecipe,
   addPopulationSupportAlignmentRecipe,
   addLandscapeMetricsRecipe,
@@ -115,14 +114,6 @@ it('urban and ecology recipes emit parseable graph kernels within portable bindi
       populations,
       sourceIds: view('uint32', 3),
       targetIds: view('uint32', 3)
-    });
-    addSparseResistanceConnectivityRecipe(graph, {
-      edges: view('uint32x2', 4),
-      conductances: view('float32', 4),
-      vertexCount: 300,
-      source: 0,
-      sink: 299,
-      maximumIterations: 2
     });
     const kernels = getGPUCommandNodeKernelSources((graph as unknown as {nodes: unknown[]}).nodes);
     expect(kernels.length).toBeGreaterThan(20);

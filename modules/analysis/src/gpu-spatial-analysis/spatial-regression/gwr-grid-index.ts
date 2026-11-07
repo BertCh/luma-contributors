@@ -5,14 +5,14 @@
 import {
   createTransientView,
   GPUGridIndex,
-  GPU_GRID_COORDINATE_WGSL,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {BIN_INDEX_WGSL} from '../shared/bin-index-wgsl';
+import {IS_FINITE_BITS_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Rows summed by one thread of the extent pass. */
 const BOUNDS_TILE_ROWS = 256;
@@ -50,13 +50,14 @@ export function createGridIndexNodes<Parameters>(
   const {id, operation, positions, rowCount, gridSize} = props;
   const tileCount = Math.ceil(rowCount / BOUNDS_TILE_ROWS);
   const cellCount = gridSize[0] * gridSize[1];
-  const transient = <Format extends 'uint32' | 'float32'>(
+  const transient = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     name: string,
     format: Format,
     length: number
   ) => createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
   const tileBounds = transient('tile-bounds', 'float32', tileCount * 4);
   const gridBounds = transient('grid-bounds', 'float32', 4);
+  const unitPositions = transient('unit-positions', 'float32x2', rowCount);
   const cellOffsets = transient('cell-offsets', 'uint32', cellCount + 1);
   const objectIds = transient('object-ids', 'uint32', rowCount);
   const sortedIds = transient('sorted-ids', 'uint32', rowCount + 4);
@@ -121,12 +122,34 @@ ${IS_FINITE_BITS_WGSL}`;
     gridBounds[gridBoundsOffset + component] = select(bounds[component], invalid, isEmpty);
   }`
     }),
+    // The published grid index takes a literal [0, 1] domain, so positions are normalized by the
+    // data-dependent extent first; non-finite or empty-extent rows become NaN and are ignored.
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-unit-positions`,
+      operation,
+      variant: 'unit-positions',
+      bindings: [
+        {name: 'positions', view: positions, type: 'f32', access: 'read'},
+        {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read'},
+        {name: 'unitPositions', view: unitPositions, type: 'f32', access: 'read_write'}
+      ],
+      invocationCount: rowCount,
+      declarations: `${IS_FINITE_VALUE_WGSL}${BIN_INDEX_WGSL}`,
+      body: `let position = vec2f(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
+  let minimum = vec2f(gridBounds[gridBoundsOffset], gridBounds[gridBoundsOffset + 1u]);
+  let maximum = vec2f(gridBounds[gridBoundsOffset + 2u], gridBounds[gridBoundsOffset + 3u]);
+  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
+  let extent = maximum - minimum;
+  let included = isFiniteValue(position.x) && isFiniteValue(position.y) && isFiniteValue(minimum.x) && isFiniteValue(minimum.y);
+  let unit = select(vec2f(0.0), (position - minimum) / extent, extent > vec2f(0.0));
+  unitPositions[unitPositionsOffset + 2u * index] = select(invalid, unit.x, included);
+  unitPositions[unitPositionsOffset + 2u * index + 1u] = select(invalid, unit.y, included);`
+    }),
     ...new GPUGridIndex({
       id: `${id}-grid-index`,
-      positions,
+      positions: unitPositions,
       gridSize: [gridSize[0], gridSize[1]],
       bounds: [0, 0, 1, 1],
-      boundsBuffer: gridBounds,
       cellOffsets,
       objectIds,
       count: indexCount,
@@ -140,8 +163,7 @@ ${IS_FINITE_BITS_WGSL}`;
       operation,
       variant: 'cell-keys',
       bindings: [
-        {name: 'positions', view: positions, type: 'f32', access: 'read'},
-        {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read'},
+        {name: 'unitPositions', view: unitPositions, type: 'f32', access: 'read'},
         {name: 'cellKeys', view: cellKeys, type: 'u32', access: 'read_write'},
         {name: 'rowIds', view: rowIds, type: 'u32', access: 'read_write'}
       ],
@@ -149,14 +171,13 @@ ${IS_FINITE_BITS_WGSL}`;
       declarations: `const INDEX_WIDTH: u32 = ${gridSize[0]}u;
 const INDEX_HEIGHT: u32 = ${gridSize[1]}u;
 const INDEX_CELL_COUNT: u32 = ${cellCount}u;
-${GPU_GRID_COORDINATE_WGSL}`,
-      body: `let x = positions[positionsOffset + 2u * index];
-  let y = positions[positionsOffset + 2u * index + 1u];
-  let minimum = vec2f(gridBounds[gridBoundsOffset], gridBounds[gridBoundsOffset + 1u]);
-  let maximum = vec2f(gridBounds[gridBoundsOffset + 2u], gridBounds[gridBoundsOffset + 3u]);
+${IS_FINITE_VALUE_WGSL}${BIN_INDEX_WGSL}`,
+      body: `let x = unitPositions[unitPositionsOffset + 2u * index];
+  let y = unitPositions[unitPositionsOffset + 2u * index + 1u];
   var key = INDEX_CELL_COUNT;
-  if (isFiniteGridValue(x) && isFiniteGridValue(y) && x >= minimum.x && x <= maximum.x && y >= minimum.y && y <= maximum.y) {
-    key = getGridCoordinate(y, minimum.y, maximum.y, INDEX_HEIGHT) * INDEX_WIDTH + getGridCoordinate(x, minimum.x, maximum.x, INDEX_WIDTH);
+  // Same unit-domain mapping as the published grid index, so keys agree with its cell offsets.
+  if (isFiniteValue(x) && isFiniteValue(y)) {
+    key = getBinIndex(y, 0.0, 1.0, INDEX_HEIGHT) * INDEX_WIDTH + getBinIndex(x, 0.0, 1.0, INDEX_WIDTH);
   }
   cellKeys[cellKeysOffset + index] = key;
   rowIds[rowIdsOffset + index] = index;`
@@ -202,7 +223,7 @@ export function getGridLookupWGSL(gridSize: readonly [number, number]): string {
 const INDEX_WIDTH: u32 = ${gridSize[0]}u;
 const INDEX_HEIGHT: u32 = ${gridSize[1]}u;
 
-${GPU_GRID_COORDINATE_WGSL}
+${IS_FINITE_VALUE_WGSL}${BIN_INDEX_WGSL}
 // Inclusive cell range (columnLow, columnHigh, rowLow, rowHigh) covering distance < bandwidth.
 // The reach is padded for f32 rounding of the box edges; rows in the padding get weight 0 or
 // a weight below 1e-8 and the exact distance test in the weight rejects the rest.
@@ -214,10 +235,10 @@ fn getGridRange(origin: vec2f, bandwidth: f32) -> vec4u {
   let low = clamp(origin - reach, minimum, maximum);
   let high = clamp(origin + reach, minimum, maximum);
   return vec4u(
-    getGridCoordinate(low.x, minimum.x, maximum.x, INDEX_WIDTH),
-    getGridCoordinate(high.x, minimum.x, maximum.x, INDEX_WIDTH),
-    getGridCoordinate(low.y, minimum.y, maximum.y, INDEX_HEIGHT),
-    getGridCoordinate(high.y, minimum.y, maximum.y, INDEX_HEIGHT)
+    getBinIndex(low.x, minimum.x, maximum.x, INDEX_WIDTH),
+    getBinIndex(high.x, minimum.x, maximum.x, INDEX_WIDTH),
+    getBinIndex(low.y, minimum.y, maximum.y, INDEX_HEIGHT),
+    getBinIndex(high.y, minimum.y, maximum.y, INDEX_HEIGHT)
   );
 }
 `;
@@ -229,7 +250,7 @@ fn getGridRange(origin: vec2f, bandwidth: f32) -> vec4u {
  * gives, found by visiting grid cells in rings around the row's cell and stopping once the
  * `maximumK`-th distance is inside the visited block (less one cell of slack for f32 cell
  * rounding). The list holds values only, so the visiting order cannot change it. Needs
- * `getPosition(row)`, `getGridCoordinate`, `ROW_COUNT`, `MAXIMUM_NEIGHBORS`, `SENTINEL` and the
+ * `getPosition(row)`, `getBinIndex`, `ROW_COUNT`, `MAXIMUM_NEIGHBORS`, `SENTINEL` and the
  * grid bindings. With `positiveOnly`, coincident rows (squared distance 0, the row itself
  * included) are skipped, so the list starts at the nearest strictly positive distance.
  *
@@ -252,8 +273,8 @@ fn ${functionName}(i: u32, maximumK: u32, list: ptr<function, array<f32, MAXIMUM
   let cellSlack = min(cellExtent.x, cellExtent.y);
   let lastColumn = i32(INDEX_WIDTH) - 1;
   let lastRow = i32(INDEX_HEIGHT) - 1;
-  let centerColumn = i32(getGridCoordinate(clamp(origin.x, minimum.x, maximum.x), minimum.x, maximum.x, INDEX_WIDTH));
-  let centerRow = i32(getGridCoordinate(clamp(origin.y, minimum.y, maximum.y), minimum.y, maximum.y, INDEX_HEIGHT));
+  let centerColumn = i32(getBinIndex(clamp(origin.x, minimum.x, maximum.x), minimum.x, maximum.x, INDEX_WIDTH));
+  let centerRow = i32(getBinIndex(clamp(origin.y, minimum.y, maximum.y), minimum.y, maximum.y, INDEX_HEIGHT));
   let lastRing = max(max(centerColumn, lastColumn - centerColumn), max(centerRow, lastRow - centerRow));
   for (var ring = 0; ring <= lastRing; ring++) {
     let ringColumnLow = max(centerColumn - ring, 0);

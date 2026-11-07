@@ -37,7 +37,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUTrackSimilarity',
           datasets: [data.id],
-          retain: ['hausdorff', 'frechet', 'maximumDistance', 'pairStatus'],
           keySpaces: [
             {id: 'pair', label: 'track pair', size: pairA.length, indexSpace: '1d'},
             {id: 'track', label: 'vessel track', size: data.trackCount, indexSpace: '1d'}

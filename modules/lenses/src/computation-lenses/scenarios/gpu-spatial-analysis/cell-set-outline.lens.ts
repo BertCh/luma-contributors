@@ -42,20 +42,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellSetOutline',
           datasets: [data.id],
-          retain: [
-            'tableCells',
-            'tableCount',
-            'segmentRows',
-            'edgeIndices',
-            'segmentCount',
-            'outlineOverflow',
-            'ringCount',
-            'ringOffsets',
-            'ringPositions',
-            'cellBoundaries',
-            'cellBoundariesCenters',
-            'cellBoundariesOffsets'
-          ],
           keySpaces: [
             {id: 'segment', label: 'exposed cell edge', size: SEGMENT_CAPACITY, indexSpace: '1d'},
             {id: 'cell', label: 'cell table row', size: CELL_CAPACITY, indexSpace: '1d'},

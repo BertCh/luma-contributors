@@ -5,8 +5,18 @@
 import type {Layer} from '@deck.gl/core';
 import type {Binding, Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {GPUCommandGraph, createGPUComputeCommandNode, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {GPUPointCloudChange, GPUPointCloudFeatures, GPUPointCloudICP, GPUPointCloudNeighborhoods} from '@luma-contributors/analysis/pointcloud-analysis';
+import {
+  GPUCommandGraph,
+  createGPUComputeCommandNode,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUPointCloudChange,
+  GPUPointCloudFeatures,
+  GPUPointCloudICP,
+  GPUPointCloudNeighborhoods
+} from '@luma-contributors/analysis/pointcloud-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';

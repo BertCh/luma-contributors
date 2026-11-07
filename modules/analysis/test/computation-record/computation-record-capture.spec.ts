@@ -6,8 +6,11 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {GPUCommandGraph, createTransientView, getViewBinding} from '@luma.gl/graph/gpu-core';
 import {
-  captureGPUCommandGraph,
+  GPUComputationRecorder,
+  GPUSnapshotArena,
+  GPUSnapshotTap,
   createGPUComputationCaptures,
+  describeGPUCommandGraph,
   createGPUComputationRecord,
   validateGPUComputationRecord,
   validateGPUComputationSidecars
@@ -15,9 +18,10 @@ import {
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
 
-function createChain(device: Device) {
-  const graph = new GPUCommandGraph(device, {id: 'capture-chain', recording: {retain: ['state']}});
-  // The nonzero view offset also exercises capture source range resolution.
+/** Three iterations of a counter, each followed by a tap that snapshots the state. */
+function createChain(device: Device, recorder: GPUComputationRecorder, arena: GPUSnapshotArena) {
+  const graph = new GPUCommandGraph(device, {id: 'capture-chain'});
+  // The nonzero view offset also exercises snapshot source range resolution.
   const storage = createTransientView(
     graph,
     'state',
@@ -27,13 +31,13 @@ function createChain(device: Device) {
   );
   const state = graph.createDataView(storage.buffer, {format: 'uint32', length: 1, byteOffset: 4});
   for (let iteration = 1; iteration <= 3; iteration++) {
-    graph.addComputePass({
+    const node = {
       id: `iteration-${iteration}`,
       publication: {
         id: `result-${iteration}`,
-        completeness: iteration === 3 ? 'complete' : 'partial'
+        completeness: iteration === 3 ? ('complete' as const) : ('partial' as const)
       },
-      resources: [{buffer: state, usage: 'storage-read-write'}],
+      resources: [{buffer: state, usage: 'storage-read-write' as const}],
       compile: () => {
         const kernel = new Kernel(device, {
           source: `@group(0) @binding(0) var<storage, read_write> state: array<u32>;
@@ -41,7 +45,7 @@ function createChain(device: Device) {
           shaderLayout: {bindings: [{name: 'state', type: 'storage', group: 0, location: 0}]}
         });
         return {
-          encode: ({computePass, getBuffer}) =>
+          encode: ({computePass, getBuffer}: any) =>
             kernel.dispatch(computePass, {
               bindings: {state: getViewBinding(state, getBuffer)},
               x: 1
@@ -49,77 +53,64 @@ function createChain(device: Device) {
           destroy: () => kernel.destroy()
         };
       }
-    });
+    };
+    graph.addComputePass(node);
+    // The tap follows its node in authoring order, so later iterations cannot overwrite the value.
+    graph.add(
+      new GPUSnapshotTap({
+        id: `observe-${iteration}`,
+        arena,
+        views: {state},
+        afterNode: node.id,
+        recorder
+      })
+    );
   }
   return {graph, state};
 }
 
-for (const at of ['publication', 'step', 'end'] as const) {
-  test(`captures a retained iterative state at ${at} boundaries`, async () => {
-    const device = await getWebGPUTestDevice();
-    if (!device) return;
-    const {graph, state} = createChain(device);
-    const compiled = graph.compile();
-    try {
-      const record = createGPUComputationRecord({
-        id: 'chain',
-        adapter: {backend: 'webgpu'},
-        domains: ['gpu-core'],
-        graphs: [compiled.describe()]
-      });
-      expect(validateGPUComputationRecord(record)).toMatchObject({valid: true});
-      const result = await captureGPUCommandGraph(compiled, {
-        encodeOptions: {parameters: undefined},
-        views: {state},
-        at,
-        runId: record.runId
-      });
-      expect(result.stepCount).toBe(3);
-      expect(result.snapshotCount).toBe(at === 'end' ? 1 : 3);
-      expect(result.captures.map(capture => Array.from(capture.values))).toEqual(
-        at === 'end' ? [[3]] : [[1], [2], [3]]
-      );
-      expect(result.captures.map(capture => capture.afterNode)).toEqual(
-        at === 'end' ? ['iteration-3'] : ['iteration-1', 'iteration-2', 'iteration-3']
-      );
-      expect(
-        result.captures.every(
-          capture => capture.elementType === 'u32' && capture.resource === 'state'
-        )
-      ).toBe(true);
-      const captures = createGPUComputationCaptures({
-        runId: record.runId,
-        snapshots: result.captures
-      });
-      expect(validateGPUComputationSidecars(record, {captures})).toMatchObject({valid: true});
-    } finally {
-      compiled.destroy();
-    }
-  });
-}
-
-test('observation tap preserves iteration two while later iterations overwrite state', async () => {
+test('taps snapshot an iterative transient while later iterations overwrite it', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;
-  const {graph, state} = createChain(device);
-  const sinkBuffer = device.createBuffer({byteLength: 4, usage: Buffer.COPY_DST | Buffer.COPY_SRC});
-  const sink = graph.importBuffer(
-    {id: 'tap-sink', byteLength: 4, usage: sinkBuffer.usage},
-    sinkBuffer
-  );
-  graph.addObservationTap(state, {afterNode: 'iteration-2', sink, id: 'observe-two'});
+  const recorder = new GPUComputationRecorder();
+  const arena = new GPUSnapshotArena(device, {
+    id: 'chain-snapshots',
+    slots: [{name: 'state', byteLength: 4, elementType: 'u32'}],
+    capacity: 3
+  });
+  const {graph} = createChain(device, recorder, arena);
   const compiled = graph.compile();
   try {
-    const result = await captureGPUCommandGraph(compiled, {
-      encodeOptions: {parameters: undefined},
-      views: {state},
-      at: 'publication'
+    const {graph: described, sources} = describeGPUCommandGraph(compiled, {recorder});
+    const record = createGPUComputationRecord({
+      id: 'chain',
+      adapter: {backend: 'webgpu'},
+      domains: ['gpu-core'],
+      graphs: [{graph: described, sources}]
     });
-    expect(result.captures.map(capture => capture.values[0])).toEqual([1, 2, 3]);
-    const bytes = await sinkBuffer.readAsync();
-    expect(new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0]).toBe(2);
+    expect(validateGPUComputationRecord(record)).toMatchObject({valid: true});
+    expect(described.nodes.filter(node => node.attrs['observationTap'])).toHaveLength(3);
+    const commandEncoder = device.createCommandEncoder();
+    compiled.encode(commandEncoder, {parameters: undefined});
+    device.submit(commandEncoder.finish());
+    const snapshots = await arena.read({
+      graph: described.id,
+      resources: {state: 'state'},
+      runId: record.runId
+    });
+    expect(snapshots.map(capture => Array.from(capture.values))).toEqual([[1], [2], [3]]);
+    expect(snapshots.map(capture => capture.afterNode)).toEqual([
+      'iteration-1',
+      'iteration-2',
+      'iteration-3'
+    ]);
+    expect(
+      snapshots.every(capture => capture.elementType === 'u32' && capture.resource === 'state')
+    ).toBe(true);
+    const captures = createGPUComputationCaptures({runId: record.runId, snapshots});
+    expect(validateGPUComputationSidecars(record, {captures})).toMatchObject({valid: true});
   } finally {
     compiled.destroy();
-    sinkBuffer.destroy();
+    arena.destroy();
   }
 });

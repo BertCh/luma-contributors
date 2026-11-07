@@ -420,8 +420,8 @@ export const UPSTREAM_SELF_COMPARE_IDIOMS: readonly {pattern: RegExp; source: st
     // gpu-spatial-utils.ts:19, gpu-grid-index-query.ts:420,603, gpu-point-spatial-filter.ts:322,
     // gpu-virtual-geometry-selection.ts:447, gpu-group-aggregation.ts:543, gpu-reduction.ts:419,
     // gpu-histogram.ts:438,565, gpu-vector-search/gpu-k-means.ts:403
-    pattern: new RegExp(String.raw`\bvalue == value && abs\(value\) <= ${F32_MAX}`, 'g'),
-    source: 'gpgpu finite(value) helpers'
+    pattern: new RegExp(String.raw`\b(\w+) == \1 && abs\(\1\) <= ${F32_MAX}`, 'g'),
+    source: 'published @luma.gl/graph finite(value) helpers and raster texture validity tests'
   },
   {
     pattern: new RegExp(String.raw`\btotal == total && abs\(total\) <= ${F32_MAX}`, 'g'),

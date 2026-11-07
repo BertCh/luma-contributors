@@ -4,7 +4,18 @@
 
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {createGPUComputeCommandNode, getBoundedDispatchLayout, getBoundedInvocationIndexSource, getGraphVectorData, getViewBinding, getViewElementOffset, type GPUCommandGraph, type GPUCommandNode, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  getGraphVectorData,
+  getViewBinding,
+  getViewElementOffset,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView,
+  type GraphVectorView
+} from '@luma.gl/graph/gpu-core';
 
 const WORKGROUP_SIZE = 64;
 

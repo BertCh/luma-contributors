@@ -55,7 +55,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.offset-expansion',
           element: 'GPUOffsetExpansion',
           datasets: ['s2-chicago-north-nature', 's2-chicago-north-tracts'],
-          retain: ['owners', 'localIndex', 'count', 'overflow'],
           keySpaces,
           relations: [
             {

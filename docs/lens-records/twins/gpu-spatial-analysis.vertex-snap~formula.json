@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the who…",
   "description": "Formula Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the who…",
-  "llms": "Formula Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the whole reference set or the matching feature range; t=max(parameters[0],0).\n\n- bound symbols: 6/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the whole reference set or the matching feature range; t=max(parameters[0],0).\n\n- bound symbols: 0/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "6/7"
+    "value": "0/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.vertex-snap</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{reference-row}{j_*}&amp;=\\underset{\\term{index}{j}\\in\\term{range}{J},\\ \\lVert\\term{reference}{r_j}-\\term{vertex}{p}\\rVert^2&lt;\\term{tolerance}{t}^2}{\\operatorname{argmin}}\\left(\\lVert\\term{reference}{r_j}-\\term{vertex}{p}\\rVert^2,\\term{index}{j}\\right)\\\\\\term{output}{p&#39;}&amp;=\\begin{cases}\\term{reference}{r_{j_*}}&amp;\\text{a candidate exists}\\\\\\term{vertex}{p}&amp;\\text{otherwise}\\end{cases}\\end{aligned}</pre><p class=\"lens-ascii\">Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the whole reference set or the matching feature range; t=max(parameters[0],0).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"reference-row\">Selected row, or NO_REFERENCE · output · outputReferenceRows</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">Reference row · index · unbound — no binding declared</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"range\">Rows in [referenceStart, referenceEnd) · intermediate · referenceStart</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"reference\">Reference positions · input · referencePositions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"vertex\">Input vertex · input · vertex</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"tolerance\">Snap tolerance · parameter · tolerance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"output\">Snapped position · output · outputPositions</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.vertex-snap</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{reference-row}{j_*}&amp;=\\underset{\\term{index}{j}\\in\\term{range}{J},\\ \\lVert\\term{reference}{r_j}-\\term{vertex}{p}\\rVert^2&lt;\\term{tolerance}{t}^2}{\\operatorname{argmin}}\\left(\\lVert\\term{reference}{r_j}-\\term{vertex}{p}\\rVert^2,\\term{index}{j}\\right)\\\\\\term{output}{p&#39;}&amp;=\\begin{cases}\\term{reference}{r_{j_*}}&amp;\\text{a candidate exists}\\\\\\term{vertex}{p}&amp;\\text{otherwise}\\end{cases}\\end{aligned}</pre><p class=\"lens-ascii\">Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the whole reference set or the matching feature range; t=max(parameters[0],0).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"reference-row\">Selected row, or NO_REFERENCE · output · unknown — wgsl outputReferenceRows not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">Reference row · index · unbound — no binding declared</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"range\">Rows in [referenceStart, referenceEnd) · intermediate · unknown — wgsl referenceStart not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"reference\">Reference positions · input · unknown — wgsl referencePositions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"vertex\">Input vertex · input · unknown — wgsl vertex not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"tolerance\">Snap tolerance · parameter · unknown — wgsl tolerance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"output\">Snapped position · output · unknown — wgsl outputPositions not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,7 +29,7 @@
       [
         "Selected row, or NO_REFERENCE",
         "output",
-        "outputReferenceRows",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -43,35 +43,35 @@
       [
         "Rows in [referenceStart, referenceEnd)",
         "intermediate",
-        "referenceStart",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Reference positions",
         "input",
-        "referencePositions",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Input vertex",
         "input",
-        "vertex",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Snap tolerance",
         "parameter",
-        "tolerance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Snapped position",
         "output",
-        "outputPositions",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -106,12 +106,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:08.132Z",
-    "runId": "run-a273d8d2",
+    "date": "2026-11-07T14:55:29.445Z",
+    "runId": "run-1a5a767d",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-a273d8d2",
+    "runId": "run-1a5a767d",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

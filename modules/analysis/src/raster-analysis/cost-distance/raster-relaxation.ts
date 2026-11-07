@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
-import type {GPUComputationNodeAnnotation} from '@luma-contributors/analysis/computation-record';
 import {
   getBoundedDispatchLayout,
   type GPUBoundedDispatchLayout,
@@ -351,22 +350,6 @@ export type RasterGatedRound<Parameters> = {
   extraResources: GraphBufferUse[];
 };
 
-function annotateLoopNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  node: GPUCommandNode<Parameters>,
-  loop: GPUComputationNodeAnnotation['loop'],
-  loopRole: 'setup' | 'round' | 'gate'
-): GPUCommandNode<Parameters> {
-  if (graph.recording) {
-    node.annotation = {
-      ...node.annotation,
-      ...(loop ? {loop: node.annotation?.loop ?? loop} : {}),
-      attrs: {...node.annotation?.attrs, loopRole}
-    };
-  }
-  return node;
-}
-
 /**
  * Unrolls `maxIterations` gated iterations with one gate node per `groupSize` iterations.
  *
@@ -403,9 +386,7 @@ export function createRasterGatedLoopNodes<Parameters>(
     operation: props.operation,
     groupSize
   });
-  const nodes: GPUCommandNode<Parameters>[] = [
-    annotateLoopNode(graph, slotTable.writeNode, undefined, 'setup')
-  ];
+  const nodes: GPUCommandNode<Parameters>[] = [slotTable.writeNode];
   for (let start = 0; start < props.maxIterations; start += groupSize) {
     const size = Math.min(groupSize, props.maxIterations - start);
     for (let groupOffset = 0; groupOffset < size; groupOffset++) {
@@ -416,45 +397,30 @@ export function createRasterGatedLoopNodes<Parameters>(
         nodeId
       );
       nodes.push(
-        annotateLoopNode(
-          graph,
-          props.createRound({
-            nodeId,
-            iteration,
-            slotBinding: {
-              name: 'roundSlot',
-              view: slotTable.getSlot(groupOffset),
-              type: 'u32',
-              access: 'read'
-            },
-            roundSlotWGSL: 'roundSlot[roundSlotOffset]',
-            markChangedWGSL: 'atomicOr(&status[statusOffset], 1u << roundSlot[roundSlotOffset]);',
-            condition,
-            extraResources
-          }),
-          {id: props.id, iteration, phase: 'gated', maximumIterations: props.maxIterations},
-          'round'
-        )
+        props.createRound({
+          nodeId,
+          iteration,
+          slotBinding: {
+            name: 'roundSlot',
+            view: slotTable.getSlot(groupOffset),
+            type: 'u32',
+            access: 'read'
+          },
+          roundSlotWGSL: 'roundSlot[roundSlotOffset]',
+          markChangedWGSL: 'atomicOr(&status[statusOffset], 1u << roundSlot[roundSlotOffset]);',
+          condition,
+          extraResources
+        })
       );
     }
     nodes.push(
-      annotateLoopNode(
-        graph,
-        createRasterIterationGroupGateNode<Parameters>(graph, {
-          id: `${gateId}-${start}`,
-          operation: props.operation,
-          state: props.state,
-          maxIterations: props.maxIterations,
-          groupSize: slotTable.getSlot(size)
-        }),
-        {
-          id: props.id,
-          iteration: start + size - 1,
-          phase: 'gated',
-          maximumIterations: props.maxIterations
-        },
-        'gate'
-      )
+      createRasterIterationGroupGateNode<Parameters>(graph, {
+        id: `${gateId}-${start}`,
+        operation: props.operation,
+        state: props.state,
+        maxIterations: props.maxIterations,
+        groupSize: slotTable.getSlot(size)
+      })
     );
   }
   return nodes;

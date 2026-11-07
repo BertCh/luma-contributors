@@ -4,7 +4,7 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {
-  captureGPUCommandGraph,
+  describeGPUCommandGraph,
   createGPUComputationCaptures,
   createGPUComputationRecord,
   getGPUComputationAdapter,
@@ -16,7 +16,13 @@ import {
   type GPUComputationKeySpace,
   type GPUComputationRelation
 } from '@luma-contributors/analysis/computation-record';
-import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  addLensViewSnapshot,
+  LensCommandGraph,
+  readLensViewSnapshot,
+  submitLensGraph
+} from '../../lens-view-snapshot';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   createGPULocalFrame,
@@ -56,8 +62,6 @@ export type S2LensRunProps = {
   datasets: readonly string[];
   /** Deterministic seed, when the run samples. */
   seed?: number;
-  /** Transient ids to retain for capture (they must be created with `Buffer.COPY_SRC`). */
-  retain?: readonly string[];
   /** Key spaces the captures index; the first one is the datum axis. */
   keySpaces?: readonly GPUComputationKeySpace[];
   /** Relations between key spaces (CSR neighbours, point → polygon). */
@@ -69,7 +73,7 @@ export type S2LensRunProps = {
    * and returns the views to capture after the run, by capture name.
    */
   build(
-    graph: GPUCommandGraph<undefined>,
+    graph: LensCommandGraph<undefined>,
     uploads: S2Uploads
   ): Promise<Record<string, S2CaptureSpec>> | Record<string, S2CaptureSpec>;
 };
@@ -96,10 +100,7 @@ export async function runS2Lens(
   device: Device,
   props: S2LensRunProps
 ): Promise<LensScenarioResult> {
-  const graph = new GPUCommandGraph<undefined>(device, {
-    id: props.scenarioId.replace(/\./g, '-'),
-    recording: {retain: [...(props.retain ?? [])]}
-  });
+  const graph = new LensCommandGraph<undefined>(device, {id: props.scenarioId.replace(/\./g, '-')});
   const owned: {destroy(): void}[] = [];
   const uploads: S2Uploads = {
     own(resource) {
@@ -129,6 +130,16 @@ export async function runS2Lens(
   };
   try {
     const captureSpecs = await props.build(graph, uploads);
+    const names = Object.keys(captureSpecs);
+    const snapshot = addLensViewSnapshot(graph, device, {
+      id: graph.id,
+      views: Object.fromEntries(names.map(name => [name, captureSpecs[name].view])),
+      elementTypes: Object.fromEntries(
+        names.flatMap(name =>
+          captureSpecs[name].elementType ? [[name, captureSpecs[name].elementType!]] : []
+        )
+      )
+    });
     const compiled = graph.compile();
     try {
       const entry = getSpatialOperatorEntry(props.element);
@@ -146,7 +157,7 @@ export async function runS2Lens(
         keySpace: keySpace.id,
         ...(keySpace.size !== undefined && {size: keySpace.size})
       }));
-      const description = compiled.describe({domain: SPATIAL_COMPUTATION_PACK_ID});
+      const description = describeGPUCommandGraph(compiled, {domain: SPATIAL_COMPUTATION_PACK_ID});
       const record = createGPUComputationRecord({
         id: props.scenarioId,
         adapter: getGPUComputationAdapter(device),
@@ -158,18 +169,13 @@ export async function runS2Lens(
         datasetVersion: props.datasets.join('+'),
         ...(props.seed !== undefined && {seed: props.seed})
       });
-      const names = Object.keys(captureSpecs);
-      const capture = await captureGPUCommandGraph(compiled, {
-        encodeOptions: {parameters: undefined},
-        views: Object.fromEntries(names.map(name => [name, captureSpecs[name].view])),
-        elementTypes: Object.fromEntries(
-          names.flatMap(name =>
-            captureSpecs[name].elementType ? [[name, captureSpecs[name].elementType!]] : []
-          )
-        ),
-        at: 'end',
-        runId: record.runId
-      });
+      submitLensGraph(device, compiled, {parameters: undefined});
+      const capture = {
+        captures: await readLensViewSnapshot(snapshot, {
+          graphId: description.graph.id,
+          runId: record.runId
+        })
+      };
       const snapshots = capture.captures.map(captured => {
         const spec = captureSpecs[captured.name];
         return {

@@ -42,7 +42,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUGreatCircleArcs',
           datasets: [data.id],
-          retain: ['arcs', 'arcOffsets', 'arcSources', 'count', 'overflow'],
           keySpaces: [{id: 'route', label: 'route from ORD', size: pairCount, indexSpace: '1d'}],
           choices: {
             spatialContext: 'longitude-latitude, great-circle sphere, meters',

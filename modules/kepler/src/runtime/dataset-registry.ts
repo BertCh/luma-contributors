@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {isOutOfMemoryError} from '@luma.gl/graph';
-
 export type KeplerMemoryKind = 'cpu' | 'gpu';
 
 /** Reuse the same descriptor for every alias of one allocation. */
@@ -848,4 +846,10 @@ function assertPopulationAdmission(
 ): void {
   if (dataset.population && dataset.population.state !== 'complete' && !options.allowIncomplete)
     throw new Error('Dataset population is incomplete; explicitly opt in to prefix inspection');
+}
+
+/** Detects device allocation failures by error name; published luma.gl has no public predicate. */
+function isOutOfMemoryError(error: unknown): boolean {
+  const name = (error as {name?: string} | null)?.name;
+  return name === 'OutOfMemoryError' || name === 'GPUOutOfMemoryError';
 }

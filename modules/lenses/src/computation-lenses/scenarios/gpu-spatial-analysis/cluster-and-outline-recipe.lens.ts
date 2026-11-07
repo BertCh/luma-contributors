@@ -27,7 +27,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.cluster-and-outline-recipe',
           element: 'addClusterAndOutlineRecipe',
           datasets: ['s2-chicago-north-nature'],
-          retain: ['labels', 'clusterCount', 'hullPositions', 'hullOffsets', 'areas', 'perimeters'],
           keySpaces: [
             {id: 'observation', label: 'observation', size: count, indexSpace: '1d'},
             {id: 'cluster', label: 'cluster slot', size: 128, indexSpace: '1d'},

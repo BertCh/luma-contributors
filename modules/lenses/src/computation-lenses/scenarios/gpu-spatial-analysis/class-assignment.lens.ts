@@ -36,7 +36,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.class-assignment',
           element: 'GPUClassAssignment',
           datasets: ['s2-midwest-counties', 's2-midwest-county-shapes'],
-          retain: ['breaks', 'classCount', 'classes'],
           keySpaces,
           choices: {method: 'quantile', classCount: 5},
           async build(graph, uploads) {

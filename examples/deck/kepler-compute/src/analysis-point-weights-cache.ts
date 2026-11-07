@@ -4,7 +4,14 @@
 
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, GPUMask, createTransientView, type CompiledGPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUMask,
+  createTransientView,
+  type CompiledGPUCommandGraph,
+  type GraphDataView,
+  type GraphVectorView
+} from '@luma.gl/graph/gpu-core';
 import {
   addKeplerPointWeights,
   assertKeplerStorageBindingFits,

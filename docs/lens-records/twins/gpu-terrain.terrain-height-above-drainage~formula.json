@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula HAND(c) = z(c) - z(d(c)); d(c) = first stream cell on the D8 path from c (c itself on a stream cell), found by pointer jumping p = p[p]; 0 on stream cells; NaN when the path ends without a stream, meets an unresolved word, or the elevations…",
   "description": "Formula HAND(c) = z(c) - z(d(c)); d(c) = first stream cell on the D8 path from c (c itself on a stream cell), found by pointer jumping p = p[p]; 0 on stream cells; NaN when the path ends without a stream, meets an unresolved word, or the elevations…",
-  "llms": "Formula HAND(c) = z(c) - z(d(c)); d(c) = first stream cell on the D8 path from c (c itself on a stream cell), found by pointer jumping p = p[p]; 0 on stream cells; NaN when the path ends without a stream, meets an unresolved word, or the elevations are not finite\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula HAND(c) = z(c) - z(d(c)); d(c) = first stream cell on the D8 path from c (c itself on a stream cell), found by pointer jumping p = p[p]; 0 on stream cells; NaN when the path ends without a stream, meets an unresolved word, or the elevations are not finite\n\n- bound symbols: 0/4\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "4/4"
+    "value": "0/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-height-above-drainage.hand</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hand}{\\mathrm{HAND}}(c) = \\term{cellElevation}{z_c} - \\term{drainageElevation}{z_{d(c)}},\\quad \\term{drainage}{d}(c) = \\text{first stream cell on the D8 path from } c</pre><p class=\"lens-ascii\">HAND(c) = z(c) - z(d(c)); d(c) = first stream cell on the D8 path from c (c itself on a stream cell), found by pointer jumping p = p[p]; 0 on stream cells; NaN when the path ends without a stream, meets an unresolved word, or the elevations are not finite</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-height-above-drainage-compiled:terrain-height-above-drainage-height\" data-value=\"hand\">HAND · output · heightOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-height-above-drainage-compiled:terrain-height-above-drainage-height\" data-value=\"cellElevation\">z_c · input · cellElevation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-height-above-drainage-compiled:terrain-height-above-drainage-height\" data-value=\"drainageElevation\">z_d(c) · input · drainageElevation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-height-above-drainage-compiled:terrain-height-above-drainage-height\" data-value=\"drainage\">d · intermediate · drainage</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-height-above-drainage.hand</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hand}{\\mathrm{HAND}}(c) = \\term{cellElevation}{z_c} - \\term{drainageElevation}{z_{d(c)}},\\quad \\term{drainage}{d}(c) = \\text{first stream cell on the D8 path from } c</pre><p class=\"lens-ascii\">HAND(c) = z(c) - z(d(c)); d(c) = first stream cell on the D8 path from c (c itself on a stream cell), found by pointer jumping p = p[p]; 0 on stream cells; NaN when the path ends without a stream, meets an unresolved word, or the elevations are not finite</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"hand\">HAND · output · unknown — wgsl heightOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cellElevation\">z_c · input · unknown — wgsl cellElevation not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"drainageElevation\">z_d(c) · input · unknown — wgsl drainageElevation not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"drainage\">d · intermediate · unknown — wgsl drainage not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,28 +29,28 @@
       [
         "HAND",
         "output",
-        "heightOut",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "z_c",
         "input",
-        "cellElevation",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "z_d(c)",
         "input",
-        "drainageElevation",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "d",
         "intermediate",
-        "drainage",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -81,14 +81,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:11.006Z",
-    "runId": "run-773aa4ef",
+    "date": "2026-11-07T14:55:30.192Z",
+    "runId": "run-3b10f5de",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-773aa4ef",
+    "runId": "run-3b10f5de",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

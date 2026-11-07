@@ -22,13 +22,29 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUCellAggregation,
   GPUCellTableCompare,
   GPUPointToCell
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUClassBreaks, GPUColorScale, GPUGroupStatistics, GPUKeyJoin, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, GPU_COLOR_SCALE_PARAMETER_LENGTH, type GPUClassBreaksMethod, type GPUGroupStatistic} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  GPUClassBreaks,
+  GPUColorScale,
+  GPUGroupStatistics,
+  GPUKeyJoin,
+  getGPUClassBreaksParameterLength,
+  getGPUClassBreaksParameterValues,
+  getGPUColorScaleParameterValues,
+  GPU_COLOR_SCALE_PARAMETER_LENGTH,
+  type GPUClassBreaksMethod,
+  type GPUGroupStatistic
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer} from '../spatial-analysis-layers';
 import type {

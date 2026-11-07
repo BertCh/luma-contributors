@@ -15,8 +15,6 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
-const INVALID_COMPONENT = 0xffffffff;
-
 /** Iterative Tarjan reference labelling each component with its lowest vertex id. */
 function calculateTarjanLabels(vertexCount: number, edges: readonly [number, number][]): number[] {
   const adjacency: number[][] = Array.from({length: vertexCount}, () => []);
@@ -82,11 +80,7 @@ function createRandomEdges(
   return Array.from({length: edgeCount}, () => [next() % vertexCount, next() % vertexCount]);
 }
 
-async function runNetworkStrongComponents(
-  vertexCount: number,
-  edges: readonly [number, number][],
-  options: {iterations?: number; method?: 'iterative' | 'reachability'} = {}
-) {
+async function runNetworkStrongComponents(vertexCount: number, edges: readonly [number, number][]) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
@@ -99,76 +93,36 @@ async function runNetworkStrongComponents(
   const buffers = [
     createInputBuffer(device, Uint32Array.from(offsets)),
     createInputBuffer(device, Uint32Array.from(neighbors)),
-    createOutputBuffer(device, vertexCount),
-    createOutputBuffer(device, 1)
+    createOutputBuffer(device, vertexCount)
   ];
-  const [offsetsBuffer, neighborsBuffer, labelsBuffer, convergedBuffer] = buffers;
+  const [offsetsBuffer, neighborsBuffer, labelsBuffer] = buffers;
   const structure = new GPUNetworkStructure({
     topology: {
       offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', offsets.length),
       neighbors: importGraphBuffer(graph, 'neighbors', neighborsBuffer, 'uint32', neighbors.length)
     },
     output: {
-      strongComponents: importGraphBuffer(graph, 'labels', labelsBuffer, 'uint32', vertexCount),
-      ...(options.method !== 'reachability' && {
-        strongComponentsConverged: importGraphBuffer(
-          graph,
-          'converged',
-          convergedBuffer,
-          'uint32',
-          1
-        )
-      })
-    },
-    strongComponentsMethod: options.method,
-    strongComponentsIterations: options.iterations
+      strongComponents: importGraphBuffer(graph, 'labels', labelsBuffer, 'uint32', vertexCount)
+    }
   });
   graph.add(structure);
   const compiled = graph.compile();
   try {
     submitGraph(device, compiled, undefined);
-    return {
-      labels: await readUint32(labelsBuffer, vertexCount),
-      converged: (await readUint32(convergedBuffer, 1))[0]
-    };
+    return {labels: await readUint32(labelsBuffer, vertexCount)};
   } finally {
     compiled.destroy();
     for (const buffer of buffers) buffer.destroy();
   }
 }
 
-it('GPUNetworkStructure strong components match Tarjan above the 1024-node reachability cap', async () => {
+it('GPUNetworkStructure reachability strong components match Tarjan on bounded graphs', async () => {
   for (const [vertexCount, edgeCount, seed] of [
-    [1500, 1800, 11],
-    [3000, 4500, 12]
+    [200, 260, 21],
+    [1000, 1500, 11]
   ]) {
     const edges = createRandomEdges(vertexCount, edgeCount, seed);
-    const result = await runNetworkStrongComponents(vertexCount, edges, {iterations: 512});
-    expect(result.converged, `converged for ${vertexCount}/${edgeCount}`).toBe(1);
+    const result = await runNetworkStrongComponents(vertexCount, edges);
     expect(result.labels).toEqual(calculateTarjanLabels(vertexCount, edges));
   }
-});
-
-it('GPUNetworkStructure strong components keep the reachability labels on bounded graphs', async () => {
-  const vertexCount = 200;
-  const edges = createRandomEdges(vertexCount, 260, 21);
-  const expected = calculateTarjanLabels(vertexCount, edges);
-  const iterative = await runNetworkStrongComponents(vertexCount, edges);
-  const reachability = await runNetworkStrongComponents(vertexCount, edges, {
-    method: 'reachability'
-  });
-  expect(iterative.converged).toBe(1);
-  expect(iterative.labels).toEqual(expected);
-  expect(reachability.labels).toEqual(expected);
-});
-
-it('GPUNetworkStructure reports an exhausted strong-component budget and invalidates labels', async () => {
-  const vertexCount = 1200;
-  const edges: [number, number][] = Array.from({length: vertexCount}, (_, vertex) => [
-    vertex,
-    (vertex + 1) % vertexCount
-  ]);
-  const result = await runNetworkStrongComponents(vertexCount, edges, {iterations: 2});
-  expect(result.converged).toBe(0);
-  expect(result.labels.every(label => label === INVALID_COMPONENT)).toBe(true);
 });

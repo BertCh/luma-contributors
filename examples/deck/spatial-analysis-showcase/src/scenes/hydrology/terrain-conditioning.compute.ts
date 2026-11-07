@@ -14,7 +14,11 @@ import {
   GPUTerrainBranchingFlow,
   GPUTerrainCatchmentSummary
 } from '@luma-contributors/analysis/gpu-terrain';
-import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

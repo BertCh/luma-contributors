@@ -73,12 +73,12 @@ const ELEMENT_KERNEL_SOURCES: Record<GeometryElement, string[]> = {
   GPULineDensity: [
     `${SOURCE_ROOT}/line-density/line-density-kernels.ts`,
     `${SOURCE_ROOT}/geometry-measures/geodesic-wgsl.ts`,
-    'modules/analysis/src/utils/sorted-segment-sums.ts'
+    'modules/analysis/src/analysis-core/kernels/sorted-segment-sums.ts'
   ],
   GPULineLengthPerPolygon: [
     `${SOURCE_ROOT}/line-density/gpu-line-length-per-polygon.ts`,
     `${SOURCE_ROOT}/geometry-measures/geodesic-wgsl.ts`,
-    'modules/analysis/src/utils/sorted-segment-sums.ts'
+    'modules/analysis/src/analysis-core/kernels/sorted-segment-sums.ts'
   ],
   GPUGridGenerator: [`${SOURCE_ROOT}/grid-generators/gpu-grid-generator.ts`],
   GPUShapeGenerator: [`${SOURCE_ROOT}/grid-generators/gpu-shape-generator.ts`],

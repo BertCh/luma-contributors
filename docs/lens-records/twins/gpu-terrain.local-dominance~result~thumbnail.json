@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.local-dominance: dem → localDominance.",
   "description": "Result of gpu-terrain.local-dominance: dem → localDominance. cells: 4,096. values read back from the GPU run. input dem: 4096 cells.",
-  "llms": "Result of gpu-terrain.local-dominance: dem → localDominance\n\n- cells: 4,096\n- input dem: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.local-dominance: dem → localDominance\n\n- cells: 4,096\n- input dem: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "4,096"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.356Z",
-    "runId": "run-ac4dcf76",
+    "date": "2026-11-07T14:55:29.745Z",
+    "runId": "run-60ef5d98",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-ac4dcf76",
+    "runId": "run-60ef5d98",
     "rung": "result",
     "bindings": {},
     "clauses": [],

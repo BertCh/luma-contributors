@@ -38,15 +38,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.transition-diagnostics',
           element: 'GPUTransitionDiagnostics',
           datasets: ['s2-midwest-counties'],
-          retain: [
-            'breaks',
-            'classes',
-            'counts',
-            'homogeneity',
-            'steadyStates',
-            'stateSparsity',
-            'converged'
-          ],
           keySpaces: [
             {id: 'transition', label: 'state x from class x to class', size: 125, indexSpace: '1d'},
             {id: 'homogeneity', label: 'homogeneity statistic', size: 5, indexSpace: '1d'},

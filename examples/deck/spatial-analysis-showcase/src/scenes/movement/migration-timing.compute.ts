@@ -4,7 +4,10 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUTemporalReductionParameterValues, GPUTemporalReduction} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUTemporalReductionParameterValues,
+  GPUTemporalReduction
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getGreatCircleDistanceMeters} from '../../cartography/reference-geometry';
 import {getClassIndexOf, getClassTableLayerProps} from '../../cartography/class-table';

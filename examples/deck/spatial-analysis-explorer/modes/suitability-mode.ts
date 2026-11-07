@@ -24,8 +24,39 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {getGPUDistanceFieldParameterValues, getGPURasterArithmeticParameterValues, getGPURasterCellStatisticsParameterValues, getGPURasterConditionalParameterValues, getGPURasterProfileParameterValues, getGPURasterReclassifyParameterValues, getGPURasterSamplingParameterValues, getGPUWeightedOverlayParameterLength, getGPUWeightedOverlayParameterValues, makeGPURasterMetadata, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH, GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH, GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH, GPU_RASTER_PROFILE_PARAMETER_LENGTH, GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH, GPU_RASTER_SAMPLING_PARAMETER_LENGTH, GPUDistanceField, GPURasterArithmetic, GPURasterCellStatistics, GPURasterConditional, GPURasterProfile, GPURasterReclassify, GPURasterSampling, GPUWeightedOverlay, type GPURasterSamplingMethod} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  getGPUDistanceFieldParameterValues,
+  getGPURasterArithmeticParameterValues,
+  getGPURasterCellStatisticsParameterValues,
+  getGPURasterConditionalParameterValues,
+  getGPURasterProfileParameterValues,
+  getGPURasterReclassifyParameterValues,
+  getGPURasterSamplingParameterValues,
+  getGPUWeightedOverlayParameterLength,
+  getGPUWeightedOverlayParameterValues,
+  makeGPURasterMetadata,
+  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
+  GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH,
+  GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH,
+  GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH,
+  GPU_RASTER_PROFILE_PARAMETER_LENGTH,
+  GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH,
+  GPU_RASTER_SAMPLING_PARAMETER_LENGTH,
+  GPUDistanceField,
+  GPURasterArithmetic,
+  GPURasterCellStatistics,
+  GPURasterConditional,
+  GPURasterProfile,
+  GPURasterReclassify,
+  GPURasterSampling,
+  GPUWeightedOverlay,
+  type GPURasterSamplingMethod
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,

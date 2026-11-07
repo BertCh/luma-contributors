@@ -63,16 +63,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellCompaction',
           datasets: [data.id],
-          retain: [
-            'children',
-            'compactedCells',
-            'compactedCount',
-            'droppedCount',
-            'inputBoundaries',
-            'inputBoundariesCenters',
-            'boundaries',
-            'boundariesCenters'
-          ],
           keySpaces: [
             {id: 'cell', label: 'compacted cell', size: capacity, indexSpace: '1d'},
             {id: 'inputCell', label: 'input cell', size: CHILD_COUNT, indexSpace: '1d'},

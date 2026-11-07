@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+…",
   "description": "Formula D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+…",
-  "llms": "Formula D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+tolerancePerKilometer*D/1000)/D; hidden=0 if S>T+beta, visible=1 if S<=T-beta, otherwise marginal=4; invalid endpoints give noData=3, D>maximumDistance>0 gives outOfRange=2, D=0 gives visible; no tested samples give visible. Clearance=(T-S)*D, 3.4028234663852886e38 for coincident points or no tested sample, NaN for noData or outOfRange; requesting clearance disables hidden-ray early exit.\n\n- bound symbols: 11/11\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+tolerancePerKilometer*D/1000)/D; hidden=0 if S>T+beta, visible=1 if S<=T-beta, otherwise marginal=4; invalid endpoints give noData=3, D>maximumDistance>0 gives outOfRange=2, D=0 gives visible; no tested samples give visible. Clearance=(T-S)*D, 3.4028234663852886e38 for coincident points or no tested sample, NaN for noData or outOfRange; requesting clearance disables hidden-ray early exit.\n\n- bound symbols: 0/11\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "11/11"
+    "value": "0/11"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-line-of-sight.tangent</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{maximum}{S}=\\max_k\\frac{\\term{sample}{h_k}-\\term{curvature}{c}\\,\\term{sampleDistance}{s_k}^{2}-\\term{eye}{z_o}}{\\term{sampleDistance}{s_k}},\\quad \\term{target}{T}=\\frac{\\term{targetTop}{z_t}-c\\,\\term{distance}{D}^{2}-z_o}{D},\\quad \\term{code}{v}=\\begin{cases}0&amp;S&gt;T+\\term{band}{\\beta}\\\\1&amp;S\\le T-\\beta\\\\4&amp;\\text{otherwise}\\end{cases},\\quad \\term{clearance}{C}=(T-S)D</pre><p class=\"lens-ascii\">D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+tolerancePerKilometer*D/1000)/D; hidden=0 if S&gt;T+beta, visible=1 if S&lt;=T-beta, otherwise marginal=4; invalid endpoints give noData=3, D&gt;maximumDistance&gt;0 gives outOfRange=2, D=0 gives visible; no tested samples give visible. Clearance=(T-S)*D, 3.4028234663852886e38 for coincident points or no tested sample, NaN for noData or outOfRange; requesting clearance disables hidden-ray early exit.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"maximum\">maximum sample tangent · intermediate · maxSlope</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"sample\">bilinear sample · input · elevationSample</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"curvature\">curvature coefficient · parameter · curvature</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"sampleDistance\">sample distance · intermediate · sampleDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"eye\">eye elevation · input · eye</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"target\">target tangent · intermediate · targetSlope</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"targetTop\">target elevation · input · targetTop</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"distance\">target distance · intermediate · targetDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"code\">visibility code · output · code</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"band\">tolerance band · parameter · band</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-line-of-sight-compiled:terrain-line-of-sight-line-of-sight\" data-value=\"clearance\">clearance (m) · output · clearance</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-line-of-sight.tangent</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{maximum}{S}=\\max_k\\frac{\\term{sample}{h_k}-\\term{curvature}{c}\\,\\term{sampleDistance}{s_k}^{2}-\\term{eye}{z_o}}{\\term{sampleDistance}{s_k}},\\quad \\term{target}{T}=\\frac{\\term{targetTop}{z_t}-c\\,\\term{distance}{D}^{2}-z_o}{D},\\quad \\term{code}{v}=\\begin{cases}0&amp;S&gt;T+\\term{band}{\\beta}\\\\1&amp;S\\le T-\\beta\\\\4&amp;\\text{otherwise}\\end{cases},\\quad \\term{clearance}{C}=(T-S)D</pre><p class=\"lens-ascii\">D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+tolerancePerKilometer*D/1000)/D; hidden=0 if S&gt;T+beta, visible=1 if S&lt;=T-beta, otherwise marginal=4; invalid endpoints give noData=3, D&gt;maximumDistance&gt;0 gives outOfRange=2, D=0 gives visible; no tested samples give visible. Clearance=(T-S)*D, 3.4028234663852886e38 for coincident points or no tested sample, NaN for noData or outOfRange; requesting clearance disables hidden-ray early exit.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"maximum\">maximum sample tangent · intermediate · unknown — wgsl maxSlope not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sample\">bilinear sample · input · unknown — wgsl elevationSample not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"curvature\">curvature coefficient · parameter · unknown — wgsl curvature not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sampleDistance\">sample distance · intermediate · unknown — wgsl sampleDistance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"eye\">eye elevation · input · unknown — wgsl eye not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"target\">target tangent · intermediate · unknown — wgsl targetSlope not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"targetTop\">target elevation · input · unknown — wgsl targetTop not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distance\">target distance · intermediate · unknown — wgsl targetDistance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"code\">visibility code · output · unknown — wgsl code not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"band\">tolerance band · parameter · unknown — wgsl band not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"clearance\">clearance (m) · output · unknown — wgsl clearance not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,77 +29,77 @@
       [
         "maximum sample tangent",
         "intermediate",
-        "maxSlope",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "bilinear sample",
         "input",
-        "elevationSample",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "curvature coefficient",
         "parameter",
-        "curvature",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "sample distance",
         "intermediate",
-        "sampleDistance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "eye elevation",
         "input",
-        "eye",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "target tangent",
         "intermediate",
-        "targetSlope",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "target elevation",
         "input",
-        "targetTop",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "target distance",
         "intermediate",
-        "targetDistance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "visibility code",
         "output",
-        "code",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "tolerance band",
         "parameter",
-        "band",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "clearance (m)",
         "output",
-        "clearance",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -137,14 +137,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:11.227Z",
-    "runId": "run-d9063a70",
+    "date": "2026-11-07T14:55:30.297Z",
+    "runId": "run-4a7196a0",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-d9063a70",
+    "runId": "run-4a7196a0",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

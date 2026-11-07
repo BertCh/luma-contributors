@@ -10,9 +10,10 @@ import {expect, it} from 'vitest';
 
 const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../src');
 const ANALYSIS_ENTRIES = [
-  'geospatial',
-  'gpu-dataframe',
-  'gpu-raster',
+  'geospatial-analysis',
+  'dataframe-analysis',
+  'raster-analysis',
+  'pointcloud-analysis',
   'gpu-terrain',
   'gpu-spatial-analysis',
   'gpu-network'

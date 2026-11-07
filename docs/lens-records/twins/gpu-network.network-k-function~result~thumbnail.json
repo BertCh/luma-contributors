@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.network-k-function: crashPositions, bandThreshold → envel…",
   "description": "Result of gpu-network.network-k-function: crashPositions, bandThreshold → envelope-maximum. rows: 8. values read back from the GPU run. input crashPositions: 64 points.",
-  "llms": "Result of gpu-network.network-k-function: crashPositions, bandThreshold → envelope-maximum\n\n- rows: 8\n- input crashPositions: 64 points\n- input bandThreshold: 8 rows\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 64 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.network-k-function: crashPositions, bandThreshold → envelope-maximum\n\n- rows: 8\n- input crashPositions: 64 points\n- input bandThreshold: 8 rows\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 64 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "8"
@@ -19,15 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:45.576Z",
-    "runId": "run-9a9fc58c",
+    "date": "2026-11-07T14:55:16.990Z",
+    "runId": "run-4f137e6f",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-9a9fc58c",
+    "runId": "run-4f137e6f",
     "rung": "result",
     "bindings": {},
     "clauses": [],

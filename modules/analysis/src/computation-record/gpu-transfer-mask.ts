@@ -1,4 +1,3 @@
-// luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
@@ -16,7 +15,8 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {hashGPUComputationText} from './hash-computation-text';
+import type {GPUComputationRecorder} from './computation-recorder';
+import {createGPUKernelAnnotation} from './create-kernel-annotation';
 
 const TRANSFER_WORKGROUP_SIZE = 256;
 
@@ -37,6 +37,8 @@ export type GPUTransferMaskProps = {
   target: GraphDataView;
   /** `any` writes one; `count` counts selected incoming relation entries. Defaults to `any`. */
   mode?: 'any' | 'count';
+  /** Annotates the produced nodes for a computation record; omitted in production. */
+  recorder?: GPUComputationRecorder;
 };
 
 /** Clears and scatters a selection mask across a GPU-resident relation. */
@@ -161,35 +163,26 @@ fn main(
           };
         }
       });
-      if (graph.recording) {
-        const hash = hashGPUComputationText(shaderSource);
-        node.annotation = {
-          op: 'GPUTransferMask',
-          attrs: {layout: relation.layout, mode},
-          source: {
-            id: `wgsl:${hash}`,
-            language: 'wgsl',
-            moduleId: `GPUTransferMask/${phase}`,
-            hash,
-            entryPoint: 'main',
-            ...(graph.recording.sourceText && {text: shaderSource})
-          },
-          workgroupSize: [TRANSFER_WORKGROUP_SIZE, 1, 1],
-          dispatch: {
-            workgroups: [dispatch.x, dispatch.y, dispatch.z],
-            invocationCount: elementCount
-          },
-          bindings: entries.map(([name, view]) => ({
-            name,
-            resource: view.buffer.id,
-            access: name === 'targetMask' ? 'read_write' : 'read',
-            elementType: name === 'targetMask' ? 'atomic<u32>' : 'u32',
-            elementOffset: getViewElementOffset(view),
-            length: view.length
-          }))
-        };
-      }
-      return node;
+      return this.props.recorder
+        ? this.props.recorder.recordNode(
+            node,
+            createGPUKernelAnnotation({
+              op: 'GPUTransferMask',
+              moduleId: `GPUTransferMask/${phase}`,
+              source: shaderSource,
+              workgroupSize: [TRANSFER_WORKGROUP_SIZE, 1, 1],
+              workgroups: [dispatch.x, dispatch.y, dispatch.z],
+              invocationCount: elementCount,
+              attrs: {layout: relation.layout, mode},
+              bindings: entries.map(([name, view]) => ({
+                name,
+                view,
+                access: name === 'targetMask' ? 'read_write' : 'read',
+                elementType: name === 'targetMask' ? 'atomic<u32>' : 'u32'
+              }))
+            })
+          )
+        : node;
     });
   }
 

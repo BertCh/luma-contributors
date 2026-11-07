@@ -32,17 +32,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineSimplification',
           datasets: [data.id],
-          retain: [
-            'importance',
-            'ids',
-            'lineCounts',
-            'count',
-            'overflow',
-            'converged',
-            'iterationCount',
-            'simplifiedRoads',
-            'simplifiedOffsets'
-          ],
           keySpaces: [
             {
               id: 'vertex',

@@ -8,10 +8,7 @@ import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {GPUPointCloudSMRF} from '../../src/pointcloud-analysis/gpu-pointcloud-smrf';
 import {GPUPointCloudNeighborhoods} from '../../src/pointcloud-analysis/gpu-pointcloud-neighborhoods';
-import {addSparseResistanceConnectivityRecipe} from '../../src/gpu-spatial-analysis/landscape-ecology/sparse-resistance';
-import {createWGSLKernelNode} from '../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-utils';
-import {RecipeTestFixture} from '../gpu-spatial-analysis/recipes/recipe-harness';
 import {getBenchmarkDistribution, getBenchmarkSettings} from '../utils/benchmark-settings';
 import {requireTestDevice} from '../utils/require-test-device';
 import {submitGraph} from '../utils/gpu-contributor-test-utils';
@@ -266,70 +263,8 @@ async function measureGroundClassification(
   }
 }
 
-async function measureResistance(device: Device, vertexCount: number, settings: Settings) {
-  const setupStarted = performance.now();
-  const fixture = new RecipeTestFixture(device, 'resistance-profile');
-  const edgeCount = (vertexCount - 2) * 2;
-  const edges = new Uint32Array(edgeCount * 2);
-  const conductances = new Float32Array(edgeCount).fill(2 / (vertexCount - 2));
-  for (let vertex = 1; vertex < vertexCount - 1; vertex++) {
-    edges.set([0, vertex, vertex, vertexCount - 1], (vertex - 1) * 4);
-  }
-  const result = addSparseResistanceConnectivityRecipe(fixture.graph, {
-    id: 'resistance',
-    edges: fixture.input('edges', edges, 'uint32x2', edgeCount),
-    conductances: fixture.input('conductances', conductances, 'float32', edgeCount),
-    vertexCount,
-    source: 0,
-    sink: vertexCount - 1,
-    maximumIterations: 8,
-    tolerance: 1e-4
-  });
-  const certificate = fixture.output('certificate', 'float32', 8);
-  fixture.graph.add(
-    createWGSLKernelNode(fixture.graph, {
-      id: 'capture-certificate',
-      operation: 'benchmark-capture',
-      invocationCount: 8,
-      bindings: [
-        {name: 'diagnostics', view: result.outputs.diagnostics, type: 'f32', access: 'read'},
-        {name: 'status', view: result.status, type: 'u32', access: 'read'},
-        {name: 'certificate', view: certificate.view, type: 'f32', access: 'read_write'}
-      ],
-      body: 'if (index < 4u) { certificate[certificateOffset + index] = diagnostics[diagnosticsOffset + index]; } else { certificate[certificateOffset + index] = f32(status[statusOffset + index - 4u]); }'
-    })
-  );
-  const validate = async () => {
-    const values = await fixture.readFloat32(certificate, 8);
-    expect(values.every(Number.isFinite)).toBe(true);
-    expect(Math.abs(values[0] - 1)).toBeLessThanOrEqual(1e-4);
-    expect(values[1]).toBeLessThanOrEqual(1e-4);
-    expect(Math.abs(values[2] - 1)).toBeLessThanOrEqual(1e-4);
-    expect(values[3]).toBeLessThanOrEqual(1e-4);
-    expect(values.slice(4)).toEqual([1, 8, 1, 0]);
-  };
-  try {
-    await (device.handle as GPUDevice).queue.onSubmittedWorkDone();
-    const setupAndUploadMilliseconds = performance.now() - setupStarted;
-    return {
-      shape: {
-        vertexCount,
-        edgeCount,
-        configuredIterations: 8,
-        distribution: 'parallel-two-edge-routes'
-      },
-      setupAndUploadMilliseconds,
-      inputBytes: edges.byteLength + conductances.byteLength,
-      certificateReadbackBytes: 32,
-      ...(await measureGraph(device, fixture.graph, validate, settings))
-    };
-  } finally {
-    fixture.destroy();
-  }
-}
-
 it.skipIf(environment?.['VITE_IRREGULAR_GEOSPATIAL_PROFILE'] !== 'true')(
-  'point cloud consumers and sparse resistance phase attribution',
+  'point cloud consumers phase attribution',
   {timeout: 900000},
   async () => {
     const settings = getBenchmarkSettings(environment);
@@ -371,14 +306,6 @@ it.skipIf(environment?.['VITE_IRREGULAR_GEOSPATIAL_PROFILE'] !== 'true')(
       measured++;
       console.log(
         `IRREGULAR_GEOSPATIAL_MEASUREMENT ${JSON.stringify({workload, ...(await measureGroundClassification(device, sourceCount, settings))})}`
-      );
-    }
-    for (const vertexCount of [1026, 8194, 65538]) {
-      const workload = `resistance-${vertexCount}`;
-      if (!workload.includes(settings.workloadFilter)) continue;
-      measured++;
-      console.log(
-        `IRREGULAR_GEOSPATIAL_MEASUREMENT ${JSON.stringify({workload, ...(await measureResistance(device, vertexCount, settings))})}`
       );
     }
     if (!measured) throw new Error('No irregular geospatial profiling workload matched the filter');

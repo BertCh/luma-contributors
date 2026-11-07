@@ -13,7 +13,10 @@ import {
   getGPUNetworkIsochronesParameterValues,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-network';
-import {getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   addClusterAndOutlineRecipe,
   addSpatialRegressionRecipe,

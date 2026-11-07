@@ -3,9 +3,33 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, GPUReduction, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {getGPURasterArithmeticParameterValues, GPURasterArithmetic, GPURasterMedialAxis, GPURasterRankFilter, GPURasterRegionGraph, GPURasterSkeleton, GPURasterWatershedSegmentation, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
-import {GPURasterClosing, GPURasterConnectedComponents, GPURasterDenseComponents, GPURasterHistogram, GPURasterOtsuThreshold, GPURasterOpening, GPURasterRegionMeasurements, GPURasterThreshold, type GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import {
+  GPUCommandGraph,
+  GPUReduction,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  getGPURasterArithmeticParameterValues,
+  GPURasterArithmetic,
+  GPURasterMedialAxis,
+  GPURasterRankFilter,
+  GPURasterRegionGraph,
+  GPURasterSkeleton,
+  GPURasterWatershedSegmentation,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPURasterClosing,
+  GPURasterConnectedComponents,
+  GPURasterDenseComponents,
+  GPURasterHistogram,
+  GPURasterOtsuThreshold,
+  GPURasterOpening,
+  GPURasterRegionMeasurements,
+  GPURasterThreshold,
+  type GPURasterBufferBand
+} from '@luma.gl/graph/gpu-raster';
 import {SpatialAnalysisResources, formatCount} from '../../engine/resources';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {fetchBytes} from '../../data/loaders';

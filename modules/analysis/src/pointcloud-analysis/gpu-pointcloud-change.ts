@@ -6,7 +6,7 @@ import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNode} from '@luma.gl/graph/gpu-core';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {GPU_POINT_CLOUD_MAXIMUM_BRUTE_FORCE_WORK} from './pointcloud-local-origin';
 
 export type GPUPointCloudChangeProps = {
@@ -138,7 +138,7 @@ export class GPUPointCloudChange {
         comparison.length
       );
       nodes.push(
-        ...getSpatialOperationNodes(graph, {
+        ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-align`,
           length: comparison.length,
           inputs: {comparison, transform: this.props.alignment.transform},
@@ -150,7 +150,7 @@ writeAligned(index,rotation*readComparison(index)+translation);`
       );
     }
     nodes.push(
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: this.id,
         length: cores.length,
         inputs: {reference, comparison: alignedComparison, cores, normals},

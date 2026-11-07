@@ -27,17 +27,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.spatial-markov',
           element: 'GPUSpatialMarkov',
           datasets: ['s2-midwest-counties'],
-          retain: [
-            'breaks',
-            'classes',
-            'counts',
-            'probabilities',
-            'rowTotals',
-            'lagBreaks',
-            'lagClassCount',
-            'homogeneity',
-            'stateSparsity'
-          ],
           keySpaces: [
             {
               id: 'transition',

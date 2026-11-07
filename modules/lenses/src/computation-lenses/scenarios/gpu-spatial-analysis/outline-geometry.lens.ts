@@ -39,7 +39,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUOutlineGeometry',
           datasets: [data.id],
-          retain: ['outline'],
           keySpaces: [
             {id: 'vertex', label: 'park vertex', size: vertexCount, indexSpace: '1d'},
             {id: 'ring', label: 'ring', size: data.ringOffsets.length - 1, indexSpace: '1d'},

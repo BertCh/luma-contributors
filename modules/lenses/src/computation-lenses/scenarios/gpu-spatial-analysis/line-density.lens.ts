@@ -46,7 +46,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPULineDensity',
           datasets: [data.id],
-          retain: ['lengths', 'densities', 'overflow', 'pieceCount'],
           keySpaces: [
             {
               id: 'cell',

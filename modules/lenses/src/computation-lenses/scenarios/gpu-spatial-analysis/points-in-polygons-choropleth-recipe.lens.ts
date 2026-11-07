@@ -38,7 +38,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.points-in-polygons-choropleth-recipe',
           element: 'addPointsInPolygonsChoroplethRecipe',
           datasets: ['s2-chicago-north-nature', 's2-chicago-north-tracts'],
-          retain: ['counts', 'classIndices', 'colors', 'breaks', 'overflow', 'uncertainCount'],
           keySpaces,
           choices: {backend: 'zonal', statistic: 'count', classMethod: 'quantile', classCount: 5},
           async build(graph, uploads) {

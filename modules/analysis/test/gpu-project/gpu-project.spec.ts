@@ -15,7 +15,6 @@ import {
   PROJECTION_PATCH_WORD_LENGTH
 } from '@luma.gl/graph/gpu-project';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-import {createGPUSpatialFrameFromCRS} from '../../src/analysis-core/contracts/spatial-frame-crs';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 
 type Coordinates = readonly [number, number];
@@ -45,36 +44,6 @@ it('packProjectionPlan rounds subnormal float32 bounds inward', () => {
     'a negative maximum rounds down to the least negative float32'
   ).toBe(0x80000001);
   void 0;
-});
-
-it('GPUProjection tags output with its target frame or target CRS', async () => {
-  const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const plan = compileProjectionPlan({
-    projection: (coordinates: number[]): number[] => [coordinates[0] * 2, coordinates[1] * 2],
-    bounds: [-1, -1, 1, 1]
-  });
-  const graph = new GPUCommandGraph(device, {id: 'gpu-project-frame-tagging'});
-  const makeView = (identifier: string) =>
-    importView(
-      graph,
-      identifier,
-      device.createBuffer({byteLength: 16, usage: Buffer.STORAGE}),
-      'float32x2',
-      2
-    );
-  const base = {plan, positions: makeView('positions'), output: makeView('output')};
-  const targetFrame = createGPUSpatialFrameFromCRS('EPSG:32633');
-  const fromFrame = new GPUProjection({...base, targetFrame});
-  const fromString = new GPUProjection({...base, targetCrs: 'EPSG:32633'});
-
-  expect(fromFrame.targetFrame).toBe(targetFrame);
-  expect(fromFrame.spatialContext?.frame).toBe(targetFrame);
-  expect(fromFrame.spatialContext?.frame.crs).toBe(fromString.spatialContext?.frame.crs);
-  expect(fromFrame.spatialContext?.units).toEqual(fromString.spatialContext?.units);
-  expect(new GPUProjection(base).spatialContext).toBeUndefined();
 });
 
 it('GPUProjection writes origin-relative f32 positions and honors nonzero view offsets', async () => {

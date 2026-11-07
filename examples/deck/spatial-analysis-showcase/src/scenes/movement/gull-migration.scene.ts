@@ -469,12 +469,12 @@ export default defineScene<GullMigrationOptions>({
       : [])
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUTrajectoryMetrics, GPULineSimplification, GPUTrajectoryResample, GPUTrackSimilarity,
   getGPUTrajectoryMetricsParameterValues, getGPULineSimplificationParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@luma.gl/graph/gpu-dataframe';
 
 // positions: float32x2 longitude/latitude degrees, great-circle metric (meters),
 // simplification and similarity use the same great-circle context,

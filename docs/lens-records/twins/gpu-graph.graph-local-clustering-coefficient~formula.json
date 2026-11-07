@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-graph.graph-local-clustering-coefficient",
   "viewId": "formula-card",
-  "caption": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "description": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0. bound symbols: 2/3. structure metadata only.",
-  "llms": "Formula y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.\n\n- bound symbols: 2/3\n- 4 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Direct kernel (chosen for this sparse graph): degree counts distinct weak neighbors; closureCount sums, over every unordered neighbor pair a < b, forwardClosure (a->b exists) + reverseClosure (b->a exists); output = closureCount / (degree *…",
+  "description": "Formula Direct kernel (chosen for this sparse graph): degree counts distinct weak neighbors; closureCount sums, over every unordered neighbor pair a < b, forwardClosure (a->b exists) + reverseClosure (b->a exists); output = closureCount / (degree *…",
+  "llms": "Formula Direct kernel (chosen for this sparse graph): degree counts distinct weak neighbors; closureCount sums, over every unordered neighbor pair a < b, forwardClosure (a->b exists) + reverseClosure (b->a exists); output = closureCount / (degree * (degree - 1)) when degree >= 2 else 0. On undirected CSR each triangle contributes two closures, so this equals 2T / (d(d-1)). Overflow publishes zero. The canonical (dense) kernel computes the same quantity by merging sorted rows.\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/3"
+    "value": "0/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.scan</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})</pre><p class=\"lens-ascii\">y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-local-clustering-coefficient-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-local-clustering-coefficient-compiled:rail-topology-forward-scan-level-0-scan\" data-value=\"y\">y · output · outputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"heads\">heads · input · unknown — wgsl segmentFlags not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-local-clustering-coefficient-compiled:rail-topology-forward-scan-level-0-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-local-clustering-coefficient-compiled:rail-topology-forward-scan-level-1-scan\">level-scan</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-graph.graph-local-clustering-coefficient-compiled:rail-topology-forward-scan-level-0-add-offsets\">add-offsets</button></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-graph.local-clustering-directed-closures</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{coefficient}{C}_v=\\frac{\\term{closures}{T}_v}{\\term{degree}{d}_v\\,(\\term{degree}{d}_v-1)}\\ (d_v\\ge2,\\ \\text{else }0),\\quad\nT_v=\\sum_{a&lt;b\\in N(v)}\\big(\\term{forwardClosure}{[a\\to b]}+\\term{reverseClosure}{[b\\to a]}\\big)</pre><p class=\"lens-ascii\">Direct kernel (chosen for this sparse graph): degree counts distinct weak neighbors; closureCount sums, over every unordered neighbor pair a &lt; b, forwardClosure (a-&gt;b exists) + reverseClosure (b-&gt;a exists); output = closureCount / (degree * (degree - 1)) when degree &gt;= 2 else 0. On undirected CSR each triangle contributes two closures, so this equals 2T / (d(d-1)). Overflow publishes zero. The canonical (dense) kernel computes the same quantity by merging sorted rows.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"coefficient\">clustering coefficient · output · unknown — wgsl output not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"closures\">closure count · intermediate · unknown — wgsl closureCount not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"degree\">distinct neighbors · intermediate · unknown — wgsl degree not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"forwardClosure\">edge a to b · intermediate · unknown — wgsl forwardClosure not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"reverseClosure\">edge b to a · intermediate · unknown — wgsl reverseClosure not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -27,22 +27,36 @@
     ],
     "rows": [
       [
-        "x",
-        "input",
-        "inputValues",
-        "—",
-        "metadata"
-      ],
-      [
-        "y",
+        "clustering coefficient",
         "output",
-        "outputValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
-        "heads",
-        "input",
+        "closure count",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "distinct neighbors",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "edge a to b",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "edge b to a",
+        "intermediate",
         "unknown",
         "—",
         "metadata"
@@ -51,25 +65,28 @@
     "provenance": [
       "metadata",
       "metadata",
+      "metadata",
+      "metadata",
       "metadata"
     ]
   },
   "formula": {
-    "tex": "\\term{y}{y_i}=\\left(\\sum_{j=s(i)}^{i-1+\\delta}\\term{x}{x_j}\\right)\\bmod 2^{32},\\quad s(i)=\\max(\\{0\\}\\cup\\{j\\le i:\\term{heads}{h_j}\\ne0\\})",
-    "ascii": "y[i] = sum(x[s(i)..i-1+delta]) mod 2^32; delta=0 exclusive (default), 1 inclusive; s(i) is the last nonzero segment flag or 0.",
+    "tex": "\\term{coefficient}{C}_v=\\frac{\\term{closures}{T}_v}{\\term{degree}{d}_v\\,(\\term{degree}{d}_v-1)}\\ (d_v\\ge2,\\ \\text{else }0),\\quad\nT_v=\\sum_{a<b\\in N(v)}\\big(\\term{forwardClosure}{[a\\to b]}+\\term{reverseClosure}{[b\\to a]}\\big)",
+    "ascii": "Direct kernel (chosen for this sparse graph): degree counts distinct weak neighbors; closureCount sums, over every unordered neighbor pair a < b, forwardClosure (a->b exists) + reverseClosure (b->a exists); output = closureCount / (degree * (degree - 1)) when degree >= 2 else 0. On undirected CSR each triangle contributes two closures, so this equals 2T / (d(d-1)). Overflow publishes zero. The canonical (dense) kernel computes the same quantity by merging sorted rows.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:42.929Z",
-    "runId": "run-64475890",
+    "date": "2026-11-07T14:55:16.355Z",
+    "runId": "run-dbd8ad5f",
     "observerEffects": [
-      "4 observation taps inserted",
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-64475890",
+    "runId": "run-dbd8ad5f",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

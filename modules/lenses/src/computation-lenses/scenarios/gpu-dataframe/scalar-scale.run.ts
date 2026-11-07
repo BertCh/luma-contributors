@@ -14,14 +14,12 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.scalar-scale';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['radius', 'radiusValidity'];
-
 /** Executes the recorded scalar scale once and reads inputs and outputs from GPU buffers. */
 export async function run(device: Device, options?: {signal?: AbortSignal}) {
   options?.signal?.throwIfAborted();
   const dataset = await loadDataFrameLensData('f-chicago-tracts');
   const poverty = Float32Array.from(dataset.columns.poverty150Pct, value => value ?? NaN);
-  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-scalar-scale', RETAINED);
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-scalar-scale');
   const example = await runExample(device, {graph, tracts: {poverty150Pct: poverty}});
   try {
     options?.signal?.throwIfAborted();

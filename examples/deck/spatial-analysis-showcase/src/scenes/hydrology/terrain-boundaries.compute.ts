@@ -14,7 +14,11 @@ import {
   GPU_TERRAIN_FLOW_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-terrain';
 import {addDrainageNetworkRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {
   SpatialAnalysisPointLayer,

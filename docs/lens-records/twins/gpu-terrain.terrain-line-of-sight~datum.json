@@ -7,7 +7,7 @@
   "viewId": "buffer-strip",
   "caption": "Buffer sightLineClearanceGeometry (24 f32). max: 4,445,660. values read back from the GPU run. min 672580.",
   "description": "Buffer sightLineClearanceGeometry (24 f32). max: 4,445,660. values read back from the GPU run. min 672580.",
-  "llms": "Buffer sightLineClearanceGeometry (24 f32)\n\n- max: 4,445,660\n- min 672580\n- 0 NaN, 0 Inf\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Buffer sightLineClearanceGeometry (24 f32)\n\n- max: 4,445,660\n- min 672580\n- 0 NaN, 0 Inf\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max",
     "value": "4,445,660"
@@ -31,14 +31,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:11.227Z",
-    "runId": "run-d9063a70",
+    "date": "2026-11-07T14:55:30.297Z",
+    "runId": "run-4a7196a0",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-d9063a70",
+    "runId": "run-4a7196a0",
     "rung": "datum",
     "bindings": {},
     "clauses": [],

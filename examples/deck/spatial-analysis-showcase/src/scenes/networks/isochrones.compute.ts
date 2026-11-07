@@ -13,13 +13,21 @@ import {
   GPUNetworkIsochrones,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-network';
-import {getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   addStraightLineCatchmentsRecipe,
   GPU_SPATIAL_JOIN_NO_FEATURE,
   GPUPointInPolygonJoin
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {fetchText, getDataFileUrl, parseCsv} from '../../data/loaders';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {

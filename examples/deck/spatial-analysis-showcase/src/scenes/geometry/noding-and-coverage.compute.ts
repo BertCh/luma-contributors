@@ -15,7 +15,11 @@ import {
   GPUSegmentRingAssembly,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {GPUNetworkNoding} from '@luma-contributors/analysis/gpu-network';
 import {ALBERS_CONUS_FRAME, getAnalysisFrameSpatialContext} from '../../engine/analysis-frame';
 import {GraphSwap} from '../../engine/graph-swap';

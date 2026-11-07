@@ -11,7 +11,6 @@ import './graph-single-source-shortest-path.lens';
 import './graph-core-number.lens';
 import './graph-local-clustering-coefficient.lens';
 import './graph-connected-components.lens';
-import './graph-strongly-connected-components.lens';
 import './graph-label-propagation.lens';
 import './graph-modularity-optimization.lens';
 import './graph-modularity.lens';

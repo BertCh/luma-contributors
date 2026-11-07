@@ -196,9 +196,7 @@ export const TERRAIN_DECODE_OPERATORS: RasterOperatorTable = {
         }
       ]
     },
-    sources: [
-      'modules/analysis/src/gpu-terrain/terrain-decode/gpu-terrain-spike-repair.ts',
-      'modules/analysis/src/gpu-graph-algorithms/gpu-graph-connected-components-internals.ts'
-    ]
+    // Component labelling is the published GPUGraphAlgorithmsConnectedComponents.
+    sources: ['modules/analysis/src/gpu-terrain/terrain-decode/gpu-terrain-spike-repair.ts']
   }
 };

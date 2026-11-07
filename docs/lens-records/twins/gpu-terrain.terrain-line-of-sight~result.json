@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-line-of-sight: dem, sightLinePairs, sightLineCoordinates → sightLineClearanceGeometry. lines: 12. values read back from the GPU run. input dem: 4096 cells.",
   "description": "Result of gpu-terrain.terrain-line-of-sight: dem, sightLinePairs, sightLineCoordinates → sightLineClearanceGeometry. lines: 12. values read back from the GPU run. input dem: 4096 cells.",
-  "llms": "Result of gpu-terrain.terrain-line-of-sight: dem, sightLinePairs, sightLineCoordinates → sightLineClearanceGeometry\n\n- lines: 12\n- input dem: 4096 cells\n- input sightLinePairs: 48 values\n- input sightLineCoordinates: 12 lines\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 48 values, 16 shown\n- 24 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 24 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 24 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-line-of-sight: dem, sightLinePairs, sightLineCoordinates → sightLineClearanceGeometry\n\n- lines: 12\n- input dem: 4096 cells\n- input sightLinePairs: 48 values\n- input sightLineCoordinates: 12 lines\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 48 values, 16 shown\n- 24 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 24 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 24 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "12"
@@ -36,14 +36,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:11.227Z",
-    "runId": "run-d9063a70",
+    "date": "2026-11-07T14:55:30.297Z",
+    "runId": "run-4a7196a0",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-d9063a70",
+    "runId": "run-4a7196a0",
     "rung": "result",
     "bindings": {},
     "clauses": [],

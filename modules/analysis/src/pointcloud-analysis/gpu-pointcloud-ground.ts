@@ -5,7 +5,7 @@
 import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {getPointCloudCellSource, validatePointCloudGrid} from './gpu-pointcloud-surfaces';
 import type {PointCloudRasterGrid} from './gpu-pointcloud-surfaces';
 
@@ -102,7 +102,7 @@ export class GPUPointCloudGround {
     const masks = [0, 1].map(value =>
       createTransientView(graph, `${this.id}-mask-${value}`, 'uint32', positions.length)
     );
-    const nodes = getSpatialOperationNodes(graph, {
+    const nodes = getPointCloudKernelNodes(graph, {
       id: `${this.id}-initialize`,
       length: positions.length,
       inputs: {},
@@ -113,7 +113,7 @@ export class GPUPointCloudGround {
       const radius = radii[iteration];
       for (const operation of ['erode', 'dilate'] as const) {
         nodes.push(
-          ...getSpatialOperationNodes(graph, {
+          ...getPointCloudKernelNodes(graph, {
             id: `${this.id}-${operation}-${iteration}`,
             length: minimumSurface.length,
             inputs: {
@@ -149,7 +149,7 @@ writeSupport(index, select(2u, 0u, count == ${(2 * radius + 1) ** 2}u && complet
       );
       const final = iteration === radii.length - 1;
       nodes.push(
-        ...getSpatialOperationNodes(graph, {
+        ...getPointCloudKernelNodes(graph, {
           id: `${this.id}-classify-${iteration}`,
           length: positions.length,
           inputs: {
@@ -174,7 +174,7 @@ writeStatus(index, select(1u, readSupport(cellIndex), valid));`
       );
     }
     nodes.push(
-      ...getSpatialOperationNodes(graph, {
+      ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-classes`,
         length: positions.length,
         inputs: {classifications, groundMask},

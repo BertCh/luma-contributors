@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {LensCommandGraph} from '../../lens-view-snapshot';
 import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUGraphAlgorithmsData,
@@ -12,13 +13,12 @@ import {
 } from '@luma.gl/graph/gpu-graph-algorithms';
 import railData from '../../data/g-nl-rail-graph.json';
 
-/** Input preparation and explicitly retained observation resources for a rail scenario. */
+/** Input preparation for a rail scenario. */
 export type RailGraphFixtureOptions = {
   id: string;
   directed: boolean;
   weights?: boolean;
   reverse?: boolean;
-  retain?: readonly string[];
 };
 
 /** Caller-owned rail inputs and outputs; building the fixture never submits commands. */
@@ -116,10 +116,7 @@ export function createRailGraphFixture(
     });
     const lonLat = new Float32Array(railData.lonLat);
     const positions = createVector('station-positions', 'float32x2', vertexCount, lonLat);
-    const commandGraph = new GPUCommandGraph<void>(device, {
-      id: options.id,
-      recording: {retain: options.retain}
-    });
+    const commandGraph = new LensCommandGraph<void>(device, {id: options.id});
     // Reserve stable capture ids before contributors import these same physical allocations.
     commandGraph.importGPUVector('csr-offsets', railTopology.forward.offsets);
     commandGraph.importGPUVector('csr-neighbors', railTopology.forward.neighbors);

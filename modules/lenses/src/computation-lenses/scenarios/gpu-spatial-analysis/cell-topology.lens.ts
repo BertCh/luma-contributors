@@ -38,7 +38,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUCellTopology',
           datasets: [data.id],
-          retain: ['diskCells', 'distances', 'counts', 'boundaries', 'boundariesCenters'],
           keySpaces: [
             {id: 'cell', label: 'disk cell', size: DISK_SIZE, indexSpace: '1d'},
             {id: 'place', label: 'input place', size: 1, indexSpace: '1d'},

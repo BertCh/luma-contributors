@@ -139,53 +139,53 @@ const DOC_DEFINITIONS = [
   {
     path: 'gpu-dataframe-analysis.md',
     id: 'gpu-dataframe-analysis',
-    entryPoint: '@luma-contributors/analysis/gpu-dataframe'
+    entryPoint: '@luma.gl/graph/gpu-dataframe'
   },
   {
     path: 'gpu-raster/operations-analysis.md',
     id: 'gpu-raster-operations-analysis',
-    entryPoint: '@luma-contributors/analysis/gpu-raster'
+    entryPoint: '@luma.gl/graph/gpu-raster'
   },
   {
     path: 'gpu-graph.md',
     id: 'gpu-graph',
-    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
+    entryPoint: '@luma.gl/graph/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-topology.md',
     id: 'gpu-graph-topology',
-    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
+    entryPoint: '@luma.gl/graph/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-metrics.md',
     id: 'gpu-graph-metrics',
-    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
+    entryPoint: '@luma.gl/graph/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-connectivity.md',
     id: 'gpu-graph-connectivity',
-    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
+    entryPoint: '@luma.gl/graph/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-traversal.md',
     id: 'gpu-graph-traversal',
-    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
+    entryPoint: '@luma.gl/graph/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-layouts.md',
     id: 'gpu-graph-layouts',
-    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
+    entryPoint: '@luma.gl/graph/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-operations.md',
     id: 'gpu-graph-operations',
-    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
+    entryPoint: '@luma.gl/graph/gpu-graph-algorithms',
     bareClassNames: true
   }
 ] as const;

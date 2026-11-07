@@ -538,7 +538,6 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
             {name: 'weights', view: dispatch.weights.weights, type: 'f32', access: 'read'},
             ...neighborBindings
           ],
-          ...(graph.recording && {record: {formula: 'local-moran'}}),
           invocationCount: dispatch.rowCount,
           declarations: fuseClassify ? getParameterWGSL(dispatch) : getNeighborFloatWGSL(dispatch),
           body: wrapGPUSpatialWeightsChunkBody(

@@ -4,7 +4,11 @@
 
 import {Buffer, type CommandEncoder, type Fence} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {prepareArrowTableForGPUAnalytics} from '@luma.gl/graph/arrow';
 import {
   addKeplerGroupBy,

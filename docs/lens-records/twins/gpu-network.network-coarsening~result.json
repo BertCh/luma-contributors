@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.network-coarsening: zone-nodes → superedges. lines: 9. values read back from the GPU run. input zone-nodes: 1199 points.",
   "description": "Result of gpu-network.network-coarsening: zone-nodes → superedges. lines: 9. values read back from the GPU run. input zone-nodes: 1199 points.",
-  "llms": "Result of gpu-network.network-coarsening: zone-nodes → superedges\n\n- lines: 9\n- input zone-nodes: 1199 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 18 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.network-coarsening: zone-nodes → superedges\n\n- lines: 9\n- input zone-nodes: 1199 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 18 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "9"
@@ -24,15 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:44.867Z",
-    "runId": "run-9606a591",
+    "date": "2026-11-07T14:55:16.823Z",
+    "runId": "run-db52577f",
     "observerEffects": [
       "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-9606a591",
+    "runId": "run-db52577f",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -5,7 +5,13 @@
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  getBoundedDispatchLayout,
+  getBoundedInvocationIndexSource,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
 import type {
   KeplerArrowDataset,

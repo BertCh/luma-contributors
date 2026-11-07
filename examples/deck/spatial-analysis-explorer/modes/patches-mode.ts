@@ -5,8 +5,20 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {getGPURasterSieveParameterValues, makeGPURasterMetadata, GPURasterPatchMetrics, GPURasterSieve, GPU_RASTER_SIEVE_PARAMETER_LENGTH, type GPURasterSieveMode} from '@luma-contributors/analysis/raster-analysis';
-import {GPURasterConnectedComponents, GPURasterDenseComponents, GPURasterThreshold, type GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import {
+  getGPURasterSieveParameterValues,
+  makeGPURasterMetadata,
+  GPURasterPatchMetrics,
+  GPURasterSieve,
+  GPU_RASTER_SIEVE_PARAMETER_LENGTH,
+  type GPURasterSieveMode
+} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPURasterConnectedComponents,
+  GPURasterDenseComponents,
+  GPURasterThreshold,
+  type GPURasterBufferBand
+} from '@luma.gl/graph/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

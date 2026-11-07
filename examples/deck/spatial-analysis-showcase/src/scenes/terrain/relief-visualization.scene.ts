@@ -1091,12 +1091,12 @@ export default defineScene<ReliefOptions>({
   create: async ctx =>
     (await import('./relief-visualization.compute')).createReliefVisualization(ctx),
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUTerrainHorizon, GPUReliefShading, GPUSimpleLocalRelief, GPUReliefBlend,
   getGPUReliefShadingParameterValues, GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL
 } from '@luma-contributors/analysis/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma-contributors/analysis/gpu-raster';
+import {makeGPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
 // Web Mercator tile: EPSG:3857 meters, origin [minX, maxY], cellSize the equatorial pixel size
 const grid = makeGPURasterMetadata({width, height, cellSize: 9.5546, origin: [minX, maxY]});

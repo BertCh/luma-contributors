@@ -4,10 +4,24 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {and, column, GPUDataFrame, parameter, type GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
-import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  and,
+  column,
+  GPUDataFrame,
+  parameter,
+  type GPUDataFrameQueryParameters
+} from '@luma.gl/graph/gpu-dataframe';
+import {
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  GPUTimeWindowFilter
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {GPUTable} from '@luma.gl/graph/gpu-tables';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';

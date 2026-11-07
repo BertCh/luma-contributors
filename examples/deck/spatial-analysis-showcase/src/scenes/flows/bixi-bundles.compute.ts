@@ -4,7 +4,11 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  GPUTimeWindowFilter
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUEdgeBundlingParameterValues,
   GPUEdgeBundling,
@@ -15,7 +19,11 @@ import {
   GPUTrajectoryPlayhead,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {dissolveBoundaries, toSegmentPairs} from '../../cartography/boundaries';
 import {MONTREAL} from '../../cartography/gazetteer';
 import {getLocalProjector} from '../../cartography/segments';

@@ -15,12 +15,12 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {SpatialOperatorEntry} from '../../../gpu-spatial-analysis/computation-pack/types';
-import {createWGSLKernelNode} from '@luma.gl/graph';
+import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
+import {LensCommandGraph} from '../../lens-view-snapshot';
 import {loadChicagoTracts, type ChicagoTracts} from './spatial-lens-data';
 import {
   runSpatialScenario,
   uploadChicagoTractPolygons,
-  getRetainedViewIds,
   uploadSpatialView,
   type SpatialCaptureTag,
   type SpatialScenarioRun,
@@ -170,7 +170,7 @@ export type RegressionExampleInput = {
 /** What a regression scenario hands back after running its example and tagging its captures. */
 export type RegressionExecution = {
   encodeOptions?: GPUCommandGraphEncodeOptions<void>;
-  /** Every view to read back, by capture name; transient ones are retained automatically. */
+  /** Every view to read back, by capture name; every transient is observable. */
   views: Readonly<Record<string, GraphDataView>>;
   /** Roles and supports; `polygons` draws the values on the tract outlines. */
   tags: Readonly<Record<string, TractCaptureTag>>;
@@ -331,8 +331,7 @@ export async function runRegressionScenario(props: {
   execute(input: RegressionExampleInput): Promise<RegressionExecution>;
 }): Promise<Awaited<ReturnType<typeof runSpatialScenario>>> {
   const {model} = props;
-  const retained: string[] = [];
-  const graph = new GPUCommandGraph(props.device, {id: props.id, recording: {retain: retained}});
+  const graph = new LensCommandGraph(props.device, {id: props.id});
   const geometry = uploadChicagoTractPolygons(graph, model.tracts);
   const response = uploadSpatialView(graph, 'response', model.response, 'float32');
   const predictors = uploadSpatialView(graph, 'predictors', model.predictors, 'float32');
@@ -359,7 +358,6 @@ export async function runRegressionScenario(props: {
       parameters: parameters?.view,
       permutationParameters: permutationParameters?.view
     });
-    retained.push(...getRetainedViewIds(execution.views));
     const count = model.tracts.count;
     const geometryReference = {verticesCapture: 'vertices', offsetsCapture: 'ringOffsets'};
     const tags: Record<string, SpatialCaptureTag> = {};

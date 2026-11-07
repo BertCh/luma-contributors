@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.inverse-distance-weighting",
   "viewId": "datum-receipt",
-  "caption": "Receipt of 10 km cell 1659. counts: 8. values read back from the GPU run. inverse-distance-weighting: 2 quantities.",
-  "description": "Receipt of 10 km cell 1659. counts: 8. values read back from the GPU run. inverse-distance-weighting: 2 quantities.",
-  "llms": "Receipt of 10 km cell 1659\n\n- counts: 8\n- inverse-distance-weighting: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of 10 km cell 1659. counts: 8. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of 10 km cell 1659. counts: 8. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of 10 km cell 1659\n\n- counts: 8\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "counts",
     "value": "8"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of 10 km cell 1659</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"inverse-distance-weighting\"><tr><th scope=\"rowgroup\" colspan=\"5\">inverse-distance-weighting</th></tr><tr data-provenance=\"readback\"><td>inverse-distance-weighting</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-snapshots-rainfall-0\">rainfall</button></td><td>118.36070251464844</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>inverse-distance-weighting</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-snapshots-counts-0\">counts</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.inverse-distance-weighting</h4><div><pre class=\"lens-tex\">\\term{result}{\\hat z(u)}=\\frac{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{sample}{z_i}\\,\\term{distance}{d_i}^{-\\term{power}{p}}}{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{distance}{d_i}^{-\\term{power}{p}}}</pre><p class=\"lens-ascii\">z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of 10 km cell 1659</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-snapshots-rainfall-0\" title=\"gpu-spatial-analysis-inverse-distance-weighting-snapshot-tap\">rainfall</button></td><td>118.36070251464844</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-snapshots-counts-0\" title=\"gpu-spatial-analysis-inverse-distance-weighting-snapshot-tap\">counts</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,14 +28,14 @@
     ],
     "rows": [
       [
-        "inverse-distance-weighting",
+        "result",
         "rainfall",
         "118.36070251464844",
         "0",
         "readback"
       ],
       [
-        "inverse-distance-weighting",
+        "result",
         "counts",
         "8",
         "0",
@@ -62,12 +62,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:25.764Z",
-    "runId": "run-849303e9",
+    "date": "2026-11-07T14:55:22.849Z",
+    "runId": "run-f500989c",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-849303e9",
+    "runId": "run-f500989c",
     "rung": "datum",
     "bindings": {
       "entity": 1659

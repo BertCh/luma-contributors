@@ -7,8 +7,19 @@ import type {LayerProps} from '@deck.gl/core';
 import type {GPUSolidPolygonLayerProps} from '@deck.gl-community/gpu-layers';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector, type VertexList} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {GPUClassBreaks, GPUColorScale, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  GPUCommandGraph,
+  GPUGather,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUClassBreaks,
+  GPUColorScale,
+  getGPUClassBreaksParameterValues,
+  getGPUColorScaleParameterValues,
+  packGPUColor
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUPointDensityHexagonCenter,
   getGPUPointDensityD3HexagonCell

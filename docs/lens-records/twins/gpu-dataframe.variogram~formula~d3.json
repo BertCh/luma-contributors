@@ -14,7 +14,7 @@
     "value": "962.6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUVariogram</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{semivariances}{\\gamma_h}=\\frac{1}{2\\term{pairCounts}{N_h}}\\sum_{\\substack{\\term{focus}{i}&lt;\\term{neighbor}{j}\\\\\\text{pair in lag }\\term{lag}{h}}}(\\term{values}{z_i-z_j})^2,\\quad \\term{lag}{h}=\\min\\left(\\left\\lfloor\\frac{\\term{pairDistance}{d}}{\\term{maximumDistance}{D}}\\term{lagCount}{H}\\right\\rfloor,\\term{lagCount}{H}-1\\right)</pre><p class=\"lens-ascii\">gamma[h]=sum_{i&lt;j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d&lt;=maximumDistance; fixed-point accumulation.</p></div><div class=\"lens-worked-example\"><h4>Entity 3</h4><div><pre class=\"lens-tex\">\\term{semivariances}{962.588}=\\frac{1}{2\\term{pairCounts}{6216}}\\sum_{\\substack{\\term{focus}{i}&lt;\\term{neighbor}{j}\\\\\\text{pair in lag }\\term{lag}{h}}}(\\term{values}{z_i-z_j})^2,\\quad \\term{lag}{h}=\\min\\left(\\left\\lfloor\\frac{\\term{pairDistance}{d}}{\\term{maximumDistance}{D}}\\term{lagCount}{H}\\right\\rfloor,\\term{lagCount}{H}-1\\right)</pre><p class=\"lens-ascii\">gamma[h]=sum_{i&lt;j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d&lt;=maximumDistance; fixed-point accumulation.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-finish\" data-value=\"semivariances\">semivariances · output · semivariances<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-finish\" data-value=\"pairCounts\">pairCounts · output · pairCounts<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"focus\">focus · index · focus</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"neighbor\">neighbor · index · neighbor</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"lag\">lag · index · lag</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-unit-quantile-histogram-0\" data-value=\"values\">included value difference · intermediate · difference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"pairDistance\">pairDistance · intermediate · pairDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-cell-keys\" data-value=\"maximumDistance\">maximumDistance · parameter · maximumDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"lagCount\">lagCount · constant · LAG_COUNT</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUVariogram</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{semivariances}{\\gamma_h}=\\frac{1}{2\\term{pairCounts}{N_h}}\\sum_{\\substack{\\term{focus}{i}&lt;\\term{neighbor}{j}\\\\\\text{pair in lag }\\term{lag}{h}}}(\\term{values}{z_i-z_j})^2,\\quad \\term{lag}{h}=\\min\\left(\\left\\lfloor\\frac{\\term{pairDistance}{d}}{\\term{maximumDistance}{D}}\\term{lagCount}{H}\\right\\rfloor,\\term{lagCount}{H}-1\\right)</pre><p class=\"lens-ascii\">gamma[h]=sum_{i&lt;j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d&lt;=maximumDistance; fixed-point accumulation.</p></div><div class=\"lens-worked-example\"><h4>Entity 3</h4><div><pre class=\"lens-tex\">\\term{semivariances}{962.588}=\\frac{1}{2\\term{pairCounts}{6216}}\\sum_{\\substack{\\term{focus}{i}&lt;\\term{neighbor}{j}\\\\\\text{pair in lag }\\term{lag}{h}}}(\\term{values}{z_i-z_j})^2,\\quad \\term{lag}{h}=\\min\\left(\\left\\lfloor\\frac{\\term{pairDistance}{d}}{\\term{maximumDistance}{D}}\\term{lagCount}{H}\\right\\rfloor,\\term{lagCount}{H}-1\\right)</pre><p class=\"lens-ascii\">gamma[h]=sum_{i&lt;j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d&lt;=maximumDistance; fixed-point accumulation.</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"semivariances\">semivariances · output · unknown — wgsl semivariances not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pairCounts\">pairCounts · output · unknown — wgsl pairCounts not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"focus\">focus · index · unknown — wgsl focus not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"neighbor\">neighbor · index · unknown — wgsl neighbor not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lag\">lag · index · unknown — wgsl lag not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"values\">included value difference · intermediate · unknown — wgsl difference not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pairDistance\">pairDistance · intermediate · unknown — wgsl pairDistance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"maximumDistance\">maximumDistance · parameter · unknown — wgsl maximumDistance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lagCount\">lagCount · constant · unknown — wgsl LAG_COUNT not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,63 +30,63 @@
       [
         "semivariances",
         "output",
-        "semivariances",
+        "unknown",
         "962.587890625",
         "readback"
       ],
       [
         "pairCounts",
         "output",
-        "pairCounts",
+        "unknown",
         "6216",
         "readback"
       ],
       [
         "focus",
         "index",
-        "focus",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "neighbor",
         "index",
-        "neighbor",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "lag",
         "index",
-        "lag",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "included value difference",
         "intermediate",
-        "difference",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "pairDistance",
         "intermediate",
-        "pairDistance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "maximumDistance",
         "parameter",
-        "maximumDistance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "lagCount",
         "constant",
-        "LAG_COUNT",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -123,12 +123,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:42.556Z",
-    "runId": "run-ebe24810",
+    "date": "2026-11-07T14:55:16.227Z",
+    "runId": "run-5fc69ee3",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-ebe24810",
+    "runId": "run-5fc69ee3",
     "rung": "formula",
     "bindings": {
       "entity": 3

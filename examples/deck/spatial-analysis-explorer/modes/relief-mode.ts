@@ -22,7 +22,11 @@
  */
 
 import {scheduleReadback} from '../readback-scheduling';
-import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUReliefShadingParameterValues,
   getGPUSolarPositionParameterValues,

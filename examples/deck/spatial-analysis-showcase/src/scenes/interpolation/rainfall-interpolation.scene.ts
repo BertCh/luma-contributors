@@ -538,8 +538,8 @@ export default defineScene<RainfallOptions>({
       : entries;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
-import {makeGPURasterMetadata} from '@luma-contributors/analysis/gpu-raster';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {makeGPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   GPUInverseDistanceWeighting, GPUKriging, GPUFocalStatistics, GPUSpatialCrossValidation,
   addInterpolationDiagnosticsRecipe,
@@ -547,7 +547,7 @@ import {
   getGPUFocalStatisticsParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPUVariogram, GPUVariogramModelFit, fitVariogramModel, getGPUVariogramParameterValues}
-  from '@luma-contributors/analysis/gpu-dataframe';
+  from '@luma.gl/graph/gpu-dataframe';
 
 // 1. Empirical variogram on the GPU; CPU and GPU fit the same Float32-rounded omni bins
 variogramGraph.add(new GPUVariogram({

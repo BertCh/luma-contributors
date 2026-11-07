@@ -47,7 +47,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.buffer-selection',
           element: 'GPUBufferSelection',
           datasets: ['s2-chicago-north-nature', 's2-chicago-north-facilities'],
-          retain: ['selected', 'distances', 'overflow'],
           keySpaces,
           choices: {distance: 300},
           async build(graph, uploads) {

@@ -25,7 +25,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.transition-matrix',
           element: 'GPUTransitionMatrix',
           datasets: ['s2-midwest-counties'],
-          retain: ['breaks', 'classes', 'counts', 'probabilities', 'rowTotals', 'ignored'],
           keySpaces: [
             {id: 'transition', label: 'from class x to class', size: 25, indexSpace: '1d'},
             {id: 'class', label: 'class (from)', size: 5, indexSpace: '1d'},

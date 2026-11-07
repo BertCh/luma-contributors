@@ -38,7 +38,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUPointToCell',
           datasets: [data.id],
-          retain: ['cells', 'boundaries', 'boundariesCenters'],
           keySpaces: [
             {id: 'place', label: 'place', size: placeCount, indexSpace: '1d'},
             {

@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.hierarchical-density-clustering",
   "viewId": "datum-receipt",
-  "caption": "Receipt of observation 300. resultObservations: -4518.96484375, 2316.523193359375. values read back from the GPU run. hierarchical-density-clustering: 4 quantities.",
-  "description": "Receipt of observation 300. resultObservations: -4518.96484375, 2316.523193359375. values read back from the GPU run. hierarchical-density-clustering: 4 quantities.",
-  "llms": "Receipt of observation 300\n\n- resultObservations: -4518.96484375, 2316.523193359375\n- hierarchical-density-clustering: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of observation 300. resultObservations: -4518.96484375, 2316.523193359375. values read back from the GPU run. result: 4 quantities.",
+  "description": "Receipt of observation 300. resultObservations: -4518.96484375, 2316.523193359375. values read back from the GPU run. result: 4 quantities.",
+  "llms": "Receipt of observation 300\n\n- resultObservations: -4518.96484375, 2316.523193359375\n- result: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "resultObservations",
     "value": "-4518.96484375, 2316.523193359375"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 300</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"hierarchical-density-clustering\"><tr><th scope=\"rowgroup\" colspan=\"5\">hierarchical-density-clustering</th></tr><tr data-provenance=\"readback\"><td>hierarchical-density-clustering</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshots-observations-0\" title=\"Every third observation (782 of 2,344), local metres\">observations</button></td><td>-4518.96484375, 2316.523193359375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>hierarchical-density-clustering</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshots-coreDistances-0\" title=\"Distance to the 5th nearest observation, itself counted (m)\">coreDistances</button></td><td>4.523890018463135</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>hierarchical-density-clustering</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshots-labels-0\" title=\"Cluster id (nominal); 0xffffffff is noise\">labels</button></td><td>10</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>hierarchical-density-clustering</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshots-resultObservations-0\">resultObservations</button></td><td>-4518.96484375, 2316.523193359375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 300</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshots-observations-0\" title=\"Every third observation (782 of 2,344), local metres\">observations</button></td><td>-4518.96484375, 2316.523193359375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshots-coreDistances-0\" title=\"Distance to the 5th nearest observation, itself counted (m)\">coreDistances</button></td><td>4.523890018463135</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshots-labels-0\" title=\"Cluster id (nominal); 0xffffffff is noise\">labels</button></td><td>10</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshots-resultObservations-0\" title=\"gpu-spatial-analysis-hierarchical-density-clustering-snapshot-tap\">resultObservations</button></td><td>-4518.96484375, 2316.523193359375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,28 +28,28 @@
     ],
     "rows": [
       [
-        "hierarchical-density-clustering",
+        "result",
         "observations",
         "-4518.96484375, 2316.523193359375",
         "0",
         "readback"
       ],
       [
-        "hierarchical-density-clustering",
+        "result",
         "coreDistances",
         "4.523890018463135",
         "0",
         "readback"
       ],
       [
-        "hierarchical-density-clustering",
+        "result",
         "labels",
         "10",
         "0",
         "readback"
       ],
       [
-        "hierarchical-density-clustering",
+        "result",
         "resultObservations",
         "-4518.96484375, 2316.523193359375",
         "0",
@@ -78,12 +78,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:23.193Z",
-    "runId": "run-c85eff1c",
+    "date": "2026-11-07T14:55:22.448Z",
+    "runId": "run-197e6e91",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-c85eff1c",
+    "runId": "run-197e6e91",
     "rung": "datum",
     "bindings": {
       "entity": 300

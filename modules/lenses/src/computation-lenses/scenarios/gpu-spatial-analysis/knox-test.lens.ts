@@ -41,7 +41,6 @@ defineLensScenario({
           // The ~460k close-pair neighbour slots are not captured: no view of this element reads
           // them (result, datum and formula read the permutation counts and summary), and they
           // alone were 1.8 MB of the record. Their row offsets (pairs per observation) are kept.
-          retain: ['pairOffsets', 'statistics', 'summary'],
           seed: 1,
           keySpaces: [
             {id: 'permutation', label: 'permutation (0: observed)', size: 200, indexSpace: '1d'},

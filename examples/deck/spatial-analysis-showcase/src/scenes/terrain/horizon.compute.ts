@@ -4,8 +4,15 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPURasterExtremaPyramid, getGPURasterExtremaPyramidLayout} from '@luma-contributors/analysis/raster-analysis';
+import {
+  GPUCommandGraph,
+  GPUReadbackRing,
+  type CompiledGPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPURasterExtremaPyramid,
+  getGPURasterExtremaPyramidLayout
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUPointHorizonProfile,
   GPUPointHorizonVisibility,

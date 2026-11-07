@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula sunHours = sum over table rows of V * duration; insolation = sum of DNI * V * max(cosIncidence, 0) * duration (+ diffuse * svf * duration while altitude > 0), in Wh/m^2; rows with altitude + radius <= 0 are skipped; V = solar-disk visibility…",
   "description": "Formula sunHours = sum over table rows of V * duration; insolation = sum of DNI * V * max(cosIncidence, 0) * duration (+ diffuse * svf * duration while altitude > 0), in Wh/m^2; rows with altitude + radius <= 0 are skipped; V = solar-disk visibility…",
-  "llms": "Formula sunHours = sum over table rows of V * duration; insolation = sum of DNI * V * max(cosIncidence, 0) * duration (+ diffuse * svf * duration while altitude > 0), in Wh/m^2; rows with altitude + radius <= 0 are skipped; V = solar-disk visibility over the horizon at the row azimuth; cosIncidence = sin(altitude) without slope and aspect or on flat ground, else cos(slope) sin(altitude) + sin(slope) cos(altitude) cos(azimuth - aspect); NaN where the horizon is NaN\n\n- bound symbols: 7/7\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula sunHours = sum over table rows of V * duration; insolation = sum of DNI * V * max(cosIncidence, 0) * duration (+ diffuse * svf * duration while altitude > 0), in Wh/m^2; rows with altitude + radius <= 0 are skipped; V = solar-disk visibility over the horizon at the row azimuth; cosIncidence = sin(altitude) without slope and aspect or on flat ground, else cos(slope) sin(altitude) + sin(slope) cos(altitude) cos(azimuth - aspect); NaN where the horizon is NaN\n\n- bound symbols: 0/7\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "7/7"
+    "value": "0/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.solar-irradiance.day-sum</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{sunHours}{T_{sun}} = \\sum_{s} V_s\\,\\term{duration}{\\Delta t_s},\\quad \\term{insolation}{E} = \\sum_{s} \\left[\\term{directNormal}{I_s}\\,V_s\\max(\\term{cosIncidence}{\\cos\\theta_s},\\,0) + \\term{diffuse}{D}\\,\\term{skyViewFactor}{S}\\,[\\alpha_s &gt; 0]\\right]\\Delta t_s</pre><p class=\"lens-ascii\">sunHours = sum over table rows of V * duration; insolation = sum of DNI * V * max(cosIncidence, 0) * duration (+ diffuse * svf * duration while altitude &gt; 0), in Wh/m^2; rows with altitude + radius &lt;= 0 are skipped; V = solar-disk visibility over the horizon at the row azimuth; cosIncidence = sin(altitude) without slope and aspect or on flat ground, else cos(slope) sin(altitude) + sin(slope) cos(altitude) cos(azimuth - aspect); NaN where the horizon is NaN</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-irradiance-compiled:solar-irradiance-sun-0\" data-value=\"sunHours\">T_sun · output · hoursValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-irradiance-compiled:solar-irradiance-sun-0\" data-value=\"insolation\">E · output · insolationValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-irradiance-compiled:solar-irradiance-sun-0\" data-value=\"duration\">Δt_s · input · duration</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-irradiance-compiled:solar-irradiance-sun-0\" data-value=\"directNormal\">I_s · input · sunTable</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-irradiance-compiled:solar-irradiance-sun-0\" data-value=\"cosIncidence\">cos θ_s · intermediate · cosIncidence</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-irradiance-compiled:solar-irradiance-sun-0\" data-value=\"diffuse\">D · parameter · diffuseIrradiance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-irradiance-compiled:solar-irradiance-sun-0\" data-value=\"skyViewFactor\">S · input · skyViewFactor</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.solar-irradiance.day-sum</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{sunHours}{T_{sun}} = \\sum_{s} V_s\\,\\term{duration}{\\Delta t_s},\\quad \\term{insolation}{E} = \\sum_{s} \\left[\\term{directNormal}{I_s}\\,V_s\\max(\\term{cosIncidence}{\\cos\\theta_s},\\,0) + \\term{diffuse}{D}\\,\\term{skyViewFactor}{S}\\,[\\alpha_s &gt; 0]\\right]\\Delta t_s</pre><p class=\"lens-ascii\">sunHours = sum over table rows of V * duration; insolation = sum of DNI * V * max(cosIncidence, 0) * duration (+ diffuse * svf * duration while altitude &gt; 0), in Wh/m^2; rows with altitude + radius &lt;= 0 are skipped; V = solar-disk visibility over the horizon at the row azimuth; cosIncidence = sin(altitude) without slope and aspect or on flat ground, else cos(slope) sin(altitude) + sin(slope) cos(altitude) cos(azimuth - aspect); NaN where the horizon is NaN</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sunHours\">T_sun · output · unknown — wgsl hoursValues not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"insolation\">E · output · unknown — wgsl insolationValues not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"duration\">Δt_s · input · unknown — wgsl duration not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"directNormal\">I_s · input · unknown — wgsl sunTable not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cosIncidence\">cos θ_s · intermediate · unknown — wgsl cosIncidence not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"diffuse\">D · parameter · unknown — wgsl diffuseIrradiance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"skyViewFactor\">S · input · unknown — wgsl skyViewFactor not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,49 +29,49 @@
       [
         "T_sun",
         "output",
-        "hoursValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "E",
         "output",
-        "insolationValues",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "Δt_s",
         "input",
-        "duration",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "I_s",
         "input",
-        "sunTable",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "cos θ_s",
         "intermediate",
-        "cosIncidence",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "D",
         "parameter",
-        "diffuseIrradiance",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "S",
         "input",
-        "skyViewFactor",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -93,14 +93,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:09.890Z",
-    "runId": "run-bee12c3a",
+    "date": "2026-11-07T14:55:29.864Z",
+    "runId": "run-748823a4",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-bee12c3a",
+    "runId": "run-748823a4",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

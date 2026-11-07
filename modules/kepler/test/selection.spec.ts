@@ -239,7 +239,11 @@ it('GPU Kepler selection rebuilds polygon topology into a stable caller-owned ma
     const admittedBytes = rectangle.workingMemoryByteLength;
     expect(admittedBytes).toBeGreaterThan(0);
     submit(device, rectangle);
-    expect(rectangle.workingMemoryByteLength).toBe(admittedBytes);
+    // Compiled graph scratch is counted from the first encode, so the total can only grow once.
+    const encodedBytes = rectangle.workingMemoryByteLength;
+    expect(encodedBytes).toBeGreaterThanOrEqual(admittedBytes);
+    submit(device, rectangle);
+    expect(rectangle.workingMemoryByteLength).toBe(encodedBytes);
     expect(await readMask(rectangle)).toEqual([0, 1, 1]);
     rectangle.destroy();
     expect(rectangle.workingMemoryByteLength).toBe(0);

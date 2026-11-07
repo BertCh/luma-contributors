@@ -15,7 +15,7 @@ Fixtures written (relative to modules/graph/test/gpu-spatial-analysis):
   trajectory-zones/fixtures/zone-events-grid.json    GPUZoneEvents vs an exact perturbed-point rule
 
 Usage, from the repository root (every fixture, or the named ones):
-  python3 -I modules/graph/test/oracles/geometry-properties.py [rollup noding makevalid delaunay buffer cover zones]
+  python3 -I modules/analysis/test/oracles/geometry-properties.py [rollup noding makevalid delaunay buffer cover zones]
 
 Needs numpy, scipy, shapely >= 2.0 and h3 >= 4 (versions are recorded in each fixture).
 """
@@ -30,7 +30,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST_ROOT = os.path.join(HERE, '..', 'gpu-spatial-analysis')
-GENERATOR = 'modules/graph/test/oracles/geometry-properties.py'
+GENERATOR = 'modules/analysis/test/oracles/geometry-properties.py'
 SEED = 20261014
 F32 = np.float32
 

@@ -29,7 +29,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUHilbertKeys',
           datasets: [data.id],
-          retain: ['keys', 'sortedRows', 'sortedKeys'],
           keySpaces: [
             {id: 'place', label: 'place', size: data.pointCount, indexSpace: '1d'},
             {id: 'rank', label: 'curve rank', size: data.pointCount, indexSpace: '1d'}

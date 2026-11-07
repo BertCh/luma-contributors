@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.raster-sieve: sieveLabels → sieveOutputLabels. cells: 4,096. values read back from the GPU run. input sieveLabels: 4096 cells.",
   "description": "Result of gpu-raster.raster-sieve: sieveLabels → sieveOutputLabels. cells: 4,096. values read back from the GPU run. input sieveLabels: 4096 cells.",
-  "llms": "Result of gpu-raster.raster-sieve: sieveLabels → sieveOutputLabels\n\n- cells: 4,096\n- input sieveLabels: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 45 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 8 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.raster-sieve: sieveLabels → sieveOutputLabels\n\n- cells: 4,096\n- input sieveLabels: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 45 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 8 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "4,096"
@@ -36,14 +36,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:49.372Z",
-    "runId": "run-a5f7cbc1",
+    "date": "2026-11-07T14:55:17.990Z",
+    "runId": "run-f066cbe5",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-a5f7cbc1",
+    "runId": "run-f066cbe5",
     "rung": "result",
     "bindings": {},
     "clauses": [],

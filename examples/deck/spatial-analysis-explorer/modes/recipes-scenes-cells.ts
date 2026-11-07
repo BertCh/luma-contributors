@@ -7,7 +7,12 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {getGPUCalendarBucketsParameterValues, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUCalendarBucketsParameterValues,
+  getGPUClassBreaksParameterValues,
+  getGPUColorScaleParameterValues,
+  packGPUColor
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addHotSpotAnalysisRecipe,
   addPeriodComparisonRecipe,

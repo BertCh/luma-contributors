@@ -5,7 +5,12 @@
 import {Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {createTransientView, GPUReduction, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  GPUReduction,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import type {GPUDorlingCartogramOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerComputeSession, KeplerMemoryReservation} from '@luma-contributors/kepler';
 

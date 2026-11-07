@@ -5,15 +5,15 @@
 import {readFileSync, statSync} from 'node:fs';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {ComputePipeline, type ComputePipelineProps} from '@luma.gl/core';
+import {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {NullDevice} from '@luma.gl/core/test-utils';
 import * as graphExports from '@luma.gl/graph/gpu-graph-algorithms';
 import {
+  describeGPUCommandGraph,
   validateGPUComputationRecord,
-  validateGPUComputationSidecars,
-  type GPUComputationCapture
+  validateGPUComputationSidecars
 } from '@luma-contributors/analysis/computation-record';
-import {GraphDataView} from '@luma.gl/graph/gpu-core';
-import * as captureModule from '@luma-contributors/analysis/computation-record';
+import * as snapshotModule from '../../../src/computation-lenses/lens-view-snapshot';
 import {
   extractLensExample,
   findNonPublicImports,
@@ -27,9 +27,9 @@ import {
 import {createRailGraphFixture} from '../../../src/computation-lenses/scenarios/gpu-graph/rail-graph-fixture';
 import {
   buildGPUGraphScenario,
+  compileGPUGraphScenario,
   getGPUGraphCaptureView,
-  recordGPUGraphScenario,
-  selectGPUGraphIterations
+  recordGPUGraphScenario
 } from '../../../src/computation-lenses/scenarios/gpu-graph/gpu-graph-scenario';
 import {runExample} from '../../../src/computation-lenses/scenarios/gpu-graph/graph-page-rank.example';
 import railData from '../../../src/computation-lenses/data/g-nl-rail-graph.json';
@@ -135,11 +135,12 @@ describe('gpu-graph lens substrate', () => {
     expect(first.buffer).toBe(second.buffer);
     const compiled = fixture.commandGraph.compile();
     try {
-      const description = compiled.describe({domain: 'gpu-graph'});
+      const description = describeGPUCommandGraph(compiled, {domain: 'gpu-graph'});
       expect(first.buffer.id).toBe('gpu-graph-page-rank-output');
+      // Published nodes carry no `op` for this algorithm; the node id names it instead.
       expect(
         description.graph.nodes.some(
-          node => node.op === 'GPUGraphAlgorithmsPageRank' && node.writes.includes(first.buffer.id)
+          node => node.id.includes('page-rank') && node.writes.includes(first.buffer.id)
         )
       ).toBe(true);
       expect(fixture.railTopology.reverse?.neighbors.length).toBe(1411);
@@ -152,17 +153,6 @@ describe('gpu-graph lens substrate', () => {
     }
     expect(destroyRanks).toHaveBeenCalledTimes(1);
     expect(destroyBuffer).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps early powers of two and the final round within eight deterministic frames', () => {
-    expect(selectGPUGraphIterations(Array.from({length: 40}, (_, iteration) => iteration))).toEqual(
-      [0, 1, 2, 4, 8, 16, 32, 39]
-    );
-    expect(
-      selectGPUGraphIterations(Array.from({length: 1024}, (_, iteration) => iteration))
-    ).toEqual([0, 1, 2, 4, 8, 16, 32, 1023]);
-    expect(selectGPUGraphIterations([0])).toEqual([0]);
-    expect(selectGPUGraphIterations([])).toEqual([]);
   });
 });
 
@@ -195,7 +185,7 @@ describe('gpu-graph scenario contracts', () => {
       expect(source).toMatch(/export async function runExample\b/);
     });
 
-    it(`${scenario.id} binds each curated term to its own recorded WGSL or resources`, async () => {
+    it(`${scenario.id} describes its compiled graph and binds curated terms to resources`, async () => {
       const device = createStructureDevice(`${scenario.id}-structure`);
       const submit = vi.spyOn(device, 'submit');
       try {
@@ -205,25 +195,21 @@ describe('gpu-graph scenario contracts', () => {
         expect(submit).not.toHaveBeenCalled();
         expect(validateGPUComputationRecord(record).issues).toEqual([]);
         const graph = record.graphs.find(candidate => candidate.form === 'compiled')!;
-        const nodes = graph.nodes.filter(node => node.op === scenario.element);
-        expect(nodes.length).toBeGreaterThan(0);
+        // Published contributors set no `op` on their nodes, so the scenario's own nodes are found
+        // by the element name in the node id (the topology scenario names them `topology-*`).
+        const elementName = scenario.id.replace('gpu-graph.graph-', '');
+        expect(graph.nodes.filter(node => node.id.includes(elementName)).length).toBeGreaterThan(0);
+        // The end-of-run snapshot tap is the last node of the observation graph.
+        expect(graph.nodes.at(-1)?.id).toMatch(/-snapshot-tap$/);
         const formula = GPU_GRAPH_FORMULAS[scenario.element];
         if ('formula' in formula) return;
-        const texts = nodes.map(
-          node => record.refs.sources.find(source => source.id === node.source)?.text ?? ''
-        );
         for (const symbol of formula.symbols) {
+          // Dropped coverage: `wgsl:` bindings are no longer verified against recorded shader text,
+          // because published luma.gl contributors expose no source. Resource bindings are checked.
           expect(symbol.binding, symbol.id).toMatch(/^(wgsl|resource):.+/);
           const [kind, ...parts] = symbol.binding!.split(':');
-          const identifier = parts.join(':');
-          if (kind === 'wgsl') {
-            // Strict even before G-1 lands: missing source.text is a real integration failure.
-            const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            expect(
-              texts.some(text => new RegExp(`\\b${escaped}\\b`).test(text)),
-              symbol.binding
-            ).toBe(true);
-          } else {
+          if (kind === 'resource') {
+            const identifier = parts.join(':');
             expect(
               graph.resources?.some(resource => resource.id === identifier),
               symbol.binding
@@ -242,65 +228,42 @@ describe('gpu-graph scenario contracts', () => {
 });
 
 describe('gpu-graph recorder plumbing (mock readback)', () => {
-  it('retains completed rounds, real capture identities, geometry, highlight, residual and observer effects', async () => {
+  it('records one end-of-run snapshot with real capture identities, geometry, highlight and residual', async () => {
     const device = createStructureDevice('record-plumbing');
-    // Spy on the defining module because shared workers may have already loaded the scenario.
-    // Only the transport is mocked; these synthetic values never leave tests.
-    const capture = vi.spyOn(captureModule, 'captureGPUCommandGraph');
-    let destroyCompiled: ReturnType<typeof vi.spyOn> | undefined;
-    let frameCount = 0;
-    let copiesPerFrame = 0;
-    capture.mockImplementationOnce(async (compiled, options) => {
-      destroyCompiled = vi.spyOn(compiled, 'destroy');
-      expect(options.at).toBe('step');
-      expect(options.encodeOptions.coalesceComputePasses).toBe(false);
-      const nodes = compiled.describe({domain: 'gpu-graph'}).graph.nodes;
-      frameCount = nodes.length;
-      copiesPerFrame = Object.keys(options.views).length;
-      const captures: GPUComputationCapture[] = nodes.flatMap(node =>
-        Object.entries(options.views).map(([name, view]) => {
-          expect(view).toBeInstanceOf(GraphDataView);
-          if (!(view instanceof GraphDataView)) throw new Error('Expected packed view');
-          const components = view.format === 'float32x2' ? 2 : 1;
-          const values = new Float32Array(view.length * components);
-          values.fill(node.loop?.iteration ?? 0);
-          if (name === 'page-rank' || name === 'iteration:page-rank') values[409] = 100;
+    // Only the submission and readback transport is mocked; these synthetic values never leave tests.
+    const submit = vi.spyOn(snapshotModule, 'submitLensGraph').mockReturnValue(undefined as never);
+    const destroyCompiled = vi.spyOn(CompiledGPUCommandGraph.prototype, 'destroy');
+    vi.spyOn(snapshotModule, 'readLensViewSnapshot').mockImplementationOnce(
+      async (snapshot, props) =>
+        Object.entries(snapshot.resources).map(([name, resource]) => {
+          const components = name === 'station-positions' ? 2 : 1;
+          const length = name === 'csr-offsets' ? 486 : name === 'csr-neighbors' ? 1411 : 485;
+          const values = new Float32Array(length * components);
+          if (name === 'page-rank') values[409] = 100;
           if (name === 'page-rank-residual') values[0] = 0.125;
           return {
-            id: `${name}-${node.id}`,
+            id: name,
             name,
-            graph: options.graphId,
-            resource: view.buffer.id,
-            afterNode: node.id,
-            elementType: 'f32',
+            graph: props.graphId,
+            resource,
+            afterNode: snapshot.tapNodeId,
+            elementType: 'f32' as const,
             values,
             components,
-            provenance: 'gpu-readback'
+            provenance: 'gpu-readback' as const
           };
         })
-      );
-      return {captures, stepCount: nodes.length, snapshotCount: nodes.length};
-    });
+    );
     try {
       const {run} = await import(
         '../../../src/computation-lenses/scenarios/gpu-graph/graph-page-rank.run'
       );
       const record = await run(device);
+      expect(submit).toHaveBeenCalledOnce();
+      expect(destroyCompiled).toHaveBeenCalledOnce();
       expect(validateGPUComputationSidecars(record, record).issues).toEqual([]);
       const snapshots = record.captures!.snapshots;
-      const frames = snapshots.filter(snapshot => snapshot.name === 'page-rank');
-      expect(frames.map(frame => frame.iteration)).toEqual([0, 1, 2, 4, 8, 16, 32, 39]);
-      for (const frame of frames) {
-        const lastNode = record.graphs[0].nodes
-          .filter(
-            node =>
-              node.op === 'GPUGraphAlgorithmsPageRank' && node.loop?.iteration === frame.iteration
-          )
-          .at(-1);
-        expect(frame.afterNode).toBe(lastNode?.id);
-        expect(frame.values[0]).toBe(frame.iteration);
-        expect(frame.keySpace).toBe('vertex');
-      }
+      expect(snapshots.filter(snapshot => snapshot.name === 'page-rank')).toHaveLength(1);
       expect(snapshots.find(snapshot => snapshot.id === 'csr-offsets')).toMatchObject({
         role: 'input',
         geometry: {
@@ -322,7 +285,7 @@ describe('gpu-graph recorder plumbing (mock readback)', () => {
       expect(record.metrics![0].encoding).toEqual({
         coalesced: false,
         timestamped: false,
-        taps: frameCount * copiesPerFrame,
+        taps: 1,
         lensTwin: true,
         retained: []
       });
@@ -330,25 +293,22 @@ describe('gpu-graph recorder plumbing (mock readback)', () => {
       expect(record.metrics![0].series).toEqual([
         {name: 'final L1 residual', axis: 'publication', values: [0.125]}
       ]);
-      expect(destroyCompiled).toHaveBeenCalledOnce();
     } finally {
       device.destroy();
     }
   });
 
-  it('uses end capture for noniterative work and always releases compiled and fixture resources on failure', async () => {
+  it('always releases the snapshot arena, compiled graph and fixture when submission fails', async () => {
     const device = createStructureDevice('failed-record');
     const fixture = createRailGraphFixture(device, {id: 'failed-record', directed: true});
-    const compiled = fixture.commandGraph.compile();
+    // A real snapshot arena and tap, so the cleanup path frees the same objects as production.
+    const {compiled, snapshot} = compileGPUGraphScenario(fixture, {});
+    const destroyArena = vi.spyOn(snapshot.arena, 'destroy');
     const destroyFixture = vi.spyOn(fixture, 'destroy');
     const destroyCompiled = vi.spyOn(compiled, 'destroy');
-    vi.spyOn(captureModule, 'captureGPUCommandGraph').mockImplementationOnce(
-      async (_compiled, options) => {
-        expect(options.at).toBe('end');
-        expect(options.encodeOptions.coalesceComputePasses).toBe(true);
-        throw new Error('readback failed');
-      }
-    );
+    vi.spyOn(snapshotModule, 'submitLensGraph').mockImplementationOnce(() => {
+      throw new Error('readback failed');
+    });
     try {
       await expect(
         recordGPUGraphScenario({
@@ -356,10 +316,12 @@ describe('gpu-graph recorder plumbing (mock readback)', () => {
           element: 'GPUGraphAlgorithmsTopology',
           fixture,
           compiled,
+          snapshot,
           outputCaptures: {},
           choices: []
         })
       ).rejects.toThrow('readback failed');
+      expect(destroyArena).toHaveBeenCalled();
       expect(destroyCompiled).toHaveBeenCalledOnce();
       expect(destroyFixture).toHaveBeenCalledOnce();
     } finally {

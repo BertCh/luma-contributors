@@ -140,7 +140,36 @@ test('spatial owned-output admission rejects before creating any buffer', () => 
   device.destroy();
 });
 
-test('composition planning rejects unavailable scratch before allocation and rolls back failed compilation', async () => {
+test('composition rejects compiled scratch beyond the budget, destroys the graph and restores the reservation', async () => {
+  const {device, registry, scopes} = fixture(1024, 512);
+  Object.defineProperty(device, 'type', {value: 'webgpu'});
+  Object.assign(device.limits, {
+    maxComputeWorkgroupsPerDimension: 65535,
+    maxComputeWorkgroupSizeX: 256,
+    maxComputeInvocationsPerWorkgroup: 256,
+    maxStorageBufferBindingSize: 2 ** 27,
+    maxStorageBuffersPerShaderStage: 16,
+    maxBindGroups: 4,
+    maxBindingsPerBindGroup: 1000
+  });
+  const destroy = vi.fn();
+  // Published graphs report transient bytes only after compilation, so the budget check follows compile.
+  const compile = vi
+    .spyOn(GPUCommandGraph.prototype, 'compile')
+    .mockReturnValue({stats: {physicalTransientResourceBytes: 4096}, destroy} as any);
+  expect(scopes.reservedMemoryByteLength).toBe(80);
+  expect(() => scopes.encode(device.commandEncoder)).toThrow('budget');
+  expect(compile).toHaveBeenCalledTimes(1);
+  expect(destroy).toHaveBeenCalledTimes(1);
+  expect(scopes.workingMemoryByteLength).toBe(80);
+  expect(scopes.reservedMemoryByteLength).toBe(80);
+  compile.mockRestore();
+  await scopes.destroy(Promise.resolve());
+  expect(registry.memoryUsage.totalBytes).toBe(0);
+  device.destroy();
+});
+
+test('composition rolls back failed compilation and returns its temporary charge', async () => {
   const {device, registry, scopes} = fixture(1024, 512);
   Object.defineProperty(device, 'type', {value: 'webgpu'});
   Object.assign(device.limits, {
@@ -154,12 +183,6 @@ test('composition planning rejects unavailable scratch before allocation and rol
   });
   const allocate = vi.spyOn(device, 'createBuffer');
   const compile = vi.spyOn(GPUCommandGraph.prototype, 'compile');
-  const competitor = registry.reserveMemory(944);
-  expect(() => scopes.encode(device.commandEncoder)).toThrow('budget');
-  expect(compile).not.toHaveBeenCalled();
-  expect(allocate).not.toHaveBeenCalled();
-  expect(scopes.reservedMemoryByteLength).toBe(80);
-  competitor.release();
   // NullDevice deliberately rejects executable pipelines after graph transients were allocated.
   // Compilation must destroy those transients before the scope returns its temporary charge.
   expect(() => scopes.encode(device.commandEncoder)).toThrow('ComputePipeline is not supported');

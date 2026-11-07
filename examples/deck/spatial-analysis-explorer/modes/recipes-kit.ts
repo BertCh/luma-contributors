@@ -11,7 +11,13 @@
 import type {Layer} from '@deck.gl/core';
 import {Buffer, type Binding, type CommandEncoder, type Device} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
-import {getViewBinding, getViewElementOffset, GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  getViewBinding,
+  getViewElementOffset,
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';

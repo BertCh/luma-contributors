@@ -34,11 +34,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
     Math.ceil(Math.max(...x) / 1000) * 1000 + 1000,
     Math.ceil(Math.max(...y) / 1000) * 1000 + 1000
   ] as const;
-  const graph = createDataFrameLensGraph<undefined>(device, SCENARIO_ID, [
-    'semivariances',
-    'pairCounts',
-    'meanDistances'
-  ]);
+  const graph = createDataFrameLensGraph<undefined>(device, SCENARIO_ID);
   const example = await runExample(device, {
     graph,
     stations: {positions, precipitation: new Float32Array(prcp)},
@@ -46,57 +42,52 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
   });
   try {
     options?.signal?.throwIfAborted();
-    const compiled = graph.compile();
-    try {
-      const graphId = `${SCENARIO_ID}-compiled`;
-      const captures = await capturePairStatisticsViews(compiled, graphId, {
-        positions: {
-          view: example.positions,
-          role: 'input',
-          keySpace: 'point',
-          geometry: {kind: 'points', coordinateModel: 'projected', unit: 'm'}
-        },
-        prcp: {view: example.rainfall, role: 'input', keySpace: 'point'},
-        semivariances: {view: example.semivariances, role: 'output', keySpace: 'lag'},
-        pairCounts: {
-          view: example.pairCounts,
-          role: 'output',
-          keySpace: 'lag',
-          meaning: 'Unordered station pairs in the lag.'
-        },
-        meanDistances: {
-          view: example.meanDistances,
-          role: 'output',
-          keySpace: 'lag',
-          meaning: 'Mean pair distance in metres.'
-        }
-      });
-      return createDataFrameLensRecord({
-        scenarioId: SCENARIO_ID,
-        device,
-        graphs: [compiled.describe({graphId, domain: 'gpu-dataframe'})],
-        formulas: getDataFrameElementFormulas('GPUVariogram'),
-        keySpaces: [
-          {id: 'point', label: 'Weather station', size: x.length, indexSpace: '1d'},
-          {id: 'lag', label: 'Lag (25 km)', size: LAG_COUNT, indexSpace: '1d'}
-        ],
-        choices: [
-          createDataFrameChoice('filter', 'coordinateModel', 'projected', {
-            alternatives: ['projected', 'geographic']
-          }),
-          createDataFrameChoice('filter', 'bounds', bounds.join(',')),
-          createDataFrameChoice('group', 'maximumDistance', MAXIMUM_DISTANCE, {
-            unit: 'm',
-            sweepable: true
-          }),
-          createDataFrameChoice('group', 'lagCount', LAG_COUNT, {sweepable: true}),
-          createDataFrameChoice('group', 'directionCount', 1)
-        ],
-        captures
-      });
-    } finally {
-      compiled.destroy();
-    }
+    const graphId = `${SCENARIO_ID}-compiled`;
+    const {captures, description} = await capturePairStatisticsViews(device, graph, graphId, {
+      positions: {
+        view: example.positions,
+        role: 'input',
+        keySpace: 'point',
+        geometry: {kind: 'points', coordinateModel: 'projected', unit: 'm'}
+      },
+      prcp: {view: example.rainfall, role: 'input', keySpace: 'point'},
+      semivariances: {view: example.semivariances, role: 'output', keySpace: 'lag'},
+      pairCounts: {
+        view: example.pairCounts,
+        role: 'output',
+        keySpace: 'lag',
+        meaning: 'Unordered station pairs in the lag.'
+      },
+      meanDistances: {
+        view: example.meanDistances,
+        role: 'output',
+        keySpace: 'lag',
+        meaning: 'Mean pair distance in metres.'
+      }
+    });
+    return createDataFrameLensRecord({
+      scenarioId: SCENARIO_ID,
+      device,
+      graphs: [description],
+      formulas: getDataFrameElementFormulas('GPUVariogram'),
+      keySpaces: [
+        {id: 'point', label: 'Weather station', size: x.length, indexSpace: '1d'},
+        {id: 'lag', label: 'Lag (25 km)', size: LAG_COUNT, indexSpace: '1d'}
+      ],
+      choices: [
+        createDataFrameChoice('filter', 'coordinateModel', 'projected', {
+          alternatives: ['projected', 'geographic']
+        }),
+        createDataFrameChoice('filter', 'bounds', bounds.join(',')),
+        createDataFrameChoice('group', 'maximumDistance', MAXIMUM_DISTANCE, {
+          unit: 'm',
+          sweepable: true
+        }),
+        createDataFrameChoice('group', 'lagCount', LAG_COUNT, {sweepable: true}),
+        createDataFrameChoice('group', 'directionCount', 1)
+      ],
+      captures
+    });
   } finally {
     example.parameters.destroy();
     example.buffers.forEach(buffer => buffer.destroy());

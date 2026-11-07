@@ -41,10 +41,9 @@ test('captureGraphCommandNodes bridges the geospatial addToGraph-style passes', 
   const output = createTransientView(graph, 'distance', 'float32', 4);
   const originalAddComputePass = graph.addComputePass;
 
-  // The geospatial classes schedule through the upstream `addGeospatialPass` helper and return the
-  // captured nodes from `getCommandNodes`.
-  const nodes = new GPUPairwisePointDistance({id: 'distance', left, right, output}).getCommandNodes(
-    graph
+  // The geospatial classes schedule through `addToGraph`, which captureGraphCommandNodes bridges.
+  const nodes = captureGraphCommandNodes(graph, () =>
+    new GPUPairwisePointDistance({id: 'distance', left, right, output}).addToGraph(graph)
   );
 
   expect(nodes.length).toBeGreaterThan(0);

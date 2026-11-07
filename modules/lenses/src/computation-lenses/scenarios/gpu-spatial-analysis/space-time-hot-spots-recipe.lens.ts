@@ -17,7 +17,7 @@ defineLensScenario({
         import('./s2-lens-run'),
         import('./space-time-hot-spots-recipe.example'),
         import('./s1-clustering-support'),
-        import('@luma.gl/graph/gpu-dataframe')
+        import('@luma-contributors/analysis/dataframe-analysis')
       ]);
     const points = await support.loadNaturePoints();
     const lattice = support.getNatureLattice(points);
@@ -28,7 +28,6 @@ defineLensScenario({
           scenarioId: 'gpu-spatial-analysis.space-time-hot-spots-recipe',
           element: 'addSpaceTimeHotSpotsRecipe',
           datasets: ['s2-chicago-north-nature'],
-          retain: ['cube', 'giZScores', 'trendZ', 'category', 'hotSliceCount', 'coldSliceCount'],
           keySpaces: [
             {
               id: 'cell',

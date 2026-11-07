@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check pre…",
   "description": "Formula Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check pre…",
-  "llms": "Formula Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check precedes scaling.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check precedes scaling.\n\n- bound symbols: 0/3\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "3/3"
+    "value": "0/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-arithmetic.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{\\Delta N}=10^{-4}\\term{after}{N_{\\mathrm{after,DN}}}-10^{-4}\\term{before}{N_{\\mathrm{before,DN}}}\\quad(\\text{both raw values valid; otherwise NaN})</pre><p class=\"lens-ascii\">Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check precedes scaling.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-arithmetic-compiled:raster-arithmetic-evaluate\" data-value=\"result\">difference · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-arithmetic-compiled:raster-arithmetic-evaluate\" data-value=\"after\">after DN · input · aRaw</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-arithmetic-compiled:raster-arithmetic-evaluate\" data-value=\"before\">before DN · input · bRaw</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-arithmetic.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{\\Delta N}=10^{-4}\\term{after}{N_{\\mathrm{after,DN}}}-10^{-4}\\term{before}{N_{\\mathrm{before,DN}}}\\quad(\\text{both raw values valid; otherwise NaN})</pre><p class=\"lens-ascii\">Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check precedes scaling.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"result\">difference · output · unknown — wgsl valuesOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"after\">after DN · input · unknown — wgsl aRaw not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"before\">before DN · input · unknown — wgsl bRaw not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "difference",
         "output",
-        "valuesOut",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "after DN",
         "input",
-        "aRaw",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "before DN",
         "input",
-        "bRaw",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -61,14 +61,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:11:48.105Z",
-    "runId": "run-8c7810d9",
+    "date": "2026-11-07T14:55:17.591Z",
+    "runId": "run-132e56b9",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-8c7810d9",
+    "runId": "run-132e56b9",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

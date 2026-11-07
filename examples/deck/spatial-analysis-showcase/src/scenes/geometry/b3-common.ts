@@ -9,7 +9,11 @@ import {
 import earcut from 'earcut';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import type {Layer} from '@deck.gl/core';
-import {DrawCommandBuffer, type CompiledGPUCommandGraph, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  DrawCommandBuffer,
+  type CompiledGPUCommandGraph,
+  type GPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import type {LoadedDataset} from '../../data/catalog';
 import {clampLatitude, projectWebMercatorMeters} from '../../engine/web-mercator';
 import {importGraphBuffer} from '../../engine/graph-buffers';

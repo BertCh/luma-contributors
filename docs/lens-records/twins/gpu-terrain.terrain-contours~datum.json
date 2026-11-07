@@ -7,7 +7,7 @@
   "viewId": "buffer-strip",
   "caption": "Buffer contourCount1700 (1 u32). max: 68. values read back from the GPU run. min 68.",
   "description": "Buffer contourCount1700 (1 u32). max: 68. values read back from the GPU run. min 68.",
-  "llms": "Buffer contourCount1700 (1 u32)\n\n- max: 68\n- min 68\n- 0 NaN, 0 Inf\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Buffer contourCount1700 (1 u32)\n\n- max: 68\n- min 68\n- 0 NaN, 0 Inf\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max",
     "value": "68"
@@ -19,14 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:10.332Z",
-    "runId": "run-c8d14304",
+    "date": "2026-11-07T14:55:29.973Z",
+    "runId": "run-74962407",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-c8d14304",
+    "runId": "run-74962407",
     "rung": "datum",
     "bindings": {},
     "clauses": [],

@@ -5,11 +5,7 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {GPUTable} from '@luma.gl/graph/gpu-tables';
-import {getGPUPartitionMemoryPlan} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {
-  getGPUPartitionDescriptorFromArrowTable,
-  type PreparedArrowAnalyticsTable
-} from '@luma.gl/graph/arrow';
+import {type PreparedArrowAnalyticsTable} from '@luma-contributors/analysis/analysis-core';
 import {
   Dictionary,
   Field,
@@ -471,16 +467,10 @@ export function makeResidentAnalytics(
       field.metadata = new Map(arrowField.metadata);
     }
   }
-  const partitioning = getGPUPartitionDescriptorFromArrowTable(rows.table);
   return {
     table,
     validity: borrowedValidity,
     dictionaries: {...prepared.dictionaries},
-    nullCounts: Object.fromEntries(names.map(name => [name, rows.table.batches.map(() => 0)])),
-    partitioning,
-    partitionMemory: getGPUPartitionMemoryPlan(
-      partitioning,
-      names.reduce((bytes, name) => bytes + 4 + (options.validity[name] ? 4 : 0), 0)
-    )
+    nullCounts: Object.fromEntries(names.map(name => [name, rows.table.batches.map(() => 0)]))
   };
 }

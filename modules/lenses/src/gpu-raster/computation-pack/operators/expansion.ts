@@ -28,7 +28,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
         'Disk search uses original valid donors only; nearest, disk inverse-distance or four-quadrant interpolation preserves observed samples.',
       symbols: []
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-fill-nodata.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-fill-nodata.ts']
   },
   GPURasterRankFilter: {
     family: 'expansion',
@@ -47,7 +47,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
         'Select sorted[min(floor(q*n),n-1)] from the finite square neighborhood; invalid centers remain invalid.',
       symbols: []
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-rank-filter.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-rank-filter.ts']
   },
   GPURasterFractionalCoverage: {
     family: 'expansion',
@@ -75,7 +75,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
         'Coverage is polygon-cell intersection area divided by affine cell area, assembled from clipped triangles.',
       symbols: []
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-fractional-coverage.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-fractional-coverage.ts']
   },
   GPURasterFractionalZonalStatistics: {
     family: 'expansion',
@@ -102,7 +102,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
         'Extensive totals sum value times fraction; density integrals additionally multiply cell area. Means divide weighted values by observed fractions.',
       symbols: []
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-fractional-coverage.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-fractional-coverage.ts']
   },
   GPURasterReconstruction: {
     family: 'expansion',
@@ -127,7 +127,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
         'Geodesic dilation iterates min(mask, neighborhood maximum) until a verified fixed point; erosion is the dual.',
       symbols: []
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-reconstruction.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts']
   },
   GPURasterFillHoles: {
     family: 'expansion',
@@ -143,7 +143,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
       reason:
         'Reconstruct boundary-connected background and complement it to fill enclosed background components.'
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-reconstruction.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts']
   },
   GPURasterReprojection: {
     family: 'expansion',
@@ -159,7 +159,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
       reason:
         'Map destination centers through the inverse projection and source affine, then sample the supplied source support.'
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-reprojection.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-reprojection.ts']
   },
   GPURasterTileReprojection: {
     family: 'expansion',
@@ -175,7 +175,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
       reason:
         'Map destination centers through the inverse projection and source affine, then sample the supplied source support.'
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-tile-reprojection.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-tile-reprojection.ts']
   },
   GPURasterWalkingCost: {
     family: 'expansion',
@@ -201,7 +201,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
         'Directed least costs obey D(v)=min(D(v),min_u(D(u)+cost(u,v))); Tobler speed is 6 exp(-3.5 abs(slope+0.05)) km/hour.',
       symbols: []
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-walking-cost.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-walking-cost.ts']
   },
   GPURasterWatershedSegmentation: {
     family: 'expansion',
@@ -217,7 +217,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
       reason:
         'Priority flood selects the smallest path maximum elevation, breaking ties by FIFO discovery age.'
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-watershed-segmentation.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-watershed-segmentation.ts']
   },
   GPURasterSkeleton: {
     family: 'expansion',
@@ -233,7 +233,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
       reason:
         'Zhang-Suen alternates two deletion phases preserving connectivity until no foreground cell changes.'
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-skeleton.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-skeleton.ts']
   },
   GPURasterMedialAxis: {
     family: 'expansion',
@@ -252,6 +252,6 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
         'Retain Euclidean foreground disks that are not contained in another foreground disk, including exterior background.',
       symbols: []
     },
-    sources: ['modules/analysis/src/gpu-raster/gpu-raster-skeleton.ts']
+    sources: ['modules/analysis/src/raster-analysis/gpu-raster-skeleton.ts']
   }
 };

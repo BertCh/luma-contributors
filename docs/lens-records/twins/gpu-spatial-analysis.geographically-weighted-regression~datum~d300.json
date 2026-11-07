@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.geographically-weighted-regression",
   "viewId": "datum-receipt",
-  "caption": "Receipt of Chicago tract 300. poverty150PctTValue: 6.391848087310791. values read back from the GPU run. lens: 7 quantities.",
-  "description": "Receipt of Chicago tract 300. poverty150PctTValue: 6.391848087310791. values read back from the GPU run. lens: 7 quantities.",
-  "llms": "Receipt of Chicago tract 300\n\n- poverty150PctTValue: 6.391848087310791\n- lens: 7 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of Chicago tract 300. poverty150PctTValue: 6.391848087310791. values read back from the GPU run. result: 7 quantities.",
+  "description": "Receipt of Chicago tract 300. poverty150PctTValue: 6.391848087310791. values read back from the GPU run. result: 7 quantities.",
+  "llms": "Receipt of Chicago tract 300\n\n- poverty150PctTValue: 6.391848087310791\n- result: 7 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "poverty150PctTValue",
     "value": "6.391848087310791"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 300</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"lens\"><tr><th scope=\"rowgroup\" colspan=\"5\">lens</th></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-response-0\" title=\"CDC PLACES diabetes prevalence (%)\">response</button></td><td>7.800000190734863</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-localR2-0\">localR2</button></td><td>0.6277381181716919</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-interceptCoefficient-0\">interceptCoefficient</button></td><td>3.392695903778076</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-poverty150PctCoefficient-0\" title=\"Local effect of poverty150Pct on diabetes: percentage points per point of poverty; diverging scale with midpoint 0\">poverty150PctCoefficient</button></td><td>0.26478657126426697</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-noVehiclePctCoefficient-0\">noVehiclePctCoefficient</button></td><td>-0.051684726029634476</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-uninsuredPctCoefficient-0\">uninsuredPctCoefficient</button></td><td>0.019236896187067032</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-poverty150PctTValue-0\">poverty150PctTValue</button></td><td>6.391848087310791</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 300</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-response-0\" title=\"CDC PLACES diabetes prevalence (%)\">response</button></td><td>7.800000190734863</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-localR2-0\" title=\"gpu-spatial-analysis.geographically-weighted-regression-snapshot-tap\">localR2</button></td><td>0.6277381181716919</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-interceptCoefficient-0\" title=\"gpu-spatial-analysis.geographically-weighted-regression-snapshot-tap\">interceptCoefficient</button></td><td>3.392695903778076</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-poverty150PctCoefficient-0\" title=\"Local effect of poverty150Pct on diabetes: percentage points per point of poverty; diverging scale with midpoint 0\">poverty150PctCoefficient</button></td><td>0.26478657126426697</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-noVehiclePctCoefficient-0\" title=\"gpu-spatial-analysis.geographically-weighted-regression-snapshot-tap\">noVehiclePctCoefficient</button></td><td>-0.051684726029634476</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-uninsuredPctCoefficient-0\" title=\"gpu-spatial-analysis.geographically-weighted-regression-snapshot-tap\">uninsuredPctCoefficient</button></td><td>0.019236896187067032</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-poverty150PctTValue-0\" title=\"gpu-spatial-analysis.geographically-weighted-regression-snapshot-tap\">poverty150PctTValue</button></td><td>6.391848087310791</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,49 +28,49 @@
     ],
     "rows": [
       [
-        "lens",
+        "result",
         "response",
         "7.800000190734863",
         "0",
         "readback"
       ],
       [
-        "lens",
+        "result",
         "localR2",
         "0.6277381181716919",
         "0",
         "readback"
       ],
       [
-        "lens",
+        "result",
         "interceptCoefficient",
         "3.392695903778076",
         "0",
         "readback"
       ],
       [
-        "lens",
+        "result",
         "poverty150PctCoefficient",
         "0.26478657126426697",
         "0",
         "readback"
       ],
       [
-        "lens",
+        "result",
         "noVehiclePctCoefficient",
         "-0.051684726029634476",
         "0",
         "readback"
       ],
       [
-        "lens",
+        "result",
         "uninsuredPctCoefficient",
         "0.019236896187067032",
         "0",
         "readback"
       ],
       [
-        "lens",
+        "result",
         "poverty150PctTValue",
         "6.391848087310791",
         "0",
@@ -120,12 +120,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:18.351Z",
-    "runId": "run-f87097cc",
+    "date": "2026-11-07T14:55:21.671Z",
+    "runId": "run-93183832",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-f87097cc",
+    "runId": "run-93183832",
     "rung": "datum",
     "bindings": {
       "entity": 300

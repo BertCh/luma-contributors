@@ -17,18 +17,12 @@ import {
 
 const SCENARIO_ID = 'gpu-dataframe.column-quantiles';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
-const RETAINED = ['quantiles', 'validCount', 'outputMask', 'filterBounds'];
-
 /** Executes the recorded quantile selection once and reads inputs and outputs from GPU buffers. */
 export async function run(device: Device, options?: {signal?: AbortSignal}) {
   options?.signal?.throwIfAborted();
   const dataset = await loadDataFrameLensData('f-chicago-tracts');
   const poverty = Float32Array.from(dataset.columns.poverty150Pct, value => value ?? NaN);
-  const graph = createDataFrameLensGraph<undefined>(
-    device,
-    'gpu-dataframe-column-quantiles',
-    RETAINED
-  );
+  const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-column-quantiles');
   const example = await runExample(device, {graph, tracts: {poverty150Pct: poverty}});
   try {
     options?.signal?.throwIfAborted();

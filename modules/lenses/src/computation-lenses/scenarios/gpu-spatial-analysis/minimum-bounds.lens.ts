@@ -32,7 +32,6 @@ defineLensScenario({
           scenarioId: SCENARIO_ID,
           element: 'GPUMinimumBounds',
           datasets: [data.id],
-          retain: ['rectangleCorners', 'rectangleSizes', 'circles', 'overflow'],
           keySpaces: [
             {id: 'park', label: 'park', size: data.featureCount, indexSpace: '1d'},
             {

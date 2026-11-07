@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {build} from 'esbuild';
 import {describe, expect, it, vi} from 'vitest';
 import {
   projectionEngine,
@@ -211,25 +210,5 @@ describe('provider-independent projection planning', () => {
       expect(Object.isFrozen(error.reasons)).toBe(true);
       expect(Object.isFrozen(error.reasons[0])).toBe(true);
     }
-  });
-
-  it('keeps math.gl and proj4 runtime code out of the provider-planning bundle', async () => {
-    const result = await build({
-      stdin: {
-        contents:
-          "export {planProjection, ProjectionPlanningError} from './modules/analysis/src/gpu-project/index';",
-        resolveDir: process.cwd()
-      },
-      bundle: true,
-      write: false,
-      metafile: true,
-      format: 'esm',
-      platform: 'browser',
-      external: ['@luma.gl/*', '@luma-contributors/*']
-    });
-    expect(Object.keys(result.metafile!.inputs).some(path => /@math.gl|proj4/.test(path))).toBe(
-      false
-    );
-    expect(result.outputFiles[0].text).toContain('planProjection');
   });
 });

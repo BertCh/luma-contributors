@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A i…",
   "description": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A i…",
-  "llms": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a <= 0 gives -Infinity\n\n- bound symbols: 6/6\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a <= 0 gives -Infinity\n\n- bound symbols: 0/6\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "6/6"
+    "value": "0/6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-hydrologic-indices.twi</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{wetness}{\\mathrm{TWI}} = \\ln\\frac{\\term{catchment}{a}}{\\term{tangent}{\\tan\\beta}},\\quad a = \\frac{\\term{area}{A}}{\\sqrt{\\Delta x\\,\\Delta y}},\\quad \\tan\\beta = \\max\\bigl(\\term{steepest}{s},\\ \\term{minimumSlope}{s_{\\min}}\\bigr),\\quad s = \\max_k \\frac{z_c - z_k}{d_k},\\quad \\mathrm{SPI} = a \\tan\\beta</pre><p class=\"lens-ascii\">TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a &lt;= 0 gives -Infinity</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"wetness\">TWI · output · wetness</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"catchment\">a · intermediate · catchment</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"tangent\">tan β · intermediate · tangent</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"area\">A · input · area</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"steepest\">s · intermediate · steepest</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"minimumSlope\">s_min · parameter · minimumSlope</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-hydrologic-indices.twi</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{wetness}{\\mathrm{TWI}} = \\ln\\frac{\\term{catchment}{a}}{\\term{tangent}{\\tan\\beta}},\\quad a = \\frac{\\term{area}{A}}{\\sqrt{\\Delta x\\,\\Delta y}},\\quad \\tan\\beta = \\max\\bigl(\\term{steepest}{s},\\ \\term{minimumSlope}{s_{\\min}}\\bigr),\\quad s = \\max_k \\frac{z_c - z_k}{d_k},\\quad \\mathrm{SPI} = a \\tan\\beta</pre><p class=\"lens-ascii\">TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a &lt;= 0 gives -Infinity</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"wetness\">TWI · output · unknown — wgsl wetness not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"catchment\">a · intermediate · unknown — wgsl catchment not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"tangent\">tan β · intermediate · unknown — wgsl tangent not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"area\">A · input · unknown — wgsl area not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"steepest\">s · intermediate · unknown — wgsl steepest not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"minimumSlope\">s_min · parameter · unknown — wgsl minimumSlope not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,42 +29,42 @@
       [
         "TWI",
         "output",
-        "wetness",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "a",
         "intermediate",
-        "catchment",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "tan β",
         "intermediate",
-        "tangent",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "A",
         "input",
-        "area",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "s",
         "intermediate",
-        "steepest",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "s_min",
         "parameter",
-        "minimumSlope",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -97,14 +97,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:13:11.162Z",
-    "runId": "run-0a8bd878",
+    "date": "2026-11-07T14:55:30.267Z",
+    "runId": "run-36a7b0bc",
     "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-0a8bd878",
+    "runId": "run-36a7b0bc",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

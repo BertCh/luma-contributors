@@ -4,7 +4,13 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUCalendarBucketsParameterValues, getGPUTemporalReductionParameterValues, GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH, GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH, GPUTemporalReduction} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  getGPUCalendarBucketsParameterValues,
+  getGPUTemporalReductionParameterValues,
+  GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH,
+  GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
+  GPUTemporalReduction
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addSpaceTimeHotSpotsRecipe,
   type GPUInferenceMetadata,

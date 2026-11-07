@@ -537,13 +537,13 @@ export default defineScene<StormCellTracksOptions>({
       : [])
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUTrajectoryMetrics, GPUTrajectoryPlayhead, GPUOutlineGeometry, GPUPointDensity,
   getGPUTrajectoryMetricsParameterValues, getGPUTrajectoryPlayheadParameterValues,
   getGPUOutlineGeometryParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/graph/gpu-dataframe';
 
 // Longitude/latitude positions with a great-circle context: speeds in m/s, headings are initial bearings.
 const metrics = new GPUCommandGraph(device, {id: 'metrics'});

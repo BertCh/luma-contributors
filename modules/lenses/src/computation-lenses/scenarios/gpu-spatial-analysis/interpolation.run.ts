@@ -8,7 +8,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '@luma.gl/graph';
+import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import {runExample as runKriging} from './local-kriging.example';
 import {runExample as runRadialBasis} from './local-rbf.example';
 import {runExample as runNaturalNeighbor} from './natural-neighbor.example';
@@ -224,12 +224,6 @@ export function runInterpolationLens(device: Device, kind: InterpolationLensKind
     element: ELEMENTS[kind],
     datasets: ['synthetic-interpolation-six-sites-v1'],
     seed: kind === 'conditional-gaussian-simulation' ? 347 : undefined,
-    retain:
-      kind === 'conditional-gaussian-simulation'
-        ? ['values', 'moments', 'statuses', 'predictions']
-        : kind === 'natural-neighbor'
-          ? ['results', 'statuses', 'weights', 'predictions']
-          : ['results', 'statuses', 'predictions'],
     keySpaces: [
       {id: 'query', label: 'Prediction site', size: QUERY_COUNT, indexSpace: '1d'},
       {id: 'sample', label: 'Synthetic observation', size: 6, indexSpace: '1d'},

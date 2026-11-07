@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.shape-generator",
   "viewId": "datum-receipt",
-  "caption": "Receipt of place (every 12th) 0. radii: 60. values read back from the GPU run. shape-generator: 2 quantities.",
-  "description": "Receipt of place (every 12th) 0. radii: 60. values read back from the GPU run. shape-generator: 2 quantities.",
-  "llms": "Receipt of place (every 12th) 0\n\n- radii: 60\n- shape-generator: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of place (every 12th) 0. radii: 60. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of place (every 12th) 0. radii: 60. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of place (every 12th) 0\n\n- radii: 60\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "radii",
     "value": "60"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of place (every 12th) 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"shape-generator\"><tr><th scope=\"rowgroup\" colspan=\"5\">shape-generator</th></tr><tr data-provenance=\"readback\"><td>shape-generator</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-generator-snapshots-centers-0\" title=\"every 12th place of the Wicker Park places\">centers</button></td><td>3696.409912109375, 10259.349609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shape-generator</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-generator-snapshots-radii-0\" title=\"circle radius in m (a parameter: 60 m for every place)\">radii</button></td><td>60</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of place (every 12th) 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-generator-snapshots-centers-0\" title=\"every 12th place of the Wicker Park places\">centers</button></td><td>3696.409912109375, 10259.349609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-generator-snapshots-radii-0\" title=\"circle radius in m (a parameter: 60 m for every place)\">radii</button></td><td>60</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -28,14 +28,14 @@
     ],
     "rows": [
       [
-        "shape-generator",
+        "result",
         "centers",
         "3696.409912109375, 10259.349609375",
         "0",
         "readback"
       ],
       [
-        "shape-generator",
+        "result",
         "radii",
         "60",
         "0",
@@ -62,12 +62,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T11:12:56.049Z",
-    "runId": "run-3f6492da",
+    "date": "2026-11-07T14:55:27.261Z",
+    "runId": "run-3742d4b1",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-3f6492da",
+    "runId": "run-3742d4b1",
     "rung": "datum",
     "bindings": {
       "entity": 0
