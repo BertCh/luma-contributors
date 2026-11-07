@@ -4,13 +4,10 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUTimeWindowFilterParameterValues,
-  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-dataframe';
-import type {GPUParameterBuffer} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUFlowAggregation} from '@luma-contributors/graph/gpu-network';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassIndexOf, getClassTableLayerProps} from '../../cartography/class-table';
 import {formatCount, formatSigned, liveText} from '../../cartography/live-text';
 import {FLOW_HALO, FLOW_INK, buildFlowArrows, formatClockHour} from './flows-style';

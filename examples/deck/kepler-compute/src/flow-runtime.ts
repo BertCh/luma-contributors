@@ -4,7 +4,7 @@
 
 import type * as arrow from 'apache-arrow';
 import type {Device} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import type {FlowAggregateSource} from './flow-gpu-aggregation';
 import {

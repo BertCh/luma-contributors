@@ -29,38 +29,26 @@
     "noUnusedLocals": true,
     "noUnusedParameters": false,
     "paths": {
-      "@luma-contributors/graph": [
-        "./modules/graph/src/index.ts"
-      ],
-      "@luma-contributors/graph/_internal/arrow": [
-        "./modules/graph/src/arrow/internal.ts"
-      ],
-      "@luma-contributors/graph/gpu-simple-graph/webgl": [
-        "./modules/graph/src/gpu-simple-graph/operations/webgl/index.ts"
-      ],
-      "@luma-contributors/graph/gpu-simple-graph/webgpu": [
-        "./modules/graph/src/gpu-simple-graph/operations/webgpu/index.ts"
-      ],
-      "@luma-contributors/graph/gpu-simple-graph/cpu": [
-        "./modules/graph/src/gpu-simple-graph/operations/cpu/index.ts"
-      ],
-      "@luma-contributors/graph/test/*": [
-        "./modules/graph/test/*"
-      ],
-      "@luma-contributors/graph/*": [
-        "./modules/graph/src/*"
-      ],
-      "@luma-contributors/lenses": [
-        "./modules/lenses/src/index.ts"
-      ],
-      "@luma-contributors/lenses/*": [
-        "./modules/lenses/src/*"
+      "@luma-contributors/analysis": [
+        "./modules/analysis/src/index.ts"
       ],
       "@luma-contributors/kepler": [
         "./modules/kepler/src/index.ts"
       ],
+      "@luma-contributors/lenses": [
+        "./modules/lenses/src/index.ts"
+      ],
+      "@luma-contributors/analysis/*": [
+        "./modules/analysis/src/*"
+      ],
+      "@luma-contributors/analysis/test/*": [
+        "./modules/analysis/test/*"
+      ],
       "@luma-contributors/kepler/*": [
         "./modules/kepler/src/*"
+      ],
+      "@luma-contributors/lenses/*": [
+        "./modules/lenses/src/*"
       ],
       "test/*": [
         "./test/*"

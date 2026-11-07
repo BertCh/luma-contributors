@@ -5,11 +5,7 @@
 import type {Layer} from '@deck.gl/core';
 import {PathLayer, ScatterplotLayer, TextLayer} from '@deck.gl/layers';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   GPUSphericalPolygonContains,
@@ -17,7 +13,7 @@ import {
   GPUS2PolygonCovering,
   GPUCellGeometry,
   GPUS2CellMeasures
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GraphSwap} from '../../engine/graph-swap';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';

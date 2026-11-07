@@ -11,7 +11,7 @@ import {
   type UpdateParameters
 } from '@deck.gl/core';
 import {Buffer, type RenderPass} from '@luma.gl/core';
-import type {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
+import type {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import {Model} from '@luma.gl/engine';
 import {BLEND_PARAMETERS} from '../../spatial-analysis-shared/layer-constants';
 

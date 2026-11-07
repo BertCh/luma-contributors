@@ -7,12 +7,12 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   GPUGeographicallyWeightedRegression
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Number of golden-section iterations built into the graph. */
 const SEARCH_ITERATIONS = 12;

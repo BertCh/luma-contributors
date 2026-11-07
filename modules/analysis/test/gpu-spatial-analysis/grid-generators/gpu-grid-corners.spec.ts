@@ -1,0 +1,240 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {expect, it} from 'vitest';
+import {
+  getGPUGridCellCount,
+  getGPUGridCornerCount,
+  getGPUGridGeneratorParameterValues,
+  getGPUGridVerticesPerCell,
+  GPUGridGenerator
+} from '../../../src/gpu-spatial-analysis/grid-generators/index';
+import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
+import {generateGridCorners} from './grid-generator-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
+
+for (const gridType of ['square', 'hex', 'hexFlat'] as const) {
+  it(`GPUGridGenerator unique ${gridType} corners match the polygon vertex union across frames`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const publicType = gridType === 'square' ? 'square' : 'hex';
+    for (const [columns, rows] of [
+      [1, 1],
+      [1, 4],
+      [4, 1],
+      [2, 2],
+      [5, 4]
+    ]) {
+      const count = getGPUGridCornerCount(publicType, columns, rows);
+      const fixture = createGeometryFixture(device, {
+        inputs: {},
+        outputs: {corners: {format: 'float32x2', length: count}},
+        create: ({outputs, parameters}) =>
+          new GPUGridGenerator({
+            gridType: publicType,
+            hexOrientation: gridType === 'hexFlat' ? 'flat' : undefined,
+            columns,
+            rows,
+            parameters,
+            output: {corners: outputs['corners'] as never}
+          })
+      });
+      try {
+        for (const [minX, minY, width, height] of [
+          [-3, 7, 2, 3],
+          [10.25, -2.5, 0.75, 1.25]
+        ]) {
+          const result = await fixture.run(
+            getGPUGridGeneratorParameterValues({
+              minX,
+              minY,
+              cellWidth: width,
+              cellHeight: height
+            })
+          );
+          const expected = generateGridCorners(
+            publicType,
+            columns,
+            rows,
+            minX,
+            minY,
+            width,
+            height,
+            gridType === 'hexFlat'
+          );
+          expect(expected.length).toBe(count);
+          const matched = new Set<number>();
+          for (let corner = 0; corner < count; corner++) {
+            const match = expected.findIndex(
+              point =>
+                Math.hypot(
+                  point[0] - result['corners'][2 * corner],
+                  point[1] - result['corners'][2 * corner + 1]
+                ) < 1e-5
+            );
+            expect(match, `corner ${corner}, ${columns} x ${rows}`).toBeGreaterThanOrEqual(0);
+            expect(matched.has(match), 'no repeated shared vertices').toBe(false);
+            matched.add(match);
+          }
+        }
+        expect(fixture.getCompileCount()).toBe(0);
+      } finally {
+        fixture.destroy();
+      }
+    }
+  });
+}
+
+it('GPUGridGenerator masks corner points independently of polygon intersection, including hole boundaries', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // GeoPandas 1.2 make_grid(feature_type='corners', intersect=True) tests each unique point,
+  // not its incident cells: https://geopandas.org/en/latest/docs/reference/api/geopandas.GeoSeries.make_grid.html
+  const fixture = createGeometryFixture(device, {
+    inputs: {
+      extent: {
+        format: 'float32x2',
+        values: Float32Array.from([0, 0, 3, 0, 3, 3, 0, 3, 1, 1, 2, 1, 2, 2, 1, 2])
+      },
+      ringOffsets: {format: 'uint32', values: Uint32Array.from([0, 4, 8])},
+      featureOffsets: {format: 'uint32', values: Uint32Array.from([0, 1])},
+      polygonOffsets: {format: 'uint32', values: Uint32Array.from([0, 2])}
+    },
+    outputs: {
+      positions: {format: 'float32x2', length: 64},
+      corners: {format: 'float32x2', length: 25},
+      intersects: {format: 'uint32', length: 16},
+      cornerIntersects: {format: 'uint32', length: 25}
+    },
+    create: ({inputs, outputs, parameters}) =>
+      new GPUGridGenerator({
+        gridType: 'square',
+        columns: 4,
+        rows: 4,
+        parameters,
+        extent: {
+          kind: 'polygons',
+          positions: inputs['extent'] as never,
+          featureOffsets: inputs['featureOffsets'] as never,
+          polygonOffsets: inputs['polygonOffsets'] as never,
+          ringOffsets: inputs['ringOffsets'] as never
+        },
+        output: {
+          positions: outputs['positions'] as never,
+          corners: outputs['corners'] as never,
+          intersects: outputs['intersects'] as never,
+          cornerIntersects: outputs['cornerIntersects'] as never
+        }
+      })
+  });
+  try {
+    for (const origin of [0, 0.5]) {
+      const result = await fixture.run(
+        getGPUGridGeneratorParameterValues({
+          minX: origin,
+          minY: origin,
+          cellWidth: 1,
+          cellHeight: 1
+        })
+      );
+      const expected: number[] = [];
+      for (let row = 0; row <= 4; row++) {
+        for (let column = 0; column <= 4; column++) {
+          const x = origin + column;
+          const y = origin + row;
+          expect(
+            result['corners'].slice(2 * (row * 5 + column), 2 * (row * 5 + column) + 2)
+          ).toEqual([x, y]);
+          expected.push(Number(x <= 3 && y <= 3 && !(x > 1 && x < 2 && y > 1 && y < 2)));
+        }
+      }
+      expect(result['cornerIntersects']).toEqual(expected);
+      expect(result['intersects'].some(Boolean)).toBe(true);
+      // Every cell touches the shell at origin zero, including cells adjacent to outside corners.
+      if (origin === 0) {
+        expect(result['intersects']).toEqual(new Array(16).fill(1));
+      }
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
+
+for (const gridType of ['square', 'hex', 'hexFlat', 'triangle'] as const) {
+  it(`GPUGridGenerator ${gridType} neighbours share bit-identical vertices`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // D-14: vertices were computed per cell (`lower + w`, `center + R * (cos, sin)`), so the copies
+    // of a shared vertex differed by an ulp (560 of 1999 square neighbour pairs at origin -122.5,
+    // w 0.01; every shared hex vertex). Every copy now comes from one lattice expression, which the
+    // corner output also uses.
+    const publicType = gridType === 'hexFlat' ? 'hex' : gridType;
+    const columns = 9;
+    const rows = 7;
+    const cellCount = getGPUGridCellCount(publicType, columns, rows);
+    const verticesPerCell = getGPUGridVerticesPerCell(publicType);
+    const hasCorners = publicType !== 'triangle';
+    const cornerCount = hasCorners ? getGPUGridCornerCount(publicType, columns, rows) : 0;
+    const fixture = createGeometryFixture(device, {
+      inputs: {},
+      outputs: {
+        positions: {format: 'float32x2', length: cellCount * verticesPerCell},
+        ...(hasCorners ? {corners: {format: 'float32x2' as const, length: cornerCount}} : {})
+      },
+      create: ({outputs, parameters}) =>
+        new GPUGridGenerator({
+          gridType: publicType,
+          hexOrientation: gridType === 'hexFlat' ? 'flat' : undefined,
+          columns,
+          rows,
+          parameters,
+          output: {
+            positions: outputs['positions'] as never,
+            ...(hasCorners ? {corners: outputs['corners'] as never} : {})
+          }
+        })
+    });
+    try {
+      for (const [minX, minY, width, height] of [
+        [-122.5, 37.25, 0.01, 0.01],
+        [-122.5, 37.25, 1 / 3, 1 / 3]
+      ]) {
+        const result = await fixture.run(
+          getGPUGridGeneratorParameterValues({minX, minY, cellWidth: width, cellHeight: height})
+        );
+        const positions = result['positions'];
+        // Group vertex copies that are within width / 1000 of each other; all copies in a group
+        // must have the same bits.
+        const quantum = width / 1000;
+        const groups = new Map<string, [number, number]>();
+        let shared = 0;
+        for (let vertex = 0; vertex < positions.length / 2; vertex++) {
+          const x = positions[2 * vertex];
+          const y = positions[2 * vertex + 1];
+          const key = `${Math.round(x / quantum)},${Math.round(y / quantum)}`;
+          const first = groups.get(key);
+          if (first) {
+            shared++;
+            expect([x, y], `${gridType} vertex ${vertex}`).toEqual(first);
+          } else {
+            groups.set(key, [x, y]);
+          }
+        }
+        expect(shared).toBeGreaterThan(cellCount);
+        if (hasCorners) {
+          const corners = new Set<string>();
+          for (let corner = 0; corner < cornerCount; corner++) {
+            corners.add(`${result['corners'][2 * corner]},${result['corners'][2 * corner + 1]}`);
+          }
+          for (const [x, y] of groups.values()) {
+            expect(corners.has(`${x},${y}`), `${gridType} corner ${x},${y}`).toBe(true);
+          }
+        }
+      }
+    } finally {
+      fixture.destroy();
+    }
+  });
+}

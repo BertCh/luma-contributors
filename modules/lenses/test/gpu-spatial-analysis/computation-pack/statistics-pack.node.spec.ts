@@ -12,8 +12,8 @@ import {STATISTICS_CLUSTERING_OPERATORS} from '../../../src/gpu-spatial-analysis
 
 const kernelSources: Record<string, string[]> = {
   GPULocalMoran: [
-    'modules/graph/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-local-moran.ts',
-    'modules/graph/src/gpu-spatial-analysis/spatial-autocorrelation/spatial-autocorrelation-kernels.ts'
+    'modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-local-moran.ts',
+    'modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/spatial-autocorrelation-kernels.ts'
   ]
 };
 

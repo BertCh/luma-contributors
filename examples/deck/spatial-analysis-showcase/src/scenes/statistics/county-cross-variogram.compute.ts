@@ -5,12 +5,8 @@
 import type {Layer} from '@deck.gl/core';
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import type {LoadedDataset} from '../../data/catalog';
-import {GPUCrossVariogram, GPUSpaceTimeVariogram} from '@luma-contributors/graph/gpu-dataframe';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCrossVariogram, GPUSpaceTimeVariogram} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';
 import {buildPolygonMesh} from '../../cartography/polygon-mesh';
 import {SpatialAnalysisPolygonLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';

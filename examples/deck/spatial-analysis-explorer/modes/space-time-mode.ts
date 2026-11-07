@@ -31,33 +31,16 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUHistogram,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCrossfilter} from '@luma-contributors/graph/gpu-crossfilter';
-import {
-  getGPUCalendarBucketsParameterValues,
-  getGPUTemporalReductionWordParameterValues,
-  getInt64TimeWords,
-  GPUCalendarBuckets,
-  GPUTemporalReduction,
-  GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
-  GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-dataframe';
-import {
-  getGPUChangeDetectionParameterValues,
-  GPUChangeDetection,
-  GPU_CHANGE_DETECTION_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, GPUHistogram, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
+import {getGPUCalendarBucketsParameterValues, getGPUTemporalReductionWordParameterValues, getInt64TimeWords, GPUCalendarBuckets, GPUTemporalReduction, GPU_CALENDAR_BUCKETS_MATRIX_LENGTH, GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
+import {getGPUChangeDetectionParameterValues, GPUChangeDetection, GPU_CHANGE_DETECTION_PARAMETER_LENGTH} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUEmergingHotSpotsParameterValues,
   GPUEmergingHotSpots,
   GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
   GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer} from '../spatial-analysis-layers';
 import type {

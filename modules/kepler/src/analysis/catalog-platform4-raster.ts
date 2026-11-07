@@ -7,7 +7,7 @@ import {
   GPURasterJoin,
   getGPUPolygonRasterizationParameterValues,
   makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
 import {COORDINATE_SYSTEM_PARAMETER} from './catalog-binding-types';
 import {

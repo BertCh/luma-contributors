@@ -3,14 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUTimeWindowFilterParameterValues,
-  GPUParameterBuffer,
   GPUTimeWindowFilter,
   GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   splitTimestamps
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Observation columns the lens scenario reads from `f-chicago-nature.json`. */
 export type TimeWindowFilterExampleInput = {

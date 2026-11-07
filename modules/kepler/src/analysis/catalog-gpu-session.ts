@@ -3,10 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {readBufferFloat32, readBufferUint32} from '../runtime/gpu-readback';
-import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 
 /** Thrown by GPU runners for inputs the contributor cannot take; the catalog falls back to the CPU engine. */
 export class CatalogGpuUnsupportedError extends Error {

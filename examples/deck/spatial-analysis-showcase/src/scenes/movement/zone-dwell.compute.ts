@@ -9,12 +9,8 @@ import {
   addFleetDwellZoneEventsRecipe,
   getGPUTrajectoryMetricsParameterValues,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassCounts, getExtent} from '../../cartography/breaks';
 import {getClassTableLayerProps, getClassIndexOf} from '../../cartography/class-table';
 import {formatArea, formatCount, formatPercent} from '../../cartography/live-text';

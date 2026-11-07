@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerMemoryReservation} from '@luma-contributors/kepler';
 import type {NativeJenksThresholds} from './native-style-plan';
 

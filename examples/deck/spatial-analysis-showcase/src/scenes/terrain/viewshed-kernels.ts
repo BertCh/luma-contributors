@@ -17,7 +17,7 @@
  * - {@link addCoarseUnseenPass}: a coarse mask of the unseen cells for the largest-gap search.
  */
 
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {VISIBILITY_CLASS} from './terrain-palettes';
 import {

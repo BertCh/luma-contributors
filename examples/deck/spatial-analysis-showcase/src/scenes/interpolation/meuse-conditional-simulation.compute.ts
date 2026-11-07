@@ -4,8 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUConditionalGaussianSimulation} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUConditionalGaussianSimulation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

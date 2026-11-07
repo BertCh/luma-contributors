@@ -7,11 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUGeometryOrientation,
   type GPUPolygonGeometryFields
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Parks in UTM 16N metres and the packed winding convention for GPUGeometryOrientation. */
 export type GeometryOrientationExampleInput = {

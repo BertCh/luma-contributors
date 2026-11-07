@@ -12,8 +12,8 @@ import {
   GPUTerrainDerivatives,
   GPUTerrainRuggedness,
   GPUTerrainVectorRuggedness
-} from '@luma-contributors/graph/gpu-terrain';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {ALPS} from '../../cartography/gazetteer';
 import type {MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';

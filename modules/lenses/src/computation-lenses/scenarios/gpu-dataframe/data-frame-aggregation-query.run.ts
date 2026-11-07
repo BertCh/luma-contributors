@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {GPUDataFrameQueryParameters} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import type {GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
 import {runExample} from './data-frame-aggregation-query.example';
 import {
   loadDataFrameLensData,

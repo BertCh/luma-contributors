@@ -4,8 +4,8 @@
 
 import {readFileSync} from 'node:fs';
 import {NullDevice} from '@luma.gl/core/test-utils';
-import {createTransientView, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import type {GPUChunkedSpatialWeights} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUChunkedSpatialWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {expect, test} from 'vitest';
 import {addKeplerSpatialRate} from '../src/analysis/analysis-bindings';
 import {addKeplerPointMultivariateLocalGeary} from '../src/analysis/point-multivariate-local-geary';

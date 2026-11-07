@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerSelectionLayer} from '@luma-contributors/kepler';
 
 /** Native layer types whose polygon selector is a point test over the dataset lng/lat positions. */

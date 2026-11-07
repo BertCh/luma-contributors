@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUVariogramParameterValues,
-  GPUParameterBuffer,
   GPUVariogram,
   GPU_VARIOGRAM_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Station columns the lens scenario reads from `f-ghcn-stations.json`. */
 export type VariogramExampleInput = {

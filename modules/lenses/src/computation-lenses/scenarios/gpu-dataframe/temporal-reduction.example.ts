@@ -4,13 +4,9 @@
 // biome-ignore-all format: the shown example is hand-formatted to fit the 25-line card limit
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  getGPUTemporalReductionParameterValues,
-  GPUParameterBuffer,
-  GPUTemporalReduction,
-  GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-dataframe';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {getGPUTemporalReductionParameterValues, GPUTemporalReduction, GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Observation columns the lens scenario reads from `f-chicago-nature.json`. */
 export type TemporalReductionExampleInput = {

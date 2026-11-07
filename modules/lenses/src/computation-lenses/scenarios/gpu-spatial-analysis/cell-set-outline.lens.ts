@@ -33,7 +33,7 @@ defineLensScenario({
       import('./cell-set-outline.example'),
       import('./cell-cover.example'),
       import('./cell-display'),
-      import('@luma-contributors/graph/gpu-spatial-analysis'),
+      import('@luma-contributors/analysis/gpu-spatial-analysis'),
       import('./s3-lens-data').then(module => module.loadS3ChicagoCommunityAreas())
     ]);
     return {

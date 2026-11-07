@@ -4,7 +4,7 @@
 
 import * as arrow from 'apache-arrow';
 import type {PreparedGeometryGPUVectors} from '@luma.gl/engine/arrow';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {makeGeometryGPUVectors} from '@luma.gl/engine/arrow';
 import type {
   KeplerArrowDataset,

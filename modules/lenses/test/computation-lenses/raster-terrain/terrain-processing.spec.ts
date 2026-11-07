@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {runTerrainProcessing} from '../../../src/computation-lenses/scenarios/gpu-terrain/terrain-processing-runner';
 import {TERRAIN_PROCESSING_SCENARIOS} from '../../../src/computation-lenses/scenarios/gpu-terrain/terrain-processing.scenarios';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 
 it.each(
   TERRAIN_PROCESSING_SCENARIOS

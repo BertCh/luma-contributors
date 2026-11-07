@@ -4,7 +4,7 @@
 
 import type {CommandEncoder} from '@luma.gl/core';
 import {KeplerResidentStyle} from '@luma-contributors/kepler';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {
   KeplerArrowDataset,
   KeplerComputeSession,

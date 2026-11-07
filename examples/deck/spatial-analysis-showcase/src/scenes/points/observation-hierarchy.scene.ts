@@ -45,8 +45,8 @@ function getClusterLegend(labels: number[], hasNoise: boolean, complete: boolean
 
 function getSnippet(state: ObservationHierarchyOptions): string {
   if (state.algorithm === 'hdbscan') {
-    return `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUHierarchicalDensityClustering} from '@luma-contributors/graph/gpu-spatial-analysis';
+    return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUHierarchicalDensityClustering} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'northerly-hdbscan'});
 graph.add(new GPUHierarchicalDensityClustering({
@@ -66,8 +66,8 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
   minimumClusterSize: ${Number(state.minimumClusterSize)},
   predecessorCorrection: ${state.predecessorCorrection},`
       : `extractionDistance: ${Number(state.extractionDistance)},`;
-  return `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUOPTICS} from '@luma-contributors/graph/gpu-spatial-analysis';
+  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUOPTICS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'northerly-optics'});
 graph.add(new GPUOPTICS({

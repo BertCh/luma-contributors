@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {validateGPUComputationSidecars} from '@luma-contributors/graph/computation-record';
+import {validateGPUComputationSidecars} from '@luma-contributors/analysis/computation-record';
 import {expect, test} from 'vitest';
 import {getLensScenario} from '../../../src/computation-lenses/registry';
 import '../../../src/computation-lenses/scenarios/gpu-core/index';

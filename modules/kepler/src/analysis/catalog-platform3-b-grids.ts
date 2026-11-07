@@ -13,8 +13,8 @@ import {
   getGPUKernelDensityParameterValues,
   getGPUKrigingParameterValues,
   getGPULineDensityParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
 import {
   addCatalogDiagnostic,

@@ -9,11 +9,11 @@ import {projectionEngine} from '@math.gl/geospatial/projection';
  * and the small WGSL display kernels that turn contributor outputs into drawable rasters.
  */
 
-import type {GraphDataView, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GraphDataView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {LoadedDataset} from '../../data/catalog';
 import {decodeRasterImage, fetchBytes, getDataFileUrl} from '../../data/loaders';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {LocalMetricProjection} from '../../engine/projection';
 export {addFillDepthPass} from '../../../../spatial-analysis-shared/terrain-passes';

@@ -5,13 +5,13 @@
 import {isPolygonFootprintLayerType} from './cell-layer-types';
 import {assert, type CommandEncoder} from '@luma.gl/core';
 import type {GeoJSONTripGPUVectors, PreparedGeometryGPUVectors} from '@luma.gl/engine/arrow';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerArrowDataset, KeplerComputeSession} from '@luma-contributors/kepler';
 import {KeplerResidentStyleCache} from '@luma-contributors/kepler';
 import type {KeplerResidentStyle} from '@luma-contributors/kepler';
 import {getKeplerResidentStyleKey, type KeplerResidentStyleDomain} from '@luma-contributors/kepler';
 import type {KeplerMemoryReservation} from '@luma-contributors/kepler';
-import type {GPUVectorEvaluator} from '@luma-contributors/graph/gpu-simple-graph';
+import type {GPUVectorEvaluator} from '@luma.gl/graph/gpu-simple-graph';
 import {assertExactFloat32IntegerRange} from './integer-style-range';
 import {readNativeJenksThresholds} from './native-jenks-reader';
 import {computeJenksBreaksInWorker} from './native-jenks-worker-client';
@@ -291,7 +291,7 @@ export class NativeStyleRuntime {
           entry.widened.set(field.name, widenedEntry);
           const created = widenedEntry;
           // Lazy import keeps the gpgpu operation graph out of unrelated style module loads.
-          import('@luma-contributors/graph/gpu-simple-graph')
+          import('@luma.gl/graph/gpu-simple-graph')
             .then(async ({castData, GPUVectorEvaluator}) => {
               await assertExactFloat32IntegerRange(
                 this.props.session.device,

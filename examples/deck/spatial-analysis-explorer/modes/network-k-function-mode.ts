@@ -17,21 +17,21 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkReachability,
   GPU_NETWORK_REACHABILITY_NONE
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {
   GPUNetworkKFunction,
   getGPUNetworkKFunctionParameterValues,
   GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {
   GPUNetworkLineGraph,
   getGPUNetworkLineGraphParameterValues,
   GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import {createSeededRandom} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

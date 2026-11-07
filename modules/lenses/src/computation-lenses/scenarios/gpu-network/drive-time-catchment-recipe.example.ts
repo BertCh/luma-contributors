@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   addDriveTimeCatchmentRecipe,
   type GPUNetworkTopology
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: roads, facility and demand longitude/latitude, and ascending drive-time breaks. */
 export type DriveTimeCatchmentRecipeExampleInput = {

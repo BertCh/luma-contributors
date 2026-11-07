@@ -73,9 +73,9 @@ export const TERRAIN_HYDROLOGY_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/hydrology/gpu-terrain-flow.ts',
-      'modules/graph/src/gpu-terrain/hydrology/terrain-flow-passes.ts',
-      'modules/graph/src/gpu-terrain/hydrology/terrain-flow-spill-fill.ts'
+      'modules/analysis/src/gpu-terrain/hydrology/gpu-terrain-flow.ts',
+      'modules/analysis/src/gpu-terrain/hydrology/terrain-flow-passes.ts',
+      'modules/analysis/src/gpu-terrain/hydrology/terrain-flow-spill-fill.ts'
     ]
   },
   GPUTerrainHeightAboveDrainage: {
@@ -117,8 +117,8 @@ export const TERRAIN_HYDROLOGY_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/hydrology/gpu-terrain-height-above-drainage.ts',
-      'modules/graph/src/gpu-terrain/hydrology/terrain-flow-tracing.ts'
+      'modules/analysis/src/gpu-terrain/hydrology/gpu-terrain-height-above-drainage.ts',
+      'modules/analysis/src/gpu-terrain/hydrology/terrain-flow-tracing.ts'
     ]
   },
   GPUTerrainWatersheds: {
@@ -142,8 +142,8 @@ export const TERRAIN_HYDROLOGY_OPERATORS: RasterOperatorTable = {
         'Each cell follows its D8 receivers to a terminal cell by pointer jumping; the label is that fixpoint, with no closed form.'
     },
     sources: [
-      'modules/graph/src/gpu-terrain/hydrology/gpu-terrain-watersheds.ts',
-      'modules/graph/src/gpu-terrain/hydrology/terrain-flow-tracing.ts'
+      'modules/analysis/src/gpu-terrain/hydrology/gpu-terrain-watersheds.ts',
+      'modules/analysis/src/gpu-terrain/hydrology/terrain-flow-tracing.ts'
     ]
   },
   GPUTerrainStreamOrder: {
@@ -168,8 +168,8 @@ export const TERRAIN_HYDROLOGY_OPERATORS: RasterOperatorTable = {
         'Strahler order is evaluated by levels on the Euler tour of the stream forest (list ranking, then scatter, scan and gather per level), not by a closed form.'
     },
     sources: [
-      'modules/graph/src/gpu-terrain/hydrology/gpu-terrain-stream-order.ts',
-      'modules/graph/src/gpu-terrain/hydrology/terrain-flow-euler-tour.ts'
+      'modules/analysis/src/gpu-terrain/hydrology/gpu-terrain-stream-order.ts',
+      'modules/analysis/src/gpu-terrain/hydrology/terrain-flow-euler-tour.ts'
     ]
   },
   GPUTerrainHydrologicIndices: {
@@ -214,6 +214,6 @@ export const TERRAIN_HYDROLOGY_OPERATORS: RasterOperatorTable = {
         {id: 'minimumSlope', role: 'parameter', label: 's_min', binding: 'wgsl:minimumSlope'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/hydrology/gpu-terrain-hydrologic-indices.ts']
+    sources: ['modules/analysis/src/gpu-terrain/hydrology/gpu-terrain-hydrologic-indices.ts']
   }
 };

@@ -7,7 +7,7 @@ import {expect, it} from 'vitest';
 import {getLensScenario} from '../../../src/computation-lenses/registry';
 import '../../../src/computation-lenses/scenarios/gpu-spatial-analysis/point-process.lens';
 import '../../../src/computation-lenses/scenarios/gpu-network/point-process.lens';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 
 for (const [id, output, expected] of [
   ['gpu-spatial-analysis.inhomogeneous-point-pattern', 'k', [5 / 3.5, 2]],

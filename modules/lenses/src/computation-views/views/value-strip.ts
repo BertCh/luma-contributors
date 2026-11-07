@@ -4,7 +4,7 @@
 
 import {clamp} from '@math.gl/core';
 import {renderRasterImage} from '../encoding/raster-image';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 
 import {CARD_PALETTE_SOURCES} from '../encoding/card-tokens';
 import {getSelectionInk} from '../encoding/selection-ink';

@@ -5,7 +5,7 @@
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 import type {S2CaptureSpec} from './s2-lens-run';
-import type {GPUComputationKeySpace} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationKeySpace} from '@luma-contributors/analysis/computation-record';
 
 defineLensScenario({
   id: 'gpu-spatial-analysis.areal-interpolation',

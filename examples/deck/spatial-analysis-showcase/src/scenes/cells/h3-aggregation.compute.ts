@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 /**
  * Chicago observations keyed to discrete global grid cells on the GPU.
  *
@@ -26,12 +26,7 @@ import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spa
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUCellAggregation,
   GPUCellCompaction,
@@ -46,7 +41,7 @@ import {
   type GPUCellCoverContainment,
   type GPUCellIndexFamily,
   type GPUCellTopologyOperation
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

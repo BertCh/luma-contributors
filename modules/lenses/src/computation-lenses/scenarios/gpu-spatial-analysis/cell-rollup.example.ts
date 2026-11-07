@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUCellRollup, type GPUCellTable} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCellRollup, type GPUCellTable} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** The zoom-18 cell table of the places and the parent table capacity. */
 export type CellRollupExampleInput = {source: GPUCellTable; capacity: number};

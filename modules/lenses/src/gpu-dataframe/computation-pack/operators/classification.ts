@@ -44,8 +44,8 @@ export const CLASSIFICATION_OPERATORS: DataFrameFamilyOperators = {
       quantiles: {level: 'ratio', extent: 'intensive'}
     },
     sourceFiles: [
-      'modules/graph/src/gpu-dataframe/column-classification/column-quantiles-nodes.ts',
-      'modules/graph/src/gpu-dataframe/column-classification/order-statistic-wgsl.ts'
+      'modules/analysis/src/gpu-dataframe/column-classification/column-quantiles-nodes.ts',
+      'modules/analysis/src/gpu-dataframe/column-classification/order-statistic-wgsl.ts'
     ]
   },
   /**
@@ -103,8 +103,8 @@ export const CLASSIFICATION_OPERATORS: DataFrameFamilyOperators = {
     },
     metadata: {exactNaturalBreaksMaximumRowCount: 1024, naturalBreaksMode: 'approximate'},
     sourceFiles: [
-      'modules/graph/src/gpu-dataframe/column-classification/gpu-class-breaks.ts',
-      'modules/graph/src/gpu-dataframe/column-classification/exact-natural-breaks-nodes.ts'
+      'modules/analysis/src/gpu-dataframe/column-classification/gpu-class-breaks.ts',
+      'modules/analysis/src/gpu-dataframe/column-classification/exact-natural-breaks-nodes.ts'
     ]
   },
   /**
@@ -156,8 +156,8 @@ export const CLASSIFICATION_OPERATORS: DataFrameFamilyOperators = {
       colors: {level: 'nominal'}
     },
     sourceFiles: [
-      'modules/graph/src/gpu-dataframe/column-classification/gpu-color-scale.ts',
-      'modules/graph/src/gpu-dataframe/column-classification/color-scale-wgsl.ts'
+      'modules/analysis/src/gpu-dataframe/column-classification/gpu-color-scale.ts',
+      'modules/analysis/src/gpu-dataframe/column-classification/color-scale-wgsl.ts'
     ]
   },
   /**
@@ -196,8 +196,8 @@ export const CLASSIFICATION_OPERATORS: DataFrameFamilyOperators = {
       outputValues: {level: 'ratio'}
     },
     sourceFiles: [
-      'modules/graph/src/gpu-dataframe/column-classification/gpu-scalar-scale.ts',
-      'modules/graph/src/gpu-dataframe/column-classification/scalar-scale-wgsl.ts'
+      'modules/analysis/src/gpu-dataframe/column-classification/gpu-scalar-scale.ts',
+      'modules/analysis/src/gpu-dataframe/column-classification/scalar-scale-wgsl.ts'
     ]
   },
   /** Primary: joint class id; each axis uses bisect-right inner edges, clamped to end classes. */
@@ -230,7 +230,7 @@ export const CLASSIFICATION_OPERATORS: DataFrameFamilyOperators = {
       classIds: {level: 'nominal'}
     },
     sourceFiles: [
-      'modules/graph/src/gpu-dataframe/column-classification/gpu-bivariate-classification.ts'
+      'modules/analysis/src/gpu-dataframe/column-classification/gpu-bivariate-classification.ts'
     ]
   },
   /**
@@ -295,6 +295,6 @@ export const CLASSIFICATION_OPERATORS: DataFrameFamilyOperators = {
       counts: {level: 'ratio', extent: 'extensive'},
       histograms: {level: 'ratio', extent: 'extensive'}
     },
-    sourceFiles: ['modules/graph/src/gpu-dataframe/column-profile/column-profile-kernels.ts']
+    sourceFiles: ['modules/analysis/src/gpu-dataframe/column-profile/column-profile-kernels.ts']
   }
 };

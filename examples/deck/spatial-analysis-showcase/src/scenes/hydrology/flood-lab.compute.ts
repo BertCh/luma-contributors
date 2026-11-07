@@ -3,12 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {
-  GPU_COLUMN_PROFILE_STATISTIC,
-  GPU_COLUMN_PROFILE_STATISTIC_COUNT,
-  GPUColumnProfile
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT, GPUColumnProfile} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisRasterLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';

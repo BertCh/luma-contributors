@@ -7,7 +7,7 @@ import elevationDataset from '../../data/datasets/wildfire-california-dem.datase
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './wildfire-terrain.md?raw';
+import narrative from './wildfire-terrain.md?raw?raw';
 import type {WildfireTerrainOptions} from './wildfire-terrain.compute';
 
 export default defineScene<WildfireTerrainOptions>({
@@ -472,8 +472,8 @@ export default defineScene<WildfireTerrainOptions>({
   GPUDistanceField,
   GPUPolygonRasterization,
   GPURasterZonalStatistics
-} from '@luma-contributors/graph/gpu-raster';
-import {GPUTerrainDerivatives} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-raster';
+import {GPUTerrainDerivatives} from '@luma-contributors/analysis/gpu-terrain';
 
 // Polygons in raster space: x east from the grid edge, y south from its north edge (row order).
 graph.add(new GPUPolygonRasterization({

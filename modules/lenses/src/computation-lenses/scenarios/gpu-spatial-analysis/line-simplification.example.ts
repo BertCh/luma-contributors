@@ -9,11 +9,11 @@ import {
   type GraphDataView,
   GPUGather,
   GPUScan
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPULineSimplification,
   type GPULineGeometryFields
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded Chicago geometry and parameters for GPULineSimplification. */
 export type LineSimplificationExampleInput = {

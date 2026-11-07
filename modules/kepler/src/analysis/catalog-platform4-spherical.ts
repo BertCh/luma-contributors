@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUSphericalPolygonContains} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUSphericalPolygonContains} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {toRadians, vec3} from '@math.gl/core';
 import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
 import {

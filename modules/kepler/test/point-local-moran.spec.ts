@@ -4,7 +4,7 @@
 
 import {expect, test} from 'vitest';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerPointWeights, type KeplerPointWeightsBinding} from '../src/analysis/point-weights';
 import {addKeplerAnalysisRecipe} from '../src/analysis/recipe-bindings';
@@ -12,17 +12,17 @@ import type {
   KeplerAnalysisRecipe,
   KeplerPointWeightsSettings
 } from '../src/recipes/analysis-recipe';
-import {importGraphBuffer} from '../../graph/src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../analysis/src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
   readUint32,
   submitGraph
-} from '../../graph/test/utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
-import {computeLocalPermutationOracle} from '../../graph/test/gpu-spatial-analysis/permutation-inference/permutation-oracle';
-import {computeLocalMoranOracle} from '../../graph/test/gpu-spatial-analysis/spatial-autocorrelation/spatial-autocorrelation-oracle';
+} from '../../analysis/test/utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {computeLocalPermutationOracle} from '../../analysis/test/gpu-spatial-analysis/permutation-inference/permutation-oracle';
+import {computeLocalMoranOracle} from '../../analysis/test/gpu-spatial-analysis/spatial-autocorrelation/spatial-autocorrelation-oracle';
 
 test('point local Moran reuses fixed geographic weights, preserves primary outputs and matches CPU inference', async () => {
   const device = await getWebGPUTestDevice();

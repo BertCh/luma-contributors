@@ -341,13 +341,13 @@ export default defineScene<ChangeOfSupportOptions>({
     ];
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   getGPUPolygonRasterizationParameterValues, makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-raster';
 import {
   addChangeOfSupportRecipe, GPUGridGenerator, GPUPycnophylactic
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'change-of-support'});
 ${

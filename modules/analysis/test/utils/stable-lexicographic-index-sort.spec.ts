@@ -1,0 +1,138 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {expect, it} from 'vitest';
+import {importGraphBuffer} from '../../src/analysis-core/kernels/gpu-contributor-utils';
+import {createStableLexicographicIndexSortNodes} from '../../src/analysis-core/kernels/stable-lexicographic-index-sort';
+import {createWGSLKernelNode} from '../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  readUint32,
+  submitGraph
+} from './gpu-contributor-test-utils';
+import {requireTestDevice} from './require-test-device';
+
+it('stable lexicographic index sort preserves lower-order tuple components', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const primaryValues = new Uint32Array([1, 0, 1, 0, 1, 0, 2, 2]);
+  const secondaryValues = new Uint32Array([0, 1, 0, 1, 1, 0, 0, 0]);
+  const tertiaryValues = new Uint32Array([2, 3, 1, 1, 0, 9, 0, 0]);
+  const identityValues = new Uint32Array(primaryValues.length).map((_, index) => index);
+  const buffers = [
+    createInputBuffer(device, primaryValues),
+    createInputBuffer(device, secondaryValues),
+    createInputBuffer(device, tertiaryValues),
+    createInputBuffer(device, identityValues),
+    createOutputBuffer(device, primaryValues.length)
+  ];
+  const view = (name: string, buffer: (typeof buffers)[number]) =>
+    importGraphBuffer(graph, name, buffer, 'uint32', primaryValues.length);
+  const primary = view('primary', buffers[0]);
+  const secondary = view('secondary', buffers[1]);
+  const tertiary = view('tertiary', buffers[2]);
+  const identity = view('identity', buffers[3]);
+  const output = view('output', buffers[4]);
+  const sorted = createStableLexicographicIndexSortNodes(graph, {
+    id: 'tuple',
+    operation: 'TupleTest',
+    indices: identity,
+    keys: [{view: primary}, {view: secondary}, {view: tertiary}]
+  });
+  const nodeIds = sorted.nodes.map(node => node.id);
+  expect(nodeIds.filter(nodeId => nodeId.endsWith('-gather'))).toEqual([
+    'tuple-pass-0-gather',
+    'tuple-pass-1-gather',
+    'tuple-pass-2-gather'
+  ]);
+  expect(nodeIds.some(nodeId => nodeId.startsWith('tuple-pass-0-sort'))).toBe(true);
+  expect(nodeIds.some(nodeId => nodeId.startsWith('tuple-pass-1-sort'))).toBe(true);
+  expect(nodeIds.some(nodeId => nodeId.startsWith('tuple-pass-2-sort'))).toBe(true);
+  expect(sorted.sortedIndices.length).toBe(primaryValues.length);
+  expect(sorted.sortedPrimaryKeys.length).toBe(primaryValues.length);
+  graph.add([
+    ...sorted.nodes,
+    createWGSLKernelNode(graph, {
+      id: 'copy-result',
+      operation: 'TupleTest',
+      variant: 'copy',
+      bindings: [
+        {name: 'input', view: sorted.sortedIndices, type: 'u32', access: 'read'},
+        {name: 'output', view: output, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: primaryValues.length,
+      body: 'output[outputOffset + index] = input[inputOffset + index];'
+    })
+  ]);
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  expect(await readUint32(buffers[4], primaryValues.length)).toEqual([5, 3, 1, 2, 0, 4, 6, 7]);
+  compiled.destroy();
+  for (const buffer of buffers) buffer.destroy();
+});
+
+it('stable lexicographic index sort packs narrow adjacent keys into one pass', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const primaryValues = new Uint32Array([1, 0, 1, 0, 1, 0, 2, 2]);
+  const secondaryValues = new Uint32Array([0, 1, 0, 1, 1, 0, 0, 0]);
+  const tertiaryValues = new Uint32Array([2, 3, 1, 1, 0, 9, 0, 0]);
+  const identityValues = new Uint32Array(primaryValues.length).map((_, index) => index);
+  const buffers = [
+    createInputBuffer(device, primaryValues),
+    createInputBuffer(device, secondaryValues),
+    createInputBuffer(device, tertiaryValues),
+    createInputBuffer(device, identityValues),
+    createOutputBuffer(device, primaryValues.length),
+    createOutputBuffer(device, primaryValues.length)
+  ];
+  const view = (name: string, buffer: (typeof buffers)[number]) =>
+    importGraphBuffer(graph, name, buffer, 'uint32', primaryValues.length);
+  const output = view('output', buffers[4]);
+  const primaryOutput = view('primary-output', buffers[5]);
+  const sorted = createStableLexicographicIndexSortNodes(graph, {
+    id: 'packed',
+    operation: 'TupleTest',
+    indices: view('identity', buffers[3]),
+    keys: [
+      {view: view('primary', buffers[0]), keyBits: 2},
+      {view: view('secondary', buffers[1]), keyBits: 1},
+      {view: view('tertiary', buffers[2]), keyBits: 4}
+    ]
+  });
+  const nodeIds = sorted.nodes.map(node => node.id);
+  expect(nodeIds.filter(nodeId => nodeId.endsWith('-gather'))).toEqual([
+    'packed-pass-0-gather',
+    'packed-primary-gather'
+  ]);
+  expect(nodeIds.some(nodeId => nodeId.startsWith('packed-pass-1-sort'))).toBe(false);
+  graph.add([
+    ...sorted.nodes,
+    createWGSLKernelNode(graph, {
+      id: 'copy-result',
+      operation: 'TupleTest',
+      variant: 'copy',
+      bindings: [
+        {name: 'input', view: sorted.sortedIndices, type: 'u32', access: 'read'},
+        {name: 'primary', view: sorted.sortedPrimaryKeys, type: 'u32', access: 'read'},
+        {name: 'output', view: output, type: 'u32', access: 'read_write'},
+        {name: 'primaryOutput', view: primaryOutput, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: primaryValues.length,
+      body: `output[outputOffset + index] = input[inputOffset + index];
+  primaryOutput[primaryOutputOffset + index] = primary[primaryOffset + index];`
+    })
+  ]);
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  expect(await readUint32(buffers[4], primaryValues.length)).toEqual([5, 3, 1, 2, 0, 4, 6, 7]);
+  expect(await readUint32(buffers[5], primaryValues.length)).toEqual([0, 0, 0, 1, 1, 1, 2, 2]);
+  compiled.destroy();
+  for (const buffer of buffers) buffer.destroy();
+});

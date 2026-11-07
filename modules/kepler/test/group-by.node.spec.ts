@@ -3,18 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import {
-  GPUCommandGraph,
-  GraphVectorView,
-  createTransientView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GraphVectorView, createTransientView} from '@luma.gl/graph/gpu-core';
 import {
   addKeplerGroupBy,
   getKeplerGroupByMemoryEstimate,
   parseKeplerGroupBySettings,
   type KeplerGroupBySettings
 } from '../src/aggregation/kepler-group-by';
-import {createNullWebGPUDevice} from '../../graph/test/utils/gpu-contributor-test-utils';
+import {createNullWebGPUDevice} from '../../analysis/test/utils/gpu-contributor-test-utils';
 
 const settings: KeplerGroupBySettings = {
   keyColumn: 'category',

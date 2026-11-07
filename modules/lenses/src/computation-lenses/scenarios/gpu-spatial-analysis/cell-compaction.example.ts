@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCellCompaction} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCellCompaction} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Resolution-9 H3 cells, a mask that drops some of them, and the output capacity. */
 export type CellCompactionExampleInput = {

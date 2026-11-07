@@ -18,7 +18,7 @@ import {
   getGPUSkaterRegionsParameterValues,
   getGPUSpatialAutocorrelationParameterValues,
   type GPUSpatialWeights
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
 import type {CatalogGpuRunner} from './catalog-gpu-bindings';
 import {

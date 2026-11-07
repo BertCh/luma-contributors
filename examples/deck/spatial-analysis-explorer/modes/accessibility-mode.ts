@@ -24,11 +24,7 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_NETWORK_SNAPPING_NONE,
   GPUNetworkAccessibility,
@@ -36,7 +32,7 @@ import {
   GPUNetworkSnapping,
   getGPUNetworkAccessibilityParameterValues,
   type GPUNetworkAccessibilitySettings
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import {createSeededRandom} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

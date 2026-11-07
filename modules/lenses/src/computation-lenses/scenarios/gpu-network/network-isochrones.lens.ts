@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {getGPUNetworkIsochronesParameterValues} from '@luma-contributors/graph/gpu-network';
-import {createGPULocalFrame} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {getGPUNetworkIsochronesParameterValues} from '@luma-contributors/analysis/gpu-network';
+import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   describeNetworkElement,
   recordNetworkElement,

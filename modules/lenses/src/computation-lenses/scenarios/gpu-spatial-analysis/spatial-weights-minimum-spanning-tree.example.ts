@@ -8,13 +8,13 @@ import {
   GPUGather,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUContiguityWeights,
   GPUGeometryMeasures,
   GPUSpatialWeightsMinimumSpanningTree,
   type GPUContiguityWeightsProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded tracts and one poverty column; the caller owns the recording graph. */
 export type MinimumSpanningTreeInput = {

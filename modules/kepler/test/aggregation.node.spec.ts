@@ -7,7 +7,7 @@ import {getKeplerAggregationLayout} from '../src/aggregation';
 import {
   getGPUPointDensityD3HexagonCell,
   getGPUPointDensityHexagonCell
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import oracle from './fixtures/d3-hexbin-oracle.json';
 
 it('optional d3 hex assignment matches an independent d3-hexbin fixture including interior disagreements and ties', () => {

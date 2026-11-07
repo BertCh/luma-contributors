@@ -337,10 +337,10 @@ export default defineScene<MigrationFlywaysOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPULineDensity, GPUTrajectoryResample, GPUTrackSimilarity, getGPULineDensityParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // positions: longitude/latitude degrees of the ${state.species === 'all' ? 'tracks' : 'selected species'} cut to the ${state.season} window
 // 1. Line length and density per grid cell, measured as great-circle pieces

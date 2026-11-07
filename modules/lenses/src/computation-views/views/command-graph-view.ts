@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
-import type {GPUComputationEdgeKind} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationEdgeKind} from '@luma-contributors/analysis/computation-record';
 import type {
   LensReceiptTable,
   LensRecord,

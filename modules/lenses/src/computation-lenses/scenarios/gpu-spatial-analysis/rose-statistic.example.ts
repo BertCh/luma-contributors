@@ -7,11 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPURoseStatistic,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Street segment ends in local metres, the segment lengths and the planar context of the frame. */
 export type RoseStatisticExampleInput = {

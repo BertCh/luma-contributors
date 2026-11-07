@@ -7,9 +7,9 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import {GPUFocalStatistics} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {GPUFocalStatistics} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** An elevation raster, its shape and packed window settings; the caller owns the recording graph. */
 export type FocalStatisticsInput = {

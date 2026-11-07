@@ -270,7 +270,7 @@ export default defineScene<SatelliteGroundTracksOptions>({
 
   snippet: state => `import {
   GPULineDensity, GPUZoneEvents, getGPULineDensityParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // positions: float32x2 [longitude, latitude] degrees; tracks are cut at the antimeridian
 graph.add(new GPULineDensity({

@@ -4,12 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUPolygonRasterizationParameterValues,
-  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
-  GPUPolygonRasterization,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+import {getGPUPolygonRasterizationParameterValues, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH, GPUPolygonRasterization, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   addChangeOfSupportRecipe,
   getGPUGridGeneratorParameterValues,
@@ -19,12 +14,8 @@ import {
   GPUGridGenerator,
   GPUPycnophylactic,
   type GPUGridType
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

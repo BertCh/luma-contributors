@@ -8,11 +8,11 @@ import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkReachability,
   type GPUNetworkTopology
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs; structureOnly selects synchronous compilation without execution. */
 export type NetworkReachabilityExampleInput = {

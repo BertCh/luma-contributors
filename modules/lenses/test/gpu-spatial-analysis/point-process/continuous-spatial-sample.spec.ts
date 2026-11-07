@@ -3,12 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {GPUContinuousSpatialSample} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {importGraphBuffer} from '@luma-contributors/graph/testing';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {GPUContinuousSpatialSample} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {importGraphBuffer} from '@luma-contributors/analysis/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 
 function makeHarness(device: Device) {
   const graph = new GPUCommandGraph(device);

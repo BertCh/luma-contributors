@@ -42,9 +42,9 @@ export const RASTER_COST_DISTANCE_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/cost-distance/gpu-cost-distance.ts',
-      'modules/graph/src/gpu-raster/cost-distance/raster-relaxation.ts',
-      'modules/graph/src/gpu-raster/cost-distance/raster-grid-utils.ts'
+      'modules/analysis/src/gpu-raster/cost-distance/gpu-cost-distance.ts',
+      'modules/analysis/src/gpu-raster/cost-distance/raster-relaxation.ts',
+      'modules/analysis/src/gpu-raster/cost-distance/raster-grid-utils.ts'
     ]
   },
   GPUCostDistancePath: {
@@ -85,8 +85,8 @@ export const RASTER_COST_DISTANCE_OPERATORS: RasterOperatorTable = {
         'A bounded pointer chase follows D8 back-links from each target to a source; invalid, cyclic or unresolved walks report an empty path.'
     },
     sources: [
-      'modules/graph/src/gpu-raster/cost-distance/gpu-cost-distance-path.ts',
-      'modules/graph/src/gpu-raster/cost-distance/gpu-cost-distance.ts'
+      'modules/analysis/src/gpu-raster/cost-distance/gpu-cost-distance-path.ts',
+      'modules/analysis/src/gpu-raster/cost-distance/gpu-cost-distance.ts'
     ]
   },
   GPUDistanceField: {
@@ -115,8 +115,8 @@ export const RASTER_COST_DISTANCE_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/distance-field/gpu-distance-field.ts',
-      'modules/graph/src/gpu-raster/distance-field/distance-field-kernels.ts'
+      'modules/analysis/src/gpu-raster/distance-field/gpu-distance-field.ts',
+      'modules/analysis/src/gpu-raster/distance-field/distance-field-kernels.ts'
     ]
   }
 };

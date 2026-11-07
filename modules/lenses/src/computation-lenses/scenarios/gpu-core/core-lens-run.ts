@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, assert, type Device} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
+import {Kernel} from '@luma.gl/graph';
 import {
   captureGPUCommandGraph,
   createGPUComputationCaptures,
@@ -19,7 +19,7 @@ import {
   type GPUComputationRecordWithSidecars,
   type GPUComputationSeries,
   type GPUComputationFormulaRef
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   GPUCommandGraph,
   describeGPUGraphCompilation,
@@ -27,8 +27,8 @@ import {
   type GPUCommandGraphRecordingOptions,
   type GPUGraphCompilation,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUData, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+} from '@luma.gl/graph/gpu-core';
+import {GPUData, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {getDefaultViewPacks} from '../../../computation-views/registry/default-registry';
 import {assertValidLensRecord, assertValidLensSidecars} from '../../validate-lens-record';
 

@@ -4,8 +4,8 @@
 
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import {GPUData, GPUVector, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+import {Kernel} from '@luma.gl/graph';
+import {GPUData, GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   GPUCommandGraph,
   GPUMask,
@@ -13,7 +13,7 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView,
   type GraphVectorView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUColorScale,
   GPUColumnQuantiles,
@@ -22,7 +22,7 @@ import {
   getGPUColumnQuantilesParameterValues,
   getGPUScalarScaleParameterValues,
   prepareGPUScalarScaleControls
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {readGPUColumnStatistics} from '../exploration/gpu-column-statistics';
 import type {KeplerComputeSession, KeplerArrowDataset} from '../session/compute-session';
 import type {KeplerDatasetLease, KeplerMemoryReservation} from '../runtime/dataset-registry';

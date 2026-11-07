@@ -4,7 +4,7 @@
 
 import {existsSync, readFileSync} from 'node:fs';
 import {describe, expect, test} from 'vitest';
-import * as spatialAnalysis from '@luma-contributors/graph/gpu-spatial-analysis';
+import * as spatialAnalysis from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GEOMETRY_OPERATORS} from '../../../src/gpu-spatial-analysis/computation-pack/operators/geometry';
 import {SPATIAL_ANALYSIS_STAGES} from '../../../src/gpu-spatial-analysis/computation-pack/stages';
 import {SPATIAL_GUARDS} from '../../../src/gpu-spatial-analysis/computation-pack/guards';
@@ -38,7 +38,7 @@ const ELEMENTS = [
 
 type GeometryElement = (typeof ELEMENTS)[number];
 
-const SOURCE_ROOT = 'modules/graph/src/gpu-spatial-analysis';
+const SOURCE_ROOT = 'modules/analysis/src/gpu-spatial-analysis';
 const ELEMENT_KERNEL_SOURCES: Record<GeometryElement, string[]> = {
   GPUOutlineGeometry: [`${SOURCE_ROOT}/outline-geometry/gpu-outline-geometry.ts`],
   GPUOffsetCurve: [`${SOURCE_ROOT}/outline-geometry/gpu-offset-curve.ts`],
@@ -73,12 +73,12 @@ const ELEMENT_KERNEL_SOURCES: Record<GeometryElement, string[]> = {
   GPULineDensity: [
     `${SOURCE_ROOT}/line-density/line-density-kernels.ts`,
     `${SOURCE_ROOT}/geometry-measures/geodesic-wgsl.ts`,
-    'modules/graph/src/utils/sorted-segment-sums.ts'
+    'modules/analysis/src/utils/sorted-segment-sums.ts'
   ],
   GPULineLengthPerPolygon: [
     `${SOURCE_ROOT}/line-density/gpu-line-length-per-polygon.ts`,
     `${SOURCE_ROOT}/geometry-measures/geodesic-wgsl.ts`,
-    'modules/graph/src/utils/sorted-segment-sums.ts'
+    'modules/analysis/src/utils/sorted-segment-sums.ts'
   ],
   GPUGridGenerator: [`${SOURCE_ROOT}/grid-generators/gpu-grid-generator.ts`],
   GPUShapeGenerator: [`${SOURCE_ROOT}/grid-generators/gpu-shape-generator.ts`],

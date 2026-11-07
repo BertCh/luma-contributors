@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {fitVariogramModel, type VariogramModelType} from '@luma-contributors/graph/gpu-dataframe';
+import {
+  fitVariogramModel,
+  type VariogramModelType
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {toDegrees, toRadians} from '@math.gl/core';
 import {EARTH_RADIUS_METERS, getHaversineDistanceMeters} from './catalog-geodesy';
 

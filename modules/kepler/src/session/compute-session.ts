@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {CommandEncoder, Device} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   makeGPUAnalyticsTableFromArrowTable,
   makeGPUTimeVectorFromPreparedArrowColumn,
@@ -12,7 +12,7 @@ import {
   type GPUTimeVectorFromPreparedArrowColumn,
   type PreparedArrowAnalyticsTable,
   type PrepareArrowTableForGPUAnalyticsOptions
-} from '@luma-contributors/graph/arrow';
+} from '@luma.gl/graph/arrow';
 import type {Data, Table} from 'apache-arrow';
 import {
   makeAdoptedArrowAnalytics,

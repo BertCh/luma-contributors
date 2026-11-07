@@ -12,7 +12,7 @@
 import {
   getGPUPointDensityHexagonCell,
   getGPUPointDensityHexagonCenter
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {getQuantileBreaks} from '../../cartography/breaks';
 import type {FlowSource} from './b11-flow-sources';
 

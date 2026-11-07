@@ -7,8 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkCoarsening, type GPUNetworkTopology} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUNetworkCoarsening,
+  type GPUNetworkTopology
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: the roads (with node positions) and one dense zone label per intersection. */
 export type NetworkCoarseningExampleInput = {

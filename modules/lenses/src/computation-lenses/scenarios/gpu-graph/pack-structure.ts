@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationFormulaRef} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationFormulaRef} from '@luma-contributors/analysis/computation-record';
 import type {OperatorDescriptor, VariableKind} from '../../../computation-views/types';
 
 /** Operator, formula, variable-kind and capture-stage tables for the structure and path family. */

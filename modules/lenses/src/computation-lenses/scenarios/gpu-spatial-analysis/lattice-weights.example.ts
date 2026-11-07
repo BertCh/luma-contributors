@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert, Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPULatticeWeights,
   GPUSpatialWeightsSummary
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** A recording graph and the lattice shape; the caller owns the graph and its uploads. */
 export type LatticeWeightsInput = {graph: GPUCommandGraph; width: number; height: number};

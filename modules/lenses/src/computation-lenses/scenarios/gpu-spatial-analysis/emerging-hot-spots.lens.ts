@@ -17,7 +17,7 @@ defineLensScenario({
         import('./s2-lens-run'),
         import('./emerging-hot-spots.example'),
         import('./s1-clustering-support'),
-        import('@luma-contributors/graph/gpu-spatial-analysis')
+        import('@luma-contributors/analysis/gpu-spatial-analysis')
       ]);
     const points = await support.loadNaturePoints();
     const lattice = support.getNatureLattice(points);

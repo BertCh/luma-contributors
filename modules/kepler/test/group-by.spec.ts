@@ -4,18 +4,18 @@
 
 import {expect, test} from 'vitest';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, GraphVectorView} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerGroupBy, type KeplerGroupBySettings} from '../src/aggregation/kepler-group-by';
-import {importGraphBuffer} from '../../graph/src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../analysis/src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
   readUint32,
   submitGraph
-} from '../../graph/test/utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+} from '../../analysis/test/utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 test('native Group By preserves null groups, first occurrence, all-row counts and finite diagnostics across chunks', async () => {
   const device = await getWebGPUTestDevice();

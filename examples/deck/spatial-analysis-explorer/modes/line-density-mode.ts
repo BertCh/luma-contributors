@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   getGPUGridCellCount,
   getGPUGridGeneratorParameterValues,
@@ -15,7 +15,7 @@ import {
   GPU_GRID_GENERATOR_PARAMETER_LENGTH,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
   type GPUGridType
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getDatasetFrame,
   getFrameDisplayModelMatrix,

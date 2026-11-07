@@ -3,15 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUMask,
-  createTransientView,
-  type CompiledGPUCommandGraph,
-  type GraphDataView,
-  type GraphVectorView
-} from '@luma-contributors/graph/gpu-core';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUMask, createTransientView, type CompiledGPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {
   addKeplerPointWeights,
   assertKeplerStorageBindingFits,

@@ -11,7 +11,7 @@ import {
   AnalysisRuntime,
   type PointWeightsSettings
 } from '../../../examples/deck/kepler-compute/src/analysis-runtime';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 const pointSettings: PointWeightsSettings = {
   longitudeColumn: 'longitude',

@@ -22,11 +22,7 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {
-  GPUCommandGraph,
-  GPUHistogram,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUHistogram, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUPermutationParameterValues,
@@ -43,7 +39,7 @@ import {
   GPUPointInPolygonJoin,
   GPUSpatialEmpiricalBayesRates,
   type GPUInferenceAlternative
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {type SpatialAnalysisPolygons} from '../spatial-analysis-data';
 import {

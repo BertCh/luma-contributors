@@ -19,22 +19,16 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {CommandEncoder} from '@luma.gl/core';
-import {
-  createTransientView,
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUCOOToCSR,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, DrawCommandBuffer, GPUCommandGraph, GPUCOOToCSR, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_SPATIAL_JOIN_NO_FEATURE,
   GPUPointInPolygonJoin
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getGPUNetworkIsochronesParameterValues,
   GPUNetworkIsochrones,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

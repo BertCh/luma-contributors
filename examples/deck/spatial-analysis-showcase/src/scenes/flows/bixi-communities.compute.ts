@@ -4,14 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUGraphAlgorithmsData,
-  GPUGraphAlgorithmsLabelPropagation,
-  GPUGraphAlgorithmsModularity,
-  GPUGraphAlgorithmsModularityOptimization,
-  GPUGraphAlgorithmsTopology
-} from '@luma-contributors/graph/gpu-graph-algorithms';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUGraphAlgorithmsData, GPUGraphAlgorithmsLabelPropagation, GPUGraphAlgorithmsModularity, GPUGraphAlgorithmsModularityOptimization, GPUGraphAlgorithmsTopology} from '@luma.gl/graph/gpu-graph-algorithms';
 import {buildPolygonMesh} from '../../cartography/polygon-mesh';
 import {formatCount, formatPercent} from '../../cartography/live-text';
 import {haversineMeters} from '../../cartography/anchors';

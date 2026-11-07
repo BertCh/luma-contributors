@@ -3,14 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {GPUKeplerTimeUnit} from '@luma-contributors/kepler';
 import {makeResidentCalendarTimeView} from './resident-calendar-time';
 

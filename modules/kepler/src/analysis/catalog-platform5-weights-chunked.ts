@@ -9,7 +9,7 @@ import {
   GPUChunkedSpatialWeightsTransform,
   type GPUChunkedSpatialWeights,
   type GPUSpatialWeightsTransformOperation
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {CatalogGpuUnsupportedError, withCatalogGpuSession} from './catalog-gpu-session';
 import type {CatalogGpuSession} from './catalog-gpu-session';
 import type {

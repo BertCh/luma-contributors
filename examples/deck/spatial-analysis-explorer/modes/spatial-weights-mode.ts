@@ -57,13 +57,7 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUHistogram,
-  GPUReadbackRing,
-  GPUReduction,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUHistogram, GPUReadbackRing, GPUReduction, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUPermutationParameterValues,
@@ -89,7 +83,7 @@ import {
   type GPUNeighborhoodSummaryStatistic,
   type GPUNeighborSearchKernel,
   type GPUNeighborSearchWeightKind
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   SpatialAnalysisPointLayer,

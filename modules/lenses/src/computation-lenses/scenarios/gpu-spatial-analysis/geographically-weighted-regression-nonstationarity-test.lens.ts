@@ -26,7 +26,7 @@ registerRegressionLens({
     pCorrection: 'none'
   },
   async loadUploads() {
-    const spatial = await import('@luma-contributors/graph/gpu-spatial-analysis');
+    const spatial = await import('@luma-contributors/analysis/gpu-spatial-analysis');
     return {
       parameters: spatial.getGPUGeographicallyWeightedRegressionParameterValues(
         {kernel: 'bisquare', bandwidthMode: 'adaptive', bandwidths: [0, 0]},

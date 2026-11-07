@@ -7,8 +7,8 @@ import {
   createNullWebGPUDevice,
   getParsedKernelSources,
   getStorageBindingCount
-} from '@luma-contributors/graph/testing';
-import {auditWGSLModule} from '@luma-contributors/graph/test/analysis-core/kernel-audit/kernel-audit-wgsl';
+} from '@luma-contributors/analysis/testing';
+import {auditWGSLModule} from '@luma-contributors/analysis/test/analysis-core/kernel-audit/kernel-audit-wgsl';
 import {buildRemoteSensingScenario} from '../../../src/computation-lenses/scenarios/gpu-raster/remote-sensing-runner';
 import {REMOTE_SENSING_SCENARIOS} from '../../../src/computation-lenses/scenarios/gpu-raster/remote-sensing.scenarios';
 import {createCoverageTrancheOneHarness} from './coverage-tranche-one-harness';

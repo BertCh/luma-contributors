@@ -7,14 +7,14 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma.gl/graph/gpu-core';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUKernelDensityParameterValues,
   GPUKernelDensity,
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`. */
 export type KernelDensityExampleInput = {

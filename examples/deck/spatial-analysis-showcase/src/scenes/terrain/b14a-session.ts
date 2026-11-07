@@ -24,14 +24,9 @@ import {
   getGPUReliefShadingParameterValues,
   GPU_RELIEF_SHADING_PARAMETER_LENGTH,
   GPUReliefShading
-} from '@luma-contributors/graph/gpu-terrain';
-import type {GPUParameterBuffer} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 import {measureCompiledGraph} from '../../engine/vector-timing';

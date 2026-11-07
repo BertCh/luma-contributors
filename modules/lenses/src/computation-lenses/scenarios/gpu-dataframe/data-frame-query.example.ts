@@ -3,16 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPURecordBatch, GPUTable} from '@luma-contributors/graph/gpu-tables';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURecordBatch, GPUTable} from '@luma.gl/graph/gpu-tables';
 import {
   GPUDataFrame,
   and,
   column,
   parameter,
   type GPUDataFrameQueryParameters
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-dataframe';
 
 /** Typed source arrays, with an explicit mask for suppressed Census income estimates. */
 export type DataFrameQueryExampleInput = {

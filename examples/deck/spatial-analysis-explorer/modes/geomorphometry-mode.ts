@@ -26,11 +26,7 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUGeomorphonsParameterValues,
   getGPUTerrainCurvatureParameterValues,
@@ -51,9 +47,9 @@ import {
   type GPUTerrainCurvatureMethod,
   type GPUTerrainRuggednessAlgorithm,
   type GPUTerrainWeissStandardization
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {GraphSwap} from '../graph-swap';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {
   SpatialAnalysisModeDefinition,

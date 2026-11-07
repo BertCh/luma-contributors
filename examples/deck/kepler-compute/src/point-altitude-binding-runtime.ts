@@ -4,12 +4,8 @@
 
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUMask,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUMask, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {
   KeplerComputeSession,
   KeplerDatasetLease,

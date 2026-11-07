@@ -8,8 +8,8 @@ import {
   validateGPUComputationRecord,
   validateGPUComputationSidecars,
   type GPUComputationCapture
-} from '@luma-contributors/graph/computation-record';
-import * as captureModule from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
+import * as captureModule from '@luma-contributors/analysis/computation-record';
 import {afterEach, expect, test, vi} from 'vitest';
 import {getLensScenario} from '../../../src/computation-lenses/registry';
 import {buildDatumReceiptModel} from '../../../src/computation-views/views/datum-receipt';

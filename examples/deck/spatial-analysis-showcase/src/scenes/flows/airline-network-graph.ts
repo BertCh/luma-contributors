@@ -3,23 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GPUCommandGraphExecution
-} from '@luma-contributors/graph/gpu-core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUGraphAlgorithmsData,
-  GPUGraphAlgorithmsCoreNumber,
-  GPUGraphAlgorithmsDegree,
-  GPUGraphAlgorithmsLabelPropagation,
-  GPUGraphAlgorithmsModularity,
-  GPUGraphAlgorithmsModularityOptimization,
-  GPUGraphAlgorithmsPageRank,
-  GPUGraphAlgorithmsTopology,
-  type GPUGraphAlgorithmsAdjacency
-} from '@luma-contributors/graph/gpu-graph-algorithms';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GPUCommandGraphExecution} from '@luma.gl/graph/gpu-core';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUGraphAlgorithmsData, GPUGraphAlgorithmsCoreNumber, GPUGraphAlgorithmsDegree, GPUGraphAlgorithmsLabelPropagation, GPUGraphAlgorithmsModularity, GPUGraphAlgorithmsModularityOptimization, GPUGraphAlgorithmsPageRank, GPUGraphAlgorithmsTopology, type GPUGraphAlgorithmsAdjacency} from '@luma.gl/graph/gpu-graph-algorithms';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 
@@ -32,7 +18,7 @@ const OPTIMIZATION_NODES_PER_STEP = OPTIMIZATION_ROUNDS_PER_STEP * OPTIMIZATION_
 type ScalarFormat = 'uint32' | 'float32';
 
 /**
- * Creates the caller-owned `GPUVector`s that `@luma-contributors/graph/gpu-graph-algorithms` reads and writes, and
+ * Creates the caller-owned `GPUVector`s that `@luma-contributors/analysis/gpu-graph-algorithms` reads and writes, and
  * destroys them (vectors first, then their buffers). The contributors never allocate: every
  * output of every graph algorithm lives in a vector made here.
  */

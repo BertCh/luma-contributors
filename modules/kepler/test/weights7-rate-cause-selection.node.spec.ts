@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {NullDevice} from '@luma.gl/core/test-utils';
-import {createTransientView, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, test} from 'vitest';
 import {KEPLER_RATE_CAUSES, addKeplerRateCauseCounts} from '../src/analysis/rate-cause-counts';
 

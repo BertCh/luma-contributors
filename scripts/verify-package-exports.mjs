@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const SIDE_EFFECT_ENTRIES = new Set(['@luma-contributors/lenses/computation-lenses/scenarios/index']);
 const failures = [];
 let checked = 0;
-for (const moduleName of ['graph', 'lenses', 'kepler']) {
+for (const moduleName of ['analysis', 'lenses', 'kepler']) {
   const packageJson = JSON.parse(readFileSync(new URL(`../modules/${moduleName}/package.json`, import.meta.url), 'utf8'));
   for (const [key, target] of Object.entries(packageJson.exports)) {
     if (key.includes('*') || typeof target === 'string') continue;

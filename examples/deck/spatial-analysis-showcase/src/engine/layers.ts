@@ -12,7 +12,7 @@ import {
 } from '@deck.gl/core';
 import {Buffer, type Device, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
-import type {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
+import type {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import type {ClassTable} from '../cartography/types';
 import {evaluateZoomStops, type ZoomStops} from '../cartography/zoom';
 import type {AnalysisFrame} from './analysis-frame';

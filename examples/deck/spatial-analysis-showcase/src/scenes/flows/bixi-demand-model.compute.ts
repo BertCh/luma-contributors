@@ -7,9 +7,9 @@ import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import {
   GPUSpatialInteraction,
   type GPUSpatialInteractionProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';

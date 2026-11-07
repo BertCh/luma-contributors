@@ -298,11 +298,11 @@ export default defineScene<MigrationStopoversOptions>({
       : [])
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUTrajectoryMetrics, GPUSpatialClustering,
   getGPUTrajectoryMetricsParameterValues, getGPUSpatialClusteringParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {CLUSTER_PALETTE} from '../../../../spatial-analysis-shared/layer-constants';
 
 // positions: float32x2 longitude/latitude degrees (great-circle metric), also for the clustering.

@@ -6,7 +6,7 @@ import type {
   GPUComputationBinding,
   GPUComputationNode,
   GPUComputationSourceRef
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import type {LensRecord} from '../registry/view-registration';
 import {h, type ViewElementNode} from '../view-node';
 import {provenanceBadge} from '../encoding/provenance';

@@ -3,16 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  GPURasterEVI,
-  GPURasterNDVI,
-  GPURasterNBR,
-  GPURasterNDWI,
-  GPURasterSAVI,
-  GPURasterSpectralUnmixing,
-  type GPURasterBufferBand
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURasterEVI, GPURasterNBR, GPURasterNDWI, GPURasterSAVI, GPURasterSpectralUnmixing} from '@luma-contributors/analysis/raster-analysis';
+import {GPURasterNDVI, type GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {GraphSwap} from '../../engine/graph-swap';
@@ -22,7 +15,7 @@ import {fetchBytes} from '../../data/loaders';
 import type {SceneContext, SceneInstance} from '../scene';
 import {createGraphViewer, createUtmFrame, UtmRasterLayer} from './b16-common';
 import {makeDixieQuadrantIds, addDixieRegionalSupport} from './spectral-regions';
-import {getGPUChangeDetectionParameterValues} from '@luma-contributors/graph/gpu-raster';
+import {getGPUChangeDetectionParameterValues} from '@luma-contributors/analysis/raster-analysis';
 
 const DATASET_ID = 'dixie-spectral';
 const SOURCE_WIDTH = 250;

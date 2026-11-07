@@ -3,14 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {type GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  type GPURasterMetadata,
-  GPUParameterBuffer,
   GPURasterSampling,
   GPU_RASTER_SAMPLING_PARAMETER_LENGTH,
   getGPURasterSamplingParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 
 /** Graph, grid and caller-owned views for raster-sampling. */
 export type RasterSamplingExampleInput = {

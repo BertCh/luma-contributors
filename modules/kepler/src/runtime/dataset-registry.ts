@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {isOutOfMemoryError} from '@luma-contributors/graph';
+import {isOutOfMemoryError} from '@luma.gl/graph';
 
 export type KeplerMemoryKind = 'cpu' | 'gpu';
 

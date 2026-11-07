@@ -4,15 +4,15 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPULocalKriging,
   GPULocalRBF,
   GPUNestedInterpolationValidation,
   type GPUNestedInterpolationCandidate,
   type GPULocalRBFProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

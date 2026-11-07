@@ -3,31 +3,27 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test, vi} from 'vitest';
-import {hashGPUComputationText} from '@luma-contributors/graph/computation-record';
-import {GPUCommandGraph, createTransientView} from '@luma-contributors/graph/gpu-core';
-import {
-  and,
-  parameter,
-  type GPUDataFrameQueryParameters
-} from '@luma-contributors/graph/gpu-dataframe';
+import {hashGPUComputationText} from '@luma-contributors/analysis/computation-record';
+import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
+import {and, parameter, type GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
 import {
   createNullWebGPUDevice,
   createVectorView,
   getGPUCommandNodeKernelSources
-} from '@luma-contributors/graph/testing';
-import {addGPUQueryPredicatePass} from '@luma-contributors/graph/testing';
+} from '@luma-contributors/analysis/testing';
+import {addGPUQueryPredicatePass} from '@luma-contributors/analysis/testing';
 import {
   describeGPUDataFrameQueryIntent,
   describeGPUDataFrameQueryShaderPlan,
   createGPUDataFrameExpressionFormulas,
   type GPUDataFrameQueryDescriptionInput
-} from '@luma-contributors/graph/testing';
+} from '@luma-contributors/analysis/testing';
 import {listTexTerms} from '../../../src/computation-views/views/formula-tex';
-import {GPURecordBatch, GPUTable} from '@luma-contributors/graph/gpu-tables';
+import {GPURecordBatch, GPUTable} from '@luma.gl/graph/gpu-tables';
 import {Buffer} from '@luma.gl/core';
-import {GPUData} from '@luma-contributors/graph/gpu-data';
-import {GPUDataFrame, column, literal} from '@luma-contributors/graph/gpu-dataframe';
-import {makeGPUQueryExpressionShaderPlan} from '@luma-contributors/graph/testing';
+import {GPUData} from '@luma.gl/graph/gpu-data';
+import {GPUDataFrame, column, literal} from '@luma.gl/graph/gpu-dataframe';
+import {makeGPUQueryExpressionShaderPlan} from '@luma-contributors/analysis/testing';
 
 function createFixture() {
   const table = new GPUTable<{fare: 'float32'}>({

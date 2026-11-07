@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUGeographicDistribution} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUGeographicDistribution} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Number of vertices of the drawn ellipse ring. */
 export const GEOGRAPHIC_DISTRIBUTION_RING_VERTICES = 32;

@@ -6,7 +6,7 @@ import {CREDITS, joinCredits} from '../../cartography/credits';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './wildfire-shapes.md?raw';
+import narrative from './wildfire-shapes.md?raw?raw';
 import type {WildfireShapesOptions} from './wildfire-shapes.compute';
 
 const YEAR_COLORS = [
@@ -452,12 +452,12 @@ export default defineScene<WildfireShapesOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   getGPUShapeDescriptorsParameterValues,
   GPUGeometryMeasures,
   GPUShapeDescriptors
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One feature per fire: featureOffsets maps fires to polygon parts, polygonOffsets maps parts to rings,
 // ringOffsets maps rings to vertices. The first ring of each part is its shell, later rings are holes.

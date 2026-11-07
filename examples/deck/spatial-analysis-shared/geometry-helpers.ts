@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 
 /** Uniform bytes every storage-model layer owns (room for a palette and config). */
 export const STORAGE_MODEL_STYLE_BYTE_LENGTH = 160;

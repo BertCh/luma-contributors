@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGPUPointDensityHexagonCenter} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {getGPUPointDensityHexagonCenter} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {GPUKeplerAggregationLayout} from '@luma-contributors/kepler';
 import {worldToLngLat} from '@math.gl/web-mercator';
 

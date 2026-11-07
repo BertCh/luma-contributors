@@ -4,7 +4,7 @@
 
 import {useEffect, useId, useRef, useState} from 'react';
 import type * as arrow from 'apache-arrow';
-import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/graph/arrow';
+import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
 import {previewArrowSource, type ArrowSourcePreview} from './source-preview';
 
 export type SourcePreviewPanelProps = {

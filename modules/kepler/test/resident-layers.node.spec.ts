@@ -4,7 +4,7 @@
 
 import {describe, expect, test, vi} from 'vitest';
 import {LayerClasses} from '@kepler.gl/layers';
-import {GPUVector, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+import {GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {Buffer} from '@luma.gl/core';
 import type {PickingInfo} from '@deck.gl/core';
 import {GPUScatterplotLayer} from '@deck.gl-community/gpu-layers';

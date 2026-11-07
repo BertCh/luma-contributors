@@ -6,7 +6,7 @@ import {beforeEach, describe, expect, it, vi} from 'vitest';
 import * as arrow from 'apache-arrow';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import type {KeplerArrowDataset, KeplerComputeSession} from '../src/session/compute-session';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 
 const mocked = vi.hoisted(() => {
   vi.resetModules();

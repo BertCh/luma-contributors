@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPUGroupStatistics} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisPointLayer, type SpatialAnalysisColor} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {RampName} from '../../engine/ramps';

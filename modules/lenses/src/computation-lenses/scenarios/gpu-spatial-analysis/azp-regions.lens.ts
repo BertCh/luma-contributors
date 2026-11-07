@@ -20,7 +20,7 @@ defineLensScenario({
       import('./azp-regions.example'),
       import('./s1-regions-support'),
       import('./spatial-scenario-utils'),
-      import('@luma-contributors/graph/gpu-spatial-analysis'),
+      import('@luma-contributors/analysis/gpu-spatial-analysis'),
       import('../../../gpu-spatial-analysis/computation-pack/operators/statistics')
     ]);
     const tracts = await support.loadRegionTracts();

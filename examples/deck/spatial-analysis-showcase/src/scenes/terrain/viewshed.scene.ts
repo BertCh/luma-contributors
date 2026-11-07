@@ -565,8 +565,8 @@ export default defineScene<ViewshedOptions>({
   legends: getLegends,
 
   snippet:
-    state => `import {GPUCommandGraph, GPUHistogram} from '@luma-contributors/graph/gpu-core';
-import {GPURasterExtremaPyramid} from '@luma-contributors/graph/gpu-raster';
+    state => `import {GPUCommandGraph, GPUHistogram} from '@luma-contributors/analysis/gpu-core';
+import {GPURasterExtremaPyramid} from '@luma-contributors/analysis/gpu-raster';
 import {
   GPUTerrainViewshed,
   GPUTerrainLineOfSight,
@@ -574,7 +574,7 @@ import {
   getGPUTerrainViewshedParameterValues,
   getGPUTerrainViewshedToleranceParameterValues,
   getGPUTerrainCurvatureCoefficient
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 
 // The wide DEM averaged ${state.cellSize} x ${state.cellSize}; elevation is a float32 band with a validity mask.
 // grid: planar, cellSize = the ground size of the central row (Web Mercator pixel size * cos(latitude)).

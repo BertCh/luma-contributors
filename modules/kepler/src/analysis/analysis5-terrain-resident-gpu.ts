@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUElementwise} from '@luma-contributors/graph/gpu-core';
+import {GPUElementwise} from '@luma.gl/graph/gpu-core';
 import {CatalogGpuSession, CatalogGpuUnsupportedError} from './catalog-gpu-session';
 import {
   addTerrainGraph,

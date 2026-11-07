@@ -3,19 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {
-  getGPUTimeWindowFilterParameterValues,
-  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
-  GPUTimeWindowFilter
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUTrajectoryPlayheadParameterValues,
   GPUTrajectoryPlayhead,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
   GPURoseStatistic,
   GPU_ROSE_STATISTIC_SUMMARY_STRIDE
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {DrawCommandBuffer, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getClassBreaks,
   getClassCounts,

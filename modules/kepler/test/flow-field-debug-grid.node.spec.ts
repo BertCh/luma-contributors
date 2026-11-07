@@ -12,7 +12,7 @@ vi.mock('@deck.gl/layers', () => ({
     constructor(readonly props: Record<string, unknown>) {}
   }
 }));
-vi.mock('@luma-contributors/graph/experimental/simulation', () => ({}));
+vi.mock('@luma.gl/graph/experimental/simulation', () => ({}));
 
 const {
   FlowFieldDebugGridCache,

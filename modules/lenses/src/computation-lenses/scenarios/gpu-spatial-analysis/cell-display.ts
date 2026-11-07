@@ -10,7 +10,7 @@ import {
   GPUScan,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUCellAggregation,
   GPUCellGeometry,
@@ -19,7 +19,7 @@ import {
   GPUPointToCell,
   type GPUCellGeometryFamily,
   type GPUCellTable
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 import type {S3Uploads} from './s3-lens-run';
 

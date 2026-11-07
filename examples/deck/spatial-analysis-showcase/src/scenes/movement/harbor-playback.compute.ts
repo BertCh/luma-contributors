@@ -5,11 +5,7 @@
 import type {Layer} from '@deck.gl/core';
 import {safeMod, toDegrees} from '@math.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  getGPUTimeWindowFilterParameterValues,
-  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
-  GPUTimeWindowFilter
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUTrajectoryMetricsParameterValues,
   getGPUTrajectoryPlayheadParameterValues,
@@ -19,12 +15,8 @@ import {
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_STATUS
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {NYC, nearestPlaceLabel} from '../../cartography/gazetteer';
 import {formatCount, formatDistance, formatPercent, liveText} from '../../cartography/live-text';
 import {importGraphBuffer} from '../../engine/graph-buffers';

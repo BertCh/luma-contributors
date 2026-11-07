@@ -3,9 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPUHotSpotAnalysisRecipeProps} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUHotSpotAnalysisRecipeProps} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerComputeSession, KeplerMemoryReservation} from '@luma-contributors/kepler';
 
 /** Lazy caller-owned outputs that survive graph replacement and asynchronous inspection. */

@@ -30,7 +30,7 @@ defineLensScenario({
       import('./s3-lens-run'),
       import('./lon-lat-polygon-preparation.example'),
       import('./s3-lens-data').then(module => module.loadS3NewYorkHarborZones()),
-      import('@luma-contributors/graph/gpu-spatial-analysis')
+      import('@luma-contributors/analysis/gpu-spatial-analysis')
     ]);
     const ringCount = data.ringOffsets.length - 1;
     // Upper bound of the densified vertex count: each edge splits into at most

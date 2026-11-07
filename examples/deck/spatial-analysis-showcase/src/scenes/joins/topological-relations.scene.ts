@@ -337,7 +337,7 @@ export default defineScene<TopologicalOptions>({
   GPUSpatialPredicateJoin,
   packGPUSpatialRelatePattern,
   formatGPUSpatialRelate
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const prepared = new GPUSpatialJoinPrepared({geometry: ${right}});
 graph.add(prepared);                         // the right-hand BVH, built once

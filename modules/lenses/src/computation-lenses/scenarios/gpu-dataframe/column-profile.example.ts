@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_COLUMN_PROFILE_STATISTIC_COUNT,
   GPUColumnProfile
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 /** Tract columns the lens scenario reads from `f-chicago-tracts.json`; suppressed estimates are NaN. */
 export type ColumnProfileExampleInput = {

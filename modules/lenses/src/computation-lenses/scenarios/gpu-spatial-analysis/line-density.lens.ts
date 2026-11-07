@@ -26,7 +26,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoRoads())
       ]);
     const {getGPULineDensityParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     const {columns, rows, cellWidth, cellHeight, minX, minY} = GRID;
     // Total road length from the uploaded vertices (f64); the grid covers every vertex.

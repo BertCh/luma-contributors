@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPULocalDominanceParameterValues,
   getGPULocalDominanceShifts,
@@ -39,7 +39,7 @@ import {
   GPUTextureShading,
   type GPUReliefBlendLayerSettings,
   type GPUReliefShadingStop
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {getClassIndexOf} from '../../cartography/class-table';
 import {formatCount} from '../../cartography/live-text';
 import type {ClassTable, MapAnnotation} from '../../cartography/types';

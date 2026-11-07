@@ -4,18 +4,14 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUGroupStatistics} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPULineDensityParameterValues,
   GPULineDensity,
   GPUTrajectoryMetrics,
   GPU_LINE_DENSITY_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createAnalysisFrameProjection, projectLngLatToFrame} from '../../engine/analysis-frame';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {

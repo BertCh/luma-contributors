@@ -22,8 +22,8 @@ import {
   type GPUHotSpotAnalysisRecipeSettings,
   type GPUInferenceAlternative,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   CLASSIFICATION_METHOD_INFO,
   getClassBreaks,

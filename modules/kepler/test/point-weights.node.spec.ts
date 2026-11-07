@@ -4,7 +4,7 @@
 
 import {expect, test, vi} from 'vitest';
 import {NullDevice} from '@luma.gl/core/test-utils';
-import {createTransientView, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   parseKeplerAnalysisRecipe,
   parseKeplerPointWeightsSettings,

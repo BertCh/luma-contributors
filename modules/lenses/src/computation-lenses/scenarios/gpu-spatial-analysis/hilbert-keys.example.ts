@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUHilbertKeys} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUHilbertKeys} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Places uploaded by the lens scenario, in UTM 16N metres (plain coordinates, no metric). */
 export type HilbertKeysExampleInput = {places: GraphDataView<'float32x2'>};

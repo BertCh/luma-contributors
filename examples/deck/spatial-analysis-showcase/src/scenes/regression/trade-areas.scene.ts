@@ -317,7 +317,7 @@ export default defineScene<TradeAreasOptions>({
 
   snippet: state => `import {
   GPUNeighborSearch, GPUCatchmentAccessibility, GPUHuffTradeAreas, getGPUNeighborSearchParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // Weights of both directions: demand rows list facilities in reach, facility rows list demand.
 // Decay (${state.decay}) and radius (${state.bandwidth} m) live in a parameter buffer.

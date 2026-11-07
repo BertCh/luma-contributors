@@ -4,11 +4,7 @@
 
 import {PathLayer} from '@deck.gl/layers';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPU_GEOMETRY_VALIDITY_BIT,
   GPUGeometryValidity,
@@ -17,7 +13,7 @@ import {
   type GPUPolygonOverlayOperation,
   type GPUPolygonOverlayOutput,
   type GPUPolygonizeOutput
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';

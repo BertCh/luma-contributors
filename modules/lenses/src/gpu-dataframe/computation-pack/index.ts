@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationFormulaRef} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationFormulaRef} from '@luma-contributors/analysis/computation-record';
 import {registerDefaultViewPack} from '../../computation-views/registry/default-registry';
 import type {
   ViewPackData,

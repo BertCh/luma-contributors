@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {SpatialAnalysisRasterLayerProps} from './layers';
 import {toRadians} from '@math.gl/core';
 

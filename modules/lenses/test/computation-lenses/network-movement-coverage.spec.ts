@@ -4,7 +4,7 @@
 
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 import {runNetworkOptimizationCoverage} from '../../src/computation-lenses/scenarios/gpu-network/optimization-coverage.lens';
 import {runTrajectoryCoverage} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/trajectory-coverage.lens';
 

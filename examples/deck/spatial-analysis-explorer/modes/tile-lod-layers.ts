@@ -12,7 +12,7 @@ import {
 } from '@deck.gl/core';
 import {Buffer, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
-import type {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
+import type {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import {BLEND_PARAMETERS} from '../../spatial-analysis-shared/layer-constants';
 
 /** Vertices per tile instance: 6 for the translucent fill, then 4 edges of 6 vertices each. */

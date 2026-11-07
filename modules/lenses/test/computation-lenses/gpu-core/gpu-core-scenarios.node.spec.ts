@@ -5,7 +5,7 @@
 import {readFileSync, statSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {NullDevice} from '@luma.gl/core/test-utils';
-import {validateGPUComputationRecord} from '@luma-contributors/graph/computation-record';
+import {validateGPUComputationRecord} from '@luma-contributors/analysis/computation-record';
 import {expect, test, vi} from 'vitest';
 import {getLensScenario} from '../../../src/computation-lenses/registry';
 import {

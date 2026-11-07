@@ -5,11 +5,7 @@
 import {PathLayer, PolygonLayer, ScatterplotLayer} from '@deck.gl/layers';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   addBuildingAdjacencyRecipe,
   addBuildingTessellationRecipe,
@@ -22,7 +18,7 @@ import {
   getGPUBoundsFilterParameterValues,
   getGPUShapeDescriptorsParameterValues,
   type GPUPolygonOverlayOutput
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {GraphSwap} from '../../engine/graph-swap';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';

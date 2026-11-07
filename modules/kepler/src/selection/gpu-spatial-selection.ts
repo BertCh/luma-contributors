@@ -4,17 +4,17 @@
 
 import {readBufferUint32Scalar} from '../runtime/gpu-readback';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCrossfilterSelection} from '@luma-contributors/graph/gpu-crossfilter';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCrossfilterSelection} from '@luma.gl/graph/gpu-crossfilter';
 import {
   GPUPointInPolygonJoin,
   type GPUPointInPolygonBoundaryRule
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   prepareKeplerSpatialSelection,
   type KeplerSelectionCoordinateSpace,

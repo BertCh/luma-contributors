@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUParameterBuffer} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   addHotSpotAnalysisRecipe
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
 import {COORDINATE_SYSTEM_PARAMETER} from './catalog-binding-types';
 import {

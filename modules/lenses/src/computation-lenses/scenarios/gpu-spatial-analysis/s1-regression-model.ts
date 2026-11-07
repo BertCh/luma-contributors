@@ -6,16 +6,16 @@ import {assert, Buffer, type Device} from '@luma.gl/core';
 import type {
   GPUComputationAxes,
   GPUComputationKeySpace
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   createTransientView,
   GPUCommandGraph,
   type GPUCommandGraphEncodeOptions,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {createGPULocalFrame} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {SpatialOperatorEntry} from '../../../gpu-spatial-analysis/computation-pack/types';
-import {createWGSLKernelNode} from '@luma-contributors/graph';
+import {createWGSLKernelNode} from '@luma.gl/graph';
 import {loadChicagoTracts, type ChicagoTracts} from './spatial-lens-data';
 import {
   runSpatialScenario,

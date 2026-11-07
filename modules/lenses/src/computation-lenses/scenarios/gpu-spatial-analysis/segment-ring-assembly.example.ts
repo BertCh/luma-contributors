@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUSegmentRingAssembly} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUSegmentRingAssembly} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Directed boundary segments (x0, y0, x1, y1) in UTM 16N metres, and the ring capacity. */
 export type SegmentRingAssemblyExampleInput = {

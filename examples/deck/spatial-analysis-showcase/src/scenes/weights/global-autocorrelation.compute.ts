@@ -4,15 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  getGPUSpatialCorrelogramParameterValues,
-  GPU_SPATIAL_CORRELOGRAM_NO_BAND,
-  GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
-  GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH,
-  GPUSpatialCorrelogram,
-  type GPUSpatialCorrelogramBandMode,
-  type GPUSpatialCorrelogramVarianceAssumption
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUSpatialCorrelogramParameterValues, GPU_SPATIAL_CORRELOGRAM_NO_BAND, GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH, GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH, GPUSpatialCorrelogram, type GPUSpatialCorrelogramBandMode, type GPUSpatialCorrelogramVarianceAssumption} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUPermutationParameterValues,
   GPU_GLOBAL_JOIN_COUNT_FIELD,
@@ -27,8 +19,8 @@ import {
   type GPUGlobalPermutationStatistic,
   type GPUInferenceAlternative,
   type GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassBreaks, getClassCounts, getExtent} from '../../cartography/breaks';
 import {getClassIndexOf, getClassTableLayerProps} from '../../cartography/class-table';
 import {CHICAGO, labelsFor} from '../../cartography/gazetteer';

@@ -4,13 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUCalendarBucketsParameterValues,
-  getGPUTemporalReductionParameterValues,
-  GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH,
-  GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
-  GPUTemporalReduction
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUCalendarBucketsParameterValues, getGPUTemporalReductionParameterValues, GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH, GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH, GPUTemporalReduction} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addSpaceTimeHotSpotsRecipe,
   type GPUInferenceMetadata,
@@ -22,9 +16,9 @@ import {
   GPUNeighborSearch,
   type GPUSpaceTimeHotSpotsRecipeSettings,
   type GPUSpatialWeightsOutput
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {createPlaybackClock} from '../../engine/playback';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../../engine/layers';

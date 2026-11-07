@@ -4,21 +4,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUCompaction,
-  GPUElementwise,
-  GPUGather,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUPointCloudOctree,
-  GPUPointCloudRadiusFilter,
-  GPUPointCloudSMRF,
-  GPUPointCloudVoxelDownsample,
-  GPUPointCloudVoxelMerge
-} from '@luma-contributors/graph/gpu-pointcloud';
+import {DrawCommandBuffer, GPUCommandGraph, GPUCompaction, GPUElementwise, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUPointCloudOctree, GPUPointCloudRadiusFilter, GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
+import {GPUPointCloudSMRF, GPUPointCloudVoxelMerge} from '@luma-contributors/analysis/pointcloud-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';

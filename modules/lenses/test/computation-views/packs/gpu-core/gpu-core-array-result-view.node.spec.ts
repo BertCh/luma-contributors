@@ -7,7 +7,7 @@ import {renderGPUCoreArrayResult} from '../../../../src/computation-views/packs/
 import {getArrayCellBounds} from '../../../../src/computation-views/packs/gpu-core/array-strip-render';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {describe, expect, test} from 'vitest';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {toRecordedLensFile} from '../../../../src/computation-lenses/registry';
 import {
   GPU_CORE_ARRAY_RESULT_VIEW,

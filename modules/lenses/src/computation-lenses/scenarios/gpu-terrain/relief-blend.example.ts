@@ -3,15 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   GPUParameterBuffer,
   GPUReliefBlend,
   getGPUReliefBlendParameterValues,
   GPU_RELIEF_BLEND_LAYER_PARAMETER_LENGTH,
   GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 
 /** Graph, grid and the two layer views (computed by earlier nodes of the graph) plus the output. */
 export type ReliefBlendExampleInput = {

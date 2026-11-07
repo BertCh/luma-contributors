@@ -7,11 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPULineDensity,
   type GPULineGeometryFields
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Roads in UTM 16N metres (planar) and the grid uploaded by the lens scenario. */
 export type LineDensityExampleInput = {

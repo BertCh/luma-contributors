@@ -2,7 +2,7 @@
   "files": [],
   "references": [
     {
-      "path": "./modules/graph"
+      "path": "./modules/analysis"
     },
     {
       "path": "./modules/lenses"

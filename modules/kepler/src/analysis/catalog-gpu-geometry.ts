@@ -55,7 +55,7 @@ import {
   type GPUPolygonOverlayOperation,
   type GPUPolygonOverlayOutput,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 type FeatureKind = 'polygon' | 'line' | 'point' | 'none';
 

@@ -12,8 +12,8 @@ import {
 } from '@deck.gl/core';
 import {Buffer, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
-import type {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
-import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
+import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {BLEND_PARAMETERS} from '../../spatial-analysis-shared/layer-constants';
 
 /** Segments each arc is tessellated into. The indirect draw record uses `ARC_SEGMENTS * 6` vertices. */

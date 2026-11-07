@@ -14,7 +14,7 @@ import {
   GPUEmpiricalBayesRates,
   GPUMultipleTestingAdjustment,
   GPU_EMPIRICAL_BAYES_SUMMARY
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {addCatalogDiagnostic, type CatalogCoordinateSystem} from './catalog-geojson';
 import {finishGrid, requireValueProperty} from './catalog-platform3-b-bindings';
 import {

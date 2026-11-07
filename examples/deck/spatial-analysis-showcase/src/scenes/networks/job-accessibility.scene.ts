@@ -409,13 +409,13 @@ export default defineScene<JobAccessibilityOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUNetworkSnapping,
   GPUNetworkCostMatrix,
   GPUNetworkAccessibility,
   getGPUNetworkAccessibilityParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 // Graph 1: encoded only when the network or the opportunities change.
 const matrixGraph = new GPUCommandGraph(device, {id: 'access-matrix'});

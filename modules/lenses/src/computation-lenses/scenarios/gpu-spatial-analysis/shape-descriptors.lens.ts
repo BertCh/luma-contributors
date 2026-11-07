@@ -25,7 +25,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoParks())
       ]);
     const {getGPUShapeDescriptorsParameterValues, GPU_SHAPE_DESCRIPTORS_DEFAULT_SLIVER_THRESHOLD} =
-      await import('@luma-contributors/graph/gpu-spatial-analysis');
+      await import('@luma-contributors/analysis/gpu-spatial-analysis');
     // The park dataset has exactly one ring per park, so the drawn paths are the parks.
     assert(data.ringOffsets.length - 1 === data.featureCount);
     return {

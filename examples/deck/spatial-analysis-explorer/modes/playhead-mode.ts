@@ -4,19 +4,14 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUTrajectoryPlayheadParameterValues,
   GPUTrajectoryPlayhead,
   GPUTrajectoryResample,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_STATUS
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {
   SpatialAnalysisModeDefinition,

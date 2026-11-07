@@ -6,7 +6,7 @@ import {Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import proj4 from 'proj4';
 import {expect, it} from 'vitest';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {normalizeProjectionLabel} from '../../../examples/deck/kepler-compute/src/resident-spatial-join-crs';
 import {
   ResidentSpatialJoinPointReprojector,

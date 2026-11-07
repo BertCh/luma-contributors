@@ -12,17 +12,13 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUEdgeBundling,
   getGPUEdgeBundlingParameterValues,
   GPU_EDGE_BUNDLING_DEFAULTS,
   type GPUEdgeBundlingSettings
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import type {
   SpatialAnalysisModeDefinition,

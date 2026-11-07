@@ -4,13 +4,9 @@
 // biome-ignore-all format: the shown example is hand-formatted to fit the 25-line card limit
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  getGPUCompositeScoreParameterValues,
-  GPUCompositeScore,
-  GPUParameterBuffer,
-  GPU_COMPOSITE_SCORE_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-dataframe';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {getGPUCompositeScoreParameterValues, GPUCompositeScore, GPU_COMPOSITE_SCORE_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Tract rates the lens scenario reads from `f-chicago-tracts.json`; suppressed estimates are NaN. */
 export type CompositeScoreExampleInput = {

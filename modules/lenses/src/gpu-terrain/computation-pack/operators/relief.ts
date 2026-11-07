@@ -43,8 +43,8 @@ export const TERRAIN_RELIEF_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/relief-visualization/gpu-simple-local-relief.ts',
-      'modules/graph/src/gpu-terrain/relief-visualization/relief-visualization-utils.ts'
+      'modules/analysis/src/gpu-terrain/relief-visualization/gpu-simple-local-relief.ts',
+      'modules/analysis/src/gpu-terrain/relief-visualization/relief-visualization-utils.ts'
     ]
   },
   GPUMultiScaleRelief: {
@@ -84,8 +84,8 @@ export const TERRAIN_RELIEF_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/relief-visualization/gpu-multi-scale-relief.ts',
-      'modules/graph/src/gpu-terrain/relief-visualization/relief-visualization-utils.ts'
+      'modules/analysis/src/gpu-terrain/relief-visualization/gpu-multi-scale-relief.ts',
+      'modules/analysis/src/gpu-terrain/relief-visualization/relief-visualization-utils.ts'
     ]
   },
   GPULocalDominance: {
@@ -124,7 +124,7 @@ export const TERRAIN_RELIEF_OPERATORS: RasterOperatorTable = {
         }
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/relief-visualization/gpu-local-dominance.ts']
+    sources: ['modules/analysis/src/gpu-terrain/relief-visualization/gpu-local-dominance.ts']
   },
   GPUReliefBlend: {
     family: 'relief',
@@ -172,6 +172,6 @@ export const TERRAIN_RELIEF_OPERATORS: RasterOperatorTable = {
         {id: 'maximum', role: 'parameter', label: 'stretch maximum', binding: 'wgsl:maximum'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/relief-visualization/gpu-relief-blend.ts']
+    sources: ['modules/analysis/src/gpu-terrain/relief-visualization/gpu-relief-blend.ts']
   }
 };

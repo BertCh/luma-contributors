@@ -7,8 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkLineGraph, type GPUNetworkTopology} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUNetworkLineGraph,
+  type GPUNetworkTopology
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: roads with node positions, packed turn costs and the arc capacity bound. */
 export type NetworkLineGraphExampleInput = {

@@ -8,8 +8,8 @@ import {
   GPUNetworkCostMatrix,
   GPUNetworkInhomogeneousK,
   GPUNetworkKernelDensity
-} from '@luma-contributors/graph/gpu-network';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-network';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {GraphSwap} from '../../engine/graph-swap';

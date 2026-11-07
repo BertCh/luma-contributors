@@ -4,7 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_TERRAIN_CRITICAL_POINT,
   GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT,
@@ -12,7 +12,7 @@ import {
   GPU_TERRAIN_SUMMITS_PARAMETER_LENGTH,
   getGPUTerrainPeakSnapParameterValues,
   getGPUTerrainSummitsParameterValues
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {formatCount, liveText} from '../../cartography/live-text';
 import type {LngLat, MapAnnotation} from '../../cartography/types';
 import {

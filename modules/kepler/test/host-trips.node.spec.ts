@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createNullWebGPUDevice} from '../../graph/test/utils/gpu-contributor-test-utils';
+import {createNullWebGPUDevice} from '../../analysis/test/utils/gpu-contributor-test-utils';
 import {expect, test, vi} from 'vitest';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {TripRuntime} from '../../../examples/deck/kepler-compute/src/trip-runtime';

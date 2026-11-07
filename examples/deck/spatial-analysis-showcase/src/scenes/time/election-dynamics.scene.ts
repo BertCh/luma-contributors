@@ -417,11 +417,11 @@ export default defineScene<ElectionDynamicsOptions>({
 
   snippet: state => `import {
   getGPUClassBreaksParameterValues, GPUClassBreaks
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/gpu-dataframe';
 import {
   getGPUSpatialAutocorrelationParameterValues,
   GPUClassAssignment, GPULISAMarkov, GPURankMarkov, GPUSpatialMarkov, GPUTransitionMatrix
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // values: rows * periods float32, period-major; weights: queen CSR {offsets, neighbors, weights}
 graph.add(new GPUClassBreaks({values, mask: pooledMask, parameters: breaksParameters,

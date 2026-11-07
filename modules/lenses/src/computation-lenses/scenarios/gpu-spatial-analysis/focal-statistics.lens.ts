@@ -21,7 +21,7 @@ defineLensScenario({
     const [{runExample}, utilities, spatial, {STATISTICS_OPERATORS}, data] = await Promise.all([
       import('./focal-statistics.example'),
       import('./spatial-scenario-utils'),
-      import('@luma-contributors/graph/gpu-spatial-analysis'),
+      import('@luma-contributors/analysis/gpu-spatial-analysis'),
       import('../../../gpu-spatial-analysis/computation-pack/operators/statistics'),
       import('../../data/s1-dixie-lattice.json').then(module => module.default)
     ]);

@@ -5,7 +5,7 @@
 import {readFileSync} from 'node:fs';
 import * as arrow from 'apache-arrow';
 import {expect, test, vi} from 'vitest';
-import {prepareArrowTableForGPUAnalytics} from '@luma-contributors/graph/arrow';
+import {prepareArrowTableForGPUAnalytics} from '@luma.gl/graph/arrow';
 import {NullDevice} from '@luma.gl/core/test-utils';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {

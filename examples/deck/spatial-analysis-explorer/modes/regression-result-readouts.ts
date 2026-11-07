@@ -9,7 +9,7 @@
  * instead of per-estimator summary slots.
  */
 
-import type {GPURegressionModelResult} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPURegressionModelResult} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 type ReadoutControls = {
   addReadout(label: string, value?: string): {setValue: (value: string) => void};

@@ -3,16 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUHistogram,
-  getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {TIME_WORDS_WGSL, getInt64TimeWords} from '@luma-contributors/graph/gpu-dataframe';
+import {Kernel} from '@luma.gl/graph';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUHistogram, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {TIME_WORDS_WGSL, getInt64TimeWords} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   convertKeplerTimeInstant,
   type KeplerArrowDataset,

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {CommandEncoder} from '@luma.gl/core';
-import type {PreparedArrowAnalyticsTimeColumn} from '@luma-contributors/graph/arrow';
+import type {PreparedArrowAnalyticsTimeColumn} from '@luma.gl/graph/arrow';
 import {
   GPUKeplerTimeSelection,
   convertKeplerTimeInstant,

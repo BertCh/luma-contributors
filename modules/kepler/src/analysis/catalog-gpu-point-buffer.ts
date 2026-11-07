@@ -5,7 +5,7 @@
 import {
   GPUPointBuffer,
   getGPUPointBufferParameterValues
-} from '@luma-contributors/graph/gpu-geometry';
+} from '@luma-contributors/analysis/geospatial-analysis';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
 import {
   EARTH_RADIUS_METERS,

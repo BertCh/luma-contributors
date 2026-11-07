@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUParameterBuffer,
   GPUProfilePeaks,
   getGPUProfilePeaksParameterValues,
   GPU_PROFILE_PEAKS_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 
 /** Graph and caller-owned views the example wires together. */
 export type ProfilePeaksExampleInput = {

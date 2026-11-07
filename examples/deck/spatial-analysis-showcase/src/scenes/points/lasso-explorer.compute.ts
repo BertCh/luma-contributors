@@ -12,15 +12,8 @@ import {
   GPURegionStatisticsReadback,
   type GPURegionSelection,
   type GPURegionStatisticsResult
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUGridIndex,
-  type CompiledGPUCommandGraph,
-  type GPUGridIndexView,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph, GPUGridIndex, type CompiledGPUCommandGraph, type GPUGridIndexView, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {CHICAGO, nearestPlaceLabel} from '../../cartography/gazetteer';
 import {getPolygonLabelPoint} from '../../cartography/anchors';
 import {hexToRgba, MAP_INK} from '../../cartography/hue-registry';

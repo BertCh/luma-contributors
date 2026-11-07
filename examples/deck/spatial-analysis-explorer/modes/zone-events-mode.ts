@@ -14,14 +14,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {CommandEncoder} from '@luma.gl/core';
-import {
-  createTransientView,
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {GPUGroupStatistics} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUZoneEvents} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {createTransientView, DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUZoneEvents} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {createSeededRandom} from '../spatial-analysis-data';

@@ -24,17 +24,17 @@ import {runExample as runAddInterpolationDiagnosticsRecipe} from './interpolatio
 import {runExample as runAddDrainageNetworkRecipe} from './drainage-network-recipe.example';
 import {runExample as runAddLocalVariabilityRecipe} from './local-variability-recipe.example';
 import {runExample as runAddCellFlowTopologyRecipe} from './cell-flow-topology-recipe.example';
-import {type GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import {getGPUChangeDetectionParameterValues} from '@luma-contributors/graph/gpu-raster';
-import {getGPUTerrainFlowParameterValues} from '@luma-contributors/graph/gpu-terrain';
+import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {getGPUChangeDetectionParameterValues} from '@luma-contributors/analysis/raster-analysis';
+import {getGPUTerrainFlowParameterValues} from '@luma-contributors/analysis/gpu-terrain';
 import {
   getGPUKrigingParameterValues,
   getGPUPermutationParameterValues,
   getGPUSpatialAutocorrelationParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {createWGSLKernelNode} from '@luma-contributors/graph';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createWGSLKernelNode} from '@luma.gl/graph';
 import {type S2Uploads, type S2CaptureSpec} from './s2-lens-run';
 const reference = {
   zones: [0, 0, 0, 1, 1, 1, 2, 2],

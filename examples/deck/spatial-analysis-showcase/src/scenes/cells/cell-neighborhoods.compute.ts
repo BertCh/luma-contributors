@@ -6,13 +6,13 @@ import {PathLayer, PolygonLayer, ScatterplotLayer, TextLayer} from '@deck.gl/lay
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {cellToBoundary, cellToLatLng} from 'h3-js';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUCellGridPath,
   GPUCellMeasures,
   GPUH3CellIdentities,
   GPUPointToCell
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GraphSwap} from '../../engine/graph-swap';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisResources} from '../../engine/resources';

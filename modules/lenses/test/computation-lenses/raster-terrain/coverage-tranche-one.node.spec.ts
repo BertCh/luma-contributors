@@ -7,7 +7,7 @@ import {
   createNullWebGPUDevice,
   getParsedKernelSources,
   getStorageBindingCount
-} from '@luma-contributors/graph/testing';
+} from '@luma-contributors/analysis/testing';
 import {buildCoverageTrancheOneScenario} from '../../../src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-runner';
 import {COVERAGE_TRANCHE_ONE_SCENARIOS} from '../../../src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one.scenarios';
 import {createCoverageTrancheOneHarness} from './coverage-tranche-one-harness';

@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPURegionStatistics} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPURegionStatistics} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Number of histogram bins in the summary. */
 export const REGION_STATISTICS_BIN_COUNT = 8;

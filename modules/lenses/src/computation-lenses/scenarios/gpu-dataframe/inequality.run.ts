@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {
   GPU_INEQUALITY_DEFAULT_PALMA_BOTTOM_SHARE,
   GPU_INEQUALITY_DEFAULT_PALMA_TOP_SHARE
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './inequality.example';
 import {
   createDataFrameChoice,

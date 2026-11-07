@@ -3,19 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  GPURasterRegistration,
-  GPURasterReprojection,
-  type GPURasterBufferBand,
-  type GPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
-import {
-  compileProjectionProgram,
-  evaluateProjectionPlan,
-  GPUProjectionProgram
-} from '@luma-contributors/graph/gpu-project';
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURasterRegistration, GPURasterReprojection} from '@luma-contributors/analysis/raster-analysis';
+import {type GPURasterBufferBand, type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {compileProjectionProgram, evaluateProjectionPlan, GPUProjectionProgram} from '@luma.gl/graph/gpu-project';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {addKernelPass} from '../../engine/mode-kernels';

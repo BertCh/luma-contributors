@@ -612,12 +612,12 @@ export default defineScene<UsShippingOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUTrajectoryPlayhead, GPULineDensity, GPUZoneEvents,
   getGPUTrajectoryPlayheadParameterValues, getGPULineDensityParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
 
 // Playhead: longitude/latitude with great-circle bearings and ground speeds.
 // Gates: AEQD meters; density: longitude/latitude with great-circle lengths.

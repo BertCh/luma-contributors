@@ -7,7 +7,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView,
   type GraphBufferHandle
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 
 /** Uploaded station states and rainfall with the caller-owned per-state destinations. */
 export type GroupAggregationExampleInput = {

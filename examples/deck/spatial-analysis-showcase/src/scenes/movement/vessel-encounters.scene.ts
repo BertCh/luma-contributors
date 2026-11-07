@@ -311,11 +311,11 @@ export default defineScene<VesselEncountersOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   addClockEncounters, GPUTrackSimilarity, GPUTrajectoryResample,
   getGPUTrajectoryClockParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // Whole routes as 64 arc-length samples, once (input of the similarity measures)
 routeGraph.add(new GPUTrajectoryResample({

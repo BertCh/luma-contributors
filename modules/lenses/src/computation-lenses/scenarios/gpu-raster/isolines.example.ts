@@ -3,15 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {type GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   type GPUIsolinesPolylineOutput,
-  type GPURasterMetadata,
   GPUIsolines,
-  GPUParameterBuffer,
   GPU_ISOLINES_PARAMETER_LENGTH,
   getGPUIsolinesParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
+import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Graph, grid and caller-owned views for isolines. */
 export type IsolinesExampleInput = {

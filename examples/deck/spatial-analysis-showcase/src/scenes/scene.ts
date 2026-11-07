@@ -4,7 +4,7 @@
 
 import type {Layer, Viewport} from '@deck.gl/core';
 import type {Device} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {LoadedDataset} from '../data/catalog';
 import type {RampName} from '../engine/ramps';
 import type {SceneFrame, ScenePointerEvent, ViewState} from '../engine/types';

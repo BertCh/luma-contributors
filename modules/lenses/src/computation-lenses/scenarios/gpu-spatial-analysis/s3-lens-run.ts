@@ -7,7 +7,7 @@ import type {
   GPUComputationAttributeValue,
   GPUComputationCapture,
   GPUComputationCaptureGeometry
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {createSpatialChoice} from '../../../gpu-spatial-analysis/computation-pack/choices';
 import type {LensScenarioResult} from '../../types';
 import {runS2Lens, type S2CaptureSpec, type S2LensRunProps, type S2Uploads} from './s2-lens-run';

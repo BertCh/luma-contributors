@@ -49,9 +49,9 @@ export const GROUPS_JOINS_OPERATORS: DataFrameFamilyOperators = {
       means: {level: 'ratio', extent: 'intensive'}
     },
     sourceFiles: [
-      'modules/graph/src/gpu-dataframe/group-statistics/group-statistics-moments.ts',
-      'modules/graph/src/gpu-dataframe/group-statistics/group-statistics-order.ts',
-      'modules/graph/src/gpu-dataframe/column-classification/order-statistic-wgsl.ts'
+      'modules/analysis/src/gpu-dataframe/group-statistics/group-statistics-moments.ts',
+      'modules/analysis/src/gpu-dataframe/group-statistics/group-statistics-order.ts',
+      'modules/analysis/src/gpu-dataframe/column-classification/order-statistic-wgsl.ts'
     ]
   },
   /**
@@ -91,6 +91,6 @@ export const GROUPS_JOINS_OPERATORS: DataFrameFamilyOperators = {
       matched: {level: 'nominal'},
       matchCounts: {level: 'ratio', extent: 'extensive'}
     },
-    sourceFiles: ['modules/graph/src/gpu-dataframe/key-join/gpu-key-join.ts']
+    sourceFiles: ['modules/analysis/src/gpu-dataframe/key-join/gpu-key-join.ts']
   }
 };

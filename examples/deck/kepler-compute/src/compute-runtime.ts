@@ -4,7 +4,7 @@
 
 import type {Deck, Effect, EffectContext, PreRenderOptions} from '@deck.gl/core';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUVector, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+import {GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   KeplerComputeSession,
   type KeplerSessionExplorer,

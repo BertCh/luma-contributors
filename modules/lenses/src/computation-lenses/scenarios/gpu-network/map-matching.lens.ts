@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {
   GPU_MAP_MATCHING_NONE,
   getGPUMapMatchingParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {
   describeNetworkElement,
   recordNetworkElement,

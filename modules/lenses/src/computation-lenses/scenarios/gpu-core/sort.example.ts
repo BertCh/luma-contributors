@@ -7,7 +7,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView,
   type GraphBufferHandle
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 
 /** Uploaded station keys, station indices and caller-owned destination handles. */
 export type SortExampleInput = {

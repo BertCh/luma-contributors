@@ -11,7 +11,7 @@ import {
   createGPUComputationRecord,
   validateGPUComputationRecord,
   type GPUComputationFormulaRef
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   GPU_CORE_FORMULAS,
   GPU_CORE_FORMULA_REFS,
@@ -117,7 +117,7 @@ describe('GPU Core curated formula coverage', () => {
       expect(entry.ascii.trim()).not.toBe('');
       expect(entry.symbols.length).toBeGreaterThan(0);
       const source = files
-        .map(file => readFileSync(resolve(`modules/graph/src/gpu-core/${file}.ts`), 'utf8'))
+        .map(file => readFileSync(resolve(`modules/analysis/src/gpu-core/${file}.ts`), 'utf8'))
         .join('\n');
       const identifiers = new Set(source.match(/[A-Za-z_][A-Za-z_0-9]*/g));
       for (const symbol of entry.symbols) {

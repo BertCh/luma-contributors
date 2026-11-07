@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
-import {createWGSLKernelNode} from '@luma-contributors/graph';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
+import {createWGSLKernelNode} from '@luma.gl/graph';
 import type {S2Uploads, S2CaptureSpec} from './s2-lens-run';
 import {runExample as runStreetProfiles} from './street-profiles-recipe.example';
 import {runExample as runBuildingAdjacency} from './building-adjacency-recipe.example';

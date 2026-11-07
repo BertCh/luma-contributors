@@ -26,7 +26,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoRoads())
       ]);
     const {getGPURectangleClipParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     const vertexCount = data.positionsProjected.length / 2;
     // Worst case: every segment becomes its own two-vertex line.

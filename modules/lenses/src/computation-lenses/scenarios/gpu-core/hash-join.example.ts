@@ -7,7 +7,7 @@ import {
   GPUHashJoin,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 
 /** Uploaded station and wet-station rows with the caller-owned table, pair and count views. */
 export type HashJoinExampleInput = {

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationFormulaRef} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationFormulaRef} from '@luma-contributors/analysis/computation-record';
 import type {DataFrameFamilyOperators, DataFrameOperatorEntry} from '../types';
 
-const DIRECTORY = 'modules/graph/src/gpu-dataframe/';
+const DIRECTORY = 'modules/analysis/src/gpu-dataframe/';
 const row = {kind: 'row', label: 'Source row', indexSpace: '1d'} as const;
 const group = {kind: 'group', label: 'Group', indexSpace: '1d'} as const;
 
@@ -48,7 +48,7 @@ function makeEntry(
 
 const groupSources = [
   `${DIRECTORY}gpu-group-aggregation-compiler.ts`,
-  'modules/graph/src/gpu-core/gpu-group-aggregation.ts'
+  'modules/analysis/src/gpu-core/gpu-group-aggregation.ts'
 ];
 const proceduralSort = {
   formula: 'none',
@@ -106,7 +106,7 @@ export const QUERIES_OPERATORS: DataFrameFamilyOperators = {
     sumFormula('GPUDataFrameAggregationQuery', false),
     [
       `${DIRECTORY}gpu-global-aggregation-compiler.ts`,
-      'modules/graph/src/gpu-core/gpu-reduction.ts'
+      'modules/analysis/src/gpu-core/gpu-reduction.ts'
     ]
   ),
   GPUDataFrameHistogramQuery: makeEntry(
@@ -128,7 +128,7 @@ export const QUERIES_OPERATORS: DataFrameFamilyOperators = {
         {id: 'maximum', role: 'parameter', binding: 'wgsl:maximum'}
       ]
     },
-    [`${DIRECTORY}gpu-histogram-compiler.ts`, 'modules/graph/src/gpu-core/gpu-histogram.ts'],
+    [`${DIRECTORY}gpu-histogram-compiler.ts`, 'modules/analysis/src/gpu-core/gpu-histogram.ts'],
     [row, {kind: 'bin', label: 'Histogram bin', indexSpace: '1d'}]
   ),
   GPUDataFrameSortQuery: makeEntry(
@@ -163,6 +163,6 @@ export const QUERIES_OPERATORS: DataFrameFamilyOperators = {
       reason:
         'a SQL statement lowers to dataframe queries; its formulas are the derived expression formulas of the plan'
     },
-    ['modules/graph/src/gpu-sql/gpu-sql.ts']
+    ['modules/analysis/src/gpu-sql/gpu-sql.ts']
   )
 };

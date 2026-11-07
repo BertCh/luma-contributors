@@ -11,8 +11,8 @@ import {
   GPULineDensity,
   GPUTrackSimilarity,
   GPUTrajectoryResample
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';

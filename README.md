@@ -5,8 +5,8 @@ GPU analysis operations, computation lenses and kepler.gl adapters built on
 
 | Package | Contents |
 | --- | --- |
-| `@luma-contributors/graph` | Spatial analysis, network, terrain, dataframe, raster and point-cloud operations, `computation-record`, and the GPU graph execution layer they run on |
-| `@luma-contributors/lenses` | Computation lenses, computation views and scenario packs that document the graph operations |
+| `@luma-contributors/analysis` | Spatial analysis, network, terrain, dataframe, raster and point-cloud operations |
+| `@luma-contributors/lenses` | Computation lenses, computation views and scenario packs that document the operations |
 | `@luma-contributors/kepler` | Explicit GPU compute and lifecycle adapters for kepler.gl |
 
 Examples are in `examples/deck/spatial-analysis-showcase` and
@@ -14,14 +14,9 @@ Examples are in `examples/deck/spatial-analysis-showcase` and
 
 ## Relationship to luma.gl
 
-This repository is independent of luma.gl's source tree. It installs `@luma.gl/core`,
-`@luma.gl/shaders` and, for examples and tests, `@luma.gl/engine` from npm.
-
-`@luma-contributors/graph` carries its own fork of the `@luma.gl/graph` execution layer, including
-`gpu-core`, `gpu-data`, `gpu-tables` and `arrow`. The analysis operations were developed against
-a newer graph than the published alpha. Always import graph APIs from `@luma-contributors/graph`.
-Do not mix them with `@luma.gl/graph` objects, and do not pass forked tables into
-`@luma.gl/engine`'s `GPUTableModel`.
+This repository holds only geospatial and analysis code. It builds on published `@luma.gl/core`,
+`@luma.gl/shaders` and `@luma.gl/graph` through their public entry points, and carries no copies
+of luma.gl code. See `dev-docs/upstream-first-plan.md`.
 
 `scripts/split/README.md` describes how this repository was produced and how to re-sync it.
 

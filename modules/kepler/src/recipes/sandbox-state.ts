@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/graph/arrow';
+import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
 import {
   parseKeplerAnalysisRecipe,
   type KeplerAnalysisRecipe,

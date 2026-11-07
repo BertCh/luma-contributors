@@ -15,7 +15,7 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import type {KeplerDatasetReference} from '../recipes/analysis-recipe';
 
 /** Per-graph limits. Larger group-bys run as several passes (see kepler-group-by-passes.ts). */

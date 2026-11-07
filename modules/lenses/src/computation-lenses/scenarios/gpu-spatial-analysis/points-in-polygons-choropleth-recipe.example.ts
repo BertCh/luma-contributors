@@ -7,20 +7,20 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUClassBreaksParameterLength,
   getGPUClassBreaksParameterValues,
   getGPUColorScaleParameterValues,
   GPU_COLOR_SCALE_PARAMETER_LENGTH,
   packGPUColor
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addPointsInPolygonsChoroplethRecipe,
   GPUParameterBuffer,
   type GPUChoroplethPolygons,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from the Chicago North Side observations and tracts. */
 export type PointsInPolygonsChoroplethRecipeExampleInput = {

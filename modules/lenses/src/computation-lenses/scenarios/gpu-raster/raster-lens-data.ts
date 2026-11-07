@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
 /** Version stamped into every raster/terrain lens run id; bump when the extracts change. */
 export const T_DATA_VERSION = '2026-10-14';

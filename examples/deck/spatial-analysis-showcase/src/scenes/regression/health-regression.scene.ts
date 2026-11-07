@@ -375,7 +375,7 @@ export default defineScene<HealthRegressionOptions>({
     return `import {
   addSpatialRegressionRecipe, GPUContiguityWeights, GPUSpatialWeightsTransform,
   GPUSpatialTwoStageLeastSquares, GPUSpatialErrorGM
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // 1. Weights ${knn ? `(directed k nearest neighbours, row-standardized)` : `(${state.weights} contiguity from shared vertices, then row-standardized)`}
 ${

@@ -8,7 +8,7 @@ import {expect, test} from 'vitest';
 import {runCatalogOperationAsync, type CatalogRunResult} from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
 import {PLATFORM5_S2_BINDINGS} from '../src/analysis/catalog-platform5-s2';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 // Oracle policy: the CPU reference engine of each binding is the oracle; the GPU path must run on
 // the named contributor (engine 'gpu') and match it.

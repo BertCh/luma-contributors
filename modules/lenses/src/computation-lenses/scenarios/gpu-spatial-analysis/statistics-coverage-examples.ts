@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {S2Uploads, S2CaptureSpec} from './s2-lens-run';
 import {createStatisticsLensInputs} from './statistics-coverage-inputs';
 import {runExample as runExample0} from './fuzzy-contiguity.example';

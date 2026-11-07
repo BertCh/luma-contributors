@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {
   validateGPUComputationRecord,
   validateGPUComputationSidecars
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {expect, test} from 'vitest';
 import {getLensScenario} from '../../../src/computation-lenses/registry';
 import data from '../../../src/computation-lenses/data/k-core.json';

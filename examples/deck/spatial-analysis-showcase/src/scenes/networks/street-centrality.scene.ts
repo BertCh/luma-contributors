@@ -377,7 +377,7 @@ export default defineScene<CentralityOptions>({
   GPUNetworkStatistics,
   getGPUNetworkSubgraphFilterParameterValues,
   getGPUNetworkStatisticsParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 // 1. Node columns for styling. No reverse CSR = undirected (symmetric CSR required).
 analyticsGraph.add(new GPUNetworkAnalyticsColumns({

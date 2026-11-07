@@ -187,7 +187,7 @@ graph.add(new GPULocalPermutationTest({
 }));`
       : '';
   if (isCells(state)) {
-    return `import {addHotSpotAnalysisRecipe, GPULocalMoran, getGPUNeighborSearchParameterValues} from '@luma-contributors/graph/gpu-spatial-analysis';
+    return `import {addHotSpotAnalysisRecipe, GPULocalMoran, getGPUNeighborSearchParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One call adds the whole chain: points -> ${state.family} cells -> counts per study cell -> great-circle neighbours -> Gi* ${state.inference === 'permutation' ? '-> permutation test' : ''}
 const hotSpots = addHotSpotAnalysisRecipe(graph, {
@@ -227,7 +227,7 @@ graph.add(new GPULocalMoran({
 }));${permutation}`
 }`;
   }
-  return `import {GPUHotSpotAnalysis, GPULocalMoran, GPULocalPermutationTest} from '@luma-contributors/graph/gpu-spatial-analysis';
+  return `import {GPUHotSpotAnalysis, GPULocalMoran, GPULocalPermutationTest} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // weights: queen contiguity (GPUContiguityWeights) or a neighbour search, ${state.weightTransform === 'row' ? 'row-standardised' : 'binary'}.
 ${

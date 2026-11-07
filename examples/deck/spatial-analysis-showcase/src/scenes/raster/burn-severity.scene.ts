@@ -599,14 +599,14 @@ export default defineScene<BurnSeverityOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPURasterArithmetic, GPURasterConditional, GPURasterReclassify, GPURasterStretch,
   GPURasterConnectedComponents, GPURasterDenseComponents, GPURasterPatchMetrics, GPURasterSieve,
   getGPURasterArithmeticParameterValues, getGPURasterConditionalParameterValues,
   getGPURasterReclassifyParameterValues, getGPURasterStretchParameterValues,
   getGPURasterSieveParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-raster';
 
 const graph = new GPUCommandGraph(device, {id: 'burn'});
 // Band math: bands are float32 digital numbers (0 = no data); scale puts them in reflectance.

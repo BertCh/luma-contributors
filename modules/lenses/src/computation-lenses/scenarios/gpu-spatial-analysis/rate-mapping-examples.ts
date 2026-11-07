@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   addExcessRiskRecipe,
   addSpatialRateRecipe
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {S2CaptureSpec, S2Uploads} from './s2-lens-run';
 
 /** Unequal populations make pooling visibly different from averaging individual rates. */

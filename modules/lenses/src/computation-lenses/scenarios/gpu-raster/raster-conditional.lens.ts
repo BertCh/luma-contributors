@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {defineLensScenario, TABLE_LENS_RUNGS} from '../../define-lens-scenarios';
 import type {LensScenarioResult} from '../../types';
-import {T_DIXIE_LANDCOVER} from '../gpu-raster/raster-lens-datasets';
+import {T_DIXIE_LANDCOVER} from './raster-lens-datasets';
 
 const SCENARIO_ID = 'gpu-raster.raster-conditional';
 

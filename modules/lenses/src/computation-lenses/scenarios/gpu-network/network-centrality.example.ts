@@ -7,8 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkCentrality, type GPUNetworkTopology} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUNetworkCentrality,
+  type GPUNetworkTopology
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: the roads, their exact transpose and the sampled pivot intersections. */
 export type NetworkCentralityExampleInput = {

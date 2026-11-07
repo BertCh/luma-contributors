@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Kernel} from '@luma-contributors/graph';
+import {Kernel} from '@luma.gl/graph';
 import {
   createTransientView,
   doGraphDataViewsOverlap,
@@ -11,11 +11,11 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUDorlingCartogram,
   type GPUDorlingCartogramOutput
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerAnalysisProvenance} from './analysis-bindings';
 import {
   getKeplerPointWeightCoordinateKeys,

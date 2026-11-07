@@ -496,12 +496,12 @@ export default defineScene<HarborPlaybackOptions>({
   snippet: state => {
     const stopSpeed = ((state.stopSpeedKnots * 1852) / 3600).toFixed(2);
     const resampled = state.focus === 'transit' || state.showRoutes;
-    return `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+    return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUTrajectoryPlayhead, GPUTrajectoryMetrics, GPUTrajectoryResample,
   getGPUTrajectoryPlayheadParameterValues, getGPUTrajectoryMetricsParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
 
 // positions: float32x2 AEQD frame meters, timestamps: float32 seconds, trackOffsets: uint32 (tracks + 1)
 const playGraph = new GPUCommandGraph(device, {id: 'playback'});

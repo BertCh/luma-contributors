@@ -8,7 +8,7 @@ import type {
   GeoArrowGeometryValue,
   GeoArrowList
 } from '@math.gl/geospatial/geoarrow';
-import {makeCPUVectorFromGeoArrowColumn} from '@luma-contributors/graph/gpu-project/geoarrow';
+import {makeCPUVectorFromGeoArrowColumn} from '@luma.gl/graph/gpu-project/geoarrow';
 import type {CatalogPosition} from './catalog-geojson';
 
 /** Encodes one row family of GeoJSON-like coordinates into a Float32 interleaved XY GeoArrow column. */

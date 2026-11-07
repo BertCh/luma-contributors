@@ -1,0 +1,280 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  createTransientView,
+  GPUVisibilityWorkflow,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
+import {
+  validateCompactOutput,
+  validateGraphOutputsDisjointFromInputs,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  createPublishNode,
+  createWGSLKernelNode
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
+/** Planar coordinates, or longitude/latitude used as plain coordinates (no metric). */
+const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native'] as const)
+});
+
+const OPERATION = 'GPUBoundsFilter';
+
+/** Number of float32 elements of the per-frame box: `[minX, minY, maxX, maxY]`. */
+export const GPU_BOUNDS_FILTER_PARAMETER_LENGTH = 4;
+
+/**
+ * Relation between each feature's bounding box `F` and the query box `B`.
+ *
+ * - `'intersects'`: `F` and `B` overlap or touch (GeoPandas `.cx` on bounds).
+ * - `'within'`: `F` lies inside `B`, borders included.
+ * - `'contains'`: `F` covers `B`, borders included.
+ */
+export type GPUBoundsFilterMode = 'intersects' | 'within' | 'contains';
+
+/** CPU settings of the per-frame box of {@link GPUBoundsFilter}. */
+export type GPUBoundsFilterSettings = {
+  /** Left edge. */
+  minX: number;
+  /** Bottom edge. */
+  minY: number;
+  /** Right edge, at least `minX` unless `wrapX` is set. */
+  maxX: number;
+  /** Top edge, at least `minY`. */
+  maxY: number;
+  /**
+   * Allows `minX > maxX`, meaning the box wraps through the longitude seam: it covers
+   * `x >= minX` and `x <= maxX` (for example `minX = 170, maxX = -170`). Intended for
+   * longitude/latitude contexts. Feature bounds must not wrap themselves. A wrapped box never
+   * satisfies `'contains'`, because a finite feature box cannot cover both sides of the seam.
+   */
+  wrapX?: boolean;
+};
+
+/**
+ * Packs a {@link GPUBoundsFilterSettings} into the 4-element float32 layout `[minX, minY, maxX, maxY]`.
+ * Write the result into a `GPUParameterBuffer` between encodings to move the box without
+ * recompiling.
+ *
+ * @param settings Box to encode.
+ * @param target Optional destination of at least 4 elements.
+ * @throws If a value is not finite, the box is inverted (`maxX < minX` needs `wrapX`), or
+ *   `target` is too short.
+ */
+export function getGPUBoundsFilterParameterValues(
+  settings: GPUBoundsFilterSettings,
+  target: Float32Array = new Float32Array(GPU_BOUNDS_FILTER_PARAMETER_LENGTH)
+): Float32Array {
+  if (target.length < GPU_BOUNDS_FILTER_PARAMETER_LENGTH) {
+    throw new Error(
+      `Bounds filter target must hold ${GPU_BOUNDS_FILTER_PARAMETER_LENGTH} elements`
+    );
+  }
+  const {minX, minY, maxX, maxY, wrapX} = settings;
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) {
+    throw new Error('Bounds filter box must be finite');
+  }
+  if ((maxX < minX && !wrapX) || maxY < minY) {
+    throw new Error('Bounds filter requires maxX >= minX (unless wrapX) and maxY >= minY');
+  }
+  target.set([minX, minY, maxX, maxY]);
+  return target;
+}
+
+/** Caller-owned outputs of {@link GPUBoundsFilter}. */
+export type GPUBoundsFilterOutput = GPUCompactOutput & {
+  /** Optional canonical 0/1 mask of accepted features, one row per feature. */
+  outputMask?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Properties for {@link GPUBoundsFilter}.
+ *
+ * Per-frame (no recompile): the box and every input buffer. Compile-time: view lengths, `mode`,
+ * `output.ids.length` and which optional views are present.
+ */
+export type GPUBoundsFilterProps = {
+  /** Prefix for generated node and transient IDs. Defaults to `'bounds-filter'`. */
+  id?: string;
+  /**
+   * Spatial context of the coordinates; omitted means native planar coordinates. Planar and
+   * longitude/latitude (metric `'none'`) are accepted. Longitude/latitude is treated as plain
+   * coordinates (no metric). A box crossing the antimeridian is expressed with
+   * `minX > maxX` (see {@link GPUBoundsFilterSettings.wrapX}); feature bounds must be non-wrapped.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * Packed per-feature bounds `[minX, minY, maxX, maxY]`, for example `GPUGeometryMeasures`
+   * bounds. Rows with a non-finite component (NaN or infinite, the empty-geometry marker) are
+   * rejected in every mode.
+   */
+  bounds: GraphDataView<'float32x4'>;
+  /** Per-frame box: a packed float32 view written with {@link getGPUBoundsFilterParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Relation tested between each feature's bounds and the box. Defaults to `'intersects'`. */
+  mode?: GPUBoundsFilterMode;
+  /** Caller-owned bounded result of accepted feature rows, ascending. `ids.length` is the capacity. */
+  output: GPUBoundsFilterOutput;
+};
+
+/**
+ * Selects features whose bounding boxes relate to a per-frame box: a GPU `GeoDataFrame.cx[...]`
+ * (bounds level) and `gdf.bounds` comparison.
+ *
+ * Note this is a bounds test, not an exact geometry test: `'intersects'` accepts a feature whose
+ * bounding box overlaps the box even when the geometry misses it. Refine the survivors with
+ * `GPUSpatialPredicateJoin` against a one-row box polygon for exact `cx` semantics.
+ *
+ * One mask kernel and a stable compaction publish the accepted row IDs, a clamped count and an
+ * overflow flag. The box is read per frame, so a viewport or slider moves without recompiling.
+ * Comparisons are closed (borders count) and exact in f32 (no arithmetic).
+ *
+ * Coordinates only, no metric: `spatialContext` accepts planar coordinates or longitude/latitude with
+ * metric `'none'`; great-circle and other metric contexts throw. Longitude/latitude degrees are used
+ * as plain coordinates. Feature bounds never wrap, but a query box with `minX > maxX` is read as
+ * wrapping through the seam (a viewport crossing the antimeridian).
+ */
+export class GPUBoundsFilter implements GPUCommandNodeProducer {
+  /** Prefix for every node and transient ID. */
+  readonly id: string;
+  /** Validated properties. */
+  readonly props: GPUBoundsFilterProps;
+  /** Resolved spatial context (planar or longitude/latitude without metric). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Resolved relation mode. */
+  readonly mode: GPUBoundsFilterMode;
+
+  constructor(props: GPUBoundsFilterProps) {
+    this.id = props.id ?? 'bounds-filter';
+    this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
+    this.mode = props.mode ?? 'intersects';
+    const {id} = this;
+    if (!['intersects', 'within', 'contains'].includes(this.mode)) {
+      throw new Error(`${id} mode must be 'intersects', 'within' or 'contains'`);
+    }
+    validatePackedView(props.bounds, ['float32x4'], `${id} bounds`);
+    if (props.bounds.length < 1) {
+      throw new Error(`${id} needs at least one bounds row`);
+    }
+    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    if (props.parameters.length < GPU_BOUNDS_FILTER_PARAMETER_LENGTH) {
+      throw new Error(
+        `${id} parameters must hold ${GPU_BOUNDS_FILTER_PARAMETER_LENGTH} float32 values`
+      );
+    }
+    validateCompactOutput(id, props.output);
+    if (props.output.ids.length < 1) {
+      throw new Error(`${id} output.ids must contain at least one row`);
+    }
+    if (props.output.outputMask) {
+      validatePackedView(props.output.outputMask, ['uint32'], `${id} output.outputMask`);
+      if (props.output.outputMask.length !== props.bounds.length) {
+        throw new Error(`${id} output.outputMask length must equal bounds length`);
+      }
+    }
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [
+        props.output.ids,
+        props.output.status.count,
+        props.output.status.overflow,
+        props.output.status.requiredCount,
+        props.output.outputMask
+      ],
+      [props.bounds, props.parameters]
+    );
+  }
+
+  /** Returns the mask kernel, the stable compaction nodes and the publish node. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {props, id} = this;
+    const {output} = props;
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.bounds,
+      props.parameters,
+      output.outputMask,
+      output.ids,
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount
+    ]);
+    const rows = props.bounds.length;
+    const mask = output.outputMask ?? createTransientView(graph, `${id}-mask`, 'uint32', rows);
+    // A box with minX > maxX wraps through the seam: its x extent is the union of two rays.
+    const comparison = {
+      intersects: `select(fMax.x >= boxMin.x && fMin.x <= boxMax.x, fMax.x >= boxMin.x || fMin.x <= boxMax.x, wrapped) && fMin.y <= boxMax.y && fMax.y >= boxMin.y`,
+      within: `select(fMin.x >= boxMin.x && fMax.x <= boxMax.x, fMin.x >= boxMin.x || fMax.x <= boxMax.x, wrapped) && fMin.y >= boxMin.y && fMax.y <= boxMax.y`,
+      contains: `!wrapped && fMin.x <= boxMin.x && fMax.x >= boxMax.x && fMin.y <= boxMin.y && fMax.y >= boxMax.y`
+    }[this.mode];
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-mask`,
+        record:
+          this.mode === 'within' ? {formula: 'gpu-spatial-analysis.bounds-filter'} : undefined,
+        operation: OPERATION,
+        bindings: [
+          {name: 'bounds', view: props.bounds, type: 'f32', access: 'read'},
+          {name: 'box', view: props.parameters, type: 'f32', access: 'read'},
+          {name: 'maskOut', view: mask, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        declarations: IS_FINITE_BITS_WGSL,
+        body: `let base = boundsOffset + 4u * index;
+  let fMin = vec2<f32>(bounds[base], bounds[base + 1u]);
+  let fMax = vec2<f32>(bounds[base + 2u], bounds[base + 3u]);
+  let boxMin = vec2<f32>(box[boxOffset], box[boxOffset + 1u]);
+  let boxMax = vec2<f32>(box[boxOffset + 2u], box[boxOffset + 3u]);
+  let wrapped = boxMin.x > boxMax.x;
+  let finite = isFiniteBits(fMin.x) && isFiniteBits(fMin.y) && isFiniteBits(fMax.x) && isFiniteBits(fMax.y);
+  let accepted = finite && ${comparison};
+  maskOut[maskOutOffset + index] = select(0u, 1u, accepted);`
+      })
+    ];
+    // Compact straight into the caller's IDs when they hold every row; otherwise compact into
+    // full-size scratch and let the publish kernel copy the bounded prefix.
+    const direct = output.ids.length >= rows;
+    const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
+    const compactIds = direct
+      ? output.ids
+      : createTransientView(graph, `${id}-compact-ids`, 'uint32', rows);
+    nodes.push(
+      ...new GPUVisibilityWorkflow({
+        id: `${id}-visibility`,
+        predicates: [{kind: 'bounds', mask}],
+        output: compactIds,
+        count: total
+      }).getCommandNodes(graph),
+      createPublishNode<Parameters>(graph, {
+        id: `${id}-publish`,
+        operation: OPERATION,
+        requiredCount: total,
+        compactIds: direct ? undefined : compactIds,
+        output
+      })
+    );
+    return nodes;
+  }
+}

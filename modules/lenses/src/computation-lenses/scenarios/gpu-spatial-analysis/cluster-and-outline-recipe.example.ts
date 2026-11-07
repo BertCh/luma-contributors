@@ -7,7 +7,7 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   addClusterAndOutlineRecipe,
   getGPUGeographicDistributionParameterValues,
@@ -16,7 +16,7 @@ import {
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`. */
 export type ClusterAndOutlineRecipeExampleInput = {

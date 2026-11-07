@@ -526,12 +526,12 @@ export default defineScene<SiteSuitabilityOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUWeightedOverlay, GPURasterCellStatistics, GPURasterSampling, GPURasterZonalStatistics,
   getGPUWeightedOverlayParameterValues, getGPURasterCellStatisticsParameterValues,
   getGPURasterSamplingParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-raster';
 
 const graph = new GPUCommandGraph(device, {id: 'suitability'});
 graph.add(new GPUWeightedOverlay({

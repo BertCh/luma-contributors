@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {toRadians} from '@math.gl/core';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import {projectWebMercatorMeters} from '../../engine/web-mercator';
 import type {LoadedDataset} from '../../data/catalog';

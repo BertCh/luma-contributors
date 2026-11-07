@@ -3,14 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUCoverageValidityParameterValues,
   GPUCoverageValidity,
   GPUParameterBuffer,
   type GPUPolygonGeometryFields,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-tracts.json`. */
 export type CoverageValidityExampleInput = {

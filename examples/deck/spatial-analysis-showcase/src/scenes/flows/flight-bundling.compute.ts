@@ -9,8 +9,8 @@ import {
   GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
   GPUEdgeBundling,
   type GPUEdgeBundlingSettings
-} from '@luma-contributors/graph/gpu-network';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-network';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {formatCount, liveText} from '../../cartography/live-text';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';

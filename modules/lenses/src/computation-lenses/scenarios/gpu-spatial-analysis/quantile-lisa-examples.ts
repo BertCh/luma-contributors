@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUQuantileLISA} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {getGPUPermutationParameterValues} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUQuantileLISA} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPUPermutationParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {S2CaptureSpec, S2Uploads} from './s2-lens-run';
 
 /** Two selected high-value rows next to one another on an eight-row cycle. */

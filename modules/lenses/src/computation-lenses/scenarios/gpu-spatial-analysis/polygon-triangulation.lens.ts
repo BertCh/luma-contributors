@@ -30,7 +30,7 @@ defineLensScenario({
       GPU_POLYGON_TRIANGULATION_DEFAULT_MAXIMUM_WORK,
       GPU_POLYGON_TRIANGULATION_DEFAULT_MONOTONE_MINIMUM_VERTICES,
       getPolygonTriangulationIndexCount
-    } = await import('@luma-contributors/graph/gpu-spatial-analysis');
+    } = await import('@luma-contributors/analysis/gpu-spatial-analysis');
     const vertexCount = data.positionsProjected.length / 2;
     const indexCount = getPolygonTriangulationIndexCount(
       vertexCount,

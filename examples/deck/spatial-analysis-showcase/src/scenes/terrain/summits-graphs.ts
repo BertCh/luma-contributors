@@ -9,20 +9,16 @@
  */
 
 import type {Buffer} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import type {GPUParameterBuffer} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUTerrainContours,
   GPUTerrainCriticalPoints,
   GPUTerrainPeakSnap,
   GPUTerrainSummits,
   GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 import {createElevationBand} from './b14b-terrain';

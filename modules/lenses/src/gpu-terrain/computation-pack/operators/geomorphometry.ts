@@ -61,8 +61,8 @@ export const TERRAIN_GEOMORPHOMETRY_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/terrain-curvature/gpu-terrain-curvature.ts',
-      'modules/graph/src/gpu-terrain/terrain-curvature/terrain-geomorphometry-utils.ts'
+      'modules/analysis/src/gpu-terrain/terrain-curvature/gpu-terrain-curvature.ts',
+      'modules/analysis/src/gpu-terrain/terrain-curvature/terrain-geomorphometry-utils.ts'
     ]
   },
   GPUGeomorphons: {
@@ -124,7 +124,7 @@ export const TERRAIN_GEOMORPHOMETRY_OPERATORS: RasterOperatorTable = {
         {id: 'form', role: 'output', label: 'landform code', binding: 'wgsl:outputForm'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/geomorphons/gpu-geomorphons.ts']
+    sources: ['modules/analysis/src/gpu-terrain/geomorphons/gpu-geomorphons.ts']
   },
   GPUTerrainRuggedness: {
     family: 'geomorphometry',
@@ -162,7 +162,7 @@ export const TERRAIN_GEOMORPHOMETRY_OPERATORS: RasterOperatorTable = {
         {id: 'centerValue', role: 'input', label: 'centre height', binding: 'wgsl:centerValue'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/topographic-position/gpu-terrain-ruggedness.ts']
+    sources: ['modules/analysis/src/gpu-terrain/topographic-position/gpu-terrain-ruggedness.ts']
   },
   GPUTerrainVectorRuggedness: {
     family: 'geomorphometry',
@@ -200,7 +200,9 @@ export const TERRAIN_GEOMORPHOMETRY_OPERATORS: RasterOperatorTable = {
         {id: 'northGradient', role: 'intermediate', label: 'q', binding: 'wgsl:northGradient'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/topographic-position/gpu-terrain-vector-ruggedness.ts']
+    sources: [
+      'modules/analysis/src/gpu-terrain/topographic-position/gpu-terrain-vector-ruggedness.ts'
+    ]
   },
   GPUTerrainTopographicPosition: {
     family: 'geomorphometry',
@@ -237,8 +239,8 @@ export const TERRAIN_GEOMORPHOMETRY_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/topographic-position/gpu-terrain-topographic-position.ts',
-      'modules/graph/src/gpu-terrain/topographic-position/terrain-summed-area-table.ts'
+      'modules/analysis/src/gpu-terrain/topographic-position/gpu-terrain-topographic-position.ts',
+      'modules/analysis/src/gpu-terrain/topographic-position/terrain-summed-area-table.ts'
     ]
   },
   GPUTerrainWeissLandforms: {
@@ -302,6 +304,8 @@ export const TERRAIN_GEOMORPHOMETRY_OPERATORS: RasterOperatorTable = {
         {id: 'landform', role: 'output', label: 'landform code', binding: 'wgsl:landform'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/topographic-position/gpu-terrain-weiss-landforms.ts']
+    sources: [
+      'modules/analysis/src/gpu-terrain/topographic-position/gpu-terrain-weiss-landforms.ts'
+    ]
   }
 };

@@ -653,7 +653,7 @@ Select **One combined region** to remove the state borders as well, or perturb o
 
   snippet: state => {
     if (state.view === 'crossings') {
-      return `import {GPUSegmentIntersection} from '@luma-contributors/graph/gpu-spatial-analysis';
+      return `import {GPUSegmentIntersection} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPUSegmentIntersection({
   spatialContext: projection.spatialContext,
@@ -667,8 +667,8 @@ graph.add(new GPUSegmentIntersection({
 }));`;
     }
     if (state.view === 'noding') {
-      return `import {GPULineSplit, GPULineMerge} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUNetworkNoding} from '@luma-contributors/graph/gpu-network';
+      return `import {GPULineSplit, GPULineMerge} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUNetworkNoding} from '@luma-contributors/analysis/gpu-network';
 
 graph.add(new GPULineSplit({
   spatialContext: projection.spatialContext,
@@ -700,7 +700,7 @@ graph.add(new GPUNetworkNoding({
 }));`;
     }
     if (state.view === 'dissolve') {
-      return `import {GPUSegmentRingAssembly} from '@luma-contributors/graph/gpu-spatial-analysis';
+      return `import {GPUSegmentRingAssembly} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPUSegmentRingAssembly({
   endpoints,                  // float32x4: x0, y0, x1, y1 of every directed ring edge
@@ -718,7 +718,7 @@ graph.add(new GPUSegmentRingAssembly({
     if (state.view === 'coverage-audit') {
       return `import {
   GPUCoverageValidity, GPUCoverageDissolve
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPUCoverageValidity({
   spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
@@ -741,7 +741,7 @@ graph.add(new GPUCoverageDissolve({
 // Draw only when the effective input passes GPUCoverageValidity and the dissolve is complete.`;
     }
     return `import {GPUCoverageSimplification, getGPULineSimplificationParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPUCoverageSimplification({
   spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),

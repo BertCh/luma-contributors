@@ -5,7 +5,7 @@
 import {expect, test} from 'vitest';
 import {NETWORK_FORMULA_REFS} from '../../../src/gpu-network/computation-pack/network-formulas';
 import {describeStructure} from '../../../src/computation-lenses/scenarios/gpu-network/network-reachability.lens';
-import {createNullWebGPUDevice} from '@luma-contributors/graph/testing';
+import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
 test('reachability formula symbols bind to identifiers in its recorded generated WGSL', async () => {
   const device = createNullWebGPUDevice();

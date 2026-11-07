@@ -5,7 +5,7 @@
 import type {
   GPUComputationCapture,
   GPUComputationKeySpace
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import type {NetworkRoads} from './network-element-lens';
 
 /** Facility rows of the roads file used by the search family: a hospital, two libraries and a fire station. */

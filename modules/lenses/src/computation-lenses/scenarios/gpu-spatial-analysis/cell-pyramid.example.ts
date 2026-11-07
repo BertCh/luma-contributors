@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCellPyramid} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCellPyramid} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Overture places (longitude/latitude degrees) and the table capacity of each level. */
 export type CellPyramidExampleInput = {

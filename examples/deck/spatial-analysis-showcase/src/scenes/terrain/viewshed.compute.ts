@@ -4,17 +4,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUHistogram,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import type {GPUParameterBuffer} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  GPURasterExtremaPyramid,
-  getGPURasterExtremaPyramidLayout,
-  type GPURasterExtremaPyramidLayout
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, GPUHistogram, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPURasterExtremaPyramid, getGPURasterExtremaPyramidLayout, type GPURasterExtremaPyramidLayout} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUTerrainCumulativeViewshed,
   GPUTerrainLineOfSight,
@@ -28,7 +20,7 @@ import {
   getGPUTerrainViewshedParameterValues,
   getGPUTerrainViewshedToleranceParameterValues,
   type GPUTerrainViewshedProps
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {
   formatArea,
   formatCount,

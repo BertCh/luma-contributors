@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPUTrajectoryMetrics} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUTrajectoryMetrics} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import type {RampName} from '../../engine/ramps';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';

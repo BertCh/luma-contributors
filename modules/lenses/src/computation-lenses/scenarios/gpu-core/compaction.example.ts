@@ -7,7 +7,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView,
   type GraphBufferHandle
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 
 /** Uploaded station inputs and caller-owned destination handles. */
 export type CompactionExampleInput = {

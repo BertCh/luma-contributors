@@ -10,8 +10,8 @@
  */
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import type {GPUParameterBuffer} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {COLORMAP_INDEXES, getRampWgsl, type RampName} from '../../engine/ramps';

@@ -10,7 +10,7 @@ import {
   DuckDBRuntime,
   DEFAULT_DUCKDB_SQL
 } from '../../../examples/deck/kepler-compute/src/duckdb-runtime';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 it('real worker SQL returns Arrow before an explicit resident GPU import', async () => {
   const device = await getWebGPUTestDevice();

@@ -3,35 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPURasterGlobalHistogramMerge,
-  GPURasterGlobalInitialize,
-  GPURasterGlobalPercentile,
-  GPURasterGlobalStatisticsMerge,
-  GPURasterGaussianBlur,
-  GPURasterCategoricalOverview,
-  GPURasterOverview,
-  GPURasterReprojection,
-  GPURasterTileCache,
-  GPURasterTileCoreExtract,
-  GPURasterTileHaloAssembler,
-  GPURasterTileHaloFill,
-  GPURasterTileReader,
-  GPURasterTileReprojection,
-  makeRasterOverviewMetadata,
-  makeGPURasterMetadata,
-  type GPURasterBufferBand,
-  type GPURasterDecodedTile,
-  type GPURasterReprojectionSourceTile,
-  type GPURasterTileRequest,
-  type GPURasterTileSource,
-  type GPURasterTileSourceMetadata
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPURasterGlobalHistogramMerge, GPURasterGlobalInitialize, GPURasterGlobalPercentile, GPURasterGlobalStatisticsMerge, GPURasterGaussianBlur, GPURasterCategoricalOverview, GPURasterOverview, GPURasterTileCache, GPURasterTileCoreExtract, GPURasterTileHaloAssembler, GPURasterTileHaloFill, GPURasterTileReader, makeRasterOverviewMetadata, type GPURasterBufferBand, type GPURasterDecodedTile, type GPURasterTileRequest, type GPURasterTileSource, type GPURasterTileSourceMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPURasterReprojection, GPURasterTileReprojection, makeGPURasterMetadata, type GPURasterReprojectionSourceTile} from '@luma-contributors/analysis/raster-analysis';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {GraphSwap} from '../../engine/graph-swap';

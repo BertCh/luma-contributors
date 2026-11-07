@@ -12,7 +12,7 @@ import {
   GPU_CELL_INDEX_RESOLUTION_RANGES,
   type GPUCellIndexFamily,
   type GPUCellTable
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {
   CatalogOperationBinding,
   CatalogParameterSpec,

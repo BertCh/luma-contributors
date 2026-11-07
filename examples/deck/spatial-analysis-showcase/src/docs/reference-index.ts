@@ -29,77 +29,77 @@ const DOC_DEFINITIONS = [
   {
     path: 'gpu-spatial-analysis/README.md',
     id: 'gpu-spatial-analysis',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/concepts.md',
     id: 'gpu-spatial-analysis-concepts',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators.md',
     id: 'gpu-spatial-analysis-operators',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-weights.md',
     id: 'gpu-spatial-analysis-operators-weights',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-statistics.md',
     id: 'gpu-spatial-analysis-operators-statistics',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-dynamics.md',
     id: 'gpu-spatial-analysis-operators-dynamics',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-accessibility.md',
     id: 'gpu-spatial-analysis-operators-accessibility',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-joins.md',
     id: 'gpu-spatial-analysis-operators-joins',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-validity.md',
     id: 'gpu-spatial-analysis-operators-validity',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-density.md',
     id: 'gpu-spatial-analysis-operators-density',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-cells.md',
     id: 'gpu-spatial-analysis-operators-cells',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-lines.md',
     id: 'gpu-spatial-analysis-operators-lines',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-geometry.md',
     id: 'gpu-spatial-analysis-operators-geometry',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/operators-regression.md',
     id: 'gpu-spatial-analysis-operators-regression',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis/recipes.md',
     id: 'gpu-spatial-analysis-recipes',
-    entryPoint: '@luma-contributors/graph/gpu-spatial-analysis'
+    entryPoint: '@luma-contributors/analysis/gpu-spatial-analysis'
   },
   {
     path: 'gpu-spatial-analysis-cross-reference.md',
@@ -109,83 +109,83 @@ const DOC_DEFINITIONS = [
   {
     path: 'gpu-network/README.md',
     id: 'gpu-network',
-    entryPoint: '@luma-contributors/graph/gpu-network'
+    entryPoint: '@luma-contributors/analysis/gpu-network'
   },
   {
     path: 'gpu-network/concepts.md',
     id: 'gpu-network-concepts',
-    entryPoint: '@luma-contributors/graph/gpu-network'
+    entryPoint: '@luma-contributors/analysis/gpu-network'
   },
   {
     path: 'gpu-network/operators.md',
     id: 'gpu-network-operators',
-    entryPoint: '@luma-contributors/graph/gpu-network'
+    entryPoint: '@luma-contributors/analysis/gpu-network'
   },
   {
     path: 'gpu-terrain/README.md',
     id: 'gpu-terrain',
-    entryPoint: '@luma-contributors/graph/gpu-terrain'
+    entryPoint: '@luma-contributors/analysis/gpu-terrain'
   },
   {
     path: 'gpu-terrain/concepts.md',
     id: 'gpu-terrain-concepts',
-    entryPoint: '@luma-contributors/graph/gpu-terrain'
+    entryPoint: '@luma-contributors/analysis/gpu-terrain'
   },
   {
     path: 'gpu-terrain/operators.md',
     id: 'gpu-terrain-operators',
-    entryPoint: '@luma-contributors/graph/gpu-terrain'
+    entryPoint: '@luma-contributors/analysis/gpu-terrain'
   },
   {
     path: 'gpu-dataframe-analysis.md',
     id: 'gpu-dataframe-analysis',
-    entryPoint: '@luma-contributors/graph/gpu-dataframe'
+    entryPoint: '@luma-contributors/analysis/gpu-dataframe'
   },
   {
     path: 'gpu-raster/operations-analysis.md',
     id: 'gpu-raster-operations-analysis',
-    entryPoint: '@luma-contributors/graph/gpu-raster'
+    entryPoint: '@luma-contributors/analysis/gpu-raster'
   },
   {
     path: 'gpu-graph.md',
     id: 'gpu-graph',
-    entryPoint: '@luma-contributors/graph/gpu-graph-algorithms',
+    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-topology.md',
     id: 'gpu-graph-topology',
-    entryPoint: '@luma-contributors/graph/gpu-graph-algorithms',
+    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-metrics.md',
     id: 'gpu-graph-metrics',
-    entryPoint: '@luma-contributors/graph/gpu-graph-algorithms',
+    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-connectivity.md',
     id: 'gpu-graph-connectivity',
-    entryPoint: '@luma-contributors/graph/gpu-graph-algorithms',
+    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-traversal.md',
     id: 'gpu-graph-traversal',
-    entryPoint: '@luma-contributors/graph/gpu-graph-algorithms',
+    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-layouts.md',
     id: 'gpu-graph-layouts',
-    entryPoint: '@luma-contributors/graph/gpu-graph-algorithms',
+    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
     bareClassNames: true
   },
   {
     path: 'gpu-graph-operations.md',
     id: 'gpu-graph-operations',
-    entryPoint: '@luma-contributors/graph/gpu-graph-algorithms',
+    entryPoint: '@luma-contributors/analysis/gpu-graph-algorithms',
     bareClassNames: true
   }
 ] as const;

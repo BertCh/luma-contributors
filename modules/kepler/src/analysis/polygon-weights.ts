@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {KeplerAllocationError} from '../runtime/dataset-registry';
-import {Kernel} from '@luma-contributors/graph';
+import {Kernel} from '@luma.gl/graph';
 import {
   createTransientView,
   doGraphDataViewsOverlap,
@@ -15,14 +15,14 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUContiguityWeights,
   type GPUPolygonGeometryPort,
   type GPUPackedGeometryPort,
   type GPUSpatialWeights,
   type GPUSpatialWeightsOutput
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   parseKeplerPolygonWeightsSettings,
   MAXIMUM_KEPLER_POLYGON_ROWS,

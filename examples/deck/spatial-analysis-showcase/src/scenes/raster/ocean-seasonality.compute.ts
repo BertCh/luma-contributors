@@ -3,12 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPURasterSeasonalBreak, GPURasterTemporal} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPURasterSeasonalBreak, GPURasterTemporal} from '@luma-contributors/analysis/raster-analysis';
 import {SpatialAnalysisPointLayer, SpatialAnalysisPolygonLayer} from '../../engine/layers';
 import type {RampName} from '../../engine/ramps';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';

@@ -4,11 +4,7 @@
 
 import {PathLayer, ScatterplotLayer} from '@deck.gl/layers';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUBufferSurface,
   GPUConvexStraightSkeleton,
@@ -20,7 +16,7 @@ import {
   GPUOffsetExpansion,
   GPUVectorStraightSkeleton,
   getGPUOffsetCurveRowsPerVertex
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';

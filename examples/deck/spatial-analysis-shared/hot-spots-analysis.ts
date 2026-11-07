@@ -11,13 +11,7 @@
  */
 
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUElementwise,
-  GPUHistogram,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUElementwise, GPUHistogram, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUPermutationParameterValues,
@@ -35,7 +29,7 @@ import {
   type GPUInferenceAlternative,
   type GPULocalMoranQuadrantGating,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {clamp} from '@math.gl/core';
 import type {
   AnalysisLegend,

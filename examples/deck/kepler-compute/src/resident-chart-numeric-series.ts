@@ -3,16 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUDataFrame,
-  literal,
-  type CompiledGPUDataFrameAggregation,
-  type GPUDataFrameQueryParameters
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUTable} from '@luma-contributors/graph/gpu-tables';
-import {GPUVector as Vector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUDataFrame, literal, type CompiledGPUDataFrameAggregation, type GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
+import {GPUTable} from '@luma.gl/graph/gpu-tables';
+import {GPUVector as Vector} from '@luma.gl/graph/gpu-data';
 import type {
   KeplerArrowDataset,
   KeplerComputeSession,

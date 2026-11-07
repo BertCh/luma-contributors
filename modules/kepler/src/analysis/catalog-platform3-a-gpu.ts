@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUHilbertKeys} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUHilbertKeys} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
 import type {CatalogFeatureCollection} from './catalog-geojson';
 import {CatalogGpuUnsupportedError, withCatalogGpuSession} from './catalog-gpu-session';

@@ -7,13 +7,13 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUContiguityWeights,
   GPUGlobalPermutationTest,
   GPUSpatialWeightsTransform,
   type GPUContiguityWeightsProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded tract geometry, poverty percentages and packed permutation settings. */
 export type GlobalPermutationTestInput = {

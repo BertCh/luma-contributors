@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {createWGSLKernelNode} from '@luma-contributors/graph';
+} from '@luma.gl/graph/gpu-core';
+import {createWGSLKernelNode} from '@luma.gl/graph';
 import {runExample as runKriging} from './local-kriging.example';
 import {runExample as runRadialBasis} from './local-rbf.example';
 import {runExample as runNaturalNeighbor} from './natural-neighbor.example';

@@ -3,16 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {type GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  type GPURasterMetadata,
   GPULineIntegralConvolution,
-  GPUParameterBuffer,
   GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
   GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH,
   getGPULineIntegralConvolutionParameterValues,
   getGPULineIntegralConvolutionUint32ParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 
 /** Graph, grids and caller-owned views for line-integral-convolution. */
 export type LineIntegralConvolutionExampleInput = {

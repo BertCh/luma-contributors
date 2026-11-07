@@ -1,0 +1,523 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {expect, it} from 'vitest';
+import {
+  getGPUClassBreaksParameterLength,
+  getGPUClassBreaksParameterValues,
+  GPU_CLASS_BREAKS_METHOD_CODES,
+  type GPUClassBreaksMethod
+} from '../../../src/dataframe-analysis/column-classification/class-breaks-parameters';
+import {
+  GPUClassBreaks,
+  type GPUClassBreaksProps
+} from '../../../src/dataframe-analysis/column-classification/gpu-class-breaks';
+import {WgslReflect} from 'wgsl_reflect';
+import {
+  CORE_WORKGROUP_STORAGE_LIMIT_BYTES,
+  createNullWebGPUDevice,
+  createVectorView,
+  getGPUCommandNodeKernelSources,
+  getGPUCommandNodePipelineKeys,
+  getStorageBindingCount,
+  getWorkgroupMemoryBytes
+} from '../../utils/gpu-contributor-test-utils';
+import {computeClassBreaksOracle, countClassesOracle} from './class-breaks-oracle';
+let graphCount = 0;
+
+/** Returns a fresh graph, so transient IDs never collide between cases. */
+function createGraph(): GPUCommandGraph {
+  return new GPUCommandGraph(createNullWebGPUDevice(), {id: `graph-${graphCount++}`});
+}
+
+function createProps(
+  graph: GPUCommandGraph,
+  overrides: Partial<GPUClassBreaksProps> = {},
+  rows = 100,
+  maximumClassCount = 8
+): GPUClassBreaksProps {
+  return {
+    values: createTransientView(graph, 'values', 'float32', rows),
+    mask: createTransientView(graph, 'mask', 'uint32', rows),
+    parameters: createTransientView(
+      graph,
+      'parameters',
+      'float32',
+      getGPUClassBreaksParameterLength(maximumClassCount)
+    ),
+    maximumClassCount,
+    output: {
+      breaks: createTransientView(graph, 'breaks', 'float32', maximumClassCount + 1),
+      classCount: createTransientView(graph, 'class-count', 'uint32', 1),
+      classCounts: createTransientView(graph, 'class-counts', 'uint32', maximumClassCount)
+    },
+    ...overrides
+  };
+}
+
+it('getGPUClassBreaksParameterValues packs the header and method data', () => {
+  const maximumClassCount = 8;
+  expect(getGPUClassBreaksParameterLength(maximumClassCount)).toBe(17);
+  const quantile = getGPUClassBreaksParameterValues({method: 'quantile', classCount: 4}, 8);
+  expect(Array.from(quantile.slice(0, 5))).toEqual([1, 4, 1, Math.fround(0.4), 1.5]);
+  expect(Array.from(quantile.slice(8, 11))).toEqual([0.25, 0.5, 0.75]);
+  expect(Number.isNaN(quantile[11])).toBe(true);
+  const boxPlot = getGPUClassBreaksParameterValues({method: 'box-plot', boxPlotHinge: 3}, 8);
+  expect(boxPlot[1]).toBe(6);
+  expect(boxPlot[4]).toBe(3);
+  expect(Array.from(boxPlot.slice(8, 11))).toEqual([0.25, 0.5, 0.75]);
+  const custom = getGPUClassBreaksParameterValues({method: 'custom', customEdges: [0, 1, 5]}, 8);
+  expect(custom[0]).toBe(GPU_CLASS_BREAKS_METHOD_CODES.custom);
+  expect(custom[1]).toBe(2);
+  expect(Array.from(custom.slice(8, 11))).toEqual([0, 1, 5]);
+  const third = getGPUClassBreaksParameterValues({method: 'quantile', classCount: 3}, 8);
+  expect(third[8]).toBe(Math.fround(1 / 3));
+  expect(() => getGPUClassBreaksParameterValues({method: 'quantile', classCount: 9}, 8)).toThrow(
+    /classCount must be an integer/
+  );
+  expect(() => getGPUClassBreaksParameterValues({method: 'custom', customEdges: [1]}, 8)).toThrow(
+    /two edges/
+  );
+  // NaN settings would leave a NaN edge (the publish kernel then reports no classification).
+  expect(() =>
+    getGPUClassBreaksParameterValues({method: 'custom', customEdges: [0, NaN, 1]}, 8)
+  ).toThrow(/NaN/);
+  expect(() =>
+    getGPUClassBreaksParameterValues({method: 'box-plot', boxPlotHinge: NaN}, 8)
+  ).toThrow(/finite/);
+  expect(() =>
+    getGPUClassBreaksParameterValues({method: 'nope' as GPUClassBreaksMethod}, 8)
+  ).toThrow(/unknown method/);
+  expect(() =>
+    getGPUClassBreaksParameterValues({method: 'quantile'}, 8, new Float32Array(4))
+  ).toThrow(/must hold/);
+});
+
+it('GPUClassBreaks validates its views and options', () => {
+  /** Builds the contributor on a fresh graph with overrides derived from that graph. */
+  const build = (
+    getOverrides: (graph: GPUCommandGraph) => Partial<GPUClassBreaksProps> = () => ({}),
+    rows = 100,
+    maximumClassCount = 8
+  ) => {
+    const graph = createGraph();
+    return () =>
+      new GPUClassBreaks(createProps(graph, getOverrides(graph), rows, maximumClassCount));
+  };
+  expect(build(() => ({maximumClassCount: 0}))).toThrow(/maximumClassCount/);
+  expect(build(() => ({maximumClassCount: 65}))).toThrow(/maximumClassCount/);
+  expect(build(() => ({methods: []}))).toThrow(/at least one/);
+  expect(build(() => ({methods: ['bogus' as GPUClassBreaksMethod]}))).toThrow(/unknown method/);
+  expect(build(undefined, 100, 5)).toThrow(/box-plot/);
+  expect(build(() => ({methods: ['quantile']}), 100, 5)).not.toThrow();
+  expect(build(() => ({naturalBreaksBinCount: 1}))).toThrow(/naturalBreaksBinCount/);
+  expect(build(() => ({naturalBreaksBinCount: 4096}))).toThrow(/naturalBreaksBinCount/);
+  expect(build(graph => ({mask: createTransientView(graph, 'short-mask', 'uint32', 99)}))).toThrow(
+    /mask length/
+  );
+  expect(
+    build(
+      graph =>
+        ({
+          values: createVectorView('vector', 'float32', [
+            createTransientView(graph, 'chunk', 'float32', 100)
+          ])
+        }) as unknown as Partial<GPUClassBreaksProps>
+    )
+  ).toThrow(/must be one packed view/);
+  expect(build(graph => ({parameters: createTransientView(graph, 'short', 'float32', 4)}))).toThrow(
+    /parameters must hold/
+  );
+  const getOutput = (graph: GPUCommandGraph) => ({
+    breaks: createTransientView(graph, 'other-breaks', 'float32', 9),
+    classCount: createTransientView(graph, 'other-class-count', 'uint32', 1),
+    classCounts: createTransientView(graph, 'other-class-counts', 'uint32', 8)
+  });
+  expect(
+    build(graph => ({
+      output: {...getOutput(graph), breaks: createTransientView(graph, 'few', 'float32', 4)}
+    }))
+  ).toThrow(/output.breaks/);
+  expect(
+    build(graph => ({
+      output: {
+        ...getOutput(graph),
+        classCounts: createTransientView(graph, 'few-counts', 'uint32', 2)
+      }
+    }))
+  ).toThrow(/output.classCounts/);
+  const graph = createGraph();
+  const props = createProps(graph);
+  expect(
+    () => new GPUClassBreaks({...props, output: {...props.output, classCount: props.mask!}})
+  ).toThrow(/share buffers/);
+});
+
+it('GPUClassBreaks returns deterministic node IDs and rejects foreign views', () => {
+  const getNodeIds = () => {
+    const graph = createGraph();
+    return new GPUClassBreaks({...createProps(graph), id: 'cb'})
+      .getCommandNodes(graph)
+      .map(node => node.id);
+  };
+  const first = getNodeIds();
+  const second = getNodeIds();
+  expect(second).toEqual(first);
+  expect(new Set(first).size).toBe(first.length);
+  expect(first[0]).toBe('cb-prepare');
+  expect(first[1]).toBe('cb-extremes');
+  expect(first).toContain('cb-head-tail-0-split');
+  expect(first).toContain('cb-natural-breaks-backtrack');
+  expect(first).toContain('cb-maximum-breaks-finish');
+  expect(first.slice(-4)).toEqual([
+    'cb-finish',
+    'cb-publish',
+    'cb-class-counts-clear',
+    'cb-class-counts'
+  ]);
+  expect(first.every(id => id.startsWith('cb-'))).toBe(true);
+  // Leaving out the sort-based and iterative methods drops their nodes.
+  const leanGraph = createGraph();
+  const lean = new GPUClassBreaks({
+    ...createProps(leanGraph),
+    id: 'lean',
+    methods: ['equal-interval']
+  });
+  expect(lean.getCommandNodes(leanGraph).map(node => node.id)).toEqual([
+    'lean-prepare',
+    'lean-extremes',
+    'lean-finish',
+    'lean-publish',
+    'lean-class-counts-clear',
+    'lean-class-counts'
+  ]);
+  const contributor = new GPUClassBreaks(createProps(createGraph()));
+  expect(() => contributor.getCommandNodes(createGraph())).toThrow(/target graph/);
+});
+
+it('class breaks oracle reproduces textbook breaks', () => {
+  const values = new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, NaN, Infinity]);
+  const base = {values, maximumClassCount: 8, naturalBreaksBinCount: 10};
+  const equal = computeClassBreaksOracle({
+    ...base,
+    parameters: {method: 'equal-interval', classCount: 3}
+  });
+  expect(equal.classCount).toBe(3);
+  expect(Array.from(equal.breaks.slice(0, 4))).toEqual([1, 4, 7, 10]);
+  const quantile = computeClassBreaksOracle({
+    ...base,
+    parameters: {method: 'quantile', classCount: 2}
+  });
+  // B-14: Infinity is missing for quantiles too (numpy.quantile of the finite values 1..10 is 5.5).
+  expect(Array.from(quantile.breaks.slice(0, 3))).toEqual([1, 5.5, 10]);
+  const gaps = new Float32Array([1, 2, 3, 10, 11, 30]);
+  const maximum = computeClassBreaksOracle({
+    ...base,
+    values: gaps,
+    parameters: {method: 'maximum-breaks', classCount: 3}
+  });
+  expect(Array.from(maximum.breaks.slice(0, 4))).toEqual([1, 6.5, 20.5, 30]);
+  const natural = computeClassBreaksOracle({
+    ...base,
+    values: new Float32Array([0, 0.5, 1, 9, 9.5, 10]),
+    parameters: {method: 'natural-breaks', classCount: 2}
+  });
+  // Every start inside the empty gap ties; the lowest start wins.
+  expect(natural.naturalStartBins).toEqual([2]);
+  const headTail = computeClassBreaksOracle({
+    ...base,
+    values: new Float32Array([1, 1, 1, 1, 1, 1, 1, 2, 4, 100]),
+    parameters: {method: 'head-tail', classCount: 8, headTailRatio: 0.4}
+  });
+  // Mean 11.3 splits off [100]; a single-row head stops.
+  expect(headTail.classCount).toBe(2);
+  expect(headTail.breaks[1]).toBeCloseTo(11.3, 5);
+  expect(Array.from(countClassesOracle(values, undefined, equal.breaks, 3, 3))).toEqual([3, 3, 5]);
+});
+
+it('GPUClassBreaks fits every kernel in 8 storage buffers with all methods compiled', () => {
+  // The default WebGPU limit; the null device reports it, so an extra binding throws here.
+  const graph = createGraph();
+  const contributor = new GPUClassBreaks(createProps(graph));
+  expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+});
+
+it('GPUClassBreaks pipelines do not grow with maximumClassCount (rule 12)', () => {
+  // Before: natural-breaks layers and head/tail rounds baked LAYER / round into WGSL, 62
+  // pipelines at 8 classes and 65 at 9. Now the layer and round are GPU state words.
+  const build = (maximumClassCount: number) => {
+    const graph = createGraph();
+    return new GPUClassBreaks(createProps(graph, {}, 100, maximumClassCount)).getCommandNodes(
+      graph
+    );
+  };
+  const counts = [8, 9, 64].map(
+    classCount => getGPUCommandNodePipelineKeys(build(classCount)).size
+  );
+  expect(counts[1]).toBe(counts[0]);
+  expect(counts[2]).toBe(counts[0]);
+  for (const {id, source} of getGPUCommandNodeKernelSources(build(9))) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(source, id).not.toMatch(/const LAYER\b|override LAYER\b/);
+  }
+});
+
+it('GPUClassBreaks gates natural-breaks layers and head/tail rounds indirectly (rule 13)', () => {
+  const graph = createGraph();
+  const nodes = new GPUClassBreaks({...createProps(graph), id: 'gate'}).getCommandNodes(graph);
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const gated = (id: string) => {
+    const condition = (byId.get(id) as {condition?: {source?: string; mode?: string}}).condition;
+    return condition?.source === 'gpu' && condition.mode === 'indirect';
+  };
+  for (let layer = 1; layer < 8; layer++) {
+    expect(gated(`gate-natural-breaks-layer-${layer}`), `layer ${layer}`).toBe(true);
+    // The advance kernel writes the layer dispatch, so it must not be gated by it.
+    expect(gated(`gate-natural-breaks-layer-${layer}-advance`)).toBe(false);
+  }
+  for (let round = 0; round < 7; round++) {
+    expect(gated(`gate-head-tail-${round}-tile`), `round ${round}`).toBe(true);
+    expect(gated(`gate-head-tail-${round}-merge`), `round ${round}`).toBe(true);
+    expect(gated(`gate-head-tail-${round}-split`)).toBe(false);
+  }
+  // Standard deviation is not a loop and stays method-gated inside the kernel.
+  expect(gated('gate-moments-tile')).toBe(false);
+});
+
+it('GPUClassBreaks natural-breaks rounds and the second coarse stage share their pipelines (rule 12)', () => {
+  const graph = createGraph();
+  const nodes = new GPUClassBreaks({
+    ...createProps(graph, {methods: ['natural-breaks']}, 100, 12),
+    id: 'nb'
+  }).getCommandNodes(graph);
+  // Eight rounds of two half-rounds compile five kernels: advance, plan, clear, accumulate, solve.
+  const halfRoundPipelines = getGPUCommandNodePipelineKeys(nodes, {
+    idPattern: /^nb-natural-breaks-refine-\d+-/
+  });
+  expect(halfRoundPipelines.size).toBe(5);
+  const halfRounds = new Set(
+    getGPUCommandNodeKernelSources(nodes)
+      .map(({id}) => /refine-(\d+)-/.exec(id)?.[1])
+      .filter(Boolean)
+  );
+  expect(halfRounds.size).toBe(16);
+  // The coarse stage over the most populated class runs the same shaders as the first.
+  const first = getGPUCommandNodePipelineKeys(nodes, {
+    idPattern: /^nb-natural-breaks-(clear|histogram|prefix|layer-\d+(-advance)?)$/
+  });
+  const both = getGPUCommandNodePipelineKeys(nodes, {
+    idPattern: /^nb-natural-breaks(-bulk)?-(clear|histogram|prefix|layer-\d+(-advance)?)$/
+  });
+  expect(first.size).toBeGreaterThan(0);
+  expect(both.size).toBe(first.size);
+  // The extents pass over the merged partition and the snap kernel repeat their shaders too.
+  expect(
+    getGPUCommandNodePipelineKeys(nodes, {idPattern: /^nb-natural-breaks-(extents|snap)(-bulk)?$/})
+      .size
+  ).toBe(2);
+});
+
+it('GPUClassBreaks gates natural-breaks refinement indirectly and keeps the writers ungated (rule 13)', () => {
+  const graph = createGraph();
+  const nodes = new GPUClassBreaks({
+    ...createProps(graph, {methods: ['natural-breaks']}),
+    id: 'g'
+  }).getCommandNodes(graph);
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const gated = (id: string) => {
+    const condition = (byId.get(id) as {condition?: {source?: string; mode?: string}}).condition;
+    return condition?.source === 'gpu' && condition.mode === 'indirect';
+  };
+  for (let half = 0; half < 16; half++) {
+    const prefix = `g-natural-breaks-refine-${half}`;
+    for (const name of ['plan', 'clear', 'accumulate', 'solve']) {
+      expect(gated(`${prefix}-${name}`), `${prefix}-${name}`).toBe(true);
+    }
+    // The advance kernel writes every triple, so the buffer cannot also gate it.
+    expect(gated(`${prefix}-advance`), `${prefix}-advance`).toBe(false);
+  }
+  expect(gated('g-natural-breaks-extents')).toBe(true);
+  expect(gated('g-natural-breaks-extents-bulk')).toBe(true);
+  for (const writer of ['backtrack', 'bulk-switch', 'bulk-assemble', 'snap', 'finalize']) {
+    expect(gated(`g-natural-breaks-${writer}`), writer).toBe(false);
+  }
+});
+
+it('GPUClassBreaks natural-breaks kernels fit core limits at 64 classes and 2048 bins', () => {
+  const graph = createGraph();
+  const nodes = new GPUClassBreaks({
+    ...createProps(graph, {methods: ['natural-breaks'], naturalBreaksBinCount: 2048}, 1 << 24, 64),
+    id: 'l'
+  }).getCommandNodes(graph);
+  for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+    expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
+    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+    );
+  }
+  // The divide and conquer layer holds the optima of all bins plus the lane reduction arrays.
+  const layer = getGPUCommandNodeKernelSources(nodes).find(
+    ({id}) => id === 'l-natural-breaks-layer-1'
+  )!;
+  expect(getWorkgroupMemoryBytes(layer.source)).toBe(2048 * 4 + 256 * 4 + 256 * 4 + 4);
+});
+
+it('GPUClassBreaks natural breaks build for one class, two bins and a handful of rows', () => {
+  for (const [maximumClassCount, naturalBreaksBinCount, rows] of [
+    [1, 2, 3],
+    [2, 2, 1],
+    [2, 2048, 1],
+    [64, 2, 5]
+  ] as const) {
+    const graph = createGraph();
+    const nodes = new GPUClassBreaks({
+      ...createProps(
+        graph,
+        {methods: ['natural-breaks'], naturalBreaksBinCount},
+        rows,
+        maximumClassCount
+      )
+    }).getCommandNodes(graph);
+    for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+      expect(() => new WgslReflect(source), id).not.toThrow();
+    }
+  }
+});
+
+it('GPUClassBreaks exact mode enforces its source capacity without an approximate fallback', () => {
+  const graph = createGraph();
+  expect(
+    () =>
+      new GPUClassBreaks(
+        createProps(graph, {naturalBreaksMode: 'exact', methods: ['natural-breaks']}, 8193)
+      )
+  ).toThrow();
+  const contributor = new GPUClassBreaks(
+    createProps(createGraph(), {naturalBreaksMode: 'exact', methods: ['natural-breaks']}, 1024)
+  );
+  expect(contributor.props.naturalBreaksMode).toBe('exact');
+});
+
+it('GPUClassBreaks exact kernels parse within default storage limits', () => {
+  const graph = createGraph();
+  const nodes = new GPUClassBreaks(
+    createProps(graph, {naturalBreaksMode: 'exact', methods: ['natural-breaks']}, 1024, 64)
+  ).getCommandNodes(graph);
+  for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
+    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+    );
+  }
+});
+
+it('GPUClassBreaks exact layers reuse pipelines and dispatch inactive layers indirectly', () => {
+  const graph = createGraph();
+  const nodes = new GPUClassBreaks({
+    ...createProps(graph, {naturalBreaksMode: 'exact', methods: ['natural-breaks']}, 1024, 64),
+    id: 'exact'
+  }).getCommandNodes(graph);
+  const pipelines = getGPUCommandNodePipelineKeys(nodes, {
+    idPattern: /exact-natural-breaks-layer-/
+  });
+  expect(pipelines.size).toBe(1);
+  for (const node of nodes.filter(node => /exact-natural-breaks-layer-/.test(node.id))) {
+    const condition = (node as {condition?: {source?: string; mode?: string}}).condition;
+    expect(condition?.source).toBe('gpu');
+    expect(condition?.mode).toBe('indirect');
+  }
+});
+
+it('GPUClassBreaks explicit natural-breaks storage and search modes validate their capacities', () => {
+  const build = (overrides: Partial<GPUClassBreaksProps>, rows: number) =>
+    new GPUClassBreaks(
+      createProps(createGraph(), {methods: ['natural-breaks'], ...overrides}, rows)
+    );
+  expect(() =>
+    build({naturalBreaksMode: 'exact', naturalBreaksExactStorage: 'materialized'}, 1025)
+  ).toThrow();
+  expect(() =>
+    build({naturalBreaksMode: 'exact', naturalBreaksExactStorage: 'recompute'}, 8192)
+  ).not.toThrow();
+  expect(() => build({naturalBreaksMode: 'monotone'}, 262144)).not.toThrow();
+  expect(() => build({naturalBreaksMode: 'monotone'}, 262145)).toThrow();
+  expect(() =>
+    build({naturalBreaksMode: 'monotone', naturalBreaksExactStorage: 'recompute'}, 16)
+  ).toThrow();
+  expect(() => build({naturalBreaksMode: 'unknown' as 'exact'}, 16)).toThrow();
+});
+
+it('GPUClassBreaks recomputation removes the quadratic binding and preserves pipeline reuse', () => {
+  const graph = createGraph();
+  const nodes = new GPUClassBreaks(
+    createProps(
+      graph,
+      {
+        naturalBreaksMode: 'exact',
+        naturalBreaksExactStorage: 'recompute',
+        methods: ['natural-breaks']
+      },
+      8192,
+      64
+    )
+  ).getCommandNodes(graph);
+  expect(nodes.some(node => node.id.endsWith('-costs'))).toBe(false);
+  expect(
+    getGPUCommandNodePipelineKeys(nodes, {idPattern: /exact-natural-breaks-layer-/}).size
+  ).toBe(1);
+  for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
+  }
+});
+
+it('GPUClassBreaks monotone search spans workgroups and reuses all level pipelines', () => {
+  for (const rows of [1, 257, 262144]) {
+    const graph = createGraph();
+    const nodes = new GPUClassBreaks(
+      createProps(
+        graph,
+        {
+          naturalBreaksMode: 'monotone',
+          methods: ['natural-breaks']
+        },
+        rows,
+        4
+      )
+    ).getCommandNodes(graph);
+    expect(
+      getGPUCommandNodePipelineKeys(nodes, {idPattern: /monotone-natural-breaks-search-/}).size
+    ).toBe(1);
+    for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+      expect(() => new WgslReflect(source), id).not.toThrow();
+      expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
+      expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+        CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+      );
+    }
+    for (const node of nodes.filter(node => /monotone-natural-breaks-search-/.test(node.id))) {
+      const condition = (node as {condition?: {mode?: string}}).condition;
+      expect(condition?.mode).toBe('indirect');
+    }
+  }
+});
+
+it('GPUClassBreaks validates row-proportional scratch against the actual device binding limit', () => {
+  const graph = createGraph();
+  Object.defineProperty(graph.device.limits, 'maxStorageBufferBindingSize', {value: 1048576});
+  const contributor = new GPUClassBreaks(
+    createProps(
+      graph,
+      {
+        naturalBreaksMode: 'monotone',
+        methods: ['natural-breaks']
+      },
+      65536,
+      8
+    )
+  );
+  expect(() => contributor.getCommandNodes(graph)).toThrow(/partitions.*binding/);
+});

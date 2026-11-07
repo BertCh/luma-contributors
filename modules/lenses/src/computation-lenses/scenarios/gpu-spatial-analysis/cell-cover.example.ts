@@ -7,11 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUCellCover,
   type GPUPolygonGeometryFields
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Community areas in longitude/latitude degrees and the cell column to write into. */
 export type CellCoverExampleInput = {

@@ -7,7 +7,7 @@ import {
   validateGPUComputationSidecars,
   type GPUComputationCapture,
   type GPUComputationRecordWithSidecars
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   buildGPUGraphScenario,
   describeGPUGraphScenario,

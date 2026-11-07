@@ -7,15 +7,15 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {packGPUColor} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-core';
+import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addRateClusterMapRecipe,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPUParameterBuffer,
   type GPURateClusterMapRecipeProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from the Chicago North Side tracts. */
 export type RateClusterMapRecipeExampleInput = {

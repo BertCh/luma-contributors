@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {GPUVectorEvaluator} from '@luma-contributors/graph/gpu-simple-graph';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import type {GPUVectorEvaluator} from '@luma.gl/graph/gpu-simple-graph';
 import type {KeplerComputeSession, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {assertExactFloat32IntegerRange} from './integer-style-range';
 
@@ -31,7 +31,7 @@ export async function widenResidentChartMeasure(props: {
   try {
     // Lazy import keeps the gpgpu operation graph out of unrelated chart module loads.
     const {castData, GPUVectorEvaluator} = await import(
-      '@luma-contributors/graph/gpu-simple-graph'
+      '@luma.gl/graph/gpu-simple-graph'
     );
     await assertExactFloat32IntegerRange(session.device, vector);
     evaluator = GPUVectorEvaluator.fromGPUVector(vector).mapGPUData(chunk =>

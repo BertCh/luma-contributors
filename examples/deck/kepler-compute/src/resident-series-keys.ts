@@ -3,14 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 
 /** Chunk-preserving composite keys, with an extra series slot retaining rows without a series. */
 export class ResidentSeriesKeys {

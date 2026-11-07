@@ -4,7 +4,7 @@
 
 import * as arrow from 'apache-arrow';
 import {expect, test} from 'vitest';
-import {prepareArrowTableForGPUAnalytics} from '@luma-contributors/graph/arrow';
+import {prepareArrowTableForGPUAnalytics} from '@luma.gl/graph/arrow';
 import {
   SANDBOX_SAMPLES,
   createSandboxSample

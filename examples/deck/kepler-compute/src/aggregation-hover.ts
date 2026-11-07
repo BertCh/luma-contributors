@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGPUPointDensityHexagonCenter} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {getGPUPointDensityHexagonCenter} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {GPUKeplerAggregationLayout} from '@luma-contributors/kepler';
 
 /** Kepler HIGHLIGH_COLOR_3D: the translucent white blended over a hovered extruded cell. */

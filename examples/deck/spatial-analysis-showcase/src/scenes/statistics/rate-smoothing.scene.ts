@@ -182,7 +182,7 @@ function getSnippet(state: RateSmoothingOptions): string {
   addRateClusterMapRecipe,
   addSpatialRateRecipe,
   GPUSpatialEmpiricalBayesRates
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // births and womenYears are float32 views; vertices, featureOffsets, polygonOffsets and
 // ringOffsets are the county polygons in GeoArrow layout (rows are counties, multipart or not).

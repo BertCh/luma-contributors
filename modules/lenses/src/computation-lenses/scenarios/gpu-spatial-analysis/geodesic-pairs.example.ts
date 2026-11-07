@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUGeodesicPairs} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUGeodesicPairs} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded O'Hare routes for GPUGeodesicPairs. */
 export type GeodesicPairsExampleInput = {

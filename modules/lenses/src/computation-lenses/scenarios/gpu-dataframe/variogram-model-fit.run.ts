@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {runExample} from './variogram-model-fit.example';
 import {
   createDataFrameLensGraph,

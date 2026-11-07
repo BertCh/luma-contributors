@@ -11,7 +11,7 @@ import {
   type CatalogRunResult
 } from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 // Oracle policy: the CPU reference engine (engine: 'cpu') is the oracle for every PLATFORM4 GPU
 // statistics binding; each must run on its contributor and match the oracle to float32 tolerance.

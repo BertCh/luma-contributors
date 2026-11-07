@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUKMeans, type GPUSpatialContext} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUKMeans, type GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Number of clusters of the example. */
 export const K_MEANS_CLUSTER_COUNT = 6;

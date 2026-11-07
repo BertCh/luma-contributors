@@ -7,8 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkKFunction, type GPUNetworkTopology} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUNetworkKFunction,
+  type GPUNetworkTopology
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: a symmetric road network in metres, crash events and the scalar settings. */
 export type NetworkKFunctionExampleInput = {

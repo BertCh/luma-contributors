@@ -4,8 +4,8 @@
 
 import {describe, expect, test} from 'vitest';
 import {scaleOrdinal, scaleQuantile, scaleThreshold} from 'd3-scale';
-import {packGPUColor} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   createNativeStylePlan,
   type NativeStyleLayer,

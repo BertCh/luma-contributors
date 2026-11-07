@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUEmergingHotSpots} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUEmergingHotSpots} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Slices of the cube: one per month of 2023. */
 export const EMERGING_HOT_SPOTS_SLICE_COUNT = 12;

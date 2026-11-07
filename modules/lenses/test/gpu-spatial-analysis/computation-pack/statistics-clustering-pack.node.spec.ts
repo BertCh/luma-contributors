@@ -6,7 +6,7 @@ import {expect, test} from 'vitest';
 import {STATISTICS_CLUSTERING_OPERATORS} from '../../../src/gpu-spatial-analysis/computation-pack/operators/statistics-clustering';
 import {expectFormulaBindingsExist, expectSpatialEntryWellFormed} from './formula-bindings';
 
-const SOURCE_ROOT = 'modules/graph/src/gpu-spatial-analysis';
+const SOURCE_ROOT = 'modules/analysis/src/gpu-spatial-analysis';
 const CLUSTERING_ROOT = `${SOURCE_ROOT}/spatial-clustering`;
 
 /** Element → the files whose WGSL generators contain the identifiers its curated formula binds. */

@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import type {LoadedDataset} from '../../data/catalog';
 import {fetchBytes, getDataFileUrl} from '../../data/loaders';
 import {LocalMetricProjection} from '../../engine/projection';

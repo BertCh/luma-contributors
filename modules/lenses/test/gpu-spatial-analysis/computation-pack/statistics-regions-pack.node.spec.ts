@@ -6,7 +6,7 @@ import {expect, test} from 'vitest';
 import {STATISTICS_REGION_OPERATORS} from '../../../src/gpu-spatial-analysis/computation-pack/operators/statistics-regions';
 import {expectFormulaBindingsExist, expectSpatialEntryWellFormed} from './formula-bindings';
 
-const SOURCE_ROOT = 'modules/graph/src/gpu-spatial-analysis';
+const SOURCE_ROOT = 'modules/analysis/src/gpu-spatial-analysis';
 const REGIONALIZATION_ROOT = `${SOURCE_ROOT}/spatial-regionalization`;
 
 /** Element → the files whose WGSL generators contain the identifiers its curated formula binds. */

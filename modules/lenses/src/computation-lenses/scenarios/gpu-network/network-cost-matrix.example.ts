@@ -7,12 +7,12 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkCostMatrix,
   GPUNetworkSnapping,
   type GPUNetworkTopology
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: roads with node positions and the facilities' longitude/latitude. */
 export type NetworkCostMatrixExampleInput = {

@@ -51,8 +51,8 @@ export const RASTER_SAMPLING_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/raster-sampling/gpu-raster-sampling.ts',
-      'modules/graph/src/gpu-raster/raster-sampling/raster-sampling-utils.ts'
+      'modules/analysis/src/gpu-raster/raster-sampling/gpu-raster-sampling.ts',
+      'modules/analysis/src/gpu-raster/raster-sampling/raster-sampling-utils.ts'
     ]
   },
   GPURasterProfile: {
@@ -109,9 +109,9 @@ export const RASTER_SAMPLING_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/raster-sampling/gpu-raster-profile.ts',
-      'modules/graph/src/gpu-raster/raster-sampling/gpu-raster-profile-scan.ts',
-      'modules/graph/src/gpu-raster/raster-sampling/raster-sampling-utils.ts'
+      'modules/analysis/src/gpu-raster/raster-sampling/gpu-raster-profile.ts',
+      'modules/analysis/src/gpu-raster/raster-sampling/gpu-raster-profile-scan.ts',
+      'modules/analysis/src/gpu-raster/raster-sampling/raster-sampling-utils.ts'
     ]
   }
 };

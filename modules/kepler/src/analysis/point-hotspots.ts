@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Kernel} from '@luma-contributors/graph';
+import {Kernel} from '@luma.gl/graph';
 import {
   createTransientView,
   getBoundedDispatchLayout,
@@ -13,15 +13,15 @@ import {
   GPUReduction,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-core';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUHotSpotAnalysis,
   getGPUSpatialAutocorrelationParameterValues,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   type GPUHotSpotAnalysisRecipeProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerPointWeightsStorage} from './point-weights-chunked';
 import type {KeplerAnalysisRecipe} from '../recipes/analysis-recipe';
 import type {KeplerAnalysisProvenance} from './analysis-bindings';

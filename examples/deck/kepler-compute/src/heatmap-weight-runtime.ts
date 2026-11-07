@@ -5,7 +5,7 @@
 import {project32, type LayerProps, type Viewport} from '@deck.gl/core';
 import {assert, type Device, type Texture} from '@luma.gl/core';
 import {TextureTransform, getGPUVectorModelBatches} from '@luma.gl/engine';
-import {GPUConstant, type GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUConstant, type GPUVector} from '@luma.gl/graph/gpu-data';
 import type {ShaderModule} from '@luma.gl/shaders';
 
 /** Borrowed VERTEX buffers with identical source chunk boundaries, including empty chunks.

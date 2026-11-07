@@ -8,8 +8,8 @@ import {
   getGPULonLatPolygonPreparationParameterValues,
   GPUGeometryMeasures,
   GPULonLatPolygonPreparation
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {addKernelPass} from '../../engine/mode-kernels';

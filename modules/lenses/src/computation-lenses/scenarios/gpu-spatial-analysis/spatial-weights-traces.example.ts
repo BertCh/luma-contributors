@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert, Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUSpatialWeightsTraces,
   GPUContiguityWeights,
   GPUSpatialWeightsTransform,
   type GPUContiguityWeightsProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded tract design and polygons; the caller owns the recording graph. */
 export type SpatialWeightsTracesInput = {

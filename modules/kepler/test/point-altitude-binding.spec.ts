@@ -5,10 +5,10 @@
 import * as arrow from 'apache-arrow';
 import {expect, test, vi} from 'vitest';
 import {Buffer} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {KeplerComputeSession} from '../src/session/compute-session';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {PointAltitudeBindingRuntime} from '../../../examples/deck/kepler-compute/src/point-altitude-binding-runtime';
 import {
   prepareTabularPointPositions,

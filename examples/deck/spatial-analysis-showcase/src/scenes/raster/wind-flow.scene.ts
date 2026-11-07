@@ -482,12 +482,12 @@ export default defineScene<WindFlowOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUParticleAdvection, GPULineIntegralConvolution, GPUStreamlines,
   getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionWordParameterValues,
   getGPULineIntegralConvolutionParameterValues, getGPUStreamlinesParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-raster';
 
 // velocities: float32x2 (u, v) per cell in degrees per second, row 0 = smallest latitude
 const particleGraph = new GPUCommandGraph(device, {id: 'particles'});

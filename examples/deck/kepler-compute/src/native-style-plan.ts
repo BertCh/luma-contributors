@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {isPolygonFootprintLayerType} from './cell-layer-types';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {packGPUColor} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   validateKeplerResidentStylePlan,
   type KeplerResidentStyleDomain,

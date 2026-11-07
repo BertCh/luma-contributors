@@ -16,8 +16,8 @@ import {
   GPU_LINE_CHUNK_PARAMETER_LENGTH,
   GPU_LINE_LOCATE_PARAMETER_LENGTH,
   GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';

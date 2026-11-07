@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView} from '@luma-contributors/graph/gpu-core';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {runExample} from './nested-interpolation-validation.example';
 import {runS2Lens, type S2CaptureSpec} from './s2-lens-run';
 export function runNestedInterpolationValidationLens(device: Device) {

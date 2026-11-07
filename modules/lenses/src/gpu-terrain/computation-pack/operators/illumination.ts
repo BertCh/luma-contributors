@@ -5,7 +5,7 @@
 import type {RasterOperatorTable} from '../../../gpu-raster/computation-pack/types';
 
 const CELL = {kind: 'cell', label: 'grid cell', indexSpace: '2d'} as const;
-const ILLUMINATION_DIRECTORY = 'modules/graph/src/gpu-terrain/terrain-illumination';
+const ILLUMINATION_DIRECTORY = 'modules/analysis/src/gpu-terrain/terrain-illumination';
 const CELL_SIZE_CHOICE = {
   stage: 'support',
   name: 'cellSizeMode',

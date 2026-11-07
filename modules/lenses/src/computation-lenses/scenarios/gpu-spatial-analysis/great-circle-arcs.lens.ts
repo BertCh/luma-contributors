@@ -26,7 +26,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3OpenFlightsHub())
       ]);
     const {getGPUGreatCircleArcsParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     const pairCount = data.destinationCount;
     // Every route starts at the hub: the source column repeats the ORD position.

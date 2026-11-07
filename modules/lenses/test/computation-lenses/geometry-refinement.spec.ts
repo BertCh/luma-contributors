@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {getLensScenario} from '../../src/computation-lenses/registry';
 import {GEOMETRY_REFINEMENT_SCENARIOS} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/geometry-refinement.lens';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 
 it.each(
   GEOMETRY_REFINEMENT_SCENARIOS

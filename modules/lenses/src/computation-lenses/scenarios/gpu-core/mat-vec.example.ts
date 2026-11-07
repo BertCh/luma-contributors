@@ -7,7 +7,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView,
   type GraphBufferHandle
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 
 /** Uploaded elevation block, eight equal weights, and the caller-owned row-mean handle. */
 export type MatVecExampleInput = {

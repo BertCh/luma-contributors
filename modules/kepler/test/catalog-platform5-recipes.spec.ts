@@ -9,7 +9,7 @@ import {runCatalogOperationAsync} from '../src/analysis/catalog-bindings';
 import type {CatalogOperationBinding} from '../src/analysis/catalog-binding-types';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
 import {PLATFORM5_RECIPE_BINDINGS} from '../src/analysis/catalog-platform5-recipes';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 // Oracle policy: each recipe binding's CPU engine composes the same join and statistics on the CPU;
 // the GPU engine runs the recipe wiring and must match it (float32 tolerance for sums).

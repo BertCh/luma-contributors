@@ -10,12 +10,7 @@
 
 import type {Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
-import {
-  getViewBinding,
-  getViewElementOffset,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {getViewBinding, getViewElementOffset, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {NAN_DECLARATIONS} from '../../spatial-analysis-shared/terrain-passes';
 export {addFillDepthPass} from '../../spatial-analysis-shared/terrain-passes';
 

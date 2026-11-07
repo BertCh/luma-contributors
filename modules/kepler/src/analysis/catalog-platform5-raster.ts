@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPURasterConnectedComponents, GPURasterNeighborhood} from '@luma.gl/graph/gpu-raster';
 import {
-  GPURasterConnectedComponents,
-  GPURasterNeighborhood,
   makeGPURasterBand,
   makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
 import {COORDINATE_SYSTEM_PARAMETER} from './catalog-binding-types';
 import {

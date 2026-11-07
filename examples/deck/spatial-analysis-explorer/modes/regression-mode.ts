@@ -33,20 +33,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPUSpatialWeights} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  getGPUCompositeScoreParameterValues,
-  getGPUInequalityParameterValues,
-  GPUCompositeScore,
-  GPUInequality,
-  GPU_COMPOSITE_SCORE_PARAMETER_LENGTH,
-  GPU_INEQUALITY_GLOBAL_SUMMARY,
-  GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
-  GPU_INEQUALITY_PARAMETER_LENGTH,
-  type GPUCompositeScoreAggregation,
-  type GPUCompositeScoreScaler
-} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUSpatialWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPUCompositeScoreParameterValues, getGPUInequalityParameterValues, GPUCompositeScore, GPUInequality, GPU_COMPOSITE_SCORE_PARAMETER_LENGTH, GPU_INEQUALITY_GLOBAL_SUMMARY, GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH, GPU_INEQUALITY_PARAMETER_LENGTH, type GPUCompositeScoreAggregation, type GPUCompositeScoreScaler} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   type GPUGeographicallyWeightedRegressionBandwidthMode,
   type GPUGeographicallyWeightedRegressionKernel,
@@ -92,13 +81,13 @@ import {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
   getGPUGeographicallyWeightedRegressionParameterLength
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUGeographicallyWeightedRegressionNonstationarityTest,
   GPU_GWR_NONSTATIONARITY_SUMMARY,
   GPU_GWR_NONSTATIONARITY_TABLE,
   GPU_GWR_NONSTATIONARITY_TABLE_STRIDE
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   type SpatialAnalysisPointsOfInterest,

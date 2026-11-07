@@ -30,7 +30,7 @@ defineLensScenario({
       import('./s3-lens-run'),
       import('./voronoi-diagram.example'),
       import('./s3-lens-data').then(module => module.loadS3ChicagoPlaces()),
-      import('@luma-contributors/graph/gpu-spatial-analysis')
+      import('@luma-contributors/analysis/gpu-spatial-analysis')
     ]);
     // Sub-selection: every fourth place, in dataset order.
     const sites = new Float32Array(2 * Math.ceil(data.pointCount / SITE_STRIDE));

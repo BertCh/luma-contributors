@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {runExample} from './key-join.example';
 import {
   createDataFrameChoice,

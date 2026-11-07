@@ -5,7 +5,7 @@
 import {afterEach, expect, test, vi} from 'vitest';
 import type {CommandEncoder} from '@luma.gl/core';
 import type {PreparedGeometryGPUVectors} from '@luma.gl/engine/arrow';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerComputeSession} from '../src/session/compute-session';
 import type {NativeStyleLayer} from '../../../examples/deck/kepler-compute/src/native-style-plan';
 import {NativeStyleRuntime} from '../../../examples/deck/kepler-compute/src/style-host-runtime';

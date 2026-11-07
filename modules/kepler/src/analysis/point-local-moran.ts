@@ -4,7 +4,7 @@
 
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {matchesKeplerPointWeightSpatialContext} from './point-weight-coordinates';
-import {Kernel} from '@luma-contributors/graph';
+import {Kernel} from '@luma.gl/graph';
 import {
   createTransientView,
   doGraphDataViewsOverlap,
@@ -17,8 +17,8 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-core';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPULocalMoran,
   GPULocalPermutationTest,
@@ -29,7 +29,7 @@ import {
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   isGPUChunkedSpatialWeights,
   type GPULocalMoranOutput
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   parseKeplerPointWeightsSettings,
   MAXIMUM_KEPLER_LOCAL_MORAN_PERMUTATIONS,

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/graph/arrow';
+import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
 import {describeWideNumericNarrowing} from './analysis2-narrowing-summary';
 import {previewArrowSource} from './source-preview';
 import {readFieldRoute, routeArrowTable} from './source-type-routes';

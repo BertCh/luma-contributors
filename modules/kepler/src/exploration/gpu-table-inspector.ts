@@ -5,20 +5,16 @@
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {Buffer} from '@luma.gl/core';
 import {readAllBuffers} from './read-all-buffers';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUGather,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUDataFrame,
   column,
   literal,
   type CompiledGPUDataFrameGlobalSort,
   type GPUDataFrameQueryParameters
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUTable} from '@luma-contributors/graph/gpu-tables';
+} from '@luma.gl/graph/gpu-dataframe';
+import {GPUTable} from '@luma.gl/graph/gpu-tables';
 import type {
   KeplerArrowDataset,
   KeplerComputeSession,

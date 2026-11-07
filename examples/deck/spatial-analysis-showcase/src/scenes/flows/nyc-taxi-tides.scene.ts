@@ -10,7 +10,7 @@ import {formatCount} from '../../cartography/live-text';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './nyc-taxi-tides.md?raw';
+import narrative from './nyc-taxi-tides.md?raw?raw';
 import type {NycTaxiTidesOptions} from './nyc-taxi-tides.compute';
 import {formatTaxiTime} from './nyc-taxi-data';
 import {FLOW_CREDITS, FLOW_INK, getFlowWidthLegend, NET_FLOW_WORDS} from './flows-style';
@@ -105,8 +105,8 @@ function getLegends(state: NycTaxiTidesOptions, data: TideData): LegendSpec[] {
 }
 
 function getSnippet(state: NycTaxiTidesOptions): string {
-  return `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUFlowAggregation} from '@luma-contributors/graph/gpu-network';
+  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
 
 // departures gate on the pickup time, arrivals on the dropoff time: same trips, two graphs
 const make = async (gateTimes) => {

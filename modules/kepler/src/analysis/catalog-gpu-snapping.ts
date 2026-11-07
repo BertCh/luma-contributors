@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUNetworkSnapping} from '@luma-contributors/graph/gpu-network';
+import {GPUNetworkSnapping} from '@luma-contributors/analysis/gpu-network';
 import type {CatalogGpuContext} from './catalog-binding-types';
 import type {CatalogPosition} from './catalog-geojson';
 import {

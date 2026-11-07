@@ -4,11 +4,11 @@
 
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUDataFrame, column, literal, not} from '@luma-contributors/graph/gpu-dataframe';
-import type {GPUDataFrameQueryParameters} from '@luma-contributors/graph/gpu-dataframe';
-import {GPURecordBatch, GPUTable} from '@luma-contributors/graph/gpu-tables';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUDataFrame, column, literal, not} from '@luma.gl/graph/gpu-dataframe';
+import type {GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
+import {GPURecordBatch, GPUTable} from '@luma.gl/graph/gpu-tables';
 import type {PolygonMesh} from '../../cartography/polygon-mesh';
 import {createFeatureLocator, getPolygonLayout, buildPolygonMesh} from '../statistics/b5-geometry';
 import {loadPolygonLayout} from '../geometry/b3-common';

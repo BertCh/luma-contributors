@@ -4,14 +4,14 @@
 
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPURasterZonalStatistics, makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURasterZonalStatistics, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUTerrainCurvature,
   GPUTerrainDerivatives,
   getGPUTerrainCurvatureParameterValues,
   getGPUTerrainDerivativesParameterValues
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {
   RASTER_TERRAIN_NODATA,
   computeRasterTerrainGrid,

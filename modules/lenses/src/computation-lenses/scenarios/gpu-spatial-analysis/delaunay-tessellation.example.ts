@@ -8,8 +8,8 @@ import {
   GPUGather,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUDelaunayTessellation} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUDelaunayTessellation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Places in UTM 16N metres (planar, as the element requires) and the uploaded triangle rows. */
 export type DelaunayTessellationExampleInput = {

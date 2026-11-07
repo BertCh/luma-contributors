@@ -7,17 +7,17 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUDistanceFieldParameterValues,
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
   makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   addStraightLineCatchmentsRecipe,
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from the Chicago North Side facilities and observations. */
 export type StraightLineCatchmentsRecipeExampleInput = {

@@ -1,0 +1,605 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {
+  createTransientView,
+  GPUGridIndex,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createTiledWGSLKernelNodes} from '../../analysis-core/kernels/wgsl-kernel-tiles';
+import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {
+  getGPUGridIndexMaximumCellCount,
+  validateCapacity,
+  validateMaximumCount,
+  validateGraphOutputsDisjointFromInputs,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
+import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_VALUE_WGSL,
+  IS_NAN_BITS_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/index';
+import {
+  getSeparationWGSL,
+  resolveInterpolationSeparation,
+  type InterpolationSeparation
+} from './separation-wgsl';
+
+const OPERATION = 'GPUInverseDistanceWeighting';
+/** Largest compile-time nearest-neighbor capacity; each invocation keeps a private list this long. */
+const MAXIMUM_NEIGHBOR_CAPACITY = 64;
+
+/** Caller-owned row-major raster outputs of {@link GPUInverseDistanceWeighting}. */
+export type GPUInverseDistanceWeightingOutput = {
+  /**
+   * Interpolated value per output cell, at least `grid.width * grid.height` float32 rows, row
+   * `y * grid.width + x` in the grid's row order (row 0 is the grid's first row: the top row of a
+   * north-up grid, `minY` when rows advance north). Nodata cells (no exact hit and fewer than `max(minimumNeighborCount, 1)` contributing
+   * samples) are NaN, which `GPUTerrainContours` and `GPURasterContours` treat as invalid.
+   */
+  values: GraphDataView<'float32'>;
+  /** Optional number of contributing samples per cell (after the `k` limit), uint32 rows. */
+  counts?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Properties for {@link GPUInverseDistanceWeighting}.
+ *
+ * Per-frame (no recompile): the contents of `parameters` (search radius, power, neighbor limit,
+ * minimum neighbor count) and of every input buffer. Topology (needs a new graph): the `grid`
+ * size, sample count, `indexGridSize`, `indexBounds`, `maximumNeighborCount`, and
+ * whether `mask` and `output.counts` are present.
+ */
+export type GPUInverseDistanceWeightingProps = {
+  /** Prefix for generated node and transient IDs. Defaults to `'inverse-distance-weighting'`. */
+  id?: string;
+  /**
+   * Coordinate space and metric of `positions`. Omitted means native planar coordinates
+   * (Euclidean distances; the search radius is in position units).
+   *
+   * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` uses haversine distances on
+   * a sphere (`sphereRadius`, else the IUGG mean Earth radius): positions are absolute
+   * `[longitude, latitude]` degrees, the grid index and output grid stay in degrees, and the
+   * search radius is in meters (kilometers with `units: 'kilometers'`). Neighbors and radius tests
+   * use the haversine term; f32 absolute lon/lat limits accuracy to about 1 m at Earth scale. The
+   * query box is conservative and does not wrap the antimeridian, and the nearest-k limit scans
+   * the whole box (no early stop). Other longitude/latitude metrics throw.
+   */
+  spatialContext?: GPUSpatialContext;
+  /** Packed sample positions in the same units as the grid and search radius. */
+  positions: GraphDataView<'float32x2'>;
+  /** Packed float32 sample values. NaN values are skipped. */
+  values: GraphDataView<'float32'>;
+  /** Optional packed `uint32` sample mask; zero skips the sample. */
+  mask?: GraphDataView<'uint32'>;
+  /** Per-frame float32 view of at least 9 values written with `getGPUInverseDistanceWeightingParameterValues`. */
+  parameters: GraphDataView<'float32'>;
+  /**
+   * Output raster grid: axis-aligned, its width and height size the kernels, and its cell centers
+   * are sampled. Pack the matching placement with `getGPUInverseDistanceWeightingParameterValues`.
+   */
+  grid: GPURasterMetadata;
+  /**
+   * Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the samples. Aim for a few
+   * samples per index cell: the in-cell sort is quadratic in the cell population. At most
+   * {@link getGPUGridIndexMaximumCellCount} cells (2^25 - 1 on a default device).
+   */
+  indexGridSize: readonly [number, number];
+  /**
+   * Inclusive sample domain `[minX, minY, maxX, maxY]` of the internal grid index. Samples outside
+   * it, or with non-finite positions, are ignored.
+   */
+  indexBounds: readonly [number, number, number, number];
+  /**
+   * Compile-time capacity of the per-frame nearest-neighbor limit `k`, at most 64. Zero (default)
+   * compiles the radius-only kernel and ignores the per-frame `neighborCount`.
+   */
+  maximumNeighborCount?: number;
+  /**
+   * Optional output cells per gather dispatch. Tiles keep global cell indices, so results do not
+   * depend on the tile size.
+   */
+  invocationTileSize?: number;
+  /** Caller-owned raster outputs. */
+  output: GPUInverseDistanceWeightingOutput;
+};
+
+/**
+ * Interpolates scattered samples onto a raster with inverse distance weighting, `w = 1 / d^p`
+ * (Shepard 1968), or with the optional `'modified-shepard'` taper `w = ((R - d)+ / (R d))^p`
+ * (Franke and Nielson 1980), where `R` is the search radius. The taper removes the hard-radius
+ * discontinuity: a sample's weight falls to zero at `R` instead of jumping when it enters or
+ * leaves the neighborhood. It needs a finite radius, and a sample exactly at `R` has weight zero.
+ *
+ * Choosing parameters: `power` 2 is the conventional default, higher powers give flatter plateaus
+ * around samples and sharper local peaks, and none is validated against your data; compare
+ * candidates with leave-one-out error on a CPU subset or use `GPUKriging` cross-validation.
+ * `minimumNeighborCount` defaults to 1, so a single distant sample inside the radius paints a
+ * constant plateau equal to its value; raise it (3 or more) to turn sparse cells into nodata.
+ * Positions are planar (see `spatialContext`), and distances are computed from offsets relative
+ * to the grid's minimum corner so large absolute coordinates (UTM northings) do not quantize them.
+ *
+ *
+ * Gather form, one invocation per output cell, so no atomics touch values. Every encoding rebuilds
+ * a `GPUGridIndex` over the samples, sorts the sample IDs inside each index cell ascending (the
+ * index leaves in-cell order unspecified), and then visits the index rows overlapping the search
+ * square in a fixed order: index row, index column, ascending sample row. Samples with
+ * `d^2 <= radius^2` contribute. With a per-frame `k > 0`, the `k` nearest contributors are kept by
+ * `(d^2, row)`, so equal distances keep the smallest row, and their weights are summed in that
+ * order. An exact hit (`d^2 == 0`) returns that sample's value; several exact hits return the one
+ * with the smallest row. With `k > 0` the cell walks index cells in rings around its own cell and
+ * stops once the `k`-th nearest is closer than the visited block's border, so an unbounded radius
+ * costs `O(k)` candidates per cell instead of every sample; the kept set is the same because the
+ * `(d^2, row)` order is total. Weights are accumulated in log space with a running maximum
+ * (`exp2(log2 w - max)`), so tiny distances and large powers do not overflow f32.
+ *
+ * Output cell `(x, y)` samples its center `gridStart + (x + 0.5, y + 0.5) * cellSize`, where
+ * `gridStart` is the outer corner of cell (0, 0) and `cellSize` is signed, so output rows follow
+ * the grid's row order (row 0 at the top of a north-up grid, at `minY` when rows advance north).
+ * Nodata is NaN. Results are deterministic for a given device; they match a float64
+ * CPU oracle to f32 rounding, not bitwise.
+ */
+export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
+  /** Prefix for every node and transient ID. */
+  readonly id: string;
+  /** Validated properties. */
+  readonly props: GPUInverseDistanceWeightingProps;
+  /** `grid.width * grid.height`. */
+  readonly cellCount: number;
+  /** Resolved spatial context; native planar when none was given. */
+  readonly spatialContext: GPUSpatialContext;
+  private readonly separation: InterpolationSeparation;
+  /** Compile-time nearest-neighbor capacity. */
+  readonly maximumNeighborCount: number;
+
+  constructor(props: GPUInverseDistanceWeightingProps) {
+    this.id = props.id ?? 'inverse-distance-weighting';
+    this.props = props;
+    const {id} = this;
+    this.separation = resolveInterpolationSeparation(id, props.spatialContext);
+    this.spatialContext = this.separation.context;
+    this.cellCount = validateRasterGrid(id, props.grid);
+    if (props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0) {
+      throw new Error(`${id} needs an axis-aligned grid`);
+    }
+    for (const [name, size] of [
+      ['indexGridSize[0]', props.indexGridSize[0]],
+      ['indexGridSize[1]', props.indexGridSize[1]]
+    ] as const) {
+      validateCapacity(id, name, size, 1, Number.MAX_SAFE_INTEGER);
+    }
+    const [minX, minY, maxX, maxY] = props.indexBounds;
+    if (
+      props.indexBounds.length !== 4 ||
+      !props.indexBounds.every(Number.isFinite) ||
+      minX > maxX ||
+      minY > maxY
+    ) {
+      throw new Error(`${id} indexBounds must be finite and ordered`);
+    }
+    this.maximumNeighborCount = props.maximumNeighborCount ?? 0;
+    validateCapacity(
+      id,
+      'maximumNeighborCount',
+      this.maximumNeighborCount,
+      0,
+      MAXIMUM_NEIGHBOR_CAPACITY
+    );
+    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validatePackedView(props.values, ['float32'], `${id} values`);
+    const sampleCount = props.values.length;
+    if (sampleCount < 1) {
+      throw new Error(`${id} needs at least one sample`);
+    }
+    if (props.positions.length !== sampleCount) {
+      throw new Error(`${id} positions length must equal values length`);
+    }
+    if (props.mask) {
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
+      if (props.mask.length !== sampleCount) {
+        throw new Error(`${id} mask length must equal values length`);
+      }
+    }
+    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    if (props.parameters.length < GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH) {
+      throw new Error(
+        `${id} parameters must hold ${GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} float32 values`
+      );
+    }
+    validatePackedView(props.output.values, ['float32'], `${id} output.values`);
+    if (props.output.values.length < this.cellCount) {
+      throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
+    }
+    if (props.output.counts) {
+      validatePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
+      if (props.output.counts.length < this.cellCount) {
+        throw new Error(`${id} output.counts must hold grid.width * grid.height rows`);
+      }
+      if (props.output.counts.buffer === props.output.values.buffer) {
+        throw new Error(`${id} outputs must not share buffers`);
+      }
+    }
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [props.output.values, props.output.counts],
+      [props.positions, props.values, props.mask, props.parameters]
+    );
+  }
+
+  /** Returns the grid index build, the in-cell sort, and the per-cell gather, in order. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {id, props, cellCount, maximumNeighborCount} = this;
+    const {output, grid, indexGridSize, indexBounds} = props;
+    const {width, height} = grid;
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.positions,
+      props.values,
+      props.mask,
+      props.parameters,
+      output.values,
+      output.counts
+    ]);
+    validateMaximumCount(
+      id,
+      'indexGridSize cells',
+      indexGridSize[0] * indexGridSize[1],
+      getGPUGridIndexMaximumCellCount(graph.device)
+    );
+    const sampleCount = props.values.length;
+    const indexCellCount = indexGridSize[0] * indexGridSize[1];
+    const cellOffsets = createTransientView(
+      graph,
+      `${id}-cell-offsets`,
+      'uint32',
+      indexCellCount + 1
+    );
+    const objectIds = createTransientView(graph, `${id}-object-ids`, 'uint32', sampleCount);
+    const sortedIds = createTransientView(graph, `${id}-sorted-ids`, 'uint32', sampleCount);
+    const indexCount = createTransientView(graph, `${id}-index-count`, 'uint32', 1);
+    const indexOverflow = createTransientView(graph, `${id}-index-overflow`, 'uint32', 1);
+    const nodes: GPUCommandNode<Parameters>[] = [
+      ...new GPUGridIndex({
+        id: `${id}-index`,
+        positions: props.positions,
+        gridSize: indexGridSize,
+        bounds: indexBounds,
+        cellOffsets,
+        objectIds,
+        count: indexCount,
+        overflow: indexOverflow
+      }).getCommandNodes(graph)
+    ];
+
+    // GPUGridIndex scatters IDs with atomics, so in-cell order varies between runs. Rank every ID
+    // within its cell to restore ascending row order before any floating-point sum depends on it.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-sort-cells`,
+        operation: OPERATION,
+        variant: 'sort-cells',
+        bindings: [
+          {
+            name: 'cellOffsets',
+            view: cellOffsets,
+            type: 'u32',
+            access: 'read'
+          },
+          {name: 'objectIds', view: objectIds, type: 'u32', access: 'read'},
+          {name: 'indexCount', view: indexCount, type: 'u32', access: 'read'},
+          {
+            name: 'sortedIds',
+            view: sortedIds,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: sampleCount,
+        declarations: `const INDEX_CELL_COUNT: u32 = ${indexCellCount}u;
+const SAMPLE_COUNT: u32 = ${sampleCount}u;`,
+        body: `if (index >= min(indexCount[indexCountOffset], SAMPLE_COUNT)) {
+    return;
+  }
+  let sample = objectIds[objectIdsOffset + index];
+  // Largest cell whose first slot is at or before this slot.
+  var low = 0u;
+  var high = INDEX_CELL_COUNT - 1u;
+  while (low < high) {
+    let middle = low + (high - low + 1u) / 2u;
+    if (cellOffsets[cellOffsetsOffset + middle] <= index) {
+      low = middle;
+    } else {
+      high = middle - 1u;
+    }
+  }
+  let start = cellOffsets[cellOffsetsOffset + low];
+  let end = cellOffsets[cellOffsetsOffset + low + 1u];
+  var rank = 0u;
+  for (var slot = start; slot < end; slot++) {
+    rank += select(0u, 1u, objectIds[objectIdsOffset + slot] < sample);
+  }
+  sortedIds[sortedIdsOffset + start + rank] = sample;`
+      })
+    );
+
+    const bindings: WGSLKernelBinding[] = [
+      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'sampleValues', view: props.values, type: 'f32', access: 'read'},
+      ...(props.mask
+        ? [
+            {
+              name: 'sampleMask',
+              view: props.mask,
+              type: 'u32',
+              access: 'read'
+            } as const
+          ]
+        : []),
+      {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
+      {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'},
+      {name: 'sortedIds', view: sortedIds, type: 'u32', access: 'read'},
+      {
+        name: 'valuesOut',
+        view: output.values,
+        type: 'f32',
+        access: 'read_write'
+      },
+      ...(output.counts
+        ? [
+            {
+              name: 'countsOut',
+              view: output.counts,
+              type: 'u32',
+              access: 'read_write'
+            } as const
+          ]
+        : [])
+    ];
+    const hasNeighborLimit = maximumNeighborCount > 0;
+    nodes.push(
+      ...createTiledWGSLKernelNodes<Parameters>(
+        graph,
+        {
+          id: `${id}-gather`,
+          operation: OPERATION,
+          variant: hasNeighborLimit ? 'gather-nearest' : 'gather-radius',
+          record: {formula: 'gpu-spatial-analysis.inverse-distance-weighting'},
+          bindings,
+          invocationCount: cellCount,
+          workgroupSize: 64,
+          declarations: `const WIDTH: u32 = ${width}u;
+const HEIGHT: u32 = ${height}u;
+const INDEX_WIDTH: u32 = ${indexGridSize[0]}u;
+const INDEX_HEIGHT: u32 = ${indexGridSize[1]}u;
+const MAX_NEIGHBORS: u32 = ${maximumNeighborCount}u;
+const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[0])}, ${getWGSLFloatLiteral(indexBounds[1])});
+const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[2])}, ${getWGSLFloatLiteral(indexBounds[3])});
+${GRID_COORDINATE_WGSL}
+${getSeparationWGSL(this.separation)}
+${WEIGHT_ACCUMULATOR_WGSL}`,
+          body: getGatherBody(
+            Boolean(props.mask),
+            Boolean(output.counts),
+            hasNeighborLimit,
+            this.separation.geographic
+          )
+        },
+        props.invocationTileSize
+      )
+    );
+    return nodes;
+  }
+}
+
+/** Same cell mapping as `GPUGridIndex`, plus finiteness and NaN helpers. */
+export const GRID_COORDINATE_WGSL = /* wgsl */ `
+${IS_FINITE_VALUE_WGSL}
+${IS_NAN_BITS_WGSL}// WGSL rejects NaN constants, so build one from a runtime bit pattern.
+${GET_NAN_WGSL}
+fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
+  if (maximum == minimum || value == minimum) { return 0u; }
+  if (value == maximum) { return size - 1u; }
+  if (minimum < 0.0 && maximum > 0.0) {
+    let scale = max(abs(minimum), abs(maximum));
+    let scaledValue = value / scale;
+    let scaledMinimum = minimum / scale;
+    let scaledMaximum = maximum / scale;
+    return min(
+      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
+      size - 1u
+    );
+  }
+  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
+}`;
+
+/**
+ * Log-space weighted mean: weights are `exp2(logWeight - maximumLogWeight)`, rescaled whenever a
+ * larger weight arrives, so every stored weight is in `(0, 1]`.
+ */
+const WEIGHT_ACCUMULATOR_WGSL = /* wgsl */ `
+struct WeightAccumulator {
+  maximumLogWeight: f32,
+  weightSum: f32,
+  weightedSum: f32,
+  isEmpty: bool,
+}
+
+fn addWeightedSample(accumulator: ptr<function, WeightAccumulator>, power: f32, radius: f32, useTaper: bool, distanceSquared: f32, value: f32) {
+  if (distanceSquared == 0.0) {
+    return;
+  }
+  var logWeight = -0.5 * power * log2(distanceSquared);
+  if (useTaper) {
+    // Franke-Nielson: w = ((R - d) / (R d))^p, zero at and beyond R.
+    let distance = sqrt(distanceSquared);
+    if (!(distance < radius)) {
+      return;
+    }
+    logWeight = power * (log2(radius - distance) - log2(radius * distance));
+  }
+  if ((*accumulator).isEmpty) {
+    (*accumulator).maximumLogWeight = logWeight;
+    (*accumulator).weightSum = 1.0;
+    (*accumulator).weightedSum = value;
+    (*accumulator).isEmpty = false;
+  } else if (logWeight > (*accumulator).maximumLogWeight) {
+    let scale = exp2((*accumulator).maximumLogWeight - logWeight);
+    (*accumulator).weightSum = (*accumulator).weightSum * scale + 1.0;
+    (*accumulator).weightedSum = (*accumulator).weightedSum * scale + value;
+    (*accumulator).maximumLogWeight = logWeight;
+  } else {
+    let weight = exp2(logWeight - (*accumulator).maximumLogWeight);
+    (*accumulator).weightSum += weight;
+    (*accumulator).weightedSum += weight * value;
+  }
+}`;
+
+function getGatherBody(
+  hasMask: boolean,
+  hasCounts: boolean,
+  hasNeighborLimit: boolean,
+  geographic: boolean
+): string {
+  const nearestDeclarations = hasNeighborLimit
+    ? `var nearDistances: array<f32, MAX_NEIGHBORS>;
+  var nearRows: array<u32, MAX_NEIGHBORS>;
+  var nearCount = 0u;`
+    : '';
+  const contribute = hasNeighborLimit
+    ? `if (neighborLimit == 0u) {
+          count += 1u;
+          addWeightedSample(&accumulator, power, radius, useTaper, getSquaredMeters(distanceSquared), value);
+        } else {
+          let last = neighborLimit - 1u;
+          let isFull = nearCount >= neighborLimit;
+          if (!isFull || distanceSquared < nearDistances[last] ||
+              (distanceSquared == nearDistances[last] && sample < nearRows[last])) {
+            var position = select(nearCount, last, isFull);
+            loop {
+              if (position == 0u) { break; }
+              let previousDistance = nearDistances[position - 1u];
+              let previousRow = nearRows[position - 1u];
+              if (previousDistance < distanceSquared ||
+                  (previousDistance == distanceSquared && previousRow < sample)) {
+                break;
+              }
+              nearDistances[position] = previousDistance;
+              nearRows[position] = previousRow;
+              position -= 1u;
+            }
+            nearDistances[position] = distanceSquared;
+            nearRows[position] = sample;
+            nearCount = min(nearCount + 1u, neighborLimit);
+          }
+        }`
+    : `count += 1u;
+        addWeightedSample(&accumulator, power, radius, useTaper, getSquaredMeters(distanceSquared), value);`;
+  const nearestFinish = hasNeighborLimit
+    ? `if (neighborLimit > 0u) {
+    count = nearCount;
+    for (var near = 0u; near < nearCount; near++) {
+      let row = nearRows[near];
+      addWeightedSample(&accumulator, power, radius, useTaper, getSquaredMeters(nearDistances[near]), sampleValues[sampleValuesOffset + row]);
+    }
+  }`
+    : '';
+  const visit = `let value = sampleValues[sampleValuesOffset + sample];
+        if (isNanBits(value)) {
+          continue;
+        }
+        ${hasMask ? 'if (sampleMask[sampleMaskOffset + sample] == 0u) {\n          continue;\n        }' : ''}
+        let position = vec2f(positions[positionsOffset + 2u * sample], positions[positionsOffset + 2u * sample + 1u]);
+        let distanceSquared = getSeparationKey(position - origin, localCenter);
+        if (!(distanceSquared <= radiusSquared)) {
+          continue;
+        }
+        if (distanceSquared == 0.0 && sample < exactRow) {
+          exactRow = sample;
+          exactValue = value;
+        }
+        ${contribute}`;
+  return `let column = index % WIDTH;
+  let rasterRow = index / WIDTH;
+  let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
+  let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
+  let radius = params[paramsOffset + 4u];
+  let power = params[paramsOffset + 5u];
+  let neighborLimitValue = params[paramsOffset + 6u];
+  let minimumNeighborValue = params[paramsOffset + 7u];
+  let neighborLimit = u32(clamp(select(0.0, neighborLimitValue, isFiniteValue(neighborLimitValue)), 0.0, f32(MAX_NEIGHBORS)));
+  let minimumNeighbors = max(u32(clamp(select(1.0, minimumNeighborValue, isFiniteValue(minimumNeighborValue)), 0.0, 4294967040.0)), 1u);
+  // Use the same positive offsets for either row order. Computing southward offsets from the
+  // opposite corner can round a coincident sample away from zero, averaging duplicate hits and
+  // applying the minimum-neighbor gate instead of the exact-hit rule.
+  let gridMinimum = min(gridStart, gridEnd);
+  let cellSize = abs(gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));
+  let sampleColumn = select(column, WIDTH - 1u - column, gridEnd.x < gridStart.x);
+  let sampleRow = select(rasterRow, HEIGHT - 1u - rasterRow, gridEnd.y < gridStart.y);
+  let cellOffset = (vec2f(f32(sampleColumn), f32(sampleRow)) + vec2f(0.5)) * cellSize;
+  let center = gridMinimum + cellOffset;
+  // Great-circle distances take absolute lon/lat, so the origin is zero there.
+  let origin = ${geographic ? 'vec2f(0.0)' : 'gridMinimum'};
+  let localCenter = ${geographic ? 'center' : 'cellOffset'};
+  let useTaper = params[paramsOffset + 8u] > 0.5;
+  let radiusSquared = getRadiusKey(radius);
+  let queryBox = getQueryBox(center, radius);
+  let queryMin = queryBox.minimum;
+  let queryMax = queryBox.maximum;
+  let valid = isFiniteValue(center.x) && isFiniteValue(center.y) && radius >= 0.0 &&
+    isFiniteValue(power) && power >= 0.0 && (!useTaper || isFiniteValue(radius)) &&
+    all(queryMax >= DOMAIN_MIN) && all(queryMin <= DOMAIN_MAX);
+  var accumulator = WeightAccumulator(0.0, 0.0, 0.0, true);
+  var count = 0u;
+  var exactRow = 0xffffffffu;
+  var exactValue = 0.0;
+  ${nearestDeclarations}
+  if (valid) {
+    let clampedMin = max(queryMin, DOMAIN_MIN);
+    let clampedMax = min(queryMax, DOMAIN_MAX);
+    // Widen by one index cell per side to absorb f32 rounding in the binning pass; the exact
+    // distance test rejects the extra candidates.
+    var columnLow = getCoordinate(clampedMin.x, DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH);
+    var rowLow = getCoordinate(clampedMin.y, DOMAIN_MIN.y, DOMAIN_MAX.y, INDEX_HEIGHT);
+    columnLow = columnLow - min(columnLow, 1u);
+    rowLow = rowLow - min(rowLow, 1u);
+    let columnHigh = min(getCoordinate(clampedMax.x, DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH) + 1u, INDEX_WIDTH - 1u);
+    let rowHigh = min(getCoordinate(clampedMax.y, DOMAIN_MIN.y, DOMAIN_MAX.y, INDEX_HEIGHT) + 1u, INDEX_HEIGHT - 1u);
+    // With a per-frame k, the k nearest are order independent (total order (d^2, row)), so an
+    // expanding-ring walk may stop early. Radius-only sums depend on the visiting order, so they
+    // keep the fixed sorted row-major sweep.
+    ${
+      hasNeighborLimit && !geographic
+        ? `if (neighborLimit > 0u) {
+      ${getRingScanWGSL(visit)}
+    } else {
+      ${getRectangleScanWGSL(visit)}
+    }`
+        : getRectangleScanWGSL(visit)
+    }
+  }
+  ${nearestFinish}
+  var result = getNaN();
+  if (exactRow != 0xffffffffu) {
+    result = exactValue;
+  } else if (count >= minimumNeighbors && !accumulator.isEmpty) {
+    result = accumulator.weightedSum / accumulator.weightSum;
+  }
+  valuesOut[valuesOutOffset + index] = result;
+  ${hasCounts ? 'countsOut[countsOutOffset + index] = count;' : ''}`;
+}

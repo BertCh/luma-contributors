@@ -13,8 +13,8 @@ import {
   type GPUNeighborSearchWeightKind,
   type GPUSpatialWeightsInformation,
   type GPUSpatialWeightsKernel
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 import type {Geography} from './b4-geography';

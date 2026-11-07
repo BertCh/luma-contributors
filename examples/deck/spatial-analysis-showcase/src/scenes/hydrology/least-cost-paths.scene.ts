@@ -606,11 +606,11 @@ export default defineScene<LeastCostOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUCostDistance, GPUCostDistancePath, GPUDistanceField,
   getGPUCostDistanceParameterValues, getGPUDistanceFieldParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-raster';
 
 // Friction kernel: minutes per metre, NaN for barriers (cliffs, water).
 //   friction = 0.01 * exp(3.5 * ${state.slopePenalty} * tan(slope)) * landCoverFactor[class]

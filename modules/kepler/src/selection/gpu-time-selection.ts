@@ -4,16 +4,16 @@
 
 import {readBufferUint32Scalar} from '../runtime/gpu-readback';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUTimeWindowFilter,
   getGPUTimeWindowFilterWordParameterValues
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 export type GPUKeplerTimeUnit = 'second' | 'millisecond' | 'microsecond' | 'nanosecond';
 

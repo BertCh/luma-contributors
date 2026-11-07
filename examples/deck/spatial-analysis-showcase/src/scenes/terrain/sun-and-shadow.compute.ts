@@ -26,7 +26,7 @@ import {
   GPUTerrainCastShadow,
   GPUTerrainDerivatives,
   GPUTerrainHorizon
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {ALPS} from '../../cartography/gazetteer';
 import {getTerrainInk} from './terrain-palettes';
 import type {MapAnnotation} from '../../cartography/types';

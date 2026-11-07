@@ -23,12 +23,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUHistogram,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUHistogram, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   getGPUTerrainDerivativesParameterValues,
   getGPUTerrainFlowFieldParameterValues,
@@ -46,15 +41,8 @@ import {
   GPUTerrainStreamOrder,
   GPUTerrainWatersheds,
   type GPUTerrainFlowRouting
-} from '@luma-contributors/graph/gpu-terrain';
-import {
-  getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionUint32ParameterValues,
-  GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
-  GPUParticleAdvection,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues, GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH, GPUParticleAdvection, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {

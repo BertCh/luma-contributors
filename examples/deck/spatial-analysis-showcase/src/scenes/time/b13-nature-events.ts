@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {LoadedDataset} from '../../data/catalog';
-import {getInt64TimeWords} from '@luma-contributors/graph/gpu-dataframe';
+import {getInt64TimeWords} from '@luma-contributors/analysis/dataframe-analysis';
 
 /** Epoch milliseconds of 2023-01-01 00:00 (the dataset's clock is local time stored as UTC). */
 export const NATURE_YEAR_START_MS = Date.UTC(2023, 0, 1);

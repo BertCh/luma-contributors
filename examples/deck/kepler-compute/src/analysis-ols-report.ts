@@ -6,7 +6,7 @@ import {
   getGPUOrdinaryLeastSquaresModelResult,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ADJUSTED_R_SQUARED,
   type GPUOrdinaryLeastSquaresReadback
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerOLSSettings} from '@luma-contributors/kepler';
 
 export type OLSAnalysisSummary = {

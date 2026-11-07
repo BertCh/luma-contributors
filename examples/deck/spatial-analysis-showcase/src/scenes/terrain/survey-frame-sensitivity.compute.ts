@@ -4,8 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUTerrainDEMCoregistration} from '@luma-contributors/graph/gpu-terrain';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUTerrainDEMCoregistration} from '@luma-contributors/analysis/gpu-terrain';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';

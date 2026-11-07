@@ -7,7 +7,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView,
   type GraphBufferHandle
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 
 /** Uploaded previous-day rainfall, one state's station indices and the destination handle. */
 export type GatherExampleInput = {

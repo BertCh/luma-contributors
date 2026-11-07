@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {getGPUNetworkSubgraphFilterParameterValues} from '@luma-contributors/graph/gpu-network';
+import {getGPUNetworkSubgraphFilterParameterValues} from '@luma-contributors/analysis/gpu-network';
 import {
   describeNetworkElement,
   recordNetworkElement,

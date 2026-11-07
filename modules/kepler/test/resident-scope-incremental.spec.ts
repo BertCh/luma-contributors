@@ -5,9 +5,9 @@
 import {expect, it} from 'vitest';
 import * as arrow from 'apache-arrow';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {KeplerComputeSession} from '../src/session/compute-session';
 import {ResidentScopeBinding} from '../../../examples/deck/kepler-compute/src/resident-scope-binding';
 import {

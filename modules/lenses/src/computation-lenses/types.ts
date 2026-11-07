@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import type {
   GPUComputationRecord,
   GPUComputationRecordWithSidecars
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import type {LensRungId} from '../computation-views/types';
 
 /** Scenario identifier: `<entry>.<element>[.<variant>]`, with kebab-case segments. */

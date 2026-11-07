@@ -7,11 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUDelaunayTessellation,
   GPUVoronoiDiagram
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Places in UTM 16N metres (planar) and the uploaded output slots of the two elements. */
 export type VoronoiDiagramExampleInput = {

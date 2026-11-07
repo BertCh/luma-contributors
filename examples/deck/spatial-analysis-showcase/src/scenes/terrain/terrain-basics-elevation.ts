@@ -11,8 +11,8 @@
  * 3. The chosen heights land in the session's elevation buffer, which every product graph reads.
  */
 
-import {GPUTerrainRGBDecode, GPUTerrainSpikeRepair} from '@luma-contributors/graph/gpu-terrain';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUTerrainRGBDecode, GPUTerrainSpikeRepair} from '@luma-contributors/analysis/gpu-terrain';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {addKernelPass} from '../../engine/mode-kernels';

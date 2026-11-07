@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCellSetOutline} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCellSetOutline} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Sorted, distinct H3 resolution-8 cell table produced by the lens scenario, with its row count. */
 export type CellSetOutlineExampleInput = {

@@ -3,15 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert, Buffer} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import {
-  createTransientView,
-  getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
-  validatePackedView,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
+import {createTransientView, getBoundedDispatchLayout, getBoundedInvocationIndexSource, validatePackedView, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUKeplerTimeUnit} from '@luma-contributors/kepler';
 
 /**

@@ -362,10 +362,10 @@ export default defineScene<StreetDensityOptions>({
     return [marker !== null && marker !== undefined ? {...legend, marker} : legend];
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPULineDensity, GPULineLengthPerPolygon, getGPULineDensityParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 ${
   state.system === 'spherical'

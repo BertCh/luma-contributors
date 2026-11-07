@@ -1,0 +1,47 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {expect, it} from 'vitest';
+import {GPUSegmentRingAssembly} from '../../../src/analysis-core/ring-assembly/index';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getStorageBindingCount
+} from '../../utils/gpu-contributor-test-utils';
+
+it('GPUSegmentRingAssembly kernels stay within 8 storage bindings', () => {
+  for (const pairedOpposites of [false, true]) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice(), {
+      id: `ring-limits-${pairedOpposites}`
+    });
+    let serial = 0;
+    const view = <Format extends 'uint32' | 'float32' | 'float32x2' | 'float32x4'>(
+      format: Format,
+      length: number
+    ) => createTransientView(graph, `ring-limit-${serial++}`, format, length);
+    const nodes = new GPUSegmentRingAssembly({
+      endpoints: view('float32x4', 16),
+      count: view('uint32', 1),
+      groups: view('uint32', 16),
+      pairedOpposites,
+      cancelOpposingSegments: true,
+      output: {
+        ringOffsets: view('uint32', 5),
+        positions: view('float32x2', 32),
+        ringShells: view('uint32', 4),
+        status: {
+          count: view('uint32', 1),
+          overflow: view('uint32', 1)
+        }
+      }
+    }).getCommandNodes(graph);
+    const sources = getGPUCommandNodeKernelSources(nodes);
+    expect(sources.length).toBeGreaterThan(10);
+    for (const {id, source} of sources) {
+      expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
+    }
+    expect(sources.some(({id}) => id.includes('quantize-extent'))).toBe(true);
+  }
+});

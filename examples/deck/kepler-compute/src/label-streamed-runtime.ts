@@ -5,7 +5,7 @@
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, type GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, type GPUVector} from '@luma.gl/graph/gpu-data';
 import {buildBitmapFontAtlas, buildSdfFontAtlas, GPUTextResources} from '@luma.gl/engine/text';
 import type {FontAtlas} from '@luma.gl/engine/text';
 import type {GPUPointLabelBatch} from '@deck.gl-community/gpu-layers';

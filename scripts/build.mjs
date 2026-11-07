@@ -11,7 +11,7 @@ import {readdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {transform} from 'esbuild';
 
-const MODULES = ['graph', 'lenses', 'kepler'];
+const MODULES = ['analysis', 'lenses', 'kepler'];
 const repositoryRoot = new URL('../', import.meta.url);
 
 for (const moduleName of MODULES) {

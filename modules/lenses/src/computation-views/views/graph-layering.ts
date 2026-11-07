@@ -5,7 +5,7 @@
 import type {
   GPUComputationGraph,
   GPUComputationEdgeKind
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 
 /** A declared node, optionally representing several unrolled loop copies. */
 export type FoldedNode = {

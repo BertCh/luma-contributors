@@ -3,16 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerPointWeights} from '../src/analysis/point-weights';
-import {importGraphBuffer} from '../../graph/src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../analysis/src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
   readUint32
-} from '../../graph/test/utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+} from '../../analysis/test/utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 const rowCount = 300;
 const settings = {

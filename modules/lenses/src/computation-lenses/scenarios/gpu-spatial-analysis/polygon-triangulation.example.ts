@@ -3,16 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {
-  createTransientView,
-  GPUGather,
-  type GPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, GPUGather, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUPolygonTriangulation,
   getPolygonTriangulationIndexCount,
   type GPUPolygonGeometryFields
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Parks uploaded by the lens scenario, in UTM 16N metres (planar, as the element requires). */
 export type PolygonTriangulationExampleInput = {parks: GPUPolygonGeometryFields};

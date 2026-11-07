@@ -3,28 +3,31 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUHotSpotAnalysis,
   GPULocalMoran,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   getGPUSpatialAutocorrelationParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerPointWeights} from '../src/analysis/point-weights';
 import {
   buildKeplerStreamedPointWeights,
   importKeplerStreamedPointWeights
 } from '../src/analysis/point-weights-streamed';
-import {GPUParameterBuffer, importGraphBuffer} from '../../graph/src/utils/gpu-contributor-utils';
+import {
+  GPUParameterBuffer,
+  importGraphBuffer
+} from '../../analysis/src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
   readUint32,
   submitGraph
-} from '../../graph/test/utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+} from '../../analysis/test/utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 const settings = {
   kind: 'distance-band' as const,

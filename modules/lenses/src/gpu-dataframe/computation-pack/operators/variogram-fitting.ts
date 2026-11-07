@@ -26,7 +26,7 @@ export const VARIOGRAM_FITTING_OPERATORS: DataFrameFamilyOperators = {
       diagnostics: {level: 'interval', extent: 'intensive'},
       statuses: {level: 'nominal'}
     },
-    sourceFiles: ['modules/graph/src/gpu-dataframe/pair-statistics/gpu-variogram-model-fit.ts'],
+    sourceFiles: ['modules/analysis/src/gpu-dataframe/pair-statistics/gpu-variogram-model-fit.ts'],
     metadata: {gpuResident: true, defaultRangeSteps: 200, defaultMaximumIterations: 32}
   }
 };

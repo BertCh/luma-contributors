@@ -46,12 +46,7 @@ import {
   type GPUPathLayerProps,
   type GPUSolidPolygonLayerProps
 } from '@deck.gl-community/gpu-layers';
-import type {
-  GPUData,
-  GPUVector,
-  GPUVectorFormat,
-  VertexList
-} from '@luma-contributors/graph/gpu-data';
+import type {GPUData, GPUVector, GPUVectorFormat, VertexList} from '@luma.gl/graph/gpu-data';
 import type {NativeStylePlan} from './native-style-plan';
 import {planKeplerTripAnimation} from '@luma-contributors/kepler';
 

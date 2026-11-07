@@ -13,7 +13,7 @@ import type {
   KeplerPolygonWeightsSettings
 } from '../src/recipes/analysis-recipe';
 import {AnalysisRuntime} from '../../../examples/deck/kepler-compute/src/analysis-runtime';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 function square(left: number, bottom: number) {
   return {

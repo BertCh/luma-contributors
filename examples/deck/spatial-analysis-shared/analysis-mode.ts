@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {CommandEncoder} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {SpatialAnalysisColor} from './layer-constants';
 
 /**

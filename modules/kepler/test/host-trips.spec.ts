@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it, vi} from 'vitest';
-import {type GPUVector} from '@luma-contributors/graph/gpu-data';
+import {type GPUVector} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {TripRuntime} from '../../../examples/deck/kepler-compute/src/trip-runtime';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {createTripRuntimeFixture} from './utils/trip-runtime-fixture';
 
 async function readWords(vector: GPUVector): Promise<number[]> {

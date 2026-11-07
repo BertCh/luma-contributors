@@ -6,7 +6,7 @@ import {runExample as runTrajectoryKalman} from './trajectory-kalman.example';
 import {runExample as runTrajectoryRestriction} from './trajectory-restriction.example';
 import {runExample as runTrackSimilaritySearch} from './track-similarity-search.example';
 import {Buffer, type Device, type VertexFormat} from '@luma.gl/core';
-import {createTransientView} from '@luma-contributors/graph/gpu-core';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {runS3Lens, type S3CaptureSpec} from './s3-lens-run';
 
 export type TrajectoryCoverageKind =

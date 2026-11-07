@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_TERRAIN_VISIBILITY} from '@luma-contributors/graph/gpu-terrain';
+import {GPU_TERRAIN_VISIBILITY} from '@luma-contributors/analysis/gpu-terrain';
 
 /** An RGBA color, 0-255 per channel; alpha defaults to 255. */
 export type SpatialAnalysisColor = readonly [number, number, number, number?];

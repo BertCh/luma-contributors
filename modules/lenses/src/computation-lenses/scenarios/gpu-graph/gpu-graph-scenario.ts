@@ -18,9 +18,9 @@ import {
   type GPUComputationRecord,
   type GPUComputationRecordWithSidecars,
   type GPUComputationSeries
-} from '@luma-contributors/graph/computation-record';
-import type {CompiledGPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPUVector, GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+} from '@luma-contributors/analysis/computation-record';
+import type {CompiledGPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUVector, GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {GPU_CORE_FORMULAS} from '../../../computation-views/packs/gpu-core/formulas';
 import {GPU_GRAPH_FORMULAS} from './computation-pack';
 import {

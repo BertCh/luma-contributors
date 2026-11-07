@@ -13,17 +13,12 @@ import {
   isResidentSqlTimeColumn,
   readResidentSqlTimeColumn
 } from './resident-sql-time-columns';
-import {makeArrowTableFromGPUAnalyticsTable} from '@luma-contributors/graph/arrow';
+import {makeArrowTableFromGPUAnalyticsTable} from '@luma.gl/graph/arrow';
 import {Buffer} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  CompiledGPUDataFrameGlobalSort,
-  CompiledGPUDataFrameGroupedAggregation,
-  CompiledGPUDataFrameJoin,
-  GPUDataFrame
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUCommandGraph, GPUGather, type GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {GPUSQLContext, type GPUSQLQuery} from '@luma-contributors/graph/gpu-sql';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {CompiledGPUDataFrameGlobalSort, CompiledGPUDataFrameGroupedAggregation, CompiledGPUDataFrameJoin, GPUDataFrame} from '@luma.gl/graph/gpu-dataframe';
+import {GPUCommandGraph, GPUGather, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUSQLContext, type GPUSQLQuery} from '@luma.gl/graph/gpu-sql';
 import {
   estimateKeplerResidentRowCacheByteLength,
   type KeplerArrowDataset,

@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUKernelDensityParameterValues,
   GPUKernelDensity,
@@ -13,7 +13,7 @@ import {
   type GPUKernelDensityKernel,
   type GPUKernelDensityMethod,
   type GPUKernelDensityNormalization
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';

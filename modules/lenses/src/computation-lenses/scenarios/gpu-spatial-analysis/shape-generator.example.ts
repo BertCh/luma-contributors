@@ -7,11 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUShapeGenerator,
   getGPUShapeVertexCount
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Circle centres and radii in UTM 16N metres (planar), and the per-frame segment count. */
 export type ShapeGeneratorExampleInput = {

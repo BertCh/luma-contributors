@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {WEB_MERCATOR_PROJECTION, formatNumber, type PolygonLayout} from './b3-common';
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {unprojectWebMercatorMeters} from '../../engine/web-mercator';
 import type {LoadedDataset} from '../../data/catalog';
 

@@ -10,11 +10,7 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {
-  getGPUClassBreaksParameterValues,
-  getGPUColorScaleParameterValues,
-  packGPUColor
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addChangeOfSupportRecipe,
   addPointsInPolygonsChoroplethRecipe,
@@ -23,12 +19,9 @@ import {
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUPolygonRasterizationParameterValues,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+import {getGPUPolygonRasterizationParameterValues, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getDatasetFrame,
   getFrameDisplayModelMatrix,

@@ -7,8 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkCostTable, type GPUNetworkTopology} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {
+  GPUNetworkCostTable,
+  type GPUNetworkTopology
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: the road network with travel seconds, and the one-row cost limit. */
 export type NetworkCostTableExampleInput = {

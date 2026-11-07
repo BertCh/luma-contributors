@@ -7,7 +7,7 @@ import {CITY_FRAMES, labelsFor, MONTREAL} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './bixi-communities.md?raw';
+import narrative from './bixi-communities.md?raw?raw';
 import type {BixiCommunitiesOptions} from './bixi-communities.compute';
 import {getCommunityLegends} from './bixi-communities-style';
 import {FLOW_CREDITS} from './flows-style';
@@ -26,11 +26,11 @@ const CREDIT = joinCredits(
 const cartouche = (title: string) => ({title: {title}});
 
 function getSnippet(state: BixiCommunitiesOptions): string {
-  return `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUGraphAlgorithmsData, GPUGraphAlgorithmsTopology, GPUGraphAlgorithmsLabelPropagation,
   GPUGraphAlgorithmsModularityOptimization, GPUGraphAlgorithmsModularity
-} from '@luma-contributors/graph/gpu-graph-algorithms';
+} from '@luma-contributors/analysis/gpu-graph-algorithms';
 
 // Caller-owned vectors: edge columns (rides as weights), CSR, and every output.
 // Edges below ${state.minRides} rides/day, beyond ${state.maxDistanceKm} km or outside the

@@ -5,7 +5,7 @@
 import type {
   GPUAnalysisChoice,
   GPUComputationAttributeValue
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 
 import type {SpatialAnalysisStage} from './stages';
 

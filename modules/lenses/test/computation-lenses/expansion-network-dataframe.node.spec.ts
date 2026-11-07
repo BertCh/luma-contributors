@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import {validateGPUComputationRecord} from '@luma-contributors/graph/computation-record';
-import {GPUCommandGraph, type GPUCommandGraphComputeNode} from '@luma-contributors/graph/gpu-core';
+import {validateGPUComputationRecord} from '@luma-contributors/analysis/computation-record';
+import {GPUCommandGraph, type GPUCommandGraphComputeNode} from '@luma.gl/graph/gpu-core';
 import {describeExpansion} from '../../src/computation-lenses/scenarios/gpu-network/expansion.lens';
 import {buildExpansion} from '../../src/computation-lenses/scenarios/gpu-dataframe/expansion.run';
-import {createNullWebGPUDevice} from '@luma-contributors/graph/testing';
+import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
 for (const kind of [
   'network-structure',

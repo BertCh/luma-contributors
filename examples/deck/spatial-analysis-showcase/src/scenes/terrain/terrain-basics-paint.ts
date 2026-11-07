@@ -15,7 +15,7 @@
  * aspect from the first and the slope from the second.
  */
 
-import type {GraphDataView, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GraphDataView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {COLORMAP_INDEXES, getRampWgsl, type RampName} from '../../engine/ramps';
 import {clamp} from '@math.gl/core';

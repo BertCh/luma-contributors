@@ -3,15 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {runExample as runDistribution} from '../../../src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-fractional-zonal-distribution.example';
 import {runExample as runFocalPairs} from '../../../src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-focal-pairs.example';
 import {runExample as runDasymetric} from '../../../src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-dasymetric.example';
 import {createCoverageTrancheOneHarness} from './coverage-tranche-one-harness';
-import {submitGraph} from '@luma-contributors/graph/testing';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {submitGraph} from '@luma-contributors/analysis/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 
 const environment = (import.meta as unknown as {env?: Record<string, string | undefined>}).env;
 const RUN_BENCHMARK = environment?.['VITE_COVERAGE_TRANCHE_ONE_BENCHMARK'] === 'true';

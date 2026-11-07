@@ -6,7 +6,7 @@ import {expect, test} from 'vitest';
 import {REGRESSION_OPERATORS} from '../../../src/gpu-spatial-analysis/computation-pack/operators/regression';
 import {expectFormulaBindingsExist, expectSpatialEntryWellFormed} from './formula-bindings';
 
-const REGRESSION_DIRECTORY = 'modules/graph/src/gpu-spatial-analysis/spatial-regression';
+const REGRESSION_DIRECTORY = 'modules/analysis/src/gpu-spatial-analysis/spatial-regression';
 
 /** Generator sources of the WGSL each regression formula binds to. */
 const kernelSources: Record<string, string[]> = {

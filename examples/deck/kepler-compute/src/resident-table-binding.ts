@@ -4,14 +4,8 @@
 
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUMask,
-  createTransientVectorView,
-  type CompiledGPUCommandGraph,
-  type GraphVectorView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUMask, createTransientVectorView, type CompiledGPUCommandGraph, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {
   GPUKeplerSpatialSelection,
   prepareKeplerSpatialSelection,

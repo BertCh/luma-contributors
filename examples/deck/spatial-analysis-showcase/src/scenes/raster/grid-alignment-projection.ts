@@ -3,17 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
-import {
-  compileProjectionPlan,
-  evaluateProjectionPlan,
-  evaluateProjectionProgram,
-  type ProjectionPlan,
-  type ProjectionProgram
-} from '@luma-contributors/graph/gpu-project';
+import {compileProjectionPlan, evaluateProjectionPlan, evaluateProjectionProgram, type ProjectionPlan, type ProjectionProgram} from '@luma.gl/graph/gpu-project';
 import {
   GPU_WGS84_FLATTENING,
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {getMercatorY} from '../../engine/web-mercator';
 import {utmToLngLat} from './b16-common';
 import {toRadians} from '@math.gl/core';

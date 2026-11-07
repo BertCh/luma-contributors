@@ -6,8 +6,8 @@ import {statSync} from 'node:fs';
 import {describe, expect, test} from 'vitest';
 import {loadLineLengthPerPolygonInputs} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/line-length-per-polygon.lens';
 import {loadS3ChicagoRoads} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/s3-lens-data';
-import type {Point} from '@luma-contributors/graph/test/gpu-spatial-analysis/line-density/line-density-oracle';
-import {computeLineLengthPerPolygon} from '@luma-contributors/graph/test/gpu-spatial-analysis/line-density/line-length-per-polygon-oracle';
+import type {Point} from '@luma-contributors/analysis/test/gpu-spatial-analysis/line-density/line-density-oracle';
+import {computeLineLengthPerPolygon} from '@luma-contributors/analysis/test/gpu-spatial-analysis/line-density/line-length-per-polygon-oracle';
 
 function getPaths(positions: Float32Array, offsets: Uint32Array): Point[][] {
   return Array.from({length: offsets.length - 1}, (_, path) =>

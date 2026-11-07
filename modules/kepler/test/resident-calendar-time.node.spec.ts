@@ -3,14 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import * as arrow from 'apache-arrow';
 import {expect, test, vi} from 'vitest';
 import {
   createNullWebGPUDevice,
   getParsedKernelSources,
   getStorageBindingCount
-} from '../../graph/test/utils/gpu-contributor-test-utils';
+} from '../../analysis/test/utils/gpu-contributor-test-utils';
 import {makeResidentCalendarTimeView} from '../../../examples/deck/kepler-compute/src/resident-calendar-time';
 
 function makeFixture() {

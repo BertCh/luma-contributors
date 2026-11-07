@@ -4,11 +4,11 @@
 
 import {ScatterplotLayer} from '@deck.gl/layers';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUHierarchicalDensityClustering,
   GPUOPTICS
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {CHICAGO, findPlace} from '../../cartography/gazetteer';
 import {formatCount, formatDistance} from '../../cartography/live-text';
 import type {LngLat} from '../../cartography/types';

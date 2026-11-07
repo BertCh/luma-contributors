@@ -3,22 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {
-  getGPUCalendarBucketsParameterValues,
-  getGPUTimeWindowFilterWordParameterValues,
-  getGPUTimeZoneTransitionTable,
-  GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
-  GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH,
-  GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
-  GPUCalendarBuckets,
-  GPUGroupStatistics,
-  GPUTimeWindowFilter
-} from '@luma-contributors/graph/gpu-dataframe';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {getGPUCalendarBucketsParameterValues, getGPUTimeWindowFilterWordParameterValues, getGPUTimeZoneTransitionTable, GPU_CALENDAR_BUCKETS_MATRIX_LENGTH, GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH, GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH, GPUCalendarBuckets, GPUGroupStatistics, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {
   SpatialAnalysisPointLayer,

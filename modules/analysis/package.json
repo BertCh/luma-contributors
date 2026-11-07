@@ -1,0 +1,104 @@
+{
+  "name": "@luma-contributors/analysis",
+  "version": "0.1.0-alpha.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "GPU geospatial and analysis operations (spatial analysis, network, terrain, dataframe, raster, point cloud) built on published luma.gl.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/visgl/luma-contributors",
+    "directory": "modules/analysis"
+  },
+  "types": "dist/index.d.ts",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./computation-record": {
+      "types": "./dist/computation-record/index.d.ts",
+      "import": "./dist/computation-record/index.js",
+      "require": "./dist/computation-record/index.cjs"
+    },
+    "./gpu-spatial-analysis": {
+      "types": "./dist/gpu-spatial-analysis/index.d.ts",
+      "import": "./dist/gpu-spatial-analysis/index.js",
+      "require": "./dist/gpu-spatial-analysis/index.cjs"
+    },
+    "./gpu-spatial-analysis/ontology": {
+      "types": "./dist/gpu-spatial-analysis/ontology/index.d.ts",
+      "import": "./dist/gpu-spatial-analysis/ontology/index.js",
+      "require": "./dist/gpu-spatial-analysis/ontology/index.cjs"
+    },
+    "./gpu-network": {
+      "types": "./dist/gpu-network/index.d.ts",
+      "import": "./dist/gpu-network/index.js",
+      "require": "./dist/gpu-network/index.cjs"
+    },
+    "./gpu-terrain": {
+      "types": "./dist/gpu-terrain/index.d.ts",
+      "import": "./dist/gpu-terrain/index.js",
+      "require": "./dist/gpu-terrain/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./dataframe-analysis": {
+      "types": "./dist/dataframe-analysis/index.d.ts",
+      "import": "./dist/dataframe-analysis/index.js",
+      "require": "./dist/dataframe-analysis/index.cjs"
+    },
+    "./raster-analysis": {
+      "types": "./dist/raster-analysis/index.d.ts",
+      "import": "./dist/raster-analysis/index.js",
+      "require": "./dist/raster-analysis/index.cjs"
+    },
+    "./pointcloud-analysis": {
+      "types": "./dist/pointcloud-analysis/index.d.ts",
+      "import": "./dist/pointcloud-analysis/index.js",
+      "require": "./dist/pointcloud-analysis/index.cjs"
+    },
+    "./geospatial-analysis": {
+      "types": "./dist/geospatial-analysis/index.d.ts",
+      "import": "./dist/geospatial-analysis/index.js",
+      "require": "./dist/geospatial-analysis/index.cjs"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "@math.gl/core": "~5.0.0-beta.4",
+    "@math.gl/geospatial": "~5.0.0-beta.4",
+    "probe.gl": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@luma.gl/core": "~10.0.0-alpha.10",
+    "@luma.gl/graph": "~10.0.0-alpha.10",
+    "@luma.gl/shaders": "~10.0.0-alpha.10",
+    "apache-arrow": ">=17.0.0",
+    "vitest": ">=4",
+    "wgsl_reflect": "^1.2.0"
+  },
+  "peerDependenciesMeta": {
+    "apache-arrow": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    },
+    "wgsl_reflect": {
+      "optional": true
+    }
+  }
+}

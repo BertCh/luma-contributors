@@ -3,13 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import type {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUScan,
-  GPUSort,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import type {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUScan, GPUSort, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {addResidentJoinPass} from './resident-join-gpu-kernels';
 import {
   getResidentSqlOrderedKeySource,

@@ -20,7 +20,7 @@ defineLensScenario({
     ] = await Promise.all([
       import('./s2-lens-run'),
       import('./inverse-distance-weighting.example'),
-      import('@luma-contributors/graph/gpu-spatial-analysis'),
+      import('@luma-contributors/analysis/gpu-spatial-analysis'),
       import('../../data/s2-helene-rain.json').then(module => module.default)
     ]);
     return {

@@ -24,7 +24,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoParks())
       ]);
     const {getGPUGeometryCleanupParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     return {
       run: device =>

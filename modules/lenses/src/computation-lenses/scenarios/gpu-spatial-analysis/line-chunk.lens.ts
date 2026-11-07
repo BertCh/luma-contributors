@@ -24,7 +24,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoRoads())
       ]);
     const {getGPULineChunkParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     // Sum per-segment upper bounds; add one piece per road for degenerate lines and rounding.
     let lineCapacity = data.lineCount;

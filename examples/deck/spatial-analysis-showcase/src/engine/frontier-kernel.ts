@@ -3,18 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Binding} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import {
-  createGPUComputeCommandNode,
-  getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
-  getViewBinding,
-  getViewElementOffset,
-  type GPUCommandGraph,
-  type GPUCommandNode,
-  type GraphBufferUse,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
+import {createGPUComputeCommandNode, getBoundedDispatchLayout, getBoundedInvocationIndexSource, getViewBinding, getViewElementOffset, type GPUCommandGraph, type GPUCommandNode, type GraphBufferUse, type GraphDataView} from '@luma.gl/graph/gpu-core';
 
 /** One storage binding of a small Frontier Lab compute kernel. */
 export type FrontierKernelBinding = {

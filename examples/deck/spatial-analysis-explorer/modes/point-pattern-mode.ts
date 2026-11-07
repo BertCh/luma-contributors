@@ -23,40 +23,8 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {
-  createTransientView,
-  GPUCommandGraph,
-  GPUReadbackRing
-} from '@luma-contributors/graph/gpu-core';
-import {
-  fitVariogramModel,
-  evaluateVariogramModel,
-  getGPUPointPatternIndicesParameterValues,
-  getGPURipleyDistanceFunctionsParameterValues,
-  getGPURipleyParameterValues,
-  getGPUSpatialCorrelogramParameterValues,
-  getGPUVariogramParameterValues,
-  GPU_CLARK_EVANS_LENGTH,
-  GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
-  GPU_QUADRAT_STATISTICS_LENGTH,
-  GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,
-  GPU_RIPLEY_PARAMETER_LENGTH,
-  GPU_SPATIAL_CORRELOGRAM_NO_BAND,
-  GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
-  GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH,
-  GPU_VARIOGRAM_PARAMETER_LENGTH,
-  GPU_VARIOGRAM_STATISTICS_LENGTH,
-  GPUPointPatternIndices,
-  GPURipley,
-  GPURipleyDistanceFunctions,
-  GPUSpatialCorrelogram,
-  GPUVariogram,
-  type GPURipleyDistanceEdgeCorrection,
-  type GPURipleyEdgeCorrection,
-  type GPUSpatialCorrelogramVarianceAssumption,
-  type VariogramModel,
-  type VariogramModelType
-} from '@luma-contributors/graph/gpu-dataframe';
+import {createTransientView, GPUCommandGraph, GPUReadbackRing} from '@luma.gl/graph/gpu-core';
+import {fitVariogramModel, evaluateVariogramModel, getGPUPointPatternIndicesParameterValues, getGPURipleyDistanceFunctionsParameterValues, getGPURipleyParameterValues, getGPUSpatialCorrelogramParameterValues, getGPUVariogramParameterValues, GPU_CLARK_EVANS_LENGTH, GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH, GPU_QUADRAT_STATISTICS_LENGTH, GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH, GPU_RIPLEY_PARAMETER_LENGTH, GPU_SPATIAL_CORRELOGRAM_NO_BAND, GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH, GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH, GPU_VARIOGRAM_PARAMETER_LENGTH, GPU_VARIOGRAM_STATISTICS_LENGTH, GPUPointPatternIndices, GPURipley, GPURipleyDistanceFunctions, GPUSpatialCorrelogram, GPUVariogram, type GPURipleyDistanceEdgeCorrection, type GPURipleyEdgeCorrection, type GPUSpatialCorrelogramVarianceAssumption, type VariogramModel, type VariogramModelType} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUGeographicDistributionParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
@@ -64,7 +32,7 @@ import {
   GPURectangleClip,
   GPUStudyWindowPreparation,
   GPU_STUDY_WINDOW_SUMMARY_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {NEW_YORK_LAND} from '../new-york-land';

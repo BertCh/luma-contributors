@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUEdgeBundling} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {GPUEdgeBundling} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: zone centroids (longitude/latitude) and one origin and destination zone per flow. */
 export type EdgeBundlingExampleInput = {

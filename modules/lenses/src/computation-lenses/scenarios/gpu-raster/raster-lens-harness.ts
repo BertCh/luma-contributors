@@ -19,9 +19,9 @@ import {
   type GPUComputationKeySpace,
   type GPUComputationNode,
   type GPUComputationRelation
-} from '@luma-contributors/graph/computation-record';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/computation-record';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import type {LensScenarioResult} from '../../types';
 

@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPULocationAllocation} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPULocationAllocation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded demand-by-facility kilometre costs and the population weight of each demand tract. */
 export type LocationAllocationInput = {

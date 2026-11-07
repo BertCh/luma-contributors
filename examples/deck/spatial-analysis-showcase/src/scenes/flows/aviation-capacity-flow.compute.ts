@@ -4,8 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkFlow, prepareGPUNetworkFlowDemands} from '@luma-contributors/graph/gpu-network';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUNetworkFlow, prepareGPUNetworkFlowDemands} from '@luma-contributors/analysis/gpu-network';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import {addKernelPass} from '../../engine/mode-kernels';

@@ -3,14 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData} from '@luma-contributors/graph/gpu-data';
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPURecordBatch, GPUTable, type GPUTypeMap} from '@luma-contributors/graph/gpu-tables';
-import {
-  GPUDataFrame,
-  type GPUDataFrameQueryParameters
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUSQLContext} from '@luma-contributors/graph/gpu-sql';
+import {GPUData} from '@luma.gl/graph/gpu-data';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURecordBatch, GPUTable, type GPUTypeMap} from '@luma.gl/graph/gpu-tables';
+import {GPUDataFrame, type GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
+import {GPUSQLContext} from '@luma.gl/graph/gpu-sql';
 
 /** Typed source arrays: the Census counts of every Chicago tract. */
 export type GPUSQLQueryExampleInput = {

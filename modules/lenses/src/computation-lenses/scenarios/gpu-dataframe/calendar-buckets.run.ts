@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {GPU_CALENDAR_BUCKETS_MATRIX_LENGTH} from '@luma-contributors/graph/gpu-dataframe';
+import {GPU_CALENDAR_BUCKETS_MATRIX_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './calendar-buckets.example';
 import {
   createDataFrameChoice,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 
 /** A count the GPU wrote and the number of table rows the card figure draws for it. */
 export type DrawnPrefixCheck = {

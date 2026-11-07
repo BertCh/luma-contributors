@@ -4,9 +4,9 @@
 
 import * as arrow from 'apache-arrow';
 import {expect, test, vi} from 'vitest';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {KeplerComputeSession} from '../src/session/compute-session';
-import {createNullWebGPUDevice} from '../../graph/test/utils/gpu-contributor-test-utils';
+import {createNullWebGPUDevice} from '../../analysis/test/utils/gpu-contributor-test-utils';
 import {HeatmapBindingRuntime} from '../../../examples/deck/kepler-compute/src/heatmap-binding-runtime';
 
 async function fixture() {

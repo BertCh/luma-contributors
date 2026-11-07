@@ -6,14 +6,14 @@ import {readFileSync, statSync} from 'node:fs';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {ComputePipeline, type ComputePipelineProps} from '@luma.gl/core';
 import {NullDevice} from '@luma.gl/core/test-utils';
-import * as graphExports from '@luma-contributors/graph/gpu-graph-algorithms';
+import * as graphExports from '@luma.gl/graph/gpu-graph-algorithms';
 import {
   validateGPUComputationRecord,
   validateGPUComputationSidecars,
   type GPUComputationCapture
-} from '@luma-contributors/graph/computation-record';
-import {GraphDataView} from '@luma-contributors/graph/gpu-core';
-import * as captureModule from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
+import {GraphDataView} from '@luma.gl/graph/gpu-core';
+import * as captureModule from '@luma-contributors/analysis/computation-record';
 import {
   extractLensExample,
   findNonPublicImports,

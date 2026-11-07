@@ -10,7 +10,7 @@ import '../../../src/computation-lenses/scenarios/gpu-network/index';
 import {
   validateGPUComputationRecord,
   type GPUComputationCapture
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   describeStructure,
   makeReachabilityStamp,
@@ -21,7 +21,7 @@ import {
   extractLensExample,
   findNonPublicImports
 } from '../../../src/computation-lenses/lens-example';
-import {createNullWebGPUDevice} from '@luma-contributors/graph/testing';
+import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
 for (const [chained, describe] of [
   [false, describeStructure],

@@ -4,19 +4,9 @@
 
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUMask,
-  createTransientView,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUColumnProfile,
-  GPU_COLUMN_PROFILE_STATISTIC,
-  GPU_COLUMN_PROFILE_STATISTIC_COUNT
-} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUMask, createTransientView, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUColumnProfile, GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addKeplerDorlingCartogram,
   estimateKeplerDorlingByteLength,

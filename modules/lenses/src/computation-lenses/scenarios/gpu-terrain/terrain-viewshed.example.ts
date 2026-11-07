@@ -3,14 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {makeGPURasterBand, type GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
+import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   GPUParameterBuffer,
   GPUTerrainViewshed,
   GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH,
   getGPUTerrainViewshedParameterValues
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 
 /** Graph, grid and caller-owned views used by this example. */
 export type TerrainViewshedExampleInput = {

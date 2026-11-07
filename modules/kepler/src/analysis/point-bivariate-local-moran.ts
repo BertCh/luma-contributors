@@ -8,13 +8,13 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-core';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPULocalPermutationTest,
   getGPUPermutationParameterValues,
   GPU_PERMUTATION_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   MAXIMUM_KEPLER_LOCAL_MORAN_PERMUTATIONS,
   MAXIMUM_KEPLER_LOCAL_MORAN_PERMUTATION_ROWS,

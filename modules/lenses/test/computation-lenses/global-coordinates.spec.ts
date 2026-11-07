@@ -4,7 +4,7 @@
 
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 import {listLensScenarios} from '../../src/computation-lenses';
 import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/global-coordinates.lens';
 

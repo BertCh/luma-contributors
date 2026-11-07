@@ -2,17 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUSpatialContext} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
 import {
   GPU_NEIGHBORHOOD_SUMMARY_NO_MODE,
   GPUNeighborhoodSummary
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  GPUCommandGraph,
-  GPUReduction,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, GPUReduction, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {SpatialAnalysisResources} from '../../engine/resources';

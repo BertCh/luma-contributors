@@ -3,23 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPURasterClosing,
-  GPURasterContourClassifier,
-  GPURasterContours,
-  GPURasterFillNoData,
-  GPURasterFillHoles,
-  GPURasterMorphology,
-  GPURasterOpening,
-  GPURasterReconstruction,
-  type GPURasterBufferBand,
-  type GPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPURasterClosing, GPURasterContourClassifier, GPURasterContours, GPURasterMorphology, GPURasterOpening, type GPURasterBufferBand, type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPURasterFillNoData, GPURasterFillHoles, GPURasterReconstruction} from '@luma-contributors/analysis/raster-analysis';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {addKernelPass} from '../../engine/mode-kernels';

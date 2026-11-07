@@ -17,7 +17,7 @@ defineLensScenario({
         import('./s2-lens-run'),
         import('./space-time-hot-spots-recipe.example'),
         import('./s1-clustering-support'),
-        import('@luma-contributors/graph/gpu-dataframe')
+        import('@luma.gl/graph/gpu-dataframe')
       ]);
     const points = await support.loadNaturePoints();
     const lattice = support.getNatureLattice(points);

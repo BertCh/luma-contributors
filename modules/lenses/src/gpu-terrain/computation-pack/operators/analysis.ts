@@ -46,7 +46,7 @@ export const TERRAIN_ANALYSIS_OPERATORS: RasterOperatorTable = {
         {id: 'northSign', role: 'constant', label: 'σ_n', binding: 'wgsl:ROW_NORTH_SIGN'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/terrain-analysis/gpu-terrain-derivatives.ts']
+    sources: ['modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-derivatives.ts']
   },
   GPUTerrainContours: {
     family: 'analysis',
@@ -130,8 +130,8 @@ export const TERRAIN_ANALYSIS_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/terrain-analysis/gpu-terrain-contours.ts',
-      'modules/graph/src/gpu-raster/gpu-raster-contours.ts'
+      'modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-contours.ts',
+      'modules/analysis/src/gpu-raster/gpu-raster-contours.ts'
     ]
   },
   GPUTerrainViewshed: {
@@ -244,8 +244,8 @@ export const TERRAIN_ANALYSIS_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/terrain-analysis/gpu-terrain-viewshed.ts',
-      'modules/graph/src/gpu-terrain/terrain-analysis/terrain-sight-line.ts'
+      'modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-viewshed.ts',
+      'modules/analysis/src/gpu-terrain/terrain-analysis/terrain-sight-line.ts'
     ]
   },
   GPUTerrainLineOfSight: {
@@ -370,8 +370,8 @@ export const TERRAIN_ANALYSIS_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/terrain-analysis/gpu-terrain-line-of-sight.ts',
-      'modules/graph/src/gpu-terrain/terrain-analysis/terrain-sight-line.ts'
+      'modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-line-of-sight.ts',
+      'modules/analysis/src/gpu-terrain/terrain-analysis/terrain-sight-line.ts'
     ]
   },
   GPUTerrainCumulativeViewshed: {
@@ -449,8 +449,8 @@ export const TERRAIN_ANALYSIS_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/terrain-analysis/gpu-terrain-cumulative-viewshed.ts',
-      'modules/graph/src/gpu-terrain/terrain-analysis/terrain-sight-line.ts'
+      'modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-cumulative-viewshed.ts',
+      'modules/analysis/src/gpu-terrain/terrain-analysis/terrain-sight-line.ts'
     ]
   }
 };

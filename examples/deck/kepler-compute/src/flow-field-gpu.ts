@@ -12,8 +12,8 @@
  */
 
 import {Buffer, type Device, type Texture} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {Kernel} from '@luma.gl/graph';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {
   METERS_PER_DEGREE_LATITUDE,

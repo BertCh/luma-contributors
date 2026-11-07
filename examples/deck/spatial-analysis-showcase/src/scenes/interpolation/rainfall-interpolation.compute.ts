@@ -4,18 +4,8 @@
 
 import type {Layer, Viewport} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  evaluateVariogramModel,
-  fitVariogramModel,
-  getGPUVariogramParameterValues,
-  GPU_VARIOGRAM_PARAMETER_LENGTH,
-  GPUVariogram,
-  GPUVariogramModelFit,
-  type VariogramModel,
-  type VariogramModelType,
-  type VariogramModelWeighting
-} from '@luma-contributors/graph/gpu-dataframe';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {evaluateVariogramModel, fitVariogramModel, getGPUVariogramParameterValues, GPU_VARIOGRAM_PARAMETER_LENGTH, GPUVariogram, GPUVariogramModelFit, type VariogramModel, type VariogramModelType, type VariogramModelWeighting} from '@luma-contributors/analysis/dataframe-analysis';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUFocalStatisticsParameterValues,
   getGPUInverseDistanceWeightingParameterValues,
@@ -28,9 +18,9 @@ import {
   GPUKriging,
   type GPUFocalStatisticsShape,
   GPUSpatialCrossValidation
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {addInterpolationDiagnosticsRecipe} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {addInterpolationDiagnosticsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {fetchText, getDataFileUrl, parseCsv} from '../../data/loaders';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';

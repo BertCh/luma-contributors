@@ -4,7 +4,7 @@
 
 import {readFileSync} from 'node:fs';
 import {expect} from 'vitest';
-import type {GPUComputationFormulaRef} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationFormulaRef} from '@luma-contributors/analysis/computation-record';
 import {listTexTerms} from '../../../src/computation-views/views/formula-tex';
 import {SPATIAL_GUARDS} from '../../../src/gpu-spatial-analysis/computation-pack/guards';
 import {isSpatialAnalysisStage} from '../../../src/gpu-spatial-analysis/computation-pack/stages';

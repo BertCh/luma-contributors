@@ -10,7 +10,7 @@ import type {
   GPUComputationMetrics,
   GPUComputationNode,
   GPUComputationSourceRef
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 
 import type {MarkProvenance} from '../types';
 import type {LensRecord, ViewContext} from '../registry/view-registration';

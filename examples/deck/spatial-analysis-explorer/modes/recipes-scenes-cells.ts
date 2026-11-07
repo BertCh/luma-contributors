@@ -7,12 +7,7 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {
-  getGPUCalendarBucketsParameterValues,
-  getGPUClassBreaksParameterValues,
-  getGPUColorScaleParameterValues,
-  packGPUColor
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUCalendarBucketsParameterValues, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addHotSpotAnalysisRecipe,
   addPeriodComparisonRecipe,
@@ -23,7 +18,7 @@ import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {formatCount} from '../spatial-analysis-resources';
 import {PackedColorRasterLayer, PackedQuadbinCellLayer} from './classification-layers';
 import {

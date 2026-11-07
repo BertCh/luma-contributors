@@ -33,11 +33,11 @@ defineLensScenario({
       import('./local-permutation-test.example'),
       import('./spatial-lens-data'),
       import('./spatial-scenario-utils'),
-      import('@luma-contributors/graph/gpu-spatial-analysis'),
-      import('@luma-contributors/graph/gpu-core'),
+      import('@luma-contributors/analysis/gpu-spatial-analysis'),
+      import('@luma.gl/graph/gpu-core'),
       // Internal operator used only by this lens; graph-lenses is a private in-repo package.
       import(
-        '@luma-contributors/graph/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-replay'
+        '@luma-contributors/analysis/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-replay'
       ),
       import('../../../gpu-spatial-analysis/computation-pack/operators/statistics'),
       import('@luma.gl/core')

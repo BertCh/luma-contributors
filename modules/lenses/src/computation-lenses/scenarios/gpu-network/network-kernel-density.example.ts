@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkKernelDensity,
   type GPUNetworkKernelDensityProps
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 export async function runExample(graph: GPUCommandGraph, input: GPUNetworkKernelDensityProps) {
   // #region example

@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUKeyJoin} from '@luma-contributors/graph/gpu-dataframe';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUKeyJoin} from '@luma-contributors/analysis/dataframe-analysis';
 
 /** Columns the lens scenario reads from `f-chicago-nature.json` and `f-chicago-tracts.json`. */
 export type KeyJoinExampleInput = {

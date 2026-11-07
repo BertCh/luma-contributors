@@ -255,7 +255,7 @@ export default defineScene<MapMatchingOptions>({
   snippet: state => `import {
   GPUMapMatching,
   getGPUMapMatchingParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 // The CSR row is the edge id: list both directions of every two-way street.
 graph.add(new GPUMapMatching({

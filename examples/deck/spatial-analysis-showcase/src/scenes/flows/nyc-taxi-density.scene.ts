@@ -393,8 +393,8 @@ export default defineScene<NycTaxiDensityOptions>({
     return [entry(side, title, true, state.scale)];
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUPointDensity} from '@luma-contributors/graph/gpu-spatial-analysis';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // pickups are rows 0..N-1 and drop-offs rows N..2N-1 of one float32x2 buffer
 const graph = new GPUCommandGraph(device, {id: 'taxi-density'});

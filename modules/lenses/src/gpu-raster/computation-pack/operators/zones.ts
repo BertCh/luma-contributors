@@ -44,7 +44,9 @@ export const RASTER_ZONES_OPERATORS: RasterOperatorTable = {
         {id: 'maximum', role: 'output', label: 'maximum', binding: 'wgsl:maximums'}
       ]
     },
-    sources: ['modules/graph/src/gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics.ts']
+    sources: [
+      'modules/analysis/src/gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics.ts'
+    ]
   },
   GPUPolygonRasterization: {
     family: 'zones',
@@ -71,8 +73,8 @@ export const RASTER_ZONES_OPERATORS: RasterOperatorTable = {
         'Edge crossings per raster row are sorted and paired into even-odd column spans that cells fill with an atomic minimum; the result has no per-cell closed form.'
     },
     sources: [
-      'modules/graph/src/gpu-raster/polygon-rasterization/gpu-polygon-rasterization.ts',
-      'modules/graph/src/gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts'
+      'modules/analysis/src/gpu-raster/polygon-rasterization/gpu-polygon-rasterization.ts',
+      'modules/analysis/src/gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts'
     ]
   },
   GPURasterJoin: {
@@ -109,8 +111,8 @@ export const RASTER_ZONES_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/polygon-rasterization/gpu-raster-join.ts',
-      'modules/graph/src/gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts'
+      'modules/analysis/src/gpu-raster/polygon-rasterization/gpu-raster-join.ts',
+      'modules/analysis/src/gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts'
     ]
   }
 };

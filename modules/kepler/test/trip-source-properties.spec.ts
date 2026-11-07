@@ -4,10 +4,10 @@
 
 import {expect, it, vi} from 'vitest';
 import {Buffer} from '@luma.gl/core';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {makeGeoJSONTripGPUVectors, prepareGeoJSONTrips} from '@luma.gl/engine/arrow';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {TripRuntime} from '../../../examples/deck/kepler-compute/src/trip-runtime';
 import {GeoJSONPropertyRuntime} from '../../../examples/deck/kepler-compute/src/geojson-property-runtime';
 

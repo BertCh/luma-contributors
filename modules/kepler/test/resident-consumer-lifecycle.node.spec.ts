@@ -6,7 +6,7 @@ import {expect, test, vi} from 'vitest';
 import * as arrow from 'apache-arrow';
 import {NullDevice} from '@luma.gl/core/test-utils';
 import {Buffer} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {KeplerComputeSession, type KeplerSessionExplorer} from '../src/session/compute-session';
 import {GPUKeplerTableInspector} from '../src/exploration/gpu-table-inspector';
 import {ResidentScopeBinding} from '../../../examples/deck/kepler-compute/src/resident-scope-binding';

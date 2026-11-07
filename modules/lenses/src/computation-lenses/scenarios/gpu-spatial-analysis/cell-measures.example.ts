@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCellMeasures} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCellMeasures} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** H3 cell keys (resolution 9) of the places to measure. */
 export type CellMeasuresExampleInput = {cells: GraphDataView<'uint32x2'>};

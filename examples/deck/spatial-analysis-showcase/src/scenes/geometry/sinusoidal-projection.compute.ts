@@ -3,12 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import {
-  GPUColumnProfile,
-  GPU_COLUMN_PROFILE_STATISTIC
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUSinusoidalProjection} from '@luma-contributors/graph/geospatial';
+import {GPUColumnProfile, GPU_COLUMN_PROFILE_STATISTIC} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUSinusoidalProjection} from '@luma.gl/graph/geospatial';
 import {GraphSwap} from '../../engine/graph-swap';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';

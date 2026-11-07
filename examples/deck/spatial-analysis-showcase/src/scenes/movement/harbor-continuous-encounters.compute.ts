@@ -4,14 +4,14 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   addClockEncounters,
   getGPUTrajectoryClockParameterValues,
   GPUTrajectoryClosestApproach,
   GPUTrajectoryRestriction,
   type GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';

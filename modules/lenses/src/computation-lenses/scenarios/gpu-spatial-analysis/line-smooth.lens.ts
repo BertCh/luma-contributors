@@ -24,7 +24,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoRoads())
       ]);
     const {getGPULineSmoothParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     const lineCapacity = data.lineCount;
     const vertexCapacity = (data.positionsProjected.length / 2) * 4;

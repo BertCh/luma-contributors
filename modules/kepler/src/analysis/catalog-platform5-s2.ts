@@ -7,7 +7,7 @@ import {
   GPUS2CellHierarchy,
   GPUS2CellMeasures,
   GPUS2PolygonCovering
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
 import {EARTH_RADIUS_METERS} from './catalog-geodesy';
 import {

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {GPUStudyWindowPreparation} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUStudyWindowPreparation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {S2CaptureSpec, S2Uploads} from './s2-lens-run';
 import {runExample as runInhomogeneous} from './inhomogeneous-point-pattern.example';
 import {runExample as runEnvelope} from './point-pattern-envelope.example';

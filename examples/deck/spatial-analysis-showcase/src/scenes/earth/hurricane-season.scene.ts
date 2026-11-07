@@ -250,11 +250,11 @@ export default defineScene<HurricaneSeasonOptions>({
     {id: 'draw', label: 'Draw', detail: 'Classed heads, trails and seasonal summaries'}
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
 
 // timestamps: float32 DAYS since 1 January 00:00 UTC of each storm's own year, so every season
 // lies on one calendar. positions: float32x2 longitude/latitude, trackOffsets: uint32.

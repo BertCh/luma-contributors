@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import * as spatialAnalysis from '@luma-contributors/graph/gpu-spatial-analysis';
-import * as network from '@luma-contributors/graph/gpu-network';
-import * as geometryContributors from '@luma-contributors/graph/gpu-geometry';
-import * as dataframeContributors from '@luma-contributors/graph/gpu-dataframe';
-import * as rasterContributors from '@luma-contributors/graph/gpu-raster';
+import * as spatialAnalysis from '@luma-contributors/analysis/gpu-spatial-analysis';
+import * as network from '@luma-contributors/analysis/gpu-network';
+import * as geometryContributors from '@luma.gl/graph/gpu-geometry';
+import * as dataframeContributors from '@luma.gl/graph/gpu-dataframe';
+import * as rasterContributors from '@luma.gl/graph/gpu-raster';
 import {
   KEPLER_CATALOG_BINDINGS,
   getCatalogBinding,

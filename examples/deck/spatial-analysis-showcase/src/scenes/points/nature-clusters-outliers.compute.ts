@@ -10,8 +10,8 @@ import {
   GPULocalOutlierFactor,
   GPUNeighborSearch,
   type GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {formatCount} from '../../cartography/live-text';
 import {DENSE_POINT_RADIUS_STOPS} from '../../cartography/zoom';
 import {importGraphBuffer} from '../../engine/graph-buffers';

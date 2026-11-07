@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUPickRegionMask} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUPickRegionMask} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** A region-pick result and the number of source rows; the caller owns the recording graph. */
 export type PickRegionMaskInput = {

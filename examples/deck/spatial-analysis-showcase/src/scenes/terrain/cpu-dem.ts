@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 /**
  * CPU probes of a DEM for the terrain chapter: bilinear sampling, Horn's 3 x 3 neighbourhood,
  * a sight line with earth curvature, a horizon fan, geomorphon rays and the summit disc and ring.

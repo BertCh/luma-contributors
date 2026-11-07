@@ -8,8 +8,8 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUOPTICS} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUOPTICS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   MAXIMUM_KEPLER_DBSCAN_SOURCE_ROWS,
   parseKeplerDBSCANSettings,

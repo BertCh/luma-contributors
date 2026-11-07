@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUFlowAggregation} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: one origin zone, destination zone and trip count per record. */
 export type FlowAggregationExampleInput = {

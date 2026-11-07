@@ -466,8 +466,8 @@ export default defineScene<NycTaxiCrossfilterOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUCrossfilter} from '@luma-contributors/graph/gpu-crossfilter';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUCrossfilter} from '@luma-contributors/analysis/gpu-crossfilter';
 
 const graph = new GPUCommandGraph(device, {id: 'taxi'});
 const filter = new GPUCrossfilter(graph, {

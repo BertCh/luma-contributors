@@ -12,11 +12,8 @@ import {
   addDriveTimeCatchmentRecipe,
   getGPUNetworkIsochronesParameterValues,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-network';
-import {
-  getGPUDistanceFieldParameterValues,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-network';
+import {getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   addClusterAndOutlineRecipe,
   addSpatialRegressionRecipe,
@@ -38,7 +35,7 @@ import {
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_LAG,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,

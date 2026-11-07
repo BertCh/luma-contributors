@@ -11,7 +11,7 @@ import {
   AnalysisRuntime,
   type HotspotSettings
 } from '../../../examples/deck/kepler-compute/src/analysis-runtime';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 test('explicit hotspot lattice matches an independent Gi-star oracle across chunks and selected populations', async () => {
   const device = await getWebGPUTestDevice();

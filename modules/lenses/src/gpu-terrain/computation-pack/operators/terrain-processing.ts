@@ -23,9 +23,9 @@ function makeProcessingEntry(
     choices: [],
     formula: {formula: 'none', reason},
     sources: [
-      `modules/graph/src/gpu-terrain/terrain-processing/${filename}.ts`,
+      `modules/analysis/src/gpu-terrain/terrain-processing/${filename}.ts`,
       ...(filename === 'gpu-terrain-tiled-flow'
-        ? ['modules/graph/src/gpu-terrain/terrain-processing/terrain-tiled-resident.ts']
+        ? ['modules/analysis/src/gpu-terrain/terrain-processing/terrain-tiled-resident.ts']
         : [])
     ]
   };

@@ -17,7 +17,7 @@
  * - `gradient`: the table colours interpolated between the class anchors (continuous colour).
  */
 
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 
 /** Most classes one paint pass holds (the June sun-hours scale has ten). */

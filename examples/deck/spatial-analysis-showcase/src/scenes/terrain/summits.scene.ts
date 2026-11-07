@@ -413,11 +413,11 @@ export default defineScene<SummitsOptions>({
 
   legends: getSummitsLegends,
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUTerrainSummits, GPUTerrainPeakSnap, GPUTerrainCriticalPoints, GPUTerrainContours,
   getGPUTerrainSummitsParameterValues, getGPUTerrainPeakSnapParameterValues
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 
 const graph = new GPUCommandGraph(device, {id: 'summits'});
 graph.add(new GPUTerrainSummits({

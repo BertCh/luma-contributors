@@ -6,7 +6,7 @@ import {expect, test} from 'vitest';
 import {
   createGPUComputationRecord,
   createGPUComputationCaptures
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {toRecordedLensFile} from '../../../src/computation-lenses/registry';
 import {createViewContext} from '../../../src/computation-views/registry/view-registry';
 import {buildLensTwin, validateLensTwin} from '../../../src/computation-views/twin/static-twin';

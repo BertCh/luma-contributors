@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {toRadians} from '@math.gl/core';
 import type {Device} from '@luma.gl/core';
 import {defineLensScenario, TABLE_LENS_RUNGS} from '../../define-lens-scenarios';
 import type {LensScenarioResult} from '../../types';
-import {T_GFS_WIND} from '../gpu-raster/raster-lens-datasets';
+import {T_GFS_WIND} from './raster-lens-datasets';
 
 const SCENARIO_ID = 'gpu-raster.line-integral-convolution';
 
@@ -35,7 +35,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
     import('./raster-lens-harness'),
     import('./raster-lens-data'),
     import('../../../gpu-raster/computation-pack/index'),
-    import('@luma-contributors/graph/gpu-raster')
+    import('@luma.gl/graph/gpu-raster')
   ]);
   const wind = await loadGFSWind();
   const entry = getRasterOperatorEntries()['GPULineIntegralConvolution'];

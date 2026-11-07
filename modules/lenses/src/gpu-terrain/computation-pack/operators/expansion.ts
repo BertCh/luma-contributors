@@ -28,7 +28,7 @@ export const TERRAIN_EXPANSION_OPERATORS: RasterOperatorTable = {
         'Follow each D8 receiver and sum affine transition lengths until a stream or terminal cell; cycles and truncated paths stay unresolved.',
       symbols: []
     },
-    sources: ['modules/graph/src/gpu-terrain/hydrology/gpu-terrain-flow-distance.ts']
+    sources: ['modules/analysis/src/gpu-terrain/hydrology/gpu-terrain-flow-distance.ts']
   },
   GPUTerrainStreamNetwork: {
     family: 'expansion',
@@ -56,6 +56,6 @@ export const TERRAIN_EXPANSION_OPERATORS: RasterOperatorTable = {
       reason:
         'Trace valid stream reaches between headwaters, confluences and outlets, retaining original raster identities and affine cell-center vertices.'
     },
-    sources: ['modules/graph/src/gpu-terrain/hydrology/gpu-terrain-stream-network.ts']
+    sources: ['modules/analysis/src/gpu-terrain/hydrology/gpu-terrain-stream-network.ts']
   }
 };

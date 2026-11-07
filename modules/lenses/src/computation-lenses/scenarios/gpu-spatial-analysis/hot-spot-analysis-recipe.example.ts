@@ -7,12 +7,12 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   addHotSpotAnalysisRecipe,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from the Chicago North Side observations and areas. */
 export type HotSpotAnalysisRecipeExampleInput = {

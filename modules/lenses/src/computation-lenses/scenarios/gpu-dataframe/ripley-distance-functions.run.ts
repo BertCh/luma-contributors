@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPURipleyDistanceEdgeCorrection} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPURipleyDistanceEdgeCorrection} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './ripley-distance-functions.example';
 import {
   capturePairStatisticsViews,

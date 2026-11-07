@@ -13,12 +13,8 @@ import {
   addSegregationCounterfactualRecipe,
   type GPUSpatialWeights,
   type GPUSpatialWeightsKernel
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getClassTableLayerProps} from '../../cartography/class-table';
 import {NO_DATA_COLOR} from '../../cartography/hue-registry';
 import {formatCount, formatOrdinal, formatPercent, liveText} from '../../cartography/live-text';

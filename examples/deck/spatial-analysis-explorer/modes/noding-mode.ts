@@ -13,9 +13,9 @@
 
 import type {Buffer} from '@luma.gl/core';
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkReachability} from '@luma-contributors/graph/gpu-network';
-import {GPUNetworkNoding} from '@luma-contributors/graph/gpu-network';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUNetworkReachability} from '@luma-contributors/analysis/gpu-network';
+import {GPUNetworkNoding} from '@luma-contributors/analysis/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

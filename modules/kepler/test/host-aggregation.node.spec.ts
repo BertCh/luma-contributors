@@ -4,7 +4,7 @@
 
 import {describe, expect, test, vi} from 'vitest';
 import {Buffer} from '@luma.gl/core';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {NullDevice} from '@luma.gl/core/test-utils';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {getKeplerAggregationLayout} from '../src/aggregation';

@@ -7,7 +7,7 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUGeographicDistributionParameterValues,
   getGPUSpatialClusteringParameterValues,
@@ -17,7 +17,7 @@ import {
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Label slots of the example; DBSCAN labels at or above it are left out of every group. */
 export const GROUP_GEOMETRY_GROUP_COUNT = 64;

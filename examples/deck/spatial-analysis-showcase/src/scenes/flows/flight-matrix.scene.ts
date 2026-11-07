@@ -11,7 +11,7 @@ import {getSizeLegendEntries} from '../../cartography/proportional';
 import {GLOBAL_FURNITURE} from '../../cartography/projection-notes';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './flight-matrix.md?raw';
+import narrative from './flight-matrix.md?raw?raw';
 import type {FlightMatrixOptions} from './flight-matrix.compute';
 import {CONTINENT_NAMES} from './b11-geography';
 import {
@@ -540,13 +540,13 @@ export default defineScene<FlightMatrixOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUAdjacencyMatrix,
   GPUAdjacencyMatrixOrder,
   GPUNetworkCoarsening,
   getGPUAdjacencyMatrixParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 // 1. airport -> matrix position: sort by group, then by tie key (two stable GPU sorts)
 orderGraph.add(new GPUAdjacencyMatrixOrder({groups, tieKeys, output: {order}}));

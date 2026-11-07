@@ -662,7 +662,7 @@ export default defineScene<SunOptions>({
 
   snippet: state => `import {
   GPUSolarPosition, GPUTerrainHorizon, GPUSolarShadowMask, GPUTerrainCastShadow, GPUSolarIrradiance
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 
 // grid: EPSG:3857 meters (origin [minX, maxY], cellSize the Mercator pixel size)
 graph.add(new GPUTerrainHorizon({

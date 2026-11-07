@@ -203,8 +203,8 @@ function getSnippet(state: ChoroplethClassesOptions): string {
   GPUClassBreaks, GPUColorScale, GPUColumnQuantiles, GPUColumnProfile,
   getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues,
   getGPUColumnQuantilesParameterValues
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUClassAssignment, GPUClassificationFit} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUClassAssignment, GPUClassificationFit} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One graph, compiled once: percentile filter -> breaks -> colours.
 graph.add(new GPUColumnQuantiles({

@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUSimilarLocations} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUSimilarLocations} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Tract attributes the example compares, in matrix column order. */
 export const SIMILAR_LOCATIONS_COLUMNS = [

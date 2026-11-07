@@ -305,7 +305,7 @@ export default defineScene<RegionalizationOptions>({
   snippet: state => `import {
   GPUContiguityWeights, GPUSpatialWeightsMinimumSpanningTree, GPUSkaterRegions,
   GPURegionPartitionEvaluation, GPUKMeans, getGPUSkaterRegionsParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One row per tract (feature); a multipart tract is one row.
 graph.add(new GPUContiguityWeights({

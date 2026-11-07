@@ -3,12 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert, Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector, getGPUVectorFormatInfo} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUGather,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector, getGPUVectorFormatInfo} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import type {PreparedNativeIcons} from './icon-source';
 import type {ResidentIconBinding} from './resident-layers';

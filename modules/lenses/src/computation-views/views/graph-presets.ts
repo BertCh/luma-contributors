@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationGraph} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationGraph} from '@luma-contributors/analysis/computation-record';
 
 /** Alternate projections of the same ordered command graph. */
 export type CommandGraphPreset = 'algorithm' | 'pass-resource' | 'memory-aliasing';

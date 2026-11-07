@@ -6,24 +6,10 @@ import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {trackDeferredOperation} from './tracked-operations';
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import type {Layer} from '@deck.gl/core';
-import {GPUVector, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
-import {
-  createTransientView,
-  GPUCommandGraph,
-  GPUMask,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUColorScale,
-  GPUColumnProfile,
-  GPUParameterBuffer,
-  GPU_COLUMN_PROFILE_STATISTIC,
-  GPU_COLUMN_PROFILE_STATISTIC_COUNT,
-  getGPUColorScaleParameterValues,
-  packGPUColor,
-  type GPUVariableStandardizationMethod
-} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
+import {createTransientView, GPUCommandGraph, GPUMask, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUColorScale, GPUColumnProfile, GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT, getGPUColorScaleParameterValues, packGPUColor, type GPUVariableStandardizationMethod} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma.gl/graph/gpu-dataframe';
 import {
   addKeplerAnalysisRecipe,
   parseKeplerIDWSettings,
@@ -47,7 +33,7 @@ import {
 } from '@luma-contributors/kepler';
 
 import type {KeplerTableDerivedSnapshot} from '@luma-contributors/kepler';
-import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getAnalysisRecipeSettings,
   isPolygonAnalysisOperation,

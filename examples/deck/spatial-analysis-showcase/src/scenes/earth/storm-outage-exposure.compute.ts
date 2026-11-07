@@ -14,19 +14,14 @@ import {
   STORM_VERIFICATION_RANGE
 } from './storm-data';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import {
-  getGPUTimeWindowFilterParameterValues,
-  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
-  GPUGroupStatistics,
-  GPUTimeWindowFilter
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUGroupStatistics, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPU_EARTH_AUTHALIC_RADIUS_METERS,
   GPULineLengthPerPolygon,
   GPUZonalStatistics,
   type GPUSpatialContext,
   type GPUZonalStatisticsSumOrder
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Track lengths: longitude/latitude positions, great-circle meters. */
 const GREAT_CIRCLE_METERS: GPUSpatialContext = {
@@ -35,7 +30,7 @@ const GREAT_CIRCLE_METERS: GPUSpatialContext = {
   metric: 'great-circle',
   units: 'meters'
 };
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {fetchJson, getDataFileUrl} from '../../data/loaders';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';

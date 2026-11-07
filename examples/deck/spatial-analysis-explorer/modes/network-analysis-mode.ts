@@ -16,13 +16,7 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUCOOToCSR,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, GPUCOOToCSR, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_NETWORK_REACHABILITY_NONE,
   GPUNetworkAnalyticsColumns,
@@ -30,7 +24,7 @@ import {
   GPUNetworkPathExtraction,
   GPUNetworkReachability,
   GPUNetworkServiceAreas
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import {type SpatialAnalysisRoadNetwork} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

@@ -3,9 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUComputationGraph} from '@luma-contributors/graph/computation-record';
-import type {GPUSQLStatement} from '@luma-contributors/graph/gpu-sql';
-import type {GPUDataFrameQueryParameters} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPUComputationGraph} from '@luma-contributors/analysis/computation-record';
+import type {GPUSQLStatement} from '@luma.gl/graph/gpu-sql';
+import type {GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
 import {runExample} from './lu-sql-query.example';
 import {
   loadDataFrameLensData,

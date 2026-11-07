@@ -9,7 +9,7 @@ import {
   parseKeplerDorlingSettings,
   type KeplerDorlingSettings
 } from '../analysis/dorling-cartogram';
-import type {GPUVariableStandardizationMethod} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPUVariableStandardizationMethod} from '@luma-contributors/analysis/dataframe-analysis';
 
 import {
   getKeplerPointWeightCoordinateKeys,

@@ -11,7 +11,7 @@ import {
   type CatalogRunResult
 } from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 // Oracle policy: the CPU reference engines of the PLATFORM4 bindings are the oracle; each GPU path
 // must run on its named contributors (engine 'gpu', dispatchedContributors accurate) and match.

@@ -11,8 +11,8 @@ import {
   packGPUSpatialRelatePattern,
   type GPUSpatialJoinGeometry,
   type GPUSpatialPredicate
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer, type SpatialAnalysisColormap} from '../../engine/layers';
 import type {RampName} from '../../engine/ramps';

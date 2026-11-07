@@ -10,7 +10,7 @@ import {expect, it} from 'vitest';
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..');
 const PACKAGE_SOURCE_ROOT = resolve(REPOSITORY_ROOT, 'modules/lenses/src');
 
-it('every modules/graph/src path cited by lens packs and scenarios exists', () => {
+it('every modules/analysis/src path cited by lens packs and scenarios exists', () => {
   const missing: string[] = [];
   let checkedCount = 0;
   for (const file of readdirSync(PACKAGE_SOURCE_ROOT, {recursive: true, encoding: 'utf8'})) {

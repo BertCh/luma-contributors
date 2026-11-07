@@ -11,13 +11,9 @@ import {
   triangulatePolygons
 } from './b3-common';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
-import {
-  getGPUTimeWindowFilterParameterValues,
-  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
-  GPUTimeWindowFilter
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUGeometryMeasures} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUGeometryMeasures} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';

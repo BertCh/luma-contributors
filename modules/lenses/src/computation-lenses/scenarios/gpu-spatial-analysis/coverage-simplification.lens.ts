@@ -25,7 +25,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoCommunityAreas())
       ]);
     const {getGPULineSimplificationParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     // The community-area dataset has exactly one ring per area, so the drawn paths are the areas.
     assert(data.ringOffsets.length - 1 === data.featureCount);

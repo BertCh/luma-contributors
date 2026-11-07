@@ -9,7 +9,7 @@ import type {LensScenarioDescriptor} from '../../types';
 function createExpansionLoader(id: string, element: string): LensScenarioDescriptor['load'] {
   return async () => ({
     run: device =>
-      import('../gpu-raster/expansion-runner').then(module =>
+      import('./expansion-runner').then(module =>
         module.runExpansion(device, element, id, 'gpu-raster')
       )
   });

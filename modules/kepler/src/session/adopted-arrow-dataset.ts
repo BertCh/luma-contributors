@@ -3,14 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {GPUTable} from '@luma-contributors/graph/gpu-tables';
-import {getGPUPartitionMemoryPlan} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUTable} from '@luma.gl/graph/gpu-tables';
+import {getGPUPartitionMemoryPlan} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getGPUPartitionDescriptorFromArrowTable,
   type PreparedArrowAnalyticsTable,
   type PrepareArrowTableForGPUAnalyticsOptions
-} from '@luma-contributors/graph/arrow';
+} from '@luma.gl/graph/arrow';
 import {DataType, Precision, type Table} from 'apache-arrow';
 import type {GPUResidentColumns} from '../exploration/gpu-resident-explorer';
 import type {KeplerDatasetRequest, KeplerMemoryReservation} from '../runtime/dataset-registry';

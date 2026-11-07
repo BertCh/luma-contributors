@@ -19,8 +19,8 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   getGPUNeighborSearchParameterValues,
   GPUCatchmentAccessibility,
@@ -28,7 +28,7 @@ import {
   GPUNeighborSearch,
   GPU_HUFF_NO_TRADE_AREA,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   SpatialAnalysisPointLayer,

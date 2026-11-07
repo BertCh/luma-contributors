@@ -7,7 +7,7 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH,
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_TABLE_STRIDE,
@@ -15,7 +15,7 @@ import {
   GPUContiguityWeights,
   GPUSpatialWeightsTransform,
   type GPUContiguityWeightsProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded tract design and polygons; the caller owns the recording graph. */
 export type SpatialErrorMaximumLikelihoodInput = {

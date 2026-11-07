@@ -291,7 +291,7 @@ export default defineScene<TransitReachabilityOptions>({
   snippet: state => `import {
   GPUNetworkReachability, GPUNetworkIsochrones, GPUNetworkCostMatrix,
   getGPUNetworkIsochronesParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 // offsets / neighbors / weights: CSR of the rail graph, weights = scheduled seconds (+ dwell)
 const graph = new GPUCommandGraph(device, {id: 'rail-reach'});

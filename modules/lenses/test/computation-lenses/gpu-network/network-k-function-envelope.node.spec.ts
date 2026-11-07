@@ -8,7 +8,7 @@ import {
   validateGPUComputationRecord,
   validateGPUComputationSidecars,
   type GPUComputationCapture
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   captureNetworkKFunction,
   describeStructure
@@ -20,7 +20,7 @@ import {
   renderResultView
 } from '../../../src/computation-views/views/result-view';
 import {getViewNodeText} from '../../../src/computation-views/view-node';
-import {createNullWebGPUDevice} from '@luma-contributors/graph/testing';
+import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
 // Synthetic readbacks exercise presentation and serialization only; no CPU analysis or GPU run.
 function makeReadbacks() {

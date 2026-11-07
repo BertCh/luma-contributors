@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
 import type {Device} from '@luma.gl/core';
 import '../../../gpu-raster/computation-pack/index';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {runRasterLens, type RasterLensSession} from './raster-lens-harness';
 import {runExample as runRemapping} from './remote-sensing-conservative-remapping.example';
 import {runExample as runTexture} from './remote-sensing-texture.example';

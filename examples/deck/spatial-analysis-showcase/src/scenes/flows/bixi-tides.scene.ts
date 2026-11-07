@@ -12,7 +12,7 @@ import {getSizeLegendEntries} from '../../cartography/proportional';
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './bixi-tides.md?raw';
+import narrative from './bixi-tides.md?raw?raw';
 import type {BixiTidesOptions} from './bixi-tides.compute';
 import {
   getNetTable,
@@ -99,9 +99,9 @@ function getLegends(
 }
 
 function getSnippet(state: BixiTidesOptions): string {
-  return `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUFlowAggregation} from '@luma-contributors/graph/gpu-network';
-import {getGPUTimeWindowFilterParameterValues} from '@luma-contributors/graph/gpu-dataframe';
+  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
+import {getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
 
 const graph = new GPUCommandGraph(device, {id: 'tides'});
 graph.add(

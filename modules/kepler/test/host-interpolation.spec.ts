@@ -7,7 +7,7 @@ import * as arrow from 'apache-arrow';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {KeplerComputeSession, type KeplerIDWSettings} from '../src';
 import {AnalysisRuntime} from '../../../examples/deck/kepler-compute/src/analysis-runtime';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 const settings: KeplerIDWSettings = {
   longitudeColumn: 'longitude',

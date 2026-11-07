@@ -4,7 +4,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {runNestedInterpolationValidationLens as run} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/nested-interpolation-validation.run';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 it('nested validation lens executes public examples and captures fitted results', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

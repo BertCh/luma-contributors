@@ -599,7 +599,7 @@ export default defineScene<HorizonOptions>({
     }
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUPointHorizonProfile,
   GPUPointHorizonVisibility,
@@ -608,7 +608,7 @@ import {
   getGPUPointHorizonProfileParameterValues,
   getGPUPointHorizonVisibilityParameterValues,
   getGPUProfilePeaksParameterValues
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 
 const graph = new GPUCommandGraph(device, {id: 'skyline'});
 // ${state.projection === 'web-mercator' ? 'grid: EPSG:3857 meters, origin [minX, maxY], cellSize the Mercator pixel size' : 'grid: planar, cellSize the ground size of one pixel'}

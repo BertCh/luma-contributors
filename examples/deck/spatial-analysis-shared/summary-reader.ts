@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
-import {GPUReadbackRing} from '@luma-contributors/graph/gpu-core';
+import {GPUReadbackRing} from '@luma.gl/graph/gpu-core';
 
 /** The part of an app's resource tracker that {@link SummaryReader} needs. */
 export type SummaryReaderResources = {

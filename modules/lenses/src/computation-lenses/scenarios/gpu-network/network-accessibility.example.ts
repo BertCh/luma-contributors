@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkAccessibility} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {GPUNetworkAccessibility} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs and the facility-by-node cost matrix, searched over the reversed roads. */
 export type NetworkAccessibilityExampleInput = {

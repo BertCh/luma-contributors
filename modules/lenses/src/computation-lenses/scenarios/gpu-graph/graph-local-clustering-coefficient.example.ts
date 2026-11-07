@@ -3,12 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUGraphAlgorithmsLocalClusteringCoefficient,
   type GPUGraphAlgorithmsTopology
-} from '@luma-contributors/graph/gpu-graph-algorithms';
+} from '@luma.gl/graph/gpu-graph-algorithms';
 
 /** Declares local clustering coefficients over the undirected rail CSR, without submitting work. */
 export async function runExample(

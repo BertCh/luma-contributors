@@ -7,7 +7,7 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUSpatialClusteringParameterValues,
   GPUGroupConvexHull,
@@ -15,7 +15,7 @@ import {
   GPUSpatialClustering,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Label slots of the example; DBSCAN labels at or above it are left out of every hull. */
 export const GROUP_CONVEX_HULL_GROUP_COUNT = 64;

@@ -7,14 +7,14 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUSpatialScanStatisticParameterValues,
   GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH,
   GPUParameterBuffer,
   GPUSpatialScanStatistic,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from `s2-midwest-counties.json`. */
 export type SpatialScanStatisticExampleInput = {

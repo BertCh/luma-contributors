@@ -8,8 +8,8 @@ import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   GPU_WGS84_FLATTENING
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import type {GPUSpatialContext} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {toRadians, toDegrees} from '@math.gl/core';
 
 /**

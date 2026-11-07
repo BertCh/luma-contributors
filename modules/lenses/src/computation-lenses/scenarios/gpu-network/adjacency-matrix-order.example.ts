@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUAdjacencyMatrixOrder} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {GPUAdjacencyMatrixOrder} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded input: one group label per intersection. */
 export type AdjacencyMatrixOrderExampleInput = {

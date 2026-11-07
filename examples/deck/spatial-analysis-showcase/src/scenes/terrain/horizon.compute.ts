@@ -4,15 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPURasterExtremaPyramid,
-  getGPURasterExtremaPyramidLayout
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURasterExtremaPyramid, getGPURasterExtremaPyramidLayout} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUPointHorizonProfile,
   GPUPointHorizonVisibility,
@@ -28,7 +21,7 @@ import {
   getGPUProfilePeaksParameterValues,
   getGPUTerrainCurvatureCoefficient,
   getGPUTerrainHorizonParameterValues
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {getClassTableLayerProps} from '../../cartography/class-table';
 import {hexToRgba, MAP_INK} from '../../cartography/hue-registry';
 import type {MapAnnotation} from '../../cartography/types';

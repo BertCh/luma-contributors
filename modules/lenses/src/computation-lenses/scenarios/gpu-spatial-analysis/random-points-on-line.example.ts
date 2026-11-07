@@ -7,14 +7,14 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPURandomPointsOnLine,
   GPUParameterBuffer,
   getGPUDotDensityParameterValues,
   type GPULineGeometryFields,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 export type RandomPointsOnLineExampleInput = {
   geometry: GPULineGeometryFields;

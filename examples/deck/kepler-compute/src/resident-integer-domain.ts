@@ -3,17 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUBatchHashIndex,
-  createTransientView,
-  createTransientVectorView,
-  getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUBatchHashIndex, createTransientView, createTransientVectorView, getBoundedDispatchLayout, getBoundedInvocationIndexSource, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 
 // Keep an extra domain beyond the accepted group limit so >512 reliably selects native intervals.
 // The table also distinguishes 513-1,000 calendar periods (native shows them) from >1,000.

@@ -7,7 +7,7 @@ import {expect, test, vi} from 'vitest';
 const dispatches: {x: number; y?: number; z?: number}[] = [];
 const sources: string[] = [];
 
-vi.mock('@luma-contributors/graph', async importOriginal => ({
+vi.mock('@luma.gl/graph', async importOriginal => ({
   ...(await importOriginal<object>()),
   Kernel: class {
     constructor(_device: unknown, options: {source: string}) {
@@ -20,7 +20,7 @@ vi.mock('@luma-contributors/graph', async importOriginal => ({
   }
 }));
 
-vi.mock('@luma-contributors/graph/gpu-core', async importOriginal => ({
+vi.mock('@luma.gl/graph/gpu-core', async importOriginal => ({
   ...(await importOriginal<object>()),
   getViewBinding: () => ({}),
   getViewElementOffset: () => 0

@@ -3,13 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import type {
-  CompiledGPUCommandGraph,
-  GPUCommandGraph,
-  GraphBufferHandle,
-  GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+import type {CompiledGPUCommandGraph, GPUCommandGraph, GraphBufferHandle, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 
 /**
  * Imports an application-owned buffer into a command graph and returns a typed view of it, using

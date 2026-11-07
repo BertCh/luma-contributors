@@ -8,7 +8,7 @@ import {Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {KeplerComputeSession} from '../src/session/compute-session';
 import {AnalysisRuntime} from '../../../examples/deck/kepler-compute/src/analysis-runtime';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 test('excess risk pools selected source batches and excludes missing or nonpositive populations', async () => {
   const device = await getWebGPUTestDevice();

@@ -14,7 +14,7 @@ import {
 import type {CatalogFeatureCollection, CatalogPosition} from '../src/analysis/catalog-geojson';
 import {getCatalogPolygonArea, isCatalogPointInPolygon} from '../src/analysis/catalog-gpu-pack';
 import {listCatalogLensScenarios, runCatalogLensScenario} from '../src/analysis/catalog-lens';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 // Oracle policy: the CPU reference engines of the catalog (engine: 'cpu') are the oracle for the
 // eight bound operations; the new GPU-only operations are checked against closed-form areas and

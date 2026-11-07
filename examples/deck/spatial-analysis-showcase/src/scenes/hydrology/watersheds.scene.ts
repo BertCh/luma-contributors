@@ -614,11 +614,11 @@ export default defineScene<WatershedsOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   getGPUTerrainFlowParameterValues, GPUTerrainFlow, GPUTerrainHeightAboveDrainage,
   GPUTerrainWatersheds, GPUTerrainStreamOrder, GPUTerrainHydrologicIndices
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 
 const graph = new GPUCommandGraph(device, {id: 'watersheds'});
 graph.add(new GPUTerrainFlow({

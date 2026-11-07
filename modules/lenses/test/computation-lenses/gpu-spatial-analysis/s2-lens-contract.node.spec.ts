@@ -88,7 +88,7 @@ export const S2_ELEMENTS = {
 
 type S2Family = keyof typeof S2_ELEMENTS;
 
-const SOURCE_ROOT = join(REPOSITORY_ROOT, 'modules/graph/src');
+const SOURCE_ROOT = join(REPOSITORY_ROOT, 'modules/analysis/src');
 const SPATIAL_ROOT = join(SOURCE_ROOT, 'gpu-spatial-analysis');
 const PAGES_ROOT = join(DOCS_ROOT, 'api-reference/experimental/gpu-spatial-analysis');
 

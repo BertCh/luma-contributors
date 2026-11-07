@@ -9,11 +9,7 @@ import {
   preparePackedPolygonContiguityTopology,
   type PreparedPolygonTopologySource
 } from '@luma.gl/engine/arrow';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   addKeplerPolygonWeights,
   parseKeplerPolygonWeightsSettings,

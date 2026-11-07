@@ -125,7 +125,7 @@ function getSnippet(state: SegregationOptions): string {
   return `import {
   GPUNeighborSearch, GPUSegregation, GPUSpatialWeightsTransform,
   getGPUSegregationLayout, getGPUNeighborSearchParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One distance band per radius; the radius is a parameter-buffer write.
 scales.forEach(({weights, searchParameters}) => {

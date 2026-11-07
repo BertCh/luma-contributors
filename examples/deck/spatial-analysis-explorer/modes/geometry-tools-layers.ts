@@ -5,18 +5,18 @@
 import type {Layer, LayerProps} from '@deck.gl/core';
 import type {Buffer, CommandEncoder, RenderPass} from '@luma.gl/core';
 import type {Model} from '@luma.gl/engine';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUHilbertKeys,
   GPU_HILBERT_MAXIMUM_ORDER
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getGPUShapeGeneratorParameterValues,
   getGPUShapeVertexCount,
   GPUShapeGenerator,
   GPU_SHAPE_GENERATOR_PARAMETER_LENGTH,
   type GPUShapeType
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {SpatialAnalysisBikeParking} from '../spatial-analysis-data';

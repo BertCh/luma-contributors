@@ -12,7 +12,7 @@ import {
   type GPUComputationKeySpace,
   type GPUComputationRelation,
   type GPUComputationRecordWithSidecars
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph,
@@ -21,7 +21,7 @@ import {
   type GraphBufferDescriptor,
   type GraphBufferHandle,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {NETWORK_FORMULA_REFS} from '../../../gpu-network/computation-pack/network-formulas';
 import {
   assembleNetworkLensRecord,

@@ -5,16 +5,8 @@
 import {
   GPUNeighborSearch,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  createTransientView,
-  GPUReduction,
-  GPURunLengthEncode,
-  GPUScan,
-  GPUSort,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createTransientView, GPUReduction, GPURunLengthEncode, GPUScan, GPUSort, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 
 /** The exact maximum radius count and its lowest input row. */

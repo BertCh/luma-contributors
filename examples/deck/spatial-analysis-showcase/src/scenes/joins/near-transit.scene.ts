@@ -258,8 +258,8 @@ export default defineScene<NearTransitOptions>({
   },
 
   snippet:
-    state => `import {GPUCommandGraph, DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
-import {GPUBufferSelection} from '@luma-contributors/graph/gpu-spatial-analysis';
+    state => `import {GPUCommandGraph, DrawCommandBuffer} from '@luma-contributors/analysis/gpu-core';
+import {GPUBufferSelection} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const drawCommands = new DrawCommandBuffer(device, {
   type: 'draw',

@@ -7,12 +7,12 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUOffsetCurve,
   getGPUOffsetCurveRowsPerVertex,
   type GPULineGeometryFields
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Streets in UTM 16N metres and the packed offset distance (20 m) for GPUOffsetCurve. */
 export type OffsetCurveExampleInput = {

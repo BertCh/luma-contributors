@@ -3,19 +3,19 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import {GPUCommandGraph, GPUMask} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUMask} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerPointWeights} from '../src/analysis/point-weights';
 import {addKeplerSpatialRate} from '../src/analysis/analysis-bindings';
-import {importGraphBuffer} from '../../graph/src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../analysis/src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
   readUint32,
   submitGraph
-} from '../../graph/test/utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+} from '../../analysis/test/utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 test('great-circle point weights cross the antimeridian and are reusable without refilling masked neighbors', async () => {
   const device = await getWebGPUTestDevice();

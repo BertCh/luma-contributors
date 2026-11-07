@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUSpatialContext} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
 /**
  * Analysis kit of the weights scenes, adapted from the explorer's weights mode. It works on any
  * weights source (polygon contiguity, kNN or distance band on centroids, a regular lattice): the
@@ -15,19 +15,14 @@ import type {GPUSpatialContext} from '@luma-contributors/graph/gpu-spatial-analy
  */
 
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  GPUReduction,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUReadbackRing, GPUReduction, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT,
   GPUSpatialLag,
   GPUSpatialWeightsAlgebra,
   GPUSpatialWeightsSummary,
   GPUSpatialWeightsTranspose
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 import {addKernelPass} from '../../engine/mode-kernels';

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {describe, expect, it} from 'vitest';
 import {selectKeyFrames} from '../../../src/computation-lenses/scenarios/gpu-raster/raster-lens-harness';
 

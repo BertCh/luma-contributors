@@ -7,11 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUAssuncaoReisStandardization,
   GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Event counts and populations per tract; the caller owns the recording graph. */
 export type AssuncaoReisStandardizationInput = {

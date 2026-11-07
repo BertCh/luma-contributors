@@ -1,11 +1,11 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUNestedInterpolationValidation,
   type GPUNestedInterpolationValidationProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 /** Fit, choose and evaluate using resident outer training/testing masks. */
 export async function runExample(
   graph: GPUCommandGraph<undefined>,

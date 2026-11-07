@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {KeplerAllocationError} from '../runtime/dataset-registry';
-import {Kernel} from '@luma-contributors/graph';
+import {Kernel} from '@luma.gl/graph';
 import {
   getBoundedDispatchLayout,
   getBoundedInvocationIndexSource,
@@ -11,7 +11,7 @@ import {
   getViewElementOffset,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 
 /**
  * Rows (or raster cells) per compute dispatch for the tiled analysis kernels. Tiles keep global

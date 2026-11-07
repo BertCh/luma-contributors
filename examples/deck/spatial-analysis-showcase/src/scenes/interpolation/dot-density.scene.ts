@@ -233,10 +233,10 @@ export default defineScene<DotDensityOptions>({
     ];
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUDotDensity, GPURandomPointsInPolygon, getGPUDotDensityParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'dot-density'});
 graph.add(new GPUDotDensity({

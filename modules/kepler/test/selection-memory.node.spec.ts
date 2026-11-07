@@ -4,8 +4,8 @@
 
 import {NullDevice} from '@luma.gl/core/test-utils';
 import {Buffer} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, test, vi} from 'vitest';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {GPUKeplerSelectionScopes} from '../src/selection/gpu-selection-scopes';

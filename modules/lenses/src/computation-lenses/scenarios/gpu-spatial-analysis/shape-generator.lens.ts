@@ -31,7 +31,7 @@ defineLensScenario({
       import('./s3-lens-run'),
       import('./shape-generator.example'),
       import('./s3-lens-data').then(module => module.loadS3ChicagoPlaces()),
-      import('@luma-contributors/graph/gpu-spatial-analysis')
+      import('@luma-contributors/analysis/gpu-spatial-analysis')
     ]);
     // Sub-selection: every 12th place, in dataset order.
     const centerCount = Math.ceil(data.pointCount / CENTER_STRIDE);

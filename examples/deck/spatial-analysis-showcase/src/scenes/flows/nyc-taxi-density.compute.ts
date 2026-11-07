@@ -7,8 +7,8 @@ import type {Buffer} from '@luma.gl/core';
 import {
   createGPUPointDensityGaussianKernel,
   GPUPointDensity
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassIndexOf, getClassTableLayerProps} from '../../cartography/class-table';
 import {nearestPlaceLabel, NYC} from '../../cartography/gazetteer';
 import {formatCount, formatDistance, liveText} from '../../cartography/live-text';

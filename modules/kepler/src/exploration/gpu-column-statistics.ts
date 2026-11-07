@@ -3,17 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
-import {GPUData, type GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUMask,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUData, type GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUMask, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUColumnProfile,
   GPU_COLUMN_PROFILE_STATISTIC,
   GPU_COLUMN_PROFILE_STATISTIC_COUNT
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 /** Largest column the fused GPU profile accepts: row counts are exact in float32 up to 2^24. */
 export const MAXIMUM_GPU_COLUMN_STATISTICS_ROWS = 2 ** 24;

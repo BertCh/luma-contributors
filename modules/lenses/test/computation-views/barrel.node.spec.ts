@@ -42,6 +42,6 @@ test('computation-views and computation-lenses import in Node without a DOM', as
   for (const name of ['registerLensScenario', 'fromRecordedLensFile', 'toRecordedLensFile']) {
     expect(typeof (lenses as Record<string, unknown>)[name], name).toBe('function');
   }
-  const root = await import('@luma-contributors/graph');
+  const root = await import('@luma.gl/graph');
   expect('buildLensTwin' in root).toBe(false);
 });

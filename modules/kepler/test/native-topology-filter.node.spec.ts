@@ -12,7 +12,7 @@ import {
   type KeplerComputeFilter
 } from '../../../examples/deck/kepler-compute/src/kepler-table-bridge';
 import {normalizeKeplerScalarRange} from '../src/selection/scalar-range';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {planKeplerConsumerFilterIds} from '../src/selection/selection-scope-plan';
 
 type NativeFilter = KeplerComputeFilter & {dataId: string[]; gpu?: boolean};

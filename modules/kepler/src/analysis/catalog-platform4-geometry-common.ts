@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandNodeProducer, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPULineGeometryOutput} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPUCommandNodeProducer, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPULineGeometryOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getFeatureIdentity,
   getLineParts,

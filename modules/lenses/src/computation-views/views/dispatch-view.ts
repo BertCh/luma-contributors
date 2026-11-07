@@ -6,7 +6,7 @@ import {renderRasterImage} from '../encoding/raster-image';
 import {CARD_COLORS} from '../encoding/card-tokens';
 import {resolveValueScale} from './value-strip';
 import {assert} from '@luma.gl/core';
-import type {GPUComputationNode} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationNode} from '@luma-contributors/analysis/computation-record';
 import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-registration';
 import type {MarkProvenance} from '../types';
 import {h, viewNodeToDom, type ViewElementNode} from '../view-node';

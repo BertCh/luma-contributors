@@ -27,7 +27,7 @@ registerRegressionLens({
     mappedVariableExtent: 'intensive'
   },
   async loadUploads() {
-    const spatial = await import('@luma-contributors/graph/gpu-spatial-analysis');
+    const spatial = await import('@luma-contributors/analysis/gpu-spatial-analysis');
     return {
       parameters: spatial.getGPUGeographicallyWeightedRegressionParameterValues(
         {

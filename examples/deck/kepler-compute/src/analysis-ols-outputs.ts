@@ -3,9 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {
   KeplerComputeSession,
   KeplerMemoryReservation,

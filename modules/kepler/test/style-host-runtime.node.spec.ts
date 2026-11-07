@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {afterEach, expect, test, vi} from 'vitest';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {CommandEncoder} from '@luma.gl/core';
 import {NativeStyleRuntime} from '../../../examples/deck/kepler-compute/src/style-host-runtime';
 import type {NativeStyleLayer} from '../../../examples/deck/kepler-compute/src/native-style-plan';

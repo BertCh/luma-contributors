@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 
 /** Reads the resident row mask chunk by chunk (one bounded readback per filter revision). */

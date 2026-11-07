@@ -844,11 +844,11 @@ export default defineScene<AirlineNetworkOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUGraphAlgorithmsData, GPUGraphAlgorithmsTopology, GPUGraphAlgorithmsDegree, GPUGraphAlgorithmsPageRank, GPUGraphAlgorithmsLabelPropagation,
   GPUGraphAlgorithmsModularity, GPUGraphAlgorithmsModularityOptimization, GPUGraphAlgorithmsForceLayout
-} from '@luma-contributors/graph/gpu-graph-algorithms';
+} from '@luma-contributors/analysis/gpu-graph-algorithms';
 
 // OpenFlights pairs: an undirected graph over borrowed GPU columns.
 const graph = new GPUGraphAlgorithmsData({vertexCount, sourceVertices, targetVertices, directed: false});
@@ -884,7 +884,7 @@ new GPUGraphAlgorithmsForceLayout({
 }).addToGraph(frameGraph);   // encoded every frame, warm-started`,
 
   about: {
-    what: 'Previously: [taxi trails](#/story/nyc-taxi-trails). Next: [flight bundling](#/story/flight-bundling).\n\nThis scene uses the `@luma-contributors/graph/gpu-graph-algorithms` classes directly. `GPUGraphAlgorithmsData` and `GPUGraphAlgorithmsTopology` describe the airline routes as an undirected graph with GPU-built adjacency; `GPUGraphAlgorithmsDegree`, `GPUGraphAlgorithmsPageRank` and `GPUGraphAlgorithmsCoreNumber` score airports; `GPUGraphAlgorithmsLabelPropagation`, `GPUGraphAlgorithmsModularityOptimization` and `GPUGraphAlgorithmsModularity` find and score communities; `GPUGraphAlgorithmsForceLayout` (or the approximate `GPUGraphAlgorithmsSpatialForceLayout`) positions airports by connection. Routes are drawn with `GPUGreatCircleArcs` or `GPUEdgeBundling`.',
+    what: 'Previously: [taxi trails](#/story/nyc-taxi-trails). Next: [flight bundling](#/story/flight-bundling).\n\nThis scene uses the `@luma-contributors/analysis/gpu-graph-algorithms` classes directly. `GPUGraphAlgorithmsData` and `GPUGraphAlgorithmsTopology` describe the airline routes as an undirected graph with GPU-built adjacency; `GPUGraphAlgorithmsDegree`, `GPUGraphAlgorithmsPageRank` and `GPUGraphAlgorithmsCoreNumber` score airports; `GPUGraphAlgorithmsLabelPropagation`, `GPUGraphAlgorithmsModularityOptimization` and `GPUGraphAlgorithmsModularity` find and score communities; `GPUGraphAlgorithmsForceLayout` (or the approximate `GPUGraphAlgorithmsSpatialForceLayout`) positions airports by connection. Routes are drawn with `GPUGreatCircleArcs` or `GPUEdgeBundling`.',
     why: 'A flight map shows geography; a graph shows structure. Ranking, communities and layout answer which airports hold the network together, whether regions are really separate systems, and where geography misleads.',
     howToRead:
       'Disc area is the chosen centrality measure. Colour is the continent or the community, with identity-stable hues; routes between two groups are off-white and drawn last. OpenFlights is a community-maintained snapshot from 2014 with one unweighted edge per airport pair: no seats, no schedules. Lines follow great-circle routes on a Winkel Tripel world map. This compromise projection balances distortion across the whole world; map lengths are not ground distances.'

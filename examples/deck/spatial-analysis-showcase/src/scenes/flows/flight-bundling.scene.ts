@@ -478,12 +478,12 @@ export default defineScene<FlightBundlingOptions>({
   },
   annotations: [],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUEdgeBundling,
   GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
   getGPUEdgeBundlingParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 const graph = new GPUCommandGraph(device, {id: 'bundling'});
 graph.add(

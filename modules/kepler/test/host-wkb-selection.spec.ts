@@ -6,9 +6,9 @@ import {expect, it} from 'vitest';
 import * as arrow from 'apache-arrow';
 import {writeWKB} from '@math.gl/geospatial';
 import {makeGeometryGPUVectors, prepareGeometrySourceFromArrow} from '@luma.gl/engine/arrow';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {GPUKeplerSelectionScopes} from '../src/selection/gpu-selection-scopes';
 
 async function readWords(vector: GPUVector<'uint32'>): Promise<number[]> {

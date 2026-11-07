@@ -4,8 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {CommandEncoder, Buffer} from '@luma.gl/core';
-import {GPUDorlingCartogram} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {GPUDorlingCartogram} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';

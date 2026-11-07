@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {runInterpolationLens} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/interpolation.run';
 import {run as runVariogramFitLens} from '../../src/computation-lenses/scenarios/gpu-dataframe/variogram-model-fit.run';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 
 for (const kind of [
   'local-kriging',

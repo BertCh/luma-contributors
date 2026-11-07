@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GraphDataView} from '@luma-contributors/graph/gpu-core';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   recordNetworkElement,
   describeNetworkElement,

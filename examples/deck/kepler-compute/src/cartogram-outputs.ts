@@ -3,15 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  createTransientView,
-  GPUReduction,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import type {GPUDorlingCartogramOutput} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {Kernel} from '@luma.gl/graph';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {createTransientView, GPUReduction, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUDorlingCartogramOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerComputeSession, KeplerMemoryReservation} from '@luma-contributors/kepler';
 
 /** Caller-owned result storage; every vector preserves the original source chunks. */

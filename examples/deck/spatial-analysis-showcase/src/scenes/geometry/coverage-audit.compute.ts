@@ -4,16 +4,12 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUCoverageValidityParameterValues,
   GPUCoverageDissolve,
   GPUCoverageValidity
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {getAnalysisFrameSpatialContext, ALBERS_CONUS_FRAME} from '../../engine/analysis-frame';
 import {GraphSwap} from '../../engine/graph-swap';

@@ -13,7 +13,7 @@ import {
   addFleetDwellRecipe,
   addFleetDwellZoneEventsRecipe,
   getGPUTrajectoryMetricsParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,

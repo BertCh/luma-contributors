@@ -5,7 +5,7 @@
 import {
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   GPU_WGS84_FLATTENING
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 /**
  * Shared helpers of the raster chapter (B16): the UTM display frame of the Sentinel-2 grids, a
  * raster layer that draws a UTM grid rotated onto the true-north basemap, small formatters and the
@@ -18,8 +18,8 @@ import {
  */
 
 import type {Buffer} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {LoadedDataset} from '../../data/catalog';
 import {decodeRasterImage, fetchBytes, getDataFileUrl} from '../../data/loaders';
 import {SpatialAnalysisRasterLayer} from '../../engine/layers';

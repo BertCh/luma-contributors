@@ -4,8 +4,8 @@
 
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUDataFrame,
   and,
@@ -17,8 +17,8 @@ import {
   type GPUExpression,
   type GPUDataFrameQueryParameters,
   type CompiledGPUDataFrameQuery
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUTable} from '@luma-contributors/graph/gpu-tables';
+} from '@luma.gl/graph/gpu-dataframe';
+import {GPUTable} from '@luma.gl/graph/gpu-tables';
 import {
   KeplerAllocationError,
   type KeplerDatasetRegistry,

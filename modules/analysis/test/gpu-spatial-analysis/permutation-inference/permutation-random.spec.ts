@@ -1,0 +1,149 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {PHILOX_PURPOSES} from '../../../src/analysis-core/kernels/philox-random';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {expect, it} from 'vitest';
+import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  getPhilox4x32,
+  PERMUTATION_RANDOM_WGSL,
+  PhiloxStream
+} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {
+  getSwapOrNotPermutationIndex,
+  getSwapOrNotRounds,
+  getPermutationShuffleWGSL
+} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
+import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
+
+const BOUNDS = [1, 2, 3, 6, 7, 1000, 65537, 0x80000001, 0xfffffffe, 0xffffffff];
+const DRAWS = 16;
+
+it('the WGSL Philox and bounded draws are bit-identical to TypeScript', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const invocations = 64;
+  const blockWords = invocations * 4;
+  const drawWords = invocations * BOUNDS.length * DRAWS;
+  const blocks = createOutputBuffer(device, blockWords);
+  const draws = createOutputBuffer(device, drawWords);
+  const graph = new GPUCommandGraph(device, {id: 'philox-test'});
+  const blocksView = importGraphBuffer(graph, 'blocks', blocks, 'uint32', blockWords);
+  const drawsView = importGraphBuffer(graph, 'draws', draws, 'uint32', drawWords);
+  graph.add({
+    getCommandNodes: target => [
+      createWGSLKernelNode(target, {
+        id: 'philox-test-kernel',
+        operation: 'PhiloxTest',
+        bindings: [
+          {name: 'blocks', view: blocksView, type: 'u32', access: 'read_write'},
+          {name: 'draws', view: drawsView, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 4097,
+        declarations: `${PERMUTATION_RANDOM_WGSL}
+const BOUNDS = array<u32, ${BOUNDS.length}>(${BOUNDS.map(bound => `${bound}u`).join(', ')});`,
+        body: `if (index < ${invocations}u) {
+    let block = getPhilox4x32(vec4<u32>(index, index * 7u, 0xdeadbeefu, index ^ 0x5555u), vec2<u32>(index * 13u, 99u));
+    for (var lane = 0u; lane < 4u; lane++) {
+      blocks[blocksOffset + index * 4u + lane] = block[lane];
+    }
+    for (var bound = 0u; bound < ${BOUNDS.length}u; bound++) {
+      var stream = createPhiloxStream(vec2<u32>(17u, index), index, bound, 3u);
+      for (var draw = 0u; draw < ${DRAWS}u; draw++) {
+        draws[drawsOffset + (index * ${BOUNDS.length}u + bound) * ${DRAWS}u + draw] = nextPhiloxBelow(&stream, BOUNDS[bound]);
+      }
+    }
+  }`
+      })
+    ]
+  });
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const gpuBlocks = await readUint32(blocks, blockWords);
+  const gpuDraws = await readUint32(draws, drawWords);
+  for (let index = 0; index < invocations; index++) {
+    const expected = getPhilox4x32(
+      [index, index * 7, 0xdeadbeef, (index ^ 0x5555) >>> 0],
+      [(index * 13) >>> 0, 99]
+    );
+    expect(gpuBlocks.slice(index * 4, index * 4 + 4), `block ${index}`).toEqual(expected);
+    for (const [boundIndex, bound] of BOUNDS.entries()) {
+      const stream = new PhiloxStream([17, index], index, boundIndex, 3);
+      const expectedDraws = Array.from({length: DRAWS}, () => stream.nextBelow(bound));
+      const offset = (index * BOUNDS.length + boundIndex) * DRAWS;
+      expect(gpuDraws.slice(offset, offset + DRAWS), `draws ${index} ${bound}`).toEqual(
+        expectedDraws
+      );
+    }
+  }
+  compiled.destroy();
+  blocks.destroy();
+  draws.destroy();
+});
+
+const SHUFFLE_COUNTS = [1, 2, 5, 100, 1000, 4097];
+const SHUFFLE_PERMUTATIONS = [1, 2];
+const SHUFFLE_STRIDE = 4097;
+const SHUFFLE_WORKGROUP = 64;
+
+it('the WGSL swap-or-not shuffle is bit-identical to TypeScript', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const cases = SHUFFLE_COUNTS.length * SHUFFLE_PERMUTATIONS.length;
+  const words = cases * SHUFFLE_STRIDE;
+  const output = createOutputBuffer(device, words);
+  const graph = new GPUCommandGraph(device, {id: 'shuffle-test'});
+  const outputView = importGraphBuffer(graph, 'shuffle', output, 'uint32', words);
+  graph.add({
+    getCommandNodes: target => [
+      createWGSLKernelNode(target, {
+        id: 'shuffle-test-kernel',
+        operation: 'ShuffleTest',
+        bindings: [{name: 'shuffle', view: outputView, type: 'u32', access: 'read_write'}],
+        workgroupSize: SHUFFLE_WORKGROUP,
+        invocationCount: cases * SHUFFLE_WORKGROUP,
+        guardIndex: false,
+        declarations: `${PERMUTATION_RANDOM_WGSL}
+${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}
+const SHUFFLE_COUNTS = array<u32, ${SHUFFLE_COUNTS.length}>(${SHUFFLE_COUNTS.map(count => `${count}u`).join(', ')});`,
+        // One workgroup per (count, permutation) case; the barrier is in uniform control flow.
+        body: `let testCase = index / ${SHUFFLE_WORKGROUP}u;
+  let count = SHUFFLE_COUNTS[testCase / ${SHUFFLE_PERMUTATIONS.length}u];
+  let permutation = testCase % ${SHUFFLE_PERMUTATIONS.length}u + 1u;
+  loadSwapOrNotRounds(vec2<u32>(123u, 4u), permutation, count, localInvocationIndex, ${SHUFFLE_WORKGROUP}u);
+  workgroupBarrier();
+  for (var position = localInvocationIndex; position < count; position += ${SHUFFLE_WORKGROUP}u) {
+    shuffle[shuffleOffset + testCase * ${SHUFFLE_STRIDE}u + position] = getSwapOrNotPermutationIndex(position, count);
+  }`
+      })
+    ]
+  });
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const gpu = await readUint32(output, words);
+  for (const [countIndex, count] of SHUFFLE_COUNTS.entries()) {
+    for (const [permutationIndex, permutation] of SHUFFLE_PERMUTATIONS.entries()) {
+      const rounds = getSwapOrNotRounds(
+        [123, 4],
+        permutation,
+        count,
+        PHILOX_PURPOSES.permutationShuffle.id
+      );
+      const expected = Array.from({length: count}, (_, index) =>
+        getSwapOrNotPermutationIndex(index, count, rounds)
+      );
+      const offset = (countIndex * SHUFFLE_PERMUTATIONS.length + permutationIndex) * SHUFFLE_STRIDE;
+      expect(
+        gpu.slice(offset, offset + count),
+        `shuffle ${count} permutation ${permutation}`
+      ).toEqual(expected);
+    }
+  }
+  compiled.destroy();
+  output.destroy();
+});

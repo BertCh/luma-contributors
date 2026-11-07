@@ -14,19 +14,14 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import type {GPURasterBand} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
   GPUTerrainDerivatives
-} from '@luma-contributors/graph/gpu-terrain';
-import {GPURasterZonalStatistics, makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {GPURasterZonalStatistics, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

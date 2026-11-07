@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources,
   getStorageBindingCount
-} from '@luma-contributors/graph/testing';
+} from '@luma-contributors/analysis/testing';
 import {buildUrbanEcologyScenario} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/urban-ecology-examples';
 import {URBAN_ECOLOGY_OPERATORS} from '../../src/gpu-spatial-analysis/urban-morphology/urban-ecology-operators';
 import type {S2Uploads} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/s2-lens-run';

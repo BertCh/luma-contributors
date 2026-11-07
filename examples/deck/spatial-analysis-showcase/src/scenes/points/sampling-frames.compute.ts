@@ -3,15 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {GPUReadbackRing} from '@luma-contributors/graph/gpu-core';
+import {GPUReadbackRing} from '@luma.gl/graph/gpu-core';
 import {
   GPUContinuousSpatialSample,
   GPUSpatialBalancedSample,
   getGPUDotDensityParameterValues,
   GPURandomPointsOnLine,
   GPUPolygonTriangulation
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';

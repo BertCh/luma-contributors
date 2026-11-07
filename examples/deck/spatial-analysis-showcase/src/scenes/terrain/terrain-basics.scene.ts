@@ -573,12 +573,12 @@ export default defineScene<BasicsOptions>({
 
   create: async ctx => (await import('./terrain-basics.compute')).createTerrainBasics(ctx),
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUTerrainRGBDecode, GPUTerrainDerivatives, GPUTerrainRuggedness,
   getGPUTerrainDerivativesParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/gpu-raster';
 
 // the tile is Web Mercator: EPSG:3857 meters, origin [minX, maxY], cellSize the equatorial pixel size
 const grid = makeGPURasterMetadata({width: 2048, height: 2048, cellSize: 9.5546, origin: [minX, maxY]});

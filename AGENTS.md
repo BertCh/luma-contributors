@@ -12,27 +12,26 @@
 
 Large typechecks need `NODE_OPTIONS=--max-old-space-size=8192` or more.
 
-## Relationship to luma.gl
-- This repository depends on **published** `@luma.gl/core`, `@luma.gl/shaders` and (examples and
-  tests only) `@luma.gl/engine` at `10.0.0-alpha.10`. Never use workspace links or source aliases
-  into a luma.gl checkout.
-- `@luma-contributors/graph` carries its own fork of the `@luma.gl/graph` execution layer
-  (`gpu-core`, `gpu-data`, `gpu-tables`, `arrow`, `gpu-simple-graph`, ...). Packages here must import
-  graph code from `@luma-contributors/graph`, never from `@luma.gl/graph`. Mixing the two makes
-  `GPUCommandGraph`, `GPUVector` and `GPUTable` instances incompatible.
-- Do not pass forked graph objects into `@luma.gl/engine` APIs that consume graph types (for example
-  `GPUTableModel`). Published engine binds through its own `@luma.gl/graph` copy.
-- Core APIs that are not in every supported luma.gl release go through
-  `modules/graph/src/utils/luma-core-compat.ts`, which prefers the native API when present.
-- `scripts/split/` holds the scripts that produced this repository from the luma.gl
-  `map-contributors` branch. See `scripts/split/README.md` before re-syncing.
+## Relationship to luma.gl (upstream-first)
+- This repository contains only geospatial and analysis code. Everything else comes from **published**
+  `@luma.gl/core`, `@luma.gl/shaders`, `@luma.gl/graph` (and, for examples and tests only,
+  `@luma.gl/engine`) at `10.0.0-alpha.10`, through their public package entry points.
+- Never import `@luma.gl/*/_internal/*`, deep `dist` paths, or copied luma.gl source. Never fork,
+  re-implement or re-export luma.gl APIs. See `dev-docs/upstream-first-plan.md`.
+- When luma.gl lacks something, in order: use the public API even if more verbose; adapt to
+  luma.gl's design; drop the feature; last resort, a small helper named for the analysis domain.
+- luma.gl improvements go upstream as ordinary luma.gl pull requests. Do not carry them here.
+- Source lives only in analysis-owned directories of `modules/analysis/src`: `analysis-core`,
+  `computation-record`, `gpu-spatial-analysis`, `gpu-network`, `gpu-terrain`, `testing`,
+  `dataframe-analysis`, `raster-analysis`, `pointcloud-analysis`, `geospatial-analysis`.
+  `src/_pending/` holds quarantined luma.gl extensions awaiting removal and must end up empty.
 
 ## Packages
-- `@luma-contributors/graph`: GPU analysis operations and the forked graph execution layer.
+- `@luma-contributors/analysis`: GPU geospatial and analysis operations.
 - `@luma-contributors/lenses`: computation lenses, views and scenario packs (private until the
   dataset licensing in `THIRD-PARTY-DATA.md` is resolved).
 - `@luma-contributors/kepler`: GPU compute and lifecycle adapters for kepler.gl.
-- Dependency direction is `kepler → lenses → graph → @luma.gl/core, @luma.gl/shaders`.
+- Dependency direction is `kepler → lenses → analysis → @luma.gl/graph, @luma.gl/core, @luma.gl/shaders`.
 
 ## Before committing
 - Always run `yarn lint-fix` after making changes.

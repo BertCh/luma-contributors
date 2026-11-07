@@ -9,8 +9,8 @@ import {
   runCoverageTrancheOne
 } from '../../../src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-runner';
 import {COVERAGE_TRANCHE_ONE_SCENARIOS} from '../../../src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one.scenarios';
-import {submitGraph} from '@luma-contributors/graph/testing';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {submitGraph} from '@luma-contributors/analysis/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 import {createCoverageTrancheOneHarness} from './coverage-tranche-one-harness';
 
 it.each(

@@ -8,8 +8,8 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUMultivariateLocalGearyPermutationTest} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUMultivariateLocalGearyPermutationTest} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerAnalysisProvenance} from './analysis-bindings';
 import {addKeplerLinearKernel, assertKeplerStorageBindingFits} from './analysis-scaling';
 import type {KeplerPointWeightsBinding} from './point-weights';

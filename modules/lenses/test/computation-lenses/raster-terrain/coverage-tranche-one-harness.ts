@@ -7,7 +7,7 @@ import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import type {
   RasterLensSession,
   RasterLensFormat,

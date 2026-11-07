@@ -4,7 +4,7 @@
 
 import {afterEach, beforeAll, expect, test, vi} from 'vitest';
 import type {CommandEncoder} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerComputeSession} from '../src/session/compute-session';
 import type {NativeStyleLayer} from '../../../examples/deck/kepler-compute/src/native-style-plan';
 import type {H3GPUVectors} from '../../../examples/deck/kepler-compute/src/h3-runtime';

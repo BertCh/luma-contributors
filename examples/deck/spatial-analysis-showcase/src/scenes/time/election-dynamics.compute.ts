@@ -4,12 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUClassBreaksParameterLength,
-  getGPUClassBreaksParameterValues,
-  GPUClassBreaks,
-  type GPUClassBreaksMethod
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, GPUClassBreaks, type GPUClassBreaksMethod} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUSpatialAutocorrelationParameterValues,
   GPU_LISA_MARKOV_STATE_COUNT,
@@ -23,8 +18,8 @@ import {
   GPURankMarkov,
   GPUSpatialMarkov,
   GPUTransitionMatrix
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {
   SpatialAnalysisRasterLayer,

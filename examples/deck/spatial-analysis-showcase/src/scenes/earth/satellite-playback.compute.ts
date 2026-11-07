@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPU_TRAJECTORY_PLAYHEAD_STATUS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_TRAJECTORY_PLAYHEAD_STATUS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createPlaybackClock} from '../../engine/playback';
 import type {RampName} from '../../engine/ramps';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';

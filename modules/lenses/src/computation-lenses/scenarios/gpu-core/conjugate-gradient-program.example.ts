@@ -7,8 +7,8 @@ import {
   createGPUConjugateGradientGraph,
   GPUGraphCompiler,
   type GPUCommandGraphRecordingOptions
-} from '@luma-contributors/graph/gpu-core';
-import type {GPUData} from '@luma-contributors/graph/gpu-data';
+} from '@luma.gl/graph/gpu-core';
+import type {GPUData} from '@luma.gl/graph/gpu-data';
 
 /** Uploaded CSR system `(I + 4 L) x = elevation` and the device that lowers the solver. */
 export type ConjugateGradientExampleInput = {

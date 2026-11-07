@@ -7,11 +7,11 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkSubgraphFilter,
   type GPUNetworkTopology
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: the road network and the packed predicate ranges (one edge column). */
 export type NetworkSubgraphFilterExampleInput = {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUNetworkCentrality, GPUNetworkStructure} from '@luma-contributors/graph/gpu-network';
+import {GPUNetworkCentrality, GPUNetworkStructure} from '@luma-contributors/analysis/gpu-network';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
 import {
   appendCatalogRow,

@@ -5,11 +5,11 @@
 import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUDataFrame, column, literal, parameter} from '@luma-contributors/graph/gpu-dataframe';
-import {GPURecordBatch, GPUTable} from '@luma-contributors/graph/gpu-tables';
-import type {GPUDataFrameQueryParameters} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUDataFrame, column, literal, parameter} from '@luma.gl/graph/gpu-dataframe';
+import {GPURecordBatch, GPUTable} from '@luma.gl/graph/gpu-tables';
+import type {GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';

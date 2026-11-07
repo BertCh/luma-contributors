@@ -350,10 +350,10 @@ export default defineScene<HurricaneFamiliesOptions>({
     {id: 'draw', label: 'Draw', detail: 'Routes and the linked family summary'}
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUTrajectoryResample, GPUTrackSimilarity, GPUKMeans
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // positions: float32x2 longitude/latitude degrees, timestamps: float32 seconds since each storm's start
 const routes = new GPUCommandGraph(device, {id: 'routes'});

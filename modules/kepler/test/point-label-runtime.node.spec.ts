@@ -4,9 +4,9 @@
 
 import {expect, test, vi} from 'vitest';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {buildBitmapFontAtlas, type FontAtlas} from '@luma.gl/engine/text';
-import {createNullWebGPUDevice} from '../../graph/test/utils/gpu-contributor-test-utils';
+import {createNullWebGPUDevice} from '../../analysis/test/utils/gpu-contributor-test-utils';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {preparePointLabelSource} from '../../../examples/deck/kepler-compute/src/label-source';
 import {makePointLabelRuntime} from '../../../examples/deck/kepler-compute/src/label-runtime';

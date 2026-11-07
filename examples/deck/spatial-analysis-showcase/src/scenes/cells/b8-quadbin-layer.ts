@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   COORDINATE_SYSTEM,
   Layer,
@@ -13,7 +13,7 @@ import {
 } from '@deck.gl/core';
 import {Buffer, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
-import type {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
+import type {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import {COLORMAP_INDEXES, getRampWgsl, type RampName} from '../../engine/ramps';
 import {BLEND_PARAMETERS} from '../../../../spatial-analysis-shared/layer-constants';
 

@@ -27,7 +27,7 @@
 import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {DrawCommandBuffer, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUGreatCircleArcsParameterValues,
   getGPULineChunkParameterValues,
@@ -47,7 +47,7 @@ import {
   GPU_LINE_LOCATE_PARAMETER_LENGTH,
   GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
   GPU_LINE_SMOOTH_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   createSeededRandom,

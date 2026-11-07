@@ -9,7 +9,7 @@ import {
   GPUNetworkReachability,
   GPU_NETWORK_REACHABILITY_NONE,
   getGPUNetworkIsochronesParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {
   addCatalogDiagnostic,
   appendCatalogRow,

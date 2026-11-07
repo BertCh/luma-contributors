@@ -7,7 +7,7 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {
   GPUParameterBuffer,
   type GPUParameterFormat
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 type Destroyable = {destroy: () => void};
 

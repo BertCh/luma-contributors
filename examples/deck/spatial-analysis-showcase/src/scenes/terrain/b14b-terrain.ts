@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 /**
  * Shared terrain preparation of the visibility chapter scenes (`viewshed`, `horizon`, `summits`).
  *
@@ -21,10 +21,10 @@ import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spa
  *   projection: great-circle rays from the grid's Mercator cell size and top-left corner.
  */
 
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {Buffer} from '@luma.gl/core';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import type {LoadedDataset} from '../../data/catalog';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {LocalMetricProjection} from '../../engine/projection';

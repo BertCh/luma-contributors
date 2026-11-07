@@ -6,7 +6,7 @@ import type {
   GPUComputationEdgeKind,
   GPUComputationGraph,
   GPUComputationNode
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {getNamespaceSegments} from './record-queries';
 
 /** A visible leaf or a derived namespace/loop aggregate, in compiler order. */

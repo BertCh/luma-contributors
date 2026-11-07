@@ -14,12 +14,12 @@ import {
   type GPUComputationCapture,
   type GPUComputationAxes,
   type GPUComputationRecordWithSidecars
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   GPUCommandGraph,
   type GPUCommandGraphEncodeOptions,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {createSpatialChoice} from '../../../gpu-spatial-analysis/computation-pack/choices';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import type {SpatialOperatorEntry} from '../../../gpu-spatial-analysis/computation-pack/types';
@@ -231,7 +231,7 @@ import {
   getGPUMapColoringParameterValues,
   type GPUContiguityWeightsProps,
   type GPUSpatialWeights
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {assertValidLensRecord, assertValidLensSidecars} from '../../validate-lens-record';
 
 /** Uploads one-ring Chicago features, preserving their source order and caller-owned buffers. */

@@ -4,17 +4,13 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {HURRICANE_CLASS} from '../../cartography/hue-registry';
-import {
-  getGPUTimeWindowFilterParameterValues,
-  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
-  GPUTimeWindowFilter
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUTimeWindowFilterParameterValues, GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH, GPUTimeWindowFilter} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUTrajectoryPlayheadParameterValues,
   GPUTrajectoryPlayhead,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {DrawCommandBuffer, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

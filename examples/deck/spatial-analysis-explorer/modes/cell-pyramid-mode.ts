@@ -20,19 +20,14 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import {
   GPUCellLevelSelection,
   GPUCellPyramid,
   GPUCellRollup,
   GPU_CELL_DEFAULT_SUM_SCALE
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {Buffer} from '@luma.gl/core';
 import type {

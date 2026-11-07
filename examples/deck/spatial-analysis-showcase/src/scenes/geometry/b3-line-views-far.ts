@@ -15,14 +15,10 @@ import {
   GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   GPU_LINE_SMOOTH_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getLatitudeFromMercatorY, getMercatorY} from '../../engine/web-mercator';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';

@@ -16,7 +16,7 @@ defineLensScenario({
       import('./s2-lens-run'),
       import('./k-means.example'),
       import('./s1-clustering-support'),
-      import('@luma-contributors/graph/gpu-spatial-analysis')
+      import('@luma-contributors/analysis/gpu-spatial-analysis')
     ]);
     const points = await support.loadNaturePoints();
     return {

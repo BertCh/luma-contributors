@@ -9,7 +9,7 @@ const simulationCalls = vi.hoisted(() => ({
   setSpawnRegion: [] as unknown[]
 }));
 
-vi.mock('@luma-contributors/graph/experimental/simulation', () => ({
+vi.mock('@luma.gl/graph/experimental/simulation', () => ({
   isFlowParticleSimulationSupported: () => true,
   FlowParticleSimulation: class {
     byteLength = 0;

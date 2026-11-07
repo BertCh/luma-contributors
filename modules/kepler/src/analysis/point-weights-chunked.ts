@@ -7,8 +7,8 @@ import {
   isGPUChunkedSpatialWeights,
   type GPUChunkedSpatialWeights,
   type GPUSpatialWeights
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import type {GraphDataView} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 
 /** Point weights as one CSR, or as row chunks when the single CSR exceeded the binding limit. */
 export type KeplerPointWeightsStorage = GPUSpatialWeights | GPUChunkedSpatialWeights;

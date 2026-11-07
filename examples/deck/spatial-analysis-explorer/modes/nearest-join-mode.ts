@@ -29,17 +29,13 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUNearestFeatureJoin,
   GPUNearestFeatureWeights,
   GPUSpatialJoinPrepared,
   type GPUNearestFeatureGeometry
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GraphSwap} from '../graph-swap';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

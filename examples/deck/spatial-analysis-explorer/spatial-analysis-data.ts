@@ -5,7 +5,7 @@
 import {
   createGPULocalFrame,
   type GPULocalFrame
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {addMetersToLngLat, getDistanceScales} from '@math.gl/web-mercator';
 
 import {clamp} from '@math.gl/core';

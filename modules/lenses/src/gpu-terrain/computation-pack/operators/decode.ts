@@ -84,7 +84,7 @@ export const TERRAIN_DECODE_OPERATORS: RasterOperatorTable = {
         }
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/terrain-decode/gpu-terrain-rgb-decode.ts']
+    sources: ['modules/analysis/src/gpu-terrain/terrain-decode/gpu-terrain-rgb-decode.ts']
   },
   GPUTerrainSpikeRepair: {
     family: 'decode',
@@ -197,8 +197,8 @@ export const TERRAIN_DECODE_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/terrain-decode/gpu-terrain-spike-repair.ts',
-      'modules/graph/src/gpu-graph-algorithms/gpu-graph-connected-components-internals.ts'
+      'modules/analysis/src/gpu-terrain/terrain-decode/gpu-terrain-spike-repair.ts',
+      'modules/analysis/src/gpu-graph-algorithms/gpu-graph-connected-components-internals.ts'
     ]
   }
 };

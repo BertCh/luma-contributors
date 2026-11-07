@@ -5,7 +5,7 @@
 import {expect, it} from 'vitest';
 import * as arrow from 'apache-arrow';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {describeWideNumericNarrowingOnGpu} from '../../../examples/deck/kepler-compute/src/wide-numeric-gpu-summary';
 import {describeWideNumericNarrowing} from '../../../examples/deck/kepler-compute/src/analysis2-narrowing-summary';
 

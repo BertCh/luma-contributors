@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {safeMod, toDegrees, toRadians} from '@math.gl/core';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Mean Earth radius of the spherical EPSG:4326 model used by every Kepler analysis (meters). */
 export const EARTH_RADIUS_METERS = GPU_EARTH_MEAN_RADIUS_METERS;

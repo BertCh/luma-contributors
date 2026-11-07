@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {GPU_COLOR_SCALE_CODES} from '@luma-contributors/graph/gpu-dataframe';
+import {GPU_COLOR_SCALE_CODES} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './color-scale.example';
 import {
   createDataFrameChoice,

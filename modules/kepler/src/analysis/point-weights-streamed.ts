@@ -10,8 +10,8 @@ import {
   createTransientView,
   type CompiledGPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-core';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUNeighborSearch,
   type GPUNeighborSearchStructure,
@@ -19,7 +19,7 @@ import {
   getGPUNeighborSearchParameterValues,
   planGPUSpatialWeightsChunks,
   type GPUChunkedSpatialWeights
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   parseKeplerPointWeightsSettings,
   type KeplerPointWeightsSettings

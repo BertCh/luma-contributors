@@ -3,10 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
-import {
-  prepareArrowTableForGPUAnalytics,
-  type PrepareArrowTableForGPUAnalyticsOptions
-} from '@luma-contributors/graph/arrow';
+import {prepareArrowTableForGPUAnalytics, type PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
 import {isExcludedRoute, readFieldRoute} from './source-type-routes';
 
 export type SourceFieldPreview = {

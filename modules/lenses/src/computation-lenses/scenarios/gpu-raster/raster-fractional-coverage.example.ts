@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPURasterFractionalCoverage,
   type GPURasterFractionalCoverageProps
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 
 /** Adds the public GPURasterFractionalCoverage contributor with explicit caller-owned inputs and outputs. */
 export async function runExample(

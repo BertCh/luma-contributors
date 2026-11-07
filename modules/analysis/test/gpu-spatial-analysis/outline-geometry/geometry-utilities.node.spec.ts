@@ -1,0 +1,223 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {expect, it} from 'vitest';
+import {GPUGridGenerator} from '../../../src/gpu-spatial-analysis/grid-generators/index';
+import {GPULabelPoint} from '../../../src/gpu-spatial-analysis/label-point/index';
+import {GPULineDensity} from '../../../src/gpu-spatial-analysis/line-density/index';
+import {
+  GPUOffsetCurve,
+  GPUOutlineGeometry
+} from '../../../src/gpu-spatial-analysis/outline-geometry/index';
+import {GPURectangleClip} from '../../../src/gpu-spatial-analysis/rectangle-clip/index';
+import {GPUShapeDescriptors} from '../../../src/gpu-spatial-analysis/shape-descriptors/index';
+import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+
+let serial = 0;
+
+function view<Format extends 'float32' | 'float32x2' | 'float32x4' | 'uint32'>(
+  graph: GPUCommandGraph,
+  format: Format,
+  length: number
+) {
+  return createTransientView(graph, `view-${serial++}`, format, length);
+}
+
+it('GPUOutlineGeometry validates sizes and declares one node', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'outline'});
+  const props = {
+    positions: view(graph, 'float32x2', 5),
+    lineOffsets: view(graph, 'uint32', 3),
+    geometryType: 'lines' as const,
+    joinSegments: 4,
+    parameters: view(graph, 'float32', 4)
+  };
+  const contributor = new GPUOutlineGeometry({
+    ...props,
+    output: {positions: view(graph, 'float32x2', 5 * 18)}
+  });
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'outline-geometry-generate'
+  ]);
+  expect(
+    () => new GPUOutlineGeometry({...props, output: {positions: view(graph, 'float32x2', 7)}})
+  ).toThrow(/rows/);
+  expect(
+    () =>
+      new GPUOutlineGeometry({
+        ...props,
+        lineOffsets: undefined as never,
+        output: {positions: view(graph, 'float32x2', 5 * 18)}
+      })
+  ).toThrow(/lineOffsets/);
+  expect(
+    () =>
+      new GPUOutlineGeometry({
+        ...props,
+        joinSegments: 2,
+        output: {positions: view(graph, 'float32x2', 30)}
+      })
+  ).toThrow(/joinSegments/);
+});
+
+it('GPULabelPoint validates outputs and grid sizes', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'label'});
+  const props = {
+    positions: view(graph, 'float32x2', 8),
+    featureOffsets: view(graph, 'uint32', 3),
+    polygonOffsets: view(graph, 'uint32', 3),
+    ringOffsets: view(graph, 'uint32', 3)
+  };
+  const contributor = new GPULabelPoint({...props, output: {points: view(graph, 'float32x2', 2)}});
+  // One per-thread kernel for small features and one workgroup kernel for large ones.
+  expect(contributor.getCommandNodes(graph)).toHaveLength(2);
+  expect(
+    () => new GPULabelPoint({...props, output: {points: view(graph, 'float32x2', 3)}})
+  ).toThrow(/points/);
+  expect(
+    () =>
+      new GPULabelPoint({
+        ...props,
+        refinementCandidates: 40,
+        output: {points: view(graph, 'float32x2', 2)}
+      })
+  ).toThrow(/refinementCandidates/);
+});
+
+it('GPUShapeDescriptors requires an output and composes measures with kernels', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'shape'});
+  const props = {
+    positions: view(graph, 'float32x2', 8),
+    featureOffsets: view(graph, 'uint32', 3),
+    polygonOffsets: view(graph, 'uint32', 3),
+    ringOffsets: view(graph, 'uint32', 3),
+    parameters: view(graph, 'float32', 4)
+  };
+  expect(() => new GPUShapeDescriptors({...props, output: {}})).toThrow(/output column/);
+  const contributor = new GPUShapeDescriptors({
+    ...props,
+    output: {
+      polsbyPopper: view(graph, 'float32', 2),
+      elongation: view(graph, 'float32', 2),
+      convexity: view(graph, 'float32', 2)
+    }
+  });
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
+  expect(ids).toContain('shape-descriptors-compactness');
+  expect(ids).toContain('shape-descriptors-moments');
+  expect(ids).toContain('shape-descriptors-convexity');
+});
+
+it('GPULineDensity, GPURectangleClip and GPUGridGenerator validate their props', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'misc'});
+  const density = new GPULineDensity({
+    spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+    positions: view(graph, 'float32x2', 6),
+    lineOffsets: view(graph, 'uint32', 3),
+    columns: 4,
+    rows: 3,
+    parameters: view(graph, 'float32', 4),
+    output: {lengths: view(graph, 'float32', 12), status: {overflow: view(graph, 'uint32', 1)}}
+  });
+  const densityIds = density.getCommandNodes(graph).map(node => node.id);
+  expect(densityIds).toContain('line-density-emit');
+  expect(densityIds).toContain('line-density-publish');
+  expect(
+    () =>
+      new GPULineDensity({
+        spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+        positions: view(graph, 'float32x2', 6),
+        lineOffsets: view(graph, 'uint32', 3),
+        columns: 4,
+        rows: 3,
+        parameters: view(graph, 'float32', 4),
+        output: {lengths: view(graph, 'float32', 11), status: {overflow: view(graph, 'uint32', 1)}}
+      })
+  ).toThrow(/lengths/);
+
+  const clipOutput = (capacity: number, lineCapacity: number) => ({
+    positions: view(graph, 'float32x2', capacity),
+    lineOffsets: view(graph, 'uint32', lineCapacity + 1),
+    status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}
+  });
+  const clip = new GPURectangleClip({
+    positions: view(graph, 'float32x2', 6),
+    featureOffsets: view(graph, 'uint32', 3),
+    polygonOffsets: view(graph, 'uint32', 3),
+    ringOffsets: view(graph, 'uint32', 3),
+    geometryType: 'polygons',
+    parameters: view(graph, 'float32', 4),
+    output: clipOutput(32, 2)
+  });
+  // Four stages of count, scan, emit and offsets, then publish.
+  expect(clip.getCommandNodes(graph).length).toBeGreaterThan(16);
+  expect(
+    () =>
+      new GPURectangleClip({
+        positions: view(graph, 'float32x2', 6),
+        featureOffsets: view(graph, 'uint32', 3),
+        polygonOffsets: view(graph, 'uint32', 3),
+        ringOffsets: view(graph, 'uint32', 3),
+        geometryType: 'polygons',
+        parameters: view(graph, 'float32', 4),
+        output: clipOutput(32, 5)
+      })
+  ).toThrow(/output.lineOffsets/);
+
+  const grid = new GPUGridGenerator({
+    gridType: 'hex',
+    columns: 3,
+    rows: 2,
+    parameters: view(graph, 'float32', 4),
+    output: {positions: view(graph, 'float32x2', 36)}
+  });
+  expect(grid.getCommandNodes(graph)).toHaveLength(1);
+  expect(
+    () =>
+      new GPUGridGenerator({
+        gridType: 'point',
+        columns: 3,
+        rows: 2,
+        parameters: view(graph, 'float32', 4),
+        output: {positions: view(graph, 'float32x2', 6)}
+      })
+  ).toThrow(/centers/);
+});
+
+it('GPUOutlineGeometry and GPUOffsetCurve take the four-level layout in polygon mode', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'polygon-mode'});
+  const polygon = {
+    positions: view(graph, 'float32x2', 5),
+    featureOffsets: view(graph, 'uint32', 2),
+    polygonOffsets: view(graph, 'uint32', 2),
+    ringOffsets: view(graph, 'uint32', 3),
+    geometryType: 'polygons' as const
+  };
+  const outline = new GPUOutlineGeometry({
+    ...polygon,
+    joinSegments: 4,
+    parameters: view(graph, 'float32', 4),
+    output: {positions: view(graph, 'float32x2', 5 * 18)}
+  });
+  expect(outline.getCommandNodes(graph)).toHaveLength(1);
+  expect(
+    () =>
+      new GPUOutlineGeometry({
+        ...polygon,
+        featureOffsets: undefined as never,
+        joinSegments: 4,
+        parameters: view(graph, 'float32', 4),
+        output: {positions: view(graph, 'float32x2', 5 * 18)}
+      })
+  ).toThrow();
+  const curve = new GPUOffsetCurve({
+    ...polygon,
+    joinStyle: 'bevel',
+    parameters: view(graph, 'float32', 4),
+    output: {positions: view(graph, 'float32x2', 10)}
+  });
+  expect(curve.boundaryOffsets).toBe(polygon.ringOffsets);
+  expect(curve.getCommandNodes(graph)).toHaveLength(1);
+});

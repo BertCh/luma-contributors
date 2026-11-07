@@ -443,11 +443,11 @@ export default defineScene<OceanDriftersVsModelOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUParticleAdvection, getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues
-} from '@luma-contributors/graph/gpu-raster';
-import {GPUGeodesicPairs, GPULineDensity} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-raster';
+import {GPUGeodesicPairs, GPULineDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // velocities: float32x2 (u, v) in degrees per day on a 720 x 320 lon/lat grid, row 0 = south
 // positions: float32x2, one particle per drifter, written once with the real release points

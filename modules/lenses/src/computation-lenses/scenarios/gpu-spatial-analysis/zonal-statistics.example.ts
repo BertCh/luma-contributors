@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUZonalStatistics} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUZonalStatistics} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Zone row and count of every tract, and the zone count; the caller owns the recording graph. */
 export type ZonalStatisticsInput = {

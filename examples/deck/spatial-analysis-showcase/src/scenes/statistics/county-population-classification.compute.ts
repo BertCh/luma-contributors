@@ -4,16 +4,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  GPUClassBreaks,
-  GPUColorScale,
-  GPU_COLOR_SCALE_PARAMETER_LENGTH,
-  getGPUClassBreaksParameterLength,
-  getGPUClassBreaksParameterValues,
-  getGPUColorScaleParameterValues
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUClassAssignment} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUClassBreaks, GPUColorScale, GPU_COLOR_SCALE_PARAMETER_LENGTH, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUClassAssignment} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {buildPolygonMesh} from '../../cartography/polygon-mesh';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';
 import {createAnalysisFrameProjection} from '../../engine/analysis-frame';

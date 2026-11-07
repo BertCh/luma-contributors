@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {renderRasterImage, getRasterSamplingNote} from '../encoding/raster-image';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-registration';
 import type {ProvisionalState} from '../types';
 import {h, viewNodeToDom, type ViewElementNode} from '../view-node';

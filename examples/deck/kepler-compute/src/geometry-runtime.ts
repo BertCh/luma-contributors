@@ -3,12 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device, type CommandEncoder} from '@luma.gl/core';
-import {GPUData, GPUVector, type VertexList} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUGather,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector, type VertexList} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {
   PreparedGeometryGPUVectors,
   GeometryPrimitiveMapping,

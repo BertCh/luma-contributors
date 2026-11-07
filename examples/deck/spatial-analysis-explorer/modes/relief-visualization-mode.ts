@@ -26,11 +26,7 @@
  * (32 px to the full tile, compile-time like the algorithm); the sweep wins at large radii.
  */
 
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   getGPULocalDominanceParameterValues,
   getGPUMultiScaleReliefParameterValues,
@@ -72,8 +68,8 @@ import {
   type GPUReliefShadingStop,
   type GPUTerrainHorizonAlgorithm,
   type GPUTerrainHorizonFormat
-} from '@luma-contributors/graph/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {

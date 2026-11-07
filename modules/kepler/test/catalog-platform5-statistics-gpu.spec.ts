@@ -11,7 +11,7 @@ import {
   type CatalogRunResult
 } from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 // Oracle policy: the CPU reference engine is the oracle. Neighbor lists are built by the CPU and
 // uploaded, so statistics are compared to float32 tolerance and permutation p-values loosely.

@@ -5,18 +5,12 @@
 import {ResidentSpatialJoinPointReprojector} from './resident-spatial-join-reproject';
 import {Buffer, type CommandEncoder, type Fence} from '@luma.gl/core';
 import type {PreparedPolygonTopologySource} from '@luma.gl/engine/arrow';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUGather,
-  type CompiledGPUCommandGraph,
-  type GraphDataView,
-  type GraphVectorView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {
   GPUSpatialJoinPrepared,
   GPUSpatialPredicateJoin
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   estimateKeplerResidentRowCacheByteLength,
   type KeplerArrowDataset,

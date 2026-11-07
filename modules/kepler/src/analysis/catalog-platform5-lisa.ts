@@ -11,7 +11,7 @@ import {
   getGPUPermutationParameterValues,
   type GPULocalPermutationStatistic,
   type GPUSpatialWeights
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
 import {appendCatalogRow, getFeatureIdentity, makeCatalogTable} from './catalog-geojson';
 import {

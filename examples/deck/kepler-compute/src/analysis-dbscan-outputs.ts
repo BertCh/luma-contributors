@@ -3,16 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  createTransientView,
-  getViewBinding,
-  getViewElementOffset,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {packGPUColor} from '@luma-contributors/graph/gpu-dataframe';
+import {Kernel} from '@luma.gl/graph';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {createTransientView, getViewBinding, getViewElementOffset, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import type {
   KeplerComputeSession,
   KeplerMemoryReservation,

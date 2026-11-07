@@ -4,24 +4,14 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUElementwise,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPURasterConnectedComponents,
-  GPURasterDenseComponents,
-  GPURasterErosion,
-  GPURasterPatchMetrics,
-  GPURasterWalkingCost,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
-import {addRasterResistanceConnectivityRecipe} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUElementwise, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURasterConnectedComponents, GPURasterDenseComponents, GPURasterErosion} from '@luma.gl/graph/gpu-raster';
+import {GPURasterPatchMetrics, GPURasterWalkingCost, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {addRasterResistanceConnectivityRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   addLandscapeMetricsRecipe,
   addPatchProximityRecipe
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeCircuitEdgeInputs, addCircuitOracleRecipes} from './habitat-connectivity-circuit';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {GraphSwap} from '../../engine/graph-swap';

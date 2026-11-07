@@ -806,11 +806,11 @@ preparedGraph.add(new GPUGeometryMeasures({
 // Inspect overflow before displaying results. Clamp latitudes only in the display kernel.
 `;
 
-    const measures = `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+    const measures = `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUGeometryMeasures, GPUShapeDescriptors, GPULabelPoint,
   GPUGeometryValidity, GPUContiguityWeights, GPUMapColoring
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'polygons'});
 // positions: lng/lat float32x2; featureOffsets, polygonOffsets, ringOffsets: the four-level polygon

@@ -38,13 +38,13 @@ const REDUCTIONS = [
 const PACKS = [
   {
     entry: 'gpu-terrain',
-    barrel: 'modules/graph/src/gpu-terrain/index.ts',
+    barrel: 'modules/analysis/src/gpu-terrain/index.ts',
     entries: getTerrainOperatorEntries,
     pack: getTerrainViewPack
   },
   {
     entry: 'gpu-raster',
-    barrel: 'modules/graph/src/gpu-raster/index.ts',
+    barrel: 'modules/analysis/src/gpu-raster/index.ts',
     entries: getRasterOperatorEntries,
     pack: getRasterViewPack
   }

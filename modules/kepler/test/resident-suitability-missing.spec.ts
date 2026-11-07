@@ -5,7 +5,7 @@
 import * as arrow from 'apache-arrow';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {KeplerComputeSession} from '../src';
 import {
   computeNativeSuitabilityScores,

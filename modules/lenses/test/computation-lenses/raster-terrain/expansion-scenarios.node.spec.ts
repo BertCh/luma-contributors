@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources,
   getStorageBindingCount
-} from '@luma-contributors/graph/testing';
+} from '@luma-contributors/analysis/testing';
 import {buildRasterExpansionScenario} from '../../../src/computation-lenses/scenarios/gpu-raster/expansion-runner';
 import type {
   RasterLensSession,

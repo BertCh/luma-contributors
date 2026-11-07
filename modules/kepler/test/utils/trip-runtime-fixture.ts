@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {makeGeoJSONTripGPUVectors, prepareGeoJSONTrips} from '@luma.gl/engine/arrow';
 
 export function createTripRuntimeFixture(device: Device) {

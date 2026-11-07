@@ -5,7 +5,7 @@
 import {existsSync, readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, it} from 'vitest';
-import * as spatialAnalysis from '@luma-contributors/graph/gpu-spatial-analysis';
+import * as spatialAnalysis from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {listTexTerms} from '../../../src/computation-views/views/formula-tex';
 import type {OperatorReduction, OperatorScope} from '../../../src/computation-views/types';
 import {LINES_OPERATORS} from '../../../src/gpu-spatial-analysis/computation-pack/operators/lines';
@@ -44,7 +44,7 @@ const ELEMENTS = [
 type Element = (typeof ELEMENTS)[number];
 type Contributor = Exclude<Element, 'addFleetDwellZoneEventsRecipe'>;
 
-const SOURCE_ROOT = 'modules/graph/src/gpu-spatial-analysis/';
+const SOURCE_ROOT = 'modules/analysis/src/gpu-spatial-analysis/';
 const REPOSITORY_ROOT = new URL('../../../../../', import.meta.url);
 
 // Explicit source ownership, including delegated WGSL generators where the contributor composes them.
@@ -81,7 +81,7 @@ const ELEMENT_KERNEL_SOURCES: Record<Contributor, string[]> = {
     `${SOURCE_ROOT}geometry-measures/geodesic-wgsl.ts`,
     `${SOURCE_ROOT}geometry-measures/rhumb-wgsl.ts`
   ],
-  GPULocalFrameProjection: ['modules/graph/src/gpu-project/projection-shader.ts'],
+  GPULocalFrameProjection: ['modules/analysis/src/gpu-project/projection-shader.ts'],
   GPULinearReferencing: [
     `${SOURCE_ROOT}linear-referencing/linear-referencing-kernels.ts`,
     `${SOURCE_ROOT}line-segmentize/line-segmentize-kernels.ts`,
@@ -107,7 +107,7 @@ const ELEMENT_KERNEL_SOURCES: Record<Contributor, string[]> = {
   GPUCoverageDissolve: [
     `${SOURCE_ROOT}polygon-coverage-topology/gpu-coverage-dissolve.ts`,
     `${SOURCE_ROOT}polygon-coverage-topology/coverage-topology-kernels.ts`,
-    'modules/graph/src/analysis-core/ring-assembly/gpu-segment-ring-assembly.ts'
+    'modules/analysis/src/analysis-core/ring-assembly/gpu-segment-ring-assembly.ts'
   ],
   GPUTrajectoryMetrics: [
     `${SOURCE_ROOT}trajectory-analysis/trajectory-metrics-kernels.ts`,

@@ -311,7 +311,7 @@ export default defineScene<SatelliteSwathOptions>({
 
   snippet: state => `import {
   GPUOutlineGeometry, getGPUOutlineGeometryParameterValues, getGPUOutlineGeometryVerticesPerInput
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // positions: float32x2 [longitude, latitude]; one node per instrument (one distance per node)
 graph.add(new GPUOutlineGeometry({

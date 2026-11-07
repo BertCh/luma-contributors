@@ -3,17 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  GPURasterConservativeRemapping,
-  GPURasterFractionalCategoricalStatistics,
-  GPURasterFractionalCoverage,
-  GPURasterFractionalZonalDistribution,
-  GPURasterFractionalZonalStatistics,
-  makeGPURasterMetadata,
-  type GPURasterFractionalZonalDistributionProps,
-  type GPURasterFractionalCategoricalStatisticsProps
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURasterConservativeRemapping, GPURasterFractionalCategoricalStatistics, GPURasterFractionalCoverage, GPURasterFractionalZonalDistribution, GPURasterFractionalZonalStatistics, makeGPURasterMetadata, type GPURasterFractionalZonalDistributionProps, type GPURasterFractionalCategoricalStatisticsProps} from '@luma-contributors/analysis/raster-analysis';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {addKernelPass} from '../../engine/mode-kernels';

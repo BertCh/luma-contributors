@@ -11,13 +11,8 @@ import {
   GPULocalPermutationTest,
   type GPUInferenceAlternative,
   type GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  GPUCommandGraph,
-  GPUHistogram,
-  GPUReduction,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, GPUHistogram, GPUReduction, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   HOT_SPOTS_GI_BIN_COUNT,
   HOT_SPOTS_GI_HISTOGRAM_EDGES,

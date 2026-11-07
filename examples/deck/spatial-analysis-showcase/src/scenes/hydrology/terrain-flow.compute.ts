@@ -4,13 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import {toRadians} from '@math.gl/core';
-import {
-  getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionUint32ParameterValues,
-  GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
-  GPUParticleAdvection
-} from '@luma-contributors/graph/gpu-raster';
+import {getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues, GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH, GPUParticleAdvection} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUTerrainDerivativesParameterValues,
   getGPUTerrainFlowFieldParameterValues,
@@ -18,12 +12,8 @@ import {
   GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH,
   GPUTerrainDerivatives,
   GPUTerrainFlowField
-} from '@luma-contributors/graph/gpu-terrain';
-import {
-  GPUCommandGraph,
-  GPUHistogram,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {GPUCommandGraph, GPUHistogram, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisRasterLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

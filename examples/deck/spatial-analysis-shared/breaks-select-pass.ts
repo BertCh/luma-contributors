@@ -4,12 +4,7 @@
 
 import type {Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
-import {
-  getViewBinding,
-  getViewElementOffset,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {getViewBinding, getViewElementOffset, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 
 /**
  * Adds a one-invocation-per-edge pass that copies one of two `GPUClassBreaks` results into the

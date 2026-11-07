@@ -47,8 +47,8 @@ export const RASTER_VECTOR_FIELD_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/particle-advection/gpu-particle-advection.ts',
-      'modules/graph/src/gpu-raster/vector-field-common/vector-field-sampling.ts'
+      'modules/analysis/src/gpu-raster/particle-advection/gpu-particle-advection.ts',
+      'modules/analysis/src/gpu-raster/vector-field-common/vector-field-sampling.ts'
     ]
   },
   GPULineIntegralConvolution: {
@@ -88,8 +88,8 @@ export const RASTER_VECTOR_FIELD_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/flow-texture/gpu-line-integral-convolution.ts',
-      'modules/graph/src/gpu-raster/vector-field-common/vector-field-sampling.ts'
+      'modules/analysis/src/gpu-raster/flow-texture/gpu-line-integral-convolution.ts',
+      'modules/analysis/src/gpu-raster/vector-field-common/vector-field-sampling.ts'
     ]
   },
   GPUStreamlines: {
@@ -121,8 +121,8 @@ export const RASTER_VECTOR_FIELD_OPERATORS: RasterOperatorTable = {
         'Each seed is traced by RK2 and the traces are then pruned by priority rounds that claim and decide occupancy-grid cells; the accepted lines have no closed form.'
     },
     sources: [
-      'modules/graph/src/gpu-raster/flow-texture/gpu-streamlines.ts',
-      'modules/graph/src/gpu-raster/vector-field-common/vector-field-sampling.ts'
+      'modules/analysis/src/gpu-raster/flow-texture/gpu-streamlines.ts',
+      'modules/analysis/src/gpu-raster/vector-field-common/vector-field-sampling.ts'
     ]
   }
 };

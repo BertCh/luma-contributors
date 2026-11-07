@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {
   GPU_COLUMN_PROFILE_STATISTIC,
   GPU_COLUMN_PROFILE_STATISTIC_COUNT
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './column-profile.example';
 import {
   createDataFrameChoice,

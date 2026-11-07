@@ -18,34 +18,8 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  createTransientView,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUBivariateClassification,
-  GPUClassBreaks,
-  GPUColorScale,
-  GPUColumnProfile,
-  GPUColumnQuantiles,
-  GPU_COLUMN_PROFILE_STATISTIC,
-  GPU_COLUMN_PROFILE_STATISTIC_COUNT,
-  GPU_CLASS_BREAKS_METHODS,
-  GPU_CLASS_BREAKS_METHOD_CODES,
-  getGPUBivariateClassificationParameterValues,
-  getGPUClassBreaksParameterLength,
-  getGPUClassBreaksParameterValues,
-  getGPUColorScaleParameterValues,
-  getGPUColumnQuantilesParameterLength,
-  getGPUColumnQuantilesParameterValues,
-  GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH,
-  GPU_COLOR_SCALE_PARAMETER_LENGTH,
-  type GPUClassBreaksMethod,
-  type GPUColorScaleType
-} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUCommandGraph, GPUReadbackRing, createTransientView, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUBivariateClassification, GPUClassBreaks, GPUColorScale, GPUColumnProfile, GPUColumnQuantiles, GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT, GPU_CLASS_BREAKS_METHODS, GPU_CLASS_BREAKS_METHOD_CODES, getGPUBivariateClassificationParameterValues, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, getGPUColumnQuantilesParameterLength, getGPUColumnQuantilesParameterValues, GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH, GPU_COLOR_SCALE_PARAMETER_LENGTH, type GPUClassBreaksMethod, type GPUColorScaleType} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPU_CLASSIFICATION_FIT_ADAM,
   GPU_CLASSIFICATION_FIT_ADCM,
@@ -55,7 +29,7 @@ import {
   GPUClassAssignment,
   GPUClassificationFit,
   GPUPointDensity
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getDatasetFrame,
   getFrameDisplayModelMatrix,

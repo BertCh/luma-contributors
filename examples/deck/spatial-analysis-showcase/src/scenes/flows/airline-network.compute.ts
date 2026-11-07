@@ -7,17 +7,14 @@ import {Buffer} from '@luma.gl/core';
 import {
   getGPUEdgeBundlingParameterValues,
   GPUEdgeBundling
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 import {
   getGPUGreatCircleArcsParameterValues,
   GPUGreatCircleArcs,
   GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUGraphAlgorithmsForceLayout,
-  GPUGraphAlgorithmsSpatialForceLayout
-} from '@luma-contributors/graph/gpu-graph-algorithms';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUGraphAlgorithmsForceLayout, GPUGraphAlgorithmsSpatialForceLayout} from '@luma.gl/graph/gpu-graph-algorithms';
 import {formatCount, formatOrdinal, liveText} from '../../cartography/live-text';
 import {getProportionalRadius} from '../../cartography/proportional';
 import {fetchGeoJson} from '../../data/loaders';
@@ -198,7 +195,7 @@ type LayoutSnapshot = {
 };
 
 /**
- * The OpenFlights airline network as a graph, using `@luma-contributors/graph/gpu-graph-algorithms` directly:
+ * The OpenFlights airline network as a graph, using `@luma-contributors/analysis/gpu-graph-algorithms` directly:
  * degree, PageRank, core numbers, label propagation, modularity and its optimization, and a
  * progressive force layout whose positions buffer is morphed against the geographic positions.
  * Routes are drawn as `GPUGreatCircleArcs` or `GPUEdgeBundling` paths colored by community.

@@ -7,12 +7,12 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkPathExtraction,
   GPUNetworkReachability,
   type GPUNetworkTopology
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: the road network, one start intersection and one target intersection. */
 export type NetworkPathExtractionExampleInput = {

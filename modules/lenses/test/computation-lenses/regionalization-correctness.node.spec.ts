@@ -8,12 +8,12 @@ import {fromRecordedLensFile} from '../../src/computation-lenses/registry';
 import {
   getAdjacency,
   runBatchedAzpMirror
-} from '@luma-contributors/graph/test/gpu-spatial-analysis/spatial-regionalization/azp-batched-mirror';
+} from '@luma-contributors/analysis/test/gpu-spatial-analysis/spatial-regionalization/azp-batched-mirror';
 import {
   computeComponentLabels,
   evaluatePartition,
   standardizeColumns
-} from '@luma-contributors/graph/test/gpu-spatial-analysis/spatial-regionalization/spatial-regionalization-oracle';
+} from '@luma-contributors/analysis/test/gpu-spatial-analysis/spatial-regionalization/spatial-regionalization-oracle';
 
 /** Read captured inputs only; CPU oracles never supply scenario output or figures. */
 function readInputs(element: string) {

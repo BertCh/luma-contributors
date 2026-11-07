@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUNetworkCostWeights} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {GPUNetworkCostWeights} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs and the facility-by-node cost matrix produced by snapping and a cost matrix. */
 export type NetworkCostWeightsExampleInput = {

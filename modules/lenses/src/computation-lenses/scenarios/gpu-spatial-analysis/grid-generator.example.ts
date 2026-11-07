@@ -7,13 +7,13 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUGridCellCount,
   getGPUGridVerticesPerCell,
   GPUGridGenerator,
   type GPUPolygonGeometryFields
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Grid size, origin parameters and the area the intersection mask tests against (UTM 16N, m). */
 export type GridGeneratorExampleInput = {

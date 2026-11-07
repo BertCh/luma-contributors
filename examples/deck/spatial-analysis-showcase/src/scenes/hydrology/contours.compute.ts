@@ -4,25 +4,13 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  getGPUIsobandsParameterValues,
-  getGPUIsolinesParameterValues,
-  GPU_ISOBANDS_PARAMETER_LENGTH,
-  GPU_ISOLINES_PARAMETER_LENGTH,
-  GPUIsobandRings,
-  GPUIsobands,
-  GPUIsolines
-} from '@luma-contributors/graph/gpu-raster';
+import {getGPUIsobandsParameterValues, getGPUIsolinesParameterValues, GPU_ISOBANDS_PARAMETER_LENGTH, GPU_ISOLINES_PARAMETER_LENGTH, GPUIsobandRings, GPUIsobands, GPUIsolines} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
   GPUTerrainDerivatives
-} from '@luma-contributors/graph/gpu-terrain';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';

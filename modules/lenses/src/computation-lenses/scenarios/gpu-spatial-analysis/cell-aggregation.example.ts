@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCellAggregation} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCellAggregation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Overture places (longitude/latitude degrees) and the cell table capacity. */
 export type CellAggregationExampleInput = {

@@ -324,7 +324,7 @@ export default defineScene<LocalRelationshipsOptions>({
   snippet: state => `import {
   GPUGeographicallyWeightedRegression, GPUGeographicallyWeightedRegressionNonstationarityTest,
   getGPUGeographicallyWeightedRegressionParameterValues, getGPUPermutationParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // positions are planar meters (Albers equal-area), predictors are z-scores, row-major
 graph.add(new GPUGeographicallyWeightedRegression({spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),

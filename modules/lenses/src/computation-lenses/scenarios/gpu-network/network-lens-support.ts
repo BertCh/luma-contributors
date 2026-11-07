@@ -13,14 +13,14 @@ import {
   type GPUComputationKeySpace,
   type GPUComputationRelation,
   type GPUComputationRecordWithSidecars
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   GPUCommandGraph,
   GraphDataView,
   type GPUCommandNode,
   type GraphBufferDescriptor,
   type GraphBufferHandle
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import roads from '../../data/n-chicago-loop-roads.json';
 
 /** Shared, versioned provenance of the deterministic Chicago Loop extract. */

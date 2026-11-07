@@ -3,16 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {
-  addRasterRegionGraphTiles,
-  GPURasterConnectedComponents,
-  GPURasterCrossTileComponents,
-  GPURasterDenseComponents,
-  GPURasterRegionMeasurements,
-  makeGPURasterMetadata,
-  type GPURasterRegionMeasurementOutputs
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {addRasterRegionGraphTiles, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {GPURasterConnectedComponents, GPURasterCrossTileComponents, GPURasterDenseComponents, GPURasterRegionMeasurements, type GPURasterRegionMeasurementOutputs} from '@luma.gl/graph/gpu-raster';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 import {addKernelPass} from '../../engine/mode-kernels';
 

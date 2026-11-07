@@ -1,0 +1,37 @@
+files rewritten 6590; deleted 427; npm-mapped declarations 4786; split 118; dropped re-exports 0; pending 35
+INFO raster-analysis/vector-field-common has no index.ts; not re-exported
+PENDING modules/analysis/src/_pending/arrow/gpu/arrow-analytics-normalization.ts
+PENDING modules/analysis/src/_pending/arrow/gpu/arrow-analytics-time-upload.ts
+PENDING modules/analysis/src/_pending/arrow/gpu/arrow-analytics-wide-numeric.ts
+PENDING modules/analysis/src/_pending/arrow/gpu/arrow-batch-stream.ts
+PENDING modules/analysis/src/_pending/gpu-core/benchmarks.ts
+PENDING modules/analysis/src/_pending/gpu-core/gpu-command-graph-describe.ts
+PENDING modules/analysis/src/_pending/gpu-core/gpu-command-node-record.ts
+PENDING modules/analysis/src/_pending/gpu-core/gpu-double-single.ts
+PENDING modules/analysis/src/_pending/gpu-core/gpu-graph-describe.ts
+PENDING modules/analysis/src/_pending/gpu-core/gpu-kernel-node.ts
+PENDING modules/analysis/src/_pending/gpu-core/gpu-planning-ordered-set.ts
+PENDING modules/analysis/src/_pending/gpu-core/gpu-scan-lookback.ts
+PENDING modules/analysis/src/_pending/gpu-core/gpu-sort-onesweep.ts
+PENDING modules/analysis/src/_pending/gpu-crossfilter/histogram-cube.ts
+PENDING modules/analysis/src/_pending/gpu-dataframe/gpu-query-describe.ts
+PENDING modules/analysis/src/_pending/gpu-graph-algorithms/gpu-graph-algorithms-utils.ts
+PENDING modules/analysis/src/_pending/gpu-graph-algorithms/gpu-graph-computation-record.ts
+PENDING modules/analysis/src/_pending/gpu-graph-algorithms/gpu-graph-iteration-gate.ts
+PENDING modules/analysis/src/_pending/gpu-graph-algorithms/gpu-graph-local-clustering-coefficient-direct.ts
+PENDING modules/analysis/src/_pending/gpu-graph-algorithms/gpu-graph-strongly-connected-components-internals.ts
+PENDING modules/analysis/src/_pending/gpu-graph-algorithms/gpu-graph-strongly-connected-components.ts
+PENDING modules/analysis/src/_pending/gpu-graph-algorithms/gpu-graph-topology-view.ts
+PENDING modules/analysis/src/_pending/gpu-physics/README.md
+PENDING modules/analysis/src/_pending/gpu-physics/rigid-body-dispatch.ts
+PENDING modules/analysis/src/_pending/gpu-simple-graph/operations/webgpu/common/kernel-dispatch.ts
+PENDING modules/analysis/src/_pending/gpu-tables/residency-arena/gpu-residency-arena.ts
+PENDING modules/analysis/src/_pending/gpu-tables/residency-arena/gpu-resident-row-selection.ts
+PENDING modules/analysis/src/_pending/gpu-tables/residency-arena/index.ts
+PENDING modules/analysis/src/_pending/gpu-tables/residency-arena/residency-arena-allocator.ts
+PENDING modules/analysis/src/_pending/gpu-tables/residency-arena/residency-arena-types.ts
+PENDING modules/analysis/src/_pending/gpu-tables/tile-lod-selection/gpu-tile-lod-selection.ts
+PENDING modules/analysis/src/_pending/gpu-tables/tile-lod-selection/index.ts
+PENDING modules/analysis/src/_pending/gpu-tables/tile-lod-selection/tile-lod-quadtree.ts
+PENDING modules/analysis/src/_pending/gpu-tables/tile-lod-selection/tile-lod-selection-shaders.ts
+PENDING modules/analysis/src/_pending/gpu-tables/tile-lod-selection/tile-lod-view.ts

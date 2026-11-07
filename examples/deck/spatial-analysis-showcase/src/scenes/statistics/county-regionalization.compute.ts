@@ -12,8 +12,8 @@ import {
   getGPUAZPRegionsParameterValues,
   getGPUMaxPRegionsParameterValues,
   getGPUWardRegionsParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {createAnalysisFrameProjection} from '../../engine/analysis-frame';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';
@@ -584,4 +584,4 @@ function countLabelComponents(
 }
 
 type GPUSpatialWeightsForScene =
-  import('@luma-contributors/graph/gpu-spatial-analysis').GPUSpatialWeights;
+  import('@luma-contributors/analysis/gpu-spatial-analysis').GPUSpatialWeights;

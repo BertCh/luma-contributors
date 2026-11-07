@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView} from '@luma-contributors/graph/gpu-core';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {runExample as runStructure} from './network-structure.example';
 import {runExample as runRoutes} from './alternative-routes.example';
 import {runExample as runDisruption} from './network-disruption-recipe.example';

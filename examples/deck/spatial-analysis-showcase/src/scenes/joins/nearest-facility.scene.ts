@@ -429,7 +429,7 @@ export default defineScene<NearestFacilityOptions>({
   snippet: state => {
     const join =
       state.mode === 'nearest'
-        ? `import {GPUNearestFeatureJoin} from '@luma-contributors/graph/gpu-spatial-analysis';
+        ? `import {GPUNearestFeatureJoin} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(
   new GPUNearestFeatureJoin({spatialContext: projection.spatialContext,
@@ -476,7 +476,7 @@ graph.add(
     output: {offsets, neighbors, weights, distances, status: {overflow}}   // CSR
   })
 );`
-            : `import {GPUSpatialJoinCandidates} from '@luma-contributors/graph/gpu-spatial-analysis';
+            : `import {GPUSpatialJoinCandidates} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(
   new GPUSpatialJoinCandidates({spatialContext: projection.spatialContext,

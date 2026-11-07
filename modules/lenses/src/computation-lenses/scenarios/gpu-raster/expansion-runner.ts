@@ -17,7 +17,7 @@ import {runExample as runRasterFractionalCoverageExample} from './raster-fractio
 import {runExample as runRasterFractionalZonalStatisticsExample} from './raster-fractional-zonal-statistics.example';
 import {runExample as runTerrainFlowDistanceExample} from '../gpu-terrain/terrain-flow-distance.example';
 import {runExample as runTerrainStreamNetworkExample} from '../gpu-terrain/terrain-stream-network.example';
-import * as raster from '@luma-contributors/graph/gpu-raster';
+import * as raster from '@luma.gl/graph/gpu-raster';
 import {runRasterLens, type RasterLensSession} from './raster-lens-harness';
 import {getRasterOperatorEntries} from '../../../gpu-raster/computation-pack/index';
 import {getTerrainOperatorEntries} from '../../../gpu-terrain/computation-pack/index';

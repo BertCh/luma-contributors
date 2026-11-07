@@ -8,12 +8,8 @@ import type {Buffer} from '@luma.gl/core';
 import {
   GPU_SPATIAL_JOIN_NO_FEATURE,
   GPUBufferSelection
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {
   SpatialAnalysisPointLayer,

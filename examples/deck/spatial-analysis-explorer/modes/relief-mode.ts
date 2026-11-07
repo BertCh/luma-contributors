@@ -22,11 +22,7 @@
  */
 
 import {scheduleReadback} from '../readback-scheduling';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUReliefShadingParameterValues,
   getGPUSolarPositionParameterValues,
@@ -50,8 +46,8 @@ import {
   GPUTextureShading,
   type GPUReliefShadingLight,
   type GPUReliefShadingStop
-} from '@luma-contributors/graph/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   SpatialAnalysisRasterLayer,

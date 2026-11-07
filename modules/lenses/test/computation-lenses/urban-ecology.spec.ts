@@ -4,11 +4,11 @@
 
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 import {listLensScenarios} from '../../src/computation-lenses';
 import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/urban-ecology.lens';
-import reference from '@luma-contributors/graph/test/oracles/fixtures/urban-ecology.json';
-import landscapeReference from '@luma-contributors/graph/test/oracles/fixtures/urban-landscape.json';
+import reference from '@luma-contributors/analysis/test/oracles/fixtures/urban-ecology.json';
+import landscapeReference from '@luma-contributors/analysis/test/oracles/fixtures/urban-landscape.json';
 
 const elements = [
   'addStreetProfilesRecipe',

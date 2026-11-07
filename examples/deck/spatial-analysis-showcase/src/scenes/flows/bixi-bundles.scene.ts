@@ -10,7 +10,7 @@ import {directionFor} from '../../engine/ramps';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './bixi-bundles.md?raw';
+import narrative from './bixi-bundles.md?raw?raw';
 import type {BixiBundlesOptions} from './bixi-bundles.compute';
 import {
   BIKE_INK,
@@ -561,9 +561,9 @@ export default defineScene<BixiBundlesOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUEdgeBundling, getGPUEdgeBundlingParameterValues} from '@luma-contributors/graph/gpu-network';
-import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma-contributors/graph/gpu-spatial-analysis';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUEdgeBundling, getGPUEdgeBundlingParameterValues} from '@luma-contributors/analysis/gpu-network';
+import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'bundling'});
 graph.add(new GPUEdgeBundling({

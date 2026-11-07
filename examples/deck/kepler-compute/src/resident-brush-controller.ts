@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {getBrushingRadiusMeters, type BrushInteractionConfig} from './native-brushing-support';
 import {ResidentBrushSelection} from './resident-brush-selection';
 

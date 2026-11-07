@@ -9,7 +9,7 @@ import {
   GPUZoneEvents,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
   GPU_ZONE_EVENT_TYPE
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   createAnalysisFrameProjection,
   type AnalysisFrameProjection,
@@ -18,14 +18,8 @@ import {
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUDistanceField,
-  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  GPU_DISTANCE_FIELD_NONE,
-  getGPUDistanceFieldParameterValues,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUDistanceField, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPU_DISTANCE_FIELD_NONE, getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {
   SpatialAnalysisPointLayer,

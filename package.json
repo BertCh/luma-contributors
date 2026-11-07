@@ -20,7 +20,8 @@
     "test-browser": "vitest --project browser",
     "verify-package-exports": "node scripts/verify-package-exports.mjs",
     "typecheck-tests": "tsc -p tsconfig.json --noEmit",
-    "test-benchmarks": "LUMA_CONTRIBUTORS_BENCHMARKS=true vitest run --project headless"
+    "test-benchmarks": "LUMA_CONTRIBUTORS_BENCHMARKS=true vitest run --project headless",
+    "check-upstream-first": "node scripts/check-upstream-first.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.8",
@@ -31,6 +32,7 @@
     "@loaders.gl/tables": "~5.0.0-beta.4",
     "@luma.gl/core": "10.0.0-alpha.10",
     "@luma.gl/engine": "10.0.0-alpha.10",
+    "@luma.gl/graph": "10.0.0-alpha.10",
     "@luma.gl/shaders": "10.0.0-alpha.10",
     "@math.gl/core": "~5.0.0-beta.4",
     "@math.gl/dggs": "~5.0.0-beta.4",

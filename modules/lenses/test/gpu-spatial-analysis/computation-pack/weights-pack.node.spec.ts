@@ -6,7 +6,7 @@ import {expect, test} from 'vitest';
 import {WEIGHTS_OPERATORS} from '../../../src/gpu-spatial-analysis/computation-pack/operators/weights';
 import {expectFormulaBindingsExist, expectSpatialEntryWellFormed} from './formula-bindings';
 
-const SOURCE_DIRECTORY = 'modules/graph/src/gpu-spatial-analysis';
+const SOURCE_DIRECTORY = 'modules/analysis/src/gpu-spatial-analysis';
 
 const kernelSources: Record<string, string[]> = {
   GPUContiguityWeights: [`${SOURCE_DIRECTORY}/spatial-weights/gpu-contiguity-weights.ts`],

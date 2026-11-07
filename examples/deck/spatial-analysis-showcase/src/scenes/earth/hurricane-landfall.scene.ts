@@ -370,12 +370,12 @@ export default defineScene<HurricaneLandfallOptions>({
     {id: 'draw', label: 'Draw', detail: 'One measure at a time: length, distance or crossings'}
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPULineDensity, GPUZoneEvents, getGPULineDensityParameterValues, GPU_ZONE_EVENT_TYPE,
   GPU_EARTH_MEAN_RADIUS_METERS
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUDistanceField, GPU_DISTANCE_FIELD_NONE, getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUDistanceField, GPU_DISTANCE_FIELD_NONE, getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma-contributors/analysis/gpu-raster';
 import {addKernelPass} from '../../engine/mode-kernels';
 
 // Where tracks pass: one density node per wind threshold (paths split where wind < threshold)

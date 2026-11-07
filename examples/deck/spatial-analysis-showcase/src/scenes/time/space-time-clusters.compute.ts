@@ -4,11 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUTemporalReductionParameterValues,
-  GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
-  GPUTemporalReduction
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUTemporalReductionParameterValues, GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH, GPUTemporalReduction} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUSpaceTimeParameterValues,
@@ -24,8 +20,8 @@ import {
   GPUMantelTest,
   GPUNeighborSearch,
   GPUSpatialScanStatistic
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {
   SpatialAnalysisPointLayer,

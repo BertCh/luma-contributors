@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createGPULocalFrame} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {GeoArrowColumn, GeoArrowGeometryValue} from '@math.gl/geospatial/geoarrow';
 import {
   makeGeoArrowColumnFromCatalogGeometries,

@@ -4,12 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCrossfilter} from '@luma-contributors/graph/gpu-crossfilter';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassTableLayerProps, getClassIndexOf} from '../../cartography/class-table';
 import {NYC, nearestPlaceLabel} from '../../cartography/gazetteer';
 import {formatCount, formatPercent, liveText} from '../../cartography/live-text';

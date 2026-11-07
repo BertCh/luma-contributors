@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUGeodesicDestination} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUGeodesicDestination} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded origin, bearing and distance columns for GPUGeodesicDestination. */
 export type GeodesicDestinationExampleInput = {

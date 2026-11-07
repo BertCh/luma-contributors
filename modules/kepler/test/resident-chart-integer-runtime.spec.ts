@@ -4,9 +4,9 @@
 
 import {expect, test} from 'vitest';
 import * as arrow from 'apache-arrow';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {KeplerComputeSession} from '../src/session/compute-session';
 import {GPUKeplerSelectionScopes} from '../src/selection/gpu-selection-scopes';
 import {ResidentNumericChartRuntime} from '../../../examples/deck/kepler-compute/src/resident-chart-numeric-runtime';

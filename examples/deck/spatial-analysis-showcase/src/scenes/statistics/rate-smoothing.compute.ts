@@ -19,8 +19,8 @@ import {
   type GPUInferenceAlternative,
   type GPUInferenceMetadata,
   type GPURateClusterMapRecipeResult
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassTableLayerProps, makeClassTable} from '../../cartography/class-table';
 import {US} from '../../cartography/gazetteer';
 import {NO_DATA_COLOR} from '../../cartography/hue-registry';

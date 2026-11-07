@@ -15,7 +15,7 @@ import {
   getSolarPosition,
   GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES,
   GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import type {DiagramChartData} from '../chart-types';
 import type {DemProbe} from './cpu-dem';
 import {getCompassName} from './b14b-terrain';

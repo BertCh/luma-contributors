@@ -18,7 +18,7 @@ import {assert, Buffer, type CommandEncoder, type Device, type ShaderLayout} fro
 import {Computation, DynamicBuffer} from '@luma.gl/engine';
 import {postProcessGLTF} from '@luma.gl/engine/gltf';
 import {areaLighting, ibl, pbrScene, type ShaderModule} from '@luma.gl/shaders';
-import type {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {toCorsSafeGcsUrl, type Layer as KeplerLayer} from '@kepler.gl/layers';
 
 import {toRadians} from '@math.gl/core';

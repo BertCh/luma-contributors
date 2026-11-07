@@ -9,7 +9,7 @@ import {
   type ViewStateChangeParameters
 } from '@deck.gl/core';
 import type {Device} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import {ArrowDeck} from '../arrow-deck';

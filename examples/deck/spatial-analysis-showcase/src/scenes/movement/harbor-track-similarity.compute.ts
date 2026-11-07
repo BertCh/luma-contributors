@@ -4,8 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUTrackSimilaritySearch} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUTrackSimilaritySearch} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';

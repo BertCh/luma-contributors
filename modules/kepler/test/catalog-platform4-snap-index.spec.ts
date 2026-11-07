@@ -4,7 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import type {CatalogFeatureCollection, CatalogPosition} from '../src/analysis/catalog-geojson';
 import {buildNetworkGraph, snapPointToNetwork} from '../src/analysis/catalog-network';
 import {snapCatalogPointsOnGpu} from '../src/analysis/catalog-gpu-snapping';

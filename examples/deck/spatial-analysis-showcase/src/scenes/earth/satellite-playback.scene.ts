@@ -297,11 +297,11 @@ export default defineScene<SatellitePlaybackOptions>({
     }
   ],
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
 
 // positions: float32x2 [longitude, latitude] degrees, cut at the antimeridian so no track wraps
 // timestamps: float32 seconds since the window start; altitudes: float32 meters per vertex

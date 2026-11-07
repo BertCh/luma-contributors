@@ -15,19 +15,19 @@ import {
   type GPUComputationCaptureGeometry,
   type GPUComputationKeySpace,
   type GPUComputationRelation
-} from '@luma-contributors/graph/computation-record';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+} from '@luma-contributors/analysis/computation-record';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   createGPULocalFrame,
   type GPULocalFrame
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   createSpatialChoice,
   getSpatialOperatorEntry,
   SPATIAL_COMPUTATION_PACK_ID
 } from '../../../gpu-spatial-analysis/computation-pack/index';
-import type {GPUSpatialWeights} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPUSpatialWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import type {LensScenarioResult} from '../../types';
 

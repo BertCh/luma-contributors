@@ -464,12 +464,12 @@ export default defineScene<RoutingOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUNetworkReachability,
   GPUNetworkPathExtraction,
   GPUNetworkNeighborhood${state.showTurnRoute ? ',\n  GPUNetworkLineGraph,\n  getGPUNetworkLineGraphParameterValues' : ''}
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 // offsets / neighbors: directed CSR of the street graph, weights: seconds per edge (-1 = closed)
 const graph = new GPUCommandGraph(device, {id: 'routing'});

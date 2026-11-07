@@ -37,36 +37,14 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {
-  getGPUDistanceFieldParameterValues,
-  getGPUIsobandsParameterValues,
-  getGPUIsolinesParameterValues,
-  getGPUPolygonRasterizationParameterValues,
-  getGPURasterStretchParameterValues,
-  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  GPU_ISOBANDS_PARAMETER_LENGTH,
-  GPU_ISOLINES_PARAMETER_LENGTH,
-  GPU_RASTER_STRETCH_PARAMETER_LENGTH,
-  GPUDistanceField,
-  GPUIsobands,
-  GPUIsolines,
-  GPUPolygonRasterization,
-  GPURasterStretch,
-  makeGPURasterMetadata,
-  type GPURasterStretchMode
-} from '@luma-contributors/graph/gpu-raster';
-import {GPUIsobandRings} from '@luma-contributors/graph/gpu-raster';
+import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {getGPUDistanceFieldParameterValues, getGPUIsobandsParameterValues, getGPUIsolinesParameterValues, getGPUPolygonRasterizationParameterValues, getGPURasterStretchParameterValues, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPU_ISOBANDS_PARAMETER_LENGTH, GPU_ISOLINES_PARAMETER_LENGTH, GPU_RASTER_STRETCH_PARAMETER_LENGTH, GPUDistanceField, GPUIsobands, GPUIsolines, GPUPolygonRasterization, GPURasterStretch, makeGPURasterMetadata, type GPURasterStretchMode} from '@luma-contributors/analysis/raster-analysis';
+import {GPUIsobandRings} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
   GPUTerrainDerivatives
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisSegmentLayer, type SpatialAnalysisColor} from '../spatial-analysis-layers';
 import type {

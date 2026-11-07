@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {runRasterLens, type RasterLensSession} from '../gpu-raster/raster-lens-harness';
 import {runExample as runBreach} from './terrain-breach.example';
 import {runExample as runBranchingFlow} from './terrain-branching-flow.example';

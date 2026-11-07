@@ -4,7 +4,7 @@
 
 import {toRadians} from '@math.gl/core';
 import {assert} from '@luma.gl/core';
-import type {GPUComputationRecordWithSidecars} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationRecordWithSidecars} from '@luma-contributors/analysis/computation-record';
 import {loadChicagoTracts, type ChicagoTracts} from './spatial-lens-data';
 
 /**

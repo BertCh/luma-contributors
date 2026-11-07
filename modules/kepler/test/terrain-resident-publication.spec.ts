@@ -4,7 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {KeplerComputeSession} from '../src/session/compute-session';
 import {createTerrainRasterSourceAsync} from '../../../examples/deck/kepler-compute/src/analysis3-raster-terrain-gpu';
 import {executeTerrainResidentPublication} from '../../../examples/deck/kepler-compute/src/terrain-resident-publication';

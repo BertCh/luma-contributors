@@ -24,12 +24,7 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUFocalStatisticsParameterValues,
   getGPUInverseDistanceWeightingParameterValues,
@@ -38,22 +33,15 @@ import {
   GPUFocalStatistics,
   GPUInverseDistanceWeighting,
   type GPUFocalStatisticsShape
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getGPUKrigingParameterValues,
   GPU_KRIGING_PARAMETER_LENGTH,
   GPUKriging
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  fitVariogramModel,
-  getGPUVariogramParameterValues,
-  GPU_VARIOGRAM_PARAMETER_LENGTH,
-  GPUVariogram,
-  type VariogramModel,
-  type VariogramModelType
-} from '@luma-contributors/graph/gpu-dataframe';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import {GPUTerrainContours} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {fitVariogramModel, getGPUVariogramParameterValues, GPU_VARIOGRAM_PARAMETER_LENGTH, GPUVariogram, type VariogramModel, type VariogramModelType} from '@luma-contributors/analysis/dataframe-analysis';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {GPUTerrainContours} from '@luma-contributors/analysis/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
 import {createSeededRandom} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';

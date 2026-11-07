@@ -5,7 +5,7 @@
 import {getTimeIntervalDeclaration} from './time-contract-settings';
 import * as arrow from 'apache-arrow';
 import type {CommandEncoder, Fence} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {
   KeplerArrowDataset,
   KeplerComputeSession,
@@ -26,7 +26,7 @@ import {
   type PreparedGeometryGPUVectors,
   type PreparedGeoJSONTrips
 } from '@luma.gl/engine/arrow';
-import {type PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/graph/arrow';
+import {type PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
 import {GeometryRuntime} from './geometry-runtime';
 import {GlobeGeometryVariants, prepareGlobeGeometryIncrementally} from './globe-geometry-variants';
 import {PlanarGeometryHibernation} from './planar-geometry-hibernation';

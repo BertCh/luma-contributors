@@ -6,7 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {
   GPU_COLUMN_QUANTILE_INTERPOLATION_CODES,
   GPU_COLUMN_QUANTILES_PARAMETER_HEADER_LENGTH
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './column-quantiles.example';
 import {
   createDataFrameChoice,

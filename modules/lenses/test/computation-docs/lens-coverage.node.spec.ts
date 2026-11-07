@@ -5,7 +5,7 @@
 import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {basename, join, relative, resolve, sep} from 'node:path';
 import {describe, expect, it} from 'vitest';
-import type {GPUComputationFormulaRef} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationFormulaRef} from '@luma-contributors/analysis/computation-record';
 // Registers every scenario descriptor (lazy; no GPU code runs).
 import '../../src/computation-lenses/scenarios/index';
 import {
@@ -52,7 +52,7 @@ const GPU_TERRAIN_PENDING: Readonly<Record<string, string>> = {};
 export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   {
     entry: 'gpu-graph',
-    barrel: 'modules/graph/src/gpu-graph-algorithms/index.ts',
+    barrel: 'modules/analysis/src/gpu-graph-algorithms/index.ts',
     docs: [
       'docs/api-reference/experimental/gpu-graph.md',
       'docs/api-reference/experimental/gpu-graph-topology.md',
@@ -70,7 +70,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   },
   {
     entry: 'gpu-core',
-    barrel: 'modules/graph/src/gpu-core/index.ts',
+    barrel: 'modules/analysis/src/gpu-core/index.ts',
     // The documented primitives are the pack's operators; the barrel also exports the compiler.
     scope: 'pack-operators',
     docs: ['docs/api-reference/experimental/gpu-core'],
@@ -80,7 +80,10 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   },
   {
     entry: 'gpu-dataframe',
-    barrel: ['modules/graph/src/gpu-dataframe/index.ts', 'modules/graph/src/gpu-sql/index.ts'],
+    barrel: [
+      'modules/analysis/src/gpu-dataframe/index.ts',
+      'modules/analysis/src/gpu-sql/index.ts'
+    ],
     docs: [
       'docs/api-reference/experimental/gpu-dataframe.md',
       'docs/api-reference/experimental/gpu-dataframe-aggregation.md',
@@ -98,7 +101,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   },
   {
     entry: 'gpu-spatial-analysis',
-    barrel: 'modules/graph/src/gpu-spatial-analysis/index.ts',
+    barrel: 'modules/analysis/src/gpu-spatial-analysis/index.ts',
     docs: ['docs/api-reference/experimental/gpu-spatial-analysis'],
     requireVariableKinds: true,
     // Chunked variants run the whole-CSR kernels once per chunk and are verified equal to them, so they
@@ -121,7 +124,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   },
   {
     entry: 'gpu-network',
-    barrel: 'modules/graph/src/gpu-network/index.ts',
+    barrel: 'modules/analysis/src/gpu-network/index.ts',
     docs: ['docs/api-reference/experimental/gpu-network'],
     loadPack: async () =>
       (await import('../../src/gpu-network/computation-pack/network-pack-data'))
@@ -130,7 +133,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   },
   {
     entry: 'gpu-raster',
-    barrel: 'modules/graph/src/gpu-raster/index.ts',
+    barrel: 'modules/analysis/src/gpu-raster/index.ts',
     docs: ['docs/api-reference/experimental/gpu-raster'],
     loadPack: async () =>
       (await import('../../src/gpu-raster/computation-pack/index')).getRasterViewPack(),
@@ -138,7 +141,7 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   },
   {
     entry: 'gpu-terrain',
-    barrel: 'modules/graph/src/gpu-terrain/index.ts',
+    barrel: 'modules/analysis/src/gpu-terrain/index.ts',
     docs: ['docs/api-reference/experimental/gpu-terrain'],
     loadPack: async () =>
       (await import('../../src/gpu-terrain/computation-pack/index')).getTerrainViewPack(),
@@ -469,7 +472,7 @@ describe('lens coverage contract', () => {
   for (const entry of SLOT_ENTRIES) {
     it(`${entry} has exactly one slot for every contributor and recipe`, () => {
       const directory = join(DOCS_ROOT, 'api-reference/experimental', entry);
-      const elements = listEntryElements(`modules/graph/src/${entry}/index.ts`);
+      const elements = listEntryElements(`modules/analysis/src/${entry}/index.ts`);
       expect(elements.contributors.length).toBeGreaterThan(0);
       expect(
         collectSlotFailures(

@@ -51,9 +51,9 @@ describe('lens example mechanism', () => {
       findNonPublicImports(`import type {Device} from '@luma.gl/core';
       import {Model} from '@luma.gl/engine';
       import '@luma.gl/gpgpu';
-      import {GPUData} from '@luma-contributors/graph/gpu-data';
-      export {Result} from '@luma-contributors/graph/computation-record';
-      const module = import('@luma-contributors/graph/gpu-raster');`)
+      import {GPUData} from '@luma-contributors/analysis/gpu-data';
+      export {Result} from '@luma-contributors/analysis/computation-record';
+      const module = import('@luma-contributors/analysis/gpu-raster');`)
     ).toEqual([]);
     expect(
       findNonPublicImports(`import './local';

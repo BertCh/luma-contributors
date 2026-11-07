@@ -6,7 +6,7 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {addKeplerLinearKernel} from './analysis-scaling';
 
 /**

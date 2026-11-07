@@ -10,7 +10,7 @@
  * dataset; nothing is typed here.
  */
 
-import {GPU_TERRAIN_VISIBILITY} from '@luma-contributors/graph/gpu-terrain';
+import {GPU_TERRAIN_VISIBILITY} from '@luma-contributors/analysis/gpu-terrain';
 import type {MapAnnotation} from '../../cartography/types';
 import type {TerrainDem} from './cpu-dem';
 import {

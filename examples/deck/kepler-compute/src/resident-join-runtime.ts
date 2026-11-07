@@ -4,17 +4,8 @@
 
 import {KeplerAllocationError} from '@luma-contributors/kepler';
 import {Buffer, type CommandEncoder, type Device, type Fence} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUGather,
-  GPUScan,
-  GPUScanUint64,
-  GPUSort,
-  type CompiledGPUCommandGraph,
-  type GraphDataView,
-  type GraphVectorView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUGather, GPUScan, GPUScanUint64, GPUSort, type CompiledGPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {
   estimateKeplerResidentRowCacheByteLength,
   type KeplerArrowDataset,

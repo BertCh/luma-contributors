@@ -4,7 +4,7 @@
 
 /**
  * Shared contracts of the computation-views runtime. Everything here is plain data: no DOM, no
- * device. Record-specific types come from `@luma-contributors/graph/computation-record`; this file
+ * device. Record-specific types come from `@luma-contributors/analysis/computation-record`; this file
  * holds the view-side vocabulary that every layer (coordinator, registry, views, hosts) shares.
  */
 

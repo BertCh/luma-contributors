@@ -4,7 +4,7 @@
 
 import {existsSync, readFileSync} from 'node:fs';
 import {describe, expect, test} from 'vitest';
-import * as spatialAnalysis from '@luma-contributors/graph/gpu-spatial-analysis';
+import * as spatialAnalysis from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {CELLS_OPERATORS} from '../../../src/gpu-spatial-analysis/computation-pack/operators/cells';
 import {SPATIAL_ANALYSIS_STAGES} from '../../../src/gpu-spatial-analysis/computation-pack/stages';
 import {SPATIAL_GUARDS} from '../../../src/gpu-spatial-analysis/computation-pack/guards';
@@ -34,25 +34,25 @@ const ELEMENTS = [
 
 type CellsElement = (typeof ELEMENTS)[number];
 
-const SOURCE_ROOT = 'modules/graph/src/gpu-spatial-analysis';
+const SOURCE_ROOT = 'modules/analysis/src/gpu-spatial-analysis';
 const ELEMENT_KERNEL_SOURCES: Record<CellsElement, string[]> = {
   GPUCellAggregation: [
     `${SOURCE_ROOT}/cell-aggregation/gpu-cell-aggregation.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-keys.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-table.ts`,
-    'modules/graph/src/analysis-core/cell-key-wgsl.ts'
+    'modules/analysis/src/analysis-core/cell-key-wgsl.ts'
   ],
   GPUCellRollup: [
     `${SOURCE_ROOT}/cell-aggregation/gpu-cell-rollup.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-keys.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-table.ts`,
-    'modules/graph/src/analysis-core/cell-key-wgsl.ts'
+    'modules/analysis/src/analysis-core/cell-key-wgsl.ts'
   ],
   GPUCellPyramid: [
     `${SOURCE_ROOT}/cell-aggregation/gpu-cell-pyramid.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-keys.ts`,
     `${SOURCE_ROOT}/cell-aggregation/cell-table.ts`,
-    'modules/graph/src/analysis-core/cell-key-wgsl.ts'
+    'modules/analysis/src/analysis-core/cell-key-wgsl.ts'
   ],
   GPUCellLevelSelection: [`${SOURCE_ROOT}/cell-aggregation/gpu-cell-level-selection.ts`],
   GPUPointToCell: [
@@ -89,7 +89,7 @@ const ELEMENT_KERNEL_SOURCES: Record<CellsElement, string[]> = {
   ],
   GPUCellSetOutline: [`${SOURCE_ROOT}/cell-set-outline/gpu-cell-set-outline.ts`],
   GPUSegmentRingAssembly: [
-    'modules/graph/src/analysis-core/ring-assembly/gpu-segment-ring-assembly.ts'
+    'modules/analysis/src/analysis-core/ring-assembly/gpu-segment-ring-assembly.ts'
   ],
   GPULineNoding: [`${SOURCE_ROOT}/geometry-topology/gpu-line-noding.ts`],
   GPUPolygonize: [`${SOURCE_ROOT}/geometry-topology/gpu-polygonize.ts`],

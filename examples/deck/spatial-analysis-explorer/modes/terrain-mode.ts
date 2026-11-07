@@ -16,12 +16,7 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {Buffer} from '@luma.gl/core';
 import {
   getGPUTerrainDerivativesParameterValues,
@@ -31,8 +26,8 @@ import {
   GPUTerrainContours,
   GPUTerrainDerivatives,
   GPUTerrainViewshed
-} from '@luma-contributors/graph/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
   SpatialAnalysisPointLayer,

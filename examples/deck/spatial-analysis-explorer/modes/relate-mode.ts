@@ -19,7 +19,7 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   formatGPUSpatialRelate,
   GPUSpatialJoinCandidates,
@@ -27,11 +27,11 @@ import {
   GPUSpatialPredicateJoin,
   type GPUSpatialJoinGeometry,
   type GPUSpatialPredicate
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPU_SPATIAL_RELATE_PATTERN_WORDS,
   packGPUSpatialRelatePattern
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {Buffer} from '@luma.gl/core';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';

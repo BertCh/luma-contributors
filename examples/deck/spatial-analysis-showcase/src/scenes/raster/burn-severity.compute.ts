@@ -4,31 +4,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  getGPURasterArithmeticParameterValues,
-  getGPURasterConditionalParameterValues,
-  getGPURasterReclassifyParameterValues,
-  getGPURasterSieveParameterValues,
-  getGPURasterStretchParameterValues,
-  GPURasterArithmetic,
-  GPURasterConditional,
-  GPURasterConnectedComponents,
-  GPURasterDenseComponents,
-  GPURasterPatchMetrics,
-  GPURasterReclassify,
-  GPURasterSieve,
-  GPURasterStatistics,
-  GPURasterStretch,
-  makeGPURasterMetadata,
-  GPU_RASTER_SIEVE_PARAMETER_LENGTH,
-  type GPURasterBufferBand,
-  type GPURasterSieveMode
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {getGPURasterArithmeticParameterValues, getGPURasterConditionalParameterValues, getGPURasterReclassifyParameterValues, getGPURasterSieveParameterValues, getGPURasterStretchParameterValues, GPURasterArithmetic, GPURasterConditional, GPURasterPatchMetrics, GPURasterReclassify, GPURasterSieve, GPURasterStretch, makeGPURasterMetadata, GPU_RASTER_SIEVE_PARAMETER_LENGTH, type GPURasterSieveMode} from '@luma-contributors/analysis/raster-analysis';
+import {GPURasterConnectedComponents, GPURasterDenseComponents, GPURasterStatistics, type GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {SpatialAnalysisResources, formatCount} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {RampName} from '../../engine/ramps';

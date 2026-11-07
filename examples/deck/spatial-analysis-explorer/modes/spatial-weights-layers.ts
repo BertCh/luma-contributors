@@ -13,12 +13,7 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUReadbackRing,
-  GPUReduction,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUReadbackRing, GPUReduction, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT,
   GPUSpatialLag,
@@ -26,7 +21,7 @@ import {
   GPUSpatialWeightsSummary,
   GPUSpatialWeightsTransform,
   GPUSpatialWeightsTranspose
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {addKernelPass} from './mode-kernels';

@@ -8,7 +8,7 @@ import {ground} from '../../cartography/grounds';
 import {getSizeLegendEntries} from '../../cartography/proportional';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './wildfire-seasons.md?raw';
+import narrative from './wildfire-seasons.md?raw?raw';
 import type {WildfireSeasonsOptions} from './wildfire-seasons.compute';
 
 /** `12 Jun 2021` from days since 2020-01-01 (kept here so this light file imports no runtime code). */
@@ -359,8 +359,8 @@ export default defineScene<WildfireSeasonsOptions>({
   snippet: state => `import {
   getGPUTimeWindowFilterParameterValues,
   GPUTimeWindowFilter
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUGeometryMeasures} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUGeometryMeasures} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // Perimeter dates are float32 days since 2020-01-01 (exact below 2^24).
 graph.add(new GPUTimeWindowFilter({

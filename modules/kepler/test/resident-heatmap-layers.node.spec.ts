@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, test, vi} from 'vitest';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {createResidentHeatmapLayerClasses} from '../../../examples/deck/kepler-compute/src/resident-heatmap-layers';
 import {makeResidentHeatmapLayer} from '../../../examples/deck/kepler-compute/src/resident-heatmap-layer';
 

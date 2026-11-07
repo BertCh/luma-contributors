@@ -5,14 +5,14 @@
 import * as arrow from 'apache-arrow';
 import {expect, test} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {prepareArrowTableForGPUAnalytics} from '@luma-contributors/graph/arrow';
+import {prepareArrowTableForGPUAnalytics} from '@luma.gl/graph/arrow';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {
   prepareTabularPointPositions,
   makeGPUVectorsFromTabularPointPositions
 } from '../../../examples/deck/kepler-compute/src/point-position-source';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 
 test('tabular altitude uploads original XYZ chunks and native Arrow null policy without changing XY geometry', async () => {
   const device = await getWebGPUTestDevice();

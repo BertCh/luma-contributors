@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationKeySpace} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationKeySpace} from '@luma-contributors/analysis/computation-record';
 import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 
@@ -19,7 +19,7 @@ defineLensScenario({
         import('./spatial-scan-statistic.example'),
         import('../../data/s2-midwest-counties.json').then(module => module.default),
         import('../../data/s2-midwest-county-shapes.json').then(module => module.default),
-        import('@luma-contributors/graph/gpu-spatial-analysis')
+        import('@luma-contributors/analysis/gpu-spatial-analysis')
       ]);
     return {
       run: device => {

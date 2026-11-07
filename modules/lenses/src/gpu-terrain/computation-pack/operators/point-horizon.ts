@@ -105,8 +105,8 @@ export const TERRAIN_POINT_HORIZON_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/point-horizon/gpu-point-horizon-profile.ts',
-      'modules/graph/src/gpu-terrain/point-horizon/point-horizon-march.ts'
+      'modules/analysis/src/gpu-terrain/point-horizon/gpu-point-horizon-profile.ts',
+      'modules/analysis/src/gpu-terrain/point-horizon/point-horizon-march.ts'
     ]
   },
   GPUPointHorizonVisibility: {
@@ -240,8 +240,8 @@ export const TERRAIN_POINT_HORIZON_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-terrain/point-horizon/gpu-point-horizon-visibility.ts',
-      'modules/graph/src/gpu-terrain/point-horizon/point-horizon-march.ts'
+      'modules/analysis/src/gpu-terrain/point-horizon/gpu-point-horizon-visibility.ts',
+      'modules/analysis/src/gpu-terrain/point-horizon/point-horizon-march.ts'
     ]
   }
 };

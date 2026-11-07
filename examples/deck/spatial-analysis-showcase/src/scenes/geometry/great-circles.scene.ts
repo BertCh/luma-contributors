@@ -336,7 +336,7 @@ Slide **Range ring distance** below: the ring grows with no recompile, because t
   snippet: state => `import {
   GPUGreatCircleArcs, GPUGeodesicPairs, GPUGeodesicDestination,
   getGPUGreatCircleArcsParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One great-circle polyline per route pair (lng/lat float32x2 columns)
 graph.add(new GPUGreatCircleArcs({

@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCrossfilter} from '@luma-contributors/graph/gpu-crossfilter';
-import {DrawCommandBuffer, GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
+import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import type {RampName} from '../../engine/ramps';
 import {

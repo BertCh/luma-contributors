@@ -2,11 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {
-  GPUCommandGraph,
-  GPUCommandNode,
-  GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createFrontierKernelNode, type FrontierKernelBinding} from '../../engine/frontier-kernel';
 
 /** Float32 parameter count consumed by {@link FrontierFloodSimulation}. */

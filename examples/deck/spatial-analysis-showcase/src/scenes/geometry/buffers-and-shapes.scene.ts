@@ -588,7 +588,7 @@ The current vertex result is **{{clipVertices}}**; the other readouts show the n
   snippet: state => {
     if (state.view === 'buffers') {
       return `import {GPUOutlineGeometry, getGPUOutlineGeometryParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPUOutlineGeometry({
   positions,                                  // float32x2, ${state.bufferSystem === 'spherical' ? 'longitude/latitude degrees' : 'local metres'}
@@ -604,7 +604,7 @@ distance.write(getGPUOutlineGeometryParameterValues({distance: ${state.bufferDis
     }
     if (state.view === 'shapes') {
       return `import {GPUShapeGenerator, getGPUShapeGeneratorParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPUShapeGenerator({
   shape: '${state.shapeKind}',
@@ -622,7 +622,7 @@ shapeParameters.write(getGPUShapeGeneratorParameterValues({
     }
     if (state.view === 'grid') {
       return `import {GPUGridGenerator, GPUHilbertKeys, getGPUGridGeneratorParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPUGridGenerator({
   spatialContext: projection.spatialContext,
@@ -642,7 +642,7 @@ gridParameters.write(getGPUGridGeneratorParameterValues({
 }));`;
     }
     return `import {GPURectangleClip, getGPURectangleClipParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPURectangleClip({
   spatialContext: projection.spatialContext,

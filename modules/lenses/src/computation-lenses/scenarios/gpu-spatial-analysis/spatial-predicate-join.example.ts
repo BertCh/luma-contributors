@@ -3,17 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {
-  createTransientView,
-  GPUHistogram,
-  type GPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, GPUHistogram, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUSpatialPredicateJoin,
   type GPUSpatialContext,
   type GPUSpatialPredicateJoinProps,
   type GPUPointInPolygonJoinProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded inputs and caller-owned outputs for this recorded example. */
 export type SpatialPredicateJoinExampleInput = {

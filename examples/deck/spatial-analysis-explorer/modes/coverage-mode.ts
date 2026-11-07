@@ -25,7 +25,7 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPULineSimplificationParameterValues,
   getGPUMapColoringParameterValues,
@@ -37,7 +37,7 @@ import {
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   GPU_MAP_COLORING_PARAMETER_LENGTH,
   GPU_MAP_COLORING_UNCOLORED
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

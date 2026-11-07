@@ -7,19 +7,19 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUPolygonRasterizationParameterValues,
   GPUPolygonRasterization,
   makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUArealInterpolation,
   GPUParameterBuffer,
   GPUSpatialLag,
   type GPUPolygonGeometryFields,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from the tract and community-area data files. */
 export type ArealInterpolationExampleInput = {

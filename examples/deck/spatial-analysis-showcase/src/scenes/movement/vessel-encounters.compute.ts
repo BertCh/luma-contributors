@@ -9,8 +9,8 @@ import {
   GPUTrackSimilarity,
   GPUTrajectoryMetrics,
   GPUTrajectoryResample
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

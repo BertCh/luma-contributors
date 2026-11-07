@@ -29,8 +29,8 @@ import {
   GPUTerrainTopographicPosition,
   GPUTerrainWeissLandforms,
   type GPUTerrainCurvatureKind
-} from '@luma-contributors/graph/gpu-terrain';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {SpatialAnalysisResources} from '../../engine/resources';

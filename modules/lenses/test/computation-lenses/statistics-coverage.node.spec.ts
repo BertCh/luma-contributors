@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources
-} from '@luma-contributors/graph/testing';
-import {auditWGSLModule} from '@luma-contributors/graph/test/analysis-core/kernel-audit/kernel-audit-wgsl';
+} from '@luma-contributors/analysis/testing';
+import {auditWGSLModule} from '@luma-contributors/analysis/test/analysis-core/kernel-audit/kernel-audit-wgsl';
 import type {S2Uploads} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/s2-lens-run';
 
 import {buildStatisticsCoverageScenario} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/statistics-coverage-examples';

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {matchesKeplerPointWeightSpatialContext} from './point-weight-coordinates';
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {parseKeplerPointWeightsSettings} from '../recipes/analysis-recipe';
 import {
   getKeplerPointWeightsMaximumNeighbors,
@@ -15,7 +15,7 @@ import {
   type WeightedQuantileLISAOutputs,
   type WeightedQuantileLISAProps
 } from './weighted-quantile-lisa';
-import {isGPUChunkedSpatialWeights} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {isGPUChunkedSpatialWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 export type KeplerPointQuantileLISAOutputs = WeightedQuantileLISAOutputs;
 export type KeplerPointQuantileLISAProps = Omit<WeightedQuantileLISAProps, 'topology'> & {

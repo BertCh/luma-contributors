@@ -4,7 +4,7 @@
 
 import {Buffer, type ComputePass, type Device, type ShaderLayout} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
-import type {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {_GlobeViewport} from '@deck.gl/core';
 import {WebMercatorViewport, lngLatToWorld} from '@math.gl/web-mercator';
 import type {LabelCollisionViewport} from './label-collision-runtime';

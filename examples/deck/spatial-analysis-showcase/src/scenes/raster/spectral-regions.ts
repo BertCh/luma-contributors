@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   addRasterZonalDistributionRecipe,
   addRegionalRasterChangeRecipe,
   type GPURasterZonalDistributionRecipeProps,
   type GPURegionalRasterChangeRecipeProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import type {GPUZonalDistributionOutput} from '@luma-contributors/graph/gpu-spatial-analysis';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUZonalDistributionOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
 /** Four fixed, whole-cell quadrants over the 64 by 64 raster crop. */
 export function makeDixieQuadrantIds(): Uint32Array {

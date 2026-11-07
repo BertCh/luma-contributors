@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources,
   getStorageBindingCount
-} from '@luma-contributors/graph/testing';
+} from '@luma-contributors/analysis/testing';
 import {buildGlobalCoordinateScenario} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/global-coordinates-examples';
 const GLOBAL_ELEMENTS = [
   'GPUS2CellHierarchy',

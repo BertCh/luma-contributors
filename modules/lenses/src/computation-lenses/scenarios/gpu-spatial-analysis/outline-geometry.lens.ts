@@ -30,7 +30,7 @@ defineLensScenario({
       import('./s3-lens-data').then(module => module.loadS3ChicagoParks())
     ]);
     const {getGPUOutlineGeometryParameterValues, getGPUOutlineGeometryVerticesPerInput} =
-      await import('@luma-contributors/graph/gpu-spatial-analysis');
+      await import('@luma-contributors/analysis/gpu-spatial-analysis');
     const vertexCount = data.positionsProjected.length / 2;
     const verticesPerInput = getGPUOutlineGeometryVerticesPerInput(JOIN_SEGMENTS);
     return {

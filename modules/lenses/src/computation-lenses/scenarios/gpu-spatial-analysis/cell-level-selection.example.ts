@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCellLevelSelection} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCellLevelSelection} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Per-level cell counts from the pyramid and the active level index (one uint32). */
 export type CellLevelSelectionExampleInput = {

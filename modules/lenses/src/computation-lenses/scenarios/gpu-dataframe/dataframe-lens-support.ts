@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   createGPUComputationRecord,
   getGPUComputationAdapter,
@@ -15,20 +15,20 @@ import {
   type GPUComputationRecordWithSidecars,
   type GPUComputationKeySpace,
   type GPUComputationRelation
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {
   captureGPUCommandGraph,
   type GPUAnalysisChoice,
   type GPUComputationCaptureGeometry,
   type GPUComputationFormulaRef
-} from '@luma-contributors/graph/computation-record';
-import type {CompiledGPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/computation-record';
+import type {CompiledGPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getDataFrameOperatorEntry} from '../../../gpu-dataframe/computation-pack/index';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
-import {type GPUComputationAxis} from '@luma-contributors/graph/computation-record';
+import {type GPUComputationAxis} from '@luma-contributors/analysis/computation-record';
 
 import type {CommandEncoder} from '@luma.gl/core';
-import type {GPUDataFrameQueryParameters} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
 import {applyLensUserInput} from '../../user-input';
 import {assertValidLensRecord, assertValidLensSidecars} from '../../validate-lens-record';
 

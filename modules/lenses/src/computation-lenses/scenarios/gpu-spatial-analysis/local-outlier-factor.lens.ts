@@ -16,7 +16,7 @@ defineLensScenario({
       import('./local-outlier-factor.example'),
       import('./s2-lens-run'),
       import('./s1-clustering-support'),
-      import('@luma-contributors/graph/gpu-spatial-analysis')
+      import('@luma-contributors/analysis/gpu-spatial-analysis')
     ]);
     const points = await support.loadNaturePoints();
     return {

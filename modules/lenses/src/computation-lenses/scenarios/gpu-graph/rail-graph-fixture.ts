@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUGraphAlgorithmsData,
   GPUGraphAlgorithmsTopology,
   type GPUGraphAlgorithmsAdjacency
-} from '@luma-contributors/graph/gpu-graph-algorithms';
+} from '@luma.gl/graph/gpu-graph-algorithms';
 import railData from '../../data/g-nl-rail-graph.json';
 
 /** Input preparation and explicitly retained observation resources for a rail scenario. */

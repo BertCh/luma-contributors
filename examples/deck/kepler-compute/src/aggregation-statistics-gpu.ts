@@ -3,32 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Binding, type CommandEncoder, type Device} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import type {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUReduction,
-  GPUSort,
-  alignGraphVectorViews,
-  createGPUComputeCommandNode,
-  createTransientView,
-  getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
-  getViewBinding,
-  getViewElementOffset,
-  type CompiledGPUCommandGraph,
-  type GPUCommandNode,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUColumnQuantiles,
-  GPUGroupStatistics,
-  getGPUColumnQuantilesParameterValues
-} from '@luma-contributors/graph/gpu-dataframe';
+import {Kernel} from '@luma.gl/graph';
+import type {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUReduction, GPUSort, alignGraphVectorViews, createGPUComputeCommandNode, createTransientView, getBoundedDispatchLayout, getBoundedInvocationIndexSource, getViewBinding, getViewElementOffset, type CompiledGPUCommandGraph, type GPUCommandNode, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUColumnQuantiles, GPUGroupStatistics, getGPUColumnQuantilesParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPU_POINT_DENSITY_D3_HEXAGON_WGSL,
   GPU_POINT_DENSITY_HEXAGON_WGSL
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {GPUKeplerAggregationLayout, GPUResidentScalarFormat} from '@luma-contributors/kepler';
 import {
   GROUP_STATISTIC_BY_AGGREGATION,

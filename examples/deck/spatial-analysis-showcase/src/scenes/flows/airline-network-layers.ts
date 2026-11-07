@@ -14,7 +14,7 @@ import {
 } from '@deck.gl/core';
 import {Buffer, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
-import type {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
+import type {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import {getCompareState} from '../../engine/layers';
 import type {PaletteColor} from '../../engine/ramps';
 import {BETWEEN_GROUPS_INDEX, EGO_ROUTE_ALPHA} from './airline-network-palette';

@@ -3,16 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {type GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  type GPURasterMetadata,
-  GPUParameterBuffer,
   GPUParticleAdvection,
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
   GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
   getGPUParticleAdvectionParameterValues,
   getGPUParticleAdvectionUint32ParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 
 /** Graph, wind grid and caller-owned views for particle-advection. */
 export type ParticleAdvectionExampleInput = {

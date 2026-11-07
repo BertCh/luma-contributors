@@ -7,7 +7,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView,
   type GraphBufferHandle
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 
 /** Uploaded elevation tile, Laplacian stencil, and the caller-owned curvature handle. */
 export type ConvolutionExampleInput = {

@@ -9,8 +9,8 @@ import {
   runRemoteSensingLens
 } from '../../../src/computation-lenses/scenarios/gpu-raster/remote-sensing-runner';
 import {REMOTE_SENSING_SCENARIOS} from '../../../src/computation-lenses/scenarios/gpu-raster/remote-sensing.scenarios';
-import {submitGraph} from '@luma-contributors/graph/testing';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {submitGraph} from '@luma-contributors/analysis/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 import {createCoverageTrancheOneHarness} from './coverage-tranche-one-harness';
 
 it.each(

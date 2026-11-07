@@ -8,8 +8,8 @@ import {dirname, join} from 'node:path';
 import {HeatmapLayer} from '@deck.gl/aggregation-layers';
 import type {UpdateParameters} from '@deck.gl/core';
 import {expect, test, vi} from 'vitest';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {createNullWebGPUDevice} from '../../graph/test/utils/gpu-contributor-test-utils';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {createNullWebGPUDevice} from '../../analysis/test/utils/gpu-contributor-test-utils';
 import {
   makeResidentHeatmapLayer,
   renderResidentHeatmapPasses,

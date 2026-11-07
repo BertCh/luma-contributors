@@ -17,13 +17,13 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {CommandEncoder} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_TRACK_SIMILARITY_STATUS,
   GPUTrackSimilarity
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {addClockEncounters} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {getGPUTrajectoryClockParameterValues} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {addClockEncounters} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPUTrajectoryClockParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

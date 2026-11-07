@@ -4,8 +4,8 @@
 
 import * as arrow from 'apache-arrow';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector, type GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
-import type {PreparedArrowAnalyticsTable} from '@luma-contributors/graph/arrow';
+import {GPUData, GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
+import type {PreparedArrowAnalyticsTable} from '@luma.gl/graph/arrow';
 import type {KeplerDatasetRegistry, KeplerMemoryReservation} from '@luma-contributors/kepler';
 
 import type {FlowRoles} from './flow-source';

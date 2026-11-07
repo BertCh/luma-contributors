@@ -120,7 +120,7 @@ function getSnippet(state: SimilarPlacesOptions): string {
   ).join(', ');
   return `import {
   GPUSimilarLocations, getGPUSimilarLocationsParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // values: 3,109 counties x 12 float32 (row-major); referenceMask: uint32 per county (1 = reference)
 graph.add(new GPUSimilarLocations({

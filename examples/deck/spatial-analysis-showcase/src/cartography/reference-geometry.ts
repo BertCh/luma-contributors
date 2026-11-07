@@ -13,7 +13,7 @@
  * a screen can show at national scales; do not use it for survey work.
  */
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   clampLatitude,
   getLatitudeFromMercatorY,

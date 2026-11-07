@@ -5,7 +5,7 @@
 import {existsSync, readFileSync} from 'node:fs';
 import {expect, test} from 'vitest';
 import {fromRecordedLensFile, listLensScenarios} from '../../src/computation-lenses/index';
-import {createNullWebGPUDevice} from '@luma-contributors/graph/testing';
+import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
 import '../../src/computation-lenses/scenarios/index';
 const scenarios = listLensScenarios();

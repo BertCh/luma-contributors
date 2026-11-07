@@ -617,7 +617,7 @@ Orange is the simplified track over the faint original. Slide **Tolerance** belo
     if (state.view === 'reshape') {
       if (state.lineTool === 'densify') {
         return `import {GPULineSegmentize, getGPULineSegmentizeParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPULineSegmentize({
   positions, lineOffsets,
@@ -630,7 +630,7 @@ segmentize.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: ${Ma
       }
       if (state.lineTool === 'chunk' || state.lineTool === 'substring') {
         return `import {GPULineChunk, getGPULineChunkParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPULineChunk({
   positions, lineOffsets,
@@ -643,7 +643,7 @@ graph.add(new GPULineChunk({
 chunk.write(getGPULineChunkParameterValues(${state.lineTool === 'chunk' ? `{chunkLength: ${Math.round(10 ** state.chunkLength)}}` : `{startMeasure: ${state.substringStart * 1000}, endMeasure: ${state.substringEnd * 1000}}`}));`;
       }
       return `import {GPULineLocate, getGPULineLocateParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPULineLocate({
   spatialContext: projection.spatialContext,
@@ -658,7 +658,7 @@ graph.add(new GPULineLocate({
 locate.write(getGPULineLocateParameterValues({measureScale: ${state.locateSpacing}, measureOffset: elapsedMetres}));`;
     }
     if (state.view === 'snap') {
-      return `import {GPULinearReferencing} from '@luma-contributors/graph/gpu-spatial-analysis';
+      return `import {GPULinearReferencing} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPULinearReferencing({
   spatialContext: projection.spatialContext,
@@ -674,7 +674,7 @@ graph.add(new GPULinearReferencing({
     }
     if (state.trackTool === 'smooth') {
       return `import {GPULineSmooth, getGPULineSmoothParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 graph.add(new GPULineSmooth({
   spatialContext: projection.spatialContext,
@@ -688,7 +688,7 @@ graph.add(new GPULineSmooth({
 smooth.write(getGPULineSmoothParameterValues({ratio: ${state.smoothRatio}}));`;
     }
     return `import {GPULineSimplification, getGPULineSimplificationParameterValues}
-  from '@luma-contributors/graph/gpu-spatial-analysis';
+  from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // Graph 1, encoded once: per-vertex importance
 importanceGraph.add(new GPULineSimplification({

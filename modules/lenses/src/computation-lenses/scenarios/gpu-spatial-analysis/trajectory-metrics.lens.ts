@@ -25,7 +25,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3NewYorkHarborTracks())
       ]);
     const {getGPUTrajectoryMetricsParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     return {
       run: device =>

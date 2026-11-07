@@ -9,7 +9,7 @@ import {runExample as runNetworkFacilityOptimization} from './network-facility-o
 import {runExample as runNetworkTimeRouting} from './network-time-routing.example';
 import {runExample as runNetworkRationalAccess} from './network-rational-access.example';
 import {Buffer, type Device, type VertexFormat} from '@luma.gl/core';
-import {createTransientView, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   recordNetworkElement,
   describeNetworkElement,

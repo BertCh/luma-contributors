@@ -15,7 +15,7 @@
  */
 
 import type {Buffer, Device} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 
 /** How {@link measureCompiledGraph} obtained its number. */
 export type CompiledGraphTimingMethod = 'gpu-timestamps' | 'wall-clock';

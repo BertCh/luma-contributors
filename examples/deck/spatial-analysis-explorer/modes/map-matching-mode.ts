@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUMapMatchingParameterValues,
   GPUMapMatching,
   GPU_MAP_MATCHING_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-network';
-import {GPULineMerge} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-network';
+import {GPULineMerge} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {

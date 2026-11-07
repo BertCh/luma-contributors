@@ -30,8 +30,8 @@ defineLensScenario({
       import('./s3-lens-run'),
       import('./cell-geometry.example'),
       import('./cell-display'),
-      import('@luma-contributors/graph/gpu-spatial-analysis'),
-      import('@luma-contributors/graph/gpu-core'),
+      import('@luma-contributors/analysis/gpu-spatial-analysis'),
+      import('@luma.gl/graph/gpu-core'),
       import('@luma.gl/core'),
       import('./s3-lens-data').then(module => module.loadS3ChicagoPlaces())
     ]);

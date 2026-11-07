@@ -4,7 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import {GPUPointLabelLayer} from '@deck.gl-community/gpu-layers';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {
   KeplerArrowDataset,
   KeplerComputeSession,

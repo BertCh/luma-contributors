@@ -3,12 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   addFleetDwellZoneEventsRecipe,
   type GPUPolygonGeometryFields,
   type GPUTrajectoryGeometryFields
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Uploaded AIS tracks and harbour zones for the zone events fleet dwell recipe. */
 export type FleetDwellZoneEventsRecipeExampleInput = {

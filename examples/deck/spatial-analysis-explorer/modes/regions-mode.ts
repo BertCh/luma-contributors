@@ -19,8 +19,8 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUContiguityWeights} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUContiguityWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
 // Deep path until the main session adds the regionalization names to the entry barrel.
 import {
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
@@ -30,7 +30,7 @@ import {
   GPURegionPartitionEvaluation,
   GPUSkaterRegions,
   GPUSpatialWeightsMinimumSpanningTree
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {SpatialAnalysisPolygons} from '../spatial-analysis-data';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';

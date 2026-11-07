@@ -7,8 +7,8 @@ import {
   createNullWebGPUDevice,
   getParsedKernelSources,
   getStorageBindingCount
-} from '@luma-contributors/graph/testing';
-import {auditWGSLModule} from '@luma-contributors/graph/test/analysis-core/kernel-audit/kernel-audit-wgsl';
+} from '@luma-contributors/analysis/testing';
+import {auditWGSLModule} from '@luma-contributors/analysis/test/analysis-core/kernel-audit/kernel-audit-wgsl';
 import {buildTerrainProcessingScenario} from '../../../src/computation-lenses/scenarios/gpu-terrain/terrain-processing-runner';
 import {TERRAIN_PROCESSING_SCENARIOS} from '../../../src/computation-lenses/scenarios/gpu-terrain/terrain-processing.scenarios';
 import {createCoverageTrancheOneHarness} from './coverage-tranche-one-harness';

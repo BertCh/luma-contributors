@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCellGridPath} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCellGridPath} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** H3 cell keys (resolution 9) of each origin place and its destination, one pair per row. */
 export type CellGridPathExampleInput = {

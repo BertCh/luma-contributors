@@ -19,7 +19,7 @@ import {getNativeCellIndex, CELL_INDEX_METADATA_KEY} from './cell-layer-types';
 import {removeDataset, addDataToMap} from '@kepler.gl/actions';
 import {fieldPreparationCoordinator} from './binding3-field-preparation';
 import {type SourceCandidate} from './source-workspace-panel';
-import {type PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/graph/arrow';
+import {type PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
 import {recordUploadMeasure} from './acceptance-instrumentation';
 import {PREPARE_DATA_MESSAGE} from './prepared-layer-classes';
 import {DatasetOperationQueue} from './binding2-dataset-operations';

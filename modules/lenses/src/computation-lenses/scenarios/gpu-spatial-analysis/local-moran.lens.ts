@@ -21,7 +21,7 @@ defineLensScenario({
         import('./local-moran.example'),
         import('./spatial-lens-data'),
         import('./spatial-scenario-utils'),
-        import('@luma-contributors/graph/gpu-spatial-analysis'),
+        import('@luma-contributors/analysis/gpu-spatial-analysis'),
         import('../../../gpu-spatial-analysis/computation-pack/operators/statistics')
       ]);
     const tracts = await loadChicagoTracts();

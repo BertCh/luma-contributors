@@ -4,10 +4,7 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUTemporalReductionParameterValues,
-  GPUTemporalReduction
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUTemporalReductionParameterValues, GPUTemporalReduction} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPULineSimplificationParameterValues,
   getGPUTrajectoryMetricsParameterValues,
@@ -17,12 +14,8 @@ import {
   GPUTrajectoryResample,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

@@ -3,12 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUTransferMask} from '@luma-contributors/graph/computation-record';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUTransferMask} from '@luma-contributors/analysis/computation-record';
 import {describe, expect, test, vi} from 'vitest';
-import type {GPUCrossfilter} from '@luma-contributors/graph/gpu-crossfilter';
+import type {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
 import {GPUCrossfilterSelectionBackend} from '../../../src/computation-views/coordinator/gpu-crossfilter-selection-backend';
-import {createNullWebGPUDevice} from '@luma-contributors/graph/testing';
+import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
 function makeFixture(keyCount = 8, useHook = false) {
   const device = createNullWebGPUDevice();

@@ -3,12 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {
-  GPUGroupStatistics,
-  GPUKeyJoin,
-  type GPUKeyJoinKind
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUGroupStatistics, GPUKeyJoin, type GPUKeyJoinKind} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassCounts, getClassIndex} from '../../cartography/breaks';
 import {getClassTableLayerProps} from '../../cartography/class-table';
 import {NO_DATA_COLOR} from '../../cartography/hue-registry';

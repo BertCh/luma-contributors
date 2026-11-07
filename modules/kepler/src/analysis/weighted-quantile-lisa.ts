@@ -9,15 +9,15 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-core';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUQuantileLISA,
   isGPUChunkedSpatialWeights,
   getGPUPermutationParameterValues,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   type GPUQuantileLISAOutput
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS,
   type KeplerQuantileLISASettings

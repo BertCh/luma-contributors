@@ -7,7 +7,7 @@ import type {Device} from '@luma.gl/core';
 import {
   GPU_SPATIAL_ANALYSIS_CAPABILITIES,
   GPU_SPATIAL_ANALYSIS_OPERATORS
-} from '@luma-contributors/graph/gpu-spatial-analysis/ontology';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   addCatalogDiagnostic,
   countCollectionVertices,

@@ -7,18 +7,18 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUClassBreaksParameterLength,
   getGPUClassBreaksParameterValues,
   getGPUColorScaleParameterValues,
   GPU_COLOR_SCALE_PARAMETER_LENGTH,
   packGPUColor
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addPeriodComparisonRecipe,
   GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`, split by day of year. */
 export type PeriodComparisonRecipeExampleInput = {

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 
 /** Largest magnitude below which every integer is exactly representable as Float32. */
 export const EXACT_FLOAT32_INTEGER_LIMIT = 2 ** 24;
@@ -18,7 +18,7 @@ export async function assertExactFloat32IntegerRange(
   device: Device,
   vector: GPUVector<'sint32'> | GPUVector<'uint32'>
 ): Promise<void> {
-  const {extent, GPUVectorEvaluator} = await import('@luma-contributors/graph/gpu-simple-graph');
+  const {extent, GPUVectorEvaluator} = await import('@luma.gl/graph/gpu-simple-graph');
   const evaluator = GPUVectorEvaluator.fromGPUVector(vector);
   const extents = evaluator.gpuDataEvaluators.map(chunk => extent(chunk));
   try {

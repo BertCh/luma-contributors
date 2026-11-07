@@ -4,13 +4,13 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {addTrackQualityRecipe} from '@luma-contributors/graph/gpu-network';
+import {addTrackQualityRecipe} from '@luma-contributors/analysis/gpu-network';
 import {
   GPUTrajectoryKalman,
   GPUTrajectoryRestriction,
   prepareGPUTrajectoryObservations
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';

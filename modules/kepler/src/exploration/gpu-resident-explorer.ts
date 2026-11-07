@@ -7,7 +7,7 @@ import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {readAllBuffers} from './read-all-buffers';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
   GPUCommandGraph,
   GPUGather,
@@ -15,12 +15,12 @@ import {
   GPUMask,
   GPUReduction,
   type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUCrossfilter,
   type GPUCrossfilterDimension,
   type GPUCrossfilterView
-} from '@luma-contributors/graph/gpu-crossfilter';
+} from '@luma.gl/graph/gpu-crossfilter';
 import {
   GPUDataFrame,
   and,
@@ -31,8 +31,8 @@ import {
   type CompiledGPUDataFrameQuery,
   type GPUDataFrameQueryParameters,
   type GPUExpression
-} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUTable} from '@luma-contributors/graph/gpu-tables';
+} from '@luma.gl/graph/gpu-dataframe';
+import {GPUTable} from '@luma.gl/graph/gpu-tables';
 
 export type GPUResidentScalarFormat = 'float32' | 'uint32' | 'sint32';
 export type GPUResidentColumns = Readonly<Record<string, GPUVector<GPUResidentScalarFormat>>>;

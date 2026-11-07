@@ -9,7 +9,7 @@ import {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
 import {
   addCatalogDiagnostic,

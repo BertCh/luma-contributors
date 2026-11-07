@@ -6,7 +6,7 @@ import {assert} from '@luma.gl/core';
 import type {
   GPUComputationFormulaRef,
   GPUComputationFormulaSymbol
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-registration';
 import type {MarkProvenance} from '../types';
 import {h, rawHtml, viewNodeToDom, type ViewElementNode} from '../view-node';

@@ -8,13 +8,13 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-core';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUInverseDistanceWeighting,
   getGPUInverseDistanceWeightingParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import type {GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   MAXIMUM_KEPLER_IDW_SOURCE_ROWS,
   parseKeplerIDWSettings,

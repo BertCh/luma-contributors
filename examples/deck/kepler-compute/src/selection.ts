@@ -9,7 +9,7 @@ import {readResidentSelectedGeometry} from './resident-select-geometry';
 import {DATASET_ID} from './sample-data';
 import {readOriginalTooltipValue} from './original-table-values';
 import {createResidentBrushController} from './resident-brush-controller';
-import {type GPUVector} from '@luma-contributors/graph/gpu-data';
+import {type GPUVector} from '@luma.gl/graph/gpu-data';
 import {getRenderedLayerInfo} from './main-layer-info';
 import {store} from './app-store';
 import {clusterRuntimes} from './app-services';

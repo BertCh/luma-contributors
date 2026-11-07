@@ -4,12 +4,12 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   createGPUPointDensityGaussianKernel,
   createGPUPointDensityGaussianKernel1D,
   GPUPointDensity
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getDatasetFrame,
   getFrameDisplayModelMatrix,
@@ -17,7 +17,7 @@ import {
 } from '../spatial-analysis-data';
 import {importGraphBuffer} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
-import {type GPUParameterBuffer} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {type GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,

@@ -11,13 +11,8 @@ import {
   GPUNetworkCostMatrix,
   GPUNetworkIsochrones,
   GPUNetworkReachability
-} from '@luma-contributors/graph/gpu-network';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-network';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {buildPolygonMesh} from '../../cartography/polygon-mesh';
 import {geodesicCircle} from '../../cartography/reference-geometry';

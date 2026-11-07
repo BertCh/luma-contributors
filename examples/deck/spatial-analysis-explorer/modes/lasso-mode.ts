@@ -14,13 +14,7 @@
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer, Viewport} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GPUGridIndex,
-  type CompiledGPUCommandGraph,
-  type GPUGridIndexView,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GPUGridIndex, type CompiledGPUCommandGraph, type GPUGridIndexView, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   type GPULocalFrame,
   getGPURegionStatisticsSummaryLength,
@@ -30,7 +24,7 @@ import {
   GPURegionStatisticsReadback,
   type GPURegionSelection,
   type GPURegionStatisticsResult
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer, submitGraph} from '../graph-buffers';
 import {GraphSwap} from '../graph-swap';
 import {createSeededRandom} from '../spatial-analysis-data';

@@ -7,12 +7,12 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPULocalOutlierFactor,
   GPUNeighborSearch,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Neighbours per observation in the kNN table. */
 export const LOCAL_OUTLIER_FACTOR_NEIGHBOR_COUNT = 10;

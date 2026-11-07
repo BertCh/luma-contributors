@@ -5,14 +5,14 @@
 import {PathLayer, PolygonLayer} from '@deck.gl/layers';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPULineNoding,
   GPUPolygonize,
   GPUSharedPaths,
   type GPUPolygonizeOutput,
   type GPUTopologyPrecisionPolicy
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   ALBERS_CONUS_FRAME,
   createAnalysisFrameProjection,

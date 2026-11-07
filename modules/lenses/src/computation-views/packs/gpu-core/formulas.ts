@@ -6,7 +6,7 @@ import type {
   GPUComputationFormulaRef,
   GPUComputationFormulaSymbol,
   GPUComputationGraphInput
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import type {ViewPackNoFormula} from '../../registry/view-registration';
 
 function symbol(

@@ -35,7 +35,7 @@ defineLensScenario({
       import('./grid-generator.example'),
       import('./s3-lens-data').then(module => module.loadS3ChicagoPlaces()),
       import('./s3-lens-data').then(module => module.loadS3ChicagoCommunityAreas()),
-      import('@luma-contributors/graph/gpu-spatial-analysis')
+      import('@luma-contributors/analysis/gpu-spatial-analysis')
     ]);
     // The community-area dataset has exactly one polygon with one ring per feature.
     assert(areas.ringOffsets.length === areas.featureCount + 1);

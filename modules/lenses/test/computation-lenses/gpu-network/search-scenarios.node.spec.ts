@@ -8,7 +8,7 @@ import type {Device} from '@luma.gl/core';
 import {
   validateGPUComputationRecord,
   type GPUComputationRecord
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import '../../../src/computation-lenses/scenarios/gpu-network/index';
 import {getLensScenario} from '../../../src/computation-lenses/registry';
 import {
@@ -16,7 +16,7 @@ import {
   findNonPublicImports
 } from '../../../src/computation-lenses/lens-example';
 import {NETWORK_FORMULA_REFS} from '../../../src/gpu-network/computation-pack/network-formulas';
-import {createNullWebGPUDevice} from '@luma-contributors/graph/testing';
+import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
 
 type SearchCase = {
   kebab: string;

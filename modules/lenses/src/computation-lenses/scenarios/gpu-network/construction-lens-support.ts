@@ -5,8 +5,8 @@
 import type {
   GPUComputationCapture,
   GPUComputationKeySpace
-} from '@luma-contributors/graph/computation-record';
-import {createGPULocalFrame} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/computation-record';
+import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import crashes from '../../data/n-chicago-loop-crashes.json';
 import odFlows from '../../data/n-chicago-od-flows.json';
 import polylines from '../../data/n-chicago-loop-polylines.json';

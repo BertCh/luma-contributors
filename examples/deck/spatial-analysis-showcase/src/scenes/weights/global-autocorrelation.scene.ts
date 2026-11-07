@@ -190,8 +190,8 @@ function getSnippet(state: GlobalAutocorrelationOptions): string {
 parameters.write(getGPUPermutationParameterValues({seed: ${state.seed}, permutationCount: ${state.permutations}}));`;
   return `import {
   GPUSpatialLag, GPUGlobalSpatialStatistics, GPUGlobalPermutationTest, getGPUPermutationParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUSpatialCorrelogram, getGPUSpatialCorrelogramParameterValues} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUSpatialCorrelogram, getGPUSpatialCorrelogramParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
 
 // The neighbour average of every county: the y axis of the Moran scatterplot.
 graph.add(new GPUSpatialLag({weights, values, mask, normalize: true, output: lag}));

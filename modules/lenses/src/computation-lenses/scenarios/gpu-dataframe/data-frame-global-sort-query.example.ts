@@ -3,13 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPURecordBatch, GPUTable} from '@luma-contributors/graph/gpu-tables';
-import {
-  GPUDataFrame,
-  type GPUDataFrameQueryParameters
-} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURecordBatch, GPUTable} from '@luma.gl/graph/gpu-tables';
+import {GPUDataFrame, type GPUDataFrameQueryParameters} from '@luma.gl/graph/gpu-dataframe';
 
 /** One record batch of poverty rates, with a mask for the tracts that have no estimate. */
 export type DataFrameGlobalSortQueryBatch = {

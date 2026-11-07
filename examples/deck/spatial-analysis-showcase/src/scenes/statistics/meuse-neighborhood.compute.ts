@@ -4,7 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   addLocalVariabilityRecipe,
   getGPUNeighborSearchParameterValues,
@@ -19,10 +19,10 @@ import {
   GPUMultivariateLocalGearyPermutationTest,
   GPUNeighborSearch,
   GPUSpatialPearson
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPU_PERMUTATION_PARAMETER_LENGTH} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_PERMUTATION_PARAMETER_LENGTH} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

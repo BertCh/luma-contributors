@@ -3,10 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {GPUDataFrame} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {GPUTable} from '@luma-contributors/graph/gpu-tables';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUDataFrame} from '@luma.gl/graph/gpu-dataframe';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUTable} from '@luma.gl/graph/gpu-tables';
 import {addResidentJoinPass} from './resident-join-gpu-kernels';
 import {
   getResidentSqlCastConversionBody,

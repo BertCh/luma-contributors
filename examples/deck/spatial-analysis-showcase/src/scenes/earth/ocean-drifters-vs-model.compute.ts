@@ -4,27 +4,15 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionUint32ParameterValues,
-  GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
-  GPUParticleAdvection
-} from '@luma-contributors/graph/gpu-raster';
+import {getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues, GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH, GPUParticleAdvection} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPULineDensityParameterValues,
   GPU_LINE_DENSITY_PARAMETER_LENGTH,
   GPUGeodesicPairs,
   GPULineDensity
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {DrawCommandBuffer, GPUCommandGraph, GPUReadbackRing, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,

@@ -4,23 +4,19 @@
 
 import {expect, it} from 'vitest';
 import type {Buffer, Device} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  GraphVectorView,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph, GraphVectorView, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerAnalysisRecipe} from '../src/analysis/recipe-bindings';
 import type {KeplerAnalysisRecipe} from '../src/recipes/analysis-recipe';
-import {importGraphBuffer} from '../../graph/src/utils/gpu-contributor-utils';
+import {importGraphBuffer} from '../../analysis/src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
   readUint32,
   submitGraph
-} from '../../graph/test/utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+} from '../../analysis/test/utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 const source = {datasetId: 'observations', revision: 1};
 function makeRecipe(

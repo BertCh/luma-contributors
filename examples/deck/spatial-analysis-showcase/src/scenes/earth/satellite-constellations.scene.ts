@@ -304,7 +304,7 @@ export default defineScene<SatelliteConstellationsOptions>({
     {id: 'satellites', label: 'Dataset'}
   ],
 
-  snippet: state => `import {GPUKMeans} from '@luma-contributors/graph/gpu-spatial-analysis';
+  snippet: state => `import {GPUKMeans} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One 2D point per satellite: [inclination (deg), ${state.altitudeWeight} * log10(mean altitude in km)]
 graph.add(new GPUKMeans({

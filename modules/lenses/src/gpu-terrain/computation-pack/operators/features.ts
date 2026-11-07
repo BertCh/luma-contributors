@@ -30,8 +30,8 @@ export const TERRAIN_FEATURES_OPERATORS: RasterOperatorTable = {
         'Prominence is read off a join tree built on the GPU from radix-sorted spill edges by parent splicing and ancestor doubling; it has no closed form.'
     },
     sources: [
-      'modules/graph/src/gpu-terrain/terrain-features/gpu-terrain-peak-prominence.ts',
-      'modules/graph/src/gpu-terrain/terrain-features/terrain-peak-prominence-tree.ts'
+      'modules/analysis/src/gpu-terrain/terrain-features/gpu-terrain-peak-prominence.ts',
+      'modules/analysis/src/gpu-terrain/terrain-features/terrain-peak-prominence-tree.ts'
     ]
   },
   GPUTerrainSummits: {
@@ -73,7 +73,7 @@ export const TERRAIN_FEATURES_OPERATORS: RasterOperatorTable = {
         {id: 'minimumDrop', role: 'parameter', label: 'δ_min', binding: 'wgsl:minimumDrop'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/terrain-features/gpu-terrain-summits.ts']
+    sources: ['modules/analysis/src/gpu-terrain/terrain-features/gpu-terrain-summits.ts']
   },
   GPUTerrainPeakSnap: {
     family: 'features',
@@ -106,7 +106,7 @@ export const TERRAIN_FEATURES_OPERATORS: RasterOperatorTable = {
       reason:
         'Each candidate takes the strict (height, -index) maximum of a metric disc, then passes an ordered chain of accept rules (ring, move length, height change); the outcome is a status code, not a formula.'
     },
-    sources: ['modules/graph/src/gpu-terrain/terrain-features/gpu-terrain-peak-snap.ts']
+    sources: ['modules/analysis/src/gpu-terrain/terrain-features/gpu-terrain-peak-snap.ts']
   },
   GPUTerrainCriticalPoints: {
     family: 'features',
@@ -137,7 +137,7 @@ export const TERRAIN_FEATURES_OPERATORS: RasterOperatorTable = {
         {id: 'higher', role: 'intermediate', label: 'H', binding: 'wgsl:higherCount'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/terrain-features/gpu-terrain-critical-points.ts']
+    sources: ['modules/analysis/src/gpu-terrain/terrain-features/gpu-terrain-critical-points.ts']
   },
   GPUProfilePeaks: {
     family: 'features',
@@ -182,6 +182,6 @@ export const TERRAIN_FEATURES_OPERATORS: RasterOperatorTable = {
         }
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/terrain-features/gpu-profile-peaks.ts']
+    sources: ['modules/analysis/src/gpu-terrain/terrain-features/gpu-profile-peaks.ts']
   }
 };

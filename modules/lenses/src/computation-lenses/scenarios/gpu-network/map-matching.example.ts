@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUMapMatching, type GPUNetworkTopology} from '@luma-contributors/graph/gpu-network';
+} from '@luma.gl/graph/gpu-core';
+import {GPUMapMatching, type GPUNetworkTopology} from '@luma-contributors/analysis/gpu-network';
 
 /** Uploaded inputs: planar roads in metres, GPS fixes in the same frame and the track offsets. */
 export type MapMatchingExampleInput = {

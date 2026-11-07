@@ -376,16 +376,16 @@ export default defineScene<IsochronesOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {addStraightLineCatchmentsRecipe} from '@luma-contributors/graph/gpu-spatial-analysis';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {addStraightLineCatchmentsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getGPUDistanceFieldParameterValues,
   makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-raster';
 import {
   addDriveTimeCatchmentRecipe,
   getGPUNetworkIsochronesParameterValues
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 const graph = new GPUCommandGraph(device, {id: 'catchments'});
 const catchment = addDriveTimeCatchmentRecipe(graph, {

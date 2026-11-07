@@ -2,25 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUDistanceFieldParameterValues,
-  getGPUPolygonRasterizationParameterValues,
-  GPUDistanceField,
-  GPUPolygonRasterization,
-  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
-  GPURasterZonalStatistics,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+import {getGPUDistanceFieldParameterValues, getGPUPolygonRasterizationParameterValues, GPUDistanceField, GPUPolygonRasterization, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH, GPURasterZonalStatistics, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
   GPUTerrainDerivatives
-} from '@luma-contributors/graph/gpu-terrain';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';

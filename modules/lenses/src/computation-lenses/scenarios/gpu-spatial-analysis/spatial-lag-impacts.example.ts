@@ -7,7 +7,7 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPU_SPATIAL_LAG_IMPACTS_STRIDE,
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH,
@@ -17,7 +17,7 @@ import {
   GPUSpatialLagMaximumLikelihood,
   GPUSpatialWeightsTransform,
   type GPUContiguityWeightsProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Series length of the log-determinant and impact series. */
 const MAXIMUM_POWER = 128;

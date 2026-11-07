@@ -22,8 +22,8 @@ import {
   GPU_GWR_NONSTATIONARITY_TABLE_STRIDE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
   GPU_PERMUTATION_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {GraphSwap} from '../../engine/graph-swap';

@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
 import {getLensScenario} from '../../src/computation-lenses/registry';
 import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/line-length-per-polygon.lens';
-import {requireTestDevice} from '@luma-contributors/graph/testing';
+import {requireTestDevice} from '@luma-contributors/analysis/testing';
 
 test('line length lens measures streets in all three community areas without overflow', async () => {
   const device = await getWebGPUTestDevice();

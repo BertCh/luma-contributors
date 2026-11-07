@@ -9,7 +9,7 @@ import {
   GPUSeeminglyUnrelatedRegression,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS,
   getGPUGeographicallyWeightedRegressionParameterValues
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
 import {COORDINATE_SYSTEM_PARAMETER} from './catalog-binding-types';
 import {

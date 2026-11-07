@@ -3,19 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Binding} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
-import {
-  createGPUComputeCommandNode,
-  getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
-  getGraphVectorData,
-  getViewBinding,
-  getViewElementOffset,
-  type GPUCommandGraph,
-  type GPUCommandNode,
-  type GraphDataView,
-  type GraphVectorView
-} from '@luma-contributors/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
+import {createGPUComputeCommandNode, getBoundedDispatchLayout, getBoundedInvocationIndexSource, getGraphVectorData, getViewBinding, getViewElementOffset, type GPUCommandGraph, type GPUCommandNode, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 
 const WORKGROUP_SIZE = 64;
 

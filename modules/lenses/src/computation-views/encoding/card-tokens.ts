@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {clamp} from '@math.gl/core';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import type {ViewContext} from '../registry/view-registration';
 import {getDeclaredVariableKind, getRunScaleRegistry} from '../views/value-strip';
 import type {ViewGround} from '../types';

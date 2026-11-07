@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getRasterSamplingNote} from '../../encoding/raster-image';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import type {ViewContext} from '../../registry/view-registration';
 import type {DescriptionKeyNumber, MarkProvenance} from '../../types';
 import {createDivergingScaleSpec, type ResolvedScale} from '../../scales/scale-registry';

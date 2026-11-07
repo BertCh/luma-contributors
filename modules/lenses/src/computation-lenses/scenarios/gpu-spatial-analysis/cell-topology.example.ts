@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUCellTopology} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPUCellTopology} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** H3 cell keys (resolution 9) of the places whose neighbourhoods are expanded. */
 export type CellTopologyExampleInput = {cells: GraphDataView<'uint32x2'>};

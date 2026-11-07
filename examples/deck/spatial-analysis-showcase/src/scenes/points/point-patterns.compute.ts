@@ -4,22 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUPointPatternIndicesParameterValues,
-  getGPURipleyDistanceFunctionsParameterValues,
-  getGPURipleyParameterValues,
-  GPU_CLARK_EVANS_LENGTH,
-  GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
-  GPU_QUADRAT_STATISTICS_LENGTH,
-  GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,
-  GPU_RIPLEY_PARAMETER_LENGTH,
-  GPUPointPatternIndices,
-  GPURipley,
-  GPURipleyEnvelope,
-  GPURipleyDistanceFunctions,
-  type GPURipleyDistanceEdgeCorrection,
-  type GPURipleyEdgeCorrection
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUPointPatternIndicesParameterValues, getGPURipleyDistanceFunctionsParameterValues, getGPURipleyParameterValues, GPU_CLARK_EVANS_LENGTH, GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH, GPU_QUADRAT_STATISTICS_LENGTH, GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH, GPU_RIPLEY_PARAMETER_LENGTH, GPUPointPatternIndices, GPURipley, GPURipleyEnvelope, GPURipleyDistanceFunctions, type GPURipleyDistanceEdgeCorrection, type GPURipleyEdgeCorrection} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPU_STUDY_WINDOW_SUMMARY_LENGTH,
   type GPUPolygonGeometryFields,
@@ -30,12 +15,8 @@ import {
   getGPUDotDensityParameterValues,
   getGPUNeighborSearchParameterValues,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {
-  createTransientView,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createTransientView, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getClassIndexOf,
   getClassLabel,

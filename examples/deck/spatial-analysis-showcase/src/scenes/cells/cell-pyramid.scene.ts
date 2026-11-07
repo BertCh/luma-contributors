@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {CHICAGO_CITY_VIEW, MONTROSE_POINT} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import {sampleRamp} from '../../engine/ramps';
@@ -511,7 +511,7 @@ export default defineScene<CellPyramidOptions>({
 
   snippet: state => {
     if (state.view === 'pyramid') {
-      return `import {GPUCellPyramid, GPUCellLevelSelection} from '@luma-contributors/graph/gpu-spatial-analysis';
+      return `import {GPUCellPyramid, GPUCellLevelSelection} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One aggregation at res 17, then roll-ups to res 4, written into per-level slices of one slab.
 graph.add(new GPUCellPyramid({
@@ -531,7 +531,7 @@ graph.add(new GPUCellLevelSelection({
 }));`;
     }
     if (state.view === 'rollup') {
-      return `import {GPUCellRollup, GPU_CELL_DEFAULT_SUM_SCALE} from '@luma-contributors/graph/gpu-spatial-analysis';
+      return `import {GPUCellRollup, GPU_CELL_DEFAULT_SUM_SCALE} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // Roll the finest table up to res ${state.rollupResolution}. Counts and fixed-point sums are integers,
 // so the parent totals equal the child totals exactly.
@@ -543,7 +543,7 @@ graph.add(new GPUCellRollup({
 }));`;
     }
     if (state.view === 'classes') {
-      return `import {GPUClassBreaks, GPUColorScale} from '@luma-contributors/graph/gpu-dataframe';
+      return `import {GPUClassBreaks, GPUColorScale} from '@luma-contributors/analysis/gpu-dataframe';
 
 // Cell table to a value column and an occupied-row mask (adapter node, as in the hot-spot recipe).
 addCellTableColumnsNode(graph, 'classes', {counts, ${state.classValue === 'confirmed' ? 'sumValues' : ''}}, {values, mask});
@@ -560,7 +560,7 @@ graph.add(new GPUColorScale({
   output: {colors}                        // packed rgba8, read by the layer
 }));`;
     }
-    return `import {addPeriodComparisonRecipe} from '@luma-contributors/graph/gpu-spatial-analysis';
+    return `import {addPeriodComparisonRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // Two periods = two masks over the same observation rows.
 const recipe = addPeriodComparisonRecipe(graph, {

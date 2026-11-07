@@ -8,13 +8,13 @@ import {
   GraphVectorView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUClassBreaks,
   GPUVariableStandardization,
   type GPUClassBreaksProps,
   type GPUVariableStandardizationProps
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addExcessRiskRecipe,
   addHotSpotAnalysisRecipe,
@@ -22,7 +22,7 @@ import {
   type GPUExcessRiskRecipeProps,
   type GPUHotSpotAnalysisRecipeProps,
   type GPUSpatialRateRecipeProps
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerAnalysisPopulation, KeplerDatasetReference} from '../recipes/analysis-recipe';
 
 export type KeplerAnalysisProvenance = {

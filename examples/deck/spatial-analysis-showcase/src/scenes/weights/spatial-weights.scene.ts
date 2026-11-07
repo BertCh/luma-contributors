@@ -270,7 +270,7 @@ graph.add(new GPUSpatialWeightsAlgebra({
   }
   output: {...analysisWeights, status: {overflow, requiredCount}}
 }));`;
-  return `import {${imports.join(', ')}} from '@luma-contributors/graph/gpu-spatial-analysis';
+  return `import {${imports.join(', ')}} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 ${producer}${transform}${algebra}
 

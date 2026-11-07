@@ -5,7 +5,7 @@
 import type {
   GPUInferenceMetadata,
   GPUMultipleTestingMethod
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Emerging-hot-spot category colors, indexed by category code (0 to 17); code 0 is transparent. */
 export const EMERGING_CATEGORY_COLORS: readonly (readonly [number, number, number])[] = [

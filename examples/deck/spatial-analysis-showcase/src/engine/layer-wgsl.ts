@@ -5,7 +5,7 @@
 import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   GPU_POINT_DENSITY_HEXAGON_WGSL
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   type AlbersAnalysisFrame,
   type AnalysisFrame,

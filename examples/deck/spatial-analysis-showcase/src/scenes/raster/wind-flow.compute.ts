@@ -2,31 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {Layer} from '@deck.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {
-  getGPULineIntegralConvolutionParameterValues,
-  getGPULineIntegralConvolutionUint32ParameterValues,
-  getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionUint32ParameterValues,
-  getGPUStreamlinesParameterValues,
-  getGPUStreamlinesUint32ParameterValues,
-  GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
-  GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
-  GPU_STREAMLINES_PARAMETER_LENGTH,
-  GPU_STREAMLINES_UINT32_PARAMETER_LENGTH,
-  GPULineIntegralConvolution,
-  GPUParticleAdvection,
-  GPUStreamlines,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {getGPULineIntegralConvolutionParameterValues, getGPULineIntegralConvolutionUint32ParameterValues, getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues, getGPUStreamlinesParameterValues, getGPUStreamlinesUint32ParameterValues, GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH, GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH, GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH, GPU_STREAMLINES_PARAMETER_LENGTH, GPU_STREAMLINES_UINT32_PARAMETER_LENGTH, GPULineIntegralConvolution, GPUParticleAdvection, GPUStreamlines, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {fetchBytes, getDataFileUrl} from '../../data/loaders';
 import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';

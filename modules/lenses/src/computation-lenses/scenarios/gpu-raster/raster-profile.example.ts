@@ -3,15 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {type GPUCommandGraph, type GraphDataView} from '@luma-contributors/graph/gpu-core';
+import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  type GPURasterMetadata,
-  GPUParameterBuffer,
   GPURasterProfile,
   type GPURasterProfileOutput,
   GPU_RASTER_PROFILE_PARAMETER_LENGTH,
   getGPURasterProfileParameterValues
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 
 /** Graph, grid and caller-owned views for raster-profile. */
 export type RasterProfileExampleInput = {

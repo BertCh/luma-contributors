@@ -482,12 +482,12 @@ export default defineScene<ObservationsByTractOptions>({
     ];
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
 import {
   GPUPointInPolygonJoin,
   GPUSpatialJoinPrepared,
   GPUZonalStatistics${state.display === 'classes' ? ',\n  addPointsInPolygonsChoroplethRecipe' : ''}
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'observations-by-tract'});
 ${

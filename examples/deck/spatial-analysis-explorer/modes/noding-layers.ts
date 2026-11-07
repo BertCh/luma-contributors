@@ -8,7 +8,7 @@
  * outputs directly and add nothing to the noding result.
  */
 
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {addKernelPass} from './mode-kernels';
 
 /** Sentinel in `rowPieces` and `nodeDegrees` for rows that are not drawn. */

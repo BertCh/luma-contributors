@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {GPUPointLabelLayer} from '@deck.gl-community/gpu-layers';
 import type {Layer} from '@deck.gl/core';
 import type {LayersData} from '@flowmap.gl/data';

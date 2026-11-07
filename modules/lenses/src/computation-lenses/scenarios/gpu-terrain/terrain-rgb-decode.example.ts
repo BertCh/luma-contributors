@@ -3,9 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {type GPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
-import {GPUTerrainRGBDecode} from '@luma-contributors/graph/gpu-terrain';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUTerrainRGBDecode} from '@luma-contributors/analysis/gpu-terrain';
 
 /** Packed Terrarium words and caller-owned decoded heights and validity. */
 export type TerrainRGBDecodeExampleInput = {

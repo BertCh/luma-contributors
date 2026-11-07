@@ -4,15 +4,10 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUGroupStatistics} from '@luma-contributors/graph/gpu-dataframe';
-import {
-  getGPUDistanceFieldParameterValues,
-  GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  GPUDistanceField,
-  makeGPURasterMetadata,
-  type GPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
+import {getGPUDistanceFieldParameterValues, GPU_DISTANCE_FIELD_PARAMETER_LENGTH, GPUDistanceField, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {GraphSwap} from '../../engine/graph-swap';

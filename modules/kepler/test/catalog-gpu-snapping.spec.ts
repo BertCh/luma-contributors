@@ -12,7 +12,7 @@ import {
 } from '../src/analysis/catalog-network';
 import {getCatalogBinding, runCatalogOperationAsync} from '../src/analysis/catalog-bindings';
 import {snapCatalogPoints} from '../src/analysis/catalog-gpu-snapping';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 // Oracle: snapPointToNetwork (CPU, float64). The GPU snaps to polyline segments through
 // GPUNetworkSnapping, so edge, fraction and position must agree to float32 precision.

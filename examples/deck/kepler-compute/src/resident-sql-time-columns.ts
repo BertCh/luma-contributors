@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {PreparedArrowAnalyticsTable} from '@luma-contributors/graph/arrow';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import type {PreparedArrowAnalyticsTable} from '@luma.gl/graph/arrow';
 
 type PreparedTimeColumn = PreparedArrowAnalyticsTable['timeColumns'][string];
 

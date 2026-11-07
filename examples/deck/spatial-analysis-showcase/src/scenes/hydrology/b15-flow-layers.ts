@@ -20,7 +20,7 @@ import {
 } from '@deck.gl/core';
 import {Buffer, type RenderPass} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
-import type {DrawCommandBuffer} from '@luma-contributors/graph/gpu-core';
+import type {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import {RAMP_STOPS, type RampName} from '../../engine/ramps';
 import {STORAGE_LAYER_BLEND_PARAMETERS} from '../../../../spatial-analysis-shared/layer-constants';
 import {STORAGE_LAYER_PROJECTION_WGSL} from '../../../../spatial-analysis-shared/layer-constants';

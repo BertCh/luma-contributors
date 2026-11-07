@@ -30,7 +30,7 @@ defineLensScenario({
     const placeCount = 40;
     const [{runExample: referencePlaces}, {getGPULineLocateParameterValues}] = await Promise.all([
       import('./linear-referencing.example'),
-      import('@luma-contributors/graph/gpu-spatial-analysis')
+      import('@luma-contributors/analysis/gpu-spatial-analysis')
     ]);
     return {
       run: device =>

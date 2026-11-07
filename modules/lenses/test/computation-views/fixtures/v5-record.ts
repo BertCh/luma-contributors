@@ -5,7 +5,7 @@
 import type {
   GPUComputationNode,
   GPUComputationCapture
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import type {
   LensRecord,
   ViewContext

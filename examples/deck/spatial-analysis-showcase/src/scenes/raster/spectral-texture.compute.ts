@@ -4,21 +4,9 @@
 
 import type {Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  GPURasterBoxBlur,
-  GPURasterConvolution,
-  GPURasterFocalPairs,
-  GPURasterGaussianBlur,
-  GPURasterGradient,
-  GPURasterGradientMagnitude,
-  GPURasterLaplacian,
-  GPURasterNeighborhood,
-  GPURasterScharr,
-  GPURasterSobel,
-  GPURasterTexture,
-  makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPURasterBoxBlur, GPURasterConvolution, GPURasterGaussianBlur, GPURasterGradient, GPURasterGradientMagnitude, GPURasterLaplacian, GPURasterNeighborhood, GPURasterScharr, GPURasterSobel} from '@luma.gl/graph/gpu-raster';
+import {GPURasterFocalPairs, GPURasterTexture, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {GraphSwap} from '../../engine/graph-swap';

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
-import type {GPUComputationGraphForm} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationGraphForm} from '@luma-contributors/analysis/computation-record';
 import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-registration';
 import {h, viewNodeToDom, type ViewElementNode} from '../view-node';
 import {provenanceMarkAttributes} from '../encoding/provenance';

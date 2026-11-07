@@ -5,8 +5,8 @@
 import {expect, test, vi} from 'vitest';
 import {WebMercatorViewport} from '@deck.gl/core';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {createNullWebGPUDevice} from '../../graph/test/utils/gpu-contributor-test-utils';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {createNullWebGPUDevice} from '../../analysis/test/utils/gpu-contributor-test-utils';
 import {KeplerDatasetRegistry} from '../src/runtime/dataset-registry';
 import {
   prepareH3Source,

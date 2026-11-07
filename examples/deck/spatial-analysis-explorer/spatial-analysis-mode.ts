@@ -4,7 +4,7 @@
 
 import type {Layer, PickingInfo, Viewport} from '@deck.gl/core';
 import type {CommandEncoder, Device} from '@luma.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {SpatialAnalysisControlSection} from './app-ui';
 import type {SpatialAnalysisDataCatalog} from './spatial-analysis-data';
 

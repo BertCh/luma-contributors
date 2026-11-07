@@ -544,9 +544,9 @@ export default defineScene<TaxiFlowOptions>({
     return legends;
   },
 
-  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUFlowAggregation} from '@luma-contributors/graph/gpu-network';
-import {getGPUTimeWindowFilterParameterValues} from '@luma-contributors/graph/gpu-dataframe';
+  snippet: state => `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
+import {getGPUTimeWindowFilterParameterValues} from '@luma-contributors/analysis/gpu-dataframe';
 
 const graph = new GPUCommandGraph(device, {id: 'flows'});
 graph.add(

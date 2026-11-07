@@ -9,7 +9,7 @@ import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './nyc-taxi-trails.md?raw';
+import narrative from './nyc-taxi-trails.md?raw?raw';
 import type {NycTaxiTrailsOptions} from './nyc-taxi-trails.compute';
 import {FLOW_CREDITS} from './flows-style';
 import {
@@ -117,10 +117,10 @@ function getLegends(
 
 function getSnippet(state: NycTaxiTrailsOptions): string {
   const trailSeconds = state.trailMinutes * 60;
-  return `import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUTimeWindowFilter} from '@luma-contributors/graph/gpu-dataframe';
-import {GPUTrajectoryPlayhead} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPURoseStatistic} from '@luma-contributors/graph/gpu-spatial-analysis';
+  return `import {GPUCommandGraph} from '@luma-contributors/analysis/gpu-core';
+import {GPUTimeWindowFilter} from '@luma-contributors/analysis/gpu-dataframe';
+import {GPUTrajectoryPlayhead} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPURoseStatistic} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // every taxi at the clock: interpolated position, heading, a compact list of live taxis
 const playheadGraph = new GPUCommandGraph(device);

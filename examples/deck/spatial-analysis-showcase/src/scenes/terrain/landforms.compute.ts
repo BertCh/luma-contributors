@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassIndexOf} from '../../cartography/class-table';
 import {ALPS} from '../../cartography/gazetteer';
 import {formatCount, formatDistance, formatSigned, liveText} from '../../cartography/live-text';

@@ -7,18 +7,18 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
+} from '@luma.gl/graph/gpu-core';
 import {
   getGPUPolygonRasterizationParameterValues,
   GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
   makeGPURasterMetadata
-} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/raster-analysis';
 import {
   addChangeOfSupportRecipe,
   GPUParameterBuffer,
   type GPUChangeOfSupportZones,
   type GPUSpatialContext
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Zone systems the lens scenario uploads from the Chicago North Side tracts and areas. */
 export type ChangeOfSupportRecipeExampleInput = {

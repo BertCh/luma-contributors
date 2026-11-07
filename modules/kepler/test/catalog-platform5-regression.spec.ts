@@ -9,7 +9,7 @@ import {runCatalogOperationAsync} from '../src/analysis/catalog-bindings';
 import type {CatalogOperationBinding} from '../src/analysis/catalog-binding-types';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
 import {PLATFORM5_REGRESSION_BINDINGS} from '../src/analysis/catalog-platform5-regression';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 
 // Oracle policy: the CPU engines are float64 implementations of the same models; the GPU engines
 // run the contributors and must match them to float32 tolerance.

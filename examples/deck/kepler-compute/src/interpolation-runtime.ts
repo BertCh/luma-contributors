@@ -3,26 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, Texture, type CommandEncoder} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
+import {Kernel} from '@luma.gl/graph';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {BitmapLayer} from '@deck.gl/layers';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  GPUCommandGraph,
-  GPUMask,
-  createTransientView,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUColorScale,
-  GPUColumnProfile,
-  GPUParameterBuffer,
-  GPU_COLUMN_PROFILE_STATISTIC,
-  GPU_COLUMN_PROFILE_STATISTIC_COUNT,
-  getGPUColorScaleParameterValues,
-  packGPUColor
-} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUCommandGraph, GPUMask, createTransientView, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUColorScale, GPUColumnProfile, GPU_COLUMN_PROFILE_STATISTIC, GPU_COLUMN_PROFILE_STATISTIC_COUNT, getGPUColorScaleParameterValues, packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma.gl/graph/gpu-dataframe';
 import {
   addKeplerAnalysisRecipe,
   getKrigingConfidenceInterval,

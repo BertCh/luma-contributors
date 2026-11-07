@@ -4,11 +4,7 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  getGPUClassBreaksParameterValues,
-  getGPUColorScaleParameterValues,
-  packGPUColor
-} from '@luma-contributors/graph/gpu-dataframe';
+import {getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addPointsInPolygonsChoroplethRecipe,
   GPU_SPATIAL_JOIN_NO_FEATURE,
@@ -16,8 +12,8 @@ import {
   GPUSpatialJoinPrepared,
   GPUZonalStatistics,
   type GPUZonalStatisticsExtentStatistic
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {
   SpatialAnalysisPointLayer,

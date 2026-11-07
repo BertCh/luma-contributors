@@ -29,7 +29,7 @@ defineLensScenario({
       import('./spatial-scenario-utils'),
       import('../../../gpu-spatial-analysis/computation-pack/operators/statistics'),
       import('../../../gpu-spatial-analysis/computation-pack/choices'),
-      import('@luma-contributors/graph/computation-record')
+      import('@luma-contributors/analysis/computation-record')
     ]);
     const tracts = await loadChicagoTracts();
     // Dense zone rows in ascending community-area order: the membership is the tract's own label.

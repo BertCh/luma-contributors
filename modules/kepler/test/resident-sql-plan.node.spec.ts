@@ -9,7 +9,7 @@ import {
   CompiledGPUDataFrameGroupedAggregation,
   CompiledGPUDataFrameJoin,
   CompiledGPUDataFrameQuery
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-dataframe';
 import {
   planResidentSqlBatchGathers,
   planResidentSqlMaterialization

@@ -21,20 +21,14 @@
 
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  GPUGather,
-  GPUReadbackRing,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
+import {DrawCommandBuffer, GPUCommandGraph, GPUGather, GPUReadbackRing, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUDotDensityParameterValues,
   GPU_DOT_DENSITY_PARAMETER_LENGTH,
   GPUDotDensity,
   type GPULocalFrame,
   GPURandomPointsInPolygon
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getDatasetFrame,
   getFrameDisplayModelMatrix,

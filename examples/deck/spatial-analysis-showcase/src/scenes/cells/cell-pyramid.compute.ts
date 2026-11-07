@@ -23,28 +23,15 @@
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {
-  DrawCommandBuffer,
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  getGPUClassBreaksParameterLength,
-  getGPUClassBreaksParameterValues,
-  getGPUColorScaleParameterValues,
-  GPUClassBreaks,
-  GPUColorScale,
-  packGPUColor,
-  type GPUClassBreaksMethod
-} from '@luma-contributors/graph/gpu-dataframe';
+import {DrawCommandBuffer, GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, getGPUColorScaleParameterValues, GPUClassBreaks, GPUColorScale, packGPUColor, type GPUClassBreaksMethod} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addPeriodComparisonRecipe,
   GPUCellLevelSelection,
   GPUCellPyramid,
   GPUCellRollup,
   GPU_CELL_DEFAULT_SUM_SCALE
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {sampleRamp, type RampName} from '../../engine/ramps';

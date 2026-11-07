@@ -442,7 +442,7 @@ export default defineScene<ZoneDwellOptions>({
   },
 
   snippet: state => {
-    const stopped = `import {addFleetDwellRecipe, getGPUTrajectoryMetricsParameterValues} from '@luma-contributors/graph/gpu-spatial-analysis';
+    const stopped = `import {addFleetDwellRecipe, getGPUTrajectoryMetricsParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const stopsGraph = new GPUCommandGraph(device, {id: 'zone-stops'});
 addFleetDwellRecipe(stopsGraph, {
@@ -463,7 +463,7 @@ stopParameters.write(getGPUTrajectoryMetricsParameterValues({
   stopSpeedThreshold: ${((state.stopSpeedKnots * 1852) / 3600).toFixed(2)},        // m/s (${state.stopSpeedKnots} kn)
   stopMinimumDuration: ${state.stopMinutes * 60}                     // s
 }));`;
-    const events = `import {addFleetDwellZoneEventsRecipe} from '@luma-contributors/graph/gpu-spatial-analysis';
+    const events = `import {addFleetDwellZoneEventsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // zones: one polygon feature per zone (holes and extra parts share its index); the edges come from the rings
 const eventsGraph = new GPUCommandGraph(device, {id: 'zone-events'});

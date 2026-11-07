@@ -5,8 +5,8 @@
 import * as arrow from 'apache-arrow';
 import {expect, test, vi} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {requireTestDevice} from '../../../graph/test/utils/require-test-device';
+import {GPUVector} from '@luma.gl/graph/gpu-data';
+import {requireTestDevice} from '../../../analysis/test/utils/require-test-device';
 import {KeplerComputeSession} from '../../src/session/compute-session';
 import {KeplerArrowStreamPublisher} from '../../src/session/arrow-stream-publisher';
 

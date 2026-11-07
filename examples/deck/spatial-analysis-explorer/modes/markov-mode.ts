@@ -20,13 +20,8 @@
  */
 
 import type {Layer} from '@deck.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUClassBreaks,
-  getGPUClassBreaksParameterLength,
-  getGPUClassBreaksParameterValues,
-  type GPUClassBreaksMethod
-} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUClassBreaks, getGPUClassBreaksParameterLength, getGPUClassBreaksParameterValues, type GPUClassBreaksMethod} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUSpatialAutocorrelationParameterValues,
@@ -38,8 +33,8 @@ import {
   GPU_LISA_MARKOV_STATE_COUNT,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import type {GPUVectorFormat} from '@luma-contributors/graph/gpu-data';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisRasterLayer, type SpatialAnalysisColor} from '../spatial-analysis-layers';
 import type {

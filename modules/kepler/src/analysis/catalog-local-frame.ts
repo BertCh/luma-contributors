@@ -6,7 +6,7 @@ import {
   createGPULocalFrame,
   type GPULocalFrame,
   type GPULocalFrameKind
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogCoordinateSystem, CatalogDiagnostic, CatalogPosition} from './catalog-geojson';
 import {addCatalogDiagnostic} from './catalog-geojson';
 

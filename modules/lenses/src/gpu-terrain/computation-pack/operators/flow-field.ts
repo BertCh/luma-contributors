@@ -40,6 +40,6 @@ export const TERRAIN_FLOW_FIELD_OPERATORS: RasterOperatorTable = {
         {id: 'exaggeration', role: 'parameter', label: 'ε', binding: 'wgsl:exaggeration'}
       ]
     },
-    sources: ['modules/graph/src/gpu-terrain/terrain-flow-field/gpu-terrain-flow-field.ts']
+    sources: ['modules/analysis/src/gpu-terrain/terrain-flow-field/gpu-terrain-flow-field.ts']
   }
 };

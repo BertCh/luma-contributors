@@ -12,7 +12,7 @@
 
 import earcut from 'earcut';
 import type {LoadedDataset} from '../../data/catalog';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {LocalMetricProjection} from '../../engine/projection';
 import {toRadians} from '@math.gl/core';
 

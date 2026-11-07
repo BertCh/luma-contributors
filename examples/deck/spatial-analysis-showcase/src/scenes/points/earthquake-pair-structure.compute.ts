@@ -5,18 +5,14 @@
 import type {Layer} from '@deck.gl/core';
 import {PathLayer, ScatterplotLayer} from '@deck.gl/layers';
 import type {Buffer} from '@luma.gl/core';
-import {
-  GPUCommandGraph,
-  type CompiledGPUCommandGraph,
-  type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPUMarkedPointStatistics} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUCommandGraph, type CompiledGPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUMarkedPointStatistics} from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPUInhomogeneousPointPattern,
   GPUStudyWindowPreparation,
   GPU_STUDY_WINDOW_FLAG_EMPTY,
   GPU_STUDY_WINDOW_FLAG_ORIENTATION_UNCERTAIN
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';

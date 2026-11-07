@@ -30,7 +30,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3NewYorkHarborTracks())
       ]);
     const {getGPUTrajectoryClockParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     // At most one pair per two distinct tracks (track < partner), so this capacity cannot overflow.
     const pairCapacity = (data.trackCount * (data.trackCount - 1)) / 2;

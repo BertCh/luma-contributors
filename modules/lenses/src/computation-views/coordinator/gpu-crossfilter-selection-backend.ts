@@ -8,10 +8,10 @@ import {
   GraphVectorView,
   GPUReduction,
   type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import type {GPUTransferMask} from '@luma-contributors/graph/computation-record';
-import type {GPUCrossfilter} from '@luma-contributors/graph/gpu-crossfilter';
-import type {GPUCrossfilterMask} from '@luma-contributors/graph/gpu-crossfilter';
+} from '@luma.gl/graph/gpu-core';
+import type {GPUTransferMask} from '@luma-contributors/analysis/computation-record';
+import type {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
+import type {GPUCrossfilterMask} from '@luma.gl/graph/gpu-crossfilter';
 import type {KeySpaceId, SelectionClause} from '../types';
 import type {GPUSelectionBackend, GPUSelectionMaskHandle} from './gpu-selection-backend';
 

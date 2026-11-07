@@ -9,8 +9,8 @@ import {
   GPU_SIMILAR_LOCATIONS_NO_RANK,
   GPUSimilarLocations,
   type GPUSimilarLocationsStandardization
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {hexToRgba, MAP_INK, NO_DATA_COLOR} from '../../cartography/hue-registry';
 import {formatCount, formatDistance, formatOrdinal, liveText} from '../../cartography/live-text';
 import type {ClassTable, LngLat, MapAnnotation} from '../../cartography/types';

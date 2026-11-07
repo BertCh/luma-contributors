@@ -2,13 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import {
-  CompiledGPUDataFrameAggregation,
-  CompiledGPUDataFrameGlobalSort,
-  CompiledGPUDataFrameGroupedAggregation,
-  CompiledGPUDataFrameQuery
-} from '@luma-contributors/graph/gpu-dataframe';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {CompiledGPUDataFrameAggregation, CompiledGPUDataFrameGlobalSort, CompiledGPUDataFrameGroupedAggregation, CompiledGPUDataFrameQuery} from '@luma.gl/graph/gpu-dataframe';
 
 /** Scalar storage formats a resident Kepler dataset can adopt. */
 export const RESIDENT_SQL_FORMATS: ReadonlySet<string> = new Set(['float32', 'sint32', 'uint32']);

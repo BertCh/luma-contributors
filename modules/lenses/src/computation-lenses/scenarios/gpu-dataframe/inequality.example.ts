@@ -4,14 +4,9 @@
 // biome-ignore-all format: the shown example is hand-formatted to fit the 25-line card limit
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {createTransientView, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {
-  getGPUInequalityParameterValues,
-  GPUInequality,
-  GPUParameterBuffer,
-  GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
-  GPU_INEQUALITY_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-dataframe';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {getGPUInequalityParameterValues, GPUInequality, GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH, GPU_INEQUALITY_PARAMETER_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Tract columns the lens scenario reads from `f-chicago-tracts.json`; suppressed estimates are NaN. */
 export type InequalityExampleInput = {

@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUTerrainCurvature,
   GPUTerrainDerivatives,
   getGPUTerrainCurvatureParameterValues,
   getGPUTerrainDerivativesParameterValues
-} from '@luma-contributors/graph/gpu-terrain';
+} from '@luma-contributors/analysis/gpu-terrain';
 import {
   CatalogGpuUnsupportedError,
   withCatalogGpuSession,

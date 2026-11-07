@@ -24,7 +24,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoParks())
       ]);
     const {getGPUOffsetCurveParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     // Raw boundary rows are 35 per park vertex; the dissolved result needs far fewer.
     const capacity = {

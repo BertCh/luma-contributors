@@ -17,11 +17,9 @@ import {
   validatePackedView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {
-  getGPUClassBreaksParameterValues,
-  GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma.gl/graph/gpu-core';
+import {getGPUClassBreaksParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   type GPUSpatialWeights,
@@ -29,7 +27,7 @@ import {
   type GPUPolygonGeometryPort,
   type GPUHotSpotAnalysisRecipeProps,
   isGPUChunkedSpatialWeights
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   parseKeplerAnalysisRecipe,
   parseKeplerPointWeightsSettings,

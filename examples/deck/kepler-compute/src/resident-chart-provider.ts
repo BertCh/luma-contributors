@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {trackDeferredOperation} from './tracked-operations';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {KeplerComputeSession, KeplerSessionExplorer} from '@luma-contributors/kepler';
 import {
   getResidentChartPlanKey,

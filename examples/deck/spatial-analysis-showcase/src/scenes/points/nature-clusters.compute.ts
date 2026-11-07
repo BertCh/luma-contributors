@@ -20,8 +20,8 @@ import {
   GPUKMeans,
   GPUSpatialClustering,
   type GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassTableLayerProps} from '../../cartography/class-table';
 import {CHICAGO, findPlace, nearestPlace, nearestPlaceLabel} from '../../cartography/gazetteer';
 import {

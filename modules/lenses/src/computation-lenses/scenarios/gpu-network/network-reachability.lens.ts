@@ -9,8 +9,8 @@ import {
   createGPUComputationMetrics,
   type GPUComputationCapture,
   type GPUComputationRecordWithSidecars
-} from '@luma-contributors/graph/computation-record';
-import type {CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/computation-record';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {NETWORK_FORMULA_REFS} from '../../../gpu-network/computation-pack/network-formulas';
 import {runExample} from './network-reachability.example';
 import {

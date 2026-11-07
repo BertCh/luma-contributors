@@ -7,8 +7,8 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GraphDataView
-} from '@luma-contributors/graph/gpu-core';
-import {GPURegionMask} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma.gl/graph/gpu-core';
+import {GPURegionMask} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Planar tract centroids and rectangle bounds `[minX, minY, maxX, maxY]`; the caller owns the graph. */
 export type RegionMaskInput = {

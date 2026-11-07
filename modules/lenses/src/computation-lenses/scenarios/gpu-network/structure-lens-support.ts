@@ -6,7 +6,7 @@ import {clamp} from '@math.gl/core';
 import type {
   GPUComputationCapture,
   GPUComputationKeySpace
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import type {NetworkRoads} from './network-element-lens';
 
 /** Key spaces shared by the structure family: nodes and directed edges, plus the scenario's own. */

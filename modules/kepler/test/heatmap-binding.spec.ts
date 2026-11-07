@@ -5,7 +5,7 @@
 import * as arrow from 'apache-arrow';
 import {expect, test, vi} from 'vitest';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {KeplerComputeSession} from '../src/session/compute-session';
 import {HeatmapBindingRuntime} from '../../../examples/deck/kepler-compute/src/heatmap-binding-runtime';

@@ -6,7 +6,7 @@ import {describe, expect, test} from 'vitest';
 import type {
   GPUComputationRelation,
   GPUComputationCapture
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 import {createKeyRelationGraphFromRecord} from '../../../src/computation-views/hosts/record-relations';
 import {makeV7Record} from '../fixtures/v7-lens-record';
 

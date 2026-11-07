@@ -6,7 +6,7 @@ import {
   validateGPUComputationRecord,
   validateGPUComputationSidecars,
   type GPUComputationRecord
-} from '@luma-contributors/graph/computation-record';
+} from '@luma-contributors/analysis/computation-record';
 
 /** Fails a scenario run whose record is malformed, so a plausible but wrong card never renders. */
 export function assertValidLensRecord(record: GPUComputationRecord): void {

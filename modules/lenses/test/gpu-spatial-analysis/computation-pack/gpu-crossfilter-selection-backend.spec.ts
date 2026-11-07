@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUTransferMask} from '@luma-contributors/graph/computation-record';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUTransferMask} from '@luma-contributors/analysis/computation-record';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
-import {GPUCrossfilter} from '@luma-contributors/graph/gpu-crossfilter';
+import {GPUCrossfilter} from '@luma.gl/graph/gpu-crossfilter';
 import {GPUCrossfilterSelectionBackend} from '../../../src/computation-views/coordinator/gpu-crossfilter-selection-backend';
 
 // Written for the main session: never run this browser/GPU spec in an S1 worker.

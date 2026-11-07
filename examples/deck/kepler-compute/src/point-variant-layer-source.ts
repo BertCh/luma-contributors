@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {PreparedArrowAnalyticsTable} from '@luma-contributors/graph/arrow';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import type {PreparedArrowAnalyticsTable} from '@luma.gl/graph/arrow';
 
 import type {PointPositionVariantRuntime} from './point-position-variants';
 import {

@@ -9,8 +9,8 @@ import {
   createGPUPointDensityGaussianKernel1D,
   GPUPointDensity,
   type GPUParameterBuffer
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {CHICAGO, nearestPlaceLabel} from '../../cartography/gazetteer';
 import {hexToRgba, MAP_INK} from '../../cartography/hue-registry';
 import {

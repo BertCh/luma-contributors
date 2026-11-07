@@ -9,8 +9,8 @@ import {
   GPULineClipByPolygon,
   GPUMinimumBounds,
   GPUSubdividePolygons
-} from '@luma-contributors/graph/gpu-spatial-analysis';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {LocalMetricProjection, projectLngLatArray} from '../../engine/projection';
 import {SpatialAnalysisResources} from '../../engine/resources';

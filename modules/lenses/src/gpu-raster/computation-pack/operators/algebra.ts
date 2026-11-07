@@ -40,8 +40,8 @@ export const RASTER_ALGEBRA_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/raster-algebra/gpu-raster-arithmetic.ts',
-      'modules/graph/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
+      'modules/analysis/src/gpu-raster/raster-algebra/gpu-raster-arithmetic.ts',
+      'modules/analysis/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
     ]
   },
   GPURasterCellStatistics: {
@@ -74,8 +74,8 @@ export const RASTER_ALGEBRA_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/raster-algebra/gpu-raster-cell-statistics.ts',
-      'modules/graph/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
+      'modules/analysis/src/gpu-raster/raster-algebra/gpu-raster-cell-statistics.ts',
+      'modules/analysis/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
     ]
   },
   GPURasterConditional: {
@@ -108,8 +108,8 @@ export const RASTER_ALGEBRA_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/raster-algebra/gpu-raster-conditional.ts',
-      'modules/graph/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
+      'modules/analysis/src/gpu-raster/raster-algebra/gpu-raster-conditional.ts',
+      'modules/analysis/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
     ]
   },
   GPURasterReclassify: {
@@ -142,8 +142,8 @@ export const RASTER_ALGEBRA_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/raster-algebra/gpu-raster-reclassify.ts',
-      'modules/graph/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
+      'modules/analysis/src/gpu-raster/raster-algebra/gpu-raster-reclassify.ts',
+      'modules/analysis/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
     ]
   },
   GPUWeightedOverlay: {
@@ -178,8 +178,8 @@ export const RASTER_ALGEBRA_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/raster-algebra/gpu-weighted-overlay.ts',
-      'modules/graph/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
+      'modules/analysis/src/gpu-raster/raster-algebra/gpu-weighted-overlay.ts',
+      'modules/analysis/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
     ]
   },
   GPURasterStretch: {
@@ -209,8 +209,8 @@ export const RASTER_ALGEBRA_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/raster-stretch/gpu-raster-stretch.ts',
-      'modules/graph/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
+      'modules/analysis/src/gpu-raster/raster-stretch/gpu-raster-stretch.ts',
+      'modules/analysis/src/gpu-raster/raster-algebra/raster-algebra-utils.ts'
     ]
   },
   GPUChangeDetection: {
@@ -246,8 +246,8 @@ export const RASTER_ALGEBRA_OPERATORS: RasterOperatorTable = {
       ]
     },
     sources: [
-      'modules/graph/src/gpu-raster/change-detection/gpu-change-detection.ts',
-      'modules/graph/src/gpu-raster/change-detection/change-detection-wgsl.ts'
+      'modules/analysis/src/gpu-raster/change-detection/gpu-change-detection.ts',
+      'modules/analysis/src/gpu-raster/change-detection/change-detection-wgsl.ts'
     ]
   }
 };

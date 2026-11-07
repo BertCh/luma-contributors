@@ -4,10 +4,10 @@
 
 import {expect, it, vi} from 'vitest';
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import {getInt64TimeWords} from '@luma-contributors/graph/gpu-dataframe';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {getInt64TimeWords} from '@luma-contributors/analysis/dataframe-analysis';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '../../graph/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {GPUKeplerTimeSelection} from '../src/selection/gpu-time-selection';
 
 it('time selection preserves exact adjacent microseconds beyond Number precision and negative epochs', async () => {

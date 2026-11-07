@@ -5,7 +5,7 @@
 import type {Viewport} from '@deck.gl/core';
 import type {Buffer, Device} from '@luma.gl/core';
 import {Model} from '@luma.gl/engine';
-import {GPUIndexPickingTarget, type GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUIndexPickingTarget, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from './graph-buffers';
 import type {SpatialAnalysisResources} from './resources';
 

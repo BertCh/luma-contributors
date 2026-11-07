@@ -3,23 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {
-  GPUCommandGraph,
-  DrawCommandBuffer,
-  GPUCompaction,
-  GPUElementwise,
-  GPUGather,
-  type CompiledGPUCommandGraph
-} from '@luma-contributors/graph/gpu-core';
-import {
-  GPUPointCloudFeatures,
-  GPUPointCloudGround,
-  GPUPointCloudHeight,
-  GPUPointCloudNeighborhoods,
-  GPUPointCloudStatisticalFilter,
-  GPUPointCloudSurfaces,
-  GPUPointCloudVoxelDownsample
-} from '@luma-contributors/graph/gpu-pointcloud';
+import {GPUCommandGraph, DrawCommandBuffer, GPUCompaction, GPUElementwise, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUPointCloudFeatures, GPUPointCloudGround, GPUPointCloudHeight, GPUPointCloudNeighborhoods, GPUPointCloudStatisticalFilter, GPUPointCloudSurfaces} from '@luma-contributors/analysis/pointcloud-analysis';
+import {GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {SpatialAnalysisResources} from '../../engine/resources';

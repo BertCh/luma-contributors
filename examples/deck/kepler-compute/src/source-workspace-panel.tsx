@@ -5,7 +5,7 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import * as arrow from 'apache-arrow';
 import type KeplerTable from '@kepler.gl/table';
-import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma-contributors/graph/arrow';
+import type {PrepareArrowTableForGPUAnalyticsOptions} from '@luma.gl/graph/arrow';
 import {SourcePreviewPanel} from './source-preview-panel';
 import {SampleGalleryPanel} from './sample-gallery-panel';
 import {RemoteSourceControl} from './remote-source-control';

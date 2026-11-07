@@ -483,7 +483,7 @@ export default defineScene<H3AggregationOptions>({
       `import {`,
       `  GPUPointToCell, ${tabular ? 'GPUCellAggregation, ' : ''}GPUCellGeometry${tabular ? ',' : ''}`,
       ...(tabular ? [`  GPUCellSetOutline, GPUCellTopology, GPUCellCover, GPUCellCompaction`] : []),
-      `} from '@luma-contributors/graph/gpu-spatial-analysis';`,
+      `} from '@luma-contributors/analysis/gpu-spatial-analysis';`,
       ``,
       `// 1. Longitude/latitude to a 64-bit cell key per observation (observation mask = per-frame buffer).`,
       `graph.add(new GPUPointToCell({family: ${family}, resolution, positions, mask, output: {cells: keys}}));`

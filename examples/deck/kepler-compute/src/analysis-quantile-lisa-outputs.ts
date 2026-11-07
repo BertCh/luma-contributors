@@ -3,10 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import type {GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {GPUCommandGraph, GraphDataView} from '@luma-contributors/graph/gpu-core';
-import {packGPUColor} from '@luma-contributors/graph/gpu-dataframe';
-import type {GPUQuantileLISAOutput} from '@luma-contributors/graph/gpu-spatial-analysis';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
+import type {GPUQuantileLISAOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerComputeSession, KeplerMemoryReservation} from '@luma-contributors/kepler';
 import {makeAnalysisOutputVector} from './analysis-hotspot-outputs';
 

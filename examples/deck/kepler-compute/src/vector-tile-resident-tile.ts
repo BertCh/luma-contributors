@@ -15,7 +15,7 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {prepareGeometrySource, makeGeometryGPUVectors} from '@luma.gl/engine/arrow';
 import {GeometryRuntime} from './geometry-runtime';
 import type {ResidentDatasetBinding} from './resident-layers';

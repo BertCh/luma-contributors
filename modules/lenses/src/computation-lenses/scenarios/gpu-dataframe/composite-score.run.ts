@@ -3,12 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUComputationCapture} from '@luma-contributors/graph/computation-record';
+import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {
   GPU_COMPOSITE_SCORE_AGGREGATION,
   GPU_COMPOSITE_SCORE_COLUMN_STATISTICS_STRIDE,
   GPU_COMPOSITE_SCORE_SCALER
-} from '@luma-contributors/graph/gpu-dataframe';
+} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './composite-score.example';
 import {
   createDataFrameChoice,

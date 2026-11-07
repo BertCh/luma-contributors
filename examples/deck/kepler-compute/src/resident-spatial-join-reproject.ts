@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, ComputePass, Device} from '@luma.gl/core';
-import {Kernel} from '@luma-contributors/graph';
+import {Kernel} from '@luma.gl/graph';
 import {
   makeProjectionWgsl,
   normalizeProjectionLabel,
@@ -12,7 +12,7 @@ import {
   unprojectDescriptor
 } from './resident-spatial-join-crs';
 import {transformLngLatToMercator, transformMercatorToLngLat} from './raster-reprojection';
-import type {PreparedArrowAnalyticsTable} from '@luma-contributors/graph/arrow';
+import type {PreparedArrowAnalyticsTable} from '@luma.gl/graph/arrow';
 import type {KeplerDatasetRegistry} from '@luma-contributors/kepler';
 import {
   estimateTabularPointPositionBytes,

@@ -6,7 +6,7 @@ import {
   getGPUPointDensityHexagonCell,
   getGPUPointDensityHexagonCenter,
   getGPUPointDensityHexagonGridSize
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /**
  * Zone geometry of the tides scene: the active lattice (hexagons or squares) of one radius, the

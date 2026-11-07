@@ -7,7 +7,7 @@ import {DataType, RecordBatch, Table, type Field} from 'apache-arrow';
 import {
   prepareArrowTableForGPUAnalytics,
   type PrepareArrowTableForGPUAnalyticsOptions
-} from '@luma-contributors/graph/arrow';
+} from '@luma.gl/graph/arrow';
 import type {KeplerDatasetSnapshot, KeplerMemoryReservation} from '../runtime/dataset-registry';
 import {
   KeplerComputeSession,

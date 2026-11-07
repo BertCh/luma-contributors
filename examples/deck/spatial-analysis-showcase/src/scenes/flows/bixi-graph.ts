@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUData, GPUVector} from '@luma-contributors/graph/gpu-data';
-import type {GPUGraphAlgorithmsAdjacency} from '@luma-contributors/graph/gpu-graph-algorithms';
+import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import type {GPUGraphAlgorithmsAdjacency} from '@luma.gl/graph/gpu-graph-algorithms';
 import type {BixiFlows} from './bixi-data';
 
 const SCALAR_BYTES = 4;

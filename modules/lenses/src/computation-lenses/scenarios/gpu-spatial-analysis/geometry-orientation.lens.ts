@@ -25,7 +25,7 @@ defineLensScenario({
         import('./s3-lens-data').then(module => module.loadS3ChicagoParks())
       ]);
     const {getGPUGeometryOrientationParameterValues} = await import(
-      '@luma-contributors/graph/gpu-spatial-analysis'
+      '@luma-contributors/analysis/gpu-spatial-analysis'
     );
     // The park dataset has exactly one ring per park, so per-ring flags are per-park values.
     assert(data.ringOffsets.length - 1 === data.featureCount);
