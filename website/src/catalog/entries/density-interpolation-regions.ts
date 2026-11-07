@@ -1314,6 +1314,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
         description: 'Label of the simulated null.'
       }
     ],
+    moreRequired: ['fittedParameters'],
     outputs: [
       {name: 'lower', type: F32, description: 'Lower envelope per radius.'},
       {name: 'upper', type: F32, description: 'Upper envelope per radius.'},
@@ -2577,7 +2578,11 @@ graph.add(new GPUWardRegions({
   output: {labels, objective, status}
 }));
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'polygons', seed: 9237, caption: 'Neighbors merge until eight regions remain.'},
+    preview: {
+      kind: 'polygons',
+      seed: 9237,
+      caption: 'Neighbors merge until targetRegionCount regions remain.'
+    },
     related: ['skater-regions', 'azp-regions', 'max-p-regions'],
     lensScenario: 'gpu-spatial-analysis.ward-regions',
     reference: 'api/gpu-spatial-analysis/operators-statistics',

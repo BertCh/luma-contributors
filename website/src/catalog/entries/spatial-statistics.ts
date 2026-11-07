@@ -2251,6 +2251,7 @@ graph.add(new GPUSegregation({
         description: 'Predictions, summary, status and candidate scores.'
       }
     ],
+    moreRequired: ['originCount', 'destinationCount'],
     outputs: [
       {
         name: 'predictions',

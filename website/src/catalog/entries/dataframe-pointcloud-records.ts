@@ -1753,7 +1753,8 @@ graph.add(new GPUVariogramModelFit({
       {
         name: 'secondValues',
         type: "GraphDataView<'float32'>",
-        description: 'Second variable; defaults to values.'
+        default: 'values',
+        description: 'Second variable for the cross semivariogram.'
       },
       {
         name: 'times',
@@ -2121,6 +2122,7 @@ device.submit();`,
         description: 'Linearity, planarity, scattering per point.'
       }
     ],
+    moreRequired: ['status'],
     outputs: [
       {name: 'normals', type: "GraphDataView<'float32x3'>", description: 'Unit normals.'},
       {
@@ -2565,6 +2567,7 @@ graph.add(new GPUPointCloudHeight({
         description: 'Upper limit of the threshold.'
       }
     ],
+    moreRequired: ['coverage', 'groundMask', 'outputClassifications', 'status'],
     outputs: [
       {name: 'groundMask', type: "GraphDataView<'uint32'>", description: 'Ground flag per point.'},
       {
@@ -2640,6 +2643,7 @@ graph.add(new GPUPointCloudGround({
       {name: 'cut', type: 'number', description: 'Net-cut spacing; zero disables.'},
       {name: 'groundClass', type: 'number', description: 'Class written for ground points.'}
     ],
+    moreRequired: ['groundSurface', 'groundMask', 'outputClassifications', 'status'],
     outputs: [
       {
         name: 'groundSurface',
@@ -2723,6 +2727,7 @@ graph.add(new GPUPointCloudSMRF({
       {name: 'iterations', type: 'number', description: 'Iteration budget.'},
       {name: 'targetGrid', type: 'PointCloudGrid', description: 'Exact static target index.'}
     ],
+    moreRequired: ['transform', 'history', 'inlierMask', 'status'],
     outputs: [
       {
         name: 'transform',
@@ -2817,6 +2822,7 @@ device.submit();`,
         description: 'Registration uncertainty added to the bound.'
       }
     ],
+    moreRequired: ['changes', 'roughness', 'counts', 'status'],
     outputs: [
       {
         name: 'changes',

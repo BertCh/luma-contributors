@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Display adapters: tiny GPU kernels that reshape an operation's output buffers into the
+// segment lists the run layers draw (for example padded vertex ids into line segments). They read
+// the operation's output on the GPU; nothing is read back or recomputed on the CPU.
+
+import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {RunBuffer, RunBuilder} from '../../../define-run';
+
+/** Segment endpoint written where a padded slot has no vertex: far outside every view. */
+const OFFSCREEN = '-100.0';
+
+/**
+ * Turns `routeIndex`-th slice (`stride` ids, padded with 0xffffffff) of a vertex-id buffer into
+ * (x0, y0, x1, y1) segments between consecutive vertices. `nodePositions` is a flat x, y array.
+ */
+export function addVertexSegments(
+  builder: RunBuilder,
+  options: {
+    id: string;
+    vertices: RunBuffer<'uint32'>;
+    nodePositions: RunBuffer<'float32'>;
+    routeIndex: number;
+    stride: number;
+  }
+): RunBuffer<'float32'> {
+  const segmentCount = options.stride - 1;
+  const segments = builder.allocate(`${options.id}-segments`, 'float32', segmentCount * 4);
+  builder.graph.add(
+    createWGSLKernelNode(builder.graph, {
+      id: `${options.id}-expand`,
+      operation: 'display-vertex-segments',
+      invocationCount: segmentCount,
+      bindings: [
+        {name: 'vertices', view: options.vertices.view, type: 'u32', access: 'read'},
+        {name: 'nodePositions', view: options.nodePositions.view, type: 'f32', access: 'read'},
+        {name: 'segments', view: segments.view, type: 'f32', access: 'read_write'}
+      ],
+      body: `
+  let first = vertices[verticesOffset + ${options.routeIndex * options.stride}u + index];
+  let second = vertices[verticesOffset + ${options.routeIndex * options.stride}u + index + 1u];
+  let isValid = first != 0xffffffffu && second != 0xffffffffu;
+  let slot = segmentsOffset + index * 4u;
+  segments[slot] = select(${OFFSCREEN}, nodePositions[nodePositionsOffset + first * 2u], isValid);
+  segments[slot + 1u] = select(${OFFSCREEN}, nodePositions[nodePositionsOffset + first * 2u + 1u], isValid);
+  segments[slot + 2u] = select(${OFFSCREEN}, nodePositions[nodePositionsOffset + second * 2u], isValid);
+  segments[slot + 3u] = select(${OFFSCREEN}, nodePositions[nodePositionsOffset + second * 2u + 1u], isValid);`
+    })
+  );
+  return segments;
+}
+
+/**
+ * Per-slot values drawn on slot lines: copies `source` (one float32 or uint32 value per slot) into
+ * both halves of a `2 * count` float32 buffer, because a slot line reads its value at its first
+ * and second endpoint.
+ */
+export function addSlotValues(
+  builder: RunBuilder,
+  options: {id: string; source: RunBuffer<'float32'> | RunBuffer<'uint32'>; count: number}
+): RunBuffer<'float32'> {
+  const doubled = builder.allocate(`${options.id}-doubled`, 'float32', options.count * 2);
+  const isInteger = options.source.format === 'uint32';
+  builder.graph.add(
+    createWGSLKernelNode(builder.graph, {
+      id: `${options.id}-double`,
+      operation: 'display-slot-values',
+      invocationCount: options.count,
+      bindings: [
+        {
+          name: 'source',
+          view: options.source.view,
+          type: isInteger ? 'u32' : 'f32',
+          access: 'read'
+        },
+        {name: 'doubled', view: doubled.view, type: 'f32', access: 'read_write'}
+      ],
+      body: `
+  let value = ${isInteger ? 'f32(source[sourceOffset + index])' : 'source[sourceOffset + index]'};
+  doubled[doubledOffset + index] = value;
+  doubled[doubledOffset + ${options.count}u + index] = value;`
+    })
+  );
+  return doubled;
+}
+
+/**
+ * Interleaves two parallel uint32 columns (`from`, `to`) into (from, to) rows, the edge-pair layout
+ * of the segments layer. Padding rows (0xffffffff) point at `fallbackNode`, a node kept offscreen.
+ */
+export function addEdgePairs(
+  builder: RunBuilder,
+  options: {
+    id: string;
+    from: RunBuffer<'uint32'>;
+    to: RunBuffer<'uint32'>;
+    fallbackNode: number;
+  }
+): RunBuffer<'uint32'> {
+  const count = options.from.length;
+  const pairs = builder.allocate(`${options.id}-pairs`, 'uint32', count * 2);
+  builder.graph.add(
+    createWGSLKernelNode(builder.graph, {
+      id: `${options.id}-interleave`,
+      operation: 'display-edge-pairs',
+      invocationCount: count,
+      bindings: [
+        {name: 'sources', view: options.from.view, type: 'u32', access: 'read'},
+        {name: 'targets', view: options.to.view, type: 'u32', access: 'read'},
+        {name: 'pairs', view: pairs.view, type: 'u32', access: 'read_write'}
+      ],
+      body: `
+  let first = sources[sourcesOffset + index];
+  let second = targets[targetsOffset + index];
+  let isValid = first != 0xffffffffu && second != 0xffffffffu;
+  pairs[pairsOffset + index * 2u] = select(${options.fallbackNode}u, first, isValid);
+  pairs[pairsOffset + index * 2u + 1u] = select(${options.fallbackNode}u, second, isValid);`
+    })
+  );
+  return pairs;
+}
+
+/** Copies `length` values (float32 or uint32) starting at `offset` of `source` into a float32 buffer. */
+export function addSlice(
+  builder: RunBuilder,
+  options: {
+    id: string;
+    source: RunBuffer<'float32'> | RunBuffer<'uint32'>;
+    offset: number;
+    length: number;
+  }
+): RunBuffer<'float32'> {
+  const slice = builder.allocate(`${options.id}-slice`, 'float32', options.length);
+  const isInteger = options.source.format === 'uint32';
+  builder.graph.add(
+    createWGSLKernelNode(builder.graph, {
+      id: `${options.id}-copy`,
+      operation: 'display-slice',
+      invocationCount: options.length,
+      bindings: [
+        {
+          name: 'source',
+          view: options.source.view,
+          type: isInteger ? 'u32' : 'f32',
+          access: 'read'
+        },
+        {name: 'slice', view: slice.view, type: 'f32', access: 'read_write'}
+      ],
+      body: `slice[sliceOffset + index] = ${isInteger ? 'f32(source[sourceOffset + ' + options.offset + 'u + index])' : 'source[sourceOffset + ' + options.offset + 'u + index]'};`
+    })
+  );
+  return slice;
+}
+
+/**
+ * Copies a graph-owned uint32 view (an operation or recipe output with no buffer of its own) into a
+ * run buffer that the layers can draw.
+ */
+export function addUint32Copy(
+  builder: RunBuilder,
+  options: {
+    id: string;
+    view: GraphDataView<'uint32'>;
+    /** WGSL statements turning `value` into the stored `result` (default: copy). */
+    transform?: string;
+  }
+): RunBuffer<'uint32'> {
+  const copy = builder.allocate(`${options.id}-copy`, 'uint32', options.view.length);
+  builder.graph.add(
+    createWGSLKernelNode(builder.graph, {
+      id: `${options.id}-copy`,
+      operation: 'display-copy',
+      invocationCount: options.view.length,
+      bindings: [
+        {name: 'source', view: options.view, type: 'u32', access: 'read'},
+        {name: 'copy', view: copy.view, type: 'u32', access: 'read_write'}
+      ],
+      body: `let value = source[sourceOffset + index];
+  var result = value;
+  ${options.transform ?? ''}
+  copy[copyOffset + index] = result;`
+    })
+  );
+  return copy;
+}

@@ -27,6 +27,11 @@ export type CatalogEntry = {
   domains: DomainId[];
   /** The props that matter, at most eight. Names and types must match the source. */
   params: ParamDoc[];
+  /**
+   * Names of required props left out of `params` to stay within the eight-row cap. The function page
+   * adds a final "and N more required" row; the catalog checker verifies each name is a required prop.
+   */
+  moreRequired?: string[];
   outputs: OutputDoc[];
   /** TypeScript, at most 25 lines, using the real public API and import path. */
   example: string;

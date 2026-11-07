@@ -55,7 +55,9 @@ function getDefaultValues(parameters: GpuSceneParameters): ParameterValues {
 
 function formatValue(parameter: GpuSceneParameter, value: number): string {
   const decimals = (String(parameter.step).split('.')[1] ?? '').length;
-  return `${value.toFixed(decimals)}${parameter.unit ?? ''}`;
+  const unit = parameter.unit ?? '';
+  // Words get a space ("4 buildings"); symbols stay attached ("25%", "2°").
+  return `${value.toFixed(decimals)}${/^[A-Za-z]/.test(unit) ? ' ' : ''}${unit}`;
 }
 
 function getTheme(): GpuTheme {
@@ -416,49 +418,74 @@ function GpuControls({
 }: GpuControlsProps): ReactElement {
   const identifier = useId();
   const isChanged = parameters.some(parameter => values[parameter.id] !== parameter.default);
+  // Sliders labelled "Data: ..." vary the synthetic input, not a prop of the operation.
+  const dataParameters = parameters
+    .filter(parameter => parameter.label.startsWith('Data: '))
+    .map(parameter => ({...parameter, label: parameter.label.slice('Data: '.length)}));
+  const propParameters = parameters.filter(parameter => !parameter.label.startsWith('Data: '));
   return (
     <div className="gpu-controls" data-live={isLive ? 'true' : 'false'}>
-      <div className="gpu-controls-sliders">
-        {parameters.map(parameter => {
-          const value = values[parameter.id] ?? parameter.default;
-          const inputId = `${identifier}-${parameter.id}`;
-          if (parameter.options) {
-            return (
-              <div className="gpu-control gpu-control--options" key={parameter.id}>
-                <span id={inputId}>{parameter.label}</span>
-                <div className="gpu-segments" role="group" aria-labelledby={inputId}>
-                  {parameter.options.map((option, index) => (
-                    <button
-                      key={option}
-                      type="button"
-                      aria-pressed={index === Math.round(value)}
-                      disabled={!isLive}
-                      onClick={() => onChange(parameter.id, index)}
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
+      <div className="gpu-controls-groups">
+        {[
+          {title: 'Props', items: propParameters, isData: false},
+          {title: 'Sample data', items: dataParameters, isData: true}
+        ].map(group =>
+          group.items.length === 0 ? null : (
+            <div
+              className="gpu-controls-group"
+              data-group={group.isData ? 'data' : 'props'}
+              key={group.title}
+            >
+              {propParameters.length > 0 && dataParameters.length > 0 ? (
+                <span className="gpu-controls-title">{group.title}</span>
+              ) : null}
+              <div className="gpu-controls-sliders">
+                {group.items.map(parameter => {
+                  const value = values[parameter.id] ?? parameter.default;
+                  const inputId = `${identifier}-${parameter.id}`;
+                  if (parameter.options) {
+                    return (
+                      <div className="gpu-control gpu-control--options" key={parameter.id}>
+                        <span id={inputId}>{parameter.label}</span>
+                        <div className="gpu-segments" role="group" aria-labelledby={inputId}>
+                          {parameter.options.map((option, index) => (
+                            <button
+                              key={option}
+                              type="button"
+                              aria-pressed={index === Math.round(value)}
+                              disabled={!isLive}
+                              onClick={() => onChange(parameter.id, index)}
+                            >
+                              {option}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="gpu-control" key={parameter.id}>
+                      <label htmlFor={inputId}>{parameter.label}</label>
+                      <output htmlFor={inputId}>{formatValue(parameter, value)}</output>
+                      <input
+                        id={inputId}
+                        type="range"
+                        min={parameter.min}
+                        max={parameter.max}
+                        step={parameter.step}
+                        value={value}
+                        disabled={!isLive}
+                        onChange={event =>
+                          onChange(parameter.id, Number(event.currentTarget.value))
+                        }
+                      />
+                    </div>
+                  );
+                })}
               </div>
-            );
-          }
-          return (
-            <div className="gpu-control" key={parameter.id}>
-              <label htmlFor={inputId}>{parameter.label}</label>
-              <output htmlFor={inputId}>{formatValue(parameter, value)}</output>
-              <input
-                id={inputId}
-                type="range"
-                min={parameter.min}
-                max={parameter.max}
-                step={parameter.step}
-                value={value}
-                disabled={!isLive}
-                onChange={event => onChange(parameter.id, Number(event.currentTarget.value))}
-              />
             </div>
-          );
-        })}
+          )
+        )}
       </div>
       <div className="gpu-controls-status">
         <span className="gpu-badge" data-live={isLive ? 'true' : 'false'}>

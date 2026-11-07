@@ -3133,6 +3133,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         description: 'Snap tolerance in position units.'
       }
     ],
+    moreRequired: ['capacity'],
     outputs: [
       {
         name: 'outputs',

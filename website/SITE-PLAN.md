@@ -47,6 +47,7 @@ encode, drawn from a real lens record), `data-on-the-gpu` (columns, chunks, vect
 | Catalog index and pages | `src/catalog/index.ts`, `src/components/catalog/**`, `src/routes/explore*`, `src/routes/explore/**`, `src/routes/fn/**` |
 | How it works | `src/routes/how-it-works*`, `src/routes/how-it-works/**`, `src/components/meta/**`, `src/lens/**` |
 | Flagship live demos | `src/gpu/demos/**` (real analysis operations run on the GPU in the browser) |
+| Live operation runs | `src/gpu/runs/**` (one run per catalog entry; see `src/gpu/runs/README.md`), `public/runs/**` (snapshots) |
 | Lead (contracts) | `SITE-PLAN.md`, `src/catalog/schema.ts`, `src/catalog/taxonomy.ts`, `src/gpu/types.ts`, `vite.config.ts`, `package.json` |
 
 Need a dependency or a contract change? Write it in your final report; the lead applies it.
@@ -55,6 +56,7 @@ design-system owner may restyle the docs route.
 
 ## Shared interfaces
 
+- Hero order on a function page: flagship demo, then the entry's run (`src/gpu/runs/registry.ts`: `hasRun`, `getRunScene`, `getRunParameters`), then the entry-specific preview, then the generic kind.
 - `src/catalog/schema.ts`: `CatalogEntry`, `PreviewSpec`, `PreviewKind`.
 - `src/catalog/taxonomy.ts`: `DATA_TYPES`, `USE_CASES`, `DOMAINS`.
 - `src/catalog/index.ts` (catalog owner): `catalog: CatalogEntry[]`, `getEntry(id)`,

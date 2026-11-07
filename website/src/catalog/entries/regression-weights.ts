@@ -2196,6 +2196,7 @@ export const entries: CatalogEntry[] = [
         required: true
       })
     ],
+    moreRequired: ['parameters'],
     outputs: [
       output('table', "GraphDataView<'float32'>", 'Per coefficient: spread, p-value.'),
       output('summary', "GraphDataView<'float32'>", 'Run summary.'),

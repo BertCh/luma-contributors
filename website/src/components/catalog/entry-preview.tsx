@@ -7,7 +7,8 @@ import type {CatalogEntryReference} from '../../catalog';
 import {GpuCanvas} from '../../gpu/gpu-canvas';
 import {getDemoParameters, getDemoScene} from '../../gpu/demos';
 import {getPreviewParameters, getPreviewScene, PreviewFallback} from '../../gpu/previews';
-import type {GpuSceneParameter} from '../../gpu/types';
+import {getRunParameters, getRunScene} from '../../gpu/runs/registry';
+import type {GpuSceneLoader, GpuSceneParameter} from '../../gpu/types';
 
 export const DEFAULT_PREVIEW_SEED = 7;
 
@@ -60,12 +61,49 @@ function DeferredFallback({children}: {children: ReactNode}) {
   );
 }
 
-/** Slider parameters of an entry's picture: its demo's when it has a demo, else its preview kind's. */
+/** Scene loader of an entry's picture: its flagship demo, else its own run, else the generic scene. */
+export function getEntryScene(entry: CatalogEntryReference): GpuSceneLoader {
+  return (
+    getDemoScene(entry.id) ?? getRunScene(entry.id) ?? getPreviewScene(entry.preview.kind, entry.id)
+  );
+}
+
+/** True when the entry's picture is the output of its own operation (a demo or a run). */
+export function hasOwnPicture(entry: CatalogEntryReference): boolean {
+  return Boolean(getDemoScene(entry.id) ?? getRunScene(entry.id));
+}
+
+/**
+ * Static picture of a run, rendered at build time from the real operation (scripts/snapshot-runs.mjs).
+ * Both themes are in the HTML; CSS shows the one that matches the page theme.
+ */
+function RunSnapshot({entry}: {entry: CatalogEntryReference}) {
+  return (
+    <div className="run-snapshot">
+      {(['dark', 'light'] as const).map(theme => (
+        <img
+          key={theme}
+          className={`run-snapshot-${theme}`}
+          src={`/runs/${entry.id}-${theme}.webp`}
+          width={640}
+          height={360}
+          alt=""
+          loading="lazy"
+          decoding="async"
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Slider parameters of an entry's picture: its demo's, else its run's, else its preview kind's. */
 export function getEntryParameters(entry: CatalogEntryReference): readonly GpuSceneParameter[] {
   if (getDemoScene(entry.id)) {
     return getDemoParameters(entry.symbol) ?? getDemoParameters(entry.id) ?? [];
   }
-  return getPreviewParameters(entry.preview.kind) ?? [];
+  const runParameters = getRunParameters(entry.id);
+  if (runParameters) return runParameters;
+  return getPreviewParameters(entry.preview.kind, entry.id) ?? [];
 }
 
 /** The picture of an entry: its flagship demo when one exists, else the generic scene for its kind. */
@@ -86,7 +124,12 @@ export function EntryPreview({
   interactive?: boolean;
 }) {
   const seed = getEntrySeed(entry);
-  const fallback = <PreviewFallback kind={entry.preview.kind} seed={seed} />;
+  const fallback =
+    !getDemoScene(entry.id) && getRunScene(entry.id) ? (
+      <RunSnapshot entry={entry} />
+    ) : (
+      <PreviewFallback kind={entry.preview.kind} seed={seed} entryId={entry.id} />
+    );
   if (!live) {
     return (
       <div className="entry-preview" style={{aspectRatio, position: 'relative'}}>
@@ -96,7 +139,7 @@ export function EntryPreview({
   }
   return (
     <GpuCanvas
-      scene={getDemoScene(entry.id) ?? getPreviewScene(entry.preview.kind)}
+      scene={getEntryScene(entry)}
       fallback={fallback}
       seed={seed}
       label={`${entry.title}: ${entry.preview.caption ?? entry.summary}`}

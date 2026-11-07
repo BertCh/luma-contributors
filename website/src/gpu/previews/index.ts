@@ -3,7 +3,7 @@
 
 import type {PreviewKind} from '../../catalog/schema.ts';
 import type {GpuSceneLoader, GpuSceneParameters} from '../types.ts';
-import {POINTER_KINDS, PREVIEW_PARAMETERS} from './parameters.ts';
+import {getPointerMode, getPreviewParameterList} from './parameters.ts';
 
 export {PreviewFallback, type PreviewFallbackProps} from './fallback.tsx';
 export {PREVIEW_PARAMETERS} from './parameters.ts';
@@ -41,27 +41,34 @@ export const PREVIEW_KINDS: PreviewKind[] = [
   'cell-cover'
 ];
 
-const loaders = new Map<PreviewKind, GpuSceneLoader>();
+const loaders = new Map<string, GpuSceneLoader>();
 
-/** Loader for the live scene of a preview kind; luma.gl is imported only when it runs. */
-export function getPreviewScene(kind: PreviewKind): GpuSceneLoader {
-  let loader = loaders.get(kind);
+/**
+ * Loader for the live scene of a preview; luma.gl is imported only when it runs. With `entryId`,
+ * the entry's function-specific preview is drawn when it has one.
+ */
+export function getPreviewScene(kind: PreviewKind, entryId?: string): GpuSceneLoader {
+  const key = entryId ? `${kind}:${entryId}` : kind;
+  let loader = loaders.get(key);
   if (!loader) {
     loader = async () => {
       const runtime = await import('./runtime.ts');
-      return {default: runtime.createPreviewScene(kind), parameters: PREVIEW_PARAMETERS[kind]};
+      return {
+        default: runtime.createPreviewScene(kind, entryId),
+        parameters: getPreviewParameterList(kind, entryId)
+      };
     };
-    loaders.set(kind, loader);
+    loaders.set(key, loader);
   }
   return loader;
 }
 
-/** Slider parameters of a preview kind, known without loading luma.gl. Defaults match the fallback. */
-export function getPreviewParameters(kind: PreviewKind): GpuSceneParameters {
-  return PREVIEW_PARAMETERS[kind];
+/** Slider parameters of a preview, known without loading luma.gl. Defaults match the fallback. */
+export function getPreviewParameters(kind: PreviewKind, entryId?: string): GpuSceneParameters {
+  return getPreviewParameterList(kind, entryId);
 }
 
-/** True when the picture of a preview kind also reacts to the pointer. */
-export function isPreviewInteractive(kind: PreviewKind): boolean {
-  return POINTER_KINDS.has(kind);
+/** True when the picture of a preview also reacts to the pointer. */
+export function isPreviewInteractive(kind: PreviewKind, entryId?: string): boolean {
+  return getPointerMode(kind, entryId) !== 'none';
 }

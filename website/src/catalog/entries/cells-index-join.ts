@@ -626,6 +626,7 @@ activeLevel.write(Uint32Array.of(2)); // switch zoom: no recompile`,
       {
         name: 'zScore',
         type: 'GPUCellTableCompareZScore',
+        default: "'poisson' (counts), 'standardized' (sums)",
         description: 'Options for a per-cell z-score column.'
       },
       {
@@ -954,6 +955,7 @@ const compiled = await graph.compileAsync();`,
         description: 'featureIds, cells and status.'
       }
     ],
+    moreRequired: ['polygonOffsets'],
     outputs: [
       {
         name: 'featureIds',

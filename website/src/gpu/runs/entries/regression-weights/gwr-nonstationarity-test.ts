@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// GPUGeographicallyWeightedRegressionNonstationarityTest asks whether each coefficient surface varies
+// more than chance: it compares the spatial standard deviation of the fitted surface (bars) with
+// the same statistic after shuffling locations (dots, the simulated mean). The first slope drifts
+// in the data, so its bar rises above the dots when `drift` is large; the pseudo p-value of every
+// coefficient is drawn below. The regression runs in the same graph.
+
+import {
+  GPUGeographicallyWeightedRegression,
+  GPUGeographicallyWeightedRegressionNonstationarityTest,
+  GPU_GWR_NONSTATIONARITY_SUMMARY,
+  GPU_GWR_NONSTATIONARITY_TABLE_STRIDE,
+  getGPUGeographicallyWeightedRegressionParameterLength,
+  getGPUGeographicallyWeightedRegressionParameterValues,
+  getGPUPermutationParameterValues
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {defineOperationRun} from '../../define-run';
+import {parameters} from './gwr-nonstationarity-test.parameters';
+import {
+  createRegressionInputs,
+  createResponse,
+  drawTractMap,
+  getDriftingCoefficients,
+  MAP_SHARE,
+  uploadRegressionMap
+} from './shared/regression';
+import {addTableColumn} from './shared/weights';
+
+const LADDER_CAPACITY = 4;
+const MAXIMUM_PERMUTATIONS = 32;
+
+export default defineOperationRun({
+  parameters,
+  caption:
+    'Local slope (left); observed variation (bars), shuffled variation (dots), p-values (below).',
+  createInputs: ({random, world}) => createRegressionInputs(random, world, 8, MAP_SHARE, true),
+  build(builder, inputs) {
+    const rowCount = inputs.tracts.count;
+    const positions = builder.upload('positions', 'float32x2', inputs.tracts.centers);
+    const predictors = builder.upload('predictors', 'float32', inputs.predictors);
+    const response = builder.allocate('response', 'float32', rowCount);
+    const bandwidthParameters = builder.allocate(
+      'bandwidth-parameters',
+      'float32',
+      getGPUGeographicallyWeightedRegressionParameterLength(LADDER_CAPACITY)
+    );
+    const permutationParameters = builder.allocate('permutation-parameters', 'uint32', 4);
+    const coefficients = builder.allocate('coefficients', 'float32', rowCount * 3);
+    const selectedBandwidth = builder.allocate('selected-bandwidth', 'float32', 2);
+    builder.graph.add(
+      new GPUGeographicallyWeightedRegression({
+        positions: positions.view,
+        predictors: predictors.view,
+        predictorCount: 2,
+        response: response.view,
+        parameters: bandwidthParameters.view,
+        maximumBandwidthCount: LADDER_CAPACITY,
+        maximumNeighborCount: 32,
+        refinement: false,
+        output: {coefficients: coefficients.view, selectedBandwidth: selectedBandwidth.view}
+      })
+    );
+    const table = builder.allocate('table', 'float32', 3 * GPU_GWR_NONSTATIONARITY_TABLE_STRIDE);
+    builder.graph.add(
+      new GPUGeographicallyWeightedRegressionNonstationarityTest({
+        positions: positions.view,
+        predictors: predictors.view,
+        predictorCount: 2,
+        response: response.view,
+        bandwidthParameters: bandwidthParameters.view,
+        selectedBandwidth: selectedBandwidth.view,
+        coefficients: coefficients.view,
+        parameters: permutationParameters.view,
+        maximumPermutations: MAXIMUM_PERMUTATIONS,
+        maximumBandwidthCount: LADDER_CAPACITY,
+        maximumNeighborCount: 32,
+        output: {
+          table: table.view,
+          summary: builder.allocate('summary', 'float32', GPU_GWR_NONSTATIONARITY_SUMMARY.length)
+            .view,
+          standardDeviations: builder.allocate(
+            'standard-deviations',
+            'float32',
+            (MAXIMUM_PERMUTATIONS + 1) * 3
+          ).view
+        }
+      })
+    );
+    const markerPositions = builder.upload(
+      'marker-positions',
+      'float32',
+      Float32Array.from([0.5 / 3, 1.5 / 3, 2.5 / 3])
+    );
+    return {
+      outputs: {
+        mesh: uploadRegressionMap(builder, inputs),
+        slope: addTableColumn(builder, 'local-slope', coefficients, 3, 1, rowCount),
+        observed: addTableColumn(
+          builder,
+          'observed',
+          table,
+          GPU_GWR_NONSTATIONARITY_TABLE_STRIDE,
+          0,
+          3
+        ),
+        simulated: addTableColumn(
+          builder,
+          'simulated',
+          table,
+          GPU_GWR_NONSTATIONARITY_TABLE_STRIDE,
+          3,
+          3
+        ),
+        pseudoP: addTableColumn(
+          builder,
+          'pseudo-p',
+          table,
+          GPU_GWR_NONSTATIONARITY_TABLE_STRIDE,
+          1,
+          3
+        ),
+        markerPositions
+      },
+      update: current => {
+        response.write(
+          createResponse(inputs, {
+            noise: 0.3,
+            coefficients: getDriftingCoefficients(inputs, current.drift)
+          })
+        );
+        bandwidthParameters.write(
+          getGPUGeographicallyWeightedRegressionParameterValues(
+            {bandwidths: [current.bandwidth], kernel: 'bisquare'},
+            LADDER_CAPACITY
+          )
+        );
+        permutationParameters.write(
+          getGPUPermutationParameterValues({seed: 7, permutationCount: current.permutationCount})
+        );
+      }
+    };
+  },
+  draw: ({inputs, outputs}) => [
+    ...drawTractMap(inputs, outputs.mesh, outputs.slope, {ramp: 'sequential', range: [0, 3.2]}),
+    {
+      layer: 'chart',
+      kind: 'bars',
+      values: outputs.observed,
+      ramp: 'sequential',
+      range: [0, 1],
+      rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]
+    },
+    {
+      layer: 'chart',
+      kind: 'scatter',
+      values: outputs.simulated,
+      xValues: outputs.markerPositions,
+      xRange: [0, 1],
+      range: [0, 1],
+      color: [1, 1, 1, 0.95],
+      radius: 5,
+      rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]
+    },
+    {
+      layer: 'chart',
+      kind: 'bars',
+      values: outputs.pseudoP,
+      range: [0, 1],
+      color: [0.55, 0.65, 0.95, 0.9],
+      rectangle: [MAP_SHARE + 0.08, 0.08, 0.97, 0.34]
+    }
+  ]
+});

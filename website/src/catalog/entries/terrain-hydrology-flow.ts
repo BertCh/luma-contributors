@@ -1471,7 +1471,8 @@ device.submit();`,
       {
         name: 'seedIds',
         type: 'GraphDataView<"uint32"> | undefined',
-        description: 'Seed id per point; defaults to the row index.'
+        default: 'row index',
+        description: 'Seed id per point.'
       },
       {
         name: 'seedMask',
@@ -1857,6 +1858,7 @@ device.submit();`,
         description: 'Caller-owned line and position views.'
       }
     ],
+    moreRequired: ['fieldHeight', 'gridHeight', 'seedRows'],
     outputs: [
       {
         name: 'lines',

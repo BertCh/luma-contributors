@@ -265,7 +265,11 @@ function main(): void {
         ? !isAbstract && (/^GPU[A-Z]/.test(name) || isOperator)
         : (FUNCTION_NAME_PATTERN.test(name) && !LOW_LEVEL_PATTERN.test(name)) || isOperator;
       const isCoreInternal = /\/analysis-core\/(kernels|graph-support|contracts|ring-assembly)\//.test(declarationFile);
-      if (!included || (isCoreInternal && !isOperator)) continue;
+      // Exports tagged @internal in their JSDoc (for example the pointcloud grid-index builder that
+      // GPUPointCloudICP, GPUPointCloudSurfaces and GPUPointCloudNeighborhoods share) are building
+      // blocks of other operations, not operations a reader would call, so they are not catalog symbols.
+      const isMarkedInternal = ts.getJSDocTags(declaration).some(tag => tag.tagName.text === 'internal');
+      if (!included || (isCoreInternal && !isOperator) || isMarkedInternal) continue;
 
       const signature = isClass
         ? checker.getTypeOfSymbolAtLocation(target, declaration).getConstructSignatures()[0]

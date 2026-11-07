@@ -1404,8 +1404,12 @@ export const entries: CatalogEntry[] = [
       makeParam('response', 'GPURasterBand', 'Dependent raster.', {required: true}),
       makeParam('radius', 'number', 'Window radius in pixels.', {required: true}),
       makeParam('minimumCount', 'number', 'Valid pairs needed for a result.'),
-      makeParam('borderMode', '"clamp" | "reflect" | "nodata"', 'How window edges are treated.'),
-      makeParam('covarianceNormalization', '"sample" | "population"', 'Covariance denominator.'),
+      makeParam('borderMode', '"clamp" | "reflect" | "nodata"', 'How window edges are treated.', {
+        default: "'nodata'"
+      }),
+      makeParam('covarianceNormalization', '"sample" | "population"', 'Covariance denominator.', {
+        default: "'sample'"
+      }),
       makeParam('output', 'GPURasterFocalPairsOutput', 'Requested metric rasters.', {
         required: true
       })
@@ -1467,6 +1471,7 @@ export const entries: CatalogEntry[] = [
       makeParam('symmetric', 'boolean', 'Count each pair in both directions.'),
       makeParam('features', FLOAT, 'Seven floats per cell.', {required: true})
     ],
+    moreRequired: ['pairCount'],
     outputs: [
       makeOutput(
         'features',

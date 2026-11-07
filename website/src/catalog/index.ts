@@ -22,7 +22,7 @@ export type {CatalogEntry} from './schema';
 /** Everything about an entry except the detail fields shown only on its function page. */
 export type CatalogEntryReference = Omit<
   CatalogEntry,
-  'explanation' | 'params' | 'outputs' | 'example'
+  'explanation' | 'params' | 'moreRequired' | 'outputs' | 'example'
 >;
 
 export type CatalogSummary = CatalogEntryReference & {

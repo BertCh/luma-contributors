@@ -114,7 +114,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     title: 'Hillshade and streams',
     caption: 'A circling sun (Horn hillshade) and a stream network from depression-filled D8 flow.',
     symbols: ['GPUTerrainDerivatives', 'GPUTerrainFlow'],
-    entryIds: ['terrain-flow', 'slope-aspect-hillshade', 'hillshade'],
+    entryIds: ['terrain-flow'],
     interactive: false,
     parameters: TERRAIN_HYDROLOGY_PARAMETERS,
     aspectRatio: 16 / 9,

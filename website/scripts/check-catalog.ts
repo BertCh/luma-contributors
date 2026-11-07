@@ -8,7 +8,7 @@
 //   node --experimental-strip-types scripts/check-catalog.ts       # check every entry file
 //   node --experimental-strip-types scripts/check-catalog.ts local-moran.ts   # only matching files
 //
-// Errors (exit code 1): duplicate id, unknown symbol, wrong importPath or kind, a param name that
+// Errors (exit code 1): duplicate id, a `moreRequired` name that is not a required prop, unknown symbol, wrong importPath or kind, a param name that
 // is not a prop of the symbol, unknown facet ids, summary over 120 characters, explanation over
 // three sentences, more than eight params, example over 25 lines, unknown related ids, missing
 // lens scenario, unknown reference slug, param or output descriptions over 80 characters, and
@@ -31,8 +31,7 @@ import ts from 'typescript';
 
 const websiteDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const entriesDirectory = join(websiteDirectory, 'src/catalog/entries');
-const REPORT_FILE =
-  '/private/tmp/claude-501/-Users-robertchristie-Documents-GitHub-vis-gl-build-luma-contributors/8b3242ff-688f-4f91-850e-f132a3086553/scratchpad/site2/checker/report.json';
+const REPORT_FILE = join(websiteDirectory, '.reports/catalog-report.json');
 const MINIMUM_OUTPUTS_FOR_QUIET_OPTIONAL = 3;
 
 type InventoryFile = {
@@ -146,6 +145,13 @@ async function main(): Promise<void> {
         }
       }
       const listedParams = new Set((entry.params ?? []).map((param: {name: string}) => param.name));
+      // `moreRequired` names required props that the eight-row cap left out of `params`.
+      for (const name of (entry.moreRequired ?? []) as string[]) {
+        const prop = inventorySymbol.props.find(candidate => candidate.name === name);
+        if (!prop) fail(`moreRequired "${name}" is not a prop of ${entry.symbol}`);
+        else if (prop.optional !== false) fail(`moreRequired "${name}" is not a required prop`);
+        listedParams.add(name);
+      }
       const omittedRequired = inventorySymbol.props.filter(prop => prop.optional === false && prop.name !== 'output' && !listedParams.has(prop.name)).map(prop => prop.name);
       if (omittedRequired.length > 0) warnings.push(`${label}: required props not listed: ${omittedRequired.join(', ')}`);
       for (const param of entry.params ?? []) {

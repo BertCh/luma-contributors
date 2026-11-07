@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {GpuSceneParameter} from '../../../types';
+
+// maximumSpeed and maximumGap are the two rows of the recipe's `thresholds` view.
+export const parameters: GpuSceneParameter[] = [
+  {
+    id: 'maximumSpeed',
+    label: 'thresholds (maximum speed)',
+    min: 0.02,
+    max: 0.4,
+    step: 0.01,
+    default: 0.07
+  },
+  {id: 'maximumGap', label: 'thresholds (maximum gap)', min: 1, max: 10, step: 0.5, default: 3},
+  {id: 'glitchRate', label: 'Data: glitch rate', min: 0, max: 0.15, step: 0.01, default: 0.05}
+];

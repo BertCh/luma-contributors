@@ -23,7 +23,7 @@ import {
 } from './shaders.ts';
 import {
   getDefaultParameterValues,
-  POINTER_KINDS,
+  getPointerMode,
   type PreviewParameterValues
 } from './parameters.ts';
 import {
@@ -514,37 +514,33 @@ function getSceneScale(width: number, height: number): number {
 /** Pointer positions snap to this many scene units, so a rebuild is not triggered by every pixel. */
 const POINTER_QUANTUM = 2;
 
-/** Kinds whose pointer choice (a source or focus node) stays after the pointer leaves. */
-const STICKY_POINTER_KINDS: ReadonlySet<PreviewKind> = new Set<PreviewKind>([
-  'network',
-  'shortest-path',
-  'isochrones',
-  'spatial-weights'
-]);
-
-/** Creates the luma.gl scene for one preview kind. */
-export function createPreviewScene(kind: PreviewKind): GpuScene {
+/** Creates the luma.gl scene for one preview kind, or for an entry's function-specific preview. */
+export function createPreviewScene(kind: PreviewKind, entryId?: string): GpuScene {
   return (context: GpuSceneContext): GpuSceneInstance => {
     const canvasContext = context.device.getDefaultCanvasContext();
     const palette = readPalette();
-    const usesPointer = POINTER_KINDS.has(kind);
+    const pointerMode = getPointerMode(kind, entryId);
+    const usesPointer = pointerMode !== 'none';
     const parameters: PreviewParameterValues = {
-      ...getDefaultParameterValues(kind),
+      ...getDefaultParameterValues(kind, entryId),
       ...context.parameters
     };
     let pointer: Point | null = null;
     let pointerKey = '';
     let isDirty = false;
-    let data = buildPreview(kind, context.seed, parameters, null);
+    let data = buildPreview(kind, context.seed, parameters, null, entryId);
     let renderer = new PreviewRenderer(context.device, data.layers, palette);
-    // Point clouds turn on the CPU: spin integrates every frame, the pointer adds an offset.
+    // Turntables (point clouds) spin on the CPU: spin integrates every frame, the pointer adds an
+    // offset, and the spin and depth parameters need no rebuild.
+    const isTurntable = data.layers.some(layer => layer.type === 'sprites' && layer.turntable);
+    const turntableParameterIds = new Set(['spin', 'depth']);
     let turnAngle = 0;
     let turnOffset = 0;
     let lastSeconds = -1;
 
     const rebuild = () => {
       isDirty = false;
-      const next = buildPreview(kind, context.seed, parameters, pointer);
+      const next = buildPreview(kind, context.seed, parameters, pointer, entryId);
       renderer.destroy();
       data = next;
       renderer = new PreviewRenderer(context.device, data.layers, palette);
@@ -555,15 +551,15 @@ export function createPreviewScene(kind: PreviewKind): GpuScene {
         const [width, height] = canvasContext.getDrawingBufferSize();
         if (width === 0 || height === 0) return;
         const seconds = timeMilliseconds / 1000;
-        if (kind === 'point-cloud') {
+        if (isTurntable) {
           const elapsed = lastSeconds < 0 || context.reducedMotion ? 0 : seconds - lastSeconds;
-          turnAngle += ((parameters.spin * Math.PI) / 180) * elapsed;
+          turnAngle += (((parameters.spin ?? 0) * Math.PI) / 180) * elapsed;
           lastSeconds = seconds;
           // Parameters change only the perspective here, so no rebuild is needed for spin.
           for (const layer of data.layers) {
             if (layer.type === 'sprites' && layer.turntable) {
               layer.turntable.angle = 0.5 + turnAngle + turnOffset;
-              layer.turntable.perspective = parameters.depth / 1000;
+              layer.turntable.perspective = (parameters.depth ?? 4.5) / 1000;
             }
           }
         }
@@ -573,7 +569,7 @@ export function createPreviewScene(kind: PreviewKind): GpuScene {
       setPointer(position) {
         if (!usesPointer) return;
         const [width, height] = canvasContext.getDrawingBufferSize();
-        if (kind === 'point-cloud') {
+        if (isTurntable) {
           turnOffset = position && width > 0 ? (position[0] / width - 0.5) * Math.PI : 0;
           return;
         }
@@ -588,7 +584,7 @@ export function createPreviewScene(kind: PreviewKind): GpuScene {
               POINTER_QUANTUM
           ];
           key = next.join(',');
-        } else if (STICKY_POINTER_KINDS.has(kind)) {
+        } else if (pointerMode === 'sticky') {
           return;
         }
         if (key === pointerKey) return;
@@ -598,8 +594,10 @@ export function createPreviewScene(kind: PreviewKind): GpuScene {
       },
       setParameters(values) {
         Object.assign(parameters, values);
-        // Point clouds read spin and perspective every frame; nothing needs rebuilding.
-        if (kind !== 'point-cloud') isDirty = true;
+        // Turntables read spin and perspective every frame; other parameters rebuild.
+        if (!isTurntable || Object.keys(values).some(id => !turntableParameterIds.has(id))) {
+          isDirty = true;
+        }
       },
       destroy() {
         renderer.destroy();

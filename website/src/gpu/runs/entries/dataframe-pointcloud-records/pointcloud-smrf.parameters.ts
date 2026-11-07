@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import type {GpuSceneParameter} from '../../../types';
+
+// Bound to GPUPointCloudSMRF's `slope`, `window`, `threshold` and `cut` (compile-time).
+export const parameters: GpuSceneParameter[] = [
+  {id: 'slope', label: 'slope', min: 0.02, max: 0.6, step: 0.02, default: 0.15},
+  {id: 'window', label: 'window', min: 0.06, max: 0.6, step: 0.03, default: 0.3},
+  {id: 'threshold', label: 'threshold', min: 0.01, max: 0.15, step: 0.01, default: 0.04},
+  {id: 'cut', label: 'cut', min: 0, max: 0.4, step: 0.04, default: 0.2}
+];

@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// GPULineSegmentize densifies polylines so that no segment is longer than maximumSegmentLength. The
+// original vertices are the coarse context; the output vertices (dots) and lines are what it wrote.
+
+import {
+  getGPULineSegmentizeParameterValues,
+  GPULineSegmentize
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {defineOperationRun} from '../../define-run';
+import {
+  addPackedSegments,
+  allocateLineOutput,
+  createLineSet,
+  createPackedSegments,
+  OUTPUT_COLOR
+} from './shared/lines';
+import {parameters} from './line-segmentize.parameters';
+
+export default defineOperationRun({
+  parameters,
+  caption: 'Lines densified to a maximum segment length; dots are the vertices written.',
+  createInputs: ({random, world}) => createLineSet(random, world, 4, 5, 3),
+  build(builder, lines, values) {
+    const closedLines = values.closedLines === 1;
+    const positions = builder.upload('positions', 'float32x2', lines.positions);
+    const lineOffsets = builder.upload('line-offsets', 'uint32', lines.lineOffsets);
+    const result = allocateLineOutput(builder, 'segmentized', 4000, lines.lineCount);
+    const parameterBuffer = builder.allocate('segmentize-parameters', 'float32', 4);
+    builder.graph.add(
+      new GPULineSegmentize({
+        positions: positions.view,
+        lineOffsets: lineOffsets.view,
+        closedLines,
+        parameters: parameterBuffer.view,
+        output: result.output
+      })
+    );
+    const drawing = addPackedSegments(
+      builder,
+      'segmentized',
+      result.positions,
+      result.lineOffsets,
+      {
+        closed: closedLines,
+        lineCount: result.lineCount
+      }
+    );
+    const originalPoints = builder.upload('original-points', 'float32x2', lines.positions);
+    const original = builder.upload(
+      'original',
+      'float32x4',
+      createPackedSegments(lines.positions, lines.lineOffsets, closedLines)
+    );
+    return {
+      outputs: {original, originalPoints, ...drawing},
+      update: current =>
+        parameterBuffer.write(
+          getGPULineSegmentizeParameterValues({maximumSegmentLength: current.maximumSegmentLength})
+        )
+    };
+  },
+  rebuildOn: ['closedLines'],
+  draw: ({outputs}) => [
+    {layer: 'lines', context: true, segments: outputs.original},
+    {layer: 'dots', context: true, positions: outputs.originalPoints, radius: 6},
+    {layer: 'lines', segments: outputs.segments, color: OUTPUT_COLOR},
+    {layer: 'dots', positions: outputs.points, radius: 3.6, color: OUTPUT_COLOR}
+  ]
+});

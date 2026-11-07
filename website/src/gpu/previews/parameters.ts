@@ -6,6 +6,7 @@
 
 import type {PreviewKind} from '../../catalog/schema.ts';
 import type {GpuSceneParameter} from '../types.ts';
+import {getEntryPreview} from './entries/index.ts';
 
 export type PreviewParameterValues = Record<string, number>;
 
@@ -137,8 +138,34 @@ export const POINTER_KINDS: ReadonlySet<PreviewKind> = new Set<PreviewKind>([
   'point-cloud'
 ]);
 
-export function getDefaultParameterValues(kind: PreviewKind): PreviewParameterValues {
+/** Slider parameters of a preview: the entry's own when it declares them, else its kind's. */
+export function getPreviewParameterList(kind: PreviewKind, entryId?: string): GpuSceneParameter[] {
+  return (entryId && getEntryPreview(entryId)?.parameters) || PREVIEW_PARAMETERS[kind];
+}
+
+/** How a preview reacts to the pointer: the entry's own mode when set, else its kind's. */
+export function getPointerMode(kind: PreviewKind, entryId?: string): 'none' | 'hover' | 'sticky' {
+  const mode = entryId ? getEntryPreview(entryId)?.pointer : undefined;
+  if (mode) return mode;
+  if (!POINTER_KINDS.has(kind)) return 'none';
+  return STICKY_POINTER_KINDS.has(kind) ? 'sticky' : 'hover';
+}
+
+/** Kinds whose pointer choice (a source or focus node) stays after the pointer leaves. */
+export const STICKY_POINTER_KINDS: ReadonlySet<PreviewKind> = new Set<PreviewKind>([
+  'network',
+  'shortest-path',
+  'isochrones',
+  'spatial-weights'
+]);
+
+export function getDefaultParameterValues(
+  kind: PreviewKind,
+  entryId?: string
+): PreviewParameterValues {
   const values: PreviewParameterValues = {};
-  for (const parameter of PREVIEW_PARAMETERS[kind]) values[parameter.id] = parameter.default;
+  for (const parameter of getPreviewParameterList(kind, entryId)) {
+    values[parameter.id] = parameter.default;
+  }
   return values;
 }

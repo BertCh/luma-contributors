@@ -14,7 +14,7 @@ const SUMMARIES_ID = 'virtual:catalog-summaries';
 const RESOLVED_SUMMARIES_ID = `\0${SUMMARIES_ID}`;
 
 /** Fields kept out of the summaries; they are only needed on the function page. */
-const DETAIL_FIELDS = ['explanation', 'params', 'outputs', 'example'] as const;
+const DETAIL_FIELDS = ['explanation', 'params', 'moreRequired', 'outputs', 'example'] as const;
 
 export function catalogPlugin({entriesDirectory}: {entriesDirectory: string}): Plugin {
   return {

@@ -5,7 +5,12 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check-catalog": "node --experimental-strip-types scripts/check-catalog.ts",
+    "verify-runs": "node scripts/verify-runs.mjs",
+    "snapshot-runs": "node scripts/snapshot-runs.mjs",
+    "check-pages": "node scripts/check-all-pages.mjs"
   },
   "dependencies": {
     "@luma-contributors/analysis": "workspace:*",

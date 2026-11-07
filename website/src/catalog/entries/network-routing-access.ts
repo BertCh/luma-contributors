@@ -1350,6 +1350,7 @@ const recipe = addNetworkDisruptionRecipe(graph, {
       {
         name: 'bandCapacity',
         type: 'number | undefined',
+        default: 'costBreaks.length',
         description: 'Maximum number of bands reported.'
       },
       {
@@ -3623,6 +3624,7 @@ graph.add(new GPUNetworkKFunction({
         description: "Denominator: 'network-length' or 'inverse-intensity'."
       }
     ],
+    moreRequired: ['nodeCount'],
     outputs: [
       {name: 'k', type: "GraphDataView<'float32'>", description: 'Inhomogeneous K per radius.'},
       {

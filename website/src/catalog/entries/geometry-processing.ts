@@ -1993,7 +1993,9 @@ export const entries: CatalogEntry[] = [
           default: '[256, 256]'
         }
       ),
-      makeParam('crossingCapacity', 'number | undefined', 'Raster crossing capacity.'),
+      makeParam('crossingCapacity', 'number | undefined', 'Raster crossing capacity.', {
+        default: '4 * samplingGrid[1] * ringCount'
+      }),
       makeParam(
         'output',
         '{ summary?: GraphDataView<"float32"> | undefined; } | undefined',

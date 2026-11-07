@@ -51,6 +51,32 @@
   border-radius: 0 0 var(--radius-medium) var(--radius-medium);
 }
 
+.gpu-controls-groups {
+  display: flex;
+  flex: 1 1 280px;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gpu-controls-title {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gpu-controls-group[data-group='props'] .gpu-control label,
+.gpu-controls-group[data-group='props'] .gpu-control--options > span {
+  color: var(--color-text);
+  font-family: var(--font-code);
+}
+
+.gpu-controls-group[data-group='data'] .gpu-control {
+  opacity: 0.75;
+}
+
 .gpu-controls-sliders {
   display: grid;
   flex: 1 1 280px;

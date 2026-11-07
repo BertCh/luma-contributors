@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// GPURankMarkov replaces values by their rank in each period and counts rank-to-rank moves.
+// Left: the rank of each tract in one period. Right: the transition probabilities between ranks
+// (a bright diagonal means stable ranks) and, below, the rank mobility of each period step.
+
+import {GPURankMarkov} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {defineOperationRun} from '../../define-run';
+import {parameters} from './rank-markov.parameters';
+import {addSlice} from './support/gather';
+import {createDynamics, createMatrixMesh, PERIOD_COUNT, uploadMatrixMesh} from './support/dynamics';
+import {uploadTractMesh} from './support/geometry';
+
+export default defineOperationRun({
+  parameters,
+  caption: 'Rank transitions between periods and the mobility of each step.',
+  createInputs: ({random, world}) => ({...createDynamics(random, world, 7), world}),
+  build(builder, {tracts, values, world}, current) {
+    const placeCount = Math.min(tracts.count, 64);
+    // GPURankMarkov handles at most 64 places; keep the first 64 (the mesh draws them all).
+    const kept = Float32Array.from(
+      {length: placeCount * PERIOD_COUNT},
+      (_, index) => values[Math.floor(index / placeCount) * tracts.count + (index % placeCount)]
+    );
+    const ranks = builder.allocate('ranks', 'uint32', kept.length);
+    const probabilities = builder.allocate('probabilities', 'float32', placeCount * placeCount);
+    const mobility = builder.allocate('mobility', 'float32', PERIOD_COUNT - 1);
+    builder.graph.add(
+      new GPURankMarkov({
+        values: builder.upload('values', 'float32', kept).view,
+        periodCount: PERIOD_COUNT,
+        mode: current.mode === 0 ? 'full-rank' : 'geographic-rank',
+        tieOrder: current.tieOrder === 0 ? 'giddy' : 'row-id',
+        output: {
+          ranks: ranks.view,
+          mobility: mobility.view,
+          counts: builder.allocate('counts', 'uint32', placeCount * placeCount).view,
+          probabilities: probabilities.view
+        }
+      })
+    );
+    const matrix = createMatrixMesh(placeCount, placeCount, [
+      world.width * 0.58,
+      0.27,
+      world.width * 0.97,
+      0.92
+    ]);
+    const mesh = uploadTractMesh(builder, tracts);
+    // Tracts past the first 64 reuse the last place's rank.
+    mesh.owners.write(
+      Uint32Array.from(
+        tracts.triangleOwners,
+        owner => Math.min(owner, placeCount - 1) + current.period * placeCount
+      )
+    );
+    return {
+      outputs: {
+        ranks: addSlice(builder, ranks, 0, ranks.length, 'rank-values'),
+        probabilities,
+        mobility,
+        placeCount,
+        matrixMesh: uploadMatrixMesh(builder, matrix, 'matrix'),
+        ...mesh
+      }
+    };
+  },
+  draw: ({inputs, outputs, world}) => [
+    {
+      layer: 'polygons',
+      positions: outputs.vertices,
+      indices: outputs.indices,
+      owners: outputs.owners,
+      values: outputs.ranks,
+      triangleCount: inputs.tracts.triangleCount,
+      ramp: 'sequential',
+      range: [0, outputs.placeCount - 1]
+    },
+    {
+      layer: 'polygons',
+      positions: outputs.matrixMesh.vertices,
+      indices: outputs.matrixMesh.indices,
+      owners: outputs.matrixMesh.owners,
+      values: outputs.probabilities,
+      triangleCount: outputs.matrixMesh.triangleCount,
+      range: [0, 0.5]
+    },
+    {
+      layer: 'chart',
+      kind: 'bars',
+      values: outputs.mobility,
+      range: 'auto',
+      rectangle: [(world.width * 0.58) / world.width, 0.05, 0.97, 0.2],
+      ramp: 'sequential'
+    }
+  ]
+});

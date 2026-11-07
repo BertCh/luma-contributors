@@ -1233,6 +1233,7 @@ ${COMPILE_AND_ENCODE}
         description: 'Packed rgba8 palette, usually diverging.'
       }
     ],
+    moreRequired: ['maximumClassCount', 'colorScaleParameters', 'maximumPaletteCount'],
     outputs: [
       {
         name: 'comparison',
@@ -3793,6 +3794,7 @@ ${COMPILE_AND_ENCODE}`,
         description: 'Maximum (track, partner, bucket) hits.'
       }
     ],
+    moreRequired: ['bounds'],
     outputs: [
       {
         name: 'samples',

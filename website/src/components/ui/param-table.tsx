@@ -3,7 +3,7 @@
 
 import type {OutputDoc, ParamDoc} from '../../catalog/schema';
 
-export function ParamTable({params}: {params: ParamDoc[]}) {
+export function ParamTable({params, moreRequired}: {params: ParamDoc[]; moreRequired?: string[]}) {
   // The column only appears when at least one prop documents a default.
   const hasDefaults = params.some(param => param.default);
   return (
@@ -38,6 +38,19 @@ export function ParamTable({params}: {params: ParamDoc[]}) {
             <td>{param.description}</td>
           </tr>
         ))}
+        {moreRequired && moreRequired.length > 0 ? (
+          <tr>
+            <td colSpan={hasDefaults ? 4 : 3}>
+              and {moreRequired.length} more required:{' '}
+              {moreRequired.map((name, index) => (
+                <span key={name}>
+                  {index > 0 ? ', ' : null}
+                  <code>{name}</code>
+                </span>
+              ))}
+            </td>
+          </tr>
+        ) : null}
       </tbody>
     </table>
   );

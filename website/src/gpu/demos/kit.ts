@@ -200,7 +200,7 @@ export function getWorldPosition(
 // ---------------------------------------------------------------------------------------------
 // Layers
 
-const PALETTE_STRUCT = /* wgsl */ `
+export const PALETTE_STRUCT = /* wgsl */ `
 struct Look {
   scale: vec2f,
   world: vec2f,
@@ -216,7 +216,7 @@ struct Look {
   background: vec4f,
   light: vec4f,
   stops: array<vec4f, 6>,
-  colors: array<vec4f, 8>,
+  colors: array<vec4f, 16>,
   // x: curve (0 linear, 1 log2), y: fade alpha with value (0 or 1), z: quantize to this many bands
   extra: vec4f
 };
@@ -232,13 +232,22 @@ fn sampleRamp(position: f32) -> vec3f {
   return mix(look.stops[index].rgb, look.stops[index + 1u].rgb, scaled - f32(index));
 }
 
-// mode 0: sequential ramp, 1: diverging ramp (range is symmetric about zero), 2: categorical.
+// mode 0: sequential ramp, 1: diverging ramp (range is symmetric about zero), 2: categorical,
+// 3: cyclic hue wheel (angles).
 fn colorize(value: f32) -> vec4f {
   if (!isValid(value)) {
     return vec4f(look.background.rgb, 0.0);
   }
+  if (look.mode > 2.5) {
+    // Cyclic hue wheel for angles: the range spans one full turn; values below it are muted.
+    if (value < look.range.x) {
+      return vec4f(look.background.rgb, 0.0);
+    }
+    let turn = fract((value - look.range.x) / max(look.range.y - look.range.x, 1.0e-6));
+    return vec4f(0.55 + 0.4 * cos(6.28318 * (turn + vec3f(0.0, 0.3333, 0.6667))), 1.0);
+  }
   if (look.mode > 1.5) {
-    let index = u32(clamp(round(value), 0.0, 7.0));
+    let index = u32(clamp(round(value), 0.0, 15.0));
     return vec4f(look.colors[index].rgb, look.colors[index].a);
   }
   var shaped = value;
@@ -266,18 +275,18 @@ fn readValue(index: u32) -> f32 {
 }
 `;
 
-// Unsigned labels: wrapped into 8 categories; 0xffffffff (noise or unreached) reads as invalid.
+// Unsigned labels: wrapped into 16 categories; 0xffffffff (noise or unreached) reads as invalid.
 const UINT_VALUES = (binding: number) => /* wgsl */ `
 @group(0) @binding(${binding}) var<storage, read> values: array<u32>;
 fn readValue(index: u32) -> f32 {
   let raw = values[index];
-  return select(f32(raw % 8u), 1.0e30, raw == 0xffffffffu);
+  return select(f32(raw % 16u), 1.0e30, raw == 0xffffffffu);
 }
 `;
 
 export type ValueFormat = 'float32' | 'uint32';
 
-function getValues(format: ValueFormat, binding: number): string {
+export function getValues(format: ValueFormat, binding: number): string {
   return format === 'uint32' ? UINT_VALUES(binding) : FLOAT_VALUES(binding);
 }
 
@@ -580,9 +589,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 }
 `;
 
-const LOOK_FLOATS = 84;
+export const LOOK_FLOATS = 116;
 
-const ALPHA_BLEND = {
+export const ALPHA_BLEND = {
   blend: true,
   blendColorOperation: 'add',
   blendColorSrcFactor: 'src-alpha',
@@ -593,8 +602,8 @@ const ALPHA_BLEND = {
 } as const;
 
 export type LookOptions = {
-  /** 0 sequential, 1 diverging, 2 categorical, -1 solid color from `solid`. */
-  mode?: 0 | 1 | 2 | -1;
+  /** 0 sequential, 1 diverging, 2 categorical, 3 cyclic, -1 solid color from `solid`. */
+  mode?: 0 | 1 | 2 | 3 | -1;
   /** Value range mapped to the ramp. */
   range?: readonly [number, number];
   /** Dot radius or segment half width in canvas pixels. */
@@ -675,11 +684,11 @@ abstract class DemoLayer {
       values.set([...ramp[Math.min(index, ramp.length - 1)], 1], 24 + index * 4);
     }
     const categories = options.categories ?? theme.categories;
-    for (let index = 0; index < 8; index++) {
+    for (let index = 0; index < 16; index++) {
       const color = categories[index % categories.length];
       values.set([color[0], color[1], color[2], color.length === 4 ? color[3] : 1], 48 + index * 4);
     }
-    values.set([options.logarithmic ? 1 : 0, options.fade ? 1 : 0, options.bands ?? 0, 0], 80);
+    values.set([options.logarithmic ? 1 : 0, options.fade ? 1 : 0, options.bands ?? 0, 0], 112);
     this.lookBuffer.write(values);
   }
 
@@ -812,7 +821,7 @@ export function drawLayers(device: Device, theme: DemoTheme, layers: readonly De
   device.submit();
 }
 
-export type {DemoLayer};
+export {DemoLayer};
 
 /**
  * Coalesces redraw requests to one per animation frame. Controls call `request()`; the scene's own

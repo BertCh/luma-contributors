@@ -12,8 +12,8 @@ import {OutputTable, ParamTable} from '../ui/param-table';
 import {Section} from '../ui/section';
 import {DataFlow} from './data-flow';
 import {EntryGrid} from './entry-grid';
-import {getDemoScene} from '../../gpu/demos';
-import {EntryPreview} from './entry-preview';
+import {getRunLegend} from '../../gpu/runs/registry';
+import {EntryPreview, hasOwnPicture} from './entry-preview';
 
 /** Preview kinds drawn from the function's own parameters, not a generic stand-in. */
 const BESPOKE_PREVIEW_KINDS: ReadonlySet<string> = new Set(['affine-transform', 'cell-cover']);
@@ -65,11 +65,13 @@ export function FunctionPage({
     entry.dataTypes.input.find(id => id !== 'table') ?? entry.dataTypes.input[0] ?? 'table';
   const importLine = `import {${entry.symbol}} from '${entry.importPath}';`;
   const hasImport = entry.example.includes(entry.importPath);
-  // Generic scenes per preview kind are stand-ins; only demos and bespoke previews run the function.
+  // Generic scenes per preview kind are stand-ins; demos, runs and bespoke previews run the function.
   const illustrativeNote =
-    getDemoScene(entry.id) || BESPOKE_PREVIEW_KINDS.has(entry.preview.kind)
+    hasOwnPicture(entry) || BESPOKE_PREVIEW_KINDS.has(entry.preview.kind)
       ? null
       : "Illustrative scene, not this function's output.";
+
+  const legend = getRunLegend(entry.id);
 
   return (
     <main className="page function-page">
@@ -85,8 +87,23 @@ export function FunctionPage({
         </Link>
       </nav>
 
+      <header className="function-title">
+        <h1>{entry.title}</h1>
+        <p className="lead">{entry.summary}</p>
+      </header>
+
       <div className="function-visual">
         <EntryPreview entry={entry} aspectRatio={16 / 9} controls interactive />
+        {legend ? (
+          <ul className="function-legend" aria-label="Key">
+            {legend.map(item => (
+              <li key={item.label}>
+                <span className="function-legend-swatch" style={{background: item.color}} />
+                {item.label}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {entry.preview.caption || illustrativeNote ? (
           <p className="function-caption">
             {entry.preview.caption}
@@ -97,8 +114,6 @@ export function FunctionPage({
       </div>
 
       <header className="function-header">
-        <h1>{entry.title}</h1>
-        <p className="lead">{entry.summary}</p>
         <div className="function-meta">
           <DataFlow input={entry.dataTypes.input} output={entry.dataTypes.output} />
           <div className="function-facets">
@@ -119,7 +134,7 @@ export function FunctionPage({
 
       {entry.params.length > 0 ? (
         <Section title="Parameters">
-          <ParamTable params={entry.params} />
+          <ParamTable params={entry.params} moreRequired={entry.moreRequired} />
         </Section>
       ) : null}
 

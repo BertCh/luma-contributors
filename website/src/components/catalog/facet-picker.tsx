@@ -17,8 +17,11 @@ export function FacetPicker({
   counts: FacetCounts;
   onSelect: (kind: FacetKind, id: string | undefined) => void;
 }) {
-  // Rows are open on desktop; on phones they start collapsed to a labelled summary line.
-  const [collapsed, setCollapsed] = useState<Partial<Record<FacetKind, boolean>>>({});
+  // The data row starts open; use and domain start collapsed (and so does data on phones).
+  const [collapsed, setCollapsed] = useState<Partial<Record<FacetKind, boolean>>>({
+    use: true,
+    domain: true
+  });
   useEffect(() => {
     if (window.matchMedia('(max-width: 640px)').matches) {
       setCollapsed({data: true, use: true, domain: true});

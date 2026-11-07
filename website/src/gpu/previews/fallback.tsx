@@ -187,12 +187,14 @@ function renderLayer(layer: PreviewLayer, key: number, gradientPrefix: string): 
 export type PreviewFallbackProps = {
   kind: PreviewKind;
   seed?: number;
+  /** Catalog entry id; draws the entry's function-specific preview when it has one. */
+  entryId?: string;
 };
 
 /** Static SVG picture of a preview kind; fills its container. */
-export function PreviewFallback({kind, seed = 1}: PreviewFallbackProps): ReactElement {
+export function PreviewFallback({kind, seed = 1, entryId}: PreviewFallbackProps): ReactElement {
   const gradientPrefix = `glow${useId().replace(/:/g, '')}`;
-  const data = buildPreview(kind, seed);
+  const data = buildPreview(kind, seed, {}, null, entryId);
   const roles = Object.keys(ROLE_COLORS) as Role[];
   return (
     <svg

@@ -457,7 +457,7 @@ function KernelsPage({topic}: {topic: Topic; models: TopicModels}) {
   return (
     <TopicShell topic={topic}>
       <Section title="Invocations, workgroups, elements">
-        <Figure caption="Each tile is one invocation and the pixel it owns, colored by workgroup. Abridged from GPUTerrainRGBDecode; the library picks the workgroup size itself, so the slider is a teaching knob. Hover a workgroup to light its lines.">
+        <Figure caption="Each tile is one invocation and the pixel it owns, colored by workgroup. The full WGSL of GPUTerrainRGBDecode as the library emits it, scrollable; the library picks the workgroup size itself, so the slider is a teaching knob. Hover a workgroup to light its lines.">
           <KernelDemo />
         </Figure>
       </Section>
