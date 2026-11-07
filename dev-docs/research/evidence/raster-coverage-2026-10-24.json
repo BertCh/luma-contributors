@@ -1,0 +1,2611 @@
+{
+  "metadata": {
+    "schemaVersion": 1,
+    "seed": 1592598566,
+    "recordedAt": "2026-10-24T05:23:39.116Z",
+    "sourceRevision": "e6375c5d683ee8a6289789f07ea8e24e7b87c21e",
+    "sourceState": "raster-performance-source-manifest",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "hardwareConcurrency": 12,
+    "device": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "max",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "limits": {
+      "maxBufferSize": 4294967292,
+      "maxStorageBufferBindingSize": 4294967292,
+      "maxStorageBuffersPerShaderStage": 10,
+      "maxComputeWorkgroupStorageSize": 32768,
+      "maxComputeInvocationsPerWorkgroup": 1024
+    },
+    "timestampQueriesAvailable": true,
+    "method": {
+      "warmupEncodesAfterFirst": 1,
+      "repeatedSamples": 5,
+      "updatedSamples": 3,
+      "executionClock": "CPU encode + submit + queue completion; excludes output/timestamp readback",
+      "compileClock": "synchronous graph.compile; deferred pipeline compilation may appear in first execution",
+      "gpuClock": "separate profiled executions sum node timestamp durations when available; normal wall-clock repetitions remain unprofiled",
+      "uploadClock": "buffer.write calls + queue completion, excludes allocation",
+      "cpuReference": "independent JavaScript correctness oracles; single run, not optimized library throughput",
+      "memory": "graph allocated transient resources; not driver/process peak memory",
+      "cache": "shared test device; pipeline caches are not cleared; first execution is not a guaranteed cold-driver measurement",
+      "envelope": "bounded workload observations only; no latency threshold or speed advantage is asserted",
+      "timestampProfiledSamplesPerState": 1,
+      "cpuReferenceCaveat": "Registration and unmixing reference durations measure analytic validation only; other workloads use simple independent CPU reductions/solves, not optimized native libraries."
+    },
+    "sourceManifestScope": "SHA256 of raster runtime and benchmark TypeScript files; other dependencies identified by sourceRevision and working-tree integration. Manifest identifies source bytes, not a claim that revision was clean.",
+    "result": "20 of 20 workload records completed and checked; Vitest 1 benchmark test passed",
+    "unavailable": [
+      "driver peak memory",
+      "optimized CPU library throughput",
+      "cross-device evidence"
+    ]
+  },
+  "sourceManifest": {
+    "modules/graph/src/gpu-raster/change-detection/change-detection-parameters.ts": "3268511d8ed4769415bc5e049da29c89bd48f259d5e74ad0df9c5ecef5f8f3f5",
+    "modules/graph/src/gpu-raster/change-detection/change-detection-wgsl.ts": "a1070eba486b1a0ad6f01617835fdb29221a35bedda05f0e450a099d5d14bef7",
+    "modules/graph/src/gpu-raster/change-detection/gpu-change-detection.ts": "2745dc870b593ed6ee22afc74ea0ace0ec468d14dfbf6c33210babf93079146c",
+    "modules/graph/src/gpu-raster/change-detection/index.ts": "d596b611874f1f4e4bfac11b95451974a20a0e8cd0787a67718a3e32fcf36852",
+    "modules/graph/src/gpu-raster/computation-pack/create-raster-pack.ts": "49a3a1630ded584a207a57a6bc0f4790dfefd77b6b560d538884da23fb95ff11",
+    "modules/graph/src/gpu-raster/computation-pack/guards.ts": "10c6da9d4f5e8f81e97b7e1b86a58ffdfa14f9bae995b23d307e998a24029013",
+    "modules/graph/src/gpu-raster/computation-pack/index.ts": "32f32d2097436061ed8deb058dd10363bce57871a19d58699fa62dc96027da31",
+    "modules/graph/src/gpu-raster/computation-pack/operators/algebra.ts": "f2e5e12bdb61e951c89d864a907e66d92f8aa115cf29bb710391478ca04a9687",
+    "modules/graph/src/gpu-raster/computation-pack/operators/cost-distance.ts": "1d4c2ccb5bfdc64d87c10ffc7ae76c6008bf545f217733db07de89ae8282e19c",
+    "modules/graph/src/gpu-raster/computation-pack/operators/coverage-expansion.ts": "f9692c5bc149dac66977e829ae29d566a71bd1af838e8f0d89773eb78c6d85de",
+    "modules/graph/src/gpu-raster/computation-pack/operators/coverage-tranche-one.ts": "c34295db881a1e30e4346198d128d95cb40eb4cf338260c0d044620c067d7760",
+    "modules/graph/src/gpu-raster/computation-pack/operators/expansion.ts": "2c66f479f195e452ec81ad111aff4a6f4f4be3ce9a8a28b456e31a3b3089dd69",
+    "modules/graph/src/gpu-raster/computation-pack/operators/isolines.ts": "980619471739cb17ef3b49074d59ff04d5d4956b1c3893227f608bd3e73963cf",
+    "modules/graph/src/gpu-raster/computation-pack/operators/regions.ts": "28af0e196c621dd6619d2f2c21ddc30ddd744472449f0b267bf4d369281c0d77",
+    "modules/graph/src/gpu-raster/computation-pack/operators/sampling.ts": "ee155f267a75734f4f8974963040ed60f15f230999cf8619dbb1032b6664f979",
+    "modules/graph/src/gpu-raster/computation-pack/operators/vector-field.ts": "31cef5edb74f6352e51b2d0efbafd98e0323d0ddfb1b6a469123880b65ce10ba",
+    "modules/graph/src/gpu-raster/computation-pack/operators/zones.ts": "f7ef57345ca88b448e00c660fd18840feaca08a9a7b385d46b115025222664ca",
+    "modules/graph/src/gpu-raster/computation-pack/types.ts": "3fbfff0352d1cbf6cd7e2e38f8b05e7454c083965b2f1b2dfe327b107c2efd75",
+    "modules/graph/src/gpu-raster/cost-distance/gpu-cost-distance-path.ts": "41804afe870ead142bc2afd6f5f077be33ba2ffae4da8d4772c42fa0096dec0f",
+    "modules/graph/src/gpu-raster/cost-distance/gpu-cost-distance.ts": "9c774581e37fdf8902ad5916e5df175d6174f5722f170b769ca4504f29ab8406",
+    "modules/graph/src/gpu-raster/cost-distance/index.ts": "25bd7070a931a4185fccaaa11db7b530812fd7d95671e5cb6acf736f3895b7e5",
+    "modules/graph/src/gpu-raster/cost-distance/raster-grid-utils.ts": "6bf10c5a1272bf7105379d10d5887914e973e60eae796b873b6abee2a04289a0",
+    "modules/graph/src/gpu-raster/cost-distance/raster-relaxation.ts": "0805679b3c0c7aba0b90cc91774b0e91db5835408435538e53b1c223bfec8737",
+    "modules/graph/src/gpu-raster/distance-field/distance-field-kernels.ts": "5c3f622753dcaed2dc3d25d26ca9862249c74d27a12765a8f060e37339082a2e",
+    "modules/graph/src/gpu-raster/distance-field/distance-field-parameters.ts": "ebc9e045a94f9d202ae44dfbfaec55861e553bbee0041f1464428ff8327f37c8",
+    "modules/graph/src/gpu-raster/distance-field/gpu-distance-field.ts": "ef91f0a3268c1d1be0737fa704261a26e55a99b42111aaa29736a12c6e2c784a",
+    "modules/graph/src/gpu-raster/distance-field/index.ts": "8187fd1bffbabb0eea5ec8190c032a4a790019edf970d77c661424d4d26bc7bd",
+    "modules/graph/src/gpu-raster/flow-texture/gpu-line-integral-convolution.ts": "f65a9e441bc4eb7385131a2ac63421d7f61e8b8db592751db6af8afc4c618259",
+    "modules/graph/src/gpu-raster/flow-texture/gpu-streamlines.ts": "ef70b2d914321ac6a31c9653a46d2273d0ecb24badfeae0155596cf0f3009005",
+    "modules/graph/src/gpu-raster/flow-texture/index.ts": "97e740067bd20a97a0ac802ed2ff2c8cab8b77bf6ca21d06afb38872d80ac46b",
+    "modules/graph/src/gpu-raster/flow-texture/line-integral-convolution-cpu.ts": "d7d7a9ba76d49b0405d70ce04245b24beb5dac6e91b7b07ebded8e5b30aabb3a",
+    "modules/graph/src/gpu-raster/flow-texture/line-integral-convolution-parameters.ts": "64ac6e471bacbbe299adbc2d19b89fa10b685ec952469393ac9e3f5aac69174e",
+    "modules/graph/src/gpu-raster/flow-texture/streamlines-cpu.ts": "685848373b0e71ad0e5b17d4d97dc50d522b328766f6ce61fe1390a4de47c45a",
+    "modules/graph/src/gpu-raster/flow-texture/streamlines-parameters.ts": "50b6fc9a70262941a84dd60fd983c7529c7a98a83105118a8d3678cb2f073a97",
+    "modules/graph/src/gpu-raster/focal-pairs/gpu-raster-focal-pairs.ts": "359e879c3469817659c36dc7b5f86c3940700ceb14a10c714f13e288e6a4cdd0",
+    "modules/graph/src/gpu-raster/focal-pairs/index.ts": "0f3be87e64e121597b580b07b539671b5cfb004447fb1de964e1db0689526059",
+    "modules/graph/src/gpu-raster/focal-pairs/raster-focal-pairs-wgsl.ts": "5ea58599d9e91405bfb1157aadc37fa731cb40bd4c7d70661de00a7a5059423d",
+    "modules/graph/src/gpu-raster/gpu-raster-band-math.ts": "09922078db95d190776ef25b8cf9576a045efee4189fbe296e94839def5ab0d2",
+    "modules/graph/src/gpu-raster/gpu-raster-buffer-to-texture.ts": "6c75c7ed4a60975c7603de8d7d5eba4901cfc1944bad62a8765967d6d1733b80",
+    "modules/graph/src/gpu-raster/gpu-raster-connected-components.ts": "cf6a5deb0877be6215ba822425875766d4a94b33d52b6203bc35d1ac3471ab42",
+    "modules/graph/src/gpu-raster/gpu-raster-contours.ts": "6826591c79f5050ea216e802893b95b1147d8a1cf4f9760b2d0da8025ef4d4fa",
+    "modules/graph/src/gpu-raster/gpu-raster-contrast.ts": "90a12f12bace655929aa57f80fdd2d01544ceac66fb923fb76800b05b4110a18",
+    "modules/graph/src/gpu-raster/gpu-raster-convolution.ts": "2b8f1f94987c1e023e7905d6ee7100c7b2aa3c4b88e2111e393c8edb3eda39cb",
+    "modules/graph/src/gpu-raster/gpu-raster-cross-tile-components.ts": "cde1d0c4be3362193c422ed0714873b60121e8ac2613e6e44a32768fa92eb03e",
+    "modules/graph/src/gpu-raster/gpu-raster-dense-components.ts": "16d047eeaa50d8bb7842a4acd53c6e28c012342bb5a2d6a456e8d810a5264494",
+    "modules/graph/src/gpu-raster/gpu-raster-edges.ts": "45d1303e3f307fcd44755692a5aea9537e1dff0c57bef281e68de98f6857ca94",
+    "modules/graph/src/gpu-raster/gpu-raster-fill-nodata.ts": "eec334d1073946495b13718799bfc134c02e94623d9b1ffbe433c2d0585d82f1",
+    "modules/graph/src/gpu-raster/gpu-raster-fractional-categorical-statistics.ts": "5e36a0ed9c4efd15f4fe5134c4b377e921886aa3285db55ae1a18a08a2b30ffe",
+    "modules/graph/src/gpu-raster/gpu-raster-fractional-coverage.ts": "fc1db373435513592235f200bbdafcb6372561463a8a4170cc4cfc3a35518856",
+    "modules/graph/src/gpu-raster/gpu-raster-fractional-zonal-distribution.ts": "2419b9300f743be893dc8cc3b16ea0ba1ca3a9e218767d5754d1df2694f6e1ed",
+    "modules/graph/src/gpu-raster/gpu-raster-global-statistics.ts": "6496222f03bea69e357df20411c36b12eec1ae5516b489a6136c4433f38dde04",
+    "modules/graph/src/gpu-raster/gpu-raster-histogram.ts": "43cca7a06644cedb7a603efc50616d93d7b3e16b9b798be46a77a5d3ccb90e0e",
+    "modules/graph/src/gpu-raster/gpu-raster-morphology.ts": "e4eff2896388a7283539df342519ec31e0f61d979acefcea13c97e0928ee5547",
+    "modules/graph/src/gpu-raster/gpu-raster-ndvi.ts": "7708901f3c4a8586282399e7ea7e3dd8817cfcdcf0066cd824b80a91ef67e4ca",
+    "modules/graph/src/gpu-raster/gpu-raster-neighborhood.ts": "dbd141a86381ef45b1953e518797a09d703ad68cc5014d5138ed7345bd736d71",
+    "modules/graph/src/gpu-raster/gpu-raster-overview.ts": "8945fbbe52cc11cd4ed171fb071572a24c273097a0410322e0e75d9f19c1faa4",
+    "modules/graph/src/gpu-raster/gpu-raster-rank-filter.ts": "b27d700d6cb4fcf0f999fe61d9e2e77238089f7cde94349a3fd84d7b5972eb31",
+    "modules/graph/src/gpu-raster/gpu-raster-reconstruction.ts": "3b32ef68c925dc80e3adc743e962cfb67bb30aa075f98e52ae3abe9d0a461432",
+    "modules/graph/src/gpu-raster/gpu-raster-region-measurements.ts": "e77a10a81fe998823d72a6c237afdc410b47108d9bb5a2118eae26c679fee9dd",
+    "modules/graph/src/gpu-raster/gpu-raster-reprojection.ts": "71a784826593c80d32710a95e78171c97dad4e618c71641b98294b26eb62f9bd",
+    "modules/graph/src/gpu-raster/gpu-raster-skeleton.ts": "dfd44d86326226a92dc1a1e988512ab37624a27cb4db58d2d76f75dd84ff5abf",
+    "modules/graph/src/gpu-raster/gpu-raster-spectral-indices.ts": "e40c2b51c0112555774453e1d9e2682869b60fa0a3de09219d780132ea28faa0",
+    "modules/graph/src/gpu-raster/gpu-raster-statistics.ts": "72ceff65d702e8ed283611eab9c55211c0b9f9cf13f13ceac43c98b7622b3e14",
+    "modules/graph/src/gpu-raster/gpu-raster-texture-to-buffer.ts": "82b884939df1c32be53560968d165ae98b93379d6259683eb006af0c0ce9f6db",
+    "modules/graph/src/gpu-raster/gpu-raster-threshold.ts": "389a005eb071c279e29744b749ff2a09f6bec38664ae1b4d747f28e5e7f0eaea",
+    "modules/graph/src/gpu-raster/gpu-raster-tile-cache.ts": "612f8e892b7bce99204d5f7bf2987925b32a3b50ec31ebc81208b6b0139f806a",
+    "modules/graph/src/gpu-raster/gpu-raster-tile-halo.ts": "fb365c20089fafc9b6c011f80ac2ec7af07fe5a9effe658e034b9e02dda64c9b",
+    "modules/graph/src/gpu-raster/gpu-raster-tile-reprojection.ts": "6ac86b8bd660854c99664caf74afb89b56671d9cf43f62f289e8a9cad60ea987",
+    "modules/graph/src/gpu-raster/gpu-raster-tile-source.ts": "eddee0a1c9904aebdf6a0ccbe2d685f5df3ce5bca9b9f9008145a186a4f65c04",
+    "modules/graph/src/gpu-raster/gpu-raster-walking-cost.ts": "c2b491dfe603fa3eea5752e0bcd6c423c06f0c612772249b5b459b46209fb776",
+    "modules/graph/src/gpu-raster/gpu-raster-watershed-segmentation.ts": "e276a025a1276fb6367a5513d5c71284786067874c826faecbbe95c7d3aaed47",
+    "modules/graph/src/gpu-raster/gpu-raster.ts": "260b191e6b9f40dd3f54dc97c1e3e8c3a8d14175c085326a98dd082c61e3244d",
+    "modules/graph/src/gpu-raster/index.ts": "e01f21ac82ef4d3786c407cbf9d1623daadd708c70973586c2050177673959fe",
+    "modules/graph/src/gpu-raster/isolines/gpu-isoband-rings.ts": "e30e502dd0944a208f875dd61b2d471fe38748454ec5ab7626bad6cbb9ce1163",
+    "modules/graph/src/gpu-raster/isolines/gpu-isobands.ts": "714c3b74c3cd66b5160203fdbbe5619e847efa16d786b395fd68ccb237422ce0",
+    "modules/graph/src/gpu-raster/isolines/gpu-isolines.ts": "ab454b1d9297d92f6e942dc006ae5a29761df6601081cd01256242f51121044e",
+    "modules/graph/src/gpu-raster/isolines/index.ts": "f30be42dfb47ab854c1fcc59af9547738a1ba8d0f308f64f4e061224412740f9",
+    "modules/graph/src/gpu-raster/isolines/isobands-parameters.ts": "dcb416752b35e7e41d80742053e605958365d1b349bf6de7ed93452c2849c265",
+    "modules/graph/src/gpu-raster/isolines/isobands-wgsl.ts": "7af01395ce7ae3d8e4d34124c93b4b26a7c9c0ec9384b8dc470f5dc79eba7093",
+    "modules/graph/src/gpu-raster/isolines/isolines-parameters.ts": "73062d516d974bd311ac5686a631703c385696f825b5737e5ef7aef943f95f14",
+    "modules/graph/src/gpu-raster/isolines/isolines-utils.ts": "2231f0b254d60280d020e3ae06399b7fc3ed4dd4311efde464a1bca8ab2f2e38",
+    "modules/graph/src/gpu-raster/particle-advection/gpu-particle-advection.ts": "4521e40efbb363f3b78fa4e9c08d7baaf137e58a78e633535abb1da19997a417",
+    "modules/graph/src/gpu-raster/particle-advection/index.ts": "2d130149cb150d781cc5e7a48f1ab0523a550b6d63d5b0511c222884044f5252",
+    "modules/graph/src/gpu-raster/particle-advection/particle-advection-cpu.ts": "6aca7bd41cf1f852a8333b397a9c86fb99d73effb1b5a00620d4b2c4cb69bff7",
+    "modules/graph/src/gpu-raster/particle-advection/particle-advection-parameters.ts": "caa850e0ebfdf65d9ce635544f0b7c41c4167cf611d6a5ef9470f01bc7f73c23",
+    "modules/graph/src/gpu-raster/polygon-rasterization/gpu-polygon-rasterization.ts": "ec58b07d8f95453b03a4813b96edf9a8723fee3315f91060863e5ac116449617",
+    "modules/graph/src/gpu-raster/polygon-rasterization/gpu-raster-join.ts": "7bca896b2894ec908386349c5a4eb0f0f6bfd04988ea71e1fdb1c2fd46aa6b9f",
+    "modules/graph/src/gpu-raster/polygon-rasterization/index.ts": "da47dc750202096604c0e8e0dd9db335600092a3452603ea29b7075948800568",
+    "modules/graph/src/gpu-raster/polygon-rasterization/polygon-rasterization-parameters.ts": "a7c0c38e0efa38b891b42b2825114d0a35335c8d69f609112011b34f50e05caf",
+    "modules/graph/src/gpu-raster/raster-algebra/gpu-raster-arithmetic.ts": "c12e1404df39efe44c2e8566ea282861dbfd23b210886ab3aa38227441ff1ccf",
+    "modules/graph/src/gpu-raster/raster-algebra/gpu-raster-cell-statistics.ts": "c9239267f09a540758285657b821bc2fc9a7966169d770ff7d8c483087584958",
+    "modules/graph/src/gpu-raster/raster-algebra/gpu-raster-conditional.ts": "9589e865c7b35870d88564684cd494916bd5c6952af6a1a294e2ba425ecf8dc1",
+    "modules/graph/src/gpu-raster/raster-algebra/gpu-raster-reclassify.ts": "a35f70dd325d43d1390d1d837a50f2b730fd550984c55c351cb566c6cb3930cc",
+    "modules/graph/src/gpu-raster/raster-algebra/gpu-weighted-overlay.ts": "5da862e289ae643241e15380d69984d7c0523336d63ad725502e6e2720384b86",
+    "modules/graph/src/gpu-raster/raster-algebra/index.ts": "e86c693c73beedfa2c3753e62a97cff7300913fe08d498c6adb294b26438a124",
+    "modules/graph/src/gpu-raster/raster-algebra/local-operations-parameters.ts": "5bb84c32eeaa21f86d1983ef0baa9f4925f3702e4938470e2251521ee77eefb9",
+    "modules/graph/src/gpu-raster/raster-algebra/raster-algebra-utils.ts": "40e825cbe246489655db05a8f67cca0fe7403ef7e10c619c0578cea2bd71164b",
+    "modules/graph/src/gpu-raster/raster-algebra/reclassify-parameters.ts": "ce5e8d260e92beb4cd62a8e0d707c1eb7822a0e1ffd3ba17373bd58866fe8b15",
+    "modules/graph/src/gpu-raster/raster-algebra/weighted-overlay-parameters.ts": "456cee3e5d26a760cd6e2369bbf9f4fb07baa65ea2ea67a0f15fed8dc8861627",
+    "modules/graph/src/gpu-raster/raster-band-utils.ts": "ecabb74f84b376409d2af3b1f5e87344206c7a0c0ccac524523a65eda5964de9",
+    "modules/graph/src/gpu-raster/raster-device-limits.ts": "2d88f98aaa5162b35023c48a156a326050b6bc0cc8ec9555104c8a24d9de4960",
+    "modules/graph/src/gpu-raster/raster-expansion-utils.ts": "ada49b5c9f997a69d4e3dbd574a14cc1a2674c76aa37fe49860a2b41275fd12b",
+    "modules/graph/src/gpu-raster/raster-grid/gpu-raster-grid.ts": "b04cc5dd4b7270d921527f54aeb7d64ffda681043828fb3317163082eae2ceb3",
+    "modules/graph/src/gpu-raster/raster-grid/index.ts": "2b6a66892048f5b3666308d074fc26690d84cf8a625ca72627a1ddd4dc600204",
+    "modules/graph/src/gpu-raster/raster-patches/gpu-raster-patch-metrics.ts": "805cc2dc473476986a9291a30c6458252631301bbb4c00a21657048501f2b12f",
+    "modules/graph/src/gpu-raster/raster-patches/gpu-raster-sieve-parameters.ts": "b9a5c16a5a984b57c4e38ebc6ef15ce542136cfb99cd1d754c092dde90dcb1d3",
+    "modules/graph/src/gpu-raster/raster-patches/gpu-raster-sieve.ts": "d59e6f1aa1295c693844ff802be32f02f8e294bf36e59764a5ba7201bea6f0a8",
+    "modules/graph/src/gpu-raster/raster-patches/index.ts": "2ae14b7b27d6a9e16271ca77046b1202423b19bf2a1f253e8affa894228e30c2",
+    "modules/graph/src/gpu-raster/raster-patches/patch-labels.ts": "3562dfd71f4b1e5c1abfe7f7c91d74eaa92fa6a75e7d5543ae5e37efed0f62fb",
+    "modules/graph/src/gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid.ts": "cec9ab893acf8c1316e605d24027f46ab603e70cd382d7131382b6951ec0b320",
+    "modules/graph/src/gpu-raster/raster-pyramid/index.ts": "b6d78d50595ed918a4ce4c77f902062f860f2904997d39f1352968e1b24d0f0d",
+    "modules/graph/src/gpu-raster/raster-sampling/gpu-raster-profile-scan.ts": "1aad6391296b7bf20e59d22ceb7e893451dda50b52060f6e3849ef9a3024cc93",
+    "modules/graph/src/gpu-raster/raster-sampling/gpu-raster-profile.ts": "8819970bda10da845064e6a21dde5d3f577793a0cd211f46afd04a1ea3a6f7bf",
+    "modules/graph/src/gpu-raster/raster-sampling/gpu-raster-sampling.ts": "1cf161b5b390d1695edd3819cc631557423fe1537e70afe83256783debdce0a3",
+    "modules/graph/src/gpu-raster/raster-sampling/index.ts": "79101528114e2f4ebfeccaf962609625c9f6e23957eb57732241160edea142ac",
+    "modules/graph/src/gpu-raster/raster-sampling/raster-sampling-parameters.ts": "41d3dcd1b374ee2924f60cf0d5317c6694a06fc00aa88c8e9d2c41fdc3e197e8",
+    "modules/graph/src/gpu-raster/raster-sampling/raster-sampling-utils.ts": "6f719678ff3c69ce29de350fa5ac059b023d32cc0b9f2c095d0880f7abe613d9",
+    "modules/graph/src/gpu-raster/raster-stretch/gpu-raster-stretch.ts": "5e3a6cebd7a16b0b61acf77242ac3114d2a8d79ed95ce8d44f1327de0be81956",
+    "modules/graph/src/gpu-raster/raster-stretch/index.ts": "59e0a6c85c20ba59c4e90e910c8858cc762ae106b52511fdc7c385e84de95074",
+    "modules/graph/src/gpu-raster/raster-stretch/raster-stretch-parameters.ts": "29165c5042c860267b66287110cb0dd2adc9c1d2e92c2ae655eff535584d9add",
+    "modules/graph/src/gpu-raster/raster-utils.ts": "4d26f8818226f41286ce90d9647e48dc66abc9ccdb7b65910b9304a9d1b605e6",
+    "modules/graph/src/gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics.ts": "3d629d486665a7a7e7a4a20fa8faca1ce58ed746c5c6f4fda53e269f6217dc26",
+    "modules/graph/src/gpu-raster/raster-zonal-statistics/index.ts": "f638c9e56032172427dccf0a4c8a4d866030a3f94f4a76a2c32f4909f7165199",
+    "modules/graph/src/gpu-raster/remote-sensing/gpu-raster-conservative-remapping.ts": "8641a75f15c81b5b23445c77c419f65ba3e1bfad7a169c1848141d4c80ab1d68",
+    "modules/graph/src/gpu-raster/remote-sensing/gpu-raster-region-graph.ts": "662ef6c630bb69f466b09ce9aba8e79f3382c0d2d60ddb1a3799bfc985daf14d",
+    "modules/graph/src/gpu-raster/remote-sensing/gpu-raster-registration.ts": "4f72d20d18c774f8cb3759c2ec06299b6cae9755d139f77abed1554dcdc827f9",
+    "modules/graph/src/gpu-raster/remote-sensing/gpu-raster-seasonal-break.ts": "250fb4ad226b1f33fc0dfec737fd28b4239f623637d76ff3144e2757e29308e3",
+    "modules/graph/src/gpu-raster/remote-sensing/gpu-raster-spectral-unmixing.ts": "be5f1696de1a61ac63cb181daed143e86ce85db2606e3f80ccb0df1c121d0a96",
+    "modules/graph/src/gpu-raster/remote-sensing/gpu-raster-temporal.ts": "f0d248c007b844048d3ddaa9db2f226baa4f6e62b2a24670b537382638b623e3",
+    "modules/graph/src/gpu-raster/remote-sensing/gpu-raster-texture.ts": "739d6519636cb36805949c4061847250e729a2ab63240ef0dbf2250183e96fa2",
+    "modules/graph/src/gpu-raster/remote-sensing/index.ts": "de52f00b29d0f29c6d7d7e37f8c6a744641b1ac580d2d9a246df2adf017067fa",
+    "modules/graph/src/gpu-raster/remote-sensing/raster-kernel-utils.ts": "be52cc6f140389b00aa458aac2cfb01991bc10eaa7e3d8b941c6618953771e7e",
+    "modules/graph/src/gpu-raster/remote-sensing/raster-masked-registration.ts": "738d79279e3f16f4f334558abe684d4bfa5e9659b07fe60776a14346daae5691",
+    "modules/graph/src/gpu-raster/remote-sensing/raster-region-tiles.ts": "6336811fd7027f5e6acafc3b0247b9c8390d33cb782297844ded24fbc5050458",
+    "modules/graph/src/gpu-raster/remote-sensing/seasonal-break-extended.ts": "5a7b30665035cd88deaae8b75994101acb8f00237fa182c88d2cc5fd03421372",
+    "modules/graph/src/gpu-raster/types.ts": "0ce09b9d391ba0099ed5103baa4e43078e888e2ee3e682434727f0004e41e160",
+    "modules/graph/src/gpu-raster/vector-field-common/vector-field-sampling.ts": "7399b4ef13dada61a95650b75507118845f1164fc88df70cf179a5b1b0f27eb5",
+    "modules/graph/test/gpu-raster/remote-sensing/raster-performance-benchmark.spec.ts": "349a627b0111a5b5adc8119bede8029837d9f437976fceedf67ef468b81d3969",
+    "modules/graph/test/gpu-raster/remote-sensing/raster-performance-fixtures.ts": "128e9741b08b010e10f6ed4fdf2bbcf29550245773a4b8bcdd947cbd6a0bef58",
+    "modules/graph/test/gpu-raster/remote-sensing/raster-performance-harness.ts": "0674201af80fa19f2de4eee1a94efc857fbf9c71bcd8fb5510cfbf004ca4a5cc"
+  },
+  "measurements": [
+    {
+      "workload": "RS02-categorical-16",
+      "shape": {
+        "side": 16,
+        "cells": 256,
+        "classes": 4
+      },
+      "updateKind": "reclassify all source cells; prepared fractional tuples retained",
+      "phases": {
+        "setupMilliseconds": 3.1000000089406967,
+        "uploadMilliseconds": 1.1000000089406967,
+        "compileHostMilliseconds": 2.0999999940395355,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 25.5,
+          "cpuEncodeMilliseconds": 1.0999999940395355,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.8999999910593033,
+          "cpuEncodeMilliseconds": 0.29999999701976776,
+          "gpuTimestampMilliseconds": 0.035999
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.699999988079071,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": 0.035877
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.29999999701976776,
+            0.30000001192092896,
+            0.29999999701976776,
+            0.3999999910593033,
+            0.30000001192092896
+          ],
+          "minimum": 0.29999999701976776,
+          "median": 0.30000001192092896,
+          "maximum": 0.3999999910593033
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.10000000894069672,
+          "readbackMilliseconds": 6
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 2.7000000029802322
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 1.6000000089406967
+        }
+      },
+      "memory": {
+        "inputBytes": 4112,
+        "updateBytes": 1024,
+        "outputBytes": 72,
+        "graphPhysicalTransientBytes": 5124,
+        "graphLogicalTransientBytes": 8256,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 11,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS03-remapping-16",
+      "shape": {
+        "sourceSide": 16,
+        "destinationSide": 8
+      },
+      "updateKind": "double source values on same compiled overlap and accumulation graph",
+      "phases": {
+        "setupMilliseconds": 0.5999999940395355,
+        "uploadMilliseconds": 0.20000000298023224,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 4,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.09999999403953552,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": 0.007751
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.007833
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224,
+            0.09999999403953552,
+            0.29999999701976776
+          ],
+          "minimum": 0.09999999403953552,
+          "median": 0.20000000298023224,
+          "maximum": 0.29999999701976776
+        },
+        "updateUploadMilliseconds": 0.4000000059604645,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.09999999403953552,
+          "readbackMilliseconds": 1.2000000029802322
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.09999999403953552,
+          "readbackMilliseconds": 0.5
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.7000000029802322
+        }
+      },
+      "memory": {
+        "inputBytes": 1024,
+        "updateBytes": 1024,
+        "outputBytes": 768,
+        "graphPhysicalTransientBytes": 4608,
+        "graphLogicalTransientBytes": 4608,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 2,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS04-texture-16",
+      "shape": {
+        "side": 16,
+        "cells": 256,
+        "levels": 2,
+        "radius": 2
+      },
+      "updateKind": "invert checkerboard values, same directional histogram graph",
+      "phases": {
+        "setupMilliseconds": 0.4000000059604645,
+        "uploadMilliseconds": 0.09999999403953552,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 2.7999999970197678,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.9000000059604645,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.9000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.19999998807907104,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.10000000894069672,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.005541
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.005583
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.9000000059604645,
+            0.9000000059604645,
+            0.19999998807907104,
+            0.10000000894069672,
+            0.20000000298023224
+          ],
+          "minimum": 0.10000000894069672,
+          "median": 0.20000000298023224,
+          "maximum": 0.9000000059604645
+        },
+        "updateUploadMilliseconds": 0.19999998807907104,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.5,
+          "readbackMilliseconds": 0.7999999970197678
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.10000000894069672,
+          "readbackMilliseconds": 1.0999999940395355
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0.10000000894069672,
+          "readbackMilliseconds": 0.3999999910593033
+        }
+      },
+      "memory": {
+        "inputBytes": 1024,
+        "updateBytes": 1024,
+        "outputBytes": 8192,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS09-evi-16",
+      "shape": {
+        "side": 16,
+        "cells": 256,
+        "bands": 3,
+        "bandMathPasses": 6
+      },
+      "updateKind": "increase NIR reflectance by 0.1, keep red/blue resident",
+      "phases": {
+        "setupMilliseconds": 0.8999999910593033,
+        "uploadMilliseconds": 0.29999999701976776,
+        "compileHostMilliseconds": 5.100000008940697,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 8.099999994039536,
+          "cpuEncodeMilliseconds": 0.3999999910593033,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 1.7999999970197678,
+          "cpuEncodeMilliseconds": 0.19999998807907104,
+          "gpuTimestampMilliseconds": 0.015040000000000001
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": 0.013959
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.29999999701976776,
+            0.3999999910593033,
+            0.20000000298023224,
+            0.4000000059604645,
+            0.20000000298023224
+          ],
+          "minimum": 0.20000000298023224,
+          "median": 0.29999999701976776,
+          "maximum": 0.4000000059604645
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.10000000894069672,
+          "readbackMilliseconds": 0.8999999910593033
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.5
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.7000000029802322
+        }
+      },
+      "memory": {
+        "inputBytes": 3072,
+        "updateBytes": 1024,
+        "outputBytes": 2048,
+        "graphPhysicalTransientBytes": 8192,
+        "graphLogicalTransientBytes": 10240,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 6,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS06-mean-16",
+      "shape": {
+        "cells": 16,
+        "slices": 9,
+        "window": 7,
+        "order": 2
+      },
+      "updateKind": "add 0.25 to every acquisition, reuse compiled graph",
+      "phases": {
+        "setupMilliseconds": 0.29999999701976776,
+        "uploadMilliseconds": 0.20000000298023224,
+        "compileHostMilliseconds": 0.09999999403953552,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 2.2999999970197678,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.19999998807907104,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.004124
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.006915
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224,
+            0.19999998807907104,
+            0.20000000298023224
+          ],
+          "minimum": 0.19999998807907104,
+          "median": 0.20000000298023224,
+          "maximum": 0.20000000298023224
+        },
+        "updateUploadMilliseconds": 0,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.30000001192092896,
+          "readbackMilliseconds": 1
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 1.2000000029802322
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.7000000029802322
+        }
+      },
+      "memory": {
+        "inputBytes": 576,
+        "updateBytes": 576,
+        "outputBytes": 256,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS06-savitzky-golay-16",
+      "shape": {
+        "cells": 16,
+        "slices": 9,
+        "window": 7,
+        "order": 2
+      },
+      "updateKind": "add 0.25 to every acquisition, reuse compiled graph",
+      "phases": {
+        "setupMilliseconds": 0.09999999403953552,
+        "uploadMilliseconds": 0.09999999403953552,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 3.2999999970197678,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.19999998807907104,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.008583
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.008499
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.19999998807907104,
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224
+          ],
+          "minimum": 0.19999998807907104,
+          "median": 0.20000000298023224,
+          "maximum": 0.20000000298023224
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.09999999403953552,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 1,
+          "readbackMilliseconds": 1.1000000089406967
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.5,
+          "readbackMilliseconds": 0.7000000029802322
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0.4000000059604645,
+          "readbackMilliseconds": 0.7000000029802322
+        }
+      },
+      "memory": {
+        "inputBytes": 576,
+        "updateBytes": 576,
+        "outputBytes": 2304,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS07-registration-16",
+      "shape": {
+        "side": 16,
+        "cells": 256,
+        "upsampleFactor": 4
+      },
+      "updateKind": "replace moving image with a different integer periodic translation",
+      "phases": {
+        "setupMilliseconds": 1.7000000029802322,
+        "uploadMilliseconds": 0.7000000029802322,
+        "compileHostMilliseconds": 0.8999999910593033,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 16,
+          "cpuEncodeMilliseconds": 0.5,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.6000000089406967,
+            "cpuEncodeMilliseconds": 0.30000001192092896,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0.19999998807907104,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 1.4000000059604645,
+          "cpuEncodeMilliseconds": 0.3999999910593033,
+          "gpuTimestampMilliseconds": 0.14056800000000003
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 1.2999999970197678,
+          "cpuEncodeMilliseconds": 0.3999999910593033,
+          "gpuTimestampMilliseconds": 0.14077
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.5999999940395355,
+            0.6000000089406967,
+            0.7000000029802322,
+            0.5,
+            0.5999999940395355
+          ],
+          "minimum": 0.5,
+          "median": 0.5999999940395355,
+          "maximum": 0.7000000029802322
+        },
+        "updateUploadMilliseconds": 0.20000000298023224,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0.19999998807907104,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.10000000894069672,
+          "readbackMilliseconds": 1
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.9000000059604645
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.7000000029802322
+        }
+      },
+      "memory": {
+        "inputBytes": 2048,
+        "updateBytes": 1024,
+        "outputBytes": 16,
+        "graphPhysicalTransientBytes": 8192,
+        "graphLogicalTransientBytes": 19184,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 37,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS08-regions-16",
+      "shape": {
+        "side": 16,
+        "cells": 256,
+        "regions": 4
+      },
+      "updateKind": "double region means: connected merge becomes separated regions",
+      "phases": {
+        "setupMilliseconds": 0.5,
+        "uploadMilliseconds": 0.20000000298023224,
+        "compileHostMilliseconds": 0.29999999701976776,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 9.099999994039536,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": 0.029453000000000007
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": 0.02933
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.3999999910593033,
+            1,
+            0.29999999701976776,
+            0.20000000298023224,
+            0.29999999701976776
+          ],
+          "minimum": 0.20000000298023224,
+          "median": 0.29999999701976776,
+          "maximum": 1
+        },
+        "updateUploadMilliseconds": 0.10000000894069672,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.20000000298023224,
+          "readbackMilliseconds": 1.0999999940395355
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.7999999970197678
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 1.4000000059604645
+        }
+      },
+      "memory": {
+        "inputBytes": 2048,
+        "updateBytes": 1024,
+        "outputBytes": 148,
+        "graphPhysicalTransientBytes": 48,
+        "graphLogicalTransientBytes": 64,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 9,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS10-simplex-16",
+      "shape": {
+        "cells": 16,
+        "bands": 8,
+        "members": 3,
+        "maximumIterations": 512
+      },
+      "updateKind": "change known simplex abundances in resident spectra",
+      "phases": {
+        "setupMilliseconds": 0.5,
+        "uploadMilliseconds": 0.20000000298023224,
+        "compileHostMilliseconds": 0.09999999403953552,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 2.7999999970197678,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.012458
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.011166
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.29999999701976776,
+            0.20000000298023224,
+            0.20000000298023224,
+            0.20000000298023224,
+            0.29999999701976776
+          ],
+          "minimum": 0.20000000298023224,
+          "median": 0.20000000298023224,
+          "maximum": 0.29999999701976776
+        },
+        "updateUploadMilliseconds": 0.10000000894069672,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.09999999403953552,
+          "readbackMilliseconds": 1
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 2.0999999940395355
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 1
+        }
+      },
+      "memory": {
+        "inputBytes": 608,
+        "updateBytes": 512,
+        "outputBytes": 384,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS11-seasonal-4",
+      "shape": {
+        "cells": 4,
+        "slices": 24,
+        "period": 8,
+        "minimumSegmentLength": 8
+      },
+      "updateKind": "change positive level break to negative break in same graph",
+      "phases": {
+        "setupMilliseconds": 0.5,
+        "uploadMilliseconds": 0.29999999701976776,
+        "compileHostMilliseconds": 0.09999999403953552,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 10.100000008940697,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7999999970197678,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.8999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.9000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 1.0999999940395355,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.551008
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.9000000059604645,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": 0.541758
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.7999999970197678,
+            0.7000000029802322,
+            0.8999999910593033,
+            0.9000000059604645,
+            1
+          ],
+          "minimum": 0.7000000029802322,
+          "median": 0.8999999910593033,
+          "maximum": 1
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.800000011920929,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7999999970197678,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7999999970197678,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 1.0999999940395355,
+          "readbackMilliseconds": 2
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.699999988079071,
+          "readbackMilliseconds": 2.1000000089406967
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0.7999999970197678,
+          "readbackMilliseconds": 1.9000000059604645
+        }
+      },
+      "memory": {
+        "inputBytes": 384,
+        "updateBytes": 384,
+        "outputBytes": 1280,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS02-categorical-128",
+      "shape": {
+        "side": 128,
+        "cells": 16384,
+        "classes": 4
+      },
+      "updateKind": "reclassify all source cells; prepared fractional tuples retained",
+      "phases": {
+        "setupMilliseconds": 3.5,
+        "uploadMilliseconds": 0.7999999970197678,
+        "compileHostMilliseconds": 0.9000000059604645,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 15.799999997019768,
+          "cpuEncodeMilliseconds": 0.20000000298023224,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.800000011920929,
+          "cpuEncodeMilliseconds": 0.20000000298023224,
+          "gpuTimestampMilliseconds": 0.049913000000000006
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.8999999910593033,
+          "cpuEncodeMilliseconds": 0.29999999701976776,
+          "gpuTimestampMilliseconds": 0.051080000000000014
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.3999999910593033,
+            0.29999999701976776,
+            0.30000001192092896,
+            0.3999999910593033,
+            0.29999999701976776
+          ],
+          "minimum": 0.29999999701976776,
+          "median": 0.30000001192092896,
+          "maximum": 0.3999999910593033
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.800000011920929,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7999999970197678,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.5,
+          "readbackMilliseconds": 2.5
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.19999998807907104,
+          "readbackMilliseconds": 1.800000011920929
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0.20000000298023224,
+          "readbackMilliseconds": 1.9000000059604645
+        }
+      },
+      "memory": {
+        "inputBytes": 262160,
+        "updateBytes": 65536,
+        "outputBytes": 72,
+        "graphPhysicalTransientBytes": 327940,
+        "graphLogicalTransientBytes": 524864,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 13,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS03-remapping-128",
+      "shape": {
+        "sourceSide": 128,
+        "destinationSide": 64
+      },
+      "updateKind": "double source values on same compiled overlap and accumulation graph",
+      "phases": {
+        "setupMilliseconds": 1.300000011920929,
+        "uploadMilliseconds": 0.19999998807907104,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 4,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.9000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.19999998807907104,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.008333
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.008417000000000001
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.9000000059604645,
+            0.5999999940395355,
+            0.29999999701976776,
+            0.30000001192092896,
+            0.19999998807907104
+          ],
+          "minimum": 0.19999998807907104,
+          "median": 0.30000001192092896,
+          "maximum": 0.9000000059604645
+        },
+        "updateUploadMilliseconds": 0.5,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.2000000029802322,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.19999998807907104,
+          "readbackMilliseconds": 1.5
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.29999999701976776,
+          "readbackMilliseconds": 0.7999999970197678
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0.20000000298023224,
+          "readbackMilliseconds": 1.5
+        }
+      },
+      "memory": {
+        "inputBytes": 65536,
+        "updateBytes": 65536,
+        "outputBytes": 49152,
+        "graphPhysicalTransientBytes": 294912,
+        "graphLogicalTransientBytes": 294912,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 2,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS04-texture-128",
+      "shape": {
+        "side": 128,
+        "cells": 16384,
+        "levels": 2,
+        "radius": 2
+      },
+      "updateKind": "invert checkerboard values, same directional histogram graph",
+      "phases": {
+        "setupMilliseconds": 1.1000000089406967,
+        "uploadMilliseconds": 0.3999999910593033,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 2.9000000059604645,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.2000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.10000000894069672,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": 0.011167
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 1.2000000029802322,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.011791
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            1.2000000029802322,
+            0.7000000029802322,
+            0.5999999940395355,
+            0.29999999701976776,
+            0.10000000894069672
+          ],
+          "minimum": 0.10000000894069672,
+          "median": 0.5999999940395355,
+          "maximum": 1.2000000029802322
+        },
+        "updateUploadMilliseconds": 0.5999999940395355,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.300000011920929,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7999999970197678,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 5.5,
+          "readbackMilliseconds": 2.7000000029802322
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 1.8999999910593033,
+          "readbackMilliseconds": 2.9000000059604645
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 4,
+          "readbackMilliseconds": 3.7999999970197678
+        }
+      },
+      "memory": {
+        "inputBytes": 65536,
+        "updateBytes": 65536,
+        "outputBytes": 524288,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS09-evi-128",
+      "shape": {
+        "side": 128,
+        "cells": 16384,
+        "bands": 3,
+        "bandMathPasses": 6
+      },
+      "updateKind": "increase NIR reflectance by 0.1, keep red/blue resident",
+      "phases": {
+        "setupMilliseconds": 2.0999999940395355,
+        "uploadMilliseconds": 1.2000000029802322,
+        "compileHostMilliseconds": 1.9000000059604645,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 8.599999994039536,
+          "cpuEncodeMilliseconds": 0.19999998807907104,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7999999970197678,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.6000000089406967,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.0185
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.018665
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.7999999970197678,
+            0.6000000089406967,
+            0.29999999701976776,
+            0.20000000298023224,
+            0.29999999701976776
+          ],
+          "minimum": 0.20000000298023224,
+          "median": 0.29999999701976776,
+          "maximum": 0.7999999970197678
+        },
+        "updateUploadMilliseconds": 0.4000000059604645,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.8999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.4000000059604645,
+          "readbackMilliseconds": 1.5999999940395355
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.30000001192092896,
+          "readbackMilliseconds": 0.7999999970197678
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0.30000001192092896,
+          "readbackMilliseconds": 1.0999999940395355
+        }
+      },
+      "memory": {
+        "inputBytes": 196608,
+        "updateBytes": 65536,
+        "outputBytes": 131072,
+        "graphPhysicalTransientBytes": 524288,
+        "graphLogicalTransientBytes": 655360,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 6,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS06-mean-512",
+      "shape": {
+        "cells": 512,
+        "slices": 31,
+        "window": 7,
+        "order": 2
+      },
+      "updateKind": "add 0.25 to every acquisition, reuse compiled graph",
+      "phases": {
+        "setupMilliseconds": 1.1000000089406967,
+        "uploadMilliseconds": 1.199999988079071,
+        "compileHostMilliseconds": 0.10000000894069672,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 2.7000000029802322,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.19999998807907104,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": 0.009875
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.01
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.7000000029802322,
+            0.29999999701976776,
+            0.20000000298023224,
+            0.20000000298023224,
+            0.19999998807907104
+          ],
+          "minimum": 0.19999998807907104,
+          "median": 0.20000000298023224,
+          "maximum": 0.7000000029802322
+        },
+        "updateUploadMilliseconds": 0.19999998807907104,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.5999999940395355,
+          "readbackMilliseconds": 1
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.5999999940395355,
+          "readbackMilliseconds": 0.800000011920929
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0.5,
+          "readbackMilliseconds": 0.800000011920929
+        }
+      },
+      "memory": {
+        "inputBytes": 63488,
+        "updateBytes": 63488,
+        "outputBytes": 8192,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS06-savitzky-golay-512",
+      "shape": {
+        "cells": 512,
+        "slices": 31,
+        "window": 7,
+        "order": 2
+      },
+      "updateKind": "add 0.25 to every acquisition, reuse compiled graph",
+      "phases": {
+        "setupMilliseconds": 1.0999999940395355,
+        "uploadMilliseconds": 0.5999999940395355,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 3.2000000029802322,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.014166
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.014084
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            0.5,
+            0.7000000029802322,
+            0.29999999701976776,
+            0.20000000298023224,
+            0.29999999701976776
+          ],
+          "minimum": 0.20000000298023224,
+          "median": 0.29999999701976776,
+          "maximum": 0.7000000029802322
+        },
+        "updateUploadMilliseconds": 0.3999999910593033,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 37.29999999701977,
+          "readbackMilliseconds": 2.7000000029802322
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 35.099999994039536,
+          "readbackMilliseconds": 3.800000011920929
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 33.900000005960464,
+          "readbackMilliseconds": 3.8999999910593033
+        }
+      },
+      "memory": {
+        "inputBytes": 63488,
+        "updateBytes": 63488,
+        "outputBytes": 253952,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS07-registration-64",
+      "shape": {
+        "side": 64,
+        "cells": 4096,
+        "upsampleFactor": 4
+      },
+      "updateKind": "replace moving image with a different integer periodic translation",
+      "phases": {
+        "setupMilliseconds": 1.2000000029802322,
+        "uploadMilliseconds": 0.7000000029802322,
+        "compileHostMilliseconds": 1,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 12.899999991059303,
+          "cpuEncodeMilliseconds": 0.3999999910593033,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 2,
+            "cpuEncodeMilliseconds": 0.30000001192092896,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.5999999940395355,
+            "cpuEncodeMilliseconds": 0.30000001192092896,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.5,
+            "cpuEncodeMilliseconds": 0.30000001192092896,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.6000000089406967,
+            "cpuEncodeMilliseconds": 0.4000000059604645,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.8999999910593033,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 2.9000000059604645,
+          "cpuEncodeMilliseconds": 0.5,
+          "gpuTimestampMilliseconds": 0.9510679999999999
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 2.5,
+          "cpuEncodeMilliseconds": 0.5999999940395355,
+          "gpuTimestampMilliseconds": 0.8816149999999999
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            2,
+            1.5999999940395355,
+            1.5,
+            1.6000000089406967,
+            1.8999999910593033
+          ],
+          "minimum": 1.5,
+          "median": 1.6000000089406967,
+          "maximum": 2
+        },
+        "updateUploadMilliseconds": 0,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.5999999940395355,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.4000000059604645,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 2,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.10000000894069672,
+          "readbackMilliseconds": 1.3999999910593033
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.800000011920929
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.7000000029802322
+        }
+      },
+      "memory": {
+        "inputBytes": 32768,
+        "updateBytes": 16384,
+        "outputBytes": 16,
+        "graphPhysicalTransientBytes": 131072,
+        "graphLogicalTransientBytes": 297584,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 49,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS08-regions-128",
+      "shape": {
+        "side": 128,
+        "cells": 16384,
+        "regions": 32
+      },
+      "updateKind": "double region means: connected merge becomes separated regions",
+      "phases": {
+        "setupMilliseconds": 1.7999999970197678,
+        "uploadMilliseconds": 0.7000000029802322,
+        "compileHostMilliseconds": 0.5,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 11.299999997019768,
+          "cpuEncodeMilliseconds": 0.29999999701976776,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.5999999940395355,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.2999999970197678,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.1000000089406967,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.0999999940395355,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.2000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 2,
+          "cpuEncodeMilliseconds": 0.20000000298023224,
+          "gpuTimestampMilliseconds": 0.8789470000000001
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 2.1000000089406967,
+          "cpuEncodeMilliseconds": 0.4000000059604645,
+          "gpuTimestampMilliseconds": 0.8014459999999999
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            1.5999999940395355,
+            1.2999999970197678,
+            1.1000000089406967,
+            1.0999999940395355,
+            1.2000000029802322
+          ],
+          "minimum": 1.0999999940395355,
+          "median": 1.2000000029802322,
+          "maximum": 1.5999999940395355
+        },
+        "updateUploadMilliseconds": 0,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.9000000059604645,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7999999970197678,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.5,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0.29999999701976776,
+          "readbackMilliseconds": 1.5
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.10000000894069672,
+          "readbackMilliseconds": 1.5
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.8999999910593033
+        }
+      },
+      "memory": {
+        "inputBytes": 131072,
+        "updateBytes": 65536,
+        "outputBytes": 8324,
+        "graphPhysicalTransientBytes": 384,
+        "graphLogicalTransientBytes": 512,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 37,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS10-simplex-256",
+      "shape": {
+        "cells": 256,
+        "bands": 32,
+        "members": 3,
+        "maximumIterations": 512
+      },
+      "updateKind": "change known simplex abundances in resident spectra",
+      "phases": {
+        "setupMilliseconds": 0.7999999970197678,
+        "uploadMilliseconds": 0.20000000298023224,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 3.7999999970197678,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.077499
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 0.074041
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            1,
+            1,
+            0.29999999701976776,
+            0.3999999910593033,
+            0.30000001192092896
+          ],
+          "minimum": 0.29999999701976776,
+          "median": 0.3999999910593033,
+          "maximum": 1
+        },
+        "updateUploadMilliseconds": 0,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.9000000059604645,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 1.5999999940395355
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 0.10000000894069672,
+          "readbackMilliseconds": 0.7999999970197678
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 0,
+          "readbackMilliseconds": 0.9000000059604645
+        }
+      },
+      "memory": {
+        "inputBytes": 33152,
+        "updateBytes": 32768,
+        "outputBytes": 6144,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    },
+    {
+      "workload": "RS11-seasonal-32",
+      "shape": {
+        "cells": 32,
+        "slices": 64,
+        "period": 8,
+        "minimumSegmentLength": 8
+      },
+      "updateKind": "change positive level break to negative break in same graph",
+      "phases": {
+        "setupMilliseconds": 0.6000000089406967,
+        "uploadMilliseconds": 0.29999999701976776,
+        "compileHostMilliseconds": 0.09999999403953552,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 23.299999997019768,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 9.900000005960464,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 9.5,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 9.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 9.399999991059303,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 9.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "profiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 9.800000011920929,
+          "cpuEncodeMilliseconds": 0.20000000298023224,
+          "gpuTimestampMilliseconds": 8.748575
+        },
+        "updatedProfiledExecution": {
+          "encodeSubmitCompletionMilliseconds": 9.900000005960464,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": 8.746657
+        },
+        "repeatedWallClockMilliseconds": {
+          "samples": [
+            9.900000005960464,
+            9.5,
+            9.5,
+            9.399999991059303,
+            9.5
+          ],
+          "minimum": 9.399999991059303,
+          "median": 9.5,
+          "maximum": 9.900000005960464
+        },
+        "updateUploadMilliseconds": 1.2000000029802322,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 9.399999991059303,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 9.300000011920929,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 9.399999991059303,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "initialValidation": {
+          "referenceMilliseconds": 27.100000008940697,
+          "readbackMilliseconds": 2.8999999910593033
+        },
+        "repeatedValidation": {
+          "referenceMilliseconds": 32.5,
+          "readbackMilliseconds": 3.2000000029802322
+        },
+        "updatedValidation": {
+          "referenceMilliseconds": 26.099999994039536,
+          "readbackMilliseconds": 2.5
+        }
+      },
+      "memory": {
+        "inputBytes": 8192,
+        "updateBytes": 8192,
+        "outputBytes": 25600,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      },
+      "correctness": "Initial, warm, and updated numerical outputs checked against independent JavaScript/analytic references; peak and iteration diagnostics checked separately where no unique reference value exists"
+    }
+  ]
+}

@@ -15,8 +15,20 @@ import {
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
 import {getSortedSegmentOffsetNodes} from './sorted-segment-offsets';
 
+/** Reduction applied by the segment tree kernel. @internal */
+export type SegmentReduction = 'sum' | 'min' | 'max';
+
+const SEGMENT_REDUCTION_IDENTITY: Record<SegmentReduction, string> = {
+  sum: '0.0',
+  min: '3.402823466e+38',
+  max: '-3.402823466e+38'
+};
+
 /** Threads per segment-sum workgroup; shared with kernels that reuse the tree reduction. @internal */
 export const SEGMENT_WORKGROUP_SIZE = 256;
+
+/** Most segment workgroups dispatched at once; more segments are reduced in strided passes. */
+const MAXIMUM_SEGMENT_WORKGROUPS = Math.floor(0xffffffff / SEGMENT_WORKGROUP_SIZE);
 
 /** Module-scope WGSL declarations for the workgroup partial sums used by {@link getSegmentTreeSumWGSL}. @internal */
 export const SEGMENT_PARTIAL_SUMS_WGSL = `var<workgroup> partialSums: array<f32, ${SEGMENT_WORKGROUP_SIZE}>;`;
@@ -27,12 +39,16 @@ export const SEGMENT_PARTIAL_SUMS_WGSL = `var<workgroup> partialSums: array<f32,
  * invocation of the workgroup must reach it (it contains barriers); the total is left in
  * `partialSums[0]`. @internal
  */
-export function getSegmentTreeSumWGSL(): string {
+export function getSegmentTreeSumWGSL(reduction: SegmentReduction = 'sum'): string {
+  const combine =
+    reduction === 'sum'
+      ? 'partialSums[localInvocationIndex] + partialSums[localInvocationIndex + stride]'
+      : `${reduction}(partialSums[localInvocationIndex], partialSums[localInvocationIndex + stride])`;
   return `partialSums[localInvocationIndex] = partialSum;
   workgroupBarrier();
   for (var stride = ${SEGMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
     if (localInvocationIndex < stride) {
-      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+      partialSums[localInvocationIndex] = ${combine};
     }
     workgroupBarrier();
   }`;
@@ -45,7 +61,10 @@ export function getSegmentTreeSumWGSL(): string {
 export function getSegmentSumDispatchShape(
   segmentCount: number
 ): readonly [invocationCount: number, workgroupSize: number] {
-  return [segmentCount * SEGMENT_WORKGROUP_SIZE, SEGMENT_WORKGROUP_SIZE];
+  return [
+    Math.min(segmentCount, MAXIMUM_SEGMENT_WORKGROUPS) * SEGMENT_WORKGROUP_SIZE,
+    SEGMENT_WORKGROUP_SIZE
+  ];
 }
 
 /** Returns the number of key bits that hold values in `[0, maximumKey]` (at least one). @internal */
@@ -193,9 +212,7 @@ export function getSortedSegmentSumNodes<Parameters>(
         segmentCount,
         input: sortedContributions,
         segmentOffsets,
-        output: reduction.output,
-        // Offsets are lower bounds in sorted keys, so they never exceed `pointCount`.
-        offsetsWithinInput: true
+        output: reduction.output
       })
     );
   }
@@ -213,9 +230,6 @@ export function getSortedSegmentSumNodes<Parameters>(
  * rounds) the node is gated. An indirect condition supplies the dispatch dimensions of the node,
  * so its triple must hold the layout of {@link getSegmentSumDispatchShape}.
  *
- * `offsetsWithinInput` and `implementation` are accepted for call-site stability and ignored:
- * published luma.gl does not export `GPUSegmentedReduction`, so the local kernel always runs.
- *
  * @internal
  */
 export function createSegmentSumNode<Parameters>(
@@ -228,10 +242,8 @@ export function createSegmentSumNode<Parameters>(
     input: GraphDataView<'float32'>;
     segmentOffsets: GraphDataView<'uint32'>;
     output: GraphDataView<'float32'>;
-    /** Ignored; retained for call-site stability. */
-    offsetsWithinInput?: boolean;
-    /** Ignored; retained for call-site stability. */
-    implementation?: 'auto' | 'kernel';
+    /** Reduction operation; defaults to `'sum'`. Empty segments write 0 for every operation. */
+    reduction?: SegmentReduction;
     /** GPU-state gate of the node. */
     condition?: GPUCommandGraphNodeCondition<Parameters>;
     /** Resources the `condition` reads (for example the `'indirect'` use of its dispatch buffer). */
@@ -254,14 +266,17 @@ function createSegmentSumKernelNode<Parameters>(
     input: GraphDataView<'float32'>;
     segmentOffsets: GraphDataView<'uint32'>;
     output: GraphDataView<'float32'>;
+    reduction?: SegmentReduction;
     condition?: GPUCommandGraphNodeCondition<Parameters>;
     extraResources?: readonly GraphBufferUse[];
   }
 ): GPUCommandNode<Parameters> {
+  const reduction = props.reduction ?? 'sum';
+  const combine = reduction === 'sum' ? 'partialSum + next' : `${reduction}(partialSum, next)`;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
-    variant: 'segment-sum',
+    variant: `segment-${reduction}`,
     condition: props.condition,
     extraResources: props.extraResources,
     bindings: [
@@ -270,24 +285,35 @@ function createSegmentSumKernelNode<Parameters>(
       {name: 'segmentOutput', view: props.output, type: 'f32', access: 'read_write'}
     ],
     workgroupSize: SEGMENT_WORKGROUP_SIZE,
-    invocationCount: props.segmentCount * SEGMENT_WORKGROUP_SIZE,
+    invocationCount:
+      Math.min(props.segmentCount, MAXIMUM_SEGMENT_WORKGROUPS) * SEGMENT_WORKGROUP_SIZE,
     guardIndex: false,
     declarations: `const INPUT_COUNT: u32 = ${props.input.length}u;
+const SEGMENT_COUNT: u32 = ${props.segmentCount}u;
 ${SEGMENT_PARTIAL_SUMS_WGSL}`,
     // No early return: every invocation of a workgroup must reach the barriers.
-    body: `let segment = index / ${SEGMENT_WORKGROUP_SIZE}u;
-  let isInRange = index < INVOCATION_COUNT;
-  var partialSum = 0.0;
+    body: `let firstSegment = index / ${SEGMENT_WORKGROUP_SIZE}u;
+  let segmentStride = INVOCATION_COUNT / ${SEGMENT_WORKGROUP_SIZE}u;
+  // Segment counts beyond one dispatch are reduced in strided passes with a uniform trip count.
+  for (var segmentPass = 0u; segmentPass < ${Math.ceil(props.segmentCount / MAXIMUM_SEGMENT_WORKGROUPS)}u; segmentPass++) {
+  let segment = firstSegment + segmentPass * segmentStride;
+  let isInRange = index < INVOCATION_COUNT && segment < SEGMENT_COUNT;
+  var partialSum = ${SEGMENT_REDUCTION_IDENTITY[reduction]};
+  var isEmpty = true;
   if (isInRange) {
     let begin = segmentOffsets[segmentOffsetsOffset + segment];
     let end = min(segmentOffsets[segmentOffsetsOffset + segment + 1u], INPUT_COUNT);
     for (var row = begin + localInvocationIndex; row < end; row += ${SEGMENT_WORKGROUP_SIZE}u) {
-      partialSum += segmentInput[segmentInputOffset + row];
+      let next = segmentInput[segmentInputOffset + row];
+      partialSum = ${combine};
     }
+    isEmpty = begin >= end;
   }
-  ${getSegmentTreeSumWGSL()}
+  ${getSegmentTreeSumWGSL(reduction)}
   if (isInRange && localInvocationIndex == 0u) {
-    segmentOutput[segmentOutputOffset + segment] = partialSums[0];
+    segmentOutput[segmentOutputOffset + segment] = select(partialSums[0], 0.0, isEmpty);
+  }
+  workgroupBarrier();
   }`
   });
 }

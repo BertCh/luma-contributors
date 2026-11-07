@@ -23,7 +23,7 @@ bounding-box enumeration (same spacing constants as the kernel, see cell-cover-h
 used by the spec to size `candidateCapacity`.
 
 Usage, from the repository root:
-  <venv>/bin/python -I modules/analysis/test/oracles/cells-cover-thin.py
+  <venv>/bin/python -I modules/graph/test/oracles/cells-cover-thin.py
 Needs numpy, shapely >= 2.0 and h3 >= 4 (versions are recorded in the fixture).
 """
 import json
@@ -36,7 +36,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.join(HERE, '..', 'gpu-spatial-analysis', 'cell-cover', 'fixtures', 'cell-cover-thin.json')
-GENERATOR = 'modules/analysis/test/oracles/cells-cover-thin.py'
+GENERATOR = 'modules/graph/test/oracles/cells-cover-thin.py'
 SEED = 20261014
 CENTER_MARGIN = 1e-4
 # Half the minimum inradius per resolution (cell-cover-h3-constants.ts, CELL_COVER_H3_MINIMUM_INRADIUS_DEGREES).

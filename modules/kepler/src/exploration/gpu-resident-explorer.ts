@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {MeteredCommandGraph} from '../session/metered-command-graph';
 import {readBufferUint32Scalar} from '../runtime/gpu-readback';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
@@ -36,6 +37,8 @@ import {GPUTable} from '@luma.gl/graph/gpu-tables';
 
 /** Crossfilter dimension that keeps dead rows out of every linked view. */
 const LIVE_DIMENSION_ID = 'kepler-live-mask';
+/** Inclusive uint32 range selecting every nonzero mask flag. */
+const SELECTED_MASK_RANGE: [number, number] = [1, 0xffffffff];
 
 export type GPUResidentScalarFormat = 'float32' | 'uint32' | 'sint32';
 export type GPUResidentColumns = Readonly<Record<string, GPUVector<GPUResidentScalarFormat>>>;
@@ -105,6 +108,8 @@ export type GPUResidentPage = {
 type PredicateState = {
   query: CompiledGPUDataFrameQuery<Record<string, GPUResidentScalarFormat>>;
   parameters: Record<string, number | boolean | null>;
+  /** Physical transient scratch of the compiled predicate graph. */
+  scratchByteLength: number;
 };
 
 /**
@@ -201,7 +206,7 @@ export class GPUResidentExplorer {
       const dimensions: GPUCrossfilterDimension[] = this.dimensions.map(dimension => {
         if (dimension.kind === 'external') {
           // Published crossfilter has no external-mask kind: a caller-written 0/1 mask is a
-          // range dimension over that mask, active as [1, 1] and bypassed when cleared.
+          // range dimension over that mask, active for any nonzero flag and bypassed when cleared.
           return {
             id: dimension.id,
             kind: 'range',
@@ -209,10 +214,13 @@ export class GPUResidentExplorer {
           };
         }
         const predicate = createPredicate(dimension);
-        const query = frame!
-          .filter(predicate)
-          .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(props.device));
-        this.predicates.set(dimension.id, {query, parameters: {}});
+        const predicateGraph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(props.device);
+        const query = frame!.filter(predicate).compile(predicateGraph);
+        this.predicates.set(dimension.id, {
+          query,
+          parameters: {},
+          scratchByteLength: predicateGraph.transientByteLength
+        });
         return {
           id: dimension.id,
           kind: 'range',
@@ -260,7 +268,7 @@ export class GPUResidentExplorer {
         views,
         outputMask: graph.importGPUVector('selection', this.selectionMask)
       });
-      if (liveDimension) filter.setRange(LIVE_DIMENSION_ID, [1, 1]);
+      if (liveDimension) filter.setRange(LIVE_DIMENSION_ID, SELECTED_MASK_RANGE);
       this.filter = filter;
       filter.addToGraph(graph);
       for (const histogram of props.histograms ?? []) {
@@ -336,7 +344,7 @@ export class GPUResidentExplorer {
                 this.allocateVector(`domain-mask-${scopes.size}`, sourceChunkLengths)
               )
             });
-            if (props.liveMask) scopedFilter.setRange(LIVE_DIMENSION_ID, [1, 1]);
+            if (props.liveMask) scopedFilter.setRange(LIVE_DIMENSION_ID, SELECTED_MASK_RANGE);
             this.domainFilters.push(scopedFilter);
             scopes.set(key, scopedFilter);
             scopedFilter.addToGraph(graph);
@@ -352,11 +360,11 @@ export class GPUResidentExplorer {
               column(domain.column).greaterThanOrEqual(literal(-3.4028234663852886e38)),
               column(domain.column).lessThanOrEqual(literal(3.4028234663852886e38))
             );
+            const finiteGraph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(props.device);
             finite = {
-              query: frame!
-                .filter(finitePredicate)
-                .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(props.device)),
-              parameters: {}
+              query: frame!.filter(finitePredicate).compile(finiteGraph),
+              parameters: {},
+              scratchByteLength: finiteGraph.transientByteLength
             };
             this.domainPredicates.set(domain.column, finite);
           }
@@ -464,7 +472,7 @@ export class GPUResidentExplorer {
     this.setPredicateParameters(id, {enabled: false});
   }
 
-  /** External and live masks must contain strictly 0 or 1; other values are not treated as set. */
+  /** Any nonzero external or live mask flag selects the row. */
   setExternalActive(id: string, active: boolean): void {
     this.requireDimension(id, 'external');
     this.setDimensionActive(this.filter, id, active);
@@ -485,9 +493,9 @@ export class GPUResidentExplorer {
     for (const scopedFilter of this.domainFilters) scopedFilter.clearAll();
     // clearAll also bypasses the liveness dimension, which must stay active.
     if (this.hasLiveMask) {
-      this.filter.setRange(LIVE_DIMENSION_ID, [1, 1]);
+      this.filter.setRange(LIVE_DIMENSION_ID, SELECTED_MASK_RANGE);
       for (const scopedFilter of this.domainFilters)
-        scopedFilter.setRange(LIVE_DIMENSION_ID, [1, 1]);
+        scopedFilter.setRange(LIVE_DIMENSION_ID, SELECTED_MASK_RANGE);
     }
     this.invalidate();
   }
@@ -685,7 +693,6 @@ export class GPUResidentExplorer {
    */
   get accountedResidentByteLength(): number {
     const buffers = new Set<Buffer>();
-    // Predicate queries keep their compiled graphs private, so their scratch is not counted: a lower bound.
     let transientBytes = this.compiled.stats.physicalTransientResourceBytes;
     for (const predicate of [...this.predicates.values(), ...this.domainPredicates.values()]) {
       for (const vector of [
@@ -695,6 +702,7 @@ export class GPUResidentExplorer {
       ]) {
         for (const data of vector.data) buffers.add(getBuffer(data));
       }
+      transientBytes += predicate.scratchByteLength;
     }
     // Neutral range selections own one 20-byte parameter buffer each.
     const neutralBuffers =
@@ -867,9 +875,9 @@ export class GPUResidentExplorer {
     }
   }
 
-  /** Every dimension is a 0/1 mask range: active selects [1, 1], inactive bypasses the mask. */
+  /** Every dimension is a mask range: active selects nonzero flags, inactive bypasses the mask. */
   private setDimensionActive(filter: GPUCrossfilter, id: string, active: boolean): void {
-    if (active) filter.setRange(id, [1, 1]);
+    if (active) filter.setRange(id, SELECTED_MASK_RANGE);
     else filter.clear(id);
   }
 

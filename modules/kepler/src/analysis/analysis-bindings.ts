@@ -2,13 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  createTransientView,
-  GraphVectorView,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma.gl/graph/gpu-core';
-import {getKeplerVectorChunks} from '../aggregation/kepler-vector-chunks';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUClassBreaks,
   GPUVariableStandardization,
@@ -145,25 +139,11 @@ function getProvenance(
   };
 }
 
+/** GPUVariableStandardization requires single-chunk columns, so the default output is one transient. */
 function createOutputColumn<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
   input: GPUVariableStandardizationProps['values']
 ): GPUVariableStandardizationProps['output'] {
-  if (!(input instanceof GraphVectorView))
-    return createTransientView(graph, id, 'float32', input.length);
-  const data: GraphDataView<'float32'>[] = getKeplerVectorChunks(input).map((chunk, index) =>
-    createTransientView(graph, `${id}-${index}`, 'float32', chunk.length)
-  );
-  return new GraphVectorView({
-    id,
-    name: id,
-    format: 'float32',
-    length: input.length,
-    valueLength: input.length,
-    stride: 1,
-    byteStride: 4,
-    rowByteLength: 4,
-    data
-  });
+  return createTransientView(graph, id, 'float32', input.length);
 }

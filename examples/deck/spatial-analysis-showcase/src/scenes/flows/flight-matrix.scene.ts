@@ -11,7 +11,7 @@ import {getSizeLegendEntries} from '../../cartography/proportional';
 import {GLOBAL_FURNITURE} from '../../cartography/projection-notes';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './flight-matrix.md?raw?raw';
+import narrative from './flight-matrix.md?raw';
 import type {FlightMatrixOptions} from './flight-matrix.compute';
 import {CONTINENT_NAMES} from './b11-geography';
 import {

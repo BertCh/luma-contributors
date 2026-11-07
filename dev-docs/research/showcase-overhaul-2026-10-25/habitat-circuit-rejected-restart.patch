@@ -1,0 +1,55 @@
+diff --git a/modules/graph/src/gpu-spatial-analysis/landscape-ecology/sparse-resistance.ts b/modules/graph/src/gpu-spatial-analysis/landscape-ecology/sparse-resistance.ts
+index 53d5728e4..c74075e42 100644
+--- a/modules/graph/src/gpu-spatial-analysis/landscape-ecology/sparse-resistance.ts
++++ b/modules/graph/src/gpu-spatial-analysis/landscape-ecology/sparse-resistance.ts
+@@ -147,6 +147,10 @@ columns[columnsOffset+index]=column;values[valuesOffset+index]=value;`
+       body: `rhs[rhsOffset+index]=f32(index==${source}u&&status[statusOffset+2u]!=0u);potentials[potentialsOffset+index]=0.0;`
+     })
+   );
++  // A fixed warm restart recomputes rhs - A*x after recursive residual drift.
++  // Reserve correction work inside the caller's budget; short solves stay unchanged.
++  const correctionIterations = maximumIterations >= 512 ? 64 : 0;
++  const initialIterations = maximumIterations - correctionIterations;
+   const solver = new GPUJacobiPCG({
+     id: `${id}-pcg`,
+     rowOffsets,
+@@ -155,10 +159,28 @@ columns[columnsOffset+index]=column;values[valuesOffset+index]=value;`
+     rhs,
+     solution: potentials,
+     columns: vertexCount,
+-    iterations: maximumIterations,
++    iterations: initialIterations,
++    // Corrected solves use the same row accumulation order as the final certificate.
++    ...(correctionIterations > 0 ? {spmvStrategy: 'scalar-row' as const} : {}),
+     toleranceSquared: tolerance * tolerance * 0.01
+   });
+   graph.add(solver);
++  if (correctionIterations > 0) {
++    graph.add(
++      new GPUJacobiPCG({
++        id: `${id}-pcg-correction`,
++        rowOffsets,
++        columnIndices: columns,
++        values,
++        rhs,
++        solution: potentials,
++        columns: vertexCount,
++        iterations: correctionIterations,
++        spmvStrategy: 'scalar-row',
++        toleranceSquared: tolerance * tolerance * 0.01
++      })
++    );
++  }
+   graph.add(
+     createRecipeKernelNode(graph, {
+       id: `${id}-true-residual`,
+@@ -236,6 +258,9 @@ let converged=valid&&maximum<=${tolerance}&&isFiniteValue(energy);status[statusO
+       vertexCount,
+       tolerance,
+       maximumIterations,
++      solverSpmvStrategy: correctionIterations > 0 ? 'scalar-row' : 'adaptive-default',
++      solverPhaseIterations:
++        correctionIterations > 0 ? [initialIterations, correctionIterations] : [initialIterations],
+       solver: 'sparse-jacobi-pcg' as const,
+       statusIterationMeaning: 'configured-budget' as const
+     }

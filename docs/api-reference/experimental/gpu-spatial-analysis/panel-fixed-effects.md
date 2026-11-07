@@ -41,7 +41,7 @@ inference are unsupported. In particular, subtracting time means from X and y
 before applying general W is not a correct two-way IV transformation.
 
 The independent fixture generator
-`modules/graph/test/oracles/spatial-panel-fixed-effects.py` fits a full
+`modules/analysis/test/oracles/spatial-panel-fixed-effects.py` fits a full
 entity-dummy instrumental-variable system with NumPy least squares. It records
 NumPy version, ordering and covariance convention, and is a reference composition
 rather than a direct panel-library call. GPU specs check coefficients, standard

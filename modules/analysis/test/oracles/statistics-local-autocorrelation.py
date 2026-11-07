@@ -8,7 +8,7 @@ Writes fixtures/statistics-local-autocorrelation.json next to this script, consu
 test/gpu-spatial-analysis/spatial-autocorrelation/spatial-autocorrelation-reference.ts) by
 gpu-hot-spot-analysis.spec.ts, gpu-local-moran.spec.ts, additional-spatial-statistics.spec.ts and
 spatial-autocorrelation.node.spec.ts. Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-local-autocorrelation.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-local-autocorrelation.py
 in a venv with numpy, scipy, esda, libpysal and statsmodels (versions are recorded in the fixture).
 
 Scene: 60 rows on a line, values = a bump at row 15, a dip at row 42 and N(0, 0.6) noise (seed 7),

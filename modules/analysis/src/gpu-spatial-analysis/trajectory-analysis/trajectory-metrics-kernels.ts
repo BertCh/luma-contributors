@@ -4,9 +4,9 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
-  createSegmentReductionNode,
-  type SegmentReductionOperation
-} from '../shared/segment-reduction';
+  createSegmentSumNode,
+  type SegmentReduction as SegmentReductionOperation
+} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -869,9 +869,10 @@ export function getSegmentedReductionNodes<Parameters>(
   props: SegmentedReductionNodesProps
 ): readonly GPUCommandNode<Parameters>[] {
   return [
-    createSegmentReductionNode<Parameters>(graph, {
+    createSegmentSumNode<Parameters>(graph, {
       id: props.id,
       operation: OPERATION,
+      segmentCount: props.output.length,
       input: props.input,
       segmentOffsets: props.segmentOffsets,
       output: props.output,

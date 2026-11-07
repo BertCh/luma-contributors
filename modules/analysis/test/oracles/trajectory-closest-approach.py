@@ -7,7 +7,7 @@ GPUTrajectoryClosestApproach.
 Writes fixtures/trajectory-closest-approach.json next to this script, consumed by
 test/gpu-spatial-analysis/trajectory-encounters/closest-approach-oracle.ts (and through it by the
 node and GPU specs). Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/trajectory-closest-approach.py
+    <venv>/bin/python -I modules/graph/test/oracles/trajectory-closest-approach.py
 in a venv with numpy and shapely (versions recorded in the fixture).
 
 No pip package implements MobilityDB's `tdwithin` / `nearestApproachDistance`, so this is a derived

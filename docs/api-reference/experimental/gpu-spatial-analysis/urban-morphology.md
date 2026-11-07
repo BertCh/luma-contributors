@@ -153,7 +153,7 @@ The distinction follows the [depthmapX metric documentation](https://github.com/
 
 ## Reference and execution evidence
 
-`modules/graph/test/oracles/urban-ecology-advanced.py` executes momepy 0.10.0 directly with
+`modules/analysis/test/oracles/urban-ecology-advanced.py` executes momepy 0.10.0 directly with
 `shrink=0`, `segment=1`, and explicit enclosure polygons, including a hole. It also directly compares street-profile width and strict shared-wall totals, including a
 point-only contact, and executes the pinned segregation package described in the ecology documentation. The native advanced suite tests
 nonconvex/holed areas, occluded facade intervals, narrow angular events, and HH normalization.

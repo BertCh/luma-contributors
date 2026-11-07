@@ -1,17 +1,15 @@
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # GPU Terrain
 
-<ExperimentalDocsTabs active="gpu-terrain" />
 
 :::caution Experimental
-`@luma-contributors/graph/gpu-terrain` is an initial, experimental entry point. APIs may change between
+`@luma-contributors/analysis/gpu-terrain` is an initial, experimental entry point. APIs may change between
 releases without a deprecation period.
 :::
 
 ## Overview
 
-`@luma-contributors/graph/gpu-terrain` provides analysis contributors for elevation tiles: Horn slope,
+`@luma-contributors/analysis/gpu-terrain` provides analysis contributors for elevation tiles: Horn slope,
 aspect and hillshade, marching-squares contours, viewshed visibility, hydrology (depression
 filling, flat resolution, D8, D-infinity and multiple-flow-direction routing, flow accumulation,
 streams, height above drainage, watersheds, stream order, hydrologic indices), batched line of sight
@@ -20,11 +18,11 @@ irradiance, relief shading, texture shading, archaeological relief visualization
 decoding, summits and critical points, curvature, geomorphons, ruggedness, topographic position,
 Weiss landforms, and terrain-following wind fields. Each contributor is an algorithm that declares its
 resources and command nodes into a caller-owned
-[`GPUCommandGraph`](../gpu-core/gpu-command-graph.md) through `getCommandNodes(graph)`
+[`GPUCommandGraph`](https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-command-graph) through `getCommandNodes(graph)`
 (`GPUCommandNodeProducer`). It never compiles, submits, encodes, or reads back.
 
 The contributors compose public primitives from [GPU Raster](../gpu-raster/README.md) and
-[GPU Core](../gpu-core/concepts.md); new WGSL is written only where no primitive fits.
+[GPU Core](https://luma.gl/docs/api-reference/experimental/gpu-core/concepts); new WGSL is written only where no primitive fits.
 
 ## When to use it
 
@@ -48,14 +46,14 @@ different kernel:
 ## Quick start
 
 ```ts
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUParameterBuffer,
   GPUTerrainDerivatives,
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
-} from '@luma-contributors/graph/gpu-terrain';
-import {makeGPURasterMetadata} from '@luma-contributors/graph/gpu-raster';
+} from '@luma-contributors/analysis/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'terrain'});
 const parameters = new GPUParameterBuffer(device, {
@@ -97,14 +95,14 @@ One figure per contributor, each drawn from a recorded GPU run on real data; cli
 
 - GPU Terrain is experimental and WebGPU-only.
 - Inputs are planar `float32` elevation values; projection is done upstream (for example with
-  [`GPUProjection`](../gpu-project.md)).
+  [`GPUProjection`](https://luma.gl/docs/api-reference/experimental/gpu-project)).
 - Each contributor's TSDoc lists its non-goals. The GPU Core maintainer roadmap
-  (`dev-docs/roadmaps/gpugraph-roadmap.md`) tracks what is still open.
+  (`dev-docs/roadmap.md`) tracks what is still open.
 
 ## Related modules
 
 - [GPU Raster](../gpu-raster/README.md) supplies the raster operators that terrain contributors compose.
-- [GPU Core](../gpu-core/concepts.md) defines contributors, composition levels, and graph ownership.
+- [GPU Core](https://luma.gl/docs/api-reference/experimental/gpu-core/concepts) defines contributors, composition levels, and graph ownership.
 - [GPU Network](../gpu-network/README.md) shares the conventions above for road and flow analysis.
 
 [Expansion computation lenses](./expansion-lenses.md) record downstream flow distance and compact

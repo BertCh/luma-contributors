@@ -2,8 +2,8 @@
 
 These recipes add nodes to a caller-owned `GPUCommandGraph`. They never submit work, read back a
 result, fit a model on the CPU, or silently change coordinate systems. Import spatial, raster and
-terrain workflows from `@luma-contributors/graph/gpu-spatial-analysis`; import network scenarios and the track-quality/map-matching composite from
-`@luma-contributors/graph/gpu-network`.
+terrain workflows from `@luma-contributors/analysis/gpu-spatial-analysis`; import network scenarios and the track-quality/map-matching composite from
+`@luma-contributors/analysis/gpu-network`.
 
 Every result exposes `outputs`, `intermediates`, `contributors` and `status.stages`. Inspect the
 stage status as well as the numerical output: a partial routing result or an incomplete geometry
@@ -28,7 +28,7 @@ It resolves native-format nodata and validity before applying scale/offset. Thes
 whole-cell quantiles. Fractional coverage does not turn them into weighted quantiles.
 
 ```ts
-import {addRasterZonalDistributionRecipe} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {addRasterZonalDistributionRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const distributions = addRasterZonalDistributionRecipe(graph, {
   grid,
@@ -147,7 +147,7 @@ D-infinity/MFD flow as D8. Lengths/distances use the planar grid affine's units.
 
 ## Track quality and route conformity
 
-`addTrackQualityRecipe` is exported by `@luma-contributors/graph/gpu-network`, since its optional map-matching stage consumes network topology. It preserves the trajectory's raw observation order and timestamp representation,
+`addTrackQualityRecipe` is exported by `@luma-contributors/analysis/gpu-network`, since its optional map-matching stage consumes network topology. It preserves the trajectory's raw observation order and timestamp representation,
 including double-single and Int64 words. Its live two-row threshold view holds maximum speed and
 maximum gap in trajectory units. Raw flags use bits 1 invalid position, 2 nonpositive/nonfinite time
 step, 4 excessive/nonfinite step speed, 8 time gap and 16 invalid threshold. First observations

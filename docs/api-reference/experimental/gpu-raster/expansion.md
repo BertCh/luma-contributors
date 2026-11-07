@@ -4,9 +4,9 @@ These experimental command-graph contributors keep inputs and results on the GPU
 bounded analytical operations and explicit completeness evidence. They have small independent
 reference fixtures; they do not yet establish a speed advantage or large-domain production parity.
 All outputs are caller-owned, packed graph views. Input/output buffers must be distinct. Import
-raster contributors from `@luma-contributors/graph/gpu-raster`, terrain contributors from
-`@luma-contributors/graph/gpu-terrain`, and hull/mesh contributors from
-`@luma-contributors/graph/gpu-spatial-analysis`.
+raster contributors from `@luma-contributors/analysis/raster-analysis`, terrain contributors from
+`@luma-contributors/analysis/gpu-terrain`, and hull/mesh contributors from
+`@luma-contributors/analysis/gpu-spatial-analysis`.
 
 ## Operations and contracts
 
@@ -140,7 +140,7 @@ markers identifiable but publishes unresolved non-marker pixels when its step bu
 
 ## Reference evidence
 
-[`raster-terrain-expansion.py`](../../../../modules/graph/test/oracles/raster-terrain-expansion.py)
+[`raster-terrain-expansion.py`](../../../../modules/analysis/test/oracles/raster-terrain-expansion.py)
 records exact package versions and produces committed fixtures using SciPy median/hole filling,
 scikit-image reconstruction/watershed, NetworkX path lengths, Shapely intersections/CDT, and a
 SciPy-Delaunay/Shapely alpha-complex composition. The matching browser tests execute actual GPU

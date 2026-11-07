@@ -1,6 +1,6 @@
 {
   "generator": "dasymetric-redistribution.py",
-  "command": "python -I modules/analysis/test/oracles/dasymetric-redistribution.py",
+  "command": "python -I modules/graph/test/oracles/dasymetric-redistribution.py",
   "versions": {
     "tobler": "0.14.0",
     "shapely": "2.1.2",

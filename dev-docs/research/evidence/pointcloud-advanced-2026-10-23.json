@@ -1,0 +1,185 @@
+{
+  "date": "2026-10-23",
+  "device": {
+    "info": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "max",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "maximumStorageBindingBytes": 4294967292,
+    "maximumBufferBytes": 4294967292
+  },
+  "invocation": "VITE_POINTCLOUD_BENCHMARK=true VITE_POINTCLOUD_MAX_ROWS=1000000 python3 /tmp/luma-contributors-round-two/run-gpu.py yarn test-headless --no-coverage --maxWorkers=1 --silent=false modules/graph/test/gpu-pointcloud/gpu-pointcloud-advanced-benchmark.spec.ts",
+  "timing": "Wall time encode/submit/native queue fence including host overhead; cold includes lazy pipeline creation; three resident samples rebuild indexes each run.",
+  "workloads": {
+    "smrf": "10k/100k/1m points,100x100/256x256 raster,slope0.01,2x2 object patches every16cells,window4,cell1; check ground and object classifications",
+    "icp": "10k/100k/1m cubic lattice translated[.05,-.03,.02],static target grid,4 iterations,Huber scale0.1,maxdistance0.2; verify transform and convergence",
+    "skew": "All input points coincide,64 owned query rows,capacity4; verify exact full support and stable IDs. Does not claim million all-query coincident neighborhoods are scalable."
+  },
+  "records": [
+    {
+      "mode": "smrf",
+      "rows": 10000,
+      "side": 100,
+      "allocationDeclarationMilliseconds": 12.800000011920929,
+      "compileMilliseconds": 3.2999999970197678,
+      "coldExecutionMilliseconds": 56.5,
+      "residentWallMilliseconds": [
+        3.4000000059604645,
+        2.8999999910593033,
+        3.1000000089406967
+      ],
+      "readbackMilliseconds": 1,
+      "transientBytes": 360004,
+      "nodeCount": 58,
+      "submissions": 4
+    },
+    {
+      "mode": "smrf",
+      "rows": 100000,
+      "side": 256,
+      "allocationDeclarationMilliseconds": 3.4000000059604645,
+      "compileMilliseconds": 1.699999988079071,
+      "coldExecutionMilliseconds": 128.20000000298023,
+      "residentWallMilliseconds": [
+        4.5,
+        4.600000008940697,
+        5.0999999940395355
+      ],
+      "readbackMilliseconds": 0.4000000059604645,
+      "transientBytes": 3048576,
+      "nodeCount": 74,
+      "submissions": 4
+    },
+    {
+      "mode": "smrf",
+      "rows": 1000000,
+      "side": 256,
+      "allocationDeclarationMilliseconds": 14.799999997019768,
+      "compileMilliseconds": 1.3999999910593033,
+      "coldExecutionMilliseconds": 91.5,
+      "residentWallMilliseconds": [
+        14.200000002980232,
+        12.799999997019768,
+        11.200000002980232
+      ],
+      "readbackMilliseconds": 0.6000000089406967,
+      "transientBytes": 21048576,
+      "nodeCount": 74,
+      "submissions": 4
+    },
+    {
+      "mode": "icp",
+      "rows": 10000,
+      "side": 22,
+      "allocationDeclarationMilliseconds": 4,
+      "compileMilliseconds": 0.5999999940395355,
+      "coldExecutionMilliseconds": 467.70000000298023,
+      "residentWallMilliseconds": [
+        5.299999997019768,
+        4.299999997019768,
+        4.700000002980232
+      ],
+      "readbackMilliseconds": 0.9000000059604645,
+      "transientBytes": 295688,
+      "nodeCount": 41,
+      "submissions": 4
+    },
+    {
+      "mode": "icp",
+      "rows": 100000,
+      "side": 47,
+      "allocationDeclarationMilliseconds": 20.5,
+      "compileMilliseconds": 0.9000000059604645,
+      "coldExecutionMilliseconds": 429.79999999701977,
+      "residentWallMilliseconds": [
+        6.4000000059604645,
+        6,
+        6.899999991059303
+      ],
+      "readbackMilliseconds": 1.4000000059604645,
+      "transientBytes": 2873820,
+      "nodeCount": 57,
+      "submissions": 4
+    },
+    {
+      "mode": "icp",
+      "rows": 1000000,
+      "side": 100,
+      "allocationDeclarationMilliseconds": 195.70000000298023,
+      "compileMilliseconds": 0.9000000059604645,
+      "coldExecutionMilliseconds": 470.20000000298023,
+      "residentWallMilliseconds": [
+        29.099999994039536,
+        27.599999994039536,
+        27.200000002980232
+      ],
+      "readbackMilliseconds": 1.2000000029802322,
+      "transientBytes": 28276324,
+      "nodeCount": 57,
+      "submissions": 4
+    },
+    {
+      "mode": "skew",
+      "rows": 10000,
+      "side": 22,
+      "allocationDeclarationMilliseconds": 1.199999988079071,
+      "compileMilliseconds": 0.4000000059604645,
+      "coldExecutionMilliseconds": 55.900000005960464,
+      "residentWallMilliseconds": [
+        5,
+        5,
+        4.5
+      ],
+      "readbackMilliseconds": 1.3999999910593033,
+      "transientBytes": 200320,
+      "nodeCount": 27,
+      "submissions": 4
+    },
+    {
+      "mode": "skew",
+      "rows": 100000,
+      "side": 47,
+      "allocationDeclarationMilliseconds": 1.0999999940395355,
+      "compileMilliseconds": 0.4000000059604645,
+      "coldExecutionMilliseconds": 95.20000000298023,
+      "residentWallMilliseconds": [
+        43.79999999701977,
+        43.900000005960464,
+        44.099999994039536
+      ],
+      "readbackMilliseconds": 1.7999999970197678,
+      "transientBytes": 2003152,
+      "nodeCount": 43,
+      "submissions": 4
+    },
+    {
+      "mode": "skew",
+      "rows": 1000000,
+      "side": 100,
+      "allocationDeclarationMilliseconds": 4.100000008940697,
+      "compileMilliseconds": 0.699999988079071,
+      "coldExecutionMilliseconds": 479.80000001192093,
+      "residentWallMilliseconds": [
+        438.59999999403954,
+        439.40000000596046,
+        439.69999998807907
+      ],
+      "readbackMilliseconds": 3,
+      "transientBytes": 20031420,
+      "nodeCount": 43,
+      "submissions": 4
+    }
+  ]
+}

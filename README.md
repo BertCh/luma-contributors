@@ -18,7 +18,7 @@ This repository holds only geospatial and analysis code. It builds on published 
 `@luma.gl/shaders` and `@luma.gl/graph` through their public entry points, and carries no copies
 of luma.gl code. See `dev-docs/upstream-first-plan.md`.
 
-`scripts/split/README.md` describes how this repository was produced and how to re-sync it.
+Plans go in `dev-docs/roadmap.md`; see `dev-docs/README.md` for the dev-docs index.
 
 ## Development
 

@@ -24,9 +24,6 @@
   "dependencies": {
     "@luma-contributors/analysis": "0.1.0-alpha.0",
     "@luma-contributors/lenses": "0.1.0-alpha.0",
-    "@luma.gl/core": "10.0.0-alpha.10",
-    "@luma.gl/graph": "10.0.0-alpha.10",
-    "@luma.gl/shaders": "10.0.0-alpha.10",
     "@mapbox/geo-viewport": "^0.4.1",
     "@math.gl/core": "~5.0.0-beta.4",
     "@math.gl/geospatial": "~5.0.0-beta.4",
@@ -39,7 +36,10 @@
     "apache-arrow": "^17.0.0"
   },
   "peerDependencies": {
-    "apache-arrow": ">=17.0.0"
+    "apache-arrow": ">=17.0.0",
+    "@luma.gl/core": "~10.0.0-alpha.10",
+    "@luma.gl/graph": "~10.0.0-alpha.10",
+    "@luma.gl/shaders": "~10.0.0-alpha.10"
   },
   "repository": {
     "type": "git",

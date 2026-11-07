@@ -203,10 +203,6 @@ export function addColumnExtraction(
       operation: 'GPURegressionLens',
       variant: 'extract-columns',
       // Lens-only presentation node: its own namespace keeps it apart from the estimator's nodes.
-      record: {
-        namespace: 'lens',
-        attrs: {purpose: 'copies estimator table columns for the result figure; computes nothing'}
-      },
       bindings: [
         {name: 'source', view: props.source, type: 'f32', access: 'read'},
         ...props.outputs.map((view, index) => ({

@@ -4,13 +4,11 @@ sidebar_label: "Recipes"
 description: "Prebuilt GPU spatial analysis recipes, documented by the contributors they compose."
 ---
 
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # Recipes
 
 See [Geospatial workflow recipes](./expansion-recipes.md) for zonal distributions, network and facility scenarios, interpolation diagnostics, exposure, raster change, drainage, track quality, local variability, cell flows and surface preparation.
 
-<ExperimentalDocsTabs active="gpu-spatial-analysis-recipes" />
 
 Recipes are plain functions, not classes: `addXRecipe(graph, props)` constructs the contributors, calls
 `graph.add` in chain order, wires outputs to inputs and returns `{contributors, ...named views}`. Views you

@@ -1,67 +1,34 @@
 ---
-title: GPURaster operations
-description: Index of GPURaster storage, overview, statistics, pixel, filtering, morphology, region, and contour operations.
+title: Raster analysis operations
+description: Index of the raster analysis contributors in @luma-contributors/analysis/raster-analysis.
 ---
 
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
+# Raster analysis reference
 
-# GPURaster operations reference
+`@luma-contributors/analysis/raster-analysis` holds the raster analysis contributors that luma.gl
+does not provide. Raster storage and residency, analytical overviews, pixel operations, statistics,
+filters and morphology, connected components, region measurements and contours are owned by
+luma.gl: see [`@luma.gl/graph/gpu-raster`](https://luma.gl/docs/api-reference/experimental/gpu-raster).
+This entry composes with those operations through `GPUCommandGraph`; it does not wrap or replace them.
 
-<ExperimentalDocsTabs active="gpu-raster-operations" />
+Each contributor declares work into a caller-owned graph and never compiles, submits or reads back.
 
-## Overview
+## Choose a page
 
-`@luma-contributors/graph/gpu-raster` provides optional, graph-native WebGPU operations for
-two-dimensional scientific and geospatial rasters. Applications control image decoding,
-coordinate transforms, source buffers and textures, output allocation, command submission, and
-optional readback; an explicitly selected residency cache can upload and own source buffers on
-their behalf.
-
-`GPURasterTileReader` validates application-owned, asynchronously decoded raster sources without
-choosing a network transport, image codec, or GPU uploader. `GPURasterTileCache` optionally adds
-explicitly budgeted CPU/GPU tile residency, cancellation-safe loading, and reusable compiled
-graphs around that reader. `GPURasterTileHaloAssembler` coordinates cumulative receptive-field
-planning and fence-safe neighboring tile leases; `GPURasterTileHaloFill` and
-`GPURasterTileCoreExtract` explicitly assemble native samples and publish seam-safe owned cores
-through the caller's command graph. `GPURasterOverview` and
-`GPURasterCategoricalOverview` separately generate nodata-aware analytical overview values and
-coverage without mistaking source-selected samples or presentation mipmaps for scientific
-reductions. Explicit global initialization, tiled statistic merges, stable-domain histogram
-replay, and bounded percentile selection preserve caller-owned dataset-wide results across
-separately processed tiles. The reader, cache, and assembler never submit commands.
-
-Current contributors cover raster metadata, explicit texture/buffer conversion, calibrated
-pointwise band math, normalized difference vegetation index (NDVI), validity-aware histograms,
-scalar summaries, contrast/gamma/equalization transforms, analytical thresholds, mask-aware
-neighborhood stencils, direct convolution, separable Gaussian/box smoothing, signed
-Sobel/Scharr/Laplacian derivatives, gradient magnitude, binary/grayscale dilation, erosion,
-opening, closing, deterministic connected foreground components, bounded dense region labels and
-counts, grouped intensity and spatial region measurements, GPU-resident marching-squares
-contours, indirect vector overlays, and adapter-limit planning. Each exposes
-`addToGraph(graph)`, which only declares work. No
-contributor submits commands or reads results back.
-
-## Choose an operation family
-
-| Family | Use it for |
+| Page | Use it for |
 | --- | --- |
-| [Storage and residency](/docs/api-reference/experimental/gpu-raster/operations-storage-residency) | Validity, decoded sources, tile caches, cancellation, halos, and owned cores. |
-| [Analytical overviews](/docs/api-reference/experimental/gpu-raster/operations-overviews) | Continuous and categorical multiresolution summaries. |
-| [Statistics](/docs/api-reference/experimental/gpu-raster/operations-statistics) | Histograms, scalar summaries, tiled replay, and quantiles. |
-| [Pixel operations](/docs/api-reference/experimental/gpu-raster/operations-pixel) | Band math, NDVI, contrast, gamma, equalization, and thresholds. |
-| [Filters and morphology](/docs/api-reference/experimental/gpu-raster/operations-filters-morphology) | Neighborhood filters, convolution, gradients, dilation, erosion, opening, and closing. |
-| [Regions and contours](/docs/api-reference/experimental/gpu-raster/operations-regions-contours) | Connected components, region measurements, marching squares, and indirect overlays. |
 | [Analysis contributors](/docs/api-reference/experimental/gpu-raster/operations-analysis) | Zonal statistics, stretches, isolines, distance and cost surfaces, rasterization, change detection, and flow textures. |
-
-## How to use this reference
-
-Start with [GPURaster concepts](/docs/api-reference/experimental/gpu-raster/concepts) if nodata,
-validity masks, tile cores, halos, or analytical overviews are unfamiliar. Each operation-family
-page states ownership, capacity, failure, and performance behavior alongside its API examples.
+| [Patch metrics and sieving](/docs/api-reference/experimental/gpu-raster/raster-patches) | Per-patch area and perimeter, and small-patch removal over dense labels. |
+| [Raster, terrain and geometry expansion](/docs/api-reference/experimental/gpu-raster/expansion) | Continuous-surface preparation, reprojection, directed walking cost and bounded topology. |
+| [Fill nodata](/docs/api-reference/experimental/gpu-raster/fill-nodata) | Four-quadrant nodata filling. |
+| [Tile reprojection](/docs/api-reference/experimental/gpu-raster/tile-reprojection) | Explicit tile reprojection. |
+| [Fractional zonal distribution](/docs/api-reference/experimental/gpu-raster/fractional-zonal-distribution) and [categorical statistics](/docs/api-reference/experimental/gpu-raster/fractional-categorical-statistics) | Weighted distributions and composition with observed support. |
+| [Focal pairs](/docs/api-reference/experimental/gpu-raster/focal-pairs) | Paired-valid covariance, correlation and local regression. |
+| [Spectral indices](/docs/api-reference/experimental/gpu-raster/spectral-indices) | Calibrated NDWI, NBR, EVI and SAVI. |
+| [Remote sensing](/docs/api-reference/experimental/gpu-raster/remote-sensing) | Remote-sensing contributors. |
 
 ## Related pages
 
-- [GPURaster overview](/docs/api-reference/experimental/gpu-raster)
+- [Raster analysis overview](/docs/api-reference/experimental/gpu-raster)
 - [GPU Terrain](/docs/api-reference/experimental/gpu-terrain)
-- [Satellite Raster Lab](/examples/showcase/raster-lab)
-- [GPU Core](/docs/api-reference/experimental/gpu-core)
+- [luma.gl GPU Core](https://luma.gl/docs/api-reference/experimental/gpu-core)

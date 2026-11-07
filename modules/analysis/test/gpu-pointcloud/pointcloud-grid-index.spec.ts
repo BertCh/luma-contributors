@@ -5,7 +5,7 @@
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {createPointCloudGridIndex} from '../../src/pointcloud-analysis/pointcloud-grid-index';
-import {getSpatialOperationNodes} from '@luma.gl/graph';
+import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/pointcloud-kernel-nodes';
 import {makeSpatialFixture, readIntegers} from '../spatial-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
 
@@ -49,7 +49,7 @@ for (const [pointCount, cellCount] of [
       cellSize: 1
     });
     for (const node of built.nodes) fixture.graph.add(node);
-    for (const node of getSpatialOperationNodes(fixture.graph, {
+    for (const node of getPointCloudKernelNodes(fixture.graph, {
       id: 'capture-indices',
       length: pointCount,
       inputs: {sortedIndices: built.sortedIndices},
@@ -57,7 +57,7 @@ for (const [pointCount, cellCount] of [
       body: 'writeIndices(index,readSortedIndices(index));'
     }))
       fixture.graph.add(node);
-    for (const node of getSpatialOperationNodes(fixture.graph, {
+    for (const node of getPointCloudKernelNodes(fixture.graph, {
       id: 'capture-offsets',
       length: cellCount + 1,
       inputs: {gridOffsets: built.offsets},

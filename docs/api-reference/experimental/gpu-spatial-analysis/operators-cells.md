@@ -1,14 +1,12 @@
 ---
 title: "GPU Spatial Analysis: Cells (DGGS)"
 sidebar_label: "Cells (DGGS)"
-description: "Cells (DGGS) contributors in @luma-contributors/graph/gpu-spatial-analysis."
+description: "Cells (DGGS) contributors in @luma-contributors/analysis/gpu-spatial-analysis."
 ---
 
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # Cells (DGGS)
 
-<ExperimentalDocsTabs active="gpu-spatial-analysis-operators" />
 
 ### `GPUCellAggregation`, `GPUCellRollup`, `GPUCellPyramid`, and `GPUCellLevelSelection`
 

@@ -7,7 +7,7 @@ slice indices for the emerging hot spots specs.
 Writes fixtures/statistics-emerging-hot-spots.json next to this script, consumed (through
 test/gpu-spatial-analysis/emerging-hot-spots/emerging-hot-spots-reference.ts) by
 emerging-hot-spots.node.spec.ts. Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-emerging-hot-spots.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-emerging-hot-spots.py
 in a venv with numpy, scipy and statsmodels (versions are recorded in the fixture).
 
 - `multipleTesting`: 100 bins at radius 0 and window 0, so the Gi* z of a bin is its population
@@ -178,7 +178,7 @@ slices = [
 ]
 
 fixture = {
-    'generator': 'modules/analysis/test/oracles/statistics-emerging-hot-spots.py',
+    'generator': 'modules/graph/test/oracles/statistics-emerging-hot-spots.py',
     'versions': {
         'python': platform.python_version(),
         'numpy': np.__version__,

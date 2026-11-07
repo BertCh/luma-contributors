@@ -31,7 +31,10 @@ const FIXTURES = {
 it('every property fixture records generator, seed, package versions and tolerances', () => {
   for (const [name, path] of Object.entries(FIXTURES)) {
     const fixture = load(path);
-    expect(fixture.generator, name).toBe('modules/analysis/test/oracles/geometry-properties.py');
+    // Fixture bytes are pinned from before the module rename, so the recorded path may say modules/graph.
+    expect(fixture.generator, name).toMatch(
+      /^modules\/(graph|analysis)\/test\/oracles\/geometry-properties\.py$/
+    );
     expect(typeof fixture.seed, name).toBe('number');
     for (const key of ['python', 'numpy', 'scipy', 'shapely', 'geos', 'h3']) {
       expect(typeof fixture.versions[key], `${name} versions.${key}`).toBe('string');

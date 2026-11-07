@@ -627,9 +627,7 @@ const COLUMN_COUNT: u32 = ${count}u;`,
       segmentCount,
       input: props.matrix,
       segmentOffsets: blockOffsets,
-      output: partials,
-      // The largest offset is `(first + count) * rows`; checked against the matrix at build time.
-      offsetsWithinInput: (first + count) * rows <= props.matrix.length
+      output: partials
     }),
     createSegmentSumNode<Parameters>(graph, {
       id: `${id}-columns`,
@@ -637,9 +635,7 @@ const COLUMN_COUNT: u32 = ${count}u;`,
       segmentCount: count,
       input: partials,
       segmentOffsets: columnOffsets,
-      output: props.totals,
-      // Column offsets are `column * blockCount <= count * blockCount`, the rows of `partials`.
-      offsetsWithinInput: true
+      output: props.totals
     })
   ];
 }

@@ -7,7 +7,7 @@ Lee's L from esda.
 Writes fixtures/statistics-local-join-counts-and-bivariate.json next to this script, consumed
 (through test/gpu-spatial-analysis/permutation-inference/new-statistics-reference.ts) by
 new-statistics.node.spec.ts and new-statistics.spec.ts. Run with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-local-join-counts-and-bivariate.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-local-join-counts-and-bivariate.py
 in a venv with numpy, scipy, esda and libpysal (versions are recorded in the fixture). It takes about
 a minute (the consistent BJC null below draws 99999 permutations per row in python).
 

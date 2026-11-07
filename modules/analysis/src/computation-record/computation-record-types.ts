@@ -10,7 +10,7 @@
  * id and node id, so two metrics files over one structure form an A/B comparison.
  *
  * The schema is fork-local and carries no external compatibility promise. Fields exist only when
- * a view consumes them; see `dev-docs/roadmaps/computation-visualization-roadmap.md` §A.
+ * a view consumes them; see `dev-docs/archive/computation-visualization-roadmap.md` §A.
  */
 
 /** Schema identifier of {@link GPUComputationRecord}. */

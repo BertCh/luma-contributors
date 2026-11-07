@@ -1,6 +1,6 @@
 # Terrain processing
 
-These contributors emit WebGPU command-graph nodes. All numeric inputs and outputs remain on the GPU; there is no host convergence read or CPU algorithm fallback. Callers own outputs. Every invocation rewrites output statuses. Inputs must be packed graph views, and outputs must not alias inputs or one another. The native GPU tests are in `modules/graph/test/gpu-terrain/terrain-processing/terrain-processing.spec.ts`.
+These contributors emit WebGPU command-graph nodes. All numeric inputs and outputs remain on the GPU; there is no host convergence read or CPU algorithm fallback. Callers own outputs. Every invocation rewrites output statuses. Inputs must be packed graph views, and outputs must not alias inputs or one another. The native GPU tests are in `modules/analysis/test/gpu-terrain/terrain-processing/terrain-processing.spec.ts`.
 
 ## Breaching and explicit burning
 
@@ -63,7 +63,7 @@ For preprocessing, compose `GPUTerrainFlow` once over the complete resident elev
 
 ## Executed references and scale coverage
 
-`modules/graph/test/oracles/terrain-upstream.py` executes pinned pysheds 0.5, xDEM 0.1.6, WhiteboxTools 2.4.0 (Python wrapper 2.3.6), NumPy 2.2.6 and SciPy 1.15.3. The adjacent requirements file and checked-in JSON preserve the inputs, reference versions and outputs. It checks supplied D8/MFD accumulation, xDEM vertical shift and NMAD, and a forced Whitebox escape corridor. Catchment statistics are explicitly composed pysheds membership plus independent NumPy reductions. Hierarchy comparisons use independently labeled SciPy sublevel components and their area/volume, so equal-height zero-persistence tree refinements do not produce false topology mismatches.
+`modules/analysis/test/oracles/terrain-upstream.py` executes pinned pysheds 0.5, xDEM 0.1.6, WhiteboxTools 2.4.0 (Python wrapper 2.3.6), NumPy 2.2.6 and SciPy 1.15.3. The adjacent requirements file and checked-in JSON preserve the inputs, reference versions and outputs. It checks supplied D8/MFD accumulation, xDEM vertical shift and NMAD, and a forced Whitebox escape corridor. Catchment statistics are explicitly composed pysheds membership plus independent NumPy reductions. Hierarchy comparisons use independently labeled SciPy sublevel components and their area/volume, so equal-height zero-persistence tree refinements do not produce false topology mismatches.
 
 Whitebox lowers the starting pit by its flat increment in the corridor fixture, while this contributor preserves the pit elevation and minimizes its explicitly stated cut objective. Tests retain and compare both outputs and the common drainage corridor; they do not claim general Whitebox elevation or path-cost identity.
 
@@ -72,11 +72,11 @@ Whitebox lowers the starting pit by its flat increment in the corridor fixture, 
 ## Separate phase measurements
 
 The opt-in `terrain-processing-benchmark.spec.ts` covers all six terrain roadmap rows at 64 and
-16,384 cells. Its [raw phase record](../../../../dev-docs/research/gpu-geospatial-performance-2026-10-23/terrain-processing-phases.json)
+16,384 cells. Its raw phase record
 includes source hashes, device limits, initial allocation/preparation/upload, graph declaration,
 synchronous compilation, first submit/fence, three repeated in-place upload/submit samples, full
 output readback, native GPU timestamps and actual compiled transient allocation. Run it with
-`VITE_TERRAIN_PROCESSING_BENCHMARK=true yarn test-browser-benchmarks --maxWorkers=1 --silent=false --reporter=verbose modules/graph/test/gpu-terrain/terrain-processing/terrain-processing-benchmark.spec.ts`.
+`VITE_TERRAIN_PROCESSING_BENCHMARK=true yarn test-browser-benchmarks --maxWorkers=1 --silent=false --reporter=verbose modules/analysis/test/gpu-terrain/terrain-processing/terrain-processing-benchmark.spec.ts`.
 
 The Apple WebGPU/Metal device measured the following at 16,384 cells. Both timing columns are
 medians of three repeated submissions, and scratch excludes caller inputs/outputs and driver

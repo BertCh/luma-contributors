@@ -58,7 +58,7 @@ const ELEMENT_KERNEL_SOURCES: Record<GeometryElement, string[]> = {
   GPUMinimumBounds: [`${SOURCE_ROOT}/minimum-bounds/gpu-minimum-bounds.ts`],
   GPUPolygonTriangulation: [
     `${SOURCE_ROOT}/polygon-triangulation/gpu-polygon-triangulation.ts`,
-    `${SOURCE_ROOT}/polygon-triangulation/polygon-triangulation-layout.ts`,
+    'modules/analysis/src/analysis-core/polygon-triangulation/polygon-triangulation-layout.ts',
     `${SOURCE_ROOT}/polygon-triangulation/polygon-triangulation-monotone.ts`,
     `${SOURCE_ROOT}/polygon-triangulation/polygon-triangulation-monotone-wgsl.ts`
   ],

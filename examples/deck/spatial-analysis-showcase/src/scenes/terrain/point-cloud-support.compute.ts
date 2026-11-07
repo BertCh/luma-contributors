@@ -147,7 +147,6 @@ export async function createPointCloudSupport(
   const octreeOwnershipBuffer = resources.createBuffer('octree-row-ownership', sampleCount * 4);
   const partBuffers = [0, 1].map(part => ({
     counts: resources.createBuffer(`voxel-part-${part}-counts`, voxelCount * 4),
-    centroids: resources.createBuffer(`voxel-part-${part}-centroids`, voxelCount * 12),
     representatives: resources.createBuffer(`voxel-part-${part}-representatives`, voxelCount * 4),
     output: resources.createBuffer(`voxel-part-${part}-sample`, voxelCount * 12)
   }));
@@ -159,7 +158,6 @@ export async function createPointCloudSupport(
   );
   const mergedStatusBuffer = resources.createBuffer('voxel-merged-status', voxelCount * 4);
   const directCountsBuffer = resources.createBuffer('voxel-direct-counts', voxelCount * 4);
-  const directCentroidsBuffer = resources.createBuffer('voxel-direct-centroids', voxelCount * 12);
   const directRepresentativesBuffer = resources.createBuffer(
     'voxel-direct-representatives',
     voxelCount * 4
@@ -253,12 +251,6 @@ export async function createPointCloudSupport(
       'voxel-direct-counts',
       directCountsBuffer,
       'uint32',
-      voxelCount
-    );
-    const directCentroids = importView(
-      'voxel-direct-centroids',
-      directCentroidsBuffer,
-      'float32x3',
       voxelCount
     );
     const directRepresentatives = importView(
@@ -357,12 +349,6 @@ export async function createPointCloudSupport(
         'uint32',
         voxelCount
       );
-      const partCentroids = importView(
-        `voxel-part-${partIndex}-centroids`,
-        part.centroids,
-        'float32x3',
-        voxelCount
-      );
       const partRepresentatives = importView(
         `voxel-part-${partIndex}-representatives`,
         part.representatives,
@@ -383,14 +369,15 @@ export async function createPointCloudSupport(
           voxelSize: VOXEL_SIZE_METERS,
           gridSize: voxelGrid,
           counts: partCounts,
-          centroids: partCentroids,
           representatives: partRepresentatives,
           output: partOutput
         })
       );
       return {
         counts: partCounts,
-        centroids: partCentroids,
+        // Published downsampling emits representative positions, not centroids; the merge's
+        // position channel therefore averages representatives and is not compared with the direct run.
+        centroids: partOutput,
         representatives: partRepresentatives,
         sourceRowOffset: partIndex === 0 ? 0 : partitionCount
       };
@@ -414,7 +401,6 @@ export async function createPointCloudSupport(
         voxelSize: VOXEL_SIZE_METERS,
         gridSize: voxelGrid,
         counts: directCounts,
-        centroids: directCentroids,
         representatives: directRepresentatives,
         output: directOutput
       })
@@ -472,14 +458,12 @@ export async function createPointCloudSupport(
     {buffer: octreeNodesBuffer, size: octreeNodeCapacity * 8 * 4},
     {buffer: octreePointIndicesBuffer, size: sampleCount * 4},
     {buffer: mergedCountsBuffer, size: voxelCount * 4},
-    {buffer: mergedCentroidsBuffer, size: voxelCount * 12},
+    {buffer: mergedRepresentativesBuffer, size: voxelCount * 4},
     {buffer: mergedStatusBuffer, size: voxelCount * 4},
     {buffer: partBuffers[0].counts, size: voxelCount * 4},
-    {buffer: partBuffers[0].centroids, size: voxelCount * 12},
     {buffer: partBuffers[1].counts, size: voxelCount * 4},
-    {buffer: partBuffers[1].centroids, size: voxelCount * 12},
     {buffer: directCountsBuffer, size: voxelCount * 4},
-    {buffer: directCentroidsBuffer, size: voxelCount * 12}
+    {buffer: directRepresentativesBuffer, size: voxelCount * 4}
   ];
   const summaryReader = new SummaryReader(
     resources,
@@ -492,11 +476,6 @@ export async function createPointCloudSupport(
         offset += length * 4;
         return view;
       };
-      const readFloat32 = (length: number): Float32Array => {
-        const view = new Float32Array(bytes, offset, length);
-        offset += length * 4;
-        return view;
-      };
       const gpuRadiusCounts = readUint32(sampleCount);
       const gpuRadiusMask = readUint32(sampleCount);
       const gpuGroundMask = readUint32(sampleCount);
@@ -505,14 +484,12 @@ export async function createPointCloudSupport(
       const octreeNodes = readUint32(octreeNodeCapacity * 8);
       const octreePointIndices = readUint32(sampleCount);
       const mergedCounts = readUint32(voxelCount);
-      const mergedCentroids = readFloat32(voxelCount * 3);
+      const mergedRepresentatives = readUint32(voxelCount);
       const mergedStatus = readUint32(voxelCount);
       const firstPartCounts = readUint32(voxelCount);
-      const firstPartCentroids = readFloat32(voxelCount * 3);
       const secondPartCounts = readUint32(voxelCount);
-      const secondPartCentroids = readFloat32(voxelCount * 3);
       const directCounts = readUint32(voxelCount);
-      const directCentroids = readFloat32(voxelCount * 3);
+      const directRepresentatives = readUint32(voxelCount);
       const radiusBuckets = new Array<number>(7).fill(0);
       let radiusSupported = 0;
       for (let row = 0; row < sampleCount; row++) {
@@ -612,7 +589,7 @@ export async function createPointCloudSupport(
       let mergedRows = 0;
       let directRows = 0;
       let partRows = 0;
-      let maximumCentroidDifference = 0;
+      let representativeMismatchCount = 0;
       let mergeError = false;
       for (let cell = 0; cell < voxelCount; cell++) {
         const flags = mergedStatus[cell];
@@ -625,33 +602,10 @@ export async function createPointCloudSupport(
           mergedCounts[cell] !== firstPartCounts[cell] + secondPartCounts[cell]
         )
           mergeError = true;
-        if (mergedCounts[cell] > 0 && directCounts[cell] > 0) {
-          const dx = mergedCentroids[cell * 3] - directCentroids[cell * 3];
-          const dy = mergedCentroids[cell * 3 + 1] - directCentroids[cell * 3 + 1];
-          const dz = mergedCentroids[cell * 3 + 2] - directCentroids[cell * 3 + 2];
-          maximumCentroidDifference = Math.max(maximumCentroidDifference, Math.hypot(dx, dy, dz));
+        if (mergedCounts[cell] > 0 && mergedRepresentatives[cell] !== directRepresentatives[cell]) {
+          representativeMismatchCount++;
+          mergeError = true;
         }
-        // Independently check that each partition's GPU means remain finite before using the merge result.
-        if (
-          firstPartCounts[cell] > 0 &&
-          ![0, 1, 2].every(axis => Number.isFinite(firstPartCentroids[cell * 3 + axis]))
-        )
-          mergeError = true;
-        if (
-          secondPartCounts[cell] > 0 &&
-          ![0, 1, 2].every(axis => Number.isFinite(secondPartCentroids[cell * 3 + axis]))
-        )
-          mergeError = true;
-        if (
-          mergedCounts[cell] > 0 &&
-          ![0, 1, 2].every(axis => Number.isFinite(mergedCentroids[cell * 3 + axis]))
-        )
-          mergeError = true;
-        if (
-          directCounts[cell] > 0 &&
-          ![0, 1, 2].every(axis => Number.isFinite(directCentroids[cell * 3 + axis]))
-        )
-          mergeError = true;
       }
       voxelMergeValid =
         !mergeError &&
@@ -664,7 +618,7 @@ export async function createPointCloudSupport(
           'mergeCountCheck',
           `${mergedRows} merged = ${directRows} direct · counts match`
         );
-        ctx.setReadout('mergeCentroidError', maximumCentroidDifference);
+        ctx.setReadout('mergeRepresentativeMismatch', representativeMismatchCount);
         ctx.setReadout('mergeStatus', '0 · valid');
         ctx.setChart('mergeChart', {
           kind: 'bars',
@@ -683,7 +637,7 @@ export async function createPointCloudSupport(
       } else {
         ctx.setReadout('mergeRows', 'Invalid · result rejected');
         ctx.setReadout('mergeCountCheck', 'Mismatch or overflow · rejected');
-        ctx.setReadout('mergeCentroidError', null);
+        ctx.setReadout('mergeRepresentativeMismatch', null);
         ctx.setReadout(
           'mergeStatus',
           mergeError ? 'Overflow / mismatch · rejected' : 'Incomplete row conservation · rejected'

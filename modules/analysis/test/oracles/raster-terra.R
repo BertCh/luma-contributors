@@ -45,5 +45,5 @@ values(stack) <- stack_values
 composites <- lapply(c('mean','min','max','median'), function(operation) as.vector(values(app(stack,operation,na.rm=TRUE))))
 names(composites) <- c('mean','minimum','maximum','median')
 result <- list(versions=list(R=as.character(getRversion()),terra=as.character(packageVersion('terra')),jsonlite=as.character(packageVersion('jsonlite'))),cases=cases,temporal=list(cellCount=3,sliceCount=4,values=as.vector(t(stack_values)),expected=composites))
-write_json(result,'modules/analysis/test/oracles/fixtures/raster-terra.json',pretty=TRUE,auto_unbox=TRUE,na='null',digits=16)
+write_json(result,'modules/graph/test/oracles/fixtures/raster-terra.json',pretty=TRUE,auto_unbox=TRUE,na='null',digits=16)
 print(result$versions)

@@ -2,8 +2,8 @@
 
 These contributors build GPU command-graph nodes. They allocate graph-owned scratch, write caller-owned
 outputs, and never read results back or fit a hidden CPU model. Import local variability and regression
-from `@luma-contributors/graph/gpu-spatial-analysis`; import the pair statistics from
-`@luma-contributors/graph/gpu-dataframe`.
+from `@luma-contributors/analysis/gpu-spatial-analysis`; import the pair statistics from
+`@luma-contributors/analysis/dataframe-analysis`.
 
 ## Local variability
 
@@ -180,7 +180,7 @@ coefficient, cross-regime equality restriction, covariance output or Chow test.
 ## Evidence and performance limits
 
 The committed generator
-[`geospatial-expansion-statistics.py`](../../../../modules/graph/test/oracles/geospatial-expansion-statistics.py)
+[`geospatial-expansion-statistics.py`](../../../../modules/analysis/test/oracles/geospatial-expansion-statistics.py)
 records package versions, synthetic input provenance, float32 rounding and reference types. It uses
 direct esda LOSH/Geary, direct constrained-bandwidth mgwr backfitting, direct spreg panel and regime
 fits, independent local statsmodels GLMs, and explicit statsmodels/NumPy compositions for grid CV

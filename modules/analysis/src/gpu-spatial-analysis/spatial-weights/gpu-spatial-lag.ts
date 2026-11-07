@@ -81,8 +81,7 @@ export type GPUSpatialLagProps = {
  * result is `sum_j w_ij y_j / sum_j w_ij` over the included neighbors. Rows are summed with the
  * shared load-balanced CSR loop, so hub rows (one row with 1e5 neighbors) spread over many
  * workgroups. The association depends only on the offsets, so the result is bitwise reproducible
- * and matches a sequential CPU sum within f32 rounding. This is a single-purpose row loop; for an arbitrary CSR matrix
- * times a vector, `GPUGraphSpMV` in `@luma-contributors/analysis/gpu-core` is the general (semantic) form.
+ * and matches a sequential CPU sum within f32 rounding. This is a single-purpose row loop.
  */
 export class GPUSpatialLag implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

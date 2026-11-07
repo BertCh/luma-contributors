@@ -9,11 +9,11 @@ rings that collapse (GEOS raises, recorded as "collapsed"), negative zero, and 1
 NaN and infinite coordinates are not recorded: GEOS does not define them, and the spec compares the
 parallel and forced-sequential GPU passes bitwise on them instead.
 
-Fixture written (relative to modules/analysis/test/oracles):
+Fixture written (relative to modules/graph/test/oracles):
   fixtures/geometry-cleanup.json
 
 Usage, from the repository root:
-  python3 -I modules/analysis/test/oracles/geometry-cleanup.py
+  python3 -I modules/graph/test/oracles/geometry-cleanup.py
 
 Needs shapely >= 2.0 and numpy. Coordinates are exact in float32. Negative zero is written as "-0".
 """
@@ -26,7 +26,7 @@ import shapely
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.join(HERE, 'fixtures', 'geometry-cleanup.json')
-GENERATOR = 'modules/analysis/test/oracles/geometry-cleanup.py'
+GENERATOR = 'modules/graph/test/oracles/geometry-cleanup.py'
 
 PATHS = [
     ('all_identical', [(1, 1)] * 5),

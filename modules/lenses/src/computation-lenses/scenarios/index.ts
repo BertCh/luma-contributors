@@ -7,7 +7,6 @@
 import '../../computation-views/packs/gpu-core/index';
 import './gpu-spatial-analysis/index';
 import './gpu-network/index';
-import './gpu-graph/index';
 import './gpu-terrain/index';
 import './gpu-raster/index';
 import './gpu-dataframe/index';

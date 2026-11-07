@@ -1,7 +1,7 @@
 # Rate mapping recipes
 
 `addExcessRiskRecipe(graph, props)` and `addSpatialRateRecipe(graph, props)` append GPU nodes
-without submitting commands or reading results. Import them from `@luma-contributors/graph/gpu-spatial-analysis`.
+without submitting commands or reading results. Import them from `@luma-contributors/analysis/gpu-spatial-analysis`.
 Both return ordinary recipe results: `outputs.excessRisk` or `outputs.spatialRates`, contributors,
 intermediates and stage status. Excess risk has no status stages; spatial rates preserve the supplied
 weights status in a `weights` stage. Pass `output` for a caller-owned readback-capable view;

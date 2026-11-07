@@ -33,8 +33,9 @@ type FixtureCase = LargePolygonDescriptor & {
 const cases = largeFixture.cases as FixtureCase[];
 
 it('the oracle fixture records Shapely-valid polygons with consistent constrained Delaunay results', () => {
-  expect(largeFixture.generator).toBe(
-    'modules/analysis/test/oracles/geometry-triangulation-large.py'
+  // Fixture bytes are pinned from before the module rename, so the recorded path may say modules/graph.
+  expect(largeFixture.generator).toMatch(
+    /^modules\/(graph|analysis)\/test\/oracles\/geometry-triangulation-large\.py$/
   );
   expect(largeFixture.versions.shapely).toMatch(/^2\./);
   expect(cases.length).toBeGreaterThanOrEqual(6);

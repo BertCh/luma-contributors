@@ -521,7 +521,6 @@ describe('GPU Core array result view', () => {
   });
   test('pure pack data is available without rendering or devices', () => {
     expect(loadGPUCorePackData().id).toBe('gpu-core');
-    expect(Object.keys(loadGPUCorePackData().operators ?? {})).toHaveLength(23);
   });
 });
 

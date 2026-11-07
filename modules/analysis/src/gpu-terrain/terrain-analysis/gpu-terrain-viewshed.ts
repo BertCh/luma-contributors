@@ -4,6 +4,7 @@
 
 import {
   assertCompatibleGPUVerticalDatums,
+  resolveGPUElevationVerticalDatum,
   type GPUTerrainHeightReference
 } from '../../analysis-core/contracts/vertical-datum';
 import {
@@ -337,7 +338,7 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     assertCompatibleGPUVerticalDatums(
       id,
       props.observerVerticalDatum,
-      props.elevationVerticalDatum
+      resolveGPUElevationVerticalDatum(props.elevation, props.elevationVerticalDatum)
     );
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);

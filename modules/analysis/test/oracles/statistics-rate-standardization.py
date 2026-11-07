@@ -7,7 +7,7 @@ Writes fixtures/statistics-rate-standardization.json next to this script, consum
 test/gpu-spatial-analysis/spatial-autocorrelation/gpu-rate-standardization-reference.ts) by
 gpu-rate-standardization.spec.ts, gpu-rate-standardization.node.spec.ts and the fixture module
 gpu-rate-standardization-fixture.ts. Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-rate-standardization.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-rate-standardization.py
 in a venv with numpy, esda and libpysal (versions are recorded in the fixture).
 
 Scene: 60 areas on a line. Populations are exp(N(7, 1)) rounded (seed 11), areas 3 and 40 shrunk to

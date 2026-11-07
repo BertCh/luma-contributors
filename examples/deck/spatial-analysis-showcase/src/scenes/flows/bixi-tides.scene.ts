@@ -12,7 +12,7 @@ import {getSizeLegendEntries} from '../../cartography/proportional';
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './bixi-tides.md?raw?raw';
+import narrative from './bixi-tides.md?raw';
 import type {BixiTidesOptions} from './bixi-tides.compute';
 import {
   getNetTable,

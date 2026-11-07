@@ -7,7 +7,7 @@ weights for `GPUNeighborSearch`.
 Writes fixtures/statistics-neighbor-search.json next to this script, consumed (through
 test/gpu-spatial-analysis/neighbor-search/neighbor-search-u5-oracle.ts) by gpu-neighbor-search-u5.spec.ts.
 Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-neighbor-search.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-neighbor-search.py
 in a venv with numpy and libpysal (versions are recorded in the fixture).
 
 Scenes (seed 20261013, positions rounded to float32 and read back, so the GPU sees the same values):

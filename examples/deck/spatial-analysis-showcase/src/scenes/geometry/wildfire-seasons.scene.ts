@@ -8,7 +8,7 @@ import {ground} from '../../cartography/grounds';
 import {getSizeLegendEntries} from '../../cartography/proportional';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './wildfire-seasons.md?raw?raw';
+import narrative from './wildfire-seasons.md?raw';
 import type {WildfireSeasonsOptions} from './wildfire-seasons.compute';
 
 /** `12 Jun 2021` from days since 2020-01-01 (kept here so this light file imports no runtime code). */

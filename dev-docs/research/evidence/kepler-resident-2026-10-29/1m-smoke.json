@@ -1,0 +1,826 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "startedAt": "2026-10-30T03:07:58.236Z",
+  "options": {
+    "rows": 1000000,
+    "iterations": 5,
+    "warmup": 1,
+    "batchSize": 65536,
+    "timeoutMilliseconds": 120000,
+    "url": "http://127.0.0.1:5318/?rows=256",
+    "output": "/tmp/luma-kepler-resident-performance-1m-smoke.json",
+    "headed": false,
+    "label": null,
+    "help": false
+  },
+  "host": {
+    "platform": "darwin",
+    "release": "23.1.0",
+    "architecture": "arm64",
+    "cpu": "Apple M3 Pro"
+  },
+  "methodology": {
+    "scenario": "Published native Point layer + inclusive numeric range filter + native Big Number Count",
+    "cold": "First source publication in a fresh browser context after the 256-row app fixture is ready; OS, driver, and Vite caches are not cleared.",
+    "warm": "Sequential native filter actions after excluded warmups. Browser performance.now clock; 4ms scheduled polling can be delayed by main-thread load.",
+    "submittedFrame": "Revision-tagged host submission boundary; excludes GPU completion and physical presentation.",
+    "animationFrame": "First requested browser animation callback after observing that submitted frame; a presentation opportunity, not proof of pixels displayed.",
+    "summary": "First polling observation of the current revision compact resident count.",
+    "linkedChart": "First polling observation of the native linked Count DOM matching the current resident count.",
+    "memory": "Registry allocated and reserved accounting only, plus optional Chromium JS heap; neither is total device/process memory.",
+    "transfers": "Only explicitly exposed counters. No inference from missing counters or resident buffer size.",
+    "quantiles": "Nearest rank; warmup samples excluded; raw per-interaction observations retained.",
+    "gpuTiming": {
+      "available": false,
+      "reason": "No GPU timestamp query instrumentation"
+    },
+    "nativeCpuBaseline": {
+      "available": false,
+      "reason": "This harness measures only the resident adapter"
+    }
+  },
+  "cold": {
+    "nodeFixtureAndIPCPreparationMilliseconds": 11.664749999999998,
+    "browserLaunchAndApplicationReadyMilliseconds": 2328.962,
+    "fileTransferDecodeAndRoleSelectionMilliseconds": 673.2920829999998,
+    "schemaAndPrecisionCheckMilliseconds": 18.78566600000022,
+    "publicationToCurrentSummaryMilliseconds": 1647.122833,
+    "publicationToLoadedPointLayerMilliseconds": 1649.8425000000002
+  },
+  "warmup": [
+    {
+      "range": [
+        0,
+        99
+      ],
+      "expectedCount": 100000,
+      "nativeRangeApplied": true,
+      "revision": 9,
+      "submittedFrameMilliseconds": 79,
+      "nextAnimationFrameMilliseconds": 90.59999996423721,
+      "residentSummaryMilliseconds": 221.30000001192093,
+      "linkedChartMilliseconds": 221.30000001192093,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    }
+  ],
+  "samples": [
+    {
+      "range": [
+        53,
+        289
+      ],
+      "expectedCount": 237000,
+      "nativeRangeApplied": true,
+      "revision": 13,
+      "submittedFrameMilliseconds": 120.69999998807907,
+      "nextAnimationFrameMilliseconds": 143.5,
+      "residentSummaryMilliseconds": 159,
+      "linkedChartMilliseconds": 159,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    },
+    {
+      "range": [
+        106,
+        479
+      ],
+      "expectedCount": 374000,
+      "nativeRangeApplied": true,
+      "revision": 17,
+      "submittedFrameMilliseconds": 111.90000003576279,
+      "nextAnimationFrameMilliseconds": 130.20000004768372,
+      "residentSummaryMilliseconds": 179.30000001192093,
+      "linkedChartMilliseconds": 179.30000001192093,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    },
+    {
+      "range": [
+        159,
+        669
+      ],
+      "expectedCount": 511000,
+      "nativeRangeApplied": true,
+      "revision": 21,
+      "submittedFrameMilliseconds": 84.5,
+      "nextAnimationFrameMilliseconds": 93.10000002384186,
+      "residentSummaryMilliseconds": 146.4000000357628,
+      "linkedChartMilliseconds": 146.4000000357628,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    },
+    {
+      "range": [
+        212,
+        859
+      ],
+      "expectedCount": 648000,
+      "nativeRangeApplied": true,
+      "revision": 25,
+      "submittedFrameMilliseconds": 92.39999997615814,
+      "nextAnimationFrameMilliseconds": 92.89999997615814,
+      "residentSummaryMilliseconds": 161.30000001192093,
+      "linkedChartMilliseconds": 161.30000001192093,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    },
+    {
+      "range": [
+        50,
+        834
+      ],
+      "expectedCount": 785000,
+      "nativeRangeApplied": true,
+      "revision": 29,
+      "submittedFrameMilliseconds": 93.5,
+      "nextAnimationFrameMilliseconds": 94,
+      "residentSummaryMilliseconds": 142.60000002384186,
+      "linkedChartMilliseconds": 142.60000002384186,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    }
+  ],
+  "errors": [],
+  "revision": "cc97a1c148a737d620d903c3f4424d8d23bca74b",
+  "workspaceDirty": true,
+  "source": {
+    "rows": 1000000,
+    "batchLengths": [
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      16960
+    ],
+    "fields": [
+      {
+        "name": "longitude",
+        "type": "Float32"
+      },
+      {
+        "name": "latitude",
+        "type": "Float32"
+      },
+      {
+        "name": "value",
+        "type": "Float32"
+      }
+    ],
+    "logicalColumnBytes": 12000000,
+    "ipcBytes": 12004088,
+    "distribution": "value = sourceRowIndex % 1000; deterministic NYC coordinate grid; no nulls",
+    "normalization": "Source Float32 values uploaded directly; no Float64 normalization"
+  },
+  "browser": {
+    "name": "Chromium",
+    "channel": "chromium",
+    "headless": true,
+    "arguments": [
+      "--enable-unsafe-webgpu",
+      "--ignore-gpu-blocklist"
+    ],
+    "version": "151.0.7922.34"
+  },
+  "nativeLayerId": "resident-published-1-points",
+  "viewport": {
+    "bearing": 0,
+    "dragRotate": false,
+    "latitude": 40.75,
+    "longitude": -74,
+    "pitch": 0,
+    "zoom": 10,
+    "isSplit": false,
+    "isViewportSynced": true,
+    "isZoomLocked": false,
+    "splitMapViewports": [],
+    "maxPitch": 60,
+    "mapSplitMode": "SINGLE_MAP",
+    "swipeComparePercentage": 50,
+    "mapViewMode": "MODE_2D",
+    "globe": {
+      "enabled": false,
+      "config": {
+        "atmosphere": true,
+        "hugeHalo": true,
+        "hugeHaloRadius": 3.5,
+        "hugeHaloOpacity": 0.2,
+        "azimuth": false,
+        "azimuthAngle": 45,
+        "terminator": true,
+        "terminatorOpacity": 0.35,
+        "basemap": true,
+        "labels": false,
+        "labelsColor": [
+          114.75,
+          114.75,
+          114.75
+        ],
+        "adminLines": true,
+        "adminLinesColor": [
+          40,
+          63,
+          93
+        ],
+        "water": true,
+        "waterColor": [
+          17,
+          35,
+          48
+        ],
+        "surface": true,
+        "surfaceColor": [
+          9,
+          16,
+          29
+        ],
+        "backgroundColor": [
+          4,
+          9,
+          17
+        ],
+        "stars": true
+      }
+    }
+  },
+  "beforeWarmup": {
+    "observation": {
+      "now": 4469.799999952316,
+      "sourceRevision": 1,
+      "explorerRevision": 6,
+      "summary": {
+        "revision": 6,
+        "selectedCount": 1000000
+      },
+      "frame": {
+        "sourceRevision": 1,
+        "explorerRevision": 6,
+        "timestamp": 4466.399999976158,
+        "stage": "submitted"
+      },
+      "readbackBytes": {
+        "explorer": 8
+      },
+      "memoryUsage": {
+        "allocatedBytes": {
+          "cpu": 12016376,
+          "gpu": 12010240
+        },
+        "reservedBytes": {
+          "cpu": 2048,
+          "gpu": 180248060
+        },
+        "totalBytes": 204276724,
+        "availableBytes": 332594188
+      },
+      "deviceInfo": {
+        "type": "webgpu",
+        "vendor": "apple",
+        "renderer": "",
+        "version": "",
+        "gpu": "apple",
+        "gpuType": "unknown",
+        "gpuBackend": "unknown",
+        "gpuArchitecture": "metal-3",
+        "fallback": false,
+        "featureLevel": "core",
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "shadingLanguage": "wgsl",
+        "shadingLanguageVersion": 100
+      }
+    },
+    "publication": {
+      "id": "resident-published-1",
+      "sourceRevision": 1,
+      "sourceUploadBytes": 12000000,
+      "sourceBufferIds": [
+        "dynamic-buffer-8",
+        "dynamic-buffer-11",
+        "dynamic-buffer-14",
+        "dynamic-buffer-17",
+        "dynamic-buffer-20",
+        "dynamic-buffer-23",
+        "dynamic-buffer-26",
+        "dynamic-buffer-29",
+        "dynamic-buffer-32",
+        "dynamic-buffer-35",
+        "dynamic-buffer-38",
+        "dynamic-buffer-41",
+        "dynamic-buffer-44",
+        "dynamic-buffer-47",
+        "dynamic-buffer-50",
+        "dynamic-buffer-53",
+        "dynamic-buffer-9",
+        "dynamic-buffer-12",
+        "dynamic-buffer-15",
+        "dynamic-buffer-18",
+        "dynamic-buffer-21",
+        "dynamic-buffer-24",
+        "dynamic-buffer-27",
+        "dynamic-buffer-30",
+        "dynamic-buffer-33",
+        "dynamic-buffer-36",
+        "dynamic-buffer-39",
+        "dynamic-buffer-42",
+        "dynamic-buffer-45",
+        "dynamic-buffer-48",
+        "dynamic-buffer-51",
+        "dynamic-buffer-54",
+        "dynamic-buffer-10",
+        "dynamic-buffer-13",
+        "dynamic-buffer-16",
+        "dynamic-buffer-19",
+        "dynamic-buffer-22",
+        "dynamic-buffer-25",
+        "dynamic-buffer-28",
+        "dynamic-buffer-31",
+        "dynamic-buffer-34",
+        "dynamic-buffer-37",
+        "dynamic-buffer-40",
+        "dynamic-buffer-43",
+        "dynamic-buffer-46",
+        "dynamic-buffer-49",
+        "dynamic-buffer-52",
+        "dynamic-buffer-55"
+      ],
+      "rowCount": 1000000,
+      "sourceBatches": [
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        16960
+      ],
+      "selectedCount": 1000000,
+      "scopeRevision": 5,
+      "scopePending": false,
+      "error": null
+    },
+    "deviceInfo": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "core",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "devicePixelRatio": 1,
+    "jsHeap": {
+      "usedJSHeapSize": 539537969,
+      "totalJSHeapSize": 591133365,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "device": {
+    "type": "webgpu",
+    "vendor": "apple",
+    "renderer": "",
+    "version": "",
+    "gpu": "apple",
+    "gpuType": "unknown",
+    "gpuBackend": "unknown",
+    "gpuArchitecture": "metal-3",
+    "fallback": false,
+    "featureLevel": "core",
+    "subgroupMinSize": 32,
+    "subgroupMaxSize": 32,
+    "shadingLanguage": "wgsl",
+    "shadingLanguageVersion": 100
+  },
+  "beforeMeasured": {
+    "observation": {
+      "now": 4704.799999952316,
+      "sourceRevision": 1,
+      "explorerRevision": 9,
+      "summary": {
+        "revision": 9,
+        "selectedCount": 100000
+      },
+      "frame": {
+        "sourceRevision": 1,
+        "explorerRevision": 9,
+        "timestamp": 4561.699999988079,
+        "stage": "submitted"
+      },
+      "readbackBytes": {
+        "explorer": 12
+      },
+      "memoryUsage": {
+        "allocatedBytes": {
+          "cpu": 12016376,
+          "gpu": 12010240
+        },
+        "reservedBytes": {
+          "cpu": 2048,
+          "gpu": 273321676
+        },
+        "totalBytes": 297350340,
+        "availableBytes": 239520572
+      },
+      "deviceInfo": {
+        "type": "webgpu",
+        "vendor": "apple",
+        "renderer": "",
+        "version": "",
+        "gpu": "apple",
+        "gpuType": "unknown",
+        "gpuBackend": "unknown",
+        "gpuArchitecture": "metal-3",
+        "fallback": false,
+        "featureLevel": "core",
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "shadingLanguage": "wgsl",
+        "shadingLanguageVersion": 100
+      }
+    },
+    "publication": {
+      "id": "resident-published-1",
+      "sourceRevision": 1,
+      "sourceUploadBytes": 12000000,
+      "sourceBufferIds": [
+        "dynamic-buffer-8",
+        "dynamic-buffer-11",
+        "dynamic-buffer-14",
+        "dynamic-buffer-17",
+        "dynamic-buffer-20",
+        "dynamic-buffer-23",
+        "dynamic-buffer-26",
+        "dynamic-buffer-29",
+        "dynamic-buffer-32",
+        "dynamic-buffer-35",
+        "dynamic-buffer-38",
+        "dynamic-buffer-41",
+        "dynamic-buffer-44",
+        "dynamic-buffer-47",
+        "dynamic-buffer-50",
+        "dynamic-buffer-53",
+        "dynamic-buffer-9",
+        "dynamic-buffer-12",
+        "dynamic-buffer-15",
+        "dynamic-buffer-18",
+        "dynamic-buffer-21",
+        "dynamic-buffer-24",
+        "dynamic-buffer-27",
+        "dynamic-buffer-30",
+        "dynamic-buffer-33",
+        "dynamic-buffer-36",
+        "dynamic-buffer-39",
+        "dynamic-buffer-42",
+        "dynamic-buffer-45",
+        "dynamic-buffer-48",
+        "dynamic-buffer-51",
+        "dynamic-buffer-54",
+        "dynamic-buffer-10",
+        "dynamic-buffer-13",
+        "dynamic-buffer-16",
+        "dynamic-buffer-19",
+        "dynamic-buffer-22",
+        "dynamic-buffer-25",
+        "dynamic-buffer-28",
+        "dynamic-buffer-31",
+        "dynamic-buffer-34",
+        "dynamic-buffer-37",
+        "dynamic-buffer-40",
+        "dynamic-buffer-43",
+        "dynamic-buffer-46",
+        "dynamic-buffer-49",
+        "dynamic-buffer-52",
+        "dynamic-buffer-55"
+      ],
+      "rowCount": 1000000,
+      "sourceBatches": [
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        16960
+      ],
+      "selectedCount": 100000,
+      "scopeRevision": 8,
+      "scopePending": false,
+      "error": null
+    },
+    "deviceInfo": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "core",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "devicePixelRatio": 1,
+    "jsHeap": {
+      "usedJSHeapSize": 552086030,
+      "totalJSHeapSize": 596643874,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "afterMeasured": {
+    "observation": {
+      "now": 5541.5,
+      "sourceRevision": 1,
+      "explorerRevision": 29,
+      "summary": {
+        "revision": 29,
+        "selectedCount": 785000
+      },
+      "frame": {
+        "sourceRevision": 1,
+        "explorerRevision": 29,
+        "timestamp": 5541.299999952316,
+        "stage": "submitted"
+      },
+      "readbackBytes": {
+        "explorer": 32
+      },
+      "memoryUsage": {
+        "allocatedBytes": {
+          "cpu": 12016376,
+          "gpu": 12010240
+        },
+        "reservedBytes": {
+          "cpu": 2048,
+          "gpu": 273321676
+        },
+        "totalBytes": 297350340,
+        "availableBytes": 239520572
+      },
+      "deviceInfo": {
+        "type": "webgpu",
+        "vendor": "apple",
+        "renderer": "",
+        "version": "",
+        "gpu": "apple",
+        "gpuType": "unknown",
+        "gpuBackend": "unknown",
+        "gpuArchitecture": "metal-3",
+        "fallback": false,
+        "featureLevel": "core",
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "shadingLanguage": "wgsl",
+        "shadingLanguageVersion": 100
+      }
+    },
+    "publication": {
+      "id": "resident-published-1",
+      "sourceRevision": 1,
+      "sourceUploadBytes": 12000000,
+      "sourceBufferIds": [
+        "dynamic-buffer-8",
+        "dynamic-buffer-11",
+        "dynamic-buffer-14",
+        "dynamic-buffer-17",
+        "dynamic-buffer-20",
+        "dynamic-buffer-23",
+        "dynamic-buffer-26",
+        "dynamic-buffer-29",
+        "dynamic-buffer-32",
+        "dynamic-buffer-35",
+        "dynamic-buffer-38",
+        "dynamic-buffer-41",
+        "dynamic-buffer-44",
+        "dynamic-buffer-47",
+        "dynamic-buffer-50",
+        "dynamic-buffer-53",
+        "dynamic-buffer-9",
+        "dynamic-buffer-12",
+        "dynamic-buffer-15",
+        "dynamic-buffer-18",
+        "dynamic-buffer-21",
+        "dynamic-buffer-24",
+        "dynamic-buffer-27",
+        "dynamic-buffer-30",
+        "dynamic-buffer-33",
+        "dynamic-buffer-36",
+        "dynamic-buffer-39",
+        "dynamic-buffer-42",
+        "dynamic-buffer-45",
+        "dynamic-buffer-48",
+        "dynamic-buffer-51",
+        "dynamic-buffer-54",
+        "dynamic-buffer-10",
+        "dynamic-buffer-13",
+        "dynamic-buffer-16",
+        "dynamic-buffer-19",
+        "dynamic-buffer-22",
+        "dynamic-buffer-25",
+        "dynamic-buffer-28",
+        "dynamic-buffer-31",
+        "dynamic-buffer-34",
+        "dynamic-buffer-37",
+        "dynamic-buffer-40",
+        "dynamic-buffer-43",
+        "dynamic-buffer-46",
+        "dynamic-buffer-49",
+        "dynamic-buffer-52",
+        "dynamic-buffer-55"
+      ],
+      "rowCount": 1000000,
+      "sourceBatches": [
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        16960
+      ],
+      "selectedCount": 785000,
+      "scopeRevision": 28,
+      "scopePending": false,
+      "error": null
+    },
+    "deviceInfo": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "core",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "devicePixelRatio": 1,
+    "jsHeap": {
+      "usedJSHeapSize": 337865762,
+      "totalJSHeapSize": 397744638,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "identity": {
+    "deviceUnchanged": true,
+    "sourceBuffersUnchanged": true
+  },
+  "transfers": {
+    "registeredSourceUploadBytes": {
+      "available": true,
+      "before": 12000000,
+      "after": 12000000,
+      "delta": 0
+    },
+    "exposedReadbackBytes": {
+      "explorer": {
+        "available": true,
+        "before": 12,
+        "after": 32,
+        "delta": 20
+      }
+    },
+    "controlUploads": {
+      "available": false,
+      "reason": "No comprehensive control-upload counter exposed"
+    },
+    "totalDeviceTransfers": {
+      "available": false,
+      "reason": "No comprehensive device transfer counter exposed"
+    }
+  },
+  "memory": {
+    "before": {
+      "allocatedBytes": {
+        "cpu": 12016376,
+        "gpu": 12010240
+      },
+      "reservedBytes": {
+        "cpu": 2048,
+        "gpu": 273321676
+      },
+      "totalBytes": 297350340,
+      "availableBytes": 239520572
+    },
+    "after": {
+      "allocatedBytes": {
+        "cpu": 12016376,
+        "gpu": 12010240
+      },
+      "reservedBytes": {
+        "cpu": 2048,
+        "gpu": 273321676
+      },
+      "totalBytes": 297350340,
+      "availableBytes": 239520572
+    },
+    "jsHeapBefore": {
+      "usedJSHeapSize": 552086030,
+      "totalJSHeapSize": 596643874,
+      "jsHeapSizeLimit": 4395630592
+    },
+    "jsHeapAfter": {
+      "usedJSHeapSize": 337865762,
+      "totalJSHeapSize": 397744638,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "metrics": {
+    "submittedFrameMilliseconds": {
+      "available": true,
+      "unit": "milliseconds",
+      "count": 5,
+      "minimum": 84.5,
+      "p50": 93.5,
+      "p95": 120.69999998807907,
+      "maximum": 120.69999998807907,
+      "mean": 100.6,
+      "quantileMethod": "nearest-rank"
+    },
+    "nextAnimationFrameMilliseconds": {
+      "available": true,
+      "unit": "milliseconds",
+      "count": 5,
+      "minimum": 92.89999997615814,
+      "p50": 94,
+      "p95": 143.5,
+      "maximum": 143.5,
+      "mean": 110.74000000953674,
+      "quantileMethod": "nearest-rank"
+    },
+    "residentSummaryMilliseconds": {
+      "available": true,
+      "unit": "milliseconds",
+      "count": 5,
+      "minimum": 142.60000002384186,
+      "p50": 159,
+      "p95": 179.30000001192093,
+      "maximum": 179.30000001192093,
+      "mean": 157.7200000166893,
+      "quantileMethod": "nearest-rank"
+    },
+    "linkedChartMilliseconds": {
+      "available": true,
+      "unit": "milliseconds",
+      "count": 5,
+      "minimum": 142.60000002384186,
+      "p50": 159,
+      "p95": 179.30000001192093,
+      "maximum": 179.30000001192093,
+      "mean": 157.7200000166893,
+      "quantileMethod": "nearest-rank"
+    }
+  },
+  "finishedAt": "2026-10-30T03:08:04.903Z"
+}

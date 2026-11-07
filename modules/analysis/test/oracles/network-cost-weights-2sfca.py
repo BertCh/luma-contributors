@@ -8,7 +8,7 @@ Writes fixtures/network-cost-weights-2sfca.json next to this script (consumed by
 test/gpu-network/network-cost-weights/gpu-network-cost-weights.spec.ts, which builds the facility
 and demand weights with GPUNetworkCostWeights and scores them with GPUCatchmentAccessibility). Run
 from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/network-cost-weights-2sfca.py
+    <venv>/bin/python -I modules/graph/test/oracles/network-cost-weights-2sfca.py
 in a venv with numpy, pandas and access (versions are recorded in the fixture).
 
 Reference: access.fca.two_stage_fca(demand_df, supply_df, cost_df, max_cost, weight_fn), which is

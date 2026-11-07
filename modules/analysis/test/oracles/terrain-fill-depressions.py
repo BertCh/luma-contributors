@@ -31,7 +31,7 @@ from pysheds.view import Raster, ViewFinder  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, 'fixtures', 'terrain-fill-depressions.json')
-GENERATOR = 'modules/analysis/test/oracles/terrain-fill-depressions.py'
+GENERATOR = 'modules/graph/test/oracles/terrain-fill-depressions.py'
 
 
 def f32(array):

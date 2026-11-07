@@ -4,7 +4,7 @@
 
 Reproduce with Python 3.12 and:
   pip install exactextract==0.3.0 numpy==2.2.6 shapely==2.1.2
-  python modules/analysis/test/oracles/rs02-fractional-categories.py
+  python modules/graph/test/oracles/rs02-fractional-categories.py
 
 Calls exactextract frac/majority/minority/count directly. Shapely builds adversarial
 multipart/hole polygons only; it does not compute the statistics. Full-coverage

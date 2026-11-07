@@ -6,7 +6,7 @@
 Writes fixtures/statistics-segregation.json next to this script, consumed (through
 test/gpu-spatial-analysis/segregation/segregation-reference.ts) by gpu-segregation-pysal.spec.ts.
 Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-segregation.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-segregation.py
 in a venv with numpy, pandas, geopandas, shapely, libpysal and segregation (versions are recorded
 in the fixture).
 
@@ -104,7 +104,7 @@ def get_indices(weights):
 
 
 fixture = {
-    'generator': 'modules/analysis/test/oracles/statistics-segregation.py',
+    'generator': 'modules/graph/test/oracles/statistics-segregation.py',
     'versions': {
         'python': platform.python_version(),
         'numpy': np.__version__,

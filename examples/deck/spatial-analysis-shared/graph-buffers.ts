@@ -72,3 +72,40 @@ export function submitGraph(device: Device, compiled: CompiledGPUCommandGraph<un
   compiled.encode(commandEncoder, {parameters: undefined});
   device.submit(commandEncoder.finish());
 }
+
+/**
+ * Publishes a view into an application-owned sink with an ordinary copy node. The graph orders the
+ * copy after earlier writers through the declared `copy-source` use, so the observed result is
+ * the value at this point of the authored sequence. Uses only the public `addCopyPass()`.
+ *
+ * @param graph Graph that receives the copy node.
+ * @param source Packed view to observe; its backing buffer needs `Buffer.COPY_SRC`.
+ * @param sink Packed destination view of the same format; its buffer needs `Buffer.COPY_DST`.
+ * @param options Node id and the node the copy follows.
+ */
+export function addGraphCopy<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  source: GraphDataView,
+  sink: GraphDataView,
+  options: {id: string; afterNode?: string}
+): void {
+  graph.addCopyPass({
+    id: options.id,
+    ...(options.afterNode !== undefined && {dependsOn: [options.afterNode]}),
+    resources: [
+      {buffer: source, usage: 'copy-source'},
+      {buffer: sink, usage: 'copy-destination'}
+    ],
+    compile: () => ({
+      encode: ({commandEncoder, getBuffer}) => {
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: getBuffer(source),
+          sourceOffset: source.byteOffset,
+          destinationBuffer: getBuffer(sink),
+          destinationOffset: sink.byteOffset,
+          size: Math.min(source.length * source.rowByteLength, sink.length * sink.rowByteLength)
+        });
+      }
+    })
+  });
+}

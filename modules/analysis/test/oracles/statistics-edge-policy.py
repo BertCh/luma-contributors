@@ -8,7 +8,7 @@ Geary's C, Getis-Ord General G and join counts (GPUGlobalSpatialStatistics), loc
 Writes fixtures/statistics-edge-policy.json, consumed by
 test/gpu-spatial-analysis/statistics-edge-policy/statistics-edge-policy.spec.ts (GPU) and
 statistics-edge-policy.node.spec.ts (CPU oracles and parameter packers). Run with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-edge-policy.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-edge-policy.py
 in a venv with numpy, scipy, esda and libpysal (versions are recorded in the fixture).
 
 The documented policy (session 32 statistics decision 4 and the contributor TSDoc): an analysis row

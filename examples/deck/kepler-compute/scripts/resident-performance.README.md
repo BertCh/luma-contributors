@@ -66,7 +66,7 @@ node --check examples/deck/kepler-compute/scripts/resident-performance.mjs
 
 ## Recorded 100k smoke
 
-The [immutable 2026-10-29 smoke report](../../../../dev-docs/perf/kepler-resident-2026-10-29/100k-smoke.json) passed with 100,000 rows in batches `[65536, 34464]`, one excluded warmup, and five measured interactions. The run used headless Chromium 151.0.7922.34 on the exposed Apple WebGPU `metal-3` adapter; an exact GPU model and driver version were unavailable.
+The [immutable 2026-10-29 smoke report](../../../../dev-docs/research/evidence/kepler-resident-2026-10-29/100k-smoke.json) passed with 100,000 rows in batches `[65536, 34464]`, one excluded warmup, and five measured interactions. The run used headless Chromium 151.0.7922.34 on the exposed Apple WebGPU `metal-3` adapter; an exact GPU model and driver version were unavailable.
 
 | Observation | p50 | p95 |
 | --- | ---: | ---: |
@@ -84,7 +84,7 @@ A historical admission audit after this run found that the then-current one-mill
 
 ## Recorded 1m smoke after memory admission remedy
 
-The [immutable 2026-10-29 one-million-row report](../../../../dev-docs/perf/kepler-resident-2026-10-29/1m-smoke.json) passed under the unchanged **512 MiB** registry budget, with one excluded warmup and five measured interactions. It used the same exposed Chromium 151 / Apple `metal-3` environment as the 100k smoke. The source retained 16 original batches: fifteen of 65,536 rows and one of 16,960 rows.
+The [immutable 2026-10-29 one-million-row report](../../../../dev-docs/research/evidence/kepler-resident-2026-10-29/1m-smoke.json) passed under the unchanged **512 MiB** registry budget, with one excluded warmup and five measured interactions. It used the same exposed Chromium 151 / Apple `metal-3` environment as the 100k smoke. The source retained 16 original batches: fifteen of 65,536 rows and one of 16,960 rows.
 
 | Observation | p50 | p95 |
 | --- | ---: | ---: |
@@ -111,7 +111,7 @@ These observations do not split GPU execution from queue waits or browser schedu
 
 ## Recorded 1m diagnostic findings
 
-A separate [five-interaction diagnostic report](../../../../dev-docs/perf/kepler-resident-2026-10-29/1m-diagnostics.json), with its [raw CPU profile](../../../../dev-docs/perf/kepler-resident-2026-10-29/1m-diagnostics.cpuprofile), passed with the same source, batch boundaries, budget, and workload. Instrumented dispatch-to-submitted p50/p95 was 104.8/150.6 ms; the gated resident Count and Count DOM observations were 177.7/189.7 ms. These do not replace the uninstrumented baseline above.
+A separate [five-interaction diagnostic report](../../../../dev-docs/research/evidence/kepler-resident-2026-10-29/1m-diagnostics.json), with its [raw CPU profile](../../../../dev-docs/research/evidence/kepler-resident-2026-10-29/1m-diagnostics.cpuprofile), passed with the same source, batch boundaries, budget, and workload. Instrumented dispatch-to-submitted p50/p95 was 104.8/150.6 ms; the gated resident Count and Count DOM observations were 177.7/189.7 ms. These do not replace the uninstrumented baseline above.
 
 Synchronous `setPublishedRange` dispatch took 64.6/73.2 ms p50/p95. The pinned native `createOrUpdateFilterUpdater` invokes dataset, field, and value updates even for an existing filter. CPU stacks show scalar predicate construction, plot explorer construction, and scope composition compilation inside this dispatch. They also show `requestUpdate` calling `deck.redraw` synchronously while the native reducer is applying intermediate filter changes. The first optimization candidate is deferring/coalescing those redraws until the native action finishes, while preserving current revision invalidation and stale-result rejection. A separate value-only native slider workload is needed; replacing the existing action silently would invalidate the comparison.
 
@@ -132,7 +132,7 @@ Two separate uninstrumented runs used five measured interactions after one exclu
 | Create-or-update, after coalescing | 62.8 / 87.2 ms | 64.3 / 109.4 ms | 95.5 / 140.6 ms |
 | Value-only slider, after coalescing | 39.7 / 61.9 ms | 48.7 / 71.4 ms | 83.5 / 105.5 ms |
 
-The corresponding immutable reports are [coalesced create-or-update](../../../../dev-docs/perf/kepler-resident-2026-10-29/1m-coalesced-create-or-update.json) and [coalesced value-only](../../../../dev-docs/perf/kepler-resident-2026-10-29/1m-coalesced-value-only.json). The latter seeds the filter once before warmup and then sends only native value updates; it cannot replace the original action as a same-workload comparison. The Count column is the current-summary-gated observation, which coincided with linked DOM polling. No CPU profiler or optional stage telemetry was enabled in either new run.
+The corresponding immutable reports are [coalesced create-or-update](../../../../dev-docs/research/evidence/kepler-resident-2026-10-29/1m-coalesced-create-or-update.json) and [coalesced value-only](../../../../dev-docs/research/evidence/kepler-resident-2026-10-29/1m-coalesced-value-only.json). The latter seeds the filter once before warmup and then sends only native value updates; it cannot replace the original action as a same-workload comparison. The Count column is the current-summary-gated observation, which coincided with linked DOM polling. No CPU profiler or optional stage telemetry was enabled in either new run.
 
 Both runs retained source/device object identity, all 16 source batches, and 12,000,000 bytes of registered scalar uploads. Each read back 20 exposed explorer bytes across the measured interactions. Registry accounting remained 297,350,340 bytes before and after measurement, with 239,520,572 bytes available. These are accounting snapshots, not peak VRAM. The expected counts were 237,000, 374,000, 511,000, 648,000, and 785,000 in both modes.
 

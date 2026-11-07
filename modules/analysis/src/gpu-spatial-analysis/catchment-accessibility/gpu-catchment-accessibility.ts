@@ -286,7 +286,6 @@ ${IS_FINITE_BITS_WGSL}`,
         id: `${id}-scores`,
         operation: OPERATION,
         variant: 'scores',
-        record: isThreeStep ? undefined : {formula: 'gpu-spatial-analysis.catchment-accessibility'},
         bindings: [
           {name: 'offsets', view: demandWeights.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: demandWeights.neighbors, type: 'u32', access: 'read'},

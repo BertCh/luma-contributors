@@ -12,7 +12,6 @@ Street networks are not a plane. Distances run along streets, events sit on stre
 | --- | --- | --- |
 | Do mapped shops cluster along streets more than chance? | `GPUNetworkKFunction` | [Do Chicago shops bunch along streets?](#/story/retail-network-k-function) |
 | Which street did this noisy GPS trace follow? | `GPUMapMatching` | [Which streets did these GPS traces follow?](#/story/map-matching) |
-| Which streets matter, and what remains if you filter the network? | `GPUNetworkAnalyticsColumns`, `GPUNetworkSubgraphFilter`, `GPUNetworkStatistics` | [Which streets does Chicago lean on?](#/story/street-centrality) |
 
 All three consume the same input: a **CSR** (compressed sparse row) adjacency, passed as one `topology` object. `offsets` has one row per node plus one, `neighbors` holds the destination of every directed edge slot, and `weights` holds a non-negative cost such as length in meters. A two-way street appears in both directions. The scenes build this layout once on the CPU from the `chicago-roads` dataset; after that, everything is GPU buffers and parameter writes.
 

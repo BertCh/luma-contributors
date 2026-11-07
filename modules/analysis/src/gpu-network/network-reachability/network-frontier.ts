@@ -11,8 +11,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
-  type WGSLKernelBinding,
-  type WGSLKernelProps
+  type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 /**
@@ -311,9 +310,7 @@ export function getFrontierFinalizeSource(phase: FrontierPhase): string {
 }
 
 /** Properties for {@link createFrontierRoundNode}. @internal */
-export type FrontierRoundProps<Parameters = unknown> = {
-  /** Optional computation-record metadata; omitted from production nodes. */
-  record?: WGSLKernelProps<Parameters>['record'];
+export type FrontierRoundProps = {
   /** Graph-wide node ID. */
   id: string;
   /** Operation name reported in the workload estimate. */
@@ -358,7 +355,7 @@ export type FrontierRoundProps<Parameters = unknown> = {
  */
 export function createFrontierRoundNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: FrontierRoundProps<Parameters>
+  props: FrontierRoundProps
 ): GPUCommandNode<Parameters> {
   const {state, phase, round, localIterations} = props;
   const {nodeCount} = state;
@@ -373,7 +370,6 @@ export function createFrontierRoundNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
-    record: props.record,
     variant: props.variant,
     bindings,
     invocationCount: nodeCount,

@@ -20,8 +20,10 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {createSegmentReductionNode} from '../shared/segment-reduction';
-import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
+import {
+  createSegmentSumNode,
+  getSortKeyBits
+} from '../../analysis-core/kernels/sorted-segment-sums';
 import {getSortedSegmentOffsetNodes} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {
   validateCapacity,
@@ -379,9 +381,10 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
       const reduce = (name: string, input: GraphDataView<'float32'>, operation: 'min' | 'max') => {
         const result = f32(`bounds-${name}`, groupCount);
         nodes.push(
-          createSegmentReductionNode<Parameters>(graph, {
+          createSegmentSumNode<Parameters>(graph, {
             id: `${id}-bounds-${name}`,
             operation: OPERATION,
+            segmentCount: groupCount,
             input,
             segmentOffsets,
             output: result,

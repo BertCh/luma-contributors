@@ -10,7 +10,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {assertCompatibleGPUVerticalDatums} from '../../analysis-core/contracts/vertical-datum';
+import {
+  assertCompatibleGPUVerticalDatums,
+  resolveGPUElevationVerticalDatum
+} from '../../analysis-core/contracts/vertical-datum';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
@@ -259,7 +262,7 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
     assertCompatibleGPUVerticalDatums(
       id,
       props.candidateVerticalDatum,
-      props.elevationVerticalDatum,
+      resolveGPUElevationVerticalDatum(props.elevation, props.elevationVerticalDatum),
       'candidate'
     );
     const {output} = props;

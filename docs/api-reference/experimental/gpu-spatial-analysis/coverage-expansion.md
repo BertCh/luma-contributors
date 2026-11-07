@@ -1,7 +1,7 @@
 # Geospatial coverage expansion
 
 The coverage expansion adds graph contributors with explicit bounded contracts. Import spatial
-operations from `@luma-contributors/graph/gpu-spatial-analysis`; raster, terrain, network, dataframe,
+operations from `@luma-contributors/analysis/gpu-spatial-analysis`; raster, terrain, network, dataframe,
 projection and point-cloud operations retain their own package subpaths.
 
 These APIs declare GPU work in the caller's graph. Inputs and outputs are GPU views; callers
@@ -20,7 +20,7 @@ complete compatibility with a reference library or every mode in the maintainer 
 | Ecology | [Landscape summaries, patch proximity, resistance connectivity and segregation decomposition](./landscape-ecology.md). |
 | Raster | [Conservative remapping, texture, temporal processing, translation registration, region graphs, spectral unmixing and seasonal breaks](../gpu-raster/remote-sensing.md). |
 | Network and movement | [Routing, flow, communities, facilities, rational-agent access, trajectory smoothing, restriction and similarity search](../gpu-network/network-movement-coverage.md). |
-| Point clouds | [Indexed neighborhoods, local features, filtering, SMRF, height normalization, ICP and surface change](../../gpgpu/gpu-pointcloud.md). |
+| Point clouds | [Indexed neighborhoods, local features, filtering, SMRF, height normalization, ICP and surface change](/docs/api-reference/experimental/pointcloud-analysis). |
 | Terrain | [Breaching, branching flow consumers, sink hierarchy, catchment summaries, DEM alignment and tiled routing](../gpu-terrain/terrain-processing.md). |
 
 Numerical tests use independent pinned references where available, together with conservation,

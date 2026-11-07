@@ -191,7 +191,7 @@ conditional on the specified support and search domain; coefficient uncertainty 
 
 ## Verification and evidence limits
 
-The generator `modules/graph/test/oracles/statistics-coverage.py` pins NumPy 2.2.6 and SciPy 1.15.3.
+The generator `modules/analysis/test/oracles/statistics-coverage.py` pins NumPy 2.2.6 and SciPy 1.15.3.
 It constructs independent dense IV sandwiches, nested regime designs, block SUR GLS, probit
 likelihood/information, profiled panel-error likelihood and interaction IPF references. These are
 **composed numerical references**. Separately, `statistics-upstream.py` actually executes pinned spreg 1.8.3, mgwr 2.2.1, esda 2.7.0, giddy 2.3.6, libpysal 4.13.0 and spint 1.0.7 (with scikit-learn 1.7.2). Its checked-in fixture records full covariance, diagnostics, local inference, exact LOO scores, tied ranks, weights and calibrated flows. `statistics-upstream.spec.ts` compares GPU results directly against those outputs; it does not relabel the composed NumPy oracle as library parity.

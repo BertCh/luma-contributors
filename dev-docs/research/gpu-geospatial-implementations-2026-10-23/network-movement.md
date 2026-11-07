@@ -1,0 +1,81 @@
+# GPU prior art: networks, movement, urban morphology and change of support
+
+Research: 2026-10-23. Read-only review of the supplied AGENTS.md, coverage backlog and current source; no repository edits, formatting, installation or tests. These are implementation candidates and engineering inferences, not measured WebGPU results. Paths below are relative to `modules/experimental/src/`. Upstream moving links need a pinned revision before implementation.
+
+## Baseline that changes the recommendations
+
+The current checkout already contains substantial GPU functionality: HMM map matching with bounded A*, UBODT-style route tables, partial-edge offsets and explicit overflow ([gpu-network/map-matching/gpu-map-matching.ts](../../../modules/graph/src/gpu-network/map-matching/gpu-map-matching.ts)); snapping, line graphs, cost matrices, reachability and coarsening; sparse facility costs and Teitz–Bart swaps ([gpu-spatial-analysis/location-allocation/gpu-location-allocation.ts](../../../modules/graph/src/gpu-spatial-analysis/location-allocation/gpu-location-allocation.ts)); exact bounded p-center and explicitly heuristic unsplit capacitated assignment ([gpu-bounded-facility-allocation.ts](../../../modules/graph/src/gpu-spatial-analysis/location-allocation/gpu-bounded-facility-allocation.ts)). Track similarity already implements bands, tiled anti-diagonal DP and Fréchet decision endpoint/coupling bounds. Fractional polygon/pixel clipping also exists in [gpu-raster/gpu-raster-fractional-coverage.ts](../../../modules/graph/src/gpu-raster/gpu-raster-fractional-coverage.ts), with validity and capacity status. These should be extended or composed, not proposed as missing capabilities.
+
+## Eight useful candidates/patterns
+
+### 1. Frontier algebra and degree-aware scheduling — NW01, NW06 prerequisites
+
+[Gunrock SSSP](https://github.com/gunrock/gunrock/blob/845c062d40afabc72d129634c556d7d72bb7c68c/include/gunrock/algorithms/sssp.hxx) and its [advance operator](https://github.com/gunrock/gunrock/blob/845c062d40afabc72d129634c556d7d72bb7c68c/include/gunrock/framework/operators/advance/advance.hxx) are actual CUDA implementation evidence. The reusable pattern is frontier expansion, edge relaxation, filtering/compaction and load balancing across irregular degrees. [License](https://github.com/gunrock/gunrock/blob/845c062d40afabc72d129634c556d7d72bb7c68c/LICENSE): Apache-2.0.
+
+Local targets: [gpu-network/network-reachability/network-frontier.ts](../../../modules/graph/src/gpu-network/network-reachability/network-frontier.ts), [network-reachability-passes.ts](../../../modules/graph/src/gpu-network/network-reachability/network-reachability-passes.ts), [network-accessibility/network-accessibility-lanes.ts](../../../modules/graph/src/gpu-network/network-accessibility/network-accessibility-lanes.ts) and [network-line-graph/gpu-network-line-graph.ts](../../../modules/graph/src/gpu-network/network-line-graph/gpu-network-line-graph.ts). Study scheduling rather than add another shortest-path class. NW01 still needs a public virtual-edge adapter preserving incoming turn state; map-matching partial-edge logic is narrower. NW06 additionally requires time-dependent costs and restriction-sequence state; static SSSP code does not supply either semantic contract.
+
+WebGPU inference: use separate dispatches for global phases, bounded queues with required-count status and device-limit-aware workgroups. CUDA warp policies and persistent scheduling do not transfer mechanically. Gate with one-way/same-edge/parallel-edge routes, forbidden turns, FIFO waiting examples and a tiny independently constructed time-expanded oracle. Benchmark degree-skewed networks, sparse versus dense frontiers and repeated cost updates, including queue scratch and dispatch overhead.
+
+### 2. Explicit residual graphs and global relabeling — NW02, foundation for NW03
+
+[ECL-MaxFlow source](https://github.com/burtscher/ECL-MaxFlow/blob/2aa2b9f1054b7ace6e2dc78f405fc3e9cd719a70/src/maxflow.cu) implements GPU push/relabel, worklists and GPU relabeling; its [paper](https://userweb.cs.txstate.edu/~mb92/papers/ipccc25a.pdf) explains the algorithm. This is actual GPU code, not a flow-aggregation API. [BSD-3-Clause license](https://github.com/burtscher/ECL-MaxFlow/blob/2aa2b9f1054b7ace6e2dc78f405fc3e9cd719a70/LICENSE) was inspected.
+
+Add a residual graph contract below network recipes, borrowing CSR validation and reverse-slot conventions from `analysis-core/network-topology` and [gpu-network/network-structure/gpu-network-structure.ts](../../../modules/graph/src/gpu-network/network-structure/gpu-network-structure.ts). Keep original edges, reverse residual arcs, capacities, flow and provenance explicit. Do not confuse existing observed-flow aggregation with capacity optimization.
+
+Start with bounded integer capacities: WGSL integer atomics offer a plausible route, but total excess can overflow 32 bits and CUDA atomic ordering assumptions need redesign. Separate preflow computation from returning excess to obtain a feasible flow. Required gates: capacity bounds, conservation at every nonterminal vertex, parallel and antiparallel arcs, disconnected terminals, exact flow/cut equality against pinned NetworkX fixtures and forced iteration exhaustion. Report incomplete status until a cut certificate and feasible flow agree. Benchmark grids, bottlenecks and high-degree graphs; max-flow value alone is insufficient validation.
+
+### 3. GPU primal–dual sparse optimization with diagnostics — NW03, NW05
+
+[cuOpt PDHG source](https://github.com/NVIDIA/cuopt/blob/b5ad4d07c3be0e4796cef8d44d891b7f6ce2a91e/cpp/src/pdlp/pdhg.cu) contains GPU sparse matrix operations; [official solver documentation](https://docs.nvidia.com/cuopt/user-guide/latest/lp-qp-features.html) distinguishes GPU PDLP/barrier and CPU dual simplex. [Apache-2.0 license](https://github.com/NVIDIA/cuopt/blob/b5ad4d07c3be0e4796cef8d44d891b7f6ce2a91e/LICENSE). Its concurrent default is a hybrid comparison, not evidence for a fully GPU browser implementation.
+
+The useful reusable pieces are incidence-matrix multiply/transpose, projected vector updates, scaling, primal/dual residuals and gap tests. These could support continuous min-cost flow; they do not automatically certify indivisible facility assignments. Local boundary: [gpu-network/network-cost-table/gpu-network-cost-table.ts](../../../modules/graph/src/gpu-network/network-cost-table/gpu-network-cost-table.ts), [gpu-spatial-analysis/location-allocation/location-allocation-sparse.ts](../../../modules/graph/src/gpu-spatial-analysis/location-allocation/location-allocation-sparse.ts), [gpu-bounded-facility-allocation.ts](../../../modules/graph/src/gpu-spatial-analysis/location-allocation/gpu-bounded-facility-allocation.ts), and existing generic solver infrastructure. For NW05, keep small exact enumeration/branch bounds separate from heuristic incumbents and LP relaxations.
+
+WebGPU lacks cuSPARSE/cuBLAS and portable baseline f64; scale inputs explicitly and validate f32 convergence independently. Gate min-cost flow with conservation, unserved demand, objective and dual evidence against tiny exact integer cases. Gate unsplit allocation against exhaustive assignments, including a case where demand-order greedy fails despite feasibility. Benchmark sparse nonzero count, conditioning, restart/iteration counts and warm starts; compare equal tolerances.
+
+### 4. Louvain local moves plus coarsening — NW04
+
+[cuGraph Louvain implementation](https://github.com/rapidsai/cugraph/blob/main/cpp/src/community/louvain_impl.cuh) explicitly computes modularity, performs delta-modularity moves and contracts levels. The file declares Apache-2.0. [Official API](https://docs.nvidia.com/cugraph/latest/api_docs/api/cugraph/cugraph.louvain/) explicitly supports undirected graphs only; directed Louvain requires a separate reference and implementation contract.
+
+Local reuse is unusually strong: [gpu-network/network-coarsening/gpu-network-coarsening.ts](../../../modules/graph/src/gpu-network/network-coarsening/gpu-network-coarsening.ts) already builds weighted superedges with grouped summaries. Add community weight totals, bounded local-move rounds, objective traces and a membership hierarchy. Audit that contraction preserves self-loop/internal weight required by modularity; its existing intra/inter summaries alone are not proof of that representation.
+
+Hazards: parallel moves can interact, reductions affect near-zero gains, and existing packed superedge keys cap group capacity at 65,535. Begin with declared weighted-undirected semantics; unsupported directed mode should remain explicit. Gate with singleton/self-loop/disconnected graphs, conservation of total contracted weight and nondecreasing accepted modularity. Compare objective and partition invariants to NetworkX, not exact label IDs. Benchmark community skew, resolution and level counts, including the local 65,535-group envelope and scratch.
+
+### 5. Parallel Kalman scans, with sequential baselines — MV01
+
+[TensorFlow Probability implementation](https://github.com/tensorflow/probability/blob/b6c09688deda545270b61171d20e9039f37650c2/tensorflow_probability/python/experimental/parallel_filter/parallel_kalman_filter_lib.py) contains associative message combination and filtering scans under Apache-2.0. [Official documentation](https://www.tensorflow.org/probability/api_docs/python/tfp/experimental/parallel_filter/kalman_filter) explains logarithmic sequential depth. This is accelerator-capable tensor code, not a ready WGSL kernel or a complete trajectory smoother.
+
+Local targets: trajectory offsets/clocks in `gpu-spatial-analysis/trajectory-interpolation`, small-state kernels near `trajectory-analysis`, and explicit composition above them. Implement constant-velocity filtering plus backward smoothing first with tracks parallel and time sequential; evaluate associative scans only for long tracks. A generic integer prefix sum is not enough: scan elements contain matrix-valued Gaussian messages.
+
+Gate covariance symmetry/positive-semidefiniteness, missing measurements, irregular time deltas, projection units, zero noise/singular systems and gap resets against pinned MovingPandas plus an independent small linear-Gaussian calculation. Compare filtering and smoothing outputs separately. Benchmark many short versus few long tracks; larger message scratch and dispatches can outweigh reduced depth. Preserve raw observations and uncertainty metadata.
+
+MV02 is a separate interval-algebra task: compose existing [trajectory-zones/gpu-zone-events.ts](../../../modules/graph/src/gpu-spatial-analysis/trajectory-zones/gpu-zone-events.ts), closest-approach and sorting/compaction; use [MobilityDB restriction/ever-always semantics](https://mobilitydb.github.io/MobilityDB/master/ch08.html) as a CPU semantic oracle. No external GPU interval implementation was verified here.
+
+### 6. Admissible bound cascades and survivor compaction — MV03
+
+[CUDA-DTW project](https://gravitino.github.io/cudadtw/) and [kernel source](https://github.com/gravitino/cudadtw/blob/122adc7c37da4994662226001b6a763ee97870ab/include/cdtw.cuh) demonstrate wavefront DTW with LB_Kim/LB_Keogh cascades. [License](https://github.com/gravitino/cudadtw/blob/122adc7c37da4994662226001b6a763ee97870ab/LICENSE.txt) is GPL-3.0: algorithm/benchmark study, not an assumed source transplant into MIT first-party code.
+
+Local [gpu-spatial-analysis/track-similarity/track-similarity-dynamic-programs.ts](../../../modules/graph/src/gpu-spatial-analysis/track-similarity/track-similarity-dynamic-programs.ts) already has tiled anti-diagonals and bands; add cheap bounds, GPU survivor lists, query batching and early abandonment around those kernels. CUDA-DTW's scalar z-normalized subsequence metric differs from geographic multivariate tracks. Its bound cannot be reused unchanged for great-circle costs, discrete Fréchet or LCSS.
+
+Gate every adopted bound mathematically for the exact supported metric/band, then differential-test threshold-boundary ties and zero false negatives against exhaustive DP. Keep exact and approximate search statuses distinct. Benchmark adversarial all-survivor data as well as easily pruned tracks; publish bound cost, survivor fraction, number of DP cells and query-batch scratch. CUDA warp shuffles/constant-memory assumptions require portable workgroup-storage paths.
+
+### 7. Indexed ray/segment queries as urban recipes — UR02, UR03, UR05; UR01 composition
+
+[Warp mesh query source](https://github.com/NVIDIA/warp/blob/main/warp/native/mesh.h) and [raycast example](https://github.com/NVIDIA/warp/blob/main/warp/examples/core/example_raycast.py) are actual GPU-capable BVH/ray implementations with Apache-2.0 headers. Transfer traversal and closest-hit patterns, not triangle-mesh semantics or CUDA architecture-specific loads.
+
+Local [gpu-spatial-analysis/segment-intersection/segment-bvh.ts](../../../modules/graph/src/gpu-spatial-analysis/segment-intersection/segment-bvh.ts), intersection kinds, [line-clip/gpu-shared-paths.ts](../../../modules/graph/src/gpu-spatial-analysis/line-clip/gpu-shared-paths.ts), shape-descriptor orientation and contiguity weights already supply much of UR02/UR03. Build sampled street normals and side-aware first-building hits; aggregate width, height and missing-side status. UR05 additionally needs angular ordering, finite range, visibility adjacency capacity and explicit graph metrics. momepy is a CPU contract oracle, not GPU prior art; depthmapX is likewise semantic reference, with repository license not verified in this review.
+
+Gate T-junctions, collinear walls, viewpoint-on-boundary, point touches versus shared walls and angular wrap; halve sample spacing to characterize approximation. Benchmark dense facades and long segments, not uniform random points alone. UR01 should compose existing boundary sampling/Voronoi/clip capabilities before considering new distance-field machinery; point Voronoi or Warp raycasts alone do not establish building tessellation.
+
+### 8. Conservation-first sparse redistribution — UR04; related NW07 reductions
+
+[PySAL tobler documentation](https://pysal.org/tobler/stable/api.html) defines masked-area interpolation; it is a CPU oracle. Local fractional clipping plus [gpu-spatial-analysis/areal-interpolation/gpu-areal-interpolation.ts](../../../modules/graph/src/gpu-spatial-analysis/areal-interpolation/gpu-areal-interpolation.ts) already implement GPU coverage tuples, weighted grouped sums, denominator choices and transferred fractions. The addition is the ancillary-mask recipe and provenance, not another weighting kernel. Preserve source totals, exclusions, uncovered mass, validity and zero-eligible-area status. Avoid multiplying marginal source/target pixel fractions as if their product were exact joint intersection area.
+
+Gate identical support, partial target support, masked-out sources, overlapping zones and whole-domain/tiled parity; keep extensive conservation separate from intensive normalization. Benchmark tuple count and source/cell skew, including the current 4,194,304 dense candidate-pair cap.
+
+NW07 can reuse sparse origin/facility costs and row/column reductions for congestion iterations, but [access RAAM](https://pysal.org/access/generated/access.Access.raam.html) is a CPU oracle, not evidence of an existing GPU RAAM solver. Match its travel/congestion scales and step schedule, preserve demand and expose iteration exhaustion. This is distinct from linear min-cost assignment and existing floating-catchment scores.
+
+## Promotion priorities and common evidence
+
+First: MV01, UR02/UR03 and UR04 recipes with consumers; then NW02 residual contracts, MV03 pruning and NW04; undertake NW03/NW05 only with explicit certificates and narrow variable semantics. Treat NW06 as a larger state-model project.
+
+For every prototype record cold compile, upload, resident execution, optional readback, peak scratch and repeated updates on named browser/device combinations; plot small-to-large crossover against a pinned CPU oracle. No CUDA speedup is a WebGPU claim. Preserve graph-owned submission, explicit capacities/status, chunk boundaries and ownership. Implementation work must follow AGENTS.md formatting/build/test gates; this domain review ran none.

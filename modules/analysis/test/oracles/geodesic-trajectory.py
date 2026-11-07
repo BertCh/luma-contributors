@@ -7,7 +7,7 @@ searchable distance of the encounter lattice.
 Writes fixtures/geodesic-trajectory.json next to this script, consumed (through
 test/gpu-spatial-analysis/trajectory-analysis/geodesic-trajectory-oracle.ts) by
 movement-spatial-context.node.spec.ts and gpu-trajectory-geodesic.spec.ts. Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/geodesic-trajectory.py
+    <venv>/bin/python -I modules/graph/test/oracles/geodesic-trajectory.py
 in a venv with numpy and pyproj (versions are recorded in the fixture).
 
 The sphere is `pyproj.Geod(a=6371008.8, f=0)`, the GPU_EARTH_MEAN_RADIUS_METERS sphere.
@@ -89,7 +89,7 @@ for cell, maximum_latitude in REACH_CASES:
     )
 
 fixture = {
-    'generator': 'modules/analysis/test/oracles/geodesic-trajectory.py',
+    'generator': 'modules/graph/test/oracles/geodesic-trajectory.py',
     'versions': {'python': platform.python_version(), 'numpy': np.__version__, 'pyproj': pyproj.__version__},
     'tolerances': {'distanceRelative': 1e-6, 'bearingDegrees': 1e-9, 'pointDegrees': 1e-9},
     'reference': {'radius': RADIUS, 'cases': cases, 'encounterReach': encounter_reach},

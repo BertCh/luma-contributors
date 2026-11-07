@@ -11,8 +11,7 @@ import {
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
-  type WGSLKernelBinding,
-  type WGSLKernelProps
+  type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -505,15 +504,12 @@ export function createEdgeBundlingClearNode<Parameters>(
     id: string;
     density: GraphDataView<'uint32'>;
     gate?: EdgeBundlingGate;
-    /** Computation-record metadata, such as the unrolled loop coordinate. */
-    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'fill',
-    record: props.record,
     bindings: [{name: 'density', view: props.density, type: 'u32', access: 'read_write'}],
     invocationCount: props.density.length,
     body: 'density[densityOffset + index] = 0u;',
@@ -533,8 +529,6 @@ export function createEdgeBundlingSplatNode<Parameters>(
     work: GraphDataView<'float32x2'>;
     density: GraphDataView<'uint32'>;
     gate?: EdgeBundlingGate;
-    /** Computation-record metadata, such as the unrolled loop coordinate. */
-    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): GPUCommandNode<Parameters> {
   const {constants} = props;
@@ -560,7 +554,6 @@ export function createEdgeBundlingSplatNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'splat',
-    record: props.record,
     bindings,
     invocationCount: constants.edgeCount * constants.pointsPerEdge,
     declarations: `${getConstantsWGSL(constants)}
@@ -617,8 +610,6 @@ export function createEdgeBundlingUpdateNode<Parameters>(
     work: GraphDataView<'float32x2'>;
     density: GraphDataView<'uint32'>;
     gate?: EdgeBundlingGate;
-    /** Computation-record metadata, such as the unrolled loop coordinate. */
-    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): GPUCommandNode<Parameters> {
   const {constants} = props;
@@ -639,7 +630,6 @@ export function createEdgeBundlingUpdateNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'update',
-    record: props.record,
     bindings,
     invocationCount: constants.edgeCount,
     workgroupSize: 64,

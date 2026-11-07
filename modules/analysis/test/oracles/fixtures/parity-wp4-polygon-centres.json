@@ -6,7 +6,7 @@
   "reference": "fractions.Fraction exact line intersection; IEEE-754 round-to-nearest half-ULP interval",
   "sources": [
     {
-      "path": "modules/analysis/test/oracles/fixtures/parity-wp4-polygons.json",
+      "path": "modules/graph/test/oracles/fixtures/parity-wp4-polygons.json",
       "sha256": "30fc1baaedd67f1b497388e305e3235d13d78718d3b05518fd412051af6ea032"
     },
     {

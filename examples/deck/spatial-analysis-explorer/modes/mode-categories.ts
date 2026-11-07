@@ -65,7 +65,7 @@ export const SPATIAL_ANALYSIS_MODE_CATEGORIES: readonly SpatialAnalysisModeCateg
   {
     id: 'cells',
     title: 'Cells (DGGS)',
-    modeIds: ['cells', 'cell-pyramid', 'tile-lod']
+    modeIds: ['cells', 'cell-pyramid']
   },
   {
     id: 'networks',

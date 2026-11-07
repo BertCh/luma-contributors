@@ -21,10 +21,7 @@ export default defineScene<HabitatConnectivityOptions>({
     'addLandscapeMetricsRecipe',
     'addPatchProximityRecipe',
     'GPURasterErosion',
-    'GPURasterWalkingCost',
-    'addRasterResistanceConnectivityRecipe',
-    'addResistanceConnectivityRecipe',
-    'addSparseResistanceConnectivityRecipe'
+    'GPURasterWalkingCost'
   ],
   datasets: [{id: 'dixie-fire', role: 'ESA WorldCover and USGS elevation'}],
   initialView: {longitude: -120.9511, latitude: 40.1396, zoom: 14.8},
@@ -52,8 +49,7 @@ export default defineScene<HabitatConnectivityOptions>({
         {value: 'mask', label: 'Selected land-cover mask'},
         {value: 'core', label: 'Interior source cells'},
         {value: 'patches', label: 'Connected patches'},
-        {value: 'cost', label: 'Scenario walking cost'},
-        {value: 'circuit', label: 'Circuit potential / current'}
+        {value: 'cost', label: 'Scenario walking cost'}
       ]
     },
     {
@@ -95,74 +91,13 @@ export default defineScene<HabitatConnectivityOptions>({
       kind: 'select',
       id: 'resistance',
       label: 'Relative resistance',
-      group: 'Walking and circuit assumptions',
+      group: 'Walking assumptions',
       apply: 'param',
       default: 'mild',
       help: 'The class values are analyst-chosen relative resistance/friction scenarios. Strong contrast raises built-up, water, bare and cropland penalties more than tree and shrub penalties. Only the walking-cost recipe adds DEM slope.',
       options: [
         {value: 'mild', label: 'Mild contrast'},
         {value: 'strong', label: 'Strong contrast'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'circuitConnectivity',
-      label: 'Circuit neighbors',
-      group: 'Circuit scenario',
-      apply: 'compile',
-      default: '8',
-      help: 'Four-neighbor connects shared cell edges; eight-neighbor also permits diagonal edges using their longer physical length.',
-      options: [
-        {value: '4', label: '4 neighbors'},
-        {value: '8', label: '8 neighbors'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'circuitBudget',
-      label: 'Solver iteration budget',
-      group: 'Circuit scenario',
-      apply: 'compile',
-      default: '512',
-      help: 'Maximum configured iteration budget. A separate current-balance certificate determines whether circuit maps and accepted scalars are published; more iterations do not guarantee acceptance under strong contrast.',
-      options: [
-        {value: '128', label: '128'},
-        {value: '512', label: '512'},
-        {value: '1024', label: '1024'}
-      ]
-    },
-    {
-      kind: 'select',
-      id: 'circuitTolerance',
-      label: 'Current balance tolerance',
-      group: 'Circuit scenario',
-      apply: 'compile',
-      default: '0.0001',
-      help: 'Maximum absolute unit-current conservation residual accepted when publishing circuit outputs.',
-      options: [
-        {value: '0.001', label: '1e-3'},
-        {value: '0.0001', label: '1e-4'}
-      ]
-    },
-    {
-      kind: 'toggle',
-      id: 'waterBarrier',
-      label: 'Water is a barrier',
-      group: 'Circuit scenario',
-      apply: 'param',
-      default: false,
-      help: 'Sensitivity switch replacing permanent-water class resistance with a barrier; default uses the documented weighted water resistance.'
-    },
-    {
-      kind: 'select',
-      id: 'circuitLayer',
-      label: 'Circuit map',
-      group: 'Display',
-      apply: 'param',
-      default: 'potential',
-      options: [
-        {value: 'potential', label: 'Potential'},
-        {value: 'current', label: 'Current density'}
       ]
     },
     {
@@ -220,48 +155,6 @@ export default defineScene<HabitatConnectivityOptions>({
         }
       ];
     }
-    if (state.layer === 'circuit') {
-      return state.circuitLayer === 'potential'
-        ? [
-            {
-              kind: 'ramp',
-              id: 'circuit-potential',
-              title: 'Circuit potential',
-              ramp: 'cividis',
-              extent: 'gpu',
-              unit: 'relative resistance·metre'
-            },
-            {
-              kind: 'categories',
-              title: 'Scenario terminals',
-              entries: [
-                {label: 'Source', value: 1, color: [255, 214, 70, 255]},
-                {label: 'Sink', value: 2, color: [235, 82, 112, 255]}
-              ],
-              note: 'Analyst-selected valid cells'
-            }
-          ]
-        : [
-            {
-              kind: 'ramp',
-              id: 'circuit-current',
-              title: 'Current density',
-              ramp: 'magma',
-              extent: 'gpu',
-              unit: 'unit injection per m²',
-              note: 'max(incoming edge-current sum, outgoing edge-current sum) / cell area'
-            },
-            {
-              kind: 'categories',
-              title: 'Scenario terminals',
-              entries: [
-                {label: 'Source', value: 1, color: [255, 214, 70, 255]},
-                {label: 'Sink', value: 2, color: [235, 82, 112, 255]}
-              ],
-              note: 'Analyst-selected valid cells'
-            }
-          ];
-    }
     return [
       {
         kind: 'categories',
@@ -306,26 +199,6 @@ export default defineScene<HabitatConnectivityOptions>({
       id: 'costStatus',
       label: 'Walking-cost status',
       help: 'Whether bounded GPU relaxation converged before publishing cost cells.'
-    },
-    {
-      id: 'circuitStatus',
-      label: 'Circuit solve status',
-      help: 'Reachability, invalid edges and unit-current convergence.'
-    },
-    {
-      id: 'circuitResidual',
-      label: 'Circuit diagnostics',
-      help: 'Effective resistance, current-conservation residual, energy and residual norm.'
-    },
-    {
-      id: 'circuitTerminals',
-      label: 'Selected terminals',
-      help: 'Deterministically selected valid crop cells and their geographic locations; these are scenario terminals.'
-    },
-    {
-      id: 'circuitOracle',
-      label: 'Dense / sparse check',
-      help: 'Actual GPU dense and sparse agreement on the same 16 × 16 subset and uploaded edges.'
     }
   ],
   story: [
@@ -387,25 +260,6 @@ export default defineScene<HabitatConnectivityOptions>({
       controls: ['resistance', 'layer'],
       caveat:
         'The resistance table, slope coefficients and source definition are scenarios only. No species, movement observations, habitat quality, barriers beyond the raster classes, or validated dispersal distances are supplied.'
-    },
-    {
-      id: 'circuits',
-      title: 'Compare circuit connectivity',
-      headline: 'Current can divide among alternate paths',
-      textAlternative: 'GPU circuit potential or current density over the WorldCover crop.',
-      body: 'The main unit-current solve spans the full 64 × 64 crop. Its two deterministic analyst-selected terminal cells lie within the central 16 × 16 subset; gold and magenta mark the source and sink. The separately labeled dense/sparse comparison solves only that 16 × 16 subset. Edge conductance is `2 / (Rₐ + Rᵦ) / physical edge length`; class values use the same mild or strong relative-resistance tables. Potential and current density show current spreading across alternate paths, unlike the least-cost walking surface, which includes DEM slope. Strong resistance contrast also stresses numerical conditioning: the bounded Float32 solve can fail its independent current-balance certificate. In that case both maps and accepted resistance/energy are withheld; the residual remains diagnostic only. Withheld does not mean zero connectivity. Change **Circuit neighbors**, **Relative resistance**, **Water is a barrier**, or **Circuit map** below to test the assumptions. These are analyst scenarios, not animal movement, species habitat, electrical material measurements, or fire-cause evidence.',
-      options: {
-        layer: 'circuit',
-        circuitLayer: 'potential',
-        circuitConnectivity: '8',
-        circuitBudget: '512',
-        circuitTolerance: '0.0001',
-        waterBarrier: false
-      },
-      controls: ['circuitConnectivity', 'resistance', 'waterBarrier', 'circuitLayer'],
-      readouts: ['circuitTerminals', 'circuitStatus', 'circuitResidual', 'circuitOracle'],
-      caveat:
-        'Terminals are chosen scenario points, not observed origins. No calibrated ohms or amperes are claimed; isotropic circuit edges do not include slope. A failed certificate is a numerical limitation, not evidence of a disconnected landscape. The separately labeled 16 × 16 comparison does not certify the full 64 × 64 solve.'
     }
   ],
   create: async ctx =>

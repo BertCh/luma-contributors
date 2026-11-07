@@ -69,8 +69,7 @@ it('createSegmentSumNode with a condition uses the kernel path and forwards the 
     segmentCount: 3,
     input,
     segmentOffsets,
-    output,
-    offsetsWithinInput: true
+    output
   };
 
   const plain = createSegmentSumNode(graph, {...props, id: 'plain'});

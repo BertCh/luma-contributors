@@ -86,7 +86,7 @@ function checkPointHorizonVerticalDatums(
       })
     ).not.toThrow();
   }
-  // A datum stray on the raster band is ignored; only `elevationVerticalDatum` is checked.
+  // A datum on the raster band (makeGPURasterBand) is honored when the prop is absent.
   expect(() =>
     create({
       id,
@@ -94,7 +94,7 @@ function checkPointHorizonVerticalDatums(
       heightReference: 'absolute',
       observerVerticalDatum: 'ellipsoidal'
     })
-  ).not.toThrow();
+  ).toThrow(/observer heights are ellipsoidal but elevation is EPSG:5773/);
 }
 
 it('getGPUPointHorizonDistanceLattice builds the exact power-of-two lattice', () => {

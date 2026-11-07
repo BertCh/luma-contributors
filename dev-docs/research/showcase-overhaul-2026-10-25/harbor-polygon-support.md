@@ -1,0 +1,7 @@
+# Hand-drawn AIS study polygon with a hole
+
+The `harbor-track-quality` story runs a parallel `GPUTrajectoryRestriction` analysis on the same bundled AIS observations. Its outer ring is derived from the selected real track's observed coordinate extent with a 50 m margin; a rectangular inner ring is an explicitly illustrative exclusion. The rings are planar in the dataset's AEQD coordinate frame, implicitly closed, and use even-odd semantics. The GPU interval-union mode merges touching included intervals when the shared endpoint is included and returns compact positions, source ranges and a three-word required/written/overflow summary.
+
+The existing rectangle-based supported-interval view remains the default. The optional polygon view shows both hand-drawn rings and only the compact GPU intervals within the polygon. Positive-duration source gaps above the user-selected maximum are marked unknown by the contributor; geometry exclusion is not interpreted as evidence that no vessel was present. The polygon is not an official harbor boundary or shipping zone.
+
+The generic API contracts are documented in `modules/graph/src/gpu-spatial-analysis/trajectory-restriction/gpu-trajectory-restriction.ts` and `trajectory-restriction-kernels.ts`. For broader movement-data semantics, see [MobilityDB temporal restrictions](https://mobilitydb.github.io/MobilityDB/stable-1.2/ch06s02.html). No independent numerical browser run was performed for this addition because the parent currently owns the shared GPU test slot.

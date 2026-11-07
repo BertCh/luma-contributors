@@ -93,13 +93,13 @@ output projection uses seven, within the default eight-binding limit. Work is bo
 
 ## Reference and verification
 
-The generator at `modules/graph/test/oracles/raster-focal-pairs.py` pins **NumPy 2.5.4**
+The generator at `modules/analysis/test/oracles/raster-focal-pairs.py` pins **NumPy 2.5.4**
 and records its SHA-256 in `fixtures/raster-focal-pairs.json`. It uses independent `numpy.cov`,
 `numpy.corrcoef` and centered `numpy.linalg.lstsq` calls after explicit window extraction and
 paired mask/calibration adaptation. Reference inputs are float32-rounded and the library
 computations use float64. This original fixture is a composed NumPy reference.
 
-The additional `modules/graph/test/oracles/raster-terra.R` generator directly executes **terra 1.9.50** with **R 4.4.3** and jsonlite 2.0.0. Its `raster-terra.json` fixture compares GPU covariance, Pearson correlation, intercept, slope and paired counts for six nodata/clamp/reflect × ignore/propagate cases. Clamp/reflect use explicit padded input rasters before calling terra, then crop the core; nodata uses native terra fillvalue=NA. The generator also checks temporal stack composites. All six focal cases passed native GPU comparison.
+The additional `modules/analysis/test/oracles/raster-terra.R` generator directly executes **terra 1.9.50** with **R 4.4.3** and jsonlite 2.0.0. Its `raster-terra.json` fixture compares GPU covariance, Pearson correlation, intercept, slope and paired counts for six nodata/clamp/reflect × ignore/propagate cases. Clamp/reflect use explicit padded input rasters before calling terra, then crop the core; nodata uses native terra fillvalue=NA. The generator also checks temporal stack composites. All six focal cases passed native GPU comparison.
 
 The supported unweighted subset corresponds to
 [terra focalPairs](https://rspatial.github.io/terra/reference/focalPairs.html) with Pearson

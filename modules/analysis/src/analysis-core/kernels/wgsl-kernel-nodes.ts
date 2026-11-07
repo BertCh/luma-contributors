@@ -32,17 +32,6 @@ import type {GPUCompactOutput} from './gpu-contributor-types';
 
 const DEFAULT_WORKGROUP_SIZE = 256;
 
-/** Free-form descriptive metadata accepted (and ignored) by the kernel-node helpers. @internal */
-export type WGSLKernelRecordMetadata = {
-  label?: string;
-  namespace?: string;
-  derivedFrom?: readonly string[];
-  datum?: unknown;
-  loop?: unknown;
-  formula?: string;
-  attrs?: Readonly<Record<string, unknown>>;
-};
-
 /** GPU-written dispatch and its update node for a runtime active-item count. @internal */
 export type WGSLActiveCountDispatch<Parameters> = {
   updateNode: GPUCommandNode<Parameters>;
@@ -69,8 +58,6 @@ export function createWGSLActiveCountDispatch<Parameters>(
     workgroupSize?: number;
     invocationsPerItem?: number;
     additionalInvocationCount?: number;
-    /** Computation-record metadata forwarded to the dispatch updater. */
-    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): WGSLActiveCountDispatch<Parameters> {
   const workgroupSize = props.workgroupSize ?? DEFAULT_WORKGROUP_SIZE;
@@ -108,7 +95,6 @@ export function createWGSLActiveCountDispatch<Parameters>(
     id: props.id,
     operation: props.operation,
     variant: 'active-count-dispatch',
-    record: props.record,
     bindings: [
       {name: 'count', view: props.count, type: 'u32', access: 'read'},
       {name: 'dispatch', view: dispatch, type: 'u32', access: 'read_write'}
@@ -289,11 +275,6 @@ export type WGSLKernelProps<Parameters> = {
   operation: string;
   /** Optional implementation variant reported in the workload estimate. */
   variant?: string;
-  /**
-   * Computation-record metadata. Ignored: published `GPUCommandGraph` has no recording hooks.
-   * Retained so call sites keep their descriptive labels.
-   */
-  record?: WGSLKernelRecordMetadata;
   /** Storage bindings in `@binding` order. At most 8 for the WebGPU default limit. */
   bindings: readonly WGSLKernelBinding[];
   /**
@@ -614,8 +595,6 @@ export function createTransientUint32Rows<Parameters>(
 
 /** Properties for {@link createPublishNode}. @internal */
 export type PublishNodeProps = {
-  /** Computation-record metadata forwarded to the publication kernel. */
-  record?: WGSLKernelProps<unknown>['record'];
   /** Graph-wide node ID. */
   id: string;
   /** Operation name reported in the workload estimate. */
@@ -706,7 +685,6 @@ export function createPublishNode<Parameters>(
     id: props.id,
     operation: props.operation,
     variant: 'publish',
-    record: props.record,
     bindings,
     invocationCount: Math.max(copyRowCount, 1),
     // Capacities are overrides so publish nodes with the same binding shape share one module.
@@ -749,8 +727,6 @@ export function createFillNode<Parameters>(
     type: 'u32' | 'i32' | 'f32';
     value: string;
     componentCount?: number;
-    /** Computation-record metadata forwarded to the fill kernel. */
-    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): GPUCommandNode<Parameters> {
   const componentCount = props.componentCount ?? props.view.length;
@@ -758,7 +734,6 @@ export function createFillNode<Parameters>(
     id: props.id,
     operation: props.operation,
     variant: 'fill',
-    record: props.record,
     bindings: [{name: 'fillTarget', view: props.view, type: props.type, access: 'read_write'}],
     invocationCount: componentCount,
     body: `fillTarget[fillTargetOffset + index] = ${props.value};`

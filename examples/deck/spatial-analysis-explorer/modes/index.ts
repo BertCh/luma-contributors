@@ -19,7 +19,6 @@ import {terrainMode} from './terrain-mode';
 import {hydrologyMode} from './hydrology-mode';
 import {costDistanceMode} from './cost-distance-mode';
 import {rasterZonalMode} from './raster-zonal-mode';
-import {tileLodMode} from './tile-lod-mode';
 import {hotSpotsMode} from './hot-spots-mode';
 import {distanceFieldMode} from './distance-field-mode';
 import {rasterJoinMode} from './raster-join-mode';
@@ -94,7 +93,6 @@ export const SPATIAL_ANALYSIS_MODES: readonly SpatialAnalysisModeDefinition[] = 
   hydrologyMode,
   costDistanceMode,
   rasterZonalMode,
-  tileLodMode,
   hotSpotsMode,
   distanceFieldMode,
   rasterJoinMode,

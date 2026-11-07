@@ -23,8 +23,6 @@ export * from './isolines/index';
 export * from './particle-advection/index';
 export * from './polygon-rasterization/index';
 export * from './raster-algebra/index';
-export * from './raster-band-utils';
-export * from './raster-expansion-utils';
 export * from './raster-grid/index';
 export * from './raster-medial-axis';
 export * from './raster-patches/index';

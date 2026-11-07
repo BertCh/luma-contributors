@@ -26,7 +26,6 @@ node implementation. Preserve a slot-to-source-edge mapping if CSR sorting chang
 | Output | Format and meaning |
 | --- | --- |
 | `strongComponents` | `uint32`, one per node, minimum node ID in the strongly connected component |
-| `strongComponentsConverged` | `uint32`, one row, one only when every strong component was resolved within the iteration budget |
 | `bridges` | `uint32`, one flag per CSR slot |
 | `articulationPoints` | `uint32`, one flag per node |
 | `biconnectedComponents` | `uint32`, one per slot, minimum slot in the edge block |
@@ -37,22 +36,12 @@ two parallel edges form a block and neither is a bridge. A self-loop pairs with 
 a singleton block. Invalid neighbor IDs are ignored; CSR offsets must remain monotone and
 within capacity. Isolated nodes are separate SCCs and are not articulation points.
 
-`strongComponentsMethod` chooses how `strongComponents` is computed:
+`strongComponents` uses an exact mutual-reachability kernel with O(V²) scratch and O(V(V+E))
+work, for at most 1024 nodes and 65536 slots. Published luma.gl has no iterative strongly connected
+components, so there is no large-graph SCC here.
 
-- `'reachability'` is the original exact path: independent source traversals and mutual
-  reachability with O(V²) scratch and O(V(V+E)) work, independent of any budget, for at most 1024
-  nodes and 65536 slots.
-- `'iterative'` runs the bounded GPU state machine of `GPUGraphAlgorithmsStronglyConnectedComponents`:
-  trim, colour, backward-mark and finalize steps with O(V) scratch and no node or slot limit.
-  `strongComponentsIterations` sets the step budget (default 256, at most 4096); long chains and
-  deeply nested components need roughly one step per level. When the budget is exhausted,
-  `strongComponentsConverged` stays zero and `strongComponents` publishes `0xffffffff` for every
-  node. Request `strongComponentsConverged` whenever the graph may be deep.
-- `'auto'` (default) uses `'reachability'` within its bounds and `'iterative'` above them, or
-  whenever `strongComponentsConverged` or `strongComponentsIterations` is given.
-
-The bounds of 1024 nodes and 65536 slots still apply to the resilience outputs and to the
-reachability SCC path. Resilience uses an iterative Tarjan traversal in one GPU invocation. These
+The bounds of 1024 nodes and 65536 slots apply to the resilience outputs and to the
+SCC path. Resilience uses an iterative Tarjan traversal in one GPU invocation. These
 are exact bounded subgraph implementations; large-graph throughput and a lower-level generic graph
 adapter for resilience remain future optimization work.
 

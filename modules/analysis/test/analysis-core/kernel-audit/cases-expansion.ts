@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import * as raster from '@luma.gl/graph/gpu-raster';
+import * as raster from '@luma-contributors/analysis/raster-analysis';
+import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import * as terrain from '../../../src/gpu-terrain/index';
 import * as spatial from '../../../src/gpu-spatial-analysis/index';
 import {compileProjectionProgram} from '@luma.gl/graph/gpu-project';
@@ -16,7 +17,7 @@ import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 import {EXPANSION_RECIPE_CASES} from './cases-expansion-recipes';
 
 /** Maximal bounded shapes are transient declarations, never CPU allocations or GPU execution. */
-const GRID: raster.GPURasterMetadata = {
+const GRID: GPURasterMetadata = {
   width: 128,
   height: 128,
   affine: [1, 0, 0, 0, 1, 0],
@@ -26,7 +27,7 @@ const CELL_COUNT = 16384;
 function band(
   context: KernelAuditContext,
   format: 'float32' | 'sint32' = 'float32'
-): raster.GPURasterBufferBand {
+): GPURasterBufferBand {
   return {
     id: 'source',
     format,
@@ -35,7 +36,7 @@ function band(
     noDataValue: -9999,
     scale: 2,
     offset: 1
-  } as raster.GPURasterBufferBand;
+  } as GPURasterBufferBand;
 }
 function convergence(context: KernelAuditContext) {
   return {converged: context.view('uint32', 1)};

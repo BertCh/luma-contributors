@@ -263,7 +263,6 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
           id: `${id}-${metric.step}-normalize`,
           operation: 'GPUNetworkAnalyticsColumns',
           variant: 'normalize',
-          record: {datum: {keySpace: 'node'}, formula: 'gpu-network.analytics.normalize'},
           bindings: [
             {name: 'raw', view: metric.raw, type: elementType, access: 'read'},
             {name: 'extent', view: extent, type: elementType, access: 'read'},

@@ -2,12 +2,9 @@
 
 This private integration package connects application-owned datasets to luma compute. It keeps
 GPU resources outside serializable UI state, preserves source identity and makes CPU readback
-and complementary execution explicit. The implementation is being integrated with the
-[Kepler example](../../examples/deck/kepler-compute) against a pinned Kepler frontend.
-
-The [integration plan](../../dev-docs/roadmaps/kepler-compute-integration-plan.md) defines the full
-target and acceptance gates. The presence of these adapters does not establish complete Kepler
-layer or analysis parity.
+and complementary execution explicit. The Kepler example (`examples/deck/kepler-compute`) is not
+ported to published luma.gl and is deferred. The presence of these adapters does not establish
+complete Kepler layer or analysis parity.
 
 ## Dataset and execution ownership
 

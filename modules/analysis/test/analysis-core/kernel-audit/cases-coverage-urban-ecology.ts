@@ -3,8 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  addSparseResistanceConnectivityRecipe,
-  addRasterResistanceConnectivityRecipe,
   addSegregationCounterfactualRecipe,
   addPopulationSupportAlignmentRecipe,
   addStreetProfilesRecipe,
@@ -21,36 +19,6 @@ import type {KernelAuditCase} from './kernel-audit-context';
 
 /** Full optional evidence and documented bounds, without allocating input or scratch buffers. */
 export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
-  {
-    exportName: 'addSparseResistanceConnectivityRecipe',
-    name: '65538 vertices with sorted CSR and Jacobi PCG',
-    build({graph, view}) {
-      addSparseResistanceConnectivityRecipe(graph, {
-        edges: view('uint32x2', 131072),
-        conductances: view('float32', 131072),
-        vertexCount: 65538,
-        source: 0,
-        sink: 65537,
-        maximumIterations: 8
-      });
-    }
-  },
-  {
-    exportName: 'addRasterResistanceConnectivityRecipe',
-    name: 'anisotropic raster with eight-neighbor resistance and current density',
-    build({graph, view}) {
-      addRasterResistanceConnectivityRecipe(graph, {
-        resistance: view('float32', 1024),
-        width: 32,
-        height: 32,
-        cellSize: [1, 2],
-        connectivity: 8,
-        source: 0,
-        sink: 1023,
-        maximumIterations: 8
-      });
-    }
-  },
   ...(['composition', 'dual-composition', 'share'] as const).map(method => ({
     exportName: 'addSegregationCounterfactualRecipe',
     name: `2048 units with ${method} quantile mapping`,

@@ -437,8 +437,6 @@ fn getTotal(zone: u32) -> f32 {
         input: sortedValues,
         segmentOffsets,
         output: sums,
-        // Exclusive scan of per-zone counts of valid cells, so the last offset is at most `cellCount`.
-        offsetsWithinInput: true,
         // Only the in-iteration sums are gated; `sumGate` is defined below, before they are built.
         ...(isGated ? sumGate : {})
       })
@@ -672,7 +670,6 @@ ${getPlacedCellAreaWGSL(getGPUAuthalicSphereRadius(this.spatialContext))}`,
           id: `${id}-${label}-restore-apply`,
           operation: OPERATION,
           variant: 'restore-and-clamp',
-          record: {formula: 'gpu-spatial-analysis.pycnophylactic'},
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read'},

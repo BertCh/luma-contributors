@@ -7,11 +7,11 @@ the color counts of networkx `greedy_color` with the `largest_first`, `smallest_
 a seeded hash instead of networkx's stable sort, so the GPU spec compares color COUNTS only (exact
 colors are checked against the TS sequential oracle in the same spec).
 
-Fixture written (relative to modules/analysis/test/oracles):
+Fixture written (relative to modules/graph/test/oracles):
   fixtures/geometry-map-coloring.json
 
 Usage, from the repository root:
-  python3 -I modules/analysis/test/oracles/geometry-map-coloring.py
+  python3 -I modules/graph/test/oracles/geometry-map-coloring.py
 
 Needs scipy, numpy and networkx.
 """
@@ -25,7 +25,7 @@ from scipy.spatial import Delaunay
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.join(HERE, 'fixtures', 'geometry-map-coloring.json')
-GENERATOR = 'modules/analysis/test/oracles/geometry-map-coloring.py'
+GENERATOR = 'modules/graph/test/oracles/geometry-map-coloring.py'
 
 
 def build_graph(point_count, seed):

@@ -189,14 +189,14 @@ near-degenerate boundary. Capacity and visit-budget failures are separately exer
 
 The additional reproducible generators are `difficult-geodesics.py`, `geodesic-area-adaptive.py`,
 `datum-horizontal.py`, `spherical-polygon-contains.py`, `spherical-polygon-overlay.py`,
-`spherical-arc-overlay.py` and `s2-polygon-covering.py` under `modules/graph/test/oracles/`.
+`spherical-arc-overlay.py` and `s2-polygon-covering.py` under `modules/analysis/test/oracles/`.
 They pin GeographicLib 2.1, pyproj 3.7.2 / PROJ 9.5.1 and S2Geometry 0.14.0. Horizontal PROJ
 fixtures write prioritized CTable2 grids and decode their actual f32-radian samples; split outputs
 must agree within `1e-9` degrees, including priority discontinuities and inclusive bounds.
 
 ## Evidence and limits
 
-`modules/graph/test/oracles/global-coordinates.py` pins `s2sphere==0.2.5` and
+`modules/analysis/test/oracles/global-coordinates.py` pins `s2sphere==0.2.5` and
 `geographiclib==2.1`, `pyproj==3.7.2` and `shapely==2.1.2`. The committed JSON records direct upstream calls and a clearly labeled composed overlap oracle. PROJ samples a generated local GTX vertical grid. For spherical crossings, Shapely computes topology in a gnomonic plane (great circles become lines) and GeographicLib independently measures the lifted intersection on a unit sphere. S2 neighbor checks
 include every cell at levels 0–2 and sampled levels 15/30, including face seams and poles. The tests
 compare measured area/perimeter with S2 values and check six-face area sums against `4*pi`.
@@ -204,7 +204,7 @@ Additional independent tests cover affine-grid interpolation/inversion, first-gr
 height units, nodata, nonfinite arithmetic, inverse exhaustion, known octant area, overlap fractions,
 open/closed/complement boundaries, capacity limits and unsupported near-antipodal geodesics.
 Node tests parse generated WGSL, audit reserved symbols and check binding counts. GPU tests are
-in `modules/graph/test/gpu-spatial-analysis/global-coordinates/global-coordinates.spec.ts`.
+in `modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates.spec.ts`.
 
 These fixtures establish the tested numerical cases, not complete S2/PROJ/GeographicLib parity.
 The bounded observations below add same-device timing and explicit-buffer evidence. Cross-device accuracy, driver memory peaks and representative geographic distributions remain unmeasured.
@@ -232,7 +232,7 @@ radians (default `1e-5`). It deliberately expands exterior covers and shrinks in
 ## Opt-in bounded performance observation
 
 The benchmark spec is
-`modules/graph/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts`.
+`modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts`.
 Run it in the isolated browser benchmark project with
 `LUMA_TEST_BROWSER_BENCHMARKS=true VITE_GLOBAL_COORDINATES_BENCHMARK=true`, and set optional
 `VITE_BENCHMARK_REVISION` / `VITE_BENCHMARK_SOURCE_STATE` metadata to identify the tested tree.
@@ -258,7 +258,7 @@ result is implied merely by adding this opt-in spec.
 
 An Apple WebGPU adapter (`metal-3`, non-fallback, chip model unspecified) running Headless Chrome151
 completed all eight benchmark workloads on October 23, 2026 at 9:07 PM EDT.
-The [raw phase samples and metadata](../../../../dev-docs/benchmarks/data/global-coordinates-2026-10-23.json)
+The raw phase samples and metadata
 retain upload, readback, validation, first/repeated/updated execution and allocation measurements.
 
 **Provenance limitation:** the runner recorded `sourceRevision: null` and `sourceState: null`.
@@ -379,7 +379,7 @@ Identical octants with intersection area and overlap fractions.
 ## Expanded-mode scaling observations
 
 The expanded harness completed fourteen workloads on the same Apple `metal-3` adapter and
-Headless Chrome 151 at 10:42 PM EDT on October 23, 2026. The [complete phase records](../../../../dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json)
+Headless Chrome 151 at 10:42 PM EDT on October 23, 2026. The complete phase records
 include the original eight cases and six added cases below. Source state is explicitly
 `shared-dirty-tree`; revision is null, so this is not a frozen-source benchmark. These are CPU
 encode/submit/queue-completion measurements, with upload, validation and readback reported

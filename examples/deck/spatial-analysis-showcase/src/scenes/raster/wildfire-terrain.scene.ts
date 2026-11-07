@@ -7,7 +7,7 @@ import elevationDataset from '../../data/datasets/wildfire-california-dem.datase
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './wildfire-terrain.md?raw?raw';
+import narrative from './wildfire-terrain.md?raw';
 import type {WildfireTerrainOptions} from './wildfire-terrain.compute';
 
 export default defineScene<WildfireTerrainOptions>({

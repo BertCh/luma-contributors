@@ -1,6 +1,6 @@
 # GPU geometry refinement
 
-The contributors in `@luma-contributors/graph/gpu-spatial-analysis` add bounded geometry
+The contributors in `@luma-contributors/analysis/gpu-spatial-analysis` add bounded geometry
 processing to caller-owned `GPUCommandGraph` buffers. They return command nodes;
 they never submit, read back or run a CPU geometry fallback. All geometric
 measurements use planar coordinates. Use a local coordinate frame for numerical

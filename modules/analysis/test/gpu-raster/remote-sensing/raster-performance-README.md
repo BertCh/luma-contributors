@@ -2,8 +2,8 @@
 
 This opt-in benchmark records RS02–RS04 and RS06–RS11 at two sizes, including both
 RS06 mean and Savitzky–Golay operations. RS01/RS05 phase records remain in
-[`geospatial-coverage-tranche-one-2026-10-23.json`](../../../../../dev-docs/perf/geospatial-coverage-tranche-one-2026-10-23.json).
-The [recorded native run](../../../../../dev-docs/perf/raster-coverage-2026-10-24.json) retains all 20 workload records, per-phase samples, GPU timestamps and source hashes.
+[`geospatial-coverage-tranche-one-2026-10-23.json`](../../../../../dev-docs/research/evidence/geospatial-coverage-tranche-one-2026-10-23.json).
+The [recorded native run](../../../../../dev-docs/research/evidence/raster-coverage-2026-10-24.json) retains all 20 workload records, per-phase samples, GPU timestamps and source hashes.
 That earlier artifact explicitly did **not** measure categorical or spectral-index throughput;
 the new harness includes RS02 categorical statistics and RS09 EVI to close those gaps.
 

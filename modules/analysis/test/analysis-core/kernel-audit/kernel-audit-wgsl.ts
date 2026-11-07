@@ -424,6 +424,11 @@ export const UPSTREAM_SELF_COMPARE_IDIOMS: readonly {pattern: RegExp; source: st
     source: 'published @luma.gl/graph finite(value) helpers and raster texture validity tests'
   },
   {
+    // gpu-raster-band-math.js:216 (published @luma.gl/graph)
+    pattern: /\b(\w+) == \1 && abs\(\1\) <= bitcast<f32>\(0x7f7fffffu\)/g,
+    source: 'published @luma.gl/graph gpu-raster band-math finite(value) helper'
+  },
+  {
     pattern: new RegExp(String.raw`\btotal == total && abs\(total\) <= ${F32_MAX}`, 'g'),
     source: 'gpgpu/src/gpu-graph/gpu-graph-page-rank-internals.ts:466'
   },

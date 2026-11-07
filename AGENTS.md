@@ -24,7 +24,9 @@ Large typechecks need `NODE_OPTIONS=--max-old-space-size=8192` or more.
 - Source lives only in analysis-owned directories of `modules/analysis/src`: `analysis-core`,
   `computation-record`, `gpu-spatial-analysis`, `gpu-network`, `gpu-terrain`, `testing`,
   `dataframe-analysis`, `raster-analysis`, `pointcloud-analysis`, `geospatial-analysis`.
-  `src/_pending/` holds quarantined luma.gl extensions awaiting removal and must end up empty.
+
+## Plans and docs
+- Plans go in `dev-docs/roadmap.md`; see `dev-docs/README.md` for the dev-docs index.
 
 ## Packages
 - `@luma-contributors/analysis`: GPU geospatial and analysis operations.

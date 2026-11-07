@@ -2,15 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphVectorView, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GraphVectorView, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-
-/** Returns the ordered chunk views of a vector, or the single view itself. */
-export function getKeplerVectorChunks<Format extends GPUVectorFormat>(
-  vector: GraphDataView<Format> | GraphVectorView<Format>
-): readonly GraphDataView<Format>[] {
-  return vector instanceof GraphVectorView ? vector.data : [vector];
-}
+import {getGraphViewChunks} from '@luma-contributors/analysis/analysis-core';
 
 /**
  * Pairs the non-empty chunks of source columns that come from the same table.
@@ -24,9 +18,7 @@ export function zipKeplerVectorChunks<const Formats extends readonly GPUVectorFo
       | GraphVectorView<Formats[Index]>;
   }
 ): readonly {readonly [Index in keyof Formats]: GraphDataView<Formats[Index]>}[] {
-  const columns = vectors.map(vector =>
-    getKeplerVectorChunks(vector).filter(chunk => chunk.length)
-  );
+  const columns = vectors.map(vector => getGraphViewChunks(vector).filter(chunk => chunk.length));
   const chunkCount = columns[0]?.length ?? 0;
   for (const column of columns) {
     // Group By source columns must share chunk boundaries

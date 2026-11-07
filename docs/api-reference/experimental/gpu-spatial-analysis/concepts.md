@@ -3,11 +3,9 @@ title: "GPU Spatial Analysis concepts"
 description: "Ontology, shared ports, conventions, coordinate precision and how analysis contributors run."
 ---
 
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # GPU Spatial Analysis concepts
 
-<ExperimentalDocsTabs active="gpu-spatial-analysis-concepts" />
 
 ## Ontology and capability catalogue
 
@@ -27,7 +25,7 @@ have no operators, which makes coverage and missing connective tissue queryable 
 import {
   getGPUSpatialAnalysisCapabilityForOperator,
   queryGPUSpatialAnalysisCapabilities
-} from '@luma-contributors/graph/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const producers = queryGPUSpatialAnalysisCapabilities({
   status: 'available',

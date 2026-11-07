@@ -8,7 +8,7 @@ Writes fixtures/statistics-permutation-alternative.json next to this script, con
 test/gpu-spatial-analysis/permutation-inference/permutation-alternative-reference.ts) by
 permutation-alternative.node.spec.ts, permutation-shuffle.node.spec.ts and
 gpu-permutation-alternative.spec.ts. Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-permutation-alternative.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-permutation-alternative.py
 in a venv with numpy, scipy, esda and libpysal (versions are recorded in the fixture).
 
 `alternatives`: `esda.significance.calculate_significance(observed, simulated, alternative=...)` for
@@ -104,7 +104,7 @@ x = np.array([(((i * 37) % 100) + 1) ** 2 / 100 for i in range(side * side)])
 moran = Moran(x, lat2W(side, side, rook=True), transformation='O', permutations=0)
 
 fixture = {
-    'generator': 'modules/analysis/test/oracles/statistics-permutation-alternative.py',
+    'generator': 'modules/graph/test/oracles/statistics-permutation-alternative.py',
     'versions': {
         'python': platform.python_version(),
         'numpy': np.__version__,

@@ -6,7 +6,7 @@
 Writes fixtures/statistics-hot-spot-recipe.json next to this script, consumed (through
 test/gpu-spatial-analysis/recipes/hot-spot-esda-fixture.ts) by hot-spot-analysis-recipe.node.spec.ts.
 Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-hot-spot-recipe.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-hot-spot-recipe.py
 in a venv with numpy, esda and libpysal (versions are recorded in the fixture).
 
 Scene: 8x8 lattice of Poisson(3) counts (seed 3), a hot block (+12) on rows/columns 0..2 and a block

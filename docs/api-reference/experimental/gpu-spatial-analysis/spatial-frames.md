@@ -68,7 +68,7 @@ reject Lambert frames and area operators reject AEQD frames.
 ### createGPULocalFrame
 
 ```ts
-import {createGPULocalFrame} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const frame = createGPULocalFrame({origin: [-122.4, 37.8], kind: 'azimuthal-equidistant'});
 const [x, y] = frame.project(-122.39, 37.81); // meters, binary64
@@ -92,7 +92,7 @@ frame with a non-default `sphereRadius` appends `,R=<radius>`.
 ### createGPUSpatialFrameFromCRS
 
 ```ts
-import {createGPUSpatialFrameFromCRS} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {createGPUSpatialFrameFromCRS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const frame = createGPUSpatialFrameFromCRS('urn:ogc:def:crs:EPSG::32633');
 // frame.id === 'EPSG:32633'

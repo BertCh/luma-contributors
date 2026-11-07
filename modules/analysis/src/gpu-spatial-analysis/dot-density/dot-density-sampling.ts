@@ -445,8 +445,7 @@ fn getTriangleStart(polygon: u32) -> u32 {
       segmentCount: featureCount,
       input: triangleAreas,
       segmentOffsets: featureTriangleOffsets,
-      output: featureAreas,
-      offsetsWithinInput: true
+      output: featureAreas
     })
   );
 

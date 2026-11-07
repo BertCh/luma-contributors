@@ -5,7 +5,7 @@
 import {readFileSync, writeFileSync} from 'node:fs';
 
 const inventory = JSON.parse(readFileSync(new URL('../src/sandbox-capabilities.json', import.meta.url), 'utf8'));
-const destination = new URL('../../../../dev-docs/reviews/kepler-sandbox-2026-10-28/capability-matrix.md', import.meta.url);
+const destination = new URL('../../../../dev-docs/research/kepler-sandbox-2026-10-28/capability-matrix.md', import.meta.url);
 const labels = {
   partial: 'Partial host integration',
   adapter: 'Reusable building blocks',

@@ -5,10 +5,6 @@
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {
-  GPU_POINT_IN_POLYGON_CLASSIFICATION,
-  GPUPairwisePointInPolygon
-} from '@luma.gl/graph/geospatial';
 import {GPUPointInPolygonJoin} from '../../../src/gpu-spatial-analysis/spatial-join/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -73,70 +69,6 @@ function makeRows(seed: number, offset: number, scale: number, count: number) {
     rows.push({point, ring});
   }
   return rows;
-}
-
-async function runProbe(offset: number, scale: number, seed: number) {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const rows = makeRows(seed, offset, scale, 6000);
-  const positions = rows.flatMap(row => row.ring.flat());
-  const graph = new GPUCommandGraph(device, {id: 'pip-exact-probe'});
-  const count = rows.length;
-  const geometryOffsets = Uint32Array.from({length: count + 1}, (_, i) => i);
-  const ringOffsets = Uint32Array.from({length: count + 1}, (_, i) => i * 3);
-  const buffers = [
-    createInputBuffer(device, Float32Array.from(rows.flatMap(row => row.point))),
-    createInputBuffer(device, Float32Array.from(positions)),
-    createInputBuffer(device, geometryOffsets),
-    createInputBuffer(device, geometryOffsets),
-    createInputBuffer(device, ringOffsets),
-    createOutputBuffer(device, count)
-  ];
-  graph.add(
-    new GPUPairwisePointInPolygon({
-      queryPositions: importGraphBuffer(graph, 'points', buffers[0], 'float32x2', count),
-      positions: importGraphBuffer(graph, 'pos', buffers[1], 'float32x2', count * 3),
-      featureOffsets: importGraphBuffer(graph, 'go', buffers[2], 'uint32', count + 1),
-      polygonOffsets: importGraphBuffer(graph, 'po', buffers[3], 'uint32', count + 1),
-      ringOffsets: importGraphBuffer(graph, 'ro', buffers[4], 'uint32', count + 1),
-      output: importGraphBuffer(graph, 'out', buffers[5], 'uint32', count)
-    })
-  );
-  const compiled = graph.compile();
-  submitGraph(device, compiled, undefined);
-  const result = await readUint32(buffers[5], count);
-  compiled.destroy();
-  buffers.forEach(buffer => buffer.destroy());
-  const {outside, inside, boundary, uncertain} = GPU_POINT_IN_POLYGON_CLASSIFICATION;
-  const names = {[outside]: 'outside', [inside]: 'inside', [boundary]: 'boundary'} as const;
-  const tally = {wrong: 0, uncertain: 0, exactBoundary: 0, correct: 0};
-  const examples: unknown[] = [];
-  rows.forEach((row, index) => {
-    const expected = classifyExact(row.point, row.ring);
-    if (expected === 'boundary') tally.exactBoundary++;
-    if (result[index] === uncertain) tally.uncertain++;
-    else if (names[result[index] as 0 | 1 | 2] !== expected) {
-      tally.wrong++;
-      if (examples.length < 3) examples.push({row, expected, got: result[index]});
-    } else tally.correct++;
-  });
-  return {tally, examples};
-}
-
-for (const [label, offset, scale] of [
-  ['small coordinates', 0, 100],
-  ['offset coordinates', 12345, 50],
-  ['wide coordinates', -500, 1000]
-] as const) {
-  it(`GPUPairwisePointInPolygon matches the exact oracle on near-degenerate points (${label})`, async () => {
-    const outcome = await runProbe(offset, scale, 17 + offset);
-    if (!outcome) return;
-    console.log(`PIP probe ${label}`, JSON.stringify(outcome));
-    expect(
-      outcome.tally.exactBoundary + outcome.tally.correct + outcome.tally.uncertain
-    ).toBeGreaterThan(5000);
-    expect(outcome.tally.wrong).toBe(0);
-  });
 }
 
 it('GPUPointInPolygonJoin resolves near-degenerate points exactly with no uncertainty', async () => {

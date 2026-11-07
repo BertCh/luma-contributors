@@ -3,11 +3,9 @@ title: "GPU Network concepts"
 description: "Conventions and execution model of GPU Network contributors."
 ---
 
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # GPU Network concepts
 
-<ExperimentalDocsTabs active="gpu-network-concepts" />
 
 ## Spatial contexts and length units
 

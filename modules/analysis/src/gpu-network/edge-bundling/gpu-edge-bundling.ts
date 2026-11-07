@@ -472,31 +472,19 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
         density,
         gate: gate && {view: gate, iteration}
       };
-      // Record metadata only: stamps the unrolled iteration on the three nodes of this cycle.
-      const record = {
-        loop: {
-          id: `${id}-iteration`,
-          iteration,
-          phase: gate ? 'gated' : 'unconditional',
-          maximumIterations
-        }
-      };
       nodes.push(
         createEdgeBundlingClearNode<Parameters>(graph, {
           id: `${id}-clear-${iteration}`,
           density,
-          gate: iterationProps.gate,
-          record
+          gate: iterationProps.gate
         }),
         createEdgeBundlingSplatNode<Parameters>(graph, {
           id: `${id}-splat-${iteration}`,
-          ...iterationProps,
-          record
+          ...iterationProps
         }),
         createEdgeBundlingUpdateNode<Parameters>(graph, {
           id: `${id}-update-${iteration}`,
-          ...iterationProps,
-          record
+          ...iterationProps
         })
       );
     }

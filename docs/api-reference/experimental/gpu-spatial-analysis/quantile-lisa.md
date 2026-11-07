@@ -84,7 +84,7 @@ multiplying independently computed memberships establishes multivariate parity.
 Numerical GPU tests cover type-5 boundaries versus type 7, negative values, constant and tied
 columns, empty classes, missing values, islands, invalid controls, neighbor capacity and replay.
 The sorted test oracle independently computes boundaries; the established Philox oracle checks
-exact exceedances, pseudo p-values and significance. The reproducible `modules/graph/test/oracles/quantile-lisa-geoda.py` fixture runs actual
+exact exceedances, pseudo p-values and significance. The reproducible `modules/analysis/test/oracles/quantile-lisa-geoda.py` fixture runs actual
 PyGeoDa 0.1.3 with 9,999 permutations. GPU observed counts match exactly; p-values are checked
 with a broad 0.2 absolute tolerance because both the random streams and endpoint sampling differ.
 Exact inference is asserted against the independent uniform Philox oracle, including the directed

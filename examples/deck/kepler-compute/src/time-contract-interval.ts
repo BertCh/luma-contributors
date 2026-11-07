@@ -12,7 +12,7 @@
  * The existing GPUKeplerTimeSelection endTimestamps path is the closed/closed variant.
  *
  * The WGSL generator reuses the TIME_WORDS_WGSL helper names (timeWordsCompare) from
- * @luma-contributors/analysis/gpu-dataframe and expects those helpers to be emitted before the snippet.
+ * @luma.gl/graph/gpu-dataframe and expects those helpers to be emitted before the snippet.
  */
 
 export type IntervalBoundaryClosure = {

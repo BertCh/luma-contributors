@@ -1,6 +1,6 @@
 # Point process contributors
 
-These contributors add bounded, GPU-resident point-process stages to `@luma-contributors/graph/gpu-spatial-analysis`; `GPUNetworkKernelDensity` and `GPUNetworkInhomogeneousK` belong to `@luma-contributors/graph/gpu-network`. They implement `GPUCommandNodeProducer`: add them to a `GPUCommandGraph`, compile and encode the graph, then explicitly read back only the results the application needs. Input and output buffers remain caller-owned. Inputs cannot overlap outputs. Every storage stage fits the eight-binding WebGPU minimum.
+These contributors add bounded, GPU-resident point-process stages to `@luma-contributors/analysis/gpu-spatial-analysis`; `GPUNetworkKernelDensity` and `GPUNetworkInhomogeneousK` belong to `@luma-contributors/analysis/gpu-network`. They implement `GPUCommandNodeProducer`: add them to a `GPUCommandGraph`, compile and encode the graph, then explicitly read back only the results the application needs. Input and output buffers remain caller-owned. Inputs cannot overlap outputs. Every storage stage fits the eight-binding WebGPU minimum.
 
 | Contributor | New behavior | Bound and status |
 | --- | --- | --- |
@@ -132,7 +132,7 @@ The opt-in `point-process-benchmark.spec.ts` exercises 32, 256 and 4096-row fram
 
 All 32/256/4096-row OPTICS cases now complete their ordering. Every reported run asserts the visited count, completion flag, uniqueness of the entire ordering, and all core/reachability values against the independent full CPU calculation after the input update. Dyadic coordinate perturbations avoid artificial cross-precision tie changes in this benchmark. The separate exhausted-frontier test still checks explicit partial-work behavior. Probability sampling completes every configured sample.
 
-The following measurements predate the maximum-heap core selection and scan-based extraction; they are retained as historical evidence, not timings of the current implementation. The [complete-ordering measurement record](../../../../dev-docs/perf/point-process-complete-2026-10-23.json) reports milliseconds on one AppleMetal WebGPU device; each warm GPU value is the median of three executions.
+The following measurements predate the maximum-heap core selection and scan-based extraction; they are retained as historical evidence, not timings of the current implementation. The complete-ordering measurement record reports milliseconds on one AppleMetal WebGPU device; each warm GPU value is the median of three executions.
 
 | Operation | Frame rows | Completed work | Warm GPU | Changed-input GPU | Full JS f64 OPTICS reference |
 | --- | ---: | --- | ---: | ---: | ---: |

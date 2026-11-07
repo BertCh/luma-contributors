@@ -39,7 +39,7 @@ result <- list(versions=list(R=as.character(getRversion()),terra=as.character(pa
                cases=list(make_case('two-square-patches',c(1,1,2,2,1,1,2,2),4,2,c(1,1)),
                           make_case('interior-background',c(1,1,2,2,1,NA,2,2,1,1,2,2),4,3,c(1,1)),
                           make_case('single-cell-class',c(1,2,2,2),4,1,c(1,1))))
-write_json(result,'modules/analysis/test/oracles/fixtures/urban-landscape.json',auto_unbox=TRUE,pretty=TRUE,digits=16,na='null')
+write_json(result,'modules/graph/test/oracles/fixtures/urban-landscape.json',auto_unbox=TRUE,pretty=TRUE,digits=16,na='null')
 # Raster ENN is edge-cell CENTER distance. landscapemetrics 2.2.1 has no proximity API;
 # the last column explicitly composes its patch area and ENN on exactly two patches.
 landscape <- rast(nrows=5,ncols=9,xmin=0,xmax=9,ymin=0,ymax=5,crs='EPSG:3857')
@@ -55,4 +55,4 @@ result$proximity <- list(width=9,height=5,patches=patches,patchClasses=c(0,0),ar
  coreEdge=lsm_p_core(landscape,directions=4,consider_boundary=FALSE,edge_depth=1)$value*10000,
  coreOpen=lsm_p_core(landscape,directions=4,consider_boundary=TRUE,edge_depth=1)$value*10000,
  convention='Direct ENN/core; proximity is composed, no lsm_p_prox exists in pinned package.')
-write_json(result,'modules/analysis/test/oracles/fixtures/urban-landscape.json',auto_unbox=TRUE,pretty=TRUE,digits=16,na='null')
+write_json(result,'modules/graph/test/oracles/fixtures/urban-landscape.json',auto_unbox=TRUE,pretty=TRUE,digits=16,na='null')

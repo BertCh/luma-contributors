@@ -36,7 +36,7 @@ from pysheds.view import Raster, ViewFinder  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, 'fixtures', 'terrain-hydrology.json')
-GENERATOR = 'modules/analysis/test/oracles/terrain-hydrology.py'
+GENERATOR = 'modules/graph/test/oracles/terrain-hydrology.py'
 
 
 def make_dem(width, height, outlet, seed):

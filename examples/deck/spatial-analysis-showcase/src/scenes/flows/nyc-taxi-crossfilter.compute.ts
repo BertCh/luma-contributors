@@ -171,7 +171,10 @@ export async function createNycTaxiCrossfilter(
   const fareBuffer = makeBuffer('fare', trips.fare);
   const passengerBuffer = makeBuffer('passengers', Float32Array.from(trips.passengers));
   const passengerKeys = makeBuffer('passenger-keys', trips.passengers);
+  // Published GPUCrossfilter has no 'count' view or external live mask. Counts are single-key group
+  // views over all-zero keys, and the live-day mask is one more range dimension fixed to [1, 1].
   const liveMaskBuffer = makeBuffer('live-mask', new Uint32Array(count).fill(1));
+  const zeroKeysBuffer = makeBuffer('zero-keys', new Uint32Array(count));
   const visibleIds = makeBuffer('visible-ids', count * 4);
   const tripSegments = makeBuffer('trip-links', getTaxiTripSegments(trips));
   const filteredDraw = resources.track(
@@ -260,23 +263,25 @@ export async function createNycTaxiCrossfilter(
     const fare = view('fare', fareBuffer, 'float32');
     const passengers = view('passengers', passengerBuffer, 'float32');
     const keys = view('passenger-keys', passengerKeys, 'uint32');
+    const zeroKeys = view('zero-keys', zeroKeysBuffer, 'uint32');
     const own = {includeOwnSelection: !selfExclude};
     const filter = new GPUCrossfilter<void>(commandGraph, {
       id: 'taxi',
       dimensions: [
-        {id: 'map', kind: 'bounds', x, y, rejectNonFinite: true},
-        {id: 'hour', kind: 'range', input: hour, exclusiveMaximum: true},
-        {id: 'distance', kind: 'range', input: distance, exclusiveMaximum: true},
-        {id: 'fare', kind: 'range', input: fare, exclusiveMaximum: true},
-        {id: 'passengers', kind: 'range', input: passengers}
+        {id: 'map', kind: 'bounds', x, y},
+        {id: 'hour', kind: 'range', input: hour},
+        {id: 'distance', kind: 'range', input: distance},
+        {id: 'fare', kind: 'range', input: fare},
+        {id: 'passengers', kind: 'range', input: passengers},
+        // Rows of the day that is switched off are dead: they leave every view below.
+        {id: 'live', kind: 'range', input: view('live-mask', liveMaskBuffer, 'uint32')}
       ],
-      // Rows of the day that is switched off are dead: they leave every view below.
-      liveMask: view('live-mask', liveMaskBuffer, 'uint32'),
       views: [
         ...funnelDimensions.map((dimension, index) => ({
           id: `count-${dimension}`,
-          kind: 'count' as const,
+          kind: 'group' as const,
           dimension,
+          keys: zeroKeys,
           output: view(`count-${dimension}`, funnelCounts[index], 'uint32', 1),
           ...own
         })),
@@ -339,7 +344,8 @@ export async function createNycTaxiCrossfilter(
         },
         {
           id: 'selected-count',
-          kind: 'count',
+          kind: 'group',
+          keys: zeroKeys,
           output: view('selected-count', selectedCount, 'uint32', 1)
         },
         {
@@ -353,6 +359,7 @@ export async function createNycTaxiCrossfilter(
         }
       ]
     });
+    filter.setRange('live', [1, 1]);
     filter.addToGraph(commandGraph);
     // Destroyed in reverse order: the compiled graph goes before the controller's selection buffers.
     graphResources.track({destroy: () => filter.destroy()});
@@ -437,6 +444,7 @@ export async function createNycTaxiCrossfilter(
     set('distance', cpuBrush.distance);
     set('fare', cpuBrush.fare);
     set('passengers', cpuBrush.passengers);
+    filter.setRange('live', [1, 1]);
     const area = getAreaBounds();
     cpuBrush.area = area;
     if (area) filter.setBounds('map', area);

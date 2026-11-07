@@ -130,9 +130,9 @@ The supplied pair arrays are the candidate index and stable provenance; batching
 ## Evidence and remaining gates
 
 The independent generator is
-[`network-movement-coverage.py`](../../../../modules/graph/test/oracles/network-movement-coverage.py),
+[`network-movement-coverage.py`](../../../../modules/analysis/test/oracles/network-movement-coverage.py),
 with committed
-[`network-movement-coverage.json`](../../../../modules/graph/test/oracles/fixtures/network-movement-coverage.json).
+[`network-movement-coverage.json`](../../../../modules/analysis/test/oracles/fixtures/network-movement-coverage.json).
 It pins NetworkX 3.5 and NumPy 2.2.6. Network flow and modularity fixtures call NetworkX directly;
 Kalman fixtures are independent dense matrix compositions, not MovingPandas calls. Tests also
 check conservation, reverse residual cancellation, self-loops, a greedy-allocation counterexample,
@@ -143,13 +143,13 @@ portable eight-storage-binding limit.
 The selected RAAM source is
 [`access` v1.1.9 `raam.py`](https://github.com/pysal/access/blob/v1.1.9/access/raam.py);
 the implementation here is independent and exposes final-load and convergence semantics explicitly.
-The additional [advanced generator](../../../../modules/graph/test/oracles/network-movement-advanced.py)
+The additional [advanced generator](../../../../modules/analysis/test/oracles/network-movement-advanced.py)
 calls MovingPandas 0.22.4/StoneSoup 1.8 smoothing and polygon clipping, tslearn 0.6.4 Euclidean-cost
 DTW/LCSS, similaritymeasures 1.3.0 Fréchet, access 1.1.9 RAAM, and spopt 0.7.0/PuLP 3.3.0 CBC facility models directly. It also includes an
 independent full-covariance NumPy solve, pyproj ECEF projection, and NetworkX virtual-split/time-expanded
-routing equivalents. A separate [server generator](../../../../modules/graph/test/oracles/network-movement-postgres.py)
+routing equivalents. A separate [server generator](../../../../modules/analysis/test/oracles/network-movement-postgres.py)
 executes PostgreSQL 16.6, PostGIS 3.5.3, pgRouting 3.8.0 and MobilityDB 1.2.1 directly.
-Its [saved results](../../../../modules/graph/test/oracles/fixtures/network-movement-postgres.json)
+Its [saved results](../../../../modules/analysis/test/oracles/fixtures/network-movement-postgres.json)
 cover directed fractional same-edge, parallel-edge and unreachable routes; polygon holes;
 all four time endpoint policies; continuous encounter intervals; and absent common support.
 SQL NULL unreachable costs map to infinity, and NULL temporal relationships map to `0xffffffff`.
@@ -169,7 +169,7 @@ loader. No reference algorithm source was changed. The local socket-only stack p
 505 MB and was removed after fixture capture. Reproduction needs these extensions installed;
 the generator accepts `--psql` and standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` settings.
 
-The [benchmark fixture](../../../../modules/graph/test/oracles/fixtures/network-movement-benchmark.json)
+The [benchmark fixture](../../../../modules/analysis/test/oracles/fixtures/network-movement-benchmark.json)
 records 30 workloads on Apple Metal3 WebGPU, including all nine contributors and 4096 trajectory
 pairs. Upload/preparation, compilation, first execution, three warm executions and readback are
 separate. Full-survivor 4096-pair Fréchet took median 5.2 ms; 205 survivors took 1.1 ms with bounded

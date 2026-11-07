@@ -19,7 +19,6 @@ import type {SceneContext, SceneInstance} from '../scene';
 
 export type SinusoidalProjectionOptions = {
   hub: 'ORD' | 'HND' | 'SYD';
-  wrapLongitude: boolean;
   axis: 'x' | 'y';
 };
 
@@ -30,10 +29,6 @@ type ProjectionVariant = {
     x: ReturnType<SpatialAnalysisResources['createBuffer']>;
     y: ReturnType<SpatialAnalysisResources['createBuffer']>;
   };
-  wrapped: {
-    x: ReturnType<SpatialAnalysisResources['createBuffer']>;
-    y: ReturnType<SpatialAnalysisResources['createBuffer']>;
-  };
   stats: ReturnType<SpatialAnalysisResources['createBuffer']>;
   probe: ReturnType<SpatialAnalysisResources['createBuffer']>;
   encoded: boolean;
@@ -41,7 +36,7 @@ type ProjectionVariant = {
 
 const AIRPORT_COUNT = 3257;
 const STATISTIC_COUNT = 11;
-const PROBE_COUNT = 8;
+const PROBE_COUNT = 4;
 const HUB_ROWS = {ORD: 2033, HND: 1071, SYD: 2589} as const;
 const LOS_ANGELES_ROW = 1501;
 
@@ -70,7 +65,6 @@ export async function createSinusoidalProjection(
   let reader: SummaryReader | null = null;
   let requested = true;
   let viewAxis = ctx.options.axis;
-  let wrappedView = ctx.options.wrapLongitude;
 
   function clearReadouts(): void {
     ctx.setReadout('projectionExtent', 'Updating GPU projection…');
@@ -81,12 +75,9 @@ export async function createSinusoidalProjection(
     const cached = cache.get(hub);
     if (cached) return cached;
     const raw = resources.createBuffer(`raw-${hub}`, airportCount * 8);
-    const wrapped = resources.createBuffer(`wrapped-${hub}`, airportCount * 8);
     const rawX = resources.createBuffer(`raw-x-${hub}`, airportCount * 4);
     const rawY = resources.createBuffer(`raw-y-${hub}`, airportCount * 4);
-    const wrappedX = resources.createBuffer(`wrapped-x-${hub}`, airportCount * 4);
-    const wrappedY = resources.createBuffer(`wrapped-y-${hub}`, airportCount * 4);
-    const stats = resources.createBuffer(`statistics-${hub}`, 4 * STATISTIC_COUNT * 4);
+    const stats = resources.createBuffer(`statistics-${hub}`, 2 * STATISTIC_COUNT * 4);
     const probe = resources.createBuffer(`probe-${hub}`, PROBE_COUNT * 4);
     const probeIndices = resources.createBuffer(
       `probe-indices-${hub}`,
@@ -96,34 +87,16 @@ export async function createSinusoidalProjection(
     const importBuffer = createGraphBufferImporter(graph);
     const positionsView = importBuffer(positionBuffer, 'float32x2', airportCount);
     const rawView = importBuffer(raw, 'float32x2', airportCount);
-    const wrappedView = importBuffer(wrapped, 'float32x2', airportCount);
-    graph.add(
-      new GPUSinusoidalProjection({
-        id: 'projection-raw',
-        positions: positionsView,
-        output: rawView,
-        origin: [positions[HUB_ROWS[hub] * 2], positions[HUB_ROWS[hub] * 2 + 1]]
-      })
-    );
-    graph.add(
-      new GPUSinusoidalProjection({
-        id: 'projection-wrapped',
-        positions: positionsView,
-        output: wrappedView,
-        origin: [positions[HUB_ROWS[hub] * 2], positions[HUB_ROWS[hub] * 2 + 1]],
-        wrapLongitude: true
-      })
-    );
+    new GPUSinusoidalProjection({
+      id: 'projection-raw',
+      positions: positionsView,
+      output: rawView,
+      origin: [positions[HUB_ROWS[hub] * 2], positions[HUB_ROWS[hub] * 2 + 1]]
+    }).addToGraph(graph);
     const rawScalarView = importBuffer(raw, 'float32', airportCount * 2);
-    const wrappedScalarView = importBuffer(wrapped, 'float32', airportCount * 2);
     const rawXView = importBuffer(rawX, 'float32', airportCount);
     const rawYView = importBuffer(rawY, 'float32', airportCount);
-    const wrappedXView = importBuffer(wrappedX, 'float32', airportCount);
-    const wrappedYView = importBuffer(wrappedY, 'float32', airportCount);
-    for (const [id, source, x, y] of [
-      ['split-raw', rawScalarView, rawXView, rawYView],
-      ['split-wrapped', wrappedScalarView, wrappedXView, wrappedYView]
-    ] as const) {
+    for (const [id, source, x, y] of [['split-raw', rawScalarView, rawXView, rawYView]] as const) {
       addKernelPass(graph, {
         id,
         invocationCount: airportCount,
@@ -135,11 +108,11 @@ export async function createSinusoidalProjection(
         body: 'xOutput[xOutputOffset + index] = source[sourceOffset + index * 2u]; yOutput[yOutputOffset + index] = source[sourceOffset + index * 2u + 1u];'
       });
     }
-    const statsView = importBuffer(stats, 'float32', 4 * STATISTIC_COUNT);
+    const statsView = importBuffer(stats, 'float32', 2 * STATISTIC_COUNT);
     graph.add(
       new GPUColumnProfile({
         id: 'profile-projected-coordinates',
-        columns: [rawXView, rawYView, wrappedXView, wrappedYView].map(values => ({values})),
+        columns: [rawXView, rawYView].map(values => ({values})),
         histogramBinCount: 1,
         output: {statistics: statsView}
       })
@@ -152,19 +125,16 @@ export async function createSinusoidalProjection(
       bindings: [
         {name: 'rawX', view: rawXView, type: 'f32', access: 'read'},
         {name: 'rawY', view: rawYView, type: 'f32', access: 'read'},
-        {name: 'wrappedX', view: wrappedXView, type: 'f32', access: 'read'},
-        {name: 'wrappedY', view: wrappedYView, type: 'f32', access: 'read'},
         {name: 'rows', view: probeRowView, type: 'u32', access: 'read'},
         {name: 'output', view: probeView, type: 'f32', access: 'read_write'}
       ],
-      body: 'let hub = rows[rowsOffset]; let lax = rows[rowsOffset + 1u]; output[outputOffset] = rawX[rawXOffset + hub]; output[outputOffset + 1u] = rawY[rawYOffset + hub]; output[outputOffset + 2u] = wrappedX[wrappedXOffset + hub]; output[outputOffset + 3u] = wrappedY[wrappedYOffset + hub]; output[outputOffset + 4u] = rawX[rawXOffset + lax]; output[outputOffset + 5u] = rawY[rawYOffset + lax]; output[outputOffset + 6u] = wrappedX[wrappedXOffset + lax]; output[outputOffset + 7u] = wrappedY[wrappedYOffset + lax];'
+      body: 'let hub = rows[rowsOffset]; let lax = rows[rowsOffset + 1u]; output[outputOffset] = rawX[rawXOffset + hub]; output[outputOffset + 1u] = rawY[rawYOffset + hub]; output[outputOffset + 2u] = rawX[rawXOffset + lax]; output[outputOffset + 3u] = rawY[rawYOffset + lax];'
     });
     const compiled = resources.track(await graph.compileAsync());
     const variant = {
       hub,
       compiled,
       raw: {x: rawX, y: rawY},
-      wrapped: {x: wrappedX, y: wrappedY},
       stats,
       probe,
       encoded: false
@@ -174,7 +144,7 @@ export async function createSinusoidalProjection(
   }
 
   function requestHub(hub: SinusoidalProjectionOptions['hub']): void {
-    const signature = `${hub}|${viewAxis}|${wrappedView}`;
+    const signature = `${hub}|${viewAxis}`;
     latestSignature = signature;
     requested = true;
     clearReadouts();
@@ -201,12 +171,12 @@ export async function createSinusoidalProjection(
   requestHub(ctx.options.hub);
   const makeReader = (variant: ProjectionVariant) => {
     reader?.release();
-    const ownerSignature = `${variant.hub}|${viewAxis}|${wrappedView}`;
+    const ownerSignature = `${variant.hub}|${viewAxis}`;
     return new SummaryReader(
       resources,
       'projection-summary',
       [
-        {buffer: variant.stats, size: 4 * STATISTIC_COUNT * 4},
+        {buffer: variant.stats, size: 2 * STATISTIC_COUNT * 4},
         {buffer: variant.probe, size: PROBE_COUNT * 4}
       ],
       bytes => {
@@ -214,26 +184,17 @@ export async function createSinusoidalProjection(
         const values = new Float32Array(bytes);
         const statIndex = (column: number, statistic: number) =>
           values[column * STATISTIC_COUNT + statistic];
-        const minimum = statIndex(
-          viewAxis === 'x' ? (wrappedView ? 2 : 0) : wrappedView ? 3 : 1,
-          GPU_COLUMN_PROFILE_STATISTIC.minimum
-        );
-        const maximum = statIndex(
-          viewAxis === 'x' ? (wrappedView ? 2 : 0) : wrappedView ? 3 : 1,
-          GPU_COLUMN_PROFILE_STATISTIC.maximum
-        );
-        const finiteCount = statIndex(
-          viewAxis === 'x' ? (wrappedView ? 2 : 0) : wrappedView ? 3 : 1,
-          GPU_COLUMN_PROFILE_STATISTIC.count
-        );
-        const probe = new Float32Array(bytes, 4 * STATISTIC_COUNT * 4, PROBE_COUNT);
+        const minimum = statIndex(viewAxis === 'x' ? 0 : 1, GPU_COLUMN_PROFILE_STATISTIC.minimum);
+        const maximum = statIndex(viewAxis === 'x' ? 0 : 1, GPU_COLUMN_PROFILE_STATISTIC.maximum);
+        const finiteCount = statIndex(viewAxis === 'x' ? 0 : 1, GPU_COLUMN_PROFILE_STATISTIC.count);
+        const probe = new Float32Array(bytes, 2 * STATISTIC_COUNT * 4, PROBE_COUNT);
         ctx.setReadout(
           'projectionExtent',
           `${formatCount(finiteCount)} finite GPU rows · ${minimum.toFixed(3)} to ${maximum.toFixed(3)} km on ${viewAxis}`
         );
         ctx.setReadout(
           'projectionProbe',
-          `${variant.hub} raw → wrapped (x, y km): ${probe[0].toFixed(3)}, ${probe[1].toFixed(3)} → ${probe[2].toFixed(3)}, ${probe[3].toFixed(3)}\nLAX raw → wrapped (x, y km): ${probe[4].toFixed(3)}, ${probe[5].toFixed(3)} → ${probe[6].toFixed(3)}, ${probe[7].toFixed(3)}`
+          `${variant.hub} (x, y km): ${probe[0].toFixed(3)}, ${probe[1].toFixed(3)}\nLAX (x, y km): ${probe[2].toFixed(3)}, ${probe[3].toFixed(3)}`
         );
       }
     );
@@ -243,10 +204,9 @@ export async function createSinusoidalProjection(
     getCompiledGraphs: () => (active ? [active.compiled] : []),
     setOption(id, value) {
       if (id === 'hub') requestHub(value as SinusoidalProjectionOptions['hub']);
-      if (id === 'axis' || id === 'wrapLongitude') {
-        viewAxis = id === 'axis' ? (value as SinusoidalProjectionOptions['axis']) : viewAxis;
-        wrappedView = id === 'wrapLongitude' ? Boolean(value) : wrappedView;
-        latestSignature = `${ctx.options.hub}|${viewAxis}|${wrappedView}`;
+      if (id === 'axis') {
+        viewAxis = value as SinusoidalProjectionOptions['axis'];
+        latestSignature = `${ctx.options.hub}|${viewAxis}`;
         if (active) reader = makeReader(active);
         requested = true;
         clearReadouts();
@@ -272,7 +232,7 @@ export async function createSinusoidalProjection(
     getLayers(): Layer[] {
       const variant = active;
       if (!variant) return [];
-      const selected = wrappedView ? variant.wrapped : variant.raw;
+      const selected = variant.raw;
       const valueBuffer = viewAxis === 'x' ? selected.x : selected.y;
       const range: readonly [number, number] = viewAxis === 'x' ? [-40000, 40000] : [-20000, 20000];
       ctx.setLegendExtent('projected-coordinate', range);

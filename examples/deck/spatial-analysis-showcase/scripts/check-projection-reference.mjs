@@ -31,14 +31,13 @@ try {
   await page.getByRole('tab', {name: 'All controls', exact: false}).click();
   for (const [hub, label] of [['ORD', "Chicago O'Hare (ORD)"], ['HND', 'Tokyo Haneda (HND)'], ['SYD', 'Sydney (SYD)']]) {
     await choose('hub', label);
-    for (const wrap of [false, true]) {
-      const toggle = page.locator('#all-option-wrapLongitude');
-      if (await toggle.isChecked() !== wrap) await toggle.press('Space');
+    // Published GPUSinusoidalProjection has no wrapLongitude option; only the raw cases remain.
+    for (const wrap of [false]) {
       for (const axis of ['x', 'y']) {
         await choose('axis', axis === 'x' ? 'x · west/east' : 'y · south/north');
         await page.waitForFunction(({hub, axis}) => {
           const rows = Object.fromEntries([...document.querySelectorAll('.readout')].map(row => [row.querySelector('dt')?.textContent ?? '', row.querySelector('dd')?.textContent ?? '']));
-          return rows['Origin and LAX coordinates']?.startsWith(`${hub} raw`) && rows['GPU coordinate support']?.endsWith(`km on ${axis}`);
+          return rows['Origin and LAX coordinates']?.startsWith(`${hub} (x, y km)`) && rows['GPU coordinate support']?.endsWith(`km on ${axis}`);
         }, {hub, axis}, {timeout: 30_000});
         const observed = await readouts();
         const expected = reference.cases.find(value => value.hub === hub && value.wrapLongitude === wrap);
@@ -47,12 +46,11 @@ try {
         assert.equal(Number(support[1].replaceAll(',', '')), 3257);
         close(Number(support[2]), expected[axis === 'x' ? 'minimumX' : 'minimumY'], 'minimum');
         close(Number(support[3]), expected[axis === 'x' ? 'maximumX' : 'maximumY'], 'maximum');
-        const probe = observed['Origin and LAX coordinates'].match(/LAX raw → wrapped \(x, y km\): ([-\d.]+), ([-\d.]+) → ([-\d.]+), ([-\d.]+)/);
+        const probe = observed['Origin and LAX coordinates'].match(/LAX \(x, y km\): ([-\d.]+), ([-\d.]+)/);
         assert.ok(probe, observed['Origin and LAX coordinates']);
         const raw = reference.cases.find(value => value.hub === hub && !value.wrapLongitude).laxProjection;
-        const wrapped = reference.cases.find(value => value.hub === hub && value.wrapLongitude).laxProjection;
-        for (const [index, value] of [...raw, ...wrapped].entries()) close(Number(probe[index + 1]), value, 'LAX probe');
-        assert.ok(observed['Origin and LAX coordinates'].includes('0.000, 0.000 → 0.000, 0.000'));
+        for (const [index, value] of raw.entries()) close(Number(probe[index + 1]), value, 'LAX probe');
+        assert.ok(observed['Origin and LAX coordinates'].includes('(x, y km): 0.000, 0.000'));
         reports.push({hub, wrap, axis, observed});
       }
     }

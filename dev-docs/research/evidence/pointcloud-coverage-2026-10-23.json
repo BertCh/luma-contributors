@@ -1,0 +1,142 @@
+{
+  "date": "2026-10-23",
+  "suite": "modules/graph/test/gpu-pointcloud/gpu-pointcloud-benchmark.spec.ts",
+  "command": "VITE_POINTCLOUD_BENCHMARK=true VITE_POINTCLOUD_MAX_ROWS=1000000 yarn test-headless --no-coverage --maxWorkers=1 modules/graph/test/gpu-pointcloud/gpu-pointcloud-benchmark.spec.ts",
+  "device": {
+    "info": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "max",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "maximumStorageBindingBytes": 4294967292,
+    "maximumBufferBytes": 4294967292
+  },
+  "workload": {
+    "distribution": "Cartesian unit lattice, row-major, last z slice possibly partial",
+    "queryRadius": 1.5,
+    "gridCellSize": 1,
+    "gridDimensions": "ceil(cubeRoot(rows)) on each axis",
+    "capacity": 8,
+    "features": "centered covariance eigensolve, oriented normals, eigenvalues, shape",
+    "warmSamples": 3,
+    "submissions": 4
+  },
+  "measurementNotes": [
+    "Allocation/upload includes CPU buffer allocation, initial upload of input and zero output buffers, and GPU queue fence.",
+    "Graph compilation is CPU graph compilation; cold execution includes first encode, lazy pipeline creation, submission and GPU queue fence.",
+    "Warm resident wall samples include encode, submission and queue fence for the full index rebuild + neighborhood + feature graph, not isolated GPU timestamps.",
+    "Readback is two separate four-byte support/status reads after the timed resident samples.",
+    "The scaled canary asserts first-point full support=6 and no degeneracy/eigensolve failure; independent small fixtures validate numerical outputs separately.",
+    "Device was native Apple WebGPU with requested max limits; this is one-device, three-sample evidence, not cross-vendor throughput certification.",
+    "Largest single neighbor-output binding at one million rows is 32 MB, below baseline WebGPU 128 MiB; actual device advertised approximately 4 GiB."
+  ],
+  "records": [
+    {
+      "rows": 1000,
+      "capacity": 8,
+      "allocationUploadMilliseconds": 1.7000000029802322,
+      "declarationMilliseconds": 2.199999988079071,
+      "compileMilliseconds": 1.6000000089406967,
+      "coldExecutionMilliseconds": 153.70000000298023,
+      "residentWallMilliseconds": [
+        6.0999999940395355,
+        4.799999997019768,
+        5.100000008940697
+      ],
+      "readbackMilliseconds": 4.0999999940395355,
+      "transientBytes": 20068,
+      "logicalTransientBytes": 29028,
+      "nodeCount": 28,
+      "outputBytes": 108000,
+      "submissionCount": 4,
+      "firstPointSupport": 6,
+      "residentWallMedianMilliseconds": 5.100000008940697,
+      "inputBytes": 12000,
+      "largestOutputBindingBytes": 32000,
+      "residentInputOutputAndScratchBytes": 140068
+    },
+    {
+      "rows": 10000,
+      "capacity": 8,
+      "allocationUploadMilliseconds": 1.4000000059604645,
+      "declarationMilliseconds": 0.7000000029802322,
+      "compileMilliseconds": 0.8999999910593033,
+      "coldExecutionMilliseconds": 151.80000001192093,
+      "residentWallMilliseconds": [
+        3.5,
+        3.199999988079071,
+        3.1000000089406967
+      ],
+      "readbackMilliseconds": 0.7000000029802322,
+      "transientBytes": 202916,
+      "logicalTransientBytes": 287716,
+      "nodeCount": 28,
+      "outputBytes": 1080000,
+      "submissionCount": 4,
+      "firstPointSupport": 6,
+      "residentWallMedianMilliseconds": 3.199999988079071,
+      "inputBytes": 120000,
+      "largestOutputBindingBytes": 320000,
+      "residentInputOutputAndScratchBytes": 1402916
+    },
+    {
+      "rows": 100000,
+      "capacity": 8,
+      "allocationUploadMilliseconds": 7,
+      "declarationMilliseconds": 0.7999999970197678,
+      "compileMilliseconds": 1.1000000089406967,
+      "coldExecutionMilliseconds": 151.8999999910593,
+      "residentWallMilliseconds": [
+        3.5,
+        3,
+        3.2000000029802322
+      ],
+      "readbackMilliseconds": 1.2999999970197678,
+      "transientBytes": 2018448,
+      "logicalTransientBytes": 2865728,
+      "nodeCount": 44,
+      "outputBytes": 10800000,
+      "submissionCount": 4,
+      "firstPointSupport": 6,
+      "residentWallMedianMilliseconds": 3.2000000029802322,
+      "inputBytes": 1200000,
+      "largestOutputBindingBytes": 3200000,
+      "residentInputOutputAndScratchBytes": 14018448
+    },
+    {
+      "rows": 1000000,
+      "capacity": 8,
+      "allocationUploadMilliseconds": 65.29999999701977,
+      "declarationMilliseconds": 0.7000000029802322,
+      "compileMilliseconds": 1.0999999940395355,
+      "coldExecutionMilliseconds": 167.90000000596046,
+      "residentWallMilliseconds": [
+        19.200000002980232,
+        19.099999994039536,
+        18.700000002980232
+      ],
+      "readbackMilliseconds": 1.2999999970197678,
+      "transientBytes": 20031424,
+      "logicalTransientBytes": 28502724,
+      "nodeCount": 44,
+      "outputBytes": 108000000,
+      "submissionCount": 4,
+      "firstPointSupport": 6,
+      "residentWallMedianMilliseconds": 19.099999994039536,
+      "inputBytes": 12000000,
+      "largestOutputBindingBytes": 32000000,
+      "residentInputOutputAndScratchBytes": 140031424
+    }
+  ]
+}

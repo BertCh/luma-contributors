@@ -26,7 +26,7 @@ function walk(directory){for(const file of fs.readdirSync(directory)){const file
 }}
 walk('examples/deck/spatial-analysis-showcase/src');
 const usedSchemas={};for(const calls of Object.values(records))for(const call of calls){const filename=call.file.replace(/\.compute\.ts$/,'.scene.ts');if(schemas[filename])usedSchemas[filename]=schemas[filename];}
-fs.writeFileSync('modules/analysis/test/oracles/parity-wp4-showcase-modes.json',JSON.stringify({conventions:'Actual AST calls; display snippets excluded. Finite mode coverage is distinguished from exhaustive slider/camera/data Cartesian products in handoff.',sources,calls:records,optionSchemas:usedSchemas},null,2)+'\n');
+fs.writeFileSync('modules/graph/test/oracles/parity-wp4-showcase-modes.json',JSON.stringify({conventions:'Actual AST calls; display snippets excluded. Finite mode coverage is distinguished from exhaustive slider/camera/data Cartesian products in handoff.',sources,calls:records,optionSchemas:usedSchemas},null,2)+'\n');
 console.log(names.length+' classes; '+Object.values(records).flat().length+' calls; '+Object.keys(usedSchemas).length+' scene option schemas');
 '''
 subprocess.run(['node','-e',SCRIPT],cwd=ROOT,check=True)

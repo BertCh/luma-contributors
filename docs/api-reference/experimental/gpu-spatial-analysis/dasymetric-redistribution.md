@@ -6,7 +6,7 @@ source-polygon coverage and an ancillary raster. Targets own whole raster cells 
 interpolation, transfer and mass accounting on the GPU. It performs no readback or CPU fallback.
 
 ```typescript
-import {addDasymetricRedistributionRecipe} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {addDasymetricRedistributionRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const result = addDasymetricRedistributionRecipe(graph, {
   grid,
@@ -105,7 +105,7 @@ not performance claims.
 
 ## Reference evidence
 
-The generator `modules/graph/test/oracles/dasymetric-redistribution.py` records package
+The generator `modules/analysis/test/oracles/dasymetric-redistribution.py` records package
 versions, units, conventions and tolerances in its fixture. Fractional-boundary and continuous
 weight cases use a **composed oracle**: Shapely/GEOS source/cell intersections followed by an
 independent weighted extensive-allocation calculation. Binary, aligned-cell cases additionally

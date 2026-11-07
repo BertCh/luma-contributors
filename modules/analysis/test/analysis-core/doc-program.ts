@@ -15,9 +15,8 @@ export const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), 
 export const DOCS_ROOT = join(REPOSITORY_ROOT, 'docs/api-reference/experimental');
 
 /**
- * The analysis doc pages, relative to `DOCS_ROOT`. Upstream-owned raster pages (concepts,
- * filters and morphology, overviews, pixel operations) and the dataframe core pages are not
- * analysis pages and stay out.
+ * The analysis doc pages, relative to `DOCS_ROOT`. Docs describe only this library's entries;
+ * luma.gl-owned APIs are linked to the luma.gl docs, not documented here.
  */
 export const ANALYSIS_DOC_PAGES = [
   'gpu-spatial-analysis/README.md',
@@ -47,8 +46,19 @@ export const ANALYSIS_DOC_PAGES = [
   'gpu-raster/README.md',
   'gpu-raster/operations.md',
   'gpu-raster/operations-analysis.md',
-  'gpu-raster/operations-regions-contours.md',
-  'gpu-raster/operations-statistics.md'
+  'gpu-raster/raster-patches.md',
+  'gpu-raster/expansion.md',
+  'gpu-raster/fill-nodata.md',
+  'gpu-raster/focal-pairs.md',
+  'gpu-raster/fractional-categorical-statistics.md',
+  'gpu-raster/fractional-zonal-distribution.md',
+  'gpu-raster/remote-sensing.md',
+  'gpu-raster/spectral-indices.md',
+  'gpu-raster/tile-reprojection.md',
+  'pointcloud-analysis.md',
+  'variable-standardization.md',
+  'computation-record.md',
+  'gpu-geometry-refinement.md'
 ] as const;
 
 /** Package entries an analysis page may import, in the order free names are resolved. */
@@ -60,6 +70,7 @@ export const ANALYSIS_ENTRIES = [
   '@luma-contributors/analysis/dataframe-analysis',
   '@luma-contributors/analysis/geospatial-analysis',
   '@luma-contributors/analysis/pointcloud-analysis',
+  '@luma-contributors/analysis/computation-record',
   '@luma.gl/graph/gpu-raster',
   '@luma.gl/graph/gpu-dataframe',
   '@luma.gl/graph/geospatial',

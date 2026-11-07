@@ -17,7 +17,7 @@ same Markdown renders on this site and in the Reference section of the spatial a
 (`examples/deck/spatial-analysis-showcase`).
 
 This page is for people writing the operator reference. The record format is documented in
-[GPU computation records](/docs/api-reference/experimental/gpu-core/computation-record).
+[GPU computation records](/docs/api-reference/experimental/computation-record).
 
 ## The lens directive
 
@@ -182,7 +182,7 @@ directive is well formed, and that every record file names its scenario.
 
 ## See also
 
-- [GPU computation records](/docs/api-reference/experimental/gpu-core/computation-record)
+- [GPU computation records](/docs/api-reference/experimental/computation-record)
 - [GPU Spatial Analysis concepts](/docs/api-reference/experimental/gpu-spatial-analysis/concepts)
 - [GPU Network concepts](/docs/api-reference/experimental/gpu-network/concepts)
 - [GPU Terrain concepts](/docs/api-reference/experimental/gpu-terrain/concepts)

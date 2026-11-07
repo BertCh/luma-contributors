@@ -6,7 +6,7 @@ This opt-in suite follows the [backlog benchmark accounting](../../geospatial-ex
 nvm use
 node scripts/benchmark-geospatial.mjs --suite interpolation --workload variogram \
   --warmups 5 --samples 30 --update-samples 5 \
-  --output dev-docs/perf/variogram-baseline-session-one
+  --output dev-docs/research/evidence/variogram-baseline-session-one
 ```
 
 The output directory must be new and its parent must exist. The wrapper preserves source hashes
@@ -46,7 +46,7 @@ The benchmark establishes only the recorded device/workload observations. It doe
 
 ## Recorded run: October 23, 2026
 
-[Full measurements](../../../../../dev-docs/perf/interpolation-coverage-2026-10-23.json) preserve all ten workload records, phase samples, input/output bytes, correctness results and maximal shader budgets. All initial, repeated and changed-input checks passed on native Apple WebGPU/Metal 3, HeadlessChrome 151, with a shared test device. The device exposed 10 storage bindings, 32 KiB workgroup memory and 1024 invocations per workgroup; this was not a native default-limit-device run. The independent static audit passed the stricter core budgets, including eight storage bindings.
+[Full measurements](../../../../../dev-docs/research/evidence/interpolation-coverage-2026-10-23.json) preserve all ten workload records, phase samples, input/output bytes, correctness results and maximal shader budgets. All initial, repeated and changed-input checks passed on native Apple WebGPU/Metal 3, HeadlessChrome 151, with a shared test device. The device exposed 10 storage bindings, 32 KiB workgroup memory and 1024 invocations per workgroup; this was not a native default-limit-device run. The independent static audit passed the stricter core budgets, including eight storage bindings.
 
 The table reports milliseconds. Warm execution is the median of five encode/submit/queue-completion samples. Readback is the single output read after those five samples; GPU timestamps were unavailable in the recordings despite device support. Browser-clock granularity and the small sample count limit interpretation of sub-millisecond differences.
 
@@ -78,7 +78,7 @@ after enabling `VITE_GEOSPATIAL_BACKLOG_BENCHMARK=true`. Schedule it separately 
 tests; the capture wrapper does not acquire a machine-wide lock. `interpolation-round-two-source.json` belongs to the retained historical
 run and is no longer used as provenance for new runs.
 
-The expanded artifact is `dev-docs/perf/interpolation-advanced-2026-10-23.json`: 17 workloads and
+The expanded artifact is `dev-docs/research/evidence/interpolation-advanced-2026-10-23.json`: 17 workloads and
 two repeated-fit comparisons, all initial/repeated/changed-input checks passed. Indexed Sibson
 warm medians were 0.3/0.3/0.4 ms at 1,024/16,384/65,536 sites for 128 queries; fixture topology and
 seed construction are outside these timings. Grid-index construction plus CSR RBF used 5.6/6.9 ms

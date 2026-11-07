@@ -984,9 +984,7 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
           input,
           segmentOffsets,
           output: result,
-          ...gate,
-          // Exclusive scan of per-group counts of valid rows, so the last offset is at most `rows`.
-          offsetsWithinInput: input.length >= rows
+          ...gate
         });
 
       // 3. Sorted local coordinates, then the weighted mean centre.

@@ -1,0 +1,42 @@
+{
+  "reviewDate": "2026-10-28",
+  "keplerVersion": "3.3.0-alpha.18",
+  "purpose": "Source fingerprint for the static coverage review; not a runtime verification certificate.",
+  "sources": [
+    {
+      "path": "node_modules/@kepler.gl/constants/package.json",
+      "sha256": "eb0aab66a2fc42ea607971edf2f0f10e717f0067b6e8ed81af842ec4ea8ea0c0",
+      "bytes": 2101
+    },
+    {
+      "path": "node_modules/@kepler.gl/constants/dist/esm/layers.js",
+      "sha256": "7e11c504952c150e5d9db83bc1cbeaf112f8455be4a44f57937557363c1c89ce",
+      "bytes": 65789
+    },
+    {
+      "path": "node_modules/@kepler.gl/utils/dist/esm/application-config.js",
+      "sha256": "d5237269e2c26b1866af88e82d947efaa3c62a023d1967fc4b7bfa1e429c4e41",
+      "bytes": 34029
+    },
+    {
+      "path": "node_modules/@kepler.gl/components/dist/esm/side-panel.js",
+      "sha256": "66af2163a45f187bec1e6ec4d44ae183b08fa349e5373cb14368d6d77a08163b",
+      "bytes": 42806
+    },
+    {
+      "path": "node_modules/@kepler.gl/components/dist/esm/side-panel/dataset-ops/dataset-ops-menu.js",
+      "sha256": "d890a80b3a77afcc105a3277cab2ab1ae442281fe92168cf912d04c3b7835491",
+      "bytes": 21118
+    },
+    {
+      "path": "node_modules/@kepler.gl/components/dist/esm/map/charts/chart-panel.js",
+      "sha256": "45ab7b1266b6dd00d36b165e36738c54261134b98dd630a3ab46913b2322002f",
+      "bytes": 215552
+    },
+    {
+      "path": "examples/deck/kepler-compute/src/sandbox-capabilities.json",
+      "sha256": "913f0c2d229fd4f8b158e57f9b649b8ed6a8c6673c8dd7a7dc68be06e740574a",
+      "bytes": 29362
+    }
+  ]
+}

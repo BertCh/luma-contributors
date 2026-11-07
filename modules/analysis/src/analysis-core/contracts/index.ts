@@ -123,7 +123,8 @@ export {createGPUSpatialFrameFromCRS} from './spatial-frame-crs';
 export type {GPUTerrainHeightReference} from './vertical-datum';
 export {
   GPU_ELLIPSOIDAL_VERTICAL_DATUM,
-  assertCompatibleGPUVerticalDatums
+  assertCompatibleGPUVerticalDatums,
+  resolveGPUElevationVerticalDatum
 } from './vertical-datum';
 
 export type {

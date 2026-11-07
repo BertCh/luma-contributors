@@ -1,24 +1,22 @@
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # GPU Network
 
-<ExperimentalDocsTabs active="gpu-network" />
 
 :::caution Experimental
-`@luma-contributors/graph/gpu-network` is an initial, experimental entry point. APIs may change between
+`@luma-contributors/analysis/gpu-network` is an initial, experimental entry point. APIs may change between
 releases without a deprecation period.
 :::
 
 ## Overview
 
-`@luma-contributors/graph/gpu-network` provides analysis contributors for networks stored as CSR
+`@luma-contributors/analysis/gpu-network` provides analysis contributors for networks stored as CSR
 adjacency, passed as one `topology: GPUNetworkTopology` (`offsets`, `neighbors`, `weights`, optional
 `nodePositions`): weighted reachability and isochrones (isoband or cell-outline polygons), path
 extraction, service areas, neighborhoods, snapping, cost matrices, accessibility scores, subgraph
 filters, coarsening, network statistics, node-aligned analytics columns, origin-destination flow
 aggregation, edge bundling, adjacency-matrix images, and network construction and analysis from line
 data (noding, turn-restricted line graphs, map matching, network K function). Each contributor declares resources and
-command nodes into a caller-owned [`GPUCommandGraph`](../gpu-core/gpu-command-graph.md) through
+command nodes into a caller-owned [`GPUCommandGraph`](https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-command-graph) through
 `getCommandNodes(graph)` (`GPUCommandNodeProducer`). It never compiles, submits, encodes, or reads
 back.
 
@@ -31,16 +29,17 @@ Use GPU Network for map and road-network tasks that need bounded, renderable res
 bands that recolor as a cost limit moves, a path that follows a dragged endpoint, a statistics panel
 or analytics columns for deck.gl styling, or aggregated flows and bundled edges for drawing.
 
-The generic graph algorithms live in [GPU Graph](../gpu-graph.md), and the network contributors build
+The generic graph algorithms live in [GPU Graph](https://luma.gl/docs/api-reference/experimental/gpu-graph), and the network contributors build
 on them rather than replace them:
 
-- `GPUNetworkAnalyticsColumns` runs `GPUGraphAlgorithmsDegree`, `GPUGraphAlgorithmsPageRank`, `GPUGraphAlgorithmsCoreNumber`,
-  `GPUGraphAlgorithmsConnectedComponents`, and `GPUGraphAlgorithmsLabelPropagation` directly on the caller's CSR views
-  through a `GPUGraphAlgorithmsTopologyView`, then normalizes the columns for styling. Call the GPU Graph
-  algorithms yourself when you need their raw outputs, convergence status, or an algorithm that has
-  no network wrapper, such as `GPUGraphAlgorithmsModularityOptimization`.
+- `GPUNetworkAnalyticsColumns` publishes degree, in-degree and weak component columns on the caller's
+  CSR views with analysis-owned kernels, then normalizes the columns for styling. Published
+  luma.gl graph algorithms (`GPUGraphAlgorithmsPageRank`, `GPUGraphAlgorithmsCoreNumber`,
+  `GPUGraphAlgorithmsLabelPropagation`, `GPUGraphAlgorithmsModularityOptimization`) accept only
+  physical `GPUGraphAlgorithmsTopology`, so call them yourself when you need ranking, core numbers
+  or communities, or their raw outputs and convergence status.
 - `GPUNetworkStatistics` reduces a CSR to one summary row (counts, components, degree histograms,
-  optional modularity) for a stats panel; it uses `GPUGraphAlgorithmsConnectedComponents` internally.
+  optional modularity) for a stats panel.
 - `GPUNetworkReachability` is a multi-source, cost-limited shortest-path search with isochrone
   bands and cycle-safe predecessors, all written to caller-owned views. Use
   `GPUGraphAlgorithmsSingleSourceShortestPath` when you need plain bounded shortest paths from one source and
@@ -51,12 +50,12 @@ on them rather than replace them:
 ## Quick start
 
 ```ts
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUNetworkReachability,
   GPUParameterBuffer,
   type GPUNetworkTopology
-} from '@luma-contributors/graph/gpu-network';
+} from '@luma-contributors/analysis/gpu-network';
 
 const graph = new GPUCommandGraph(device, {id: 'network'});
 const startNodes = new GPUParameterBuffer(device, {id: 'starts', format: 'uint32', length: 4});
@@ -103,12 +102,12 @@ One figure per contributor, each drawn from a recorded GPU run on real data; cli
 - GPU Network is experimental and WebGPU-only.
 - CSR graphs use packed views only. Edge weights must be non-negative where a contributor takes costs.
 - Each contributor's TSDoc lists its non-goals. The GPU Core maintainer roadmap
-  (`dev-docs/roadmaps/gpugraph-roadmap.md`) tracks what is still open.
+  (`dev-docs/roadmap.md`) tracks what is still open.
 
 ## Related modules
 
-- [GPU Graph](../gpu-graph.md) supplies the generic algorithms, topology views, and layouts.
+- [GPU Graph](https://luma.gl/docs/api-reference/experimental/gpu-graph) supplies the generic algorithms, topology views, and layouts.
 - [GPU Raster](../gpu-raster/README.md) has the raster counterpart of cost distance and isolines.
-- [GPU Core](../gpu-core/concepts.md) defines contributors, composition levels, and graph ownership.
+- [GPU Core](https://luma.gl/docs/api-reference/experimental/gpu-core/concepts) defines contributors, composition levels, and graph ownership.
 
 - [Bounded alternative routes](./alternative-routes.md)

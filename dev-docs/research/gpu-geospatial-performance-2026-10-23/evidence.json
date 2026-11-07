@@ -1,0 +1,1687 @@
+{
+  "schemaVersion": 1,
+  "researchDate": "2026-10-23",
+  "capturedAtUTC": "2026-10-24T03:33:06.482762+00:00",
+  "baseRevision": "e6375c5d683ee8a6289789f07ea8e24e7b87c21e",
+  "scope": "Read-only extraction of existing local measurement records and hashes of selected reviewed files. No new GPU timings. A file hash identifies the reviewed contents, not the execution-time source state of historical measurements. The shared checkout has unrelated uncommitted work.",
+  "reviewedSourceHashes": {
+    "modules/graph/src/gpu-dataframe/pair-statistics/gpu-variogram-model-fit.ts": "bda0eb47d0edaa8236fbc61d45a82979dee608c0075aaaf15cd0ad5188d14cf7",
+    "modules/graph/src/gpu-spatial-analysis/spatial-regression/gpu-seemingly-unrelated-regression.ts": "f40e3fbc3f055d516e24a6602f750ca48b5288acfde8b7a60face3d7972f7dc3",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-conditional-gaussian-simulation.ts": "2737ff5e81cdbebd4deec8c8cb110ec358d04f997d1cac23b04be79206fda7c2",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-natural-neighbor.ts": "f2b942ad0924294a49ca3dd75c7dae17f74628c85c810cc0c0492bf611008a52",
+    "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-rbf.ts": "0a3a81295a90ab50ff90cfa0910d3de3c9232294ceae7bacaec51461d5830710",
+    "modules/graph/src/gpu-spatial-analysis/cell-topology/gpu-s2-cap-covering.ts": "23c5b2c0c7922d9971eb90c7af63e3d52d6a84bc323f0698d6a6911a13581e65",
+    "modules/graph/src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering.ts": "016c84ebf3d8bfd4cf7b67fa2ac8f411a63a4b6e83804a1574e5ace5ab1990a0",
+    "modules/graph/src/gpu-raster/gpu-raster-watershed-segmentation.ts": "e276a025a1276fb6367a5513d5c71284786067874c826faecbbe95c7d3aaed47",
+    "modules/graph/src/gpu-network/network-optimization/gpu-network-louvain.ts": "cf95df1382146cc9f576b63d09739d27f6909757d6529221b7e598e88ee9366c",
+    "modules/graph/src/gpu-network/network-optimization/gpu-network-facility-optimization.ts": "95652753e58c4b726fde7985a2ffad1618be60ed1e4e3850baba85d87655aca5",
+    "modules/graph/src/gpu-spatial-analysis/landscape-ecology/sparse-resistance.ts": "cd1cf0b046eaf8cb3bf11e76d9fbe5374030dbaacdf76abf288644e997244fd8",
+    "modules/graph/src/gpu-spatial-analysis/spatial-clustering/gpu-optics.ts": "3c6e48d7f3cfc665e84c015c0f51b75077a6880e1dc40732cd8451f0fe762f26",
+    "modules/graph/src/gpu-pointcloud/gpu-pointcloud-features.ts": "a0d565b9768131b54fa8409558a300b35e84c3ab68968baed6b93cae54bb09ab",
+    "modules/graph/src/gpu-core/gpu-sort.ts": "e2885b9e84f8e401e4ca3ce2db22ff343a71d07137f68133bb9ca8a38067ad08",
+    "modules/graph/src/gpu-core/gpu-scan.ts": "773b59a24cca24aa245ad01ddc1f605afb99f20b2540fbd898cba402756b8edf",
+    "modules/graph/src/gpu-core/gpu-compaction.ts": "362c41a16eb14778379944bbbd5a19694f111846c123b3b3a8a26e44c543249b",
+    "modules/graph/src/gpu-core/gpu-pcg.ts": "eb9069afe65f1cf0c337852373f337505afa0faccb5e4a05542e7a854b5c1f6f",
+    "modules/graph/src/gpu-core/gpu-adaptive-spmv.ts": "00ff32f720fd5a0ae6ea77c3ba1d03228dd13911d62897ab3ed8fbdd50a9e20b",
+    "modules/graph/src/gpu-core/gpu-spmv-strategy.ts": "ac99c72a3823d1e6a53d269b99a7f8ad15bfcd4cc1150e30ba4739181c97a56f",
+    "modules/graph/src/utils/load-balanced-for-each.ts": "03885a1ab8e060bc0e9cfbd5503597bceb51644cbb52b5ded9645a7535c7cfac",
+    "modules/graph/src/utils/fixed-point-accumulator.ts": "67896ba792f6024433aaa64d9cd1067637c6c3cfc4cdc7688238449adf251851",
+    "modules/graph/src/gpu-core/gpu-program-lowering.ts": "bb6e6c36c3f588a149df567c1d0fd3785b56c62ba2339e8bc73459333def3545",
+    "modules/graph/src/gpu-spatial-analysis/point-density/kernel-density-binned.ts": "0cb267b9135a093cf6f5fa7c65ad3b508ec23d04b14612b5dc4830fac9bd91ef",
+    "modules/graph/src/gpu-terrain/hydrology/terrain-flow-spill-fill.ts": "9c727749f60a18854d9dde3c19b71210d28bcdc3daba05cb1c753fdde0713438",
+    "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-scaling-fixtures.ts": "10a9e42a3c422d1e5abcde94cf39eaa26fba57730c854f9b38b0c706d41fe8f7",
+    "modules/graph/test/gpu-spatial-analysis/urban-ecology/urban-ecology-benchmark.spec.ts": "3e5ab6626c4f90f210ffda65c8f3845181302b5e60bf4d8c65293bc3201c4621",
+    "dev-docs/roadmaps/gpu-analysis-algorithms-roadmap.md": "bf9a3cd1f2c90901821b27a946d07f99957102a51c02fb99544ea6378fbe1f46",
+    "dev-docs/benchmarks/gpu-project-table-performance.md": "354760b364b4435ee5e0e6e2bba159e697211b821df4061699a7c51b358d6812"
+  },
+  "measurementFileHashes": {
+    "dev-docs/perf/point-process-coverage-2026-10-23.json": "21890c9daa846f3db62300e05a8aa303fb13a3d4af4892335d91e936e2d4354e",
+    "dev-docs/perf/pointcloud-advanced-2026-10-23.json": "1edeae31e9b023ae64089ab1bad2b398fa1aad954b89406dc1713cb883006c6f",
+    "dev-docs/perf/pointcloud-coverage-2026-10-23.json": "f116b129e5ec6b87fcde76e809e555267d615668bac07f9edbf4e2b52064a8d6",
+    "dev-docs/perf/spatial-validation-2026-10-23.json": "4ceeb1aece1bae0aff41158b70083c1b1e44811082d29ce4cb88714500a1a084",
+    "dev-docs/perf/point-process-complete-2026-10-23.json": "78e6554833e974e4649a14b8f08a8498ef8518b90b079974d11641bf5c3d0908",
+    "dev-docs/perf/urban-ecology-coverage-2026-10-23.json": "2ab11499f9801f3c33b9c0014e1cefe1c7fddb295cfcca3930dc81d5b3996b06",
+    "dev-docs/perf/geospatial-coverage-tranche-one-2026-10-23.json": "5e68853bc7715110c2ad6c2c1c2f8868eecdbb287c70efb3de9c001dcbe8e238",
+    "dev-docs/perf/interpolation-advanced-2026-10-23.json": "4876045e4e403b230258aa09a72eab1b73b7271188de35b771060e5d69d98bc9",
+    "dev-docs/perf/interpolation-coverage-2026-10-23.json": "80eafbb6add2842c8f618a52a533a4ebf2f62eb0b10d0b63ac075c8313db0104",
+    "dev-docs/perf/geospatial-backlog-2026-10-23.json": "2d2e3ad7de59b06b34b35917b94a0337f96d3fb97886c41f0e836c87120a7e3c",
+    "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json": "0d475dba939cbc64b734e33e4fd8b0479119ceb44142bba7b948d96b5c4d5b0b",
+    "modules/graph/test/oracles/fixtures/statistics-performance-baseline.json": "b5ebdd451a3cb0ad14d1f68b4fff396939867ff161bbc91402efb74a60c623ca",
+    "modules/graph/test/oracles/fixtures/network-movement-benchmark.json": "78a238cfb4a8636ce2c1d866104a05a2d34a74ccd0ca999cacf98188431130e9"
+  },
+  "measurements": [
+    {
+      "source": "dev-docs/perf/point-process-coverage-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "operation": "optics",
+        "rows": 32,
+        "frontierIterations": 32,
+        "sampleCount": null
+      },
+      "warmWallMedianMilliseconds": 2
+    },
+    {
+      "source": "dev-docs/perf/point-process-coverage-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "operation": "sampling",
+        "rows": 32,
+        "frontierIterations": null,
+        "sampleCount": 8
+      },
+      "warmWallMedianMilliseconds": 0.5
+    },
+    {
+      "source": "dev-docs/perf/point-process-coverage-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "operation": "optics",
+        "rows": 256,
+        "frontierIterations": 256,
+        "sampleCount": null
+      },
+      "warmWallMedianMilliseconds": 9.299999997019768
+    },
+    {
+      "source": "dev-docs/perf/point-process-coverage-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "operation": "sampling",
+        "rows": 256,
+        "frontierIterations": null,
+        "sampleCount": 64
+      },
+      "warmWallMedianMilliseconds": 5.399999991059303
+    },
+    {
+      "source": "dev-docs/perf/point-process-coverage-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "operation": "optics",
+        "rows": 4096,
+        "frontierIterations": 64,
+        "sampleCount": null
+      },
+      "warmWallMedianMilliseconds": 44.79999999701977
+    },
+    {
+      "source": "dev-docs/perf/point-process-coverage-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "operation": "sampling",
+        "rows": 4096,
+        "frontierIterations": null,
+        "sampleCount": 128
+      },
+      "warmWallMedianMilliseconds": 34.599999994039536
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "mode": "smrf",
+        "rows": 10000,
+        "side": 100
+      },
+      "warmWallMedianMilliseconds": 3.1000000089406967
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "mode": "smrf",
+        "rows": 100000,
+        "side": 256
+      },
+      "warmWallMedianMilliseconds": 4.600000008940697
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "mode": "smrf",
+        "rows": 1000000,
+        "side": 256
+      },
+      "warmWallMedianMilliseconds": 12.799999997019768
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "mode": "icp",
+        "rows": 10000,
+        "side": 22
+      },
+      "warmWallMedianMilliseconds": 4.700000002980232
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "mode": "icp",
+        "rows": 100000,
+        "side": 47
+      },
+      "warmWallMedianMilliseconds": 6.4000000059604645
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "mode": "icp",
+        "rows": 1000000,
+        "side": 100
+      },
+      "warmWallMedianMilliseconds": 27.599999994039536
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 6,
+      "identity": {
+        "mode": "skew",
+        "rows": 10000,
+        "side": 22
+      },
+      "warmWallMedianMilliseconds": 5
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 7,
+      "identity": {
+        "mode": "skew",
+        "rows": 100000,
+        "side": 47
+      },
+      "warmWallMedianMilliseconds": 43.900000005960464
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-advanced-2026-10-23.json",
+      "recordIndex": 8,
+      "identity": {
+        "mode": "skew",
+        "rows": 1000000,
+        "side": 100
+      },
+      "warmWallMedianMilliseconds": 439.40000000596046
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-coverage-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "rows": 1000
+      },
+      "warmWallMedianMilliseconds": 5.100000008940697
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-coverage-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "rows": 10000
+      },
+      "warmWallMedianMilliseconds": 3.199999988079071
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-coverage-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "rows": 100000
+      },
+      "warmWallMedianMilliseconds": 3.2000000029802322
+    },
+    {
+      "source": "dev-docs/perf/pointcloud-coverage-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "rows": 1000000
+      },
+      "warmWallMedianMilliseconds": 19.099999994039536
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "workload": "validation-groups-64",
+        "shape": {
+          "rows": 64,
+          "predictions": 64,
+          "folds": 2,
+          "candidates": 0
+        }
+      },
+      "warmWallMedianMilliseconds": 2.6000000089406967
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "workload": "validation-groups-256",
+        "shape": {
+          "rows": 256,
+          "predictions": 256,
+          "folds": 2,
+          "candidates": 0
+        }
+      },
+      "warmWallMedianMilliseconds": 5.200000002980232
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "workload": "validation-environmental-64",
+        "shape": {
+          "rows": 64,
+          "predictions": 64,
+          "folds": 2,
+          "candidates": 0
+        }
+      },
+      "warmWallMedianMilliseconds": 0.3999999910593033
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "workload": "validation-environmental-256",
+        "shape": {
+          "rows": 256,
+          "predictions": 256,
+          "folds": 2,
+          "candidates": 0
+        }
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "workload": "validation-nndm-16",
+        "shape": {
+          "rows": 16,
+          "predictions": 16,
+          "folds": 16,
+          "candidates": 0
+        }
+      },
+      "warmWallMedianMilliseconds": 0.5
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "workload": "validation-nndm-64",
+        "shape": {
+          "rows": 64,
+          "predictions": 64,
+          "folds": 64,
+          "candidates": 0
+        }
+      },
+      "warmWallMedianMilliseconds": 9.199999988079071
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 6,
+      "identity": {
+        "workload": "validation-knndm-64",
+        "shape": {
+          "rows": 64,
+          "predictions": 64,
+          "folds": 2,
+          "candidates": 4
+        }
+      },
+      "warmWallMedianMilliseconds": 3.4000000059604645
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 7,
+      "identity": {
+        "workload": "validation-knndm-256",
+        "shape": {
+          "rows": 256,
+          "predictions": 256,
+          "folds": 2,
+          "candidates": 4
+        }
+      },
+      "warmWallMedianMilliseconds": 42.3999999910593
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 8,
+      "identity": {
+        "workload": "nested-interpolation-12",
+        "shape": {
+          "rows": 12,
+          "outerFolds": 2,
+          "innerFolds": 2,
+          "candidates": 2,
+          "neighbors": 4
+        }
+      },
+      "warmWallMedianMilliseconds": 0.5999999940395355
+    },
+    {
+      "source": "dev-docs/perf/spatial-validation-2026-10-23.json",
+      "recordIndex": 9,
+      "identity": {
+        "workload": "nested-interpolation-256",
+        "shape": {
+          "rows": 256,
+          "outerFolds": 2,
+          "innerFolds": 2,
+          "candidates": 2,
+          "neighbors": 4
+        }
+      },
+      "warmWallMedianMilliseconds": 2.0999999940395355
+    },
+    {
+      "source": "dev-docs/perf/point-process-complete-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "operation": "optics",
+        "rows": 32,
+        "frontierIterations": 32,
+        "sampleCount": null
+      },
+      "warmWallMedianMilliseconds": 0.7999999970197678
+    },
+    {
+      "source": "dev-docs/perf/point-process-complete-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "operation": "sampling",
+        "rows": 32,
+        "frontierIterations": null,
+        "sampleCount": 8
+      },
+      "warmWallMedianMilliseconds": 0.6000000089406967
+    },
+    {
+      "source": "dev-docs/perf/point-process-complete-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "operation": "optics",
+        "rows": 256,
+        "frontierIterations": 256,
+        "sampleCount": null
+      },
+      "warmWallMedianMilliseconds": 4
+    },
+    {
+      "source": "dev-docs/perf/point-process-complete-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "operation": "sampling",
+        "rows": 256,
+        "frontierIterations": null,
+        "sampleCount": 64
+      },
+      "warmWallMedianMilliseconds": 5.200000002980232
+    },
+    {
+      "source": "dev-docs/perf/point-process-complete-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "operation": "optics",
+        "rows": 4096,
+        "frontierIterations": 4096,
+        "sampleCount": null
+      },
+      "warmWallMedianMilliseconds": 24.599999994039536
+    },
+    {
+      "source": "dev-docs/perf/point-process-complete-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "operation": "sampling",
+        "rows": 4096,
+        "frontierIterations": null,
+        "sampleCount": 128
+      },
+      "warmWallMedianMilliseconds": 34.6000000089407
+    },
+    {
+      "source": "dev-docs/perf/urban-ecology-coverage-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "kind": "sparse-resistance",
+        "size": 1026
+      },
+      "warmWallMedianMilliseconds": 12.399999991059303
+    },
+    {
+      "source": "dev-docs/perf/urban-ecology-coverage-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "kind": "sparse-resistance",
+        "size": 8194
+      },
+      "warmWallMedianMilliseconds": 123
+    },
+    {
+      "source": "dev-docs/perf/urban-ecology-coverage-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "kind": "sparse-resistance",
+        "size": 65538
+      },
+      "warmWallMedianMilliseconds": 149.1000000089407
+    },
+    {
+      "source": "dev-docs/perf/urban-ecology-coverage-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "kind": "patch-proximity",
+        "size": 32
+      },
+      "warmWallMedianMilliseconds": 1.0999999940395355
+    },
+    {
+      "source": "dev-docs/perf/urban-ecology-coverage-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "kind": "patch-proximity",
+        "size": 128
+      },
+      "warmWallMedianMilliseconds": 5.299999997019768
+    },
+    {
+      "source": "dev-docs/perf/urban-ecology-coverage-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "kind": "patch-proximity",
+        "size": 256
+      },
+      "warmWallMedianMilliseconds": 18.400000005960464
+    },
+    {
+      "source": "dev-docs/perf/geospatial-coverage-tranche-one-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "workload": "focal-pairs",
+        "side": 8,
+        "shape": {
+          "cells": 64,
+          "radius": 2,
+          "maximumWindowPairs": 25
+        }
+      },
+      "warmWallMedianMilliseconds": 0.3999999910593033
+    },
+    {
+      "source": "dev-docs/perf/geospatial-coverage-tranche-one-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "workload": "focal-pairs",
+        "side": 32,
+        "shape": {
+          "cells": 1024,
+          "radius": 2,
+          "maximumWindowPairs": 25
+        }
+      },
+      "warmWallMedianMilliseconds": 0.4000000059604645
+    },
+    {
+      "source": "dev-docs/perf/geospatial-coverage-tranche-one-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "workload": "fractional-distribution",
+        "side": 8,
+        "shape": {
+          "cells": 64,
+          "tuples": 64,
+          "zones": 8,
+          "quantiles": 3
+        }
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "dev-docs/perf/geospatial-coverage-tranche-one-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "workload": "fractional-distribution",
+        "side": 32,
+        "shape": {
+          "cells": 1024,
+          "tuples": 1024,
+          "zones": 8,
+          "quantiles": 3
+        }
+      },
+      "warmWallMedianMilliseconds": 3.2000000029802322
+    },
+    {
+      "source": "dev-docs/perf/geospatial-coverage-tranche-one-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "workload": "dasymetric",
+        "side": 8,
+        "shape": {
+          "cells": 64,
+          "tuples": 64,
+          "sourceZones": 8,
+          "targetZones": 4
+        }
+      },
+      "warmWallMedianMilliseconds": 1.4000000059604645
+    },
+    {
+      "source": "dev-docs/perf/geospatial-coverage-tranche-one-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "workload": "dasymetric",
+        "side": 32,
+        "shape": {
+          "cells": 1024,
+          "tuples": 1024,
+          "sourceZones": 8,
+          "targetZones": 4
+        }
+      },
+      "warmWallMedianMilliseconds": 2.3999999910593033
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "workload": "local-kriging-8-4",
+        "shape": {
+          "samples": 8,
+          "queries": 4,
+          "neighbors": 8,
+          "driftColumns": 4,
+          "supportCount": 1,
+          "storageBindings": 8
+        }
+      },
+      "warmWallMedianMilliseconds": 0.29999999701976776
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "workload": "local-rbf-8-4",
+        "shape": {
+          "samples": 8,
+          "queries": 4,
+          "neighbors": 8,
+          "polynomialDegree": 1,
+          "smoothing": 0.05
+        }
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "workload": "sibson-8-4",
+        "shape": {
+          "samples": 8,
+          "queries": 4,
+          "maximumVertexCount": 64
+        }
+      },
+      "warmWallMedianMilliseconds": 0.9000000059604645
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "workload": "conditional-simulation-8-4-16",
+        "shape": {
+          "observations": 8,
+          "queries": 4,
+          "replicates": 16,
+          "seed": 1229870149
+        }
+      },
+      "warmWallMedianMilliseconds": 0.3999999910593033
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "workload": "variogram-fit-20",
+        "shape": {
+          "bins": 20,
+          "modelCandidates": 3,
+          "rangeSteps": 200,
+          "refinementIterations": 32,
+          "weighting": "pairs"
+        }
+      },
+      "warmWallMedianMilliseconds": 4.5
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "workload": "local-kriging-16-128",
+        "shape": {
+          "samples": 16,
+          "queries": 128,
+          "neighbors": 16,
+          "driftColumns": 4,
+          "supportCount": 16,
+          "storageBindings": 8
+        }
+      },
+      "warmWallMedianMilliseconds": 1.7999999970197678
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 6,
+      "identity": {
+        "workload": "local-rbf-16-128",
+        "shape": {
+          "samples": 16,
+          "queries": 128,
+          "neighbors": 16,
+          "polynomialDegree": 1,
+          "smoothing": 0.05
+        }
+      },
+      "warmWallMedianMilliseconds": 1.7000000029802322
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 7,
+      "identity": {
+        "workload": "sibson-32-128",
+        "shape": {
+          "samples": 32,
+          "queries": 128,
+          "maximumVertexCount": 64
+        }
+      },
+      "warmWallMedianMilliseconds": 4.399999991059303
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 8,
+      "identity": {
+        "workload": "conditional-simulation-16-16-128",
+        "shape": {
+          "observations": 16,
+          "queries": 16,
+          "replicates": 128,
+          "seed": 1229870149
+        }
+      },
+      "warmWallMedianMilliseconds": 2.3999999910593033
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 9,
+      "identity": {
+        "workload": "variogram-fit-256",
+        "shape": {
+          "bins": 256,
+          "modelCandidates": 3,
+          "rangeSteps": 200,
+          "refinementIterations": 32,
+          "weighting": "pairs"
+        }
+      },
+      "warmWallMedianMilliseconds": 50.5
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 10,
+      "identity": {
+        "workload": "sibson-indexed-1024-sites",
+        "shape": {
+          "sampleCount": 1024,
+          "queryCount": 128,
+          "maximumNeighborCount": 64,
+          "maximumVertexCount": 64,
+          "triangleCount": 1922
+        }
+      },
+      "warmWallMedianMilliseconds": 0.29999999701976776
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 11,
+      "identity": {
+        "workload": "sibson-indexed-16384-sites",
+        "shape": {
+          "sampleCount": 16384,
+          "queryCount": 128,
+          "maximumNeighborCount": 64,
+          "maximumVertexCount": 64,
+          "triangleCount": 32258
+        }
+      },
+      "warmWallMedianMilliseconds": 0.29999999701976776
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 12,
+      "identity": {
+        "workload": "sibson-indexed-65536-sites",
+        "shape": {
+          "sampleCount": 65536,
+          "queryCount": 128,
+          "maximumNeighborCount": 64,
+          "maximumVertexCount": 64,
+          "triangleCount": 130050
+        }
+      },
+      "warmWallMedianMilliseconds": 0.4000000059604645
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 13,
+      "identity": {
+        "workload": "rbf-resident-grid-1024-sites",
+        "shape": {
+          "sampleCount": 1024,
+          "queryCount": 128,
+          "neighborCount": 32,
+          "degree": 2,
+          "gridSide": 32
+        }
+      },
+      "warmWallMedianMilliseconds": 5.5999999940395355
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 14,
+      "identity": {
+        "workload": "rbf-resident-grid-16384-sites",
+        "shape": {
+          "sampleCount": 16384,
+          "queryCount": 128,
+          "neighborCount": 32,
+          "degree": 2,
+          "gridSide": 32
+        }
+      },
+      "warmWallMedianMilliseconds": 6.899999991059303
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 15,
+      "identity": {
+        "workload": "simulation-shared-factor-32-plus-32",
+        "shape": {
+          "sampleCount": 32,
+          "queryCount": 32,
+          "replicateCount": 128,
+          "jointMatrixCount": 64
+        }
+      },
+      "warmWallMedianMilliseconds": 5.0999999940395355
+    },
+    {
+      "source": "dev-docs/perf/interpolation-advanced-2026-10-23.json",
+      "recordIndex": 16,
+      "identity": {
+        "workload": "simulation-shared-factor-128-plus-128",
+        "shape": {
+          "sampleCount": 128,
+          "queryCount": 128,
+          "replicateCount": 128,
+          "jointMatrixCount": 256
+        }
+      },
+      "warmWallMedianMilliseconds": 146.20000000298023
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "workload": "local-kriging-8-4",
+        "shape": {
+          "samples": 8,
+          "queries": 4,
+          "neighbors": 8,
+          "driftColumns": 4,
+          "supportCount": 1,
+          "storageBindings": 8
+        }
+      },
+      "warmWallMedianMilliseconds": 0.4000000059604645
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "workload": "local-rbf-8-4",
+        "shape": {
+          "samples": 8,
+          "queries": 4,
+          "neighbors": 8,
+          "polynomialDegree": 1,
+          "smoothing": 0.05
+        }
+      },
+      "warmWallMedianMilliseconds": 0.4000000059604645
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "workload": "sibson-8-4",
+        "shape": {
+          "samples": 8,
+          "queries": 4,
+          "maximumVertexCount": 64
+        }
+      },
+      "warmWallMedianMilliseconds": 0.5999999940395355
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "workload": "conditional-simulation-8-4-16",
+        "shape": {
+          "observations": 8,
+          "queries": 4,
+          "replicates": 16,
+          "seed": 1229870149
+        }
+      },
+      "warmWallMedianMilliseconds": 0.29999999701976776
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "workload": "variogram-fit-20",
+        "shape": {
+          "bins": 20,
+          "modelCandidates": 3,
+          "rangeSteps": 200,
+          "refinementIterations": 32,
+          "weighting": "pairs"
+        }
+      },
+      "warmWallMedianMilliseconds": 5
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "workload": "local-kriging-16-128",
+        "shape": {
+          "samples": 16,
+          "queries": 128,
+          "neighbors": 16,
+          "driftColumns": 4,
+          "supportCount": 16,
+          "storageBindings": 8
+        }
+      },
+      "warmWallMedianMilliseconds": 0.9000000059604645
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 6,
+      "identity": {
+        "workload": "local-rbf-16-128",
+        "shape": {
+          "samples": 16,
+          "queries": 128,
+          "neighbors": 16,
+          "polynomialDegree": 1,
+          "smoothing": 0.05
+        }
+      },
+      "warmWallMedianMilliseconds": 0.699999988079071
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 7,
+      "identity": {
+        "workload": "sibson-32-128",
+        "shape": {
+          "samples": 32,
+          "queries": 128,
+          "maximumVertexCount": 64
+        }
+      },
+      "warmWallMedianMilliseconds": 2.8999999910593033
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 8,
+      "identity": {
+        "workload": "conditional-simulation-16-16-128",
+        "shape": {
+          "observations": 16,
+          "queries": 16,
+          "replicates": 128,
+          "seed": 1229870149
+        }
+      },
+      "warmWallMedianMilliseconds": 3.8999999910593033
+    },
+    {
+      "source": "dev-docs/perf/interpolation-coverage-2026-10-23.json",
+      "recordIndex": 9,
+      "identity": {
+        "workload": "variogram-fit-256",
+        "shape": {
+          "bins": 256,
+          "modelCandidates": 3,
+          "rangeSteps": 200,
+          "refinementIterations": 32,
+          "weighting": "pairs"
+        }
+      },
+      "warmWallMedianMilliseconds": 52.1000000089407
+    },
+    {
+      "source": "dev-docs/perf/geospatial-backlog-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "workload": "marked-pairs-64",
+        "shape": {
+          "points": 64,
+          "radii": 4,
+          "directedPairs": 4032,
+          "edgeCorrection": "translation"
+        }
+      },
+      "warmWallMedianMilliseconds": 1.8999999910593033
+    },
+    {
+      "source": "dev-docs/perf/geospatial-backlog-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "workload": "marked-pairs-512",
+        "shape": {
+          "points": 512,
+          "radii": 4,
+          "directedPairs": 261632,
+          "edgeCorrection": "translation"
+        }
+      },
+      "warmWallMedianMilliseconds": 2.5
+    },
+    {
+      "source": "dev-docs/perf/geospatial-backlog-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "workload": "watershed-8",
+        "shape": {
+          "width": 8,
+          "height": 8,
+          "cells": 64,
+          "markers": 3,
+          "connectivity": 4,
+          "maximumSteps": 64
+        }
+      },
+      "warmWallMedianMilliseconds": 2.7999999970197678
+    },
+    {
+      "source": "dev-docs/perf/geospatial-backlog-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "workload": "watershed-24",
+        "shape": {
+          "width": 24,
+          "height": 24,
+          "cells": 576,
+          "markers": 3,
+          "connectivity": 4,
+          "maximumSteps": 576
+        }
+      },
+      "warmWallMedianMilliseconds": 36.099999994039536
+    },
+    {
+      "source": "dev-docs/perf/geospatial-backlog-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "workload": "strong-components-16",
+        "shape": {
+          "vertices": 16,
+          "directedEdges": 34,
+          "initialComponents": 2,
+          "updatedComponents": 1
+        }
+      },
+      "warmWallMedianMilliseconds": 0.20000000298023224
+    },
+    {
+      "source": "dev-docs/perf/geospatial-backlog-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "workload": "strong-components-128",
+        "shape": {
+          "vertices": 128,
+          "directedEdges": 272,
+          "initialComponents": 16,
+          "updatedComponents": 1
+        }
+      },
+      "warmWallMedianMilliseconds": 0.29999999701976776
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 0,
+      "identity": {
+        "workload": "s2-neighbors-166",
+        "shape": {
+          "rows": 166,
+          "levels": "0,1,2,15,30",
+          "distinctOracleCells": 166
+        }
+      },
+      "warmWallMedianMilliseconds": 0.8999999910593033
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 1,
+      "identity": {
+        "workload": "s2-neighbors-16384",
+        "shape": {
+          "rows": 16384,
+          "levels": "0,1,2,15,30",
+          "distinctOracleCells": 166
+        }
+      },
+      "warmWallMedianMilliseconds": 0.9000000059604645
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 2,
+      "identity": {
+        "workload": "datum-grid-256",
+        "shape": {
+          "rows": 256,
+          "gridWidth": 2,
+          "gridHeight": 2
+        }
+      },
+      "warmWallMedianMilliseconds": 0.29999999701976776
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 3,
+      "identity": {
+        "workload": "datum-grid-16384",
+        "shape": {
+          "rows": 16384,
+          "gridWidth": 2,
+          "gridHeight": 2
+        }
+      },
+      "warmWallMedianMilliseconds": 0.29999999701976776
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 4,
+      "identity": {
+        "workload": "s2-cap-cover-1",
+        "shape": {
+          "rows": 1,
+          "level": 4,
+          "candidateCellsPerCap": 1536
+        }
+      },
+      "warmWallMedianMilliseconds": 37.30000001192093
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 5,
+      "identity": {
+        "workload": "s2-cap-cover-32",
+        "shape": {
+          "rows": 32,
+          "level": 4,
+          "candidateCellsPerCap": 1536
+        }
+      },
+      "warmWallMedianMilliseconds": 29.200000002980232
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 6,
+      "identity": {
+        "workload": "spherical-overlap-1",
+        "shape": {
+          "rows": 1,
+          "verticesPerInput": 4,
+          "capacityPerRow": 16
+        }
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 7,
+      "identity": {
+        "workload": "spherical-overlap-256",
+        "shape": {
+          "rows": 256,
+          "verticesPerInput": 4,
+          "capacityPerRow": 16
+        }
+      },
+      "warmWallMedianMilliseconds": 0.5999999940395355
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 8,
+      "identity": {
+        "workload": "s2-stable-measures-166",
+        "shape": {
+          "rows": 166,
+          "maximumLevel": 30
+        }
+      },
+      "warmWallMedianMilliseconds": 0.20000000298023224
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 9,
+      "identity": {
+        "workload": "s2-stable-measures-16384",
+        "shape": {
+          "rows": 16384,
+          "maximumLevel": 30
+        }
+      },
+      "warmWallMedianMilliseconds": 0.4000000059604645
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 10,
+      "identity": {
+        "workload": "s2-adaptive-cover-level4",
+        "shape": {
+          "maximumLevel": 4,
+          "inputVertices": 3,
+          "capacity": 4096
+        }
+      },
+      "warmWallMedianMilliseconds": 73.29999999701977
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 11,
+      "identity": {
+        "workload": "s2-adaptive-cover-level6",
+        "shape": {
+          "maximumLevel": 6,
+          "inputVertices": 3,
+          "capacity": 4096
+        }
+      },
+      "warmWallMedianMilliseconds": 309.1000000089407
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 12,
+      "identity": {
+        "workload": "spherical-intrinsic-overlay-8",
+        "shape": {
+          "inputVertices": 8,
+          "capacity": 256
+        }
+      },
+      "warmWallMedianMilliseconds": 3.199999988079071
+    },
+    {
+      "source": "dev-docs/benchmarks/data/global-coordinates-expanded-2026-10-23.json",
+      "recordIndex": 13,
+      "identity": {
+        "workload": "spherical-intrinsic-overlay-32",
+        "shape": {
+          "inputVertices": 32,
+          "capacity": 256
+        }
+      },
+      "warmWallMedianMilliseconds": 22.19999998807907
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/statistics-performance-baseline.json",
+      "recordIndex": 0,
+      "identity": {
+        "kind": "sur",
+        "rows": 64
+      },
+      "warmWallMedianMilliseconds": 1.7999999970197678
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/statistics-performance-baseline.json",
+      "recordIndex": 1,
+      "identity": {
+        "kind": "sur",
+        "rows": 1024
+      },
+      "warmWallMedianMilliseconds": 4.799999997019768
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/statistics-performance-baseline.json",
+      "recordIndex": 2,
+      "identity": {
+        "kind": "sur",
+        "rows": 16384
+      },
+      "warmWallMedianMilliseconds": 63.79999999701977
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/statistics-performance-baseline.json",
+      "recordIndex": 3,
+      "identity": {
+        "kind": "poisson-bandwidth-selection",
+        "rows": 32
+      },
+      "warmWallMedianMilliseconds": 2.5
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/statistics-performance-baseline.json",
+      "recordIndex": 4,
+      "identity": {
+        "kind": "poisson-bandwidth-selection",
+        "rows": 128
+      },
+      "warmWallMedianMilliseconds": 7
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/statistics-performance-baseline.json",
+      "recordIndex": 5,
+      "identity": {
+        "kind": "poisson-bandwidth-selection",
+        "rows": 512
+      },
+      "warmWallMedianMilliseconds": 17.5
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 0,
+      "identity": {
+        "operation": "flow",
+        "size": 8
+      },
+      "warmWallMedianMilliseconds": 0.800000011920929
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 1,
+      "identity": {
+        "operation": "flow",
+        "size": 32
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 2,
+      "identity": {
+        "operation": "flow",
+        "size": 128
+      },
+      "warmWallMedianMilliseconds": 1.300000011920929
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 3,
+      "identity": {
+        "operation": "louvain",
+        "size": 4
+      },
+      "warmWallMedianMilliseconds": 0.5999999940395355
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 4,
+      "identity": {
+        "operation": "louvain",
+        "size": 16
+      },
+      "warmWallMedianMilliseconds": 5
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 5,
+      "identity": {
+        "operation": "louvain",
+        "size": 32
+      },
+      "warmWallMedianMilliseconds": 28.900000005960464
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 6,
+      "identity": {
+        "operation": "time-routing",
+        "size": 8
+      },
+      "warmWallMedianMilliseconds": 0.30000001192092896
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 7,
+      "identity": {
+        "operation": "time-routing",
+        "size": 64
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 8,
+      "identity": {
+        "operation": "time-routing",
+        "size": 256
+      },
+      "warmWallMedianMilliseconds": 0.4000000059604645
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 9,
+      "identity": {
+        "operation": "point-routing",
+        "size": 8
+      },
+      "warmWallMedianMilliseconds": 0.29999999701976776
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 10,
+      "identity": {
+        "operation": "point-routing",
+        "size": 64
+      },
+      "warmWallMedianMilliseconds": 0.6000000089406967
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 11,
+      "identity": {
+        "operation": "point-routing",
+        "size": 128
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 12,
+      "identity": {
+        "operation": "facility",
+        "size": 4
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 13,
+      "identity": {
+        "operation": "facility",
+        "size": 8
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 14,
+      "identity": {
+        "operation": "facility",
+        "size": 16
+      },
+      "warmWallMedianMilliseconds": 3.2000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 15,
+      "identity": {
+        "operation": "raam",
+        "size": 4
+      },
+      "warmWallMedianMilliseconds": 1.199999988079071
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 16,
+      "identity": {
+        "operation": "raam",
+        "size": 16
+      },
+      "warmWallMedianMilliseconds": 0.800000011920929
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 17,
+      "identity": {
+        "operation": "raam",
+        "size": 64
+      },
+      "warmWallMedianMilliseconds": 2.5
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 18,
+      "identity": {
+        "operation": "kalman",
+        "size": 32
+      },
+      "warmWallMedianMilliseconds": 0.5999999940395355
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 19,
+      "identity": {
+        "operation": "kalman",
+        "size": 512
+      },
+      "warmWallMedianMilliseconds": 0.30000001192092896
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 20,
+      "identity": {
+        "operation": "kalman",
+        "size": 4096
+      },
+      "warmWallMedianMilliseconds": 1
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 21,
+      "identity": {
+        "operation": "restriction",
+        "size": 32
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 22,
+      "identity": {
+        "operation": "restriction",
+        "size": 512
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 23,
+      "identity": {
+        "operation": "restriction",
+        "size": 4096
+      },
+      "warmWallMedianMilliseconds": 0.7000000029802322
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 24,
+      "identity": {
+        "operation": "similarity",
+        "size": 64
+      },
+      "warmWallMedianMilliseconds": 0.7999999970197678
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 25,
+      "identity": {
+        "operation": "similarity",
+        "size": 64
+      },
+      "warmWallMedianMilliseconds": 0.7999999970197678
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 26,
+      "identity": {
+        "operation": "similarity",
+        "size": 1024
+      },
+      "warmWallMedianMilliseconds": 2
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 27,
+      "identity": {
+        "operation": "similarity",
+        "size": 1024
+      },
+      "warmWallMedianMilliseconds": 0.800000011920929
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 28,
+      "identity": {
+        "operation": "similarity",
+        "size": 4096
+      },
+      "warmWallMedianMilliseconds": 5.200000002980232
+    },
+    {
+      "source": "modules/graph/test/oracles/fixtures/network-movement-benchmark.json",
+      "recordIndex": 29,
+      "identity": {
+        "operation": "similarity",
+        "size": 4096
+      },
+      "warmWallMedianMilliseconds": 1.0999999940395355
+    }
+  ],
+  "variogramFitComparisons": [
+    {
+      "workload": "variogram-repeated-fit-comparison-20",
+      "binCount": 20,
+      "models": 3,
+      "rangeSteps": 200,
+      "maximumIterations": 60,
+      "weights": "pairs",
+      "samples": [
+        {
+          "residentMilliseconds": 4.700000002980232,
+          "readbackMilliseconds": 0.29999999701976776,
+          "cpuFitMilliseconds": 0.800000011920929,
+          "uploadMilliseconds": 0.3999999910593033,
+          "cpuRoundTripMilliseconds": 1.5
+        },
+        {
+          "residentMilliseconds": 4.299999997019768,
+          "readbackMilliseconds": 0.29999999701976776,
+          "cpuFitMilliseconds": 0.5,
+          "uploadMilliseconds": 0,
+          "cpuRoundTripMilliseconds": 0.7999999970197678
+        },
+        {
+          "residentMilliseconds": 4.300000011920929,
+          "readbackMilliseconds": 1.2999999970197678,
+          "cpuFitMilliseconds": 0.5,
+          "uploadMilliseconds": 0.09999999403953552,
+          "cpuRoundTripMilliseconds": 1.8999999910593033
+        },
+        {
+          "residentMilliseconds": 4.200000002980232,
+          "readbackMilliseconds": 0.7999999970197678,
+          "cpuFitMilliseconds": 0.4000000059604645,
+          "uploadMilliseconds": 0.09999999403953552,
+          "cpuRoundTripMilliseconds": 1.2999999970197678
+        },
+        {
+          "residentMilliseconds": 4.300000011920929,
+          "readbackMilliseconds": 0.3999999910593033,
+          "cpuFitMilliseconds": 0.29999999701976776,
+          "uploadMilliseconds": 0.6000000089406967,
+          "cpuRoundTripMilliseconds": 1.2999999970197678
+        }
+      ],
+      "correctnessStatus": "passed",
+      "method": "Updated resident empirical bins; GPU encode/submit/completion versus actual concurrent three-buffer readback + CPU three-model fit + fitted parameters upload/completion. CPU fixed60 refinements; GPU convergence may stop earlier. Validation output readback excluded from both. Both use same device and warmed caches.",
+      "medians": {
+        "residentMilliseconds": 4.300000011920929,
+        "readbackMilliseconds": 0.3999999910593033,
+        "cpuFitMilliseconds": 0.5,
+        "uploadMilliseconds": 0.09999999403953552,
+        "cpuRoundTripMilliseconds": 1.2999999970197678
+      }
+    },
+    {
+      "workload": "variogram-repeated-fit-comparison-256",
+      "binCount": 256,
+      "models": 3,
+      "rangeSteps": 200,
+      "maximumIterations": 60,
+      "weights": "pairs",
+      "samples": [
+        {
+          "residentMilliseconds": 52.30000001192093,
+          "readbackMilliseconds": 1.199999988079071,
+          "cpuFitMilliseconds": 2,
+          "uploadMilliseconds": 0.10000000894069672,
+          "cpuRoundTripMilliseconds": 3.2999999970197678
+        },
+        {
+          "residentMilliseconds": 51.29999999701977,
+          "readbackMilliseconds": 0.7999999970197678,
+          "cpuFitMilliseconds": 2,
+          "uploadMilliseconds": 0.4000000059604645,
+          "cpuRoundTripMilliseconds": 3.2000000029802322
+        },
+        {
+          "residentMilliseconds": 51.30000001192093,
+          "readbackMilliseconds": 0.699999988079071,
+          "cpuFitMilliseconds": 2,
+          "uploadMilliseconds": 0,
+          "cpuRoundTripMilliseconds": 2.699999988079071
+        },
+        {
+          "residentMilliseconds": 51.70000000298023,
+          "readbackMilliseconds": 0.9000000059604645,
+          "cpuFitMilliseconds": 1.8999999910593033,
+          "uploadMilliseconds": 0.10000000894069672,
+          "cpuRoundTripMilliseconds": 2.9000000059604645
+        },
+        {
+          "residentMilliseconds": 51.29999999701977,
+          "readbackMilliseconds": 0.800000011920929,
+          "cpuFitMilliseconds": 1.8999999910593033,
+          "uploadMilliseconds": 0.5,
+          "cpuRoundTripMilliseconds": 3.2000000029802322
+        }
+      ],
+      "correctnessStatus": "passed",
+      "method": "Updated resident empirical bins; GPU encode/submit/completion versus actual concurrent three-buffer readback + CPU three-model fit + fitted parameters upload/completion. CPU fixed60 refinements; GPU convergence may stop earlier. Validation output readback excluded from both. Both use same device and warmed caches.",
+      "medians": {
+        "residentMilliseconds": 51.30000001192093,
+        "readbackMilliseconds": 0.800000011920929,
+        "cpuFitMilliseconds": 2,
+        "uploadMilliseconds": 0.10000000894069672,
+        "cpuRoundTripMilliseconds": 3.2000000029802322
+      }
+    }
+  ]
+}

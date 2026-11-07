@@ -32,7 +32,7 @@ The coverage report records executable call sites separately from scene metadata
 Add `--functionality` to inspect public methods and option variants. This is a static inventory;
 GPU execution and numerical correctness require separate browser and reference checks.
 
-The [October 2026 expansion sprint](../../../dev-docs/roadmaps/showcase-sprint-2026-10-24.md)
+The [October 2026 expansion sprint](../../../dev-docs/archive/showcase-sprint-2026-10-24.md)
 links the API inventory, dataset research, story designs, implementation ledger, and verification.
 Research candidates are kept separate from datasets actually bundled with the showcase.
 

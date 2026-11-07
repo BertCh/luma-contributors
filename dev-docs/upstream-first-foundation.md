@@ -1,7 +1,7 @@
 # Upstream-first foundation: what changed for area agents
 
-Written by the foundation agent. Scope: `modules/analysis/src/analysis-core/**`,
-`src/testing/**`, `src/index.ts`, and the quarantined `_pending/gpu-core` files it owned.
+Final state of the foundation layer. Scope: `modules/analysis/src/analysis-core/**`,
+`src/testing/**` and `src/index.ts`. The former quarantine directory `src/_pending/` no longer exists.
 `analysis-core` and `testing` typecheck against npm `@luma.gl/*@10.0.0-alpha.10` with zero guard
 violations. Public luma.gl entry points are the keys of `node_modules/@luma.gl/*/package.json`
 `exports` (no wildcards). Everything below is verified against the installed `.d.ts` files.
@@ -30,23 +30,23 @@ compiling; the options are accepted and ignored where noted.
 
 | Removed | Effect on call sites | What to do |
 | --- | --- | --- |
-| Computation-record annotations (`graph.recording`, `node.annotation`, `GPUComputeCommandNode.annotation`) | `record: {...}` on `createWGSLKernelNode` / `createWGSLActiveCountDispatch` / helper props is **accepted and ignored** (type `WGSLKernelRecordMetadata`, exported from `wgsl-kernel-nodes.ts`). `node.annotation = ...` no longer type checks. | Do not set `node.annotation`. In `raster-analysis/cost-distance/raster-relaxation.ts` and `computation-record/gpu-transfer-mask.ts` delete the annotation writes (or keep loop metadata in a local variable). |
+| Computation-record annotations (`graph.recording`, `node.annotation`, `GPUComputeCommandNode.annotation`) | The `record` prop and the `WGSLKernelRecordMetadata` type were deleted from `createWGSLKernelNode` / `createWGSLActiveCountDispatch` and the helper props. `node.annotation = ...` does not type check. | Use `GPUComputationRecorder` from `computation-record` (see `upstream-first-recording.md`); never set `node.annotation`. |
 | `setGPUComputeDispatchWorkgroups` metadata (direct-dispatch geometry used by the forked compiler to swap in predicate-controlled indirect dispatch) | Nodes no longer carry it; the published compiler dispatches them directly. | Nothing; behaviour is correct, only the indirect-gate optimisation is lost. |
 | `_bindGroupCacheKeys` on `Kernel.dispatch` | The bind-group reuse key is dropped; `setBindings` is called without cache keys. `createChangedBindingResolver` / `createCachedBindingResolver` still return `null` when nothing changed. | Nothing. Slightly more bind-group creation per encode. |
 | Upstream `GPUSegmentedReduction` fast path in `createSegmentSumNode` | `offsetsWithinInput` and `implementation` options are accepted and ignored; the local 256-lane tree kernel always runs (bit-identical results). | Nothing. |
-| Test exports `addGPUQueryPredicatePass`, `makeGPUQueryExpressionShaderPlan` | `makeGPUQueryExpressionShaderPlan` is public in `@luma.gl/graph/gpu-dataframe` (`gpu-expression-shader`); `addGPUQueryPredicatePass` is not public. | Import from `@luma.gl/graph/gpu-dataframe` where public; `modules/lenses/test/gpu-dataframe/describe/gpu-query-describe.node.spec.ts` must be dropped or rewritten by the lenses owner. |
-| Test exports `describeGPUDataFrameQueryIntent`, `describeGPUDataFrameQueryShaderPlan`, `createGPUDataFrameExpressionFormulas`, `GPUDataFrameQueryDescriptionInput` | Removed from `testing/index.ts`. Their source is still in `_pending/gpu-dataframe/gpu-query-describe.ts` (not owned by foundation). | Owner of `computation-record` / lenses decides: drop with the describe feature. |
+| Test exports `addGPUQueryPredicatePass`, `makeGPUQueryExpressionShaderPlan`, `describeGPUDataFrameQuery*`, `createGPUDataFrameExpressionFormulas` | Removed from `testing/index.ts`; the dataframe query describe feature was dropped with its spec. `makeGPUQueryExpressionShaderPlan` is public in `@luma.gl/graph/gpu-dataframe`; `addGPUQueryPredicatePass` is not public. | Import from `@luma.gl/graph/gpu-dataframe` where public. |
 
-## 3. Deleted quarantined files (luma.gl extensions)
+## 3. Deleted luma.gl extensions
 
-Deleted from `src/_pending/gpu-core/`; no analysis code imported them:
+These quarantined files were deleted and nothing imports them:
 `gpu-kernel-node.ts`, `gpu-planning-ordered-set.ts`, `gpu-double-single.ts`, `gpu-scan-lookback.ts`
-(look-back scan), `gpu-sort-onesweep.ts` (onesweep sort), `benchmarks.ts`.
+(look-back scan), `gpu-sort-onesweep.ts` (onesweep sort), `benchmarks.ts`, and the describe and record
+files (`gpu-command-graph-describe.ts`, `gpu-command-node-record.ts`, `gpu-graph-describe.ts`),
+replaced by `computation-record`.
 
 Use published `GPUSort` / `GPUScan` defaults (`@luma.gl/graph/gpu-core`). Accepted limit: no onesweep
 or look-back strategies, so large-array sort/scan throughput follows the published defaults.
-Still in `_pending/gpu-core` (owned by other agents): `gpu-command-graph-describe.ts`,
-`gpu-command-node-record.ts`, `gpu-graph-describe.ts`.
+See `upstream-first-pending.md` for every other dropped capability.
 
 ## 4. Replacements for commonly missing luma internals
 
@@ -100,16 +100,7 @@ Useful public names to remember (all `@luma.gl/graph/gpu-core` unless noted): `G
   `pointcloud-analysis`, `gpu-terrain`, `gpu-spatial-analysis`, `gpu-network`). The vocabulary
   allowlist is empty (its entries were all luma-owned raster base classes). Point-cloud props are
   not covered by the vocabulary check (they have `iterations` / `selection` names).
-- `doc-snippets` and `doc-parameters` specs are `it.skip` pending a docs rewrite (docs still import
-  `@luma-contributors/graph/*`). `doc-program.ts` / `doc-parameters.ts` entry lists are updated.
+- `doc-snippets` and `doc-parameters` specs run against the rewritten docs (`@luma.gl/*` and
+  `@luma-contributors/analysis` imports). `doc-program.ts` / `doc-parameters.ts` entry lists are current.
 - Removed tests: `wgsl-kernel-node-record.node.spec.ts` (recording) and the bind-group-cache test in
   `wgsl-kernel-nodes.node.spec.ts`.
-
-### Remaining node-test failures that belong to area agents
-
-`yarn vitest run --project node modules/analysis/test/analysis-core modules/analysis/test/utils`:
-2447 passed, 145 failed, 3 skipped. Every failure is a kernel-audit build that throws because the
-area source still uses a missing luma symbol (`GPUSegmentedReduction`, `getGraphVectorData`,
-`validateRasterBand`, `GPUGraphAlgorithmsTopologyView`, `GPURasterX is not a constructor`,
-`GPUJacobiPCG`, the undeclared WGSL helper `isFiniteGridValue` in `gwr-grid-index.ts`, and similar).
-They should clear as each area is fixed.

@@ -52,7 +52,6 @@ function isDroppedScenario(scenario: string | undefined): boolean {
 // Resume lists for the next round: element → what is still missing (from the stream handoffs).
 // Element → what is missing, as `<stream>: <parts>`. Generated from the failing checks and cross-checked with the
 // stream handoffs (2026-10-14); 'docs card' means scenario and pack exist but the doc section lacks lenses.
-const GPU_GRAPH_PENDING: Readonly<Record<string, string>> = {};
 const GPU_DATAFRAME_PENDING: Readonly<Record<string, string>> = {};
 const GPU_SPATIAL_ANALYSIS_PENDING: Readonly<Record<string, string>> = {};
 const GPU_NETWORK_PENDING: Readonly<Record<string, string>> = {};
@@ -65,31 +64,11 @@ const GPU_TERRAIN_PENDING: Readonly<Record<string, string>> = {};
  */
 export const COVERED_ENTRIES: readonly CoveredEntry[] = [
   {
-    entry: 'gpu-graph',
-    // The graph algorithms are published in @luma.gl/graph; the pack operators are the elements.
-    barrel: 'modules/analysis/src/gpu-network/index.ts',
-    scope: 'pack-operators',
-    docs: [
-      'docs/api-reference/experimental/gpu-graph.md',
-      'docs/api-reference/experimental/gpu-graph-topology.md',
-      'docs/api-reference/experimental/gpu-graph-traversal.md',
-      'docs/api-reference/experimental/gpu-graph-connectivity.md',
-      'docs/api-reference/experimental/gpu-graph-metrics.md',
-      'docs/api-reference/experimental/gpu-graph-layouts.md'
-    ],
-    // gpu-graph contributors add themselves with `addToGraph(commandGraph)`.
-    contributorMethods: ['addToGraph'],
-    loadPack: async () =>
-      (await import('../../src/computation-lenses/scenarios/gpu-graph/computation-pack'))
-        .GPU_GRAPH_COMPUTATION_PACK,
-    pending: GPU_GRAPH_PENDING
-  },
-  {
     entry: 'gpu-dataframe',
     barrel: 'modules/analysis/src/dataframe-analysis/index.ts',
     docs: [
       'docs/api-reference/experimental/gpu-dataframe-analysis.md',
-      'docs/api-reference/graph/gpu-variable-standardization.md'
+      'docs/api-reference/experimental/variable-standardization.md'
     ],
     loadPack: async () =>
       (await import('../../src/gpu-dataframe/computation-pack/index')).createDataFramePackData(),

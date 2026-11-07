@@ -277,6 +277,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
     const hourHistogramBuffer = resources.createBuffer('hour-histogram', 24 * 4);
     const selectionBuffer = resources.createBuffer('selection', vertexCount * 4);
     const selectedCountBuffer = resources.createBuffer('selected-count', 4);
+    const visibleIndicesBuffer = resources.createBuffer('visible-indices', vertexCount * 4);
     const countsBuffer = resources.createBuffer('cube-counts', binCount * 4);
     const minimumBuffer = resources.createBuffer('cube-min', binCount * 4);
     const maximumBuffer = resources.createBuffer('cube-max', binCount * 4);
@@ -363,9 +364,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
     );
     const hourFilter = new GPUCrossfilter(graph, {
       id: 'hour-brush',
-      dimensions: [
-        {id: 'hour', kind: 'range', input: hourView, rejectNonFinite: true, exclusiveMaximum: true}
-      ],
+      dimensions: [{id: 'hour', kind: 'range', input: hourView}],
       views: [
         {
           id: 'hour-histogram',
@@ -378,8 +377,15 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
         {id: 'selection', kind: 'mask', output: selectionView},
         {
           id: 'selected-count',
-          kind: 'count',
-          output: importGraphBuffer(graph, 'selected-count', selectedCountBuffer, 'uint32', 1)
+          kind: 'visibility',
+          output: importGraphBuffer(
+            graph,
+            'visible-indices',
+            visibleIndicesBuffer,
+            'uint32',
+            vertexCount
+          ),
+          count: importGraphBuffer(graph, 'selected-count', selectedCountBuffer, 'uint32', 1)
         }
       ]
     });

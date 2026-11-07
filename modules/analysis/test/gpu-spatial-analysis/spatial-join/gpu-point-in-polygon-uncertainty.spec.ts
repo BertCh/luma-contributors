@@ -2,14 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {
-  GPU_POINT_IN_POLYGON_CLASSIFICATION,
-  GPUPairwisePointInPolygon
-} from '@luma.gl/graph/geospatial';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_SPATIAL_JOIN_NO_FEATURE,
@@ -22,12 +17,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {UNCERTAINTY_FEATURES, UNCERTAINTY_POINTS} from './uncertainty-scene';
-import {
-  buildPolygonFeatureArrays,
-  classifyPointInFeature,
-  joinPointsInPolygons,
-  type OraclePolygonFeature
-} from './spatial-join-oracle';
+import {buildPolygonFeatureArrays, joinPointsInPolygons} from './spatial-join-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
@@ -35,102 +25,6 @@ type Point = [number, number];
 function toFloat32Points(points: Point[]): Float32Array {
   return Float32Array.from(points.flat());
 }
-
-it('GPUPairwisePointInPolygon proves containment despite near-collinear far edges', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const rows: {point: Point; feature: OraclePolygonFeature}[] = [];
-  for (const point of UNCERTAINTY_POINTS) {
-    for (const feature of UNCERTAINTY_FEATURES) {
-      rows.push({point, feature});
-    }
-  }
-  const positions: number[] = [];
-  const geometryOffsets = [0];
-  const polygonOffsets = [0];
-  const ringOffsets = [0];
-  let polygonCount = 0;
-  let ringCount = 0;
-  for (const {feature} of rows) {
-    for (const polygon of feature) {
-      for (const ring of polygon) {
-        for (const vertex of ring) {
-          positions.push(...vertex);
-        }
-        ringCount++;
-        ringOffsets.push(positions.length / 2);
-      }
-      polygonCount++;
-      polygonOffsets.push(ringCount);
-    }
-    geometryOffsets.push(polygonCount);
-  }
-
-  const graph = new GPUCommandGraph(device, {id: 'pip-uncertainty'});
-  const buffers: Buffer[] = [];
-  const input = (data: Float32Array | Uint32Array): Buffer => {
-    const buffer = createInputBuffer(device, data);
-    buffers.push(buffer);
-    return buffer;
-  };
-  const output = createOutputBuffer(device, rows.length);
-  buffers.push(output);
-  graph.add(
-    new GPUPairwisePointInPolygon({
-      queryPositions: importGraphBuffer(
-        graph,
-        'points',
-        input(toFloat32Points(rows.map(row => row.point))),
-        'float32x2',
-        rows.length
-      ),
-      positions: importGraphBuffer(
-        graph,
-        'positions',
-        input(Float32Array.from(positions)),
-        'float32x2',
-        positions.length / 2
-      ),
-      featureOffsets: importGraphBuffer(
-        graph,
-        'geometry-offsets',
-        input(Uint32Array.from(geometryOffsets)),
-        'uint32',
-        geometryOffsets.length
-      ),
-      polygonOffsets: importGraphBuffer(
-        graph,
-        'polygon-offsets',
-        input(Uint32Array.from(polygonOffsets)),
-        'uint32',
-        polygonOffsets.length
-      ),
-      ringOffsets: importGraphBuffer(
-        graph,
-        'ring-offsets',
-        input(Uint32Array.from(ringOffsets)),
-        'uint32',
-        ringOffsets.length
-      ),
-      output: importGraphBuffer(graph, 'output', output, 'uint32', rows.length)
-    })
-  );
-  const compiled = graph.compile();
-  submitGraph(device, compiled, undefined);
-  const classifications = await readUint32(output, rows.length);
-  const {inside, outside} = GPU_POINT_IN_POLYGON_CLASSIFICATION;
-  for (const [index, {point, feature}] of rows.entries()) {
-    const expected = classifyPointInFeature(point, feature);
-    expect(expected, `oracle row ${index} is never boundary`).not.toBe('boundary');
-    expect(classifications[index], `point ${point} row ${index}`).toBe(
-      expected === 'inside' ? inside : outside
-    );
-  }
-  compiled.destroy();
-  for (const buffer of buffers) {
-    buffer.destroy();
-  }
-});
 
 it('GPUPointInPolygonJoin assigns near-collinear points and reports no uncertainty', async () => {
   const device = await getWebGPUTestDevice();

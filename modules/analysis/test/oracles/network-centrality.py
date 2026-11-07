@@ -6,7 +6,7 @@
 Writes fixtures/network-centrality.json next to this script (consumed by
 test/gpu-network/network-centrality/network-centrality.node.spec.ts, which runs the TypeScript mirror
 of the GPU schedule against it, and by gpu-network-centrality.spec.ts). Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/network-centrality.py
+    <venv>/bin/python -I modules/graph/test/oracles/network-centrality.py
 in a venv with numpy and networkx (versions are recorded in the fixture).
 
 Conventions (GPUNetworkCentrality measures outward from its pivots):

@@ -4,7 +4,7 @@
 
 import {expect, it} from 'vitest';
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph, GraphVectorView, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerAnalysisRecipe} from '../src/analysis/recipe-bindings';
 import type {KeplerAnalysisRecipe} from '../src/recipes/analysis-recipe';
@@ -57,26 +57,12 @@ function makeBuffers(device: Device, graph: GPUCommandGraph) {
   };
 }
 
-it('saved standardization executes on chunked GPU data and separates full versus selected populations', async () => {
+it('saved standardization executes on single-chunk GPU data and separates full versus selected populations', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
   const storage = makeBuffers(device, graph);
-  const chunks = [
-    storage.input('first', 'float32', new Float32Array([2, 4])),
-    storage.input('second', 'float32', new Float32Array([6, 100]))
-  ];
-  const values = new GraphVectorView({
-    id: 'values',
-    name: 'values',
-    format: 'float32',
-    length: 4,
-    valueLength: 4,
-    stride: 1,
-    byteStride: 4,
-    rowByteLength: 4,
-    data: chunks
-  });
+  const values = storage.input('values', 'float32', new Float32Array([2, 4, 6, 100]));
   const validityMask = storage.input('validity', 'uint32', new Uint32Array([1, 1, 1, 0]));
   const mask = storage.input('selection', 'uint32', new Uint32Array([0, 1, 1, 0]));
   const full = storage.output('full', 'float32', 4);
@@ -102,7 +88,7 @@ it('saved standardization executes on chunked GPU data and separates full versus
     submitGraph(device, compiled, undefined);
     expectValues(await readFloat32(full.buffer, 4), [-2, 0, 2, NaN]);
     expectValues(await readFloat32(selected.buffer, 4), [NaN, -1, 1, NaN]);
-    storage.buffers[3].write(new Uint32Array([1, 1, 0, 0]));
+    storage.buffers[2].write(new Uint32Array([1, 1, 0, 0]));
     submitGraph(device, compiled, undefined);
     expectValues(await readFloat32(selected.buffer, 4), [-1, 1, NaN, NaN]);
     expectValues(await readFloat32(full.buffer, 4), [-2, 0, 2, NaN]);

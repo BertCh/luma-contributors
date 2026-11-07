@@ -5,7 +5,7 @@
 import {Buffer, type CommandEncoder, type Device} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {MeteredCommandGraph} from '../session/metered-command-graph';
 import {
   GPUDataFrame,
   and,
@@ -72,6 +72,8 @@ type PredicateState = {
   filter: GPUKeplerScalarFilter;
   source: GPUVector<ScalarFormat>;
   query: CompiledGPUDataFrameQuery<Record<string, ScalarFormat>>;
+  /** Physical transient scratch of the compiled query graph. */
+  scratchByteLength: number;
   mask: GPUVector<'uint32'>;
   time?: GPUKeplerTimeSelection;
   control: GPUKeplerScalarControl;
@@ -450,6 +452,7 @@ export class GPUKeplerScalarSelection {
         for (const chunk of vector.data) buffers.add(getBuffer(chunk));
       byteLength +=
         [...buffers].reduce((total, buffer) => total + buffer.byteLength, 0) +
+        state.scratchByteLength +
         (state.time?.accountedResidentByteLength ?? 0);
     }
     return byteLength;
@@ -478,6 +481,7 @@ export class GPUKeplerScalarSelection {
   ): PredicateState {
     let time: GPUKeplerTimeSelection | undefined;
     let query: PredicateState['query'] | undefined;
+    let scratchByteLength = 0;
     let frame: GPUDataFrame<Record<string, ScalarFormat>> | undefined;
     let mask: GPUVector<'uint32'> | undefined;
     try {
@@ -522,9 +526,11 @@ export class GPUKeplerScalarSelection {
         ownership: 'borrowed'
       });
       const predicate = makePredicate(filter);
+      const queryGraph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(this.device);
       query = frame
         .filter(or(not(parameter('active', false)), and(not(parameter('empty', false)), predicate)))
-        .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(this.device));
+        .compile(queryGraph);
+      scratchByteLength = queryGraph.transientByteLength;
       mask = makeMask(
         this.device,
         filter.filterId,
@@ -577,6 +583,7 @@ export class GPUKeplerScalarSelection {
         filter: {...filter},
         source,
         query,
+        scratchByteLength,
         mask,
         time,
         control,

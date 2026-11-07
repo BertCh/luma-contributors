@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 """Independent nested held-out oracle; no runtime WGSL/code translation is evaluated.
 
-Run /tmp/luma-coverage-oracles/bin/python modules/analysis/test/oracles/nested-validation-oracle.py.
+Run /tmp/luma-coverage-oracles/bin/python modules/graph/test/oracles/nested-validation-oracle.py.
 RBF fits call scipy.interpolate.RBFInterpolator; ordinary kriging solves the
 bordered covariance equations with NumPy LAPACK. Neighborhoods use explicit
 (distance, original row) ordering to make equal-distance ties reproducible.

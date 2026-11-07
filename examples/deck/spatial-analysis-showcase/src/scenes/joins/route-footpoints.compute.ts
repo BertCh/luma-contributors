@@ -639,83 +639,60 @@ export async function createRouteFootpoints(
         'uint32',
         1
       );
-      const spatialContext = projection.spatialContext;
-      graph.add(
-        new GPUPairwisePointLinestringNearest({
-          queryPositions: stationView,
-          positions: pathView,
-          featureOffsets: featureOffsetsView,
-          lineOffsets: lineOffsetsView,
-          output: {
-            distances: nearestDistanceView,
-            nearestPositions: nearestView,
-            lineIndices: nearestLineView,
-            segmentIndices: nearestSegmentView
-          },
-          spatialContext
-        })
-      );
-      graph.add(
-        new GPUPairwisePointDistance({
-          id: 'route-reference-point-distance',
-          left: stationView,
-          right: referenceView,
-          output: pointDistanceView,
-          spatialContext
-        })
-      );
-      graph.add(
-        new GPUPairwisePointDistance({
-          id: 'route-footpoint-distance',
-          left: stationView,
-          right: nearestView,
-          output: footpointDistanceView,
-          spatialContext
-        })
-      );
-      graph.add(
-        new GPUHaversineDistance({
-          left: stationLonLatView,
-          right: referenceLonLatView,
-          output: haversineView,
-          units: state.haversineUnits,
-          sphereRadius:
-            state.haversineUnits === 'meters'
-              ? GPU_EARTH_MEAN_RADIUS_METERS
-              : GPU_EARTH_MEAN_RADIUS_METERS / 1000
-        })
-      );
-      graph.add(
-        new GPUPairwisePointInPolygon({
-          queryPositions: stationView,
-          positions: polygonView,
-          featureOffsets: polygonFeatureView,
-          polygonOffsets: polygonOffsetView,
-          ringOffsets: polygonRingView,
-          output: polygonClassView,
-          spatialContext
-        })
-      );
-      graph.add(
-        new GPUPointSpatialQuery({
-          positions: stationView,
-          kind: state.query,
-          parameters: queryParameterView,
-          polygon:
-            state.query === 'polygon'
-              ? {positions: queryPolygonView, ringOffsets: queryRingOffsetsView}
-              : undefined,
-          spatialContext,
-          output: {
-            ids: queryIdsView,
-            status: {
-              count: queryCountView,
-              requiredCount: queryRequiredView,
-              overflow: queryOverflowView
-            }
-          }
-        })
-      );
+      new GPUPairwisePointLinestringNearest({
+        points: stationView,
+        linestringPositions: pathView,
+        geometryOffsets: featureOffsetsView,
+        linestringOffsets: lineOffsetsView,
+        output: nearestDistanceView,
+        nearestPoints: nearestView,
+        linestringIndices: nearestLineView,
+        segmentIndices: nearestSegmentView
+      }).addToGraph(graph);
+      new GPUPairwisePointDistance({
+        id: 'route-reference-point-distance',
+        left: stationView,
+        right: referenceView,
+        output: pointDistanceView
+      }).addToGraph(graph);
+      new GPUPairwisePointDistance({
+        id: 'route-footpoint-distance',
+        left: stationView,
+        right: nearestView,
+        output: footpointDistanceView
+      }).addToGraph(graph);
+      new GPUHaversineDistance({
+        left: stationLonLatView,
+        right: referenceLonLatView,
+        output: haversineView,
+        radius:
+          state.haversineUnits === 'meters'
+            ? GPU_EARTH_MEAN_RADIUS_METERS
+            : GPU_EARTH_MEAN_RADIUS_METERS / 1000
+      }).addToGraph(graph);
+      new GPUPairwisePointInPolygon({
+        points: stationView,
+        polygonPositions: polygonView,
+        geometryOffsets: polygonFeatureView,
+        polygonOffsets: polygonOffsetView,
+        ringOffsets: polygonRingView,
+        output: polygonClassView
+      }).addToGraph(graph);
+      new GPUPointSpatialQuery({
+        positions: stationView,
+        kind: state.query,
+        query: queryParameterView,
+        polygon:
+          state.query === 'polygon'
+            ? {positions: queryPolygonView, ringOffsets: queryRingOffsetsView}
+            : undefined,
+        output: {
+          ids: queryIdsView,
+          count: queryCountView,
+          totalCount: queryRequiredView,
+          overflow: queryOverflowView
+        }
+      }).addToGraph(graph);
       const compiled = await graph.compileAsync();
       localResources.track(compiled);
       let liveSummaryIdentity = identity;
@@ -769,15 +746,12 @@ export async function createRouteFootpoints(
             'float32',
             1
           );
-          segmentGraph.add(
-            new GPUPairwisePointSegmentDistance({
-              positions: pointView,
-              segmentStarts: startView,
-              segmentEnds: endView,
-              output: resultView,
-              spatialContext: projection.spatialContext
-            })
-          );
+          new GPUPairwisePointSegmentDistance({
+            points: pointView,
+            segmentStarts: startView,
+            segmentEnds: endView,
+            output: resultView
+          }).addToGraph(segmentGraph);
           const compiled = await segmentGraph.compileAsync();
           segmentResources.track(compiled);
           const reader = new SummaryReader(

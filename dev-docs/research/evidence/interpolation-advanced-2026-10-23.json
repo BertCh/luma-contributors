@@ -1,0 +1,2176 @@
+{
+  "metadata": {
+    "schemaVersion": 1,
+    "seed": 1229870149,
+    "recordedAt": "2026-10-24T02:26:05.299Z",
+    "sourceRevision": "e6375c5d683ee8a6289789f07ea8e24e7b87c21e",
+    "sourceState": "1858bee1eb10e42d2596cb3731f1c6f00b98385a5fe07d5068e334ff54aa6f27",
+    "sourceSnapshot": {
+      "revision": "e6375c5d683ee8a6289789f07ea8e24e7b87c21e",
+      "capturedAt": "2026-10-24T02:25:50.130481+00:00",
+      "files": {
+        "modules/graph/src/gpu-dataframe/pair-statistics/gpu-variogram-model-fit.ts": "bda0eb47d0edaa8236fbc61d45a82979dee608c0075aaaf15cd0ad5188d14cf7",
+        "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-conditional-gaussian-simulation.ts": "2737ff5e81cdbebd4deec8c8cb110ec358d04f997d1cac23b04be79206fda7c2",
+        "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-focal-statistics.ts": "060dfa155c8775de2e830cc35a493f4d0f2ebf540fa672f0ecc5dd4936df2eec",
+        "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-inverse-distance-weighting.ts": "61d99a8f9dde3c2ad5968d5671d505f56319ec9688ed36536f1c452438f54ce0",
+        "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-kriging.ts": "66b9fd194e34930ced7f9a582dad953b147a849e4caccba99c3c1dbcc15a6386",
+        "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging.ts": "21b6c7f7d4aa92b5a77f51bbd49c9c1b71a1ab794f75164f95b6d2da0765a47c",
+        "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-rbf.ts": "0a3a81295a90ab50ff90cfa0910d3de3c9232294ceae7bacaec51461d5830710",
+        "modules/graph/src/gpu-spatial-analysis/spatial-interpolation/gpu-natural-neighbor.ts": "f2b942ad0924294a49ca3dd75c7dae17f74628c85c810cc0c0492bf611008a52",
+        "modules/graph/src/utils/gpu-prediction-utils.ts": "4934e7d424dba15a39b38563a173696d78020efbeb8001d97717bb0c18fde9d5",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-advanced.spec.ts": "e4db254eae0987a9e7841c4205b3559142c758dee1267ce884ab822941074e77",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-coverage-reference.ts": "93337b5bf2cdd382a1a2f89d9b0fdf4e12ca07a40dc76ca357c262b0ba3855f8",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-coverage.node.spec.ts": "60ed816fb10e00425df4538626548ac73e354663894bdc312961e6ad05bff2f0",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-coverage.spec.ts": "68ee9adb0da235b27b57ae83dd34df4f80cbab169a94e712326c2b18c5575388",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-fit-comparison.ts": "f5c7b648f4df82fe22bee1b98f667d641a403e17cc3d7ac1ee2d72920ff3b26a",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance-benchmark.spec.ts": "364d43c010c7098d60f70adc88db5fc3be7be0630ddd2d9c7230a8551c93e124",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance-fixtures.ts": "d5559cedd538351d5073ae0ee1f1cd8d1d8ebb05976f76d80935179422796c3e",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance-harness.ts": "786baf22870bbea1e33c349be6b2c6d48005e511de5aedbb26059871cba85dba",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance.node.spec.ts": "2beb656d989dfdb15126164a41ba0223678aa6840696e678d8bcc6f02822b71a",
+        "modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-scaling-fixtures.ts": "10a9e42a3c422d1e5abcde94cf39eaa26fba57730c854f9b38b0c706d41fe8f7"
+      },
+      "sha256": "1858bee1eb10e42d2596cb3731f1c6f00b98385a5fe07d5068e334ff54aa6f27",
+      "scope": "Interpolation implementation, tests, fixtures, and benchmark source hashes; shared repository has additional uncommitted changes."
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "hardwareConcurrency": 12,
+    "device": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "max",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "limits": {
+      "maxBufferSize": 4294967292,
+      "maxStorageBufferBindingSize": 4294967292,
+      "maxStorageBuffersPerShaderStage": 10,
+      "maxComputeWorkgroupStorageSize": 32768,
+      "maxComputeInvocationsPerWorkgroup": 1024
+    },
+    "timestampQueriesAvailable": true,
+    "method": {
+      "warmupEncodesAfterFirst": 1,
+      "repeatedSamples": 5,
+      "updatedSamples": 3,
+      "executionClock": "CPU encode + submit + queue completion; excludes output/timestamp readback",
+      "compileClock": "synchronous graph.compile; deferred compilation may appear in first execution",
+      "uploadClock": "buffer.write + queue completion; allocation excluded",
+      "gpuClock": "timestamped nodes when enabled; null otherwise",
+      "validation": "analytic reproduction, independent f64 linear algebra, status and changed-input replay; CPU fixture generation outside measured phases",
+      "memory": "graph transient bytes and caller buffer bytes; private/function shader budgets separately audited; driver/process peak unavailable",
+      "cache": "shared device; caches not cleared; first execution is not necessarily cold",
+      "envelope": "bounded observations only; no latency threshold or speedup assertion"
+    }
+  },
+  "measurements": [
+    {
+      "workload": "local-kriging-8-4",
+      "shape": {
+        "samples": 8,
+        "queries": 4,
+        "neighbors": 8,
+        "driftColumns": 4,
+        "supportCount": 1,
+        "storageBindings": 8
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Bilinear external-drift reproduction, weight partition, finite variance and successful status, before and after +3 observation update.",
+      "phases": {
+        "setupMilliseconds": 2,
+        "uploadMilliseconds": 3.699999988079071,
+        "compileHostMilliseconds": 1.300000011920929,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 106.69999998807907,
+          "cpuEncodeMilliseconds": 0.9000000059604645,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 0.29999999701976776,
+          "median": 0.29999999701976776,
+          "maximum": 0.4000000059604645
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 4.100000008940697,
+          "validationMilliseconds": 0.3999999910593033,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.5,
+          "validationMilliseconds": 0,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.4000000059604645,
+          "validationMilliseconds": 0.09999999403953552,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 416,
+        "updateBytes": 128,
+        "outputBytes": 208,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "local-rbf-8-4",
+      "shape": {
+        "samples": 8,
+        "queries": 4,
+        "neighbors": 8,
+        "polynomialDegree": 1,
+        "smoothing": 0.05
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Affine reproduction of thin-plate spline with smoothing and finite pivot diagnostics; +3 input update.",
+      "phases": {
+        "setupMilliseconds": 0.4000000059604645,
+        "uploadMilliseconds": 0.29999999701976776,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 60.3999999910593,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 0.5999999940395355,
+          "median": 0.7000000029802322,
+          "maximum": 0.7000000029802322
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.2999999970197678,
+          "validationMilliseconds": 0.20000000298023224,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.7999999970197678,
+          "validationMilliseconds": 0.20000000298023224,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.5999999940395355,
+          "validationMilliseconds": 0.10000000894069672,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 128,
+        "updateBytes": 32,
+        "outputBytes": 80,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "sibson-8-4",
+      "shape": {
+        "samples": 8,
+        "queries": 4,
+        "maximumVertexCount": 64
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Affine precision, nonnegative weights, partition of unity, all statuses successful, +3 input update.",
+      "phases": {
+        "setupMilliseconds": 0.3999999910593033,
+        "uploadMilliseconds": 0.30000001192092896,
+        "compileHostMilliseconds": 0.09999999403953552,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 83.90000000596046,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.9000000059604645,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.8999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.2000000029802322,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 0.7000000029802322,
+          "median": 0.9000000059604645,
+          "maximum": 1.2000000029802322
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.199999988079071,
+          "validationMilliseconds": 0,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.5,
+          "validationMilliseconds": 0.09999999403953552,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.10000000894069672,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.8999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7999999970197678,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.9000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.4000000059604645,
+          "validationMilliseconds": 0.09999999403953552,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 128,
+        "updateBytes": 32,
+        "outputBytes": 208,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "conditional-simulation-8-4-16",
+      "shape": {
+        "observations": 8,
+        "queries": 4,
+        "replicates": 16,
+        "seed": 1229870149
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Independent f64 conditional moments; finite joint draws; unchanged-input stream replay; observation update shifts each draw by the independently computed mean shift.",
+      "phases": {
+        "setupMilliseconds": 0.5999999940395355,
+        "uploadMilliseconds": 0.29999999701976776,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 64.20000000298023,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.30000001192092896,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 0.30000001192092896,
+          "median": 0.3999999910593033,
+          "maximum": 0.7000000029802322
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.5999999940395355,
+          "validationMilliseconds": 0.10000000894069672,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 1.5999999940395355,
+          "validationMilliseconds": 0.4000000059604645,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.7000000029802322,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.4000000059604645,
+          "validationMilliseconds": 0.5,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 224,
+        "updateBytes": 128,
+        "outputBytes": 352,
+        "graphPhysicalTransientBytes": 824,
+        "graphLogicalTransientBytes": 824,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 2,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "variogram-fit-20",
+      "shape": {
+        "bins": 20,
+        "modelCandidates": 3,
+        "rangeSteps": 200,
+        "refinementIterations": 32,
+        "weighting": "pairs"
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Admissible candidate fits and explicit convergence/boundary status; generating exponential parameters recovered before and after x2 semivariance update.",
+      "phases": {
+        "setupMilliseconds": 0.4000000059604645,
+        "uploadMilliseconds": 0.20000000298023224,
+        "compileHostMilliseconds": 0.09999999403953552,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 116.5,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 6.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6.399999991059303,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.200000002980232,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 4.200000002980232,
+          "median": 4.5,
+          "maximum": 6.5
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.2000000029802322,
+          "validationMilliseconds": 0.20000000298023224,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.9000000059604645,
+          "validationMilliseconds": 0,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 4.299999997019768,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.4000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.0999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 1,
+          "validationMilliseconds": 0,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 240,
+        "updateBytes": 80,
+        "outputBytes": 108,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "local-kriging-16-128",
+      "shape": {
+        "samples": 16,
+        "queries": 128,
+        "neighbors": 16,
+        "driftColumns": 4,
+        "supportCount": 16,
+        "storageBindings": 8
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Bilinear external-drift reproduction, weight partition, finite variance and successful status, before and after +3 observation update.",
+      "phases": {
+        "setupMilliseconds": 0.20000000298023224,
+        "uploadMilliseconds": 0.20000000298023224,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 103.5,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7999999970197678,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.9000000059604645,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.8999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 1.7000000029802322,
+          "median": 1.7999999970197678,
+          "maximum": 1.9000000059604645
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.2000000029802322,
+          "validationMilliseconds": 1.7999999970197678,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.9000000059604645,
+          "validationMilliseconds": 1.5999999940395355,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.20000000298023224,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 2.2999999970197678,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7999999970197678,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.7999999970197678,
+          "validationMilliseconds": 1.6000000089406967,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 19072,
+        "updateBytes": 256,
+        "outputBytes": 10752,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "local-rbf-16-128",
+      "shape": {
+        "samples": 16,
+        "queries": 128,
+        "neighbors": 16,
+        "polynomialDegree": 1,
+        "smoothing": 0.05
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Affine reproduction of thin-plate spline with smoothing and finite pivot diagnostics; +3 input update.",
+      "phases": {
+        "setupMilliseconds": 0.09999999403953552,
+        "uploadMilliseconds": 0.4000000059604645,
+        "compileHostMilliseconds": 0.09999999403953552,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 67.6000000089407,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 2,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.3999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7999999970197678,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.7000000029802322,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 1.3999999910593033,
+          "median": 1.7000000029802322,
+          "maximum": 2
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.699999988079071,
+          "validationMilliseconds": 1.1000000089406967,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 1.2000000029802322,
+          "validationMilliseconds": 1,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.4000000059604645,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 1.5999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.5,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.5,
+          "validationMilliseconds": 1,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 1216,
+        "updateBytes": 64,
+        "outputBytes": 2560,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "sibson-32-128",
+      "shape": {
+        "samples": 32,
+        "queries": 128,
+        "maximumVertexCount": 64
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Affine precision, nonnegative weights, partition of unity, all statuses successful, +3 input update.",
+      "phases": {
+        "setupMilliseconds": 0.20000000298023224,
+        "uploadMilliseconds": 0.5,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 96.09999999403954,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 4.4000000059604645,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.399999991059303,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.100000008940697,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.199999988079071,
+            "cpuEncodeMilliseconds": 0.19999998807907104,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 4.100000008940697,
+          "median": 4.399999991059303,
+          "maximum": 4.5
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 2.1000000089406967,
+          "validationMilliseconds": 1.2999999970197678,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 1.2000000029802322,
+          "validationMilliseconds": 1.1000000089406967,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 4.5,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.700000002980232,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 1.0999999940395355,
+          "validationMilliseconds": 1.2000000029802322,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 1408,
+        "updateBytes": 128,
+        "outputBytes": 18944,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "conditional-simulation-16-16-128",
+      "shape": {
+        "observations": 16,
+        "queries": 16,
+        "replicates": 128,
+        "seed": 1229870149
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Independent f64 conditional moments; finite joint draws; unchanged-input stream replay; observation update shifts each draw by the independently computed mean shift.",
+      "phases": {
+        "setupMilliseconds": 0.20000000298023224,
+        "uploadMilliseconds": 0.20000000298023224,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 77.8999999910593,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 2.3999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 2.2999999970197678,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 2.1000000089406967,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 2.7000000029802322,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 2.3999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 2.1000000089406967,
+          "median": 2.3999999910593033,
+          "maximum": 2.7000000029802322
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.7999999970197678,
+          "validationMilliseconds": 0.10000000894069672,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.6000000089406967,
+          "validationMilliseconds": 7.5999999940395355,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.4000000059604645,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 2.7999999970197678,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 1.2000000029802322,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.699999988079071,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.6000000089406967,
+          "validationMilliseconds": 7.399999991059303,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 512,
+        "updateBytes": 256,
+        "outputBytes": 8832,
+        "graphPhysicalTransientBytes": 4744,
+        "graphLogicalTransientBytes": 4744,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 2,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "variogram-fit-256",
+      "shape": {
+        "bins": 256,
+        "modelCandidates": 3,
+        "rangeSteps": 200,
+        "refinementIterations": 32,
+        "weighting": "pairs"
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Admissible candidate fits and explicit convergence/boundary status; generating exponential parameters recovered before and after x2 semivariance update.",
+      "phases": {
+        "setupMilliseconds": 0.20000000298023224,
+        "uploadMilliseconds": 0.8999999910593033,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 165,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 50.5,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 50.5,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 50.6000000089407,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 50.29999999701977,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 50.70000000298023,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 50.29999999701977,
+          "median": 50.5,
+          "maximum": 50.70000000298023
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.0999999940395355,
+          "validationMilliseconds": 0,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 1,
+          "validationMilliseconds": 0.09999999403953552,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.30000001192092896,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 50.599999994039536,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 50.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 50.400000005960464,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 1,
+          "validationMilliseconds": 0.09999999403953552,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 3072,
+        "updateBytes": 1024,
+        "outputBytes": 108,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "sibson-indexed-1024-sites",
+      "shape": {
+        "sampleCount": 1024,
+        "queryCount": 128,
+        "maximumNeighborCount": 64,
+        "maximumVertexCount": 64,
+        "triangleCount": 1922
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "GPU cavity result and changed values reproduce affine field; supplied indexed topology outside timings",
+      "phases": {
+        "setupMilliseconds": 0.29999999701976776,
+        "uploadMilliseconds": 0.30000001192092896,
+        "compileHostMilliseconds": 0.29999999701976776,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 108.5,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 0.29999999701976776,
+          "median": 0.29999999701976776,
+          "maximum": 0.5
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.8999999910593033,
+          "validationMilliseconds": 0.4000000059604645,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.7000000029802322,
+          "validationMilliseconds": 0.4000000059604645,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.3999999910593033,
+          "validationMilliseconds": 0.10000000894069672,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 59952,
+        "updateBytes": 4096,
+        "outputBytes": 2560,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "sibson-indexed-16384-sites",
+      "shape": {
+        "sampleCount": 16384,
+        "queryCount": 128,
+        "maximumNeighborCount": 64,
+        "maximumVertexCount": 64,
+        "triangleCount": 32258
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "GPU cavity result and changed values reproduce affine field; supplied indexed topology outside timings",
+      "phases": {
+        "setupMilliseconds": 0.8999999910593033,
+        "uploadMilliseconds": 0.30000001192092896,
+        "compileHostMilliseconds": 0.19999998807907104,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 105.1000000089407,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 0.20000000298023224,
+          "median": 0.29999999701976776,
+          "maximum": 0.4000000059604645
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.7999999970197678,
+          "validationMilliseconds": 0.20000000298023224,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.30000001192092896,
+          "validationMilliseconds": 0.19999998807907104,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.20000000298023224,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.20000000298023224,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.3999999910593033,
+          "validationMilliseconds": 0.20000000298023224,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 972336,
+        "updateBytes": 65536,
+        "outputBytes": 2560,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "sibson-indexed-65536-sites",
+      "shape": {
+        "sampleCount": 65536,
+        "queryCount": 128,
+        "maximumNeighborCount": 64,
+        "maximumVertexCount": 64,
+        "triangleCount": 130050
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "GPU cavity result and changed values reproduce affine field; supplied indexed topology outside timings",
+      "phases": {
+        "setupMilliseconds": 2.5999999940395355,
+        "uploadMilliseconds": 1.5,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 104.6000000089407,
+          "cpuEncodeMilliseconds": 0.10000000894069672,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.29999999701976776,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 0.29999999701976776,
+          "median": 0.4000000059604645,
+          "maximum": 0.4000000059604645
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1,
+          "validationMilliseconds": 0.29999999701976776,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 0.5,
+          "validationMilliseconds": 0.29999999701976776,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.10000000894069672,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 0.3999999910593033,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 0.4000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.29999999701976776,
+          "validationMilliseconds": 0.20000000298023224,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 3909168,
+        "updateBytes": 262144,
+        "outputBytes": 2560,
+        "graphPhysicalTransientBytes": 0,
+        "graphLogicalTransientBytes": 0,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 1,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "rbf-resident-grid-1024-sites",
+      "shape": {
+        "sampleCount": 1024,
+        "queryCount": 128,
+        "neighborCount": 32,
+        "degree": 2,
+        "gridSide": 32
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Includes GPU grid construction/CSR neighbor search plus degree2 smoothed solve; affine reproduction and updates",
+      "phases": {
+        "setupMilliseconds": 3.2999999970197678,
+        "uploadMilliseconds": 0.7000000029802322,
+        "compileHostMilliseconds": 1.2000000029802322,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 445.59999999403954,
+          "cpuEncodeMilliseconds": 0.5,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 7.799999997019768,
+            "cpuEncodeMilliseconds": 0.5,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 5.5999999940395355,
+            "cpuEncodeMilliseconds": 0.3999999910593033,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 5.200000002980232,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6,
+            "cpuEncodeMilliseconds": 0.30000001192092896,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 5.5,
+            "cpuEncodeMilliseconds": 0.30000001192092896,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 5.200000002980232,
+          "median": 5.5999999940395355,
+          "maximum": 7.799999997019768
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 3.1000000089406967,
+          "validationMilliseconds": 0.5999999940395355,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 1.6000000089406967,
+          "validationMilliseconds": 0.3999999910593033,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.10000000894069672,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 5.5,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6.200000002980232,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6.199999988079071,
+            "cpuEncodeMilliseconds": 0.19999998807907104,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 1.9000000059604645,
+          "validationMilliseconds": 0.29999999701976776,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 13360,
+        "updateBytes": 4096,
+        "outputBytes": 35848,
+        "graphPhysicalTransientBytes": 76356,
+        "graphLogicalTransientBytes": 111720,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 32,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "rbf-resident-grid-16384-sites",
+      "shape": {
+        "sampleCount": 16384,
+        "queryCount": 128,
+        "neighborCount": 32,
+        "degree": 2,
+        "gridSide": 32
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Includes GPU grid construction/CSR neighbor search plus degree2 smoothed solve; affine reproduction and updates",
+      "phases": {
+        "setupMilliseconds": 1.5,
+        "uploadMilliseconds": 0.5999999940395355,
+        "compileHostMilliseconds": 0.5999999940395355,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 217.40000000596046,
+          "cpuEncodeMilliseconds": 0.30000001192092896,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 7.600000008940697,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6.899999991059303,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 7.600000008940697,
+            "cpuEncodeMilliseconds": 0.4000000059604645,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6.899999991059303,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6.299999997019768,
+            "cpuEncodeMilliseconds": 0.29999999701976776,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 6.299999997019768,
+          "median": 6.899999991059303,
+          "maximum": 7.600000008940697
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.7000000029802322,
+          "validationMilliseconds": 0.3999999910593033,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 1.9000000059604645,
+          "validationMilliseconds": 0.29999999701976776,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 5.5,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6.299999997019768,
+            "cpuEncodeMilliseconds": 0.20000000298023224,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 6.300000011920929,
+            "cpuEncodeMilliseconds": 0.30000001192092896,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 1.5999999940395355,
+          "validationMilliseconds": 0.29999999701976776,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 197680,
+        "updateBytes": 65536,
+        "outputBytes": 35848,
+        "graphPhysicalTransientBytes": 420424,
+        "graphLogicalTransientBytes": 603240,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 32,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "simulation-shared-factor-32-plus-32",
+      "shape": {
+        "sampleCount": 32,
+        "queryCount": 32,
+        "replicateCount": 128,
+        "jointMatrixCount": 64
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Shared GPU storage factor once per encode; independently solved f64 conditional means and changed observation replay",
+      "phases": {
+        "setupMilliseconds": 0.20000000298023224,
+        "uploadMilliseconds": 0.29999999701976776,
+        "compileHostMilliseconds": 0.20000000298023224,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 78.3999999910593,
+          "cpuEncodeMilliseconds": 0,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 5.399999991059303,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 5.4000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 5.0999999940395355,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.9000000059604645,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 4.9000000059604645,
+          "median": 5.0999999940395355,
+          "maximum": 5.4000000059604645
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 2,
+          "validationMilliseconds": 0.20000000298023224,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 1.0999999940395355,
+          "validationMilliseconds": 0.10000000894069672,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 4.5,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.5,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 4.899999991059303,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 0.9000000059604645,
+          "validationMilliseconds": 0.20000000298023224,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 1024,
+        "updateBytes": 512,
+        "outputBytes": 17152,
+        "graphPhysicalTransientBytes": 17672,
+        "graphLogicalTransientBytes": 17672,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 2,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    },
+    {
+      "workload": "simulation-shared-factor-128-plus-128",
+      "shape": {
+        "sampleCount": 128,
+        "queryCount": 128,
+        "replicateCount": 128,
+        "jointMatrixCount": 256
+      },
+      "updateKind": "changed values uploaded into the same compiled graph",
+      "correctness": "Shared GPU storage factor once per encode; independently solved f64 conditional means and changed observation replay",
+      "phases": {
+        "setupMilliseconds": 0.20000000298023224,
+        "uploadMilliseconds": 0.19999998807907104,
+        "compileHostMilliseconds": 0.10000000894069672,
+        "firstExecution": {
+          "encodeSubmitCompletionMilliseconds": 234.79999999701977,
+          "cpuEncodeMilliseconds": 0.09999999403953552,
+          "gpuTimestampMilliseconds": null
+        },
+        "repeatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 146.20000000298023,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 146.29999999701977,
+            "cpuEncodeMilliseconds": 0.19999998807907104,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 146.20000000298023,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 146.19999998807907,
+            "cpuEncodeMilliseconds": 0.09999999403953552,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 145.90000000596046,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "repeatedWallClockMilliseconds": {
+          "minimum": 145.90000000596046,
+          "median": 146.20000000298023,
+          "maximum": 146.29999999701977
+        },
+        "initialValidation": {
+          "readbackMilliseconds": 1.2999999970197678,
+          "validationMilliseconds": 0.6000000089406967,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "repeatedValidation": {
+          "readbackMilliseconds": 2.1000000089406967,
+          "validationMilliseconds": 0.5,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        },
+        "updateUploadMilliseconds": 0.09999999403953552,
+        "updatedExecution": [
+          {
+            "encodeSubmitCompletionMilliseconds": 145.90000000596046,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 146.09999999403954,
+            "cpuEncodeMilliseconds": 0.10000000894069672,
+            "gpuTimestampMilliseconds": null
+          },
+          {
+            "encodeSubmitCompletionMilliseconds": 146,
+            "cpuEncodeMilliseconds": 0,
+            "gpuTimestampMilliseconds": null
+          }
+        ],
+        "updatedValidation": {
+          "readbackMilliseconds": 1.3999999910593033,
+          "validationMilliseconds": 0.5,
+          "correctnessStatus": "passed",
+          "statusCodes": [
+            0
+          ]
+        }
+      },
+      "memory": {
+        "inputBytes": 4096,
+        "updateBytes": 2048,
+        "outputBytes": 67072,
+        "graphPhysicalTransientBytes": 267272,
+        "graphLogicalTransientBytes": 267272,
+        "driverPeakBytes": null
+      },
+      "graphNodes": 2,
+      "capabilities": {
+        "timestampQueries": true,
+        "subgroups": true,
+        "subgroupId": true,
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "softwareAdapter": false,
+        "maxBufferByteLength": 4294967292,
+        "maxStorageBufferBindingByteLength": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupsPerDimension": 65535
+      }
+    }
+  ],
+  "fitComparisons": [
+    {
+      "workload": "variogram-repeated-fit-comparison-20",
+      "binCount": 20,
+      "models": 3,
+      "rangeSteps": 200,
+      "maximumIterations": 60,
+      "weights": "pairs",
+      "samples": [
+        {
+          "residentMilliseconds": 4.700000002980232,
+          "readbackMilliseconds": 0.29999999701976776,
+          "cpuFitMilliseconds": 0.800000011920929,
+          "uploadMilliseconds": 0.3999999910593033,
+          "cpuRoundTripMilliseconds": 1.5
+        },
+        {
+          "residentMilliseconds": 4.299999997019768,
+          "readbackMilliseconds": 0.29999999701976776,
+          "cpuFitMilliseconds": 0.5,
+          "uploadMilliseconds": 0,
+          "cpuRoundTripMilliseconds": 0.7999999970197678
+        },
+        {
+          "residentMilliseconds": 4.300000011920929,
+          "readbackMilliseconds": 1.2999999970197678,
+          "cpuFitMilliseconds": 0.5,
+          "uploadMilliseconds": 0.09999999403953552,
+          "cpuRoundTripMilliseconds": 1.8999999910593033
+        },
+        {
+          "residentMilliseconds": 4.200000002980232,
+          "readbackMilliseconds": 0.7999999970197678,
+          "cpuFitMilliseconds": 0.4000000059604645,
+          "uploadMilliseconds": 0.09999999403953552,
+          "cpuRoundTripMilliseconds": 1.2999999970197678
+        },
+        {
+          "residentMilliseconds": 4.300000011920929,
+          "readbackMilliseconds": 0.3999999910593033,
+          "cpuFitMilliseconds": 0.29999999701976776,
+          "uploadMilliseconds": 0.6000000089406967,
+          "cpuRoundTripMilliseconds": 1.2999999970197678
+        }
+      ],
+      "correctnessStatus": "passed",
+      "method": "Updated resident empirical bins; GPU encode/submit/completion versus actual concurrent three-buffer readback + CPU three-model fit + fitted parameters upload/completion. CPU fixed60 refinements; GPU convergence may stop earlier. Validation output readback excluded from both. Both use same device and warmed caches.",
+      "medians": {
+        "residentMilliseconds": 4.300000011920929,
+        "readbackMilliseconds": 0.3999999910593033,
+        "cpuFitMilliseconds": 0.5,
+        "uploadMilliseconds": 0.09999999403953552,
+        "cpuRoundTripMilliseconds": 1.2999999970197678
+      }
+    },
+    {
+      "workload": "variogram-repeated-fit-comparison-256",
+      "binCount": 256,
+      "models": 3,
+      "rangeSteps": 200,
+      "maximumIterations": 60,
+      "weights": "pairs",
+      "samples": [
+        {
+          "residentMilliseconds": 52.30000001192093,
+          "readbackMilliseconds": 1.199999988079071,
+          "cpuFitMilliseconds": 2,
+          "uploadMilliseconds": 0.10000000894069672,
+          "cpuRoundTripMilliseconds": 3.2999999970197678
+        },
+        {
+          "residentMilliseconds": 51.29999999701977,
+          "readbackMilliseconds": 0.7999999970197678,
+          "cpuFitMilliseconds": 2,
+          "uploadMilliseconds": 0.4000000059604645,
+          "cpuRoundTripMilliseconds": 3.2000000029802322
+        },
+        {
+          "residentMilliseconds": 51.30000001192093,
+          "readbackMilliseconds": 0.699999988079071,
+          "cpuFitMilliseconds": 2,
+          "uploadMilliseconds": 0,
+          "cpuRoundTripMilliseconds": 2.699999988079071
+        },
+        {
+          "residentMilliseconds": 51.70000000298023,
+          "readbackMilliseconds": 0.9000000059604645,
+          "cpuFitMilliseconds": 1.8999999910593033,
+          "uploadMilliseconds": 0.10000000894069672,
+          "cpuRoundTripMilliseconds": 2.9000000059604645
+        },
+        {
+          "residentMilliseconds": 51.29999999701977,
+          "readbackMilliseconds": 0.800000011920929,
+          "cpuFitMilliseconds": 1.8999999910593033,
+          "uploadMilliseconds": 0.5,
+          "cpuRoundTripMilliseconds": 3.2000000029802322
+        }
+      ],
+      "correctnessStatus": "passed",
+      "method": "Updated resident empirical bins; GPU encode/submit/completion versus actual concurrent three-buffer readback + CPU three-model fit + fitted parameters upload/completion. CPU fixed60 refinements; GPU convergence may stop earlier. Validation output readback excluded from both. Both use same device and warmed caches.",
+      "medians": {
+        "residentMilliseconds": 51.30000001192093,
+        "readbackMilliseconds": 0.800000011920929,
+        "cpuFitMilliseconds": 2,
+        "uploadMilliseconds": 0.10000000894069672,
+        "cpuRoundTripMilliseconds": 3.2000000029802322
+      }
+    }
+  ],
+  "interpretation": {
+    "fitReadbackAvoidance": "No benefit observed: the complete CPU readback/fit/reupload round trip is faster at both measured sizes.",
+    "simulationScaling": "One shared factor removes replicate-duplicated conditioning, but sequential storage Cholesky remains cubic and costs146.2ms at128+128 on this device.",
+    "indexedNaturalNeighbor": "Cavity timings exclude caller-provided index construction and containing-triangle location; upload measured separately.",
+    "timestamps": "CPU encode/submit/completion; GPU timestamps remain null."
+  }
+}

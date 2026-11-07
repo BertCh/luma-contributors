@@ -3,11 +3,9 @@ title: "GPU Terrain concepts"
 description: "Conventions and execution model of GPU Terrain contributors."
 ---
 
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # GPU Terrain concepts
 
-<ExperimentalDocsTabs active="gpu-terrain-concepts" />
 
 ## Conventions
 
@@ -60,7 +58,7 @@ import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-
 
 Declare height datums when combining DEM elevations with absolute observer or catalogue heights.
 
-Absolute heights and DEM heights must share one vertical datum, and observer positions must share the DEM grid's horizontal datum. Declare both (`verticalDatum` on the band, `observerVerticalDatum` on the operator, `datum` on contexts). The library checks the declarations and never converts. Heights above the ground (`heightReference: 'ground'`) need no conversion. For a few observers, convert them on the CPU in binary64: h_orthometric = h_ellipsoidal − N(lat, lon), with N taken from the DEM's own geoid model (PROJ, pyproj or GeographicLib). For many observers or targets, convert the DEM on the GPU: resample N onto the DEM grid, add it with `GPURasterBandMath('add')`, and declare `'ellipsoidal'`. Convert horizontal datums (NAD27, GCJ-02) on the CPU before upload.
+Absolute heights and DEM heights must share one vertical datum, and observer positions must share the DEM grid's horizontal datum. Declare both (`verticalDatum` on the band or `elevationVerticalDatum` on the operator, the operator prop taking precedence; `observerVerticalDatum` on the operator, `datum` on contexts). The library checks the declarations and never converts. Heights above the ground (`heightReference: 'ground'`) need no conversion. For a few observers, convert them on the CPU in binary64: h_orthometric = h_ellipsoidal − N(lat, lon), with N taken from the DEM's own geoid model (PROJ, pyproj or GeographicLib). For many observers or targets, convert the DEM on the GPU: resample N onto the DEM grid, add it with `GPURasterBandMath('add')`, and declare `'ellipsoidal'`. Convert horizontal datums (NAD27, GCJ-02) on the CPU before upload.
 
 | Source | Vertical datum to declare |
 | --- | --- |

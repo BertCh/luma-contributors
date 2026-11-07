@@ -1,7 +1,7 @@
 # Quarantined luma.gl extensions: replacements
 
-Result of resolving `modules/analysis/src/_pending/` (non-recording, non-foundation files).
-Consumers are not yet edited; area agents apply this table.
+Record of every luma.gl extension that was quarantined in the former `modules/analysis/src/_pending/`
+(now deleted) and what replaced it or was dropped. Consumers have been updated.
 
 | Quarantined symbol(s) | Replacement |
 | --- | --- |
@@ -28,5 +28,40 @@ Consumers are not yet edited; area agents apply this table.
 
 ## Entry point note
 
-`graph-support` has no package export yet. kepler and examples need one (for example
-`@luma-contributors/analysis/analysis-core/graph-support`) added to `modules/analysis/package.json`, or relative imports.
+`graph-support` has no package export. Consumers outside `modules/analysis` import it through the package
+entry points that re-export it, or by relative path inside the package.
+
+## Chunked standardization
+
+`GPUVariableStandardization` (and kepler `addKeplerStandardization` default outputs) require single-chunk
+`values`, `mask` and `output` columns; the fork's `alignGraphVectorViews` multi-span path is dropped because
+published `GraphVectorView` chunks are not realigned. Callers with streamed multi-batch tables must pack to one chunk first.
+
+## Sparse resistance connectivity (accepted drop, EC03)
+
+`addSparseResistanceConnectivityRecipe`, `addRasterResistanceConnectivityRecipe`, `addSparseResistanceComponents`
+and `addSerialSparseResistanceComponents` are dropped, with their Circuitscape golden spec. They depended on
+`GPUJacobiPCG`, which published luma.gl does not export. Only the bounded `addResistanceConnectivityRecipe`
+(at most 256 vertices and 65,536 edges) remains. Restore on `createGPUConjugateGradientGraph` and `GPUSort` (no Jacobi
+preconditioner, so re-derive tolerances) if the feature is needed. The docs (`landscape-ecology.md`,
+`urban-ecology-lenses.md`) describe it as dropped; tracked as EC03 in `roadmap.md`.
+
+## Other dropped capabilities
+
+- Computation-record intent/lowered graph descriptions, `captureGPUCommandGraph` stepping, `graph.recording`
+  (see `upstream-first-recording.md`).
+- Onesweep sort, look-back scan, double-single arithmetic, `GPUSegmentedReduction` fast path (see
+  `upstream-first-foundation.md`).
+- Strongly connected components `'iterative'` method; only the 1024-vertex `'reachability'` kernel remains.
+- Residency arena, tile LOD selection, histogram cube, kernel dispatch, rigid-body dispatch, local clustering
+  and graph-algorithms topology views.
+- Multi-chunk `GPUVariableStandardization` inputs (pack to one chunk first).
+
+## Accepted published-luma limits
+
+- `GPURasterCrossTileComponents` cancellation sums are not fixed-point exact in published alpha.10, so
+  `gpu-raster-cross-tile-components.spec.ts` was deleted.
+- `GPUHistogram` parity tests (`parity-wp6-histogram.parity.spec.ts`) were dropped: the class is luma-owned.
+- `GPUPairwisePointInPolygon` exactness probes were dropped from `gpu-point-in-polygon-uncertainty.spec.ts` and
+  `gpu-point-in-polygon-exact-probe.spec.ts`: the class is luma-owned. `GPUPointInPolygonJoin` cases remain.
+- `parity-wp3-graph-showcase.parity.spec.ts` was deleted with the dropped PageRank/analytics metrics.

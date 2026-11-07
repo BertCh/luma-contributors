@@ -612,8 +612,11 @@ export class GPUKeplerSelectionScopes {
       graph.importGPUVector(`mask-${sequence++}`, mask);
     const display = importMask(this.displayMask);
     const nativeTopology = importMask(this.nativeTopologyMask);
-    const transient = (template: GraphVectorView<'uint32'> = display) =>
-      createTransientVectorView(graph, `scope-${sequence++}`, template);
+    let plannedTransientByteLength = 0;
+    const transient = (template: GraphVectorView<'uint32'> = display) => {
+      plannedTransientByteLength += template.length * Uint32Array.BYTES_PER_ELEMENT;
+      return createTransientVectorView(graph, `scope-${sequence++}`, template);
+    };
     const compose = (
       inputs: readonly GraphVectorView<'uint32'>[],
       output: GraphVectorView<'uint32'>,
@@ -770,6 +773,8 @@ output[outputOffset + index] = accepted;`
     }
     let compiled: CompiledGPUCommandGraph;
     try {
+      // Conservative pre-compile bound (compile may alias transients): admit before allocating.
+      this.checkAdditionalMemory(plannedTransientByteLength);
       compiled = graph.compile();
     } catch (error) {
       this.settleReservation();

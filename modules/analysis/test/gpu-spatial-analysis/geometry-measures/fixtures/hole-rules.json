@@ -315,7 +315,7 @@
   }
  ],
  "provenance": {
-  "generator": "modules/analysis/test/oracles/geometry-hole-rules.py",
+  "generator": "modules/graph/test/oracles/geometry-hole-rules.py",
   "shapely": "2.2.0",
   "numpy": "2.5.4",
   "tolerance": {

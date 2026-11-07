@@ -5,7 +5,7 @@
 """Independent bounded optimization and Gaussian fixtures; never imports production kernels.
 
 Reproduce: python -m pip install networkx==3.5 numpy==2.2.6
-          python modules/analysis/test/oracles/network-movement-coverage.py
+          python modules/graph/test/oracles/network-movement-coverage.py
 """
 import json
 from pathlib import Path

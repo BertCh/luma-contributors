@@ -14,7 +14,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {zipKeplerVectorChunks, getKeplerVectorChunks} from './kepler-vector-chunks';
+import {getGraphViewChunks} from '@luma-contributors/analysis/analysis-core';
+import {zipKeplerVectorChunks} from './kepler-vector-chunks';
 import type {KeplerDatasetReference} from '../recipes/analysis-recipe';
 
 /** Per-graph limits. Larger group-bys run as several passes (see kepler-group-by-passes.ts). */
@@ -205,7 +206,7 @@ export function addKeplerGroupBy<Parameters>(
   ) => {
     if (input.length !== rowCount || input.format !== format)
       throw new Error('Group By source columns must align');
-    for (const view of getKeplerVectorChunks(input)) {
+    for (const view of getGraphViewChunks(input)) {
       validatePackedView(view, [format], id);
       if (view.buffer.graph !== graph)
         throw new Error('Group By views must belong to the current graph');
@@ -473,7 +474,7 @@ function createUint32Scratch<Parameters>(
   id: string,
   template: ScalarColumn<'uint32'> | ScalarColumn<'float32'>
 ): GraphVectorView<'uint32'> {
-  const data = getKeplerVectorChunks(template).map((chunk, index) =>
+  const data = getGraphViewChunks(template).map((chunk, index) =>
     createTransientView(graph, `${id}-${index}`, 'uint32', chunk.length)
   );
   return new GraphVectorView({

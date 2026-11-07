@@ -94,6 +94,45 @@ it('GPUVariableStandardization validates topology, format and ownership', () => 
   device.destroy();
 });
 
+it('GPUVariableStandardization rejects multi-chunk values and mask vectors', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const output = createTransientView(graph, 'output', 'float32', 3);
+  const makeTwoChunkVector = <Format extends 'float32' | 'uint32'>(format: Format, name: string) =>
+    new GraphVectorView<Format>({
+      id: name,
+      name,
+      format,
+      length: 3,
+      valueLength: 3,
+      stride: 1,
+      byteStride: 4,
+      rowByteLength: 4,
+      data: [
+        createTransientView(graph, `${name}-a`, format, 2),
+        createTransientView(graph, `${name}-b`, format, 1)
+      ]
+    });
+  expect(
+    () =>
+      new GPUVariableStandardization({
+        values: makeTwoChunkVector('float32', 'chunked-values'),
+        output,
+        method: 'mad'
+      })
+  ).toThrow('variable-standardization values single chunk');
+  expect(
+    () =>
+      new GPUVariableStandardization({
+        values: createTransientView(graph, 'values', 'float32', 3),
+        mask: makeTwoChunkVector('uint32', 'chunked-mask'),
+        output,
+        method: 'mad'
+      })
+  ).toThrow('variable-standardization mask single chunk');
+  device.destroy();
+});
+
 it('GPUVariableStandardization accepts an empty logical column', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);

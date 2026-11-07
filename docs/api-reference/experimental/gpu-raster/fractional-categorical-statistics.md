@@ -6,7 +6,7 @@ and returns class coverage, planar class area, composition and majority/minority
 It does not count intersected cells or apply observation weights.
 
 ```typescript
-import {GPURasterFractionalCategoricalStatistics} from '@luma-contributors/graph/gpu-raster';
+import {GPURasterFractionalCategoricalStatistics} from '@luma-contributors/analysis/raster-analysis';
 
 graph.add(new GPURasterFractionalCategoricalStatistics({
   grid,
@@ -100,7 +100,7 @@ weights, spherical areas, category dictionary discovery, or implicit tile stitch
 
 ## Reference evidence
 
-The checked-in generator `modules/graph/test/oracles/rs02-fractional-categories.py` pins
+The checked-in generator `modules/analysis/test/oracles/rs02-fractional-categories.py` pins
 exactextract 0.3.0, NumPy 2.2.6 and Shapely 2.1.2. It calls exactextract `frac`, `majority`,
 `minority`, `count`, and Cartesian area-weighted count directly. A separate all-valid raster
 retains missing-cell coverage. Shapely constructs partial-cell multipart and hole geometries;

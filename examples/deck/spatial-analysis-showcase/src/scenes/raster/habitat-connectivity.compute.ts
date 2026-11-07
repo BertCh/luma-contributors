@@ -19,31 +19,24 @@ import {
   GPURasterWalkingCost,
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
-import {addRasterResistanceConnectivityRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   addLandscapeMetricsRecipe,
   addPatchProximityRecipe
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {makeCircuitEdgeInputs, addCircuitOracleRecipes} from './habitat-connectivity-circuit';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {GraphSwap} from '../../engine/graph-swap';
-import {importGraphBuffer} from '../../engine/graph-buffers';
+import {addGraphCopy} from '../../engine/graph-buffers';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {createGraphViewer, createUtmFrame, loadClassRaster, UtmRasterLayer} from './b16-common';
 import {HABITAT_PATCH_COLORS, WORLD_COVER_CLASSES} from './habitat-connectivity-style';
 
 export type HabitatConnectivityOptions = {
-  layer: 'cover' | 'mask' | 'core' | 'patches' | 'cost' | 'circuit';
-  circuitLayer: 'potential' | 'current';
+  layer: 'cover' | 'mask' | 'core' | 'patches' | 'cost';
   habitat: 'tree' | 'woody' | 'broad';
   countRasterBorder: boolean;
   coreCells: number;
   resistance: 'mild' | 'strong';
-  circuitConnectivity: '4' | '8';
-  circuitBudget: '128' | '512' | '1024';
-  circuitTolerance: '0.001' | '0.0001';
-  waterBarrier: boolean;
   opacity: number;
 };
 
@@ -104,20 +97,6 @@ type HabitatGraphBuffers = {
   coreValidities: Buffer[];
   friction: Buffer;
   elevation: Buffer;
-  circuitResistance: Buffer;
-  circuitPotential: Buffer;
-  circuitCurrentDensity: Buffer;
-  circuitStatus: Buffer;
-  circuitDiagnostics: Buffer;
-  circuitTerminals: Buffer;
-  oracleDensePotential: Buffer;
-  oracleSparsePotential: Buffer;
-  oracleDenseCurrents: Buffer;
-  oracleSparseCurrents: Buffer;
-  oracleDenseStatus: Buffer;
-  oracleSparseStatus: Buffer;
-  oracleDenseDiagnostics: Buffer;
-  oracleSparseDiagnostics: Buffer;
 };
 
 /**
@@ -207,14 +186,7 @@ async function createHabitatConnectivityInstance(
     cellSize,
     origin: [-frame.halfWidth, frame.halfHeight]
   });
-  const oracleStart = 24;
-  const oracleSize = 16;
-  const oracleCellCount = oracleSize * oracleSize;
   const resources = new SpatialAnalysisResources(ctx.device, 'habitat');
-  const circuitConnectivity = ctx.options.circuitConnectivity === '4' ? 4 : 8;
-  const oracleEdgeCount = oracleCellCount * (circuitConnectivity === 8 ? 4 : 2);
-  const configuredCircuitBudget = Number(ctx.options.circuitBudget ?? '512');
-  const configuredCircuitTolerance = Number(ctx.options.circuitTolerance ?? '0.0001');
   const buffers: HabitatGraphBuffers = {
     mask: resources.createBuffer('mask', new Uint32Array(cellCount)),
     cover: resources.createBuffer('cover-classes', new Uint32Array(cellCount)),
@@ -243,27 +215,7 @@ async function createHabitatConnectivityInstance(
       resources.createBuffer(`core-${radius}-validity`, cellCount * 4)
     ),
     friction: resources.createBuffer('friction', new Float32Array(cellCount)),
-    elevation: resources.createBuffer('elevation', elevation),
-    circuitResistance: resources.createBuffer('circuit-resistance', new Float32Array(cellCount)),
-    circuitPotential: resources.createBuffer(
-      'circuit-potential',
-      new Float32Array(cellCount).fill(Number.NaN)
-    ),
-    circuitCurrentDensity: resources.createBuffer(
-      'circuit-current-density',
-      new Float32Array(cellCount).fill(Number.NaN)
-    ),
-    circuitStatus: resources.createBuffer('circuit-status', 16),
-    circuitDiagnostics: resources.createBuffer('circuit-diagnostics', 16),
-    circuitTerminals: resources.createBuffer('circuit-terminals', new Uint32Array(cellCount)),
-    oracleDensePotential: resources.createBuffer('circuit-oracle-dense-potential', 256 * 4),
-    oracleSparsePotential: resources.createBuffer('circuit-oracle-sparse-potential', 256 * 4),
-    oracleDenseCurrents: resources.createBuffer('circuit-oracle-dense-currents', 1024 * 4),
-    oracleSparseCurrents: resources.createBuffer('circuit-oracle-sparse-currents', 1024 * 4),
-    oracleDenseStatus: resources.createBuffer('circuit-oracle-dense-status', 16),
-    oracleSparseStatus: resources.createBuffer('circuit-oracle-sparse-status', 16),
-    oracleDenseDiagnostics: resources.createBuffer('circuit-oracle-dense-diagnostics', 16),
-    oracleSparseDiagnostics: resources.createBuffer('circuit-oracle-sparse-diagnostics', 16)
+    elevation: resources.createBuffer('elevation', elevation)
   };
   buffers.cover.write(coverValues);
   buffers.patchClasses.write(new Uint32Array(PATCH_CAPACITY));
@@ -274,39 +226,6 @@ async function createHabitatConnectivityInstance(
     view(name, buffer, 'uint32', length);
   const float = (name: string, buffer: Buffer, length = cellCount) =>
     view(name, buffer, 'float32', length);
-  const validResistanceClass = (code: number): boolean =>
-    WORLD_COVER_CLASSES.some(({code: validCode}) => validCode === code);
-  const nearestValidOracleCell = (targetColumn: number, targetRow: number): number => {
-    let bestIndex = -1;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    for (let row = 0; row < oracleSize; row++) {
-      for (let column = 0; column < oracleSize; column++) {
-        const index = (oracleStart + row) * GRID_SIZE + oracleStart + column;
-        if (!validResistanceClass(classes[index])) continue;
-        const distance = (column - targetColumn) ** 2 + (row - targetRow) ** 2;
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestIndex = row * oracleSize + column;
-        }
-      }
-    }
-    return bestIndex;
-  };
-  const circuitSource = nearestValidOracleCell(3, 8);
-  const circuitSink = nearestValidOracleCell(12, 8);
-  if (circuitSource < 0 || circuitSink < 0 || circuitSource === circuitSink) {
-    throw new Error('WorldCover crop has no distinct valid circuit terminals');
-  }
-  const sourceCropRow = oracleStart + Math.floor(circuitSource / oracleSize);
-  const sourceCropColumn = oracleStart + (circuitSource % oracleSize);
-  const sinkCropRow = oracleStart + Math.floor(circuitSink / oracleSize);
-  const sinkCropColumn = oracleStart + (circuitSink % oracleSize);
-  const sourceCoordinate = frame.cellToLngLat(sourceCropColumn, sourceCropRow);
-  const sinkCoordinate = frame.cellToLngLat(sinkCropColumn, sinkCropRow);
-  const terminalValues = new Uint32Array(cellCount);
-  terminalValues[sourceCropRow * GRID_SIZE + sourceCropColumn] = 1;
-  terminalValues[sinkCropRow * GRID_SIZE + sinkCropColumn] = 2;
-  buffers.circuitTerminals.write(terminalValues);
   const maskView = word('habitat-mask', buffers.mask);
   const maskBand = {
     id: 'habitat-mask',
@@ -418,26 +337,33 @@ async function createHabitatConnectivityInstance(
     coreModel: 'raster-erosion',
     coreBoundary: 'edge'
   });
-  graph.addObservationTap(proximity.outputs.core, {
-    afterNode: 'patch-proximity-core-distance',
-    sink: word('proximity-core-output', buffers.proximityCore),
-    id: 'publish-proximity-core'
-  });
-  graph.addObservationTap(landscape.outputs.landscape, {
-    afterNode: 'landscape-metrics-landscape-summary',
-    sink: float('landscape-summary-output', buffers.landscape, 4),
-    id: 'publish-landscape-summary'
-  });
-  graph.addObservationTap(landscape.outputs.landscapeCohesion, {
-    afterNode: 'landscape-metrics-landscape-aggregation-cohesion',
-    sink: float('landscape-cohesion-output', buffers.landscapeCohesion, 1),
-    id: 'publish-landscape-cohesion'
-  });
-  graph.addObservationTap(proximity.outputs.metrics, {
-    afterNode: 'patch-proximity-patch-summary',
-    sink: float('proximity-metrics-output', buffers.proximityMetrics, PATCH_CAPACITY * 4),
-    id: 'publish-proximity-metrics'
-  });
+  addGraphCopy(
+    graph,
+    proximity.outputs.core,
+    word('proximity-core-output', buffers.proximityCore),
+    {id: 'publish-proximity-core', afterNode: 'patch-proximity-core-distance'}
+  );
+  addGraphCopy(
+    graph,
+    landscape.outputs.landscape,
+    float('landscape-summary-output', buffers.landscape, 4),
+    {id: 'publish-landscape-summary', afterNode: 'landscape-metrics-landscape-summary'}
+  );
+  addGraphCopy(
+    graph,
+    landscape.outputs.landscapeCohesion,
+    float('landscape-cohesion-output', buffers.landscapeCohesion, 1),
+    {
+      id: 'publish-landscape-cohesion',
+      afterNode: 'landscape-metrics-landscape-aggregation-cohesion'
+    }
+  );
+  addGraphCopy(
+    graph,
+    proximity.outputs.metrics,
+    float('proximity-metrics-output', buffers.proximityMetrics, PATCH_CAPACITY * 4),
+    {id: 'publish-proximity-metrics', afterNode: 'patch-proximity-patch-summary'}
+  );
   graph.add(
     new GPURasterWalkingCost({
       id: 'walking-cost-scenario',
@@ -462,173 +388,7 @@ async function createHabitatConnectivityInstance(
       }
     })
   );
-  const getCircuitResistance = (state: HabitatConnectivityOptions): Float32Array => {
-    const values = new Float32Array(cellCount);
-    for (let index = 0; index < cellCount; index++) {
-      const code = classes[index];
-      const resistance =
-        state.resistance === 'mild'
-          ? (MILD_RESISTANCE[code] ?? Number.NaN)
-          : (STRONG_RESISTANCE[code] ?? Number.NaN);
-      values[index] = state.waterBarrier && code === 80 ? Number.POSITIVE_INFINITY : resistance;
-    }
-    return values;
-  };
-  buffers.circuitResistance.write(getCircuitResistance(ctx.options as HabitatConnectivityOptions));
-  const circuitResistanceView = float('circuit-resistance', buffers.circuitResistance);
-  const circuitResult = addRasterResistanceConnectivityRecipe(graph, {
-    id: 'habitat-circuit-map',
-    resistance: circuitResistanceView,
-    width: GRID_SIZE,
-    height: GRID_SIZE,
-    cellSize: [cellSize, cellSize],
-    connectivity: circuitConnectivity,
-    source:
-      (oracleStart + Math.floor(circuitSource / oracleSize)) * GRID_SIZE +
-      oracleStart +
-      (circuitSource % oracleSize),
-    sink:
-      (oracleStart + Math.floor(circuitSink / oracleSize)) * GRID_SIZE +
-      oracleStart +
-      (circuitSink % oracleSize),
-    maximumIterations: configuredCircuitBudget,
-    tolerance: configuredCircuitTolerance
-  });
-  const circuitPotentialOutput = float('circuit-potential-output', buffers.circuitPotential);
-  const circuitCurrentOutput = float('circuit-current-output', buffers.circuitCurrentDensity);
-  const circuitStatusOutput = word('circuit-status-output', buffers.circuitStatus, 4);
-  const circuitDiagnosticsOutput = float(
-    'circuit-diagnostics-output',
-    buffers.circuitDiagnostics,
-    4
-  );
-  graph.addObservationTap(circuitResult.outputs.potentials, {
-    afterNode: 'habitat-circuit-map-solve-ungrounded-mask',
-    sink: circuitPotentialOutput,
-    id: 'publish-circuit-potential'
-  });
-  graph.addObservationTap(circuitResult.outputs.currentDensity, {
-    afterNode: 'habitat-circuit-map-current-density',
-    sink: circuitCurrentOutput,
-    id: 'publish-circuit-current-density'
-  });
-  graph.addObservationTap(circuitResult.status, {
-    afterNode: 'habitat-circuit-map-solve-certificate',
-    sink: circuitStatusOutput,
-    id: 'publish-circuit-status'
-  });
-  graph.addObservationTap(circuitResult.outputs.diagnostics, {
-    afterNode: 'habitat-circuit-map-solve-certificate',
-    sink: circuitDiagnosticsOutput,
-    id: 'publish-circuit-diagnostics'
-  });
-
-  const oracleResistance = new Float32Array(oracleCellCount);
-  const initialCircuitResistance = getCircuitResistance(ctx.options as HabitatConnectivityOptions);
-  for (let row = 0; row < oracleSize; row++) {
-    for (let column = 0; column < oracleSize; column++) {
-      const oracleIndex = row * oracleSize + column;
-      const cropIndex = (oracleStart + row) * GRID_SIZE + oracleStart + column;
-      oracleResistance[oracleIndex] = initialCircuitResistance[cropIndex];
-    }
-  }
-  const oracleEdgeInputs = makeCircuitEdgeInputs(
-    oracleResistance,
-    oracleSize,
-    oracleSize,
-    [cellSize, cellSize],
-    circuitConnectivity
-  );
-  const oracleEdgesBuffer = resources.createBuffer('circuit-oracle-edges', oracleEdgeInputs.edges);
-  const oracleConductancesBuffer = resources.createBuffer(
-    'circuit-oracle-conductances',
-    oracleEdgeInputs.conductances
-  );
-  const oracleGraph = new GPUCommandGraph<void>(ctx.device, {id: 'habitat-circuit-oracle'});
-  const oracleImport = <Format extends 'uint32x2' | 'float32' | 'uint32x4'>(
-    buffer: Buffer,
-    format: Format,
-    length: number
-  ) => importGraphBuffer(oracleGraph, buffer.id, buffer, format, length);
-  const oracleResults = addCircuitOracleRecipes(oracleGraph, {
-    edges: oracleImport(oracleEdgesBuffer, 'uint32x2', oracleEdgeInputs.edges.length / 2),
-    conductances: oracleImport(
-      oracleConductancesBuffer,
-      'float32',
-      oracleEdgeInputs.conductances.length
-    ),
-    vertexCount: oracleCellCount,
-    source: circuitSource,
-    sink: circuitSink,
-    maximumIterations: Math.min(configuredCircuitBudget, 256),
-    tolerance: configuredCircuitTolerance
-  });
-  const densePotentialOutput = oracleImport(
-    buffers.oracleDensePotential,
-    'float32',
-    oracleCellCount
-  );
-  const sparsePotentialOutput = oracleImport(
-    buffers.oracleSparsePotential,
-    'float32',
-    oracleCellCount
-  );
-  const denseStatusOutput = oracleImport(buffers.oracleDenseStatus, 'uint32x4', 1);
-  const sparseStatusOutput = oracleImport(buffers.oracleSparseStatus, 'uint32x4', 1);
-  const denseDiagnosticsOutput = oracleImport(buffers.oracleDenseDiagnostics, 'float32', 4);
-  const sparseDiagnosticsOutput = oracleImport(buffers.oracleSparseDiagnostics, 'float32', 4);
-  oracleGraph.addObservationTap(oracleResults.dense.outputs.potentials, {
-    afterNode: 'habitat-circuit-dense-reference-solve',
-    sink: densePotentialOutput,
-    id: 'publish-dense-potential'
-  });
-  const denseCurrentsOutput = oracleImport(
-    buffers.oracleDenseCurrents,
-    'float32',
-    oracleEdgeInputs.conductances.length
-  );
-  const sparseCurrentsOutput = oracleImport(
-    buffers.oracleSparseCurrents,
-    'float32',
-    oracleEdgeInputs.conductances.length
-  );
-  oracleGraph.addObservationTap(oracleResults.dense.outputs.currents, {
-    afterNode: 'habitat-circuit-dense-reference-edge-currents',
-    sink: denseCurrentsOutput,
-    id: 'publish-dense-currents'
-  });
-  oracleGraph.addObservationTap(oracleResults.dense.status, {
-    afterNode: 'habitat-circuit-dense-reference-solve',
-    sink: denseStatusOutput,
-    id: 'publish-dense-status'
-  });
-  oracleGraph.addObservationTap(oracleResults.dense.outputs.diagnostics, {
-    afterNode: 'habitat-circuit-dense-reference-solve',
-    sink: denseDiagnosticsOutput,
-    id: 'publish-dense-diagnostics'
-  });
-  oracleGraph.addObservationTap(oracleResults.sparse.outputs.currents, {
-    afterNode: 'habitat-circuit-sparse-reference-currents',
-    sink: sparseCurrentsOutput,
-    id: 'publish-sparse-currents'
-  });
-  oracleGraph.addObservationTap(oracleResults.sparse.outputs.potentials, {
-    afterNode: 'habitat-circuit-sparse-reference-ungrounded-mask',
-    sink: sparsePotentialOutput,
-    id: 'publish-sparse-potential'
-  });
-  oracleGraph.addObservationTap(oracleResults.sparse.status, {
-    afterNode: 'habitat-circuit-sparse-reference-certificate',
-    sink: sparseStatusOutput,
-    id: 'publish-sparse-status'
-  });
-  oracleGraph.addObservationTap(oracleResults.sparse.outputs.diagnostics, {
-    afterNode: 'habitat-circuit-sparse-reference-certificate',
-    sink: sparseDiagnosticsOutput,
-    id: 'publish-sparse-diagnostics'
-  });
   const compiled = resources.track(await graph.compileAsync());
-  const oracleCompiled = resources.track(await oracleGraph.compileAsync());
   if (ctx.signal.aborted) {
     resources.destroy();
     ctx.signal.throwIfAborted();
@@ -638,11 +398,8 @@ async function createHabitatConnectivityInstance(
   let destroyed = false;
   let lastStateKey = '';
   let revision = 0;
-  let circuitAccepted = false;
   const summaryRevisionByteOffset =
     36 + cellCount * 4 * (2 + CORE_RADII.length) + PATCH_CAPACITY * 16;
-  let circuitPotentialRange: [number, number] = [0, 1];
-  let circuitCurrentRange: [number, number] = [0, 1];
   const summaryReader = new SummaryReader(
     resources,
     'habitat-summary',
@@ -658,19 +415,7 @@ async function createHabitatConnectivityInstance(
       {buffer: buffers.proximityMetrics, size: PATCH_CAPACITY * 16},
       {buffer: buffers.costValidity, size: cellCount * 4},
       {buffer: buffers.revision, size: 4},
-      {buffer: buffers.perimeters, size: PATCH_CAPACITY * 4},
-      {buffer: buffers.circuitPotential, size: cellCount * 4},
-      {buffer: buffers.circuitCurrentDensity, size: cellCount * 4},
-      {buffer: buffers.circuitStatus, size: 16},
-      {buffer: buffers.circuitDiagnostics, size: 16},
-      {buffer: buffers.oracleDensePotential, size: oracleCellCount * 4},
-      {buffer: buffers.oracleSparsePotential, size: oracleCellCount * 4},
-      {buffer: buffers.oracleDenseCurrents, size: 1024 * 4},
-      {buffer: buffers.oracleSparseCurrents, size: 1024 * 4},
-      {buffer: buffers.oracleDenseStatus, size: 16},
-      {buffer: buffers.oracleSparseStatus, size: 16},
-      {buffer: buffers.oracleDenseDiagnostics, size: 16},
-      {buffer: buffers.oracleSparseDiagnostics, size: 16}
+      {buffer: buffers.perimeters, size: PATCH_CAPACITY * 4}
     ],
     bytes => {
       if (destroyed || ctx.signal.aborted || !isCurrent()) return;
@@ -767,136 +512,6 @@ async function createHabitatConnectivityInstance(
         'landscapeCohesion',
         Number.isFinite(cohesion) ? `${cohesion.toFixed(1)}%` : 'undefined for this mask'
       );
-      const circuitOffset =
-        bytes.byteLength - (cellCount * 8 + 32 + oracleCellCount * 8 + 64 + 1024 * 8);
-      const circuitPotential = new Float32Array(bytes, circuitOffset, cellCount);
-      const circuitCurrentDensity = new Float32Array(
-        bytes,
-        circuitOffset + cellCount * 4,
-        cellCount
-      );
-      const circuitStatusOffset = circuitOffset + cellCount * 8;
-      const circuitStatus = new Uint32Array(bytes, circuitStatusOffset, 4);
-      const circuitDiagnostics = new Float32Array(bytes, circuitStatusOffset + 16, 4);
-      const densePotential = new Float32Array(bytes, circuitStatusOffset + 32, oracleCellCount);
-      const sparsePotential = new Float32Array(
-        bytes,
-        circuitStatusOffset + 32 + oracleCellCount * 4,
-        oracleCellCount
-      );
-      const denseStatus = new Uint32Array(
-        bytes,
-        circuitStatusOffset + 32 + oracleCellCount * 8 + 1024 * 8,
-        4
-      );
-      const sparseStatus = new Uint32Array(
-        bytes,
-        circuitStatusOffset + 48 + oracleCellCount * 8 + 1024 * 8,
-        4
-      );
-      const denseDiagnostics = new Float32Array(
-        bytes,
-        circuitStatusOffset + 64 + oracleCellCount * 8 + 1024 * 8,
-        4
-      );
-      const sparseDiagnostics = new Float32Array(
-        bytes,
-        circuitStatusOffset + 80 + oracleCellCount * 8 + 1024 * 8,
-        4
-      );
-      const denseCurrents = new Float32Array(
-        bytes,
-        circuitStatusOffset + 32 + oracleCellCount * 8,
-        1024
-      );
-      const sparseCurrents = new Float32Array(
-        bytes,
-        circuitStatusOffset + 32 + oracleCellCount * 8 + 1024 * 4,
-        1024
-      );
-      circuitAccepted = circuitStatus[0] !== 0 && circuitStatus[2] !== 0;
-      ctx.requestLayers();
-      if (circuitStatus[2] === 0) {
-        ctx.setReadout('circuitStatus', `unreachable · ${circuitStatus[3]} invalid edges`);
-      } else if (circuitStatus[0] === 0) {
-        ctx.setReadout(
-          'circuitStatus',
-          `not converged · configured budget ${configuredCircuitBudget} · residual ${circuitDiagnostics[1].toExponential(2)}`
-        );
-        ctx.setReadout(
-          'circuitResidual',
-          `diagnostic only · current-conservation residual ${circuitDiagnostics[1].toExponential(2)} · residual norm ${circuitDiagnostics[3].toExponential(2)}`
-        );
-      } else {
-        ctx.setReadout(
-          'circuitStatus',
-          `converged · configured budget ${configuredCircuitBudget} · effective resistance ${circuitDiagnostics[0].toFixed(3)} relative resistance·m`
-        );
-        ctx.setReadout(
-          'circuitResidual',
-          `current conservation ${circuitDiagnostics[1].toExponential(2)} · energy ${circuitDiagnostics[2].toFixed(3)} · residual norm ${circuitDiagnostics[3].toExponential(2)}`
-        );
-        let minimumPotential = Number.POSITIVE_INFINITY;
-        let maximumPotential = Number.NEGATIVE_INFINITY;
-        let maximumCurrentDensity = 0;
-        let finitePotentialCount = 0;
-        for (let index = 0; index < cellCount; index++) {
-          const potential = circuitPotential[index];
-          const currentDensity = circuitCurrentDensity[index];
-          if (Number.isFinite(potential)) {
-            minimumPotential = Math.min(minimumPotential, potential);
-            maximumPotential = Math.max(maximumPotential, potential);
-            finitePotentialCount++;
-          }
-          if (Number.isFinite(currentDensity))
-            maximumCurrentDensity = Math.max(maximumCurrentDensity, currentDensity);
-        }
-        if (finitePotentialCount)
-          ctx.setLegendExtent('circuit-potential', [minimumPotential, maximumPotential]);
-        ctx.setLegendExtent('circuit-current', [0, maximumCurrentDensity || 1]);
-        circuitPotentialRange = [minimumPotential, maximumPotential];
-        circuitCurrentRange = [0, maximumCurrentDensity || 1];
-        ctx.requestLayers();
-      }
-      ctx.setReadout(
-        'circuitTerminals',
-        `subset offset [24,24] · source local16 ${circuitSource} / local64 ${sourceCropRow * GRID_SIZE + sourceCropColumn} / source raster ${(startRow + sourceCropRow) * manifest.rasters.worldcover.width + startColumn + sourceCropColumn} @ ${sourceCoordinate[0].toFixed(5)}, ${sourceCoordinate[1].toFixed(5)} · sink local16 ${circuitSink} / local64 ${sinkCropRow * GRID_SIZE + sinkCropColumn} / source raster ${(startRow + sinkCropRow) * manifest.rasters.worldcover.width + startColumn + sinkCropColumn} @ ${sinkCoordinate[0].toFixed(5)}, ${sinkCoordinate[1].toFixed(5)} · ${Math.hypot(sourceCropColumn - sinkCropColumn, sourceCropRow - sinkCropRow) * cellSize} m grid distance`
-      );
-      const denseFinite = denseStatus[0] !== 0 && denseStatus[2] !== 0;
-      const sparseFinite = sparseStatus[0] !== 0 && sparseStatus[2] !== 0;
-      if (denseFinite && sparseFinite) {
-        let maximumPotentialDelta = 0;
-        let maximumCurrentDelta = 0;
-        let comparedPotentialCount = 0;
-        let comparedCurrentCount = 0;
-        for (let index = 0; index < oracleCellCount; index++) {
-          if (Number.isFinite(densePotential[index]) && Number.isFinite(sparsePotential[index])) {
-            maximumPotentialDelta = Math.max(
-              maximumPotentialDelta,
-              Math.abs(densePotential[index] - sparsePotential[index])
-            );
-            comparedPotentialCount++;
-          }
-        }
-        for (let index = 0; index < oracleEdgeCount; index++) {
-          if (Number.isFinite(denseCurrents[index]) && Number.isFinite(sparseCurrents[index])) {
-            maximumCurrentDelta = Math.max(
-              maximumCurrentDelta,
-              Math.abs(denseCurrents[index] - sparseCurrents[index])
-            );
-            comparedCurrentCount++;
-          }
-        }
-        ctx.setReadout(
-          'circuitOracle',
-          `dense/sparse converged · max potential Δ ${maximumPotentialDelta.toExponential(2)} (${comparedPotentialCount} cells) · current Δ ${maximumCurrentDelta.toExponential(2)} (${comparedCurrentCount} edges) · injection residuals ${denseDiagnostics[1].toExponential(2)} / ${sparseDiagnostics[1].toExponential(2)} · energies ${denseDiagnostics[2].toFixed(3)} / ${sparseDiagnostics[2].toFixed(3)}`
-        );
-      } else {
-        ctx.setReadout(
-          'circuitOracle',
-          `comparison withheld · dense ${denseStatus[0] ? 'converged' : 'not converged'}, sparse ${sparseStatus[0] ? 'converged' : 'not converged'}`
-        );
-      }
     }
   );
   const coverSelected = (code: number, habitat: HabitatConnectivityOptions['habitat']): boolean =>
@@ -912,7 +527,7 @@ async function createHabitatConnectivityInstance(
           code === 95 ||
           code === 100;
   const updateInputs = (state: HabitatConnectivityOptions) => {
-    const key = `${state.habitat}/${state.resistance}/${state.waterBarrier}`;
+    const key = `${state.habitat}/${state.resistance}`;
     if (key === lastStateKey) return;
     lastStateKey = key;
     revision++;
@@ -928,81 +543,15 @@ async function createHabitatConnectivityInstance(
     }
     buffers.mask.write(mask);
     buffers.friction.write(friction);
-    const circuitResistance = getCircuitResistance(state);
-    buffers.circuitResistance.write(circuitResistance);
-    buffers.circuitPotential.write(new Float32Array(cellCount).fill(Number.NaN));
-    buffers.circuitCurrentDensity.write(new Float32Array(cellCount).fill(Number.NaN));
-    circuitPotentialRange = [0, 1];
-    circuitCurrentRange = [0, 1];
-    ctx.setLegendExtent('circuit-potential', [0, 1]);
-    ctx.setLegendExtent('circuit-current', [0, 1]);
-    circuitAccepted = false;
-    ctx.requestLayers();
-    ctx.setReadout('circuitStatus', 'pending · previous circuit outputs cleared');
-    ctx.setReadout('circuitResidual', 'pending');
-    ctx.setReadout('circuitOracle', 'pending');
-    const subsetResistance = new Float32Array(oracleCellCount);
-    for (let row = 0; row < oracleSize; row++) {
-      for (let column = 0; column < oracleSize; column++) {
-        subsetResistance[row * oracleSize + column] =
-          circuitResistance[(oracleStart + row) * GRID_SIZE + oracleStart + column];
-      }
-    }
-    const edgeInputs = makeCircuitEdgeInputs(
-      subsetResistance,
-      oracleSize,
-      oracleSize,
-      [cellSize, cellSize],
-      circuitConnectivity
-    );
-    oracleConductancesBuffer.write(edgeInputs.conductances);
     buffers.revision.write(new Uint32Array([revision]));
     dirty = true;
     summaryReader.markStale();
   };
   updateInputs(ctx.options as HabitatConnectivityOptions);
 
-  const getCompiledGraphs = (): readonly CompiledGPUCommandGraph<void>[] => [
-    compiled,
-    oracleCompiled
-  ];
+  const getCompiledGraphs = (): readonly CompiledGPUCommandGraph<void>[] => [compiled];
   const getLayers = (): Layer[] => {
     const state = ctx.options;
-    if (state.layer === 'circuit') {
-      const values =
-        state.circuitLayer === 'potential'
-          ? buffers.circuitPotential
-          : buffers.circuitCurrentDensity;
-      const ramp = state.circuitLayer === 'potential' ? 'cividis' : 'magma';
-      return [
-        new UtmRasterLayer({
-          id: `habitat-circuit-${state.circuitLayer}`,
-          visible: circuitAccepted,
-          frame,
-          values,
-          valueFormat: 'float32',
-          colormap: ramp,
-          valueRange:
-            state.circuitLayer === 'potential' ? circuitPotentialRange : circuitCurrentRange,
-          noDataColor: [0, 0, 0, 0],
-          opacity: state.opacity
-        }),
-        new UtmRasterLayer({
-          id: 'habitat-circuit-terminals',
-          frame,
-          values: buffers.circuitTerminals,
-          valueFormat: 'uint32',
-          colormap: 'category',
-          palette: [
-            [0, 0, 0, 0],
-            [255, 214, 70, 255],
-            [235, 82, 112, 255]
-          ],
-          noDataValue: 0,
-          opacity: 1
-        })
-      ];
-    }
     const coreValues =
       state.coreCells === 0 ? buffers.mask : buffers.coreVariants[state.coreCells - 1];
     const values =
@@ -1098,7 +647,7 @@ async function createHabitatConnectivityInstance(
     getCompiledGraphs,
     getLayers,
     setOption(id) {
-      if (id === 'layer' || id === 'opacity' || id === 'circuitLayer') ctx.requestLayers();
+      if (id === 'layer' || id === 'opacity') ctx.requestLayers();
       else {
         if (id === 'habitat') {
           updateInputs(ctx.options as HabitatConnectivityOptions);
@@ -1114,7 +663,6 @@ async function createHabitatConnectivityInstance(
       updateInputs(ctx.options as HabitatConnectivityOptions);
       if (dirty) {
         compiled.encode(commandEncoder, {parameters: undefined});
-        oracleCompiled.encode(commandEncoder, {parameters: undefined});
         dirty = false;
         summaryReader.request(commandEncoder);
       }
@@ -1159,26 +707,10 @@ export async function createHabitatConnectivity(
       if (!rebuilding && !disposed) activeInstance.encode(commandEncoder, currentFrame);
     },
     setOption(id, value, state) {
-      if (
-        id === 'circuitConnectivity' ||
-        id === 'circuitBudget' ||
-        id === 'circuitTolerance' ||
-        id === 'countRasterBorder'
-      ) {
+      if (id === 'countRasterBorder') {
         rebuilding = true;
         const requestGeneration = ++generation;
-        ctx.setLegendExtent('circuit-potential', [0, 1]);
-        ctx.setLegendExtent('circuit-current', [0, 1]);
-        if (id === 'countRasterBorder') {
-          ctx.setReadout('patchPerimeter', 'rebuilding patch metrics · previous summary cleared');
-        } else {
-          ctx.setReadout(
-            'circuitStatus',
-            'rebuilding circuit graph · previous map and summaries cleared'
-          );
-        }
-        ctx.setReadout('circuitResidual', 'pending');
-        ctx.setReadout('circuitOracle', 'pending');
+        ctx.setReadout('patchPerimeter', 'rebuilding patch metrics · previous summary cleared');
         ctx.requestLayers();
         void graphSwap
           .request({
@@ -1197,9 +729,7 @@ export async function createHabitatConnectivity(
           })
           .catch(error => {
             if (disposed || requestGeneration !== generation) return;
-            ctx.setStatus(
-              `${id === 'countRasterBorder' ? 'Patch-metrics' : 'Circuit'} graph rebuild failed: ${String(error)}`
-            );
+            ctx.setStatus(`Patch-metrics graph rebuild failed: ${String(error)}`);
             ctx.requestLayers();
           });
         return;

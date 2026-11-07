@@ -10,7 +10,7 @@ import {formatCount} from '../../cartography/live-text';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './nyc-taxi-tides.md?raw?raw';
+import narrative from './nyc-taxi-tides.md?raw';
 import type {NycTaxiTidesOptions} from './nyc-taxi-tides.compute';
 import {formatTaxiTime} from './nyc-taxi-data';
 import {FLOW_CREDITS, FLOW_INK, getFlowWidthLegend, NET_FLOW_WORDS} from './flows-style';

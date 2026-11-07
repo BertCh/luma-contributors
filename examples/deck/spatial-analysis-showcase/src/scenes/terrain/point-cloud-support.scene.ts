@@ -205,11 +205,10 @@ export default defineScene<PointCloudSupportOptions>({
       help: 'Compares per-cell merged counts against an independent single-cloud GPU voxel reduction.'
     },
     {
-      id: 'mergeCentroidError',
-      label: 'Largest centroid difference',
+      id: 'mergeRepresentativeMismatch',
+      label: 'Representative mismatches',
       format: 'decimal',
-      unit: 'm',
-      help: 'Maximum per-cell distance between the merged centroid and single-cloud GPU reduction, read back from both GPU results.'
+      help: 'Number of occupied cells whose merged minimum-source-row representative differs from the single-cloud GPU reduction, read back from both GPU results.'
     },
     {
       id: 'mergeStatus',
@@ -307,17 +306,17 @@ export default defineScene<PointCloudSupportOptions>({
     {
       id: 'merge-sufficient-statistics',
       textAlternative:
-        'Voxel representatives retain LAS class colors while charts compare merged partition counts and centroids with direct GPU reduction results.',
+        'Voxel representatives retain LAS class colors while charts compare merged partition counts and representatives with direct GPU reduction results.',
       title: 'Merge two disjoint voxel summaries',
-      headline: 'Per-cell counts and centroids should match a one-cloud GPU reduction',
-      body: '`GPUPointCloudVoxelDownsample` produces count and centroid sufficient statistics for each of two disjoint row ranges. `GPUPointCloudVoxelMerge` combines those summaries. A separate GPU downsample of the full sample provides a per-cell count and centroid comparison.',
+      headline: 'Per-cell counts and representatives should match a one-cloud GPU reduction',
+      body: '`GPUPointCloudVoxelDownsample` produces per-cell counts and minimum-source-row representatives for each of two disjoint row ranges. `GPUPointCloudVoxelMerge` combines those summaries. A separate GPU downsample of the full sample provides a per-cell count and representative comparison.',
       evidence:
-        '**{{mergeRows}}** source rows are represented; **{{mergeCountCheck}}**. Largest per-cell centroid difference: **{{mergeCentroidError}}**.',
+        '**{{mergeRows}}** source rows are represented; **{{mergeCountCheck}}**. Representative mismatches: **{{mergeRepresentativeMismatch}}**.',
       caveat:
-        'The voxel grid fixes a 6 m aggregation scale. A passing count and centroid comparison checks this merge against the same GPU reduction method; it does not show that a voxel centroid preserves terrain detail.',
+        'The voxel grid fixes a 6 m aggregation scale. A passing count and representative comparison checks this merge against the same GPU reduction method; it does not show that a voxel representative preserves terrain detail.',
       options: {view: 'merge'},
       controls: ['view', 'pointSize'],
-      readouts: ['mergeRows', 'mergeCountCheck', 'mergeCentroidError', 'mergeStatus'],
+      readouts: ['mergeRows', 'mergeCountCheck', 'mergeRepresentativeMismatch', 'mergeStatus'],
       stage: 'merge'
     }
   ],
@@ -420,9 +419,9 @@ export default defineScene<PointCloudSupportOptions>({
       }
     ];
   },
-  snippet: `graph.add(new GPUPointCloudRadiusFilter({positions, radiusCounts, mask, radius: 3, minimumNeighbors: 4}));\ngraph.add(new GPUPointCloudSMRF({positions, classifications, selection: mask, grid, window: 12, slope: 0.15, groundMask, status}));\ngraph.add(new GPUPointCloudOctree({positions, origin, size, maximumDepth: 5, nodePointLimit: 24, pointIndices, nodes, status: octreeStatus}));\ngraph.add(new GPUPointCloudVoxelDownsample({positions: partA, origin, cellSize: 6, counts: countsA, centroids: centroidsA}));\ngraph.add(new GPUPointCloudVoxelDownsample({positions: partB, origin, cellSize: 6, counts: countsB, centroids: centroidsB}));\ngraph.add(new GPUPointCloudVoxelMerge({countsA, centroidsA, countsB, centroidsB, counts: mergedCounts, centroids: mergedCentroids}));`,
+  snippet: `graph.add(new GPUPointCloudRadiusFilter({positions, radiusCounts, mask, radius: 3, minimumNeighbors: 4}));\ngraph.add(new GPUPointCloudSMRF({positions, classifications, selection: mask, grid, window: 12, slope: 0.15, groundMask, status}));\ngraph.add(new GPUPointCloudOctree({positions, origin, size, maximumDepth: 5, nodePointLimit: 24, pointIndices, nodes, status: octreeStatus}));\ngraph.add(new GPUPointCloudVoxelDownsample({positions: partA, origin, cellSize: 6, counts: countsA, representatives: representativesA, output: sampleA}));\ngraph.add(new GPUPointCloudVoxelDownsample({positions: partB, origin, cellSize: 6, counts: countsB, representatives: representativesB, output: sampleB}));\ngraph.add(new GPUPointCloudVoxelMerge({partitionPolicy: 'disjoint-owned-rows', parts: [{counts: countsA, representatives: representativesA, centroids: sampleA, sourceRowOffset: 0}, {counts: countsB, representatives: representativesB, centroids: sampleB, sourceRowOffset}], counts: mergedCounts, representatives: mergedRepresentatives, centroids: mergedSample, status}));`,
   about: {
-    what: 'The workflow applies exact radius support, a Simple Morphological Filter (SMRF), sparse octree partitioning, and a merge of voxel counts and centroids.',
+    what: 'The workflow applies exact radius support, a Simple Morphological Filter (SMRF), sparse octree partitioning, and a merge of voxel counts and representatives.',
     why: 'These operations answer different scale questions: which rows have local support, which rows fit a terrain surface, how points are partitioned in space, and whether partial summaries can be merged.',
     howToRead:
       'Map colors show the currently selected GPU output. The charts and counts are derived from asynchronous GPU readback. A nonzero overflow or merge status means the affected result must be rejected.'

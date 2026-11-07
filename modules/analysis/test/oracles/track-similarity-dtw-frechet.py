@@ -7,7 +7,7 @@ for GPUTrackSimilarity.
 Writes fixtures/track-similarity-dtw-frechet.json next to this script, consumed by
 test/gpu-spatial-analysis/track-similarity/gpu-track-similarity-dtw-frechet.spec.ts (GPU) and
 track-similarity-dtw-frechet.node.spec.ts (fixture sanity). Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/track-similarity-dtw-frechet.py
+    <venv>/bin/python -I modules/graph/test/oracles/track-similarity-dtw-frechet.py
 in a venv with numpy, shapely, similaritymeasures, tslearn and dtaidistance (versions recorded).
 
 Inputs are rounded to float32 first (the GPU reads float32 positions); every reference is then

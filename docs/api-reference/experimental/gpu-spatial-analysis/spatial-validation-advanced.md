@@ -33,7 +33,7 @@ Changing outer held-out responses changes the outer metrics but leaves that fold
 
 Bounds are 256 observations, 2–16 outer folds, 2–8 inner folds, 1–16 candidates and 2–32 local neighbors. Work scales with the product of these counts; a supported bound is not a latency guarantee. Outputs are caller-owned. Prediction rows outside the outer test mask are NaN. Status bit1 marks overlapping outer masks, bit2 no selected candidate, bit4 missing held-out predictions bit8 an empty held-out set and bit16 nonfinite held-out metric arithmetic (the four aggregate metrics become NaN). Undefined R² is NaN when the held-out outcome variance is zero.
 
-The independent reference generator is `modules/graph/test/oracles/spatial-validation-advanced.R`, pinned to blockCV 4.0.1. `spatial-validation-advanced.spec.ts` compares real native GPU results against that fixture, tests complete test coverage, disjoint masks, invalid/empty/exhausted designs, automatic kNNDM generation and nested changed-input leakage invariance. Independent NumPy 2.2.6 bordered covariance solves and SciPy 1.15.3 RBFInterpolator verify every nested candidate score, chosen model, held-out prediction and metric. Maximal shader options have their own kernel-audit cases.
+The independent reference generator is `modules/analysis/test/oracles/spatial-validation-advanced.R`, pinned to blockCV 4.0.1. `spatial-validation-advanced.spec.ts` compares real native GPU results against that fixture, tests complete test coverage, disjoint masks, invalid/empty/exhausted designs, automatic kNNDM generation and nested changed-input leakage invariance. Independent NumPy 2.2.6 bordered covariance solves and SciPy 1.15.3 RBFInterpolator verify every nested candidate score, chosen model, held-out prediction and metric. Maximal shader options have their own kernel-audit cases.
 
 {/* lens:GPUNestedInterpolationValidation */}
 
@@ -43,7 +43,7 @@ The independent reference generator is `modules/graph/test/oracles/spatial-valid
 
 ## Measured execution envelopes
 
-The native Chromium WebGPU run recorded ten correctness-checked workloads on the Apple Metal-3 adapter. Timings include CPU encode, submit and queue completion. Warm medians use five repetitions after the first execution; source hashes, upload, compile, first-run, readback, three changed-input repetitions and caller/transient bytes are recorded in `dev-docs/perf/spatial-validation-2026-10-23.json`. Shared device caches were not cleared; these observations are not latency guarantees or CPU speedup claims. GPU timestamps were unavailable for these runs.
+The native Chromium WebGPU run recorded ten correctness-checked workloads on the Apple Metal-3 adapter. Timings include CPU encode, submit and queue completion. Warm medians use five repetitions after the first execution; source hashes, upload, compile, first-run, readback, three changed-input repetitions and caller/transient bytes are recorded in `dev-docs/research/evidence/spatial-validation-2026-10-23.json`. Shared device caches were not cleared; these observations are not latency guarantees or CPU speedup claims. GPU timestamps were unavailable for these runs.
 
 | Workload | Warm median ms | First execution ms | Physical transient bytes |
 | --- | ---: | ---: | ---: |

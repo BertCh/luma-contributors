@@ -8,7 +8,7 @@ Writes fixtures/statistics-rate-smoothing.json next to this script, consumed (th
 test/gpu-spatial-analysis/rate-smoothing/eb-low-dispersion-fixture.ts and esda-spatial-eb-fixture.ts) by
 gpu-empirical-bayes-rates.spec.ts / .node.spec.ts and gpu-spatial-empirical-bayes-rates.spec.ts. Run
 from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/statistics-rate-smoothing.py
+    <venv>/bin/python -I modules/graph/test/oracles/statistics-rate-smoothing.py
 in a venv with numpy, esda and libpysal (versions are recorded in the fixture).
 
 Scenes:

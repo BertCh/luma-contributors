@@ -9,7 +9,7 @@ import {ground} from '../../cartography/grounds';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './nyc-taxi-trails.md?raw?raw';
+import narrative from './nyc-taxi-trails.md?raw';
 import type {NycTaxiTrailsOptions} from './nyc-taxi-trails.compute';
 import {FLOW_CREDITS} from './flows-style';
 import {

@@ -7,7 +7,7 @@ Writes fixtures/network-shortest-paths.json next to this script (consumed by
 test/gpu-network/network-reachability/network-reachability-reference.node.spec.ts, which checks the
 TypeScript Dijkstra oracle against it, and by the 'networkx references' case of
 gpu-network-reachability.spec.ts). Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/network-shortest-paths.py
+    <venv>/bin/python -I modules/graph/test/oracles/network-shortest-paths.py
 in a venv with numpy and networkx (versions are recorded in the fixture).
 
 Reference: networkx.single_source_dijkstra_path_length on a MultiDiGraph with a virtual super

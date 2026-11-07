@@ -10,7 +10,7 @@ import {directionFor} from '../../engine/ramps';
 import {playbackOptions} from '../../engine/playback';
 import {defineScene, type LegendSpec} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './bixi-bundles.md?raw?raw';
+import narrative from './bixi-bundles.md?raw';
 import type {BixiBundlesOptions} from './bixi-bundles.compute';
 import {
   BIKE_INK,

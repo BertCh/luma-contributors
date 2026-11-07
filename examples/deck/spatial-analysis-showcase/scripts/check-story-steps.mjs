@@ -30,7 +30,7 @@ module.exports = stub;`;
 
 const CONTRACTS_DIRECTORY = join(
   dirname(fileURLToPath(import.meta.url)),
-  '../../../../modules/graph/src/analysis-core/contracts'
+  '../../../../modules/analysis/src/analysis-core/contracts'
 );
 /** Real contract exports (local frames, earth constants); every other name is the stub. */
 const CONTRACTS_SOURCE = `${STUB_SOURCE.replace('module.exports = stub;', '')}
@@ -51,7 +51,7 @@ const stubPlugin = {
       loader: 'text'
     }));
     // Frames are built at module load, so the spatial-analysis contracts (pure CPU code) are real.
-    builder.onResolve({filter: /^@luma\.gl\/(?:experimental|graph)\/gpu-spatial-analysis$/}, args => ({
+    builder.onResolve({filter: /^@luma-contributors\/analysis\/gpu-spatial-analysis$/}, args => ({
       path: args.path,
       namespace: 'contracts'
     }));
@@ -60,7 +60,28 @@ const stubPlugin = {
       resolveDir: CONTRACTS_DIRECTORY,
       loader: 'js'
     }));
-    builder.onResolve({filter: /^[^./]/}, args => ({path: args.path, namespace: 'stub'}));
+    // Terrain visibility codes are read at module load, so give the terrain stub the real codes.
+    builder.onResolve({filter: /^@luma-contributors\/analysis\/gpu-terrain$/}, args => ({
+      path: args.path,
+      namespace: 'terrain'
+    }));
+    builder.onLoad({filter: /.*/, namespace: 'terrain'}, () => ({
+      contents: `${STUB_SOURCE.replace('module.exports = stub;', '')}
+const visibility = {hidden: 0, visible: 1, outOfRange: 2, noData: 3, marginal: 4};
+module.exports = new Proxy({GPU_TERRAIN_VISIBILITY: visibility}, {
+  get: (target, key) => (key in target ? target[key] : key === '__esModule' ? true : stub)
+});`,
+      loader: 'js'
+    }));
+    // Pure CPU math is real: stubbed named imports are not copied by esbuild interop.
+    builder.onResolve({filter: /^@math\.gl\//}, async args => {
+      if (args.pluginData === 'math') return undefined;
+      const resolved = await builder.resolve(args.path, {resolveDir: args.resolveDir, kind: args.kind, pluginData: 'math'});
+      return resolved.errors.length ? {path: args.path, namespace: 'stub'} : resolved;
+    });
+    builder.onResolve({filter: /^[^./]/}, args =>
+      args.pluginData === 'math' ? undefined : {path: args.path, namespace: 'stub'}
+    );
     builder.onLoad({filter: /.*/, namespace: 'stub'}, () => ({contents: STUB_SOURCE, loader: 'js'}));
   }
 };

@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as spatial from '../../../src/gpu-spatial-analysis/index';
-import * as raster from '@luma.gl/graph/gpu-raster';
+import * as raster from '@luma-contributors/analysis/raster-analysis';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import * as network from '../../../src/gpu-network/index';
 import {compileProjectionProgram} from '@luma.gl/graph/gpu-project';
 import type {KernelAuditCase} from './kernel-audit-context';
@@ -106,7 +107,7 @@ for (const instrumentOrder of [1, 2] as const) {
     }
   });
 }
-const GRID: raster.GPURasterMetadata = {
+const GRID: GPURasterMetadata = {
   width: 128,
   height: 128,
   affine: [1, 0, 0, 0, 1, 0],

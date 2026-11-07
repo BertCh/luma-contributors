@@ -1727,10 +1727,6 @@ ${getSpatialRelateWorkgroupWGSL(sideSpecs)}`,
         id: `${id}-mask`,
         operation: OPERATION,
         variant: 'mask',
-        record:
-          this.props.predicate === 'intersects'
-            ? {formula: 'gpu-spatial-analysis.spatial-predicate-join'}
-            : undefined,
         bindings: [
           {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
           {name: 'matrices', view: matrices, type: 'u32', access: 'read'},

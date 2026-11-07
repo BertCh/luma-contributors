@@ -93,26 +93,6 @@ Four supplied population tables share the same two zones. Their dissimilarities 
 ::lens{scenario=gpu-spatial-analysis.segregation-decomposition-recipe rung=graph caption="Follow the executable GPU stages and output capture copies."}
 
 
-## `addSparseResistanceConnectivityRecipe`
-
-Sparse Jacobi-preconditioned resistance with a true-current certificate. This executes a synthetic fixture and preserves status independently from numerical output.
-
-{/* lens:addSparseResistanceConnectivityRecipe */}
-
-::lens{scenario=gpu-spatial-analysis.sparse-resistance-connectivity-recipe rung=result caption="Inspect the actual GPU outputs and completeness evidence."}
-
-::lens{scenario=gpu-spatial-analysis.sparse-resistance-connectivity-recipe rung=graph caption="Follow graph-native construction and execution."}
-
-## `addRasterResistanceConnectivityRecipe`
-
-Raster resistance converted to physical neighbor conductance. This executes a synthetic fixture and preserves status independently from numerical output.
-
-{/* lens:addRasterResistanceConnectivityRecipe */}
-
-::lens{scenario=gpu-spatial-analysis.raster-resistance-connectivity-recipe rung=result caption="Inspect the actual GPU outputs and completeness evidence."}
-
-::lens{scenario=gpu-spatial-analysis.raster-resistance-connectivity-recipe rung=graph caption="Follow graph-native construction and execution."}
-
 ## `addSegregationCounterfactualRecipe`
 
 Empirical-quantile population counterfactuals and Shapley components. This executes a synthetic fixture and preserves status independently from numerical output.

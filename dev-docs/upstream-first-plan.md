@@ -4,6 +4,11 @@ Goal: this repository contains only geospatial and analysis code. Everything els
 published `@luma.gl/*` packages through their public entry points. We accept more verbose code and
 upstream design decisions over carrying parallel, forked or divergent code.
 
+Status: executed. The fork is deleted and `src/_pending/` no longer exists. Outcomes are recorded in
+`upstream-first-foundation.md`, `upstream-first-recording.md` and `upstream-first-pending.md`. The
+sections below keep the original plan for context; open follow-ups live in `roadmap.md` and
+`upstream-workarounds.md`.
+
 ## Rules
 
 1. Import luma.gl only through published public entry points. Do not use `_internal`, deep `dist`
@@ -16,13 +21,13 @@ upstream design decisions over carrying parallel, forked or divergent code.
 3. Improvements to luma.gl go to luma.gl as ordinary pull requests. This repository never waits on
    them and never carries them. When a release ships them, delete the local workaround.
 4. A check fails the build on any non-public `@luma.gl` import and on any file under
-   `modules/graph/src` that is not in an analysis-owned directory.
+   `modules/analysis/src` that is not in an analysis-owned directory (`scripts/check-upstream-first.mjs`).
 
 ## Measured gap
 
-The experiment is in `scripts/split/unfork-experiment.mjs`. It deletes all 422 forked luma.gl
-files, points every import at npm `@luma.gl/graph@10.0.0-alpha.10`, and typechecks the sources.
-That gives 704 errors with these root causes:
+The experiment (since removed with the migration scripts) deleted all 422 forked luma.gl
+files, pointed every import at npm `@luma.gl/graph@10.0.0-alpha.10`, and typechecked the sources.
+That gave 704 errors with these root causes:
 
 | Bucket | Errors | Cause | Resolution |
 | --- | --- | --- | --- |
@@ -92,7 +97,11 @@ Consumers move to the published equivalents.
   helpers (exact predicates, Philox, fixed-point accumulation) stay only where analysis kernels use
   them, under an analysis directory.
 
-## Decisions needed
+## Decisions (resolved)
+
+Resolutions: (1) a `GPUComputationRecorder` built on public compiled-graph data (see
+`upstream-first-recording.md`); (2) kepler adapters stay as `@luma-contributors/kepler` on public APIs and the
+`kepler-compute` example stays parked (see `roadmap.md`); (3) regressions accepted.
 
 1. **Computation records and lenses.** This is the largest coupling: 116 errors, plus most of the
    lens errors. Options:
@@ -112,8 +121,8 @@ Consumers move to the published equivalents.
 
 ## Phases
 
-1. **Guard rails.** Add the public-import and allowed-directory check. Rename
-   `@luma-contributors/graph` to an analysis-specific name, since it no longer carries a graph.
+1. **Guard rails.** Add the public-import and allowed-directory check. The
+   package was renamed from `@luma-contributors/graph` to `@luma-contributors/analysis`, since it no longer carries a graph.
 2. **Re-home bucket A.** Move the analysis files out of luma-owned directories into analysis-owned
    ones (`dataframe-analysis/`, `raster-analysis/`, `pointcloud-analysis/`, ...) and give each an
    entry point. Mechanical, about 240 files.

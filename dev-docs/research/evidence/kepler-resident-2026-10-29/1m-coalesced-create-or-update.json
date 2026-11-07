@@ -1,0 +1,850 @@
+{
+  "schemaVersion": 2,
+  "status": "passed",
+  "startedAt": "2026-10-30T03:45:58.141Z",
+  "options": {
+    "rows": 1000000,
+    "iterations": 5,
+    "warmup": 1,
+    "batchSize": 65536,
+    "timeoutMilliseconds": 120000,
+    "url": "http://127.0.0.1:5318/?rows=256",
+    "output": "/tmp/luma-kepler-resident-performance-1m-coalesced-create-or-update.json",
+    "headed": false,
+    "diagnostics": false,
+    "interaction": "create-or-update",
+    "label": null,
+    "help": false
+  },
+  "host": {
+    "platform": "darwin",
+    "release": "23.1.0",
+    "architecture": "arm64",
+    "cpu": "Apple M3 Pro"
+  },
+  "methodology": {
+    "scenario": "Published native Point layer + inclusive numeric range filter + native Big Number Count",
+    "cold": "First source publication in a fresh browser context after the 256-row app fixture is ready; OS, driver, and Vite caches are not cleared.",
+    "interaction": "Native createOrUpdateFilter updates dataset, field and value; broader than a slider value update.",
+    "warm": "Sequential native filter actions after excluded warmups. Browser performance.now clock; 4ms scheduled polling can be delayed by main-thread load.",
+    "submittedFrame": "Revision-tagged host submission boundary; excludes GPU completion and physical presentation.",
+    "animationFrame": "First requested browser animation callback after observing that submitted frame; a presentation opportunity, not proof of pixels displayed.",
+    "summary": "First polling observation of the current revision compact resident count.",
+    "linkedChart": "First polling observation of the native linked Count DOM matching the current resident count.",
+    "memory": "Registry allocated and reserved accounting only, plus optional Chromium JS heap; neither is total device/process memory.",
+    "transfers": "Only explicitly exposed counters. No inference from missing counters or resident buffer size.",
+    "quantiles": "Nearest rank; warmup samples excluded; raw per-interaction observations retained.",
+    "gpuTiming": {
+      "available": false,
+      "reason": "No GPU timestamp query instrumentation"
+    },
+    "nativeCpuBaseline": {
+      "available": false,
+      "reason": "This harness measures only the resident adapter"
+    }
+  },
+  "cold": {
+    "nodeFixtureAndIPCPreparationMilliseconds": 10.646999999999991,
+    "browserLaunchAndApplicationReadyMilliseconds": 2664.3285,
+    "fileTransferDecodeAndRoleSelectionMilliseconds": 697.9695830000001,
+    "schemaAndPrecisionCheckMilliseconds": 19.424749999999676,
+    "publicationToCurrentSummaryMilliseconds": 1629.3997920000002,
+    "publicationToLoadedPointLayerMilliseconds": 1632.4775840000002
+  },
+  "warmup": [
+    {
+      "interaction": "create-or-update",
+      "sourceRevision": 1,
+      "range": [
+        0,
+        99
+      ],
+      "expectedCount": 100000,
+      "nativeRangeApplied": true,
+      "revision": 9,
+      "submittedFrameMilliseconds": 60.19999998807907,
+      "nextAnimationFrameMilliseconds": 90.19999998807907,
+      "residentSummaryMilliseconds": 151.5,
+      "linkedChartMilliseconds": 151.5,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    }
+  ],
+  "samples": [
+    {
+      "interaction": "create-or-update",
+      "sourceRevision": 1,
+      "range": [
+        53,
+        289
+      ],
+      "expectedCount": 237000,
+      "nativeRangeApplied": true,
+      "revision": 13,
+      "submittedFrameMilliseconds": 75.69999998807907,
+      "nextAnimationFrameMilliseconds": 84.60000002384186,
+      "residentSummaryMilliseconds": 140.60000002384186,
+      "linkedChartMilliseconds": 140.60000002384186,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    },
+    {
+      "interaction": "create-or-update",
+      "sourceRevision": 1,
+      "range": [
+        106,
+        479
+      ],
+      "expectedCount": 374000,
+      "nativeRangeApplied": true,
+      "revision": 17,
+      "submittedFrameMilliseconds": 87.19999998807907,
+      "nextAnimationFrameMilliseconds": 109.39999997615814,
+      "residentSummaryMilliseconds": 122.80000001192093,
+      "linkedChartMilliseconds": 122.80000001192093,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    },
+    {
+      "interaction": "create-or-update",
+      "sourceRevision": 1,
+      "range": [
+        159,
+        669
+      ],
+      "expectedCount": 511000,
+      "nativeRangeApplied": true,
+      "revision": 21,
+      "submittedFrameMilliseconds": 53.80000001192093,
+      "nextAnimationFrameMilliseconds": 64.30000001192093,
+      "residentSummaryMilliseconds": 95.5,
+      "linkedChartMilliseconds": 95.5,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    },
+    {
+      "interaction": "create-or-update",
+      "sourceRevision": 1,
+      "range": [
+        212,
+        859
+      ],
+      "expectedCount": 648000,
+      "nativeRangeApplied": true,
+      "revision": 25,
+      "submittedFrameMilliseconds": 53.39999997615814,
+      "nextAnimationFrameMilliseconds": 62.09999996423721,
+      "residentSummaryMilliseconds": 80.59999996423721,
+      "linkedChartMilliseconds": 80.59999996423721,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    },
+    {
+      "interaction": "create-or-update",
+      "sourceRevision": 1,
+      "range": [
+        50,
+        834
+      ],
+      "expectedCount": 785000,
+      "nativeRangeApplied": true,
+      "revision": 29,
+      "submittedFrameMilliseconds": 62.80000001192093,
+      "nextAnimationFrameMilliseconds": 64.19999998807907,
+      "residentSummaryMilliseconds": 82,
+      "linkedChartMilliseconds": 82,
+      "timingContract": "revision-tagged submitted frame + next RAF + polled summary/DOM"
+    }
+  ],
+  "errors": [],
+  "revision": "cc97a1c148a737d620d903c3f4424d8d23bca74b",
+  "workspaceDirty": true,
+  "source": {
+    "rows": 1000000,
+    "batchLengths": [
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      65536,
+      16960
+    ],
+    "fields": [
+      {
+        "name": "longitude",
+        "type": "Float32"
+      },
+      {
+        "name": "latitude",
+        "type": "Float32"
+      },
+      {
+        "name": "value",
+        "type": "Float32"
+      }
+    ],
+    "logicalColumnBytes": 12000000,
+    "ipcBytes": 12004088,
+    "distribution": "value = sourceRowIndex % 1000; deterministic NYC coordinate grid; no nulls",
+    "normalization": "Source Float32 values uploaded directly; no Float64 normalization"
+  },
+  "browser": {
+    "name": "Chromium",
+    "channel": "chromium",
+    "headless": true,
+    "arguments": [
+      "--enable-unsafe-webgpu",
+      "--ignore-gpu-blocklist"
+    ],
+    "version": "151.0.7922.34"
+  },
+  "nativeLayerId": "resident-published-1-points",
+  "viewport": {
+    "bearing": 0,
+    "dragRotate": false,
+    "latitude": 40.75,
+    "longitude": -74,
+    "pitch": 0,
+    "zoom": 10,
+    "isSplit": false,
+    "isViewportSynced": true,
+    "isZoomLocked": false,
+    "splitMapViewports": [],
+    "maxPitch": 60,
+    "mapSplitMode": "SINGLE_MAP",
+    "swipeComparePercentage": 50,
+    "mapViewMode": "MODE_2D",
+    "globe": {
+      "enabled": false,
+      "config": {
+        "atmosphere": true,
+        "hugeHalo": true,
+        "hugeHaloRadius": 3.5,
+        "hugeHaloOpacity": 0.2,
+        "azimuth": false,
+        "azimuthAngle": 45,
+        "terminator": true,
+        "terminatorOpacity": 0.35,
+        "basemap": true,
+        "labels": false,
+        "labelsColor": [
+          114.75,
+          114.75,
+          114.75
+        ],
+        "adminLines": true,
+        "adminLinesColor": [
+          40,
+          63,
+          93
+        ],
+        "water": true,
+        "waterColor": [
+          17,
+          35,
+          48
+        ],
+        "surface": true,
+        "surfaceColor": [
+          9,
+          16,
+          29
+        ],
+        "backgroundColor": [
+          4,
+          9,
+          17
+        ],
+        "stars": true
+      }
+    }
+  },
+  "beforeWarmup": {
+    "observation": {
+      "now": 4641.699999988079,
+      "sourceRevision": 1,
+      "explorerRevision": 6,
+      "summary": {
+        "revision": 6,
+        "selectedCount": 1000000
+      },
+      "frame": {
+        "sourceRevision": 1,
+        "explorerRevision": 6,
+        "timestamp": 4638,
+        "stage": "submitted"
+      },
+      "encode": null,
+      "encodeTelemetry": null,
+      "summaryRead": null,
+      "readbackBytes": {
+        "explorer": 8
+      },
+      "memoryUsage": {
+        "allocatedBytes": {
+          "cpu": 12016376,
+          "gpu": 12010240
+        },
+        "reservedBytes": {
+          "cpu": 2048,
+          "gpu": 180248060
+        },
+        "totalBytes": 204276724,
+        "availableBytes": 332594188
+      },
+      "deviceInfo": {
+        "type": "webgpu",
+        "vendor": "apple",
+        "renderer": "",
+        "version": "",
+        "gpu": "apple",
+        "gpuType": "unknown",
+        "gpuBackend": "unknown",
+        "gpuArchitecture": "metal-3",
+        "fallback": false,
+        "featureLevel": "core",
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "shadingLanguage": "wgsl",
+        "shadingLanguageVersion": 100
+      }
+    },
+    "publication": {
+      "id": "resident-published-1",
+      "sourceRevision": 1,
+      "sourceUploadBytes": 12000000,
+      "sourceBufferIds": [
+        "dynamic-buffer-8",
+        "dynamic-buffer-11",
+        "dynamic-buffer-14",
+        "dynamic-buffer-17",
+        "dynamic-buffer-20",
+        "dynamic-buffer-23",
+        "dynamic-buffer-26",
+        "dynamic-buffer-29",
+        "dynamic-buffer-32",
+        "dynamic-buffer-35",
+        "dynamic-buffer-38",
+        "dynamic-buffer-41",
+        "dynamic-buffer-44",
+        "dynamic-buffer-47",
+        "dynamic-buffer-50",
+        "dynamic-buffer-53",
+        "dynamic-buffer-9",
+        "dynamic-buffer-12",
+        "dynamic-buffer-15",
+        "dynamic-buffer-18",
+        "dynamic-buffer-21",
+        "dynamic-buffer-24",
+        "dynamic-buffer-27",
+        "dynamic-buffer-30",
+        "dynamic-buffer-33",
+        "dynamic-buffer-36",
+        "dynamic-buffer-39",
+        "dynamic-buffer-42",
+        "dynamic-buffer-45",
+        "dynamic-buffer-48",
+        "dynamic-buffer-51",
+        "dynamic-buffer-54",
+        "dynamic-buffer-10",
+        "dynamic-buffer-13",
+        "dynamic-buffer-16",
+        "dynamic-buffer-19",
+        "dynamic-buffer-22",
+        "dynamic-buffer-25",
+        "dynamic-buffer-28",
+        "dynamic-buffer-31",
+        "dynamic-buffer-34",
+        "dynamic-buffer-37",
+        "dynamic-buffer-40",
+        "dynamic-buffer-43",
+        "dynamic-buffer-46",
+        "dynamic-buffer-49",
+        "dynamic-buffer-52",
+        "dynamic-buffer-55"
+      ],
+      "rowCount": 1000000,
+      "sourceBatches": [
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        16960
+      ],
+      "selectedCount": 1000000,
+      "scopeRevision": 5,
+      "scopePending": false,
+      "error": null
+    },
+    "deviceInfo": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "core",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "devicePixelRatio": 1,
+    "jsHeap": {
+      "usedJSHeapSize": 543291444,
+      "totalJSHeapSize": 601021180,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "device": {
+    "type": "webgpu",
+    "vendor": "apple",
+    "renderer": "",
+    "version": "",
+    "gpu": "apple",
+    "gpuType": "unknown",
+    "gpuBackend": "unknown",
+    "gpuArchitecture": "metal-3",
+    "fallback": false,
+    "featureLevel": "core",
+    "subgroupMinSize": 32,
+    "subgroupMaxSize": 32,
+    "shadingLanguage": "wgsl",
+    "shadingLanguageVersion": 100
+  },
+  "beforeMeasured": {
+    "observation": {
+      "now": 4796.099999964237,
+      "sourceRevision": 1,
+      "explorerRevision": 9,
+      "summary": {
+        "revision": 9,
+        "selectedCount": 100000
+      },
+      "frame": {
+        "sourceRevision": 1,
+        "explorerRevision": 9,
+        "timestamp": 4794.5,
+        "stage": "submitted"
+      },
+      "encode": null,
+      "encodeTelemetry": null,
+      "summaryRead": null,
+      "readbackBytes": {
+        "explorer": 12
+      },
+      "memoryUsage": {
+        "allocatedBytes": {
+          "cpu": 12016376,
+          "gpu": 12010240
+        },
+        "reservedBytes": {
+          "cpu": 2048,
+          "gpu": 273321676
+        },
+        "totalBytes": 297350340,
+        "availableBytes": 239520572
+      },
+      "deviceInfo": {
+        "type": "webgpu",
+        "vendor": "apple",
+        "renderer": "",
+        "version": "",
+        "gpu": "apple",
+        "gpuType": "unknown",
+        "gpuBackend": "unknown",
+        "gpuArchitecture": "metal-3",
+        "fallback": false,
+        "featureLevel": "core",
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "shadingLanguage": "wgsl",
+        "shadingLanguageVersion": 100
+      }
+    },
+    "publication": {
+      "id": "resident-published-1",
+      "sourceRevision": 1,
+      "sourceUploadBytes": 12000000,
+      "sourceBufferIds": [
+        "dynamic-buffer-8",
+        "dynamic-buffer-11",
+        "dynamic-buffer-14",
+        "dynamic-buffer-17",
+        "dynamic-buffer-20",
+        "dynamic-buffer-23",
+        "dynamic-buffer-26",
+        "dynamic-buffer-29",
+        "dynamic-buffer-32",
+        "dynamic-buffer-35",
+        "dynamic-buffer-38",
+        "dynamic-buffer-41",
+        "dynamic-buffer-44",
+        "dynamic-buffer-47",
+        "dynamic-buffer-50",
+        "dynamic-buffer-53",
+        "dynamic-buffer-9",
+        "dynamic-buffer-12",
+        "dynamic-buffer-15",
+        "dynamic-buffer-18",
+        "dynamic-buffer-21",
+        "dynamic-buffer-24",
+        "dynamic-buffer-27",
+        "dynamic-buffer-30",
+        "dynamic-buffer-33",
+        "dynamic-buffer-36",
+        "dynamic-buffer-39",
+        "dynamic-buffer-42",
+        "dynamic-buffer-45",
+        "dynamic-buffer-48",
+        "dynamic-buffer-51",
+        "dynamic-buffer-54",
+        "dynamic-buffer-10",
+        "dynamic-buffer-13",
+        "dynamic-buffer-16",
+        "dynamic-buffer-19",
+        "dynamic-buffer-22",
+        "dynamic-buffer-25",
+        "dynamic-buffer-28",
+        "dynamic-buffer-31",
+        "dynamic-buffer-34",
+        "dynamic-buffer-37",
+        "dynamic-buffer-40",
+        "dynamic-buffer-43",
+        "dynamic-buffer-46",
+        "dynamic-buffer-49",
+        "dynamic-buffer-52",
+        "dynamic-buffer-55"
+      ],
+      "rowCount": 1000000,
+      "sourceBatches": [
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        16960
+      ],
+      "selectedCount": 100000,
+      "scopeRevision": 8,
+      "scopePending": false,
+      "error": null
+    },
+    "deviceInfo": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "core",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "devicePixelRatio": 1,
+    "jsHeap": {
+      "usedJSHeapSize": 538080024,
+      "totalJSHeapSize": 606530688,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "afterMeasured": {
+    "observation": {
+      "now": 5363.199999988079,
+      "sourceRevision": 1,
+      "explorerRevision": 29,
+      "summary": {
+        "revision": 29,
+        "selectedCount": 785000
+      },
+      "frame": {
+        "sourceRevision": 1,
+        "explorerRevision": 29,
+        "timestamp": 5333.699999988079,
+        "stage": "submitted"
+      },
+      "encode": null,
+      "encodeTelemetry": null,
+      "summaryRead": null,
+      "readbackBytes": {
+        "explorer": 32
+      },
+      "memoryUsage": {
+        "allocatedBytes": {
+          "cpu": 12016376,
+          "gpu": 12010240
+        },
+        "reservedBytes": {
+          "cpu": 2048,
+          "gpu": 273321676
+        },
+        "totalBytes": 297350340,
+        "availableBytes": 239520572
+      },
+      "deviceInfo": {
+        "type": "webgpu",
+        "vendor": "apple",
+        "renderer": "",
+        "version": "",
+        "gpu": "apple",
+        "gpuType": "unknown",
+        "gpuBackend": "unknown",
+        "gpuArchitecture": "metal-3",
+        "fallback": false,
+        "featureLevel": "core",
+        "subgroupMinSize": 32,
+        "subgroupMaxSize": 32,
+        "shadingLanguage": "wgsl",
+        "shadingLanguageVersion": 100
+      }
+    },
+    "publication": {
+      "id": "resident-published-1",
+      "sourceRevision": 1,
+      "sourceUploadBytes": 12000000,
+      "sourceBufferIds": [
+        "dynamic-buffer-8",
+        "dynamic-buffer-11",
+        "dynamic-buffer-14",
+        "dynamic-buffer-17",
+        "dynamic-buffer-20",
+        "dynamic-buffer-23",
+        "dynamic-buffer-26",
+        "dynamic-buffer-29",
+        "dynamic-buffer-32",
+        "dynamic-buffer-35",
+        "dynamic-buffer-38",
+        "dynamic-buffer-41",
+        "dynamic-buffer-44",
+        "dynamic-buffer-47",
+        "dynamic-buffer-50",
+        "dynamic-buffer-53",
+        "dynamic-buffer-9",
+        "dynamic-buffer-12",
+        "dynamic-buffer-15",
+        "dynamic-buffer-18",
+        "dynamic-buffer-21",
+        "dynamic-buffer-24",
+        "dynamic-buffer-27",
+        "dynamic-buffer-30",
+        "dynamic-buffer-33",
+        "dynamic-buffer-36",
+        "dynamic-buffer-39",
+        "dynamic-buffer-42",
+        "dynamic-buffer-45",
+        "dynamic-buffer-48",
+        "dynamic-buffer-51",
+        "dynamic-buffer-54",
+        "dynamic-buffer-10",
+        "dynamic-buffer-13",
+        "dynamic-buffer-16",
+        "dynamic-buffer-19",
+        "dynamic-buffer-22",
+        "dynamic-buffer-25",
+        "dynamic-buffer-28",
+        "dynamic-buffer-31",
+        "dynamic-buffer-34",
+        "dynamic-buffer-37",
+        "dynamic-buffer-40",
+        "dynamic-buffer-43",
+        "dynamic-buffer-46",
+        "dynamic-buffer-49",
+        "dynamic-buffer-52",
+        "dynamic-buffer-55"
+      ],
+      "rowCount": 1000000,
+      "sourceBatches": [
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        65536,
+        16960
+      ],
+      "selectedCount": 785000,
+      "scopeRevision": 28,
+      "scopePending": false,
+      "error": null
+    },
+    "deviceInfo": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "core",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "devicePixelRatio": 1,
+    "jsHeap": {
+      "usedJSHeapSize": 332831541,
+      "totalJSHeapSize": 401812841,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "identity": {
+    "deviceUnchanged": true,
+    "sourceBuffersUnchanged": true
+  },
+  "transfers": {
+    "registeredSourceUploadBytes": {
+      "available": true,
+      "before": 12000000,
+      "after": 12000000,
+      "delta": 0
+    },
+    "exposedReadbackBytes": {
+      "explorer": {
+        "available": true,
+        "before": 12,
+        "after": 32,
+        "delta": 20
+      }
+    },
+    "controlUploads": {
+      "available": false,
+      "reason": "No comprehensive control-upload counter exposed"
+    },
+    "totalDeviceTransfers": {
+      "available": false,
+      "reason": "No comprehensive device transfer counter exposed"
+    }
+  },
+  "memory": {
+    "before": {
+      "allocatedBytes": {
+        "cpu": 12016376,
+        "gpu": 12010240
+      },
+      "reservedBytes": {
+        "cpu": 2048,
+        "gpu": 273321676
+      },
+      "totalBytes": 297350340,
+      "availableBytes": 239520572
+    },
+    "after": {
+      "allocatedBytes": {
+        "cpu": 12016376,
+        "gpu": 12010240
+      },
+      "reservedBytes": {
+        "cpu": 2048,
+        "gpu": 273321676
+      },
+      "totalBytes": 297350340,
+      "availableBytes": 239520572
+    },
+    "jsHeapBefore": {
+      "usedJSHeapSize": 538080024,
+      "totalJSHeapSize": 606530688,
+      "jsHeapSizeLimit": 4395630592
+    },
+    "jsHeapAfter": {
+      "usedJSHeapSize": 332831541,
+      "totalJSHeapSize": 401812841,
+      "jsHeapSizeLimit": 4395630592
+    }
+  },
+  "metrics": {
+    "submittedFrameMilliseconds": {
+      "available": true,
+      "unit": "milliseconds",
+      "count": 5,
+      "minimum": 53.39999997615814,
+      "p50": 62.80000001192093,
+      "p95": 87.19999998807907,
+      "maximum": 87.19999998807907,
+      "mean": 66.57999999523163,
+      "quantileMethod": "nearest-rank"
+    },
+    "nextAnimationFrameMilliseconds": {
+      "available": true,
+      "unit": "milliseconds",
+      "count": 5,
+      "minimum": 62.09999996423721,
+      "p50": 64.30000001192093,
+      "p95": 109.39999997615814,
+      "maximum": 109.39999997615814,
+      "mean": 76.91999999284744,
+      "quantileMethod": "nearest-rank"
+    },
+    "residentSummaryMilliseconds": {
+      "available": true,
+      "unit": "milliseconds",
+      "count": 5,
+      "minimum": 80.59999996423721,
+      "p50": 95.5,
+      "p95": 140.60000002384186,
+      "maximum": 140.60000002384186,
+      "mean": 104.3,
+      "quantileMethod": "nearest-rank"
+    },
+    "linkedChartMilliseconds": {
+      "available": true,
+      "unit": "milliseconds",
+      "count": 5,
+      "minimum": 80.59999996423721,
+      "p50": 95.5,
+      "p95": 140.60000002384186,
+      "maximum": 140.60000002384186,
+      "mean": 104.3,
+      "quantileMethod": "nearest-rank"
+    }
+  },
+  "finishedAt": "2026-10-30T03:46:04.834Z"
+}

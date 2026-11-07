@@ -12,10 +12,7 @@ import {generateDocPages} from './doc-parameters';
 // their TSDoc. Regenerate with `UPDATE_DOC_PARAMETERS=1 npx vitest run --project node
 // modules/analysis/test/analysis-core/doc-parameters.node.spec.ts`.
 
-// Skipped during the upstream-first migration: the docs still import the pre-split package names
-// (`@luma-contributors/graph/*`, `.../gpu-raster`) and describe luma-owned operators. Re-enable
-// once the docs are rewritten for the analysis entries (see dev-docs/upstream-first-foundation.md).
-it.skip('analysis doc "Parameters" subsections are in sync with the packers', () => {
+it('analysis doc "Parameters" subsections are in sync with the packers', () => {
   const {pages, undocumented} = generateDocPages();
   const stale: string[] = [];
   for (const [page, text] of pages) {

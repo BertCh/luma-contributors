@@ -7,7 +7,6 @@ import type {ViewPackRegistration} from '../../registry/view-registration';
 import {GPU_CORE_ARRAY_RESULT_VIEW} from './array-result-view';
 import {loadGPUCorePackData} from './pack-data';
 
-export {GPU_CORE_OPERATORS} from './operators';
 export {
   GPU_CORE_FORMULAS,
   GPU_CORE_FORMULA_REFS,

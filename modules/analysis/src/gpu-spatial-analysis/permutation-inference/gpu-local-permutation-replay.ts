@@ -103,19 +103,12 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
       type: 'u32' as const,
       access: 'read_write' as const
     };
-    const record = {
-      namespace: 'replay',
-      // The replay redraws the null distribution of the raw local term; it computes no formula output.
-      datum: {keySpace: props.keySpace ?? 'row'},
-      attrs: {provenance: 'gpu-replay', rowResource: props.row.buffer.id}
-    };
     return [
       // Packing the pin and observed term leaves the draw kernel at eight storage bindings.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-setup`,
         operation: 'GPULocalPermutationReplay',
         variant: 'setup',
-        record,
         bindings: [
           {name: 'row', view: props.row, type: 'u32', access: 'read'},
           {name: 'observedRaw', view: inputs.observedRaw, type: 'f32', access: 'read'},
@@ -134,7 +127,6 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
         id: `${id}-permute`,
         operation: 'GPULocalPermutationReplay',
         variant: 'replay',
-        record,
         bindings: [
           ...inputs.bindings,
           {

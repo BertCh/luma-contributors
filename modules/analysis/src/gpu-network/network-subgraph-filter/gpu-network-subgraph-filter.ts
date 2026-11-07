@@ -15,8 +15,7 @@ import {
   createFillNode,
   createWGSLKernelNode,
   createPublishNode,
-  type WGSLKernelBinding,
-  type WGSLKernelProps
+  type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validatePackedView,
@@ -343,15 +342,13 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       bindings: WGSLKernelBinding[],
       invocationCount: number,
       body: string,
-      declarations?: string,
-      record?: WGSLKernelProps<Parameters>['record']
+      declarations?: string
     ) =>
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-${step}`,
           operation: OPERATION,
           variant,
-          record,
           bindings,
           invocationCount,
           body,
@@ -404,12 +401,7 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
           rowCount,
           `var live = maskOut[maskOutOffset + index] != 0u;
   ${tests}
-  maskOut[maskOutOffset + index] = select(0u, 1u, live);`,
-          undefined,
-          {
-            datum: {keySpace: step === 'vertex' ? 'node' : 'edge'},
-            formula: 'gpu-network.subgraph-filter.range'
-          }
+  maskOut[maskOutOffset + index] = select(0u, 1u, live);`
         );
       }
     };

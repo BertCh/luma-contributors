@@ -249,11 +249,3 @@ const metrics = createGPUComputationMetrics({
   graph argument; the caller decides whether to call it.
 - `observationTap` annotation attr remains and is set by `GPUSnapshotTap` when given a recorder.
 - Graph ids must not contain `:` (unchanged).
-
-## Not in this module (for other agents)
-
-Test files outside `test/computation-record` still import deleted modules:
-`modules/analysis/test/gpu-core/gpu-graph-describe.node.spec.ts`,
-`modules/analysis/test/gpu-core/gpu-command-node-record.node.spec.ts`,
-`modules/analysis/test/gpu-graph/gpu-graph-recording.node.spec.ts` and
-`modules/lenses/test/gpu-dataframe/describe/gpu-query-describe.node.spec.ts` should be deleted.

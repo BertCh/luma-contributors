@@ -241,10 +241,7 @@ function getPrelude(
   ];
 }
 
-// Skipped during the upstream-first migration: the docs still import the pre-split package names
-// (`@luma-contributors/graph/*`, `.../gpu-raster`) and describe luma-owned operators. Re-enable
-// once the docs are rewritten for the analysis entries (see dev-docs/upstream-first-foundation.md).
-it.skip('analysis doc ```ts blocks type-check against the barrels', () => {
+it('analysis doc ```ts blocks type-check against the barrels', () => {
   const options = getRepositoryCompilerOptions();
   const snippets = ANALYSIS_DOC_PAGES.flatMap(extractSnippets);
   const optOuts = snippets.filter(snippet => snippet.optOutReason !== undefined);

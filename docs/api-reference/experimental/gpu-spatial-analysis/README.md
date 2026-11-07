@@ -1,15 +1,13 @@
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # GPU Spatial Analysis
 
-<ExperimentalDocsTabs active="gpu-spatial-analysis" />
 
 :::caution Experimental
-`@luma-contributors/graph/gpu-spatial-analysis` is an experimental entry point. APIs may change between
+`@luma-contributors/analysis/gpu-spatial-analysis` is an experimental entry point. APIs may change between
 releases without a deprecation period.
 :::
 
-The `@luma-contributors/graph/gpu-spatial-analysis` entry point is the analysis layer above luma.gl's
+The `@luma-contributors/analysis/gpu-spatial-analysis` entry point is the analysis layer above luma.gl's
 GPU spatial primitives. It does not reimplement them. It composes the
 [geospatial kernels](/docs/api-reference/experimental/geospatial) (projection, distances,
 point-in-polygon, `GPUGridIndex`, `GPUPointSpatialQuery`) and the GPU Core primitives (sort, scan,
@@ -35,8 +33,8 @@ Core primitives (`GPUVisibilityWorkflow`, `GPUBVH`, `GPUGridBinning`, `GPUHistog
 primitive fits.
 
 ```ts
-import {GPUCommandGraph} from '@luma-contributors/graph/gpu-core';
-import {GPUParameterBuffer, GPUPointDensity} from '@luma-contributors/graph/gpu-spatial-analysis';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUParameterBuffer, GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'map'});
 const viewport = new GPUParameterBuffer(device, {id: 'viewport', format: 'float32', length: 4});
@@ -75,8 +73,8 @@ contributors by task; the [operators index](./operators.md) lists them all.
 
 Contributors for networks, rasters and dataframe columns live in their own entries:
 [GPU Network](/docs/api-reference/experimental/gpu-network),
-[GPU Raster](/docs/api-reference/experimental/gpu-raster/operations-regions-contours) and
-[GPU Dataframe](/docs/api-reference/experimental/gpu-dataframe-analysis).
+[GPU Raster](https://luma.gl/docs/api-reference/experimental/gpu-raster/operations-regions-contours) and
+[GPU Dataframe](https://luma.gl/docs/api-reference/experimental/gpu-dataframe-analysis).
 
 ## Catalog
 
@@ -88,7 +86,7 @@ One figure per contributor, each drawn from a recorded GPU run on real data; cli
 
 See the [task-organized cross-reference](/docs/api-reference/experimental/gpu-spatial-analysis-cross-reference).
 
-Contributors live in `@luma-contributors/graph/gpu-spatial-analysis` unless the entry says
+Contributors live in `@luma-contributors/analysis/gpu-spatial-analysis` unless the entry says
 `(network)`, `(raster)` or `(dataframe)`, meaning `gpu-network`, `gpu-raster` and `gpu-dataframe`.
 Recipes are the `add...Recipe` builder functions. "Not built" rows point at the library to use
 instead (see the GPU Core maintainer roadmap). Every contributor runs on the GPU with
@@ -314,10 +312,10 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 ## See also
 
 - [Geospatial kernels](/docs/api-reference/experimental/geospatial) for the projection, distance, point-in-polygon, grid-index and point-query primitives these contributors compose
-- [GPUCommandGraph](/docs/api-reference/experimental/gpu-core/gpu-command-graph)
+- [GPUCommandGraph](https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-command-graph)
 - [GPU Network](/docs/api-reference/experimental/gpu-network) and [GPU Terrain](/docs/api-reference/experimental/gpu-terrain) for the network and elevation analysis contributors
-- [GPU Dataframe analysis contributors](/docs/api-reference/experimental/gpu-dataframe-analysis) for the column statistics, joins, and time filters the spatial contributors consume
-- [GPUGridIndex](/docs/api-reference/experimental/gpu-core/gpu-grid-index)
+- [GPU Dataframe analysis contributors](https://luma.gl/docs/api-reference/experimental/gpu-dataframe-analysis) for the column statistics, joins, and time filters the spatial contributors consume
+- [GPUGridIndex](https://luma.gl/docs/api-reference/experimental/gpu-core/gpu-grid-index)
 
 - [Adaptive generalized GWR](./adaptive-generalized-gwr.md)
 - [Unit fixed effects](./panel-fixed-effects.md)

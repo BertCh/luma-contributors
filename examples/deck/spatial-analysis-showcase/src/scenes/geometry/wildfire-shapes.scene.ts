@@ -6,7 +6,7 @@ import {CREDITS, joinCredits} from '../../cartography/credits';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './wildfire-shapes.md?raw?raw';
+import narrative from './wildfire-shapes.md?raw';
 import type {WildfireShapesOptions} from './wildfire-shapes.compute';
 
 const YEAR_COLORS = [

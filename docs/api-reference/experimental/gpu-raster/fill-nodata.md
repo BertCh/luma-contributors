@@ -26,7 +26,7 @@ and normalize that sentinel difference. GPU float32 arithmetic can differ from G
 accumulation; parity uses numerical tolerances.
 
 The direct Rasterio oracle generator is
-`modules/graph/test/oracles/raster-fill-four-quadrant.py`; its JSON records Rasterio and
+`modules/analysis/test/oracles/raster-fill-four-quadrant.py`; its JSON records Rasterio and
 GDAL versions. Cases cover asymmetric holes, borders and ties, bounded original donors and no
 donors. GPU tests resubmit the same compiled graph after changing input values. The implementation
 uses bounded local search rather than GDAL's scanline work files: work grows with pixel count and

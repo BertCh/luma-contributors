@@ -78,6 +78,8 @@ export async function createOsmCrossfilter(
   const daysBuffer = resources.createBuffer('days', history.days);
   const kindBuffer = resources.createBuffer('kind', history.kind);
   const contributorBuffer = resources.createBuffer('contributor', history.contributor);
+  // Published GPUCrossfilter has no 'count' view: the selected count is a single-key group over zero keys.
+  const zeroKeysBuffer = resources.createBuffer('zero-keys', new Uint32Array(count));
 
   // ---- Outputs --------------------------------------------------------------------------------------
   const timeOthers = resources.createBuffer('time-others', TIME_BINS * 4);
@@ -101,6 +103,7 @@ export async function createOsmCrossfilter(
   const days = v('days', daysBuffer, 'float32', count);
   const kind = v('kind', kindBuffer, 'uint32', count);
   const contributor = v('contributor', contributorBuffer, 'uint32', count);
+  const zeroKeys = v('zero-keys', zeroKeysBuffer, 'uint32', count);
   const filter = new GPUCrossfilter<void>(graph, {
     id: 'osm-crossfilter',
     dimensions: [
@@ -136,7 +139,8 @@ export async function createOsmCrossfilter(
       },
       {
         id: 'selected-count',
-        kind: 'count',
+        kind: 'group',
+        keys: zeroKeys,
         output: v('selected-count', selectedCount, 'uint32', 1)
       },
       {

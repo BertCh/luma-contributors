@@ -1,128 +1,47 @@
 ---
-title: Experimental modules
-description: A catalog of incubating luma.gl renderers, GPU algorithms, simulations, and WebXR helpers.
+title: Analysis modules
+description: Geospatial and analysis operations in @luma-contributors/analysis, built on published luma.gl.
 ---
 
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
-import {DocumentationBadge, DocumentationBadges} from '@site/src/components/docs/documentation-badges';
-import {OITExample} from '@site/src/examples';
+# Analysis modules
 
-# Experimental modules
+`@luma-contributors/analysis` is an extension of [luma.gl](https://luma.gl). It holds only the
+geospatial and analysis operations; the GPU infrastructure they run on (`GPUCommandGraph`, GPU Core
+operations, `GPUData`/`GPUVector`/`GPUTable`, GPU Dataframe, GPU Graph Algorithms, GPU Project, GPU
+DGGS, GPU Trace, physics and simulation, renderers) is owned and documented by luma.gl. Operations
+here are built from the public `@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph` APIs.
 
-<ExperimentalDocsTabs active="overview" />
+## Entries
 
-## Overview
-
-`@luma.gl/experimental` has been removed. Its APIs now live in ANARI, Engine experimental subpaths, and Graph experimental subpaths. These modules let the
-project validate new GPU architecture, analytics, rendering, and simulation contracts before they
-are considered for stable packages.
-
-<DocumentationBadges>
-  <DocumentationBadge tone="experimental">Experimental APIs</DocumentationBadge>
-  <DocumentationBadge tone="webgpu">WebGPU features available</DocumentationBadge>
-</DocumentationBadges>
-
-Use the matching public package and explicit subpath for each API. Public scene renderers and their lighting, shadow, and transparency helpers now live in `@luma.gl/anari`. Controls, material plugins, texture helpers, and WebXR APIs live under `@luma.gl/engine/experimental/*`. Path/polygon models live under `@luma.gl/engine/models`; simulation code lives under `@luma-contributors/graph/experimental/simulation`.
-
-## When to use it
-
-Use an experimental module when its current contract fits your application and you can absorb
-changes between releases. Prefer Core, Engine, Shaders, or another stable package when they
-already provide the required capability.
-
-## Live example
-
-This explicitly activated example compares A-buffer, weighted-blended, and ordinary alpha
-blending on the same scene. It demonstrates how an experimental renderer can still compose with
-stable Engine models and Shaders passes.
-
-<OITExample embedded showStats={false} />
-
-## Module catalog
-
-### GPU Core and GPU analytics
-
-| Module | Use it for |
+| Entry | Use it for |
 | --- | --- |
-| [`@luma-contributors/graph/gpu-data`](/docs/api-reference/graph/gpu-data) | Primitive GPU chunks, views, vectors, constants, memory formats, and basic layout helpers. |
-| [`@luma-contributors/graph/gpu-tables`](/docs/api-reference/experimental/gpu-tables) | GPU record batches, tables, schemas, bindings, computations, and generic table planners. |
-| `@luma.gl/engine/models` | Experimental path and polygon rendering models. GPU input preparation remains in `@luma-contributors/graph/experimental/models`. |
-| [`@luma-contributors/graph/gpu-core`](/docs/api-reference/experimental/gpu-core) | Schedule reusable GPU algorithms, validate resource dependencies, reuse transient storage, and drive indirect work. |
-| [`@luma-contributors/graph/gpu-graph-algorithms`](/docs/api-reference/experimental/gpu-graph) | GPU-resident topology, traversal, connectivity, ranking, community, and layout algorithms. |
-| [GPU Raster](/docs/api-reference/experimental/gpu-raster) | Validity-aware raster overviews, statistics, filters, morphology, contours, and bounded residency. |
-| [GPU Volume Algorithms](/docs/api-reference/experimental/lucim) | CuCIM-inspired dense 3D volume thresholding, morphology, connected components, and region measurements. |
-| [GPU Project](/docs/api-reference/experimental/gpu-project) | Adaptive high-precision coordinate projection on WebGPU. |
-| [GPU DGGS cells](/docs/api-reference/experimental/gpu-dggs) | H3 and A5 cell-center decoding for GPU-resident split-uint64 indexes. |
-| [GPU Trace](/docs/api-reference/experimental/gpu-trace) | Large GPU-resident trace scenes, interaction, aggregation, temporal indexing, comparison, and causal analysis. |
-| [GPU Dataframe](/docs/api-reference/experimental/gpu-dataframe) | Immutable GPU-resident dataframe expressions, grouping, aggregation, sorting, indexes, and joins. |
-| [GPU SQL](/docs/api-reference/experimental/gpu-sql) | Bounded SQL planning over registered GPU Dataframe inputs. |
-| [GPU Crossfilter](/docs/api-reference/experimental/gpu-crossfilter) | Linked GPU filtering, histograms, aggregates, and rendering masks. |
-| [Geospatial kernels](/docs/api-reference/experimental/geospatial) | Projection, distance, point-in-polygon, nearest-feature, grid-index, and spatial-query operations. |
-| [GPU Spatial Analysis](/docs/api-reference/experimental/gpu-spatial-analysis) | Analysis contributors composed from the geospatial kernels and GPU Core: spatial weights and statistics, joins, density, cells, lines, trajectories, and regression. |
-| [GPU Spatial Analysis cross-reference](/docs/api-reference/experimental/gpu-spatial-analysis-cross-reference) | Task-organised map from turf, PostGIS, GeoPandas, PySAL, QGIS, ArcGIS and CARTO tool names to the matching contributor. |
-| [GPU Terrain](/docs/api-reference/experimental/gpu-terrain) | Elevation-tile analysis contributors: slope, contours, viewshed, hydrology, solar shadows, and relief shading. |
-| [GPU Network](/docs/api-reference/experimental/gpu-network) | CSR network analysis contributors: reachability, service areas, accessibility, flow aggregation, and edge bundling. |
+| [`@luma-contributors/analysis/gpu-spatial-analysis`](/docs/api-reference/experimental/gpu-spatial-analysis) | Spatial weights and statistics, joins, density, cells, lines, geometry, trajectories, and regression. |
+| [`@luma-contributors/analysis/gpu-network`](/docs/api-reference/experimental/gpu-network) | CSR network analysis: reachability, service areas, accessibility, flow aggregation, and edge bundling. |
+| [`@luma-contributors/analysis/gpu-terrain`](/docs/api-reference/experimental/gpu-terrain) | Elevation-tile analysis: slope, contours, viewshed, hydrology, solar shadows, and relief shading. |
+| [`@luma-contributors/analysis/raster-analysis`](/docs/api-reference/experimental/gpu-raster) | Raster analysis: fill nodata, tile reprojection, fractional coverage, focal pairs, spectral indices, regions, contours, and statistics. |
+| [`@luma-contributors/analysis/dataframe-analysis`](/docs/api-reference/experimental/gpu-dataframe-analysis) | Analysis contributors over luma.gl GPU Dataframe columns: profiles, group statistics, joins, and standardization. |
+| [`@luma-contributors/analysis/geospatial-analysis`](/docs/api-reference/experimental/geospatial) | Geospatial contexts, datum grid transforms and point buffers layered on luma.gl GPU Project. |
+| [`@luma-contributors/analysis/pointcloud-analysis`](/docs/api-reference/experimental/pointcloud-analysis) | Point cloud neighborhoods, features, ground classification, registration, and change. |
+| [`@luma-contributors/analysis/computation-record`](/docs/api-reference/experimental/computation-record) | Recorded executions of a computation as plain data, for the lens views. |
+| [`@luma-contributors/analysis/analysis-core`](/docs/api-reference/experimental/gpu-spatial-analysis/concepts) | Shared kernels and contracts used by the analysis entries. |
 
-### Rendering moved to ANARI
+See the [analysis catalog](/docs/api-reference/experimental/analysis-catalog) for every contributor
+at a glance and the [cross-reference](/docs/api-reference/experimental/gpu-spatial-analysis-cross-reference)
+for a map from familiar tool names to contributors.
 
-The following APIs are owned by `@luma.gl/anari`.
+## What luma.gl owns
 
-| Module | Use it for |
-| --- | --- |
-| [SceneRenderer](/docs/api-reference/anari/scene-renderer) | Retained physically based forward rendering on WebGPU and WebGL 2. |
-| [DeferredSceneRenderer](/docs/api-reference/anari/deferred-scene-renderer) | G-buffer-based opaque lighting with forward fallbacks for unsupported materials. |
-| [PBR environments](/docs/api-reference/anari/pbr-environment) | Diffuse irradiance, prefiltered specular cubemaps, and BRDF lookup textures. |
-| [GBuffer](/docs/api-reference/anari/g-buffer) | Standard scene color, normal, roughness, velocity, and depth attachments. |
-| [Selection outlines](/docs/api-reference/anari/selection-outline) | Visible placement boundaries from exact integer ID textures. |
-| [Deferred lighting](/docs/api-reference/anari/deferred-lighting) | Fullscreen lighting from G-buffer material targets. |
-| [Clustered lighting](/docs/api-reference/anari/clustered-lighting) | Compute-binned local lights for deferred shading. |
-| [Shadow maps](/docs/api-reference/anari/shadow-map-renderer) | Cascaded, spot-array, and point cube-array shadows with PCSS filtering. |
+Link to the luma.gl documentation rather than to copies here:
 
-### Materials and transparency
+- [GPU Core and `GPUCommandGraph`](https://luma.gl/docs/api-reference/experimental/gpu-core)
+- [GPU Data and GPU Tables](https://luma.gl/docs/api-reference/graph/gpu-data)
+- [GPU Dataframe and GPU SQL](https://luma.gl/docs/api-reference/experimental/gpu-dataframe)
+- [GPU Graph Algorithms](https://luma.gl/docs/api-reference/experimental/gpu-graph)
+- [GPU Project and GPU DGGS](https://luma.gl/docs/api-reference/experimental/gpu-project)
+- [Glossary](https://luma.gl/docs/glossary)
 
-| Module | Use it for |
-| --- | --- |
-| [A-buffer renderer](/docs/api-reference/anari/a-buffer-renderer) | Accurate bounded per-pixel fragment storage, sorting, and compositing. |
-| [Weighted blended OIT](/docs/api-reference/anari/wboit-renderer) | Portable approximate order-independent transparency without sorting. |
-| [Glass material](/docs/api-reference/engine/experimental/glass-material) | Screen-space refraction, Fresnel reflection, dispersion, and absorption. |
-| [Reflective material](/docs/api-reference/engine/experimental/reflective-material) | Lightweight glossy environment reflection. |
-| [Spectral caustics](/docs/api-reference/anari/spectral-caustics-renderer) | Geometry-derived multi-wavelength planar caustic lighting. |
-| [Comparison splitter](/docs/api-reference/engine/experimental/comparison-splitter) | Accessible before-and-after canvas comparisons. |
+## Conventions
 
-### Simulation and immersive input
-
-| Module | Use it for |
-| --- | --- |
-| [MLS-MPM fluid](/docs/api-reference/experimental/mls-mpm-fluid-simulation) | Fixed-capacity two-dimensional particle/grid fluid simulation. |
-| [Spectral ocean](/docs/api-reference/experimental/spectral-ocean-simulation) | Deterministic FFT-based ocean displacement and foam. |
-| [Volumetric fire](/docs/api-reference/experimental/volumetric-fire-simulation) | GPU-resident volumetric combustion and rendering. |
-| [WebXR](/docs/api-reference/engine/experimental/webxr) | Experimental WebGPU/WebGL session, frame, and camera helpers. |
-
-## Core concepts
-
-Experimental modules follow the same ownership model as the rest of luma.gl: callers own the frame
-loop and command submission unless a reference explicitly says otherwise. GPU Core contributors
-declare work but do not submit it. Renderer and simulation references state which resources they
-own, borrow, cache, or expose.
-
-Use the [shared glossary](/docs/glossary) for resource, ownership, binding, pipeline, pass,
-submission, data hazard, indirect work, and GPU residency terminology.
-
-## Limits and compatibility
-
-Experimental APIs may change or be removed without the compatibility guarantees of stable
-packages. Many GPU Core and simulation modules require WebGPU; individual references state backend,
-feature, capacity, and memory requirements. Treat benchmark results as workload- and adapter-
-specific rather than universal performance claims.
-
-## Related modules
-
-- [Choosing a luma.gl API layer](/docs/api-guide)
-- [Core API](/docs/api-reference/core)
-- [Engine API](/docs/api-reference/engine)
-- [Shaders API](/docs/api-reference/shaders)
-- [Effects API](/docs/api-reference/effects)
-
-[`DepthTextureCopy`](../anari/depth-texture-copy.md) transfers projected ray depth to a render attachment for raster overlays.
-
-[`getRayTracingQualityPreset`](../anari/ray-tracing-quality-presets.md) supplies interactive and still settings without changing camera or sampling seed.
+Contributors declare work on a caller-owned `GPUCommandGraph` and return command nodes; callers own
+the frame loop, command submission and readback. Entries are WebGPU-first; individual pages state
+backend, capacity and precision limits.

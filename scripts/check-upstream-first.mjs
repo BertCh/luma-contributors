@@ -4,7 +4,7 @@
 
 // Enforce dev-docs/upstream-first-plan.md:
 // - luma.gl is imported only through published public entry points
-// - analysis source lives only in analysis-owned directories (src/_pending must be empty)
+// - analysis source lives only in analysis-owned directories
 import fs from 'node:fs';
 import path from 'node:path';
 import {createRequire} from 'node:module';

@@ -3,13 +3,11 @@ title: "GPU Spatial Analysis operators"
 description: "Index of every GPU Spatial Analysis contributor and recipe by operator family."
 ---
 
-import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-tabs';
 
 # GPU Spatial Analysis operators
 
-<ExperimentalDocsTabs active="gpu-spatial-analysis-operators" />
 
-Every contributor and recipe exported by `@luma-contributors/graph/gpu-spatial-analysis`, grouped by
+Every contributor and recipe exported by `@luma-contributors/analysis/gpu-spatial-analysis`, grouped by
 operator family. Each family page documents inputs, outputs, capacity, status and parameters, and
 ends each section with how the contributor computes. Read
 [GPU Spatial Analysis concepts](./concepts.md) first for the shared ports, conventions and the

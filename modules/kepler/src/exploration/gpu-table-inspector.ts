@@ -6,6 +6,7 @@ import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {Buffer} from '@luma.gl/core';
 import {readAllBuffers} from './read-all-buffers';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {MeteredCommandGraph} from '../session/metered-command-graph';
 import {GPUCommandGraph, GPUGather, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUDataFrame,
@@ -411,7 +412,7 @@ export class GPUKeplerTableInspector {
         table,
         ...(validity ? {validity: {value: validity}} : {})
       });
-      const graph = new GPUCommandGraph<GPUDataFrameQueryParameters>(this.session.device, {
+      const graph = new MeteredCommandGraph<GPUDataFrameQueryParameters>(this.session.device, {
         id: 'kepler-table-sort'
       });
       query =
@@ -433,9 +434,9 @@ export class GPUKeplerTableInspector {
       ]) {
         for (const data of vector.data) buffers.add(getBuffer(data));
       }
-      // Published compiled queries keep their graph private, so query scratch is not counted here:
-      // this admission is a lower bound on real GPU memory (owned buffers only).
-      const accountedBytes = [...buffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
+      const accountedBytes =
+        [...buffers].reduce((sum, buffer) => sum + buffer.byteLength, 0) +
+        graph.transientByteLength;
       if (accountedBytes > reservation.byteLength)
         throw new KeplerAllocationError('memory-budget', {
           message: 'Table sort exceeds its reserved working memory'

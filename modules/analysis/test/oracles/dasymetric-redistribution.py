@@ -5,7 +5,7 @@
 
 Install pinned reference dependencies in an isolated environment:
   pip install tobler==0.14.0 shapely==2.1.2 geopandas==1.1.1 rasterio==1.4.3 numpy==2.2.6
-Run: python -I modules/analysis/test/oracles/dasymetric-redistribution.py
+Run: python -I modules/graph/test/oracles/dasymetric-redistribution.py
 
 GEOS intersections supply fractional source/cell support. Continuous ancillary density
 is a weighted sum of these exact geometric areas, composed with extensive allocation;
@@ -87,7 +87,7 @@ for name, ancillary in [('continuous', [2., 0., 1., 3., 1., 0.]),
         cases.append(result)
 fixture = {
     'generator': Path(__file__).name,
-    'command': 'python -I modules/analysis/test/oracles/dasymetric-redistribution.py',
+    'command': 'python -I modules/graph/test/oracles/dasymetric-redistribution.py',
     'versions': {name: importlib.metadata.version(name) for name in [*PINNED, 'scipy', 'pandas', 'pyproj']},
     'conventions': {'coordinates': 'EPSG:3857 planar meters', 'areaUnits': 'square meters',
                     'ancillaryUnits': 'relative density per square meter', 'targetOwnership': 'whole cells',

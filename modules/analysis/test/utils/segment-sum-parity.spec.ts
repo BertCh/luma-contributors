@@ -72,15 +72,13 @@ function createCase(segmentCount: number, seed: number) {
   return {offsets, values, nanSegment, nanPopulated: lengths[nanSegment] > 0};
 }
 
-async function runImplementation(
+async function runSegmentSum(
   device: Device,
-  testCase: ReturnType<typeof createCase>,
-  implementation: 'auto' | 'kernel',
-  offsetsWithinInput: boolean
+  testCase: ReturnType<typeof createCase>
 ): Promise<{bits: Uint32Array; nodeCount: number; milliseconds: number}> {
   const {offsets, values} = testCase;
   const segmentCount = offsets.length - 1;
-  const graph = new GPUCommandGraph(device, {id: `segment-sum-${implementation}`});
+  const graph = new GPUCommandGraph(device, {id: `segment-sum`});
   const inputBuffer = createInputBuffer(device, values.length ? values : new Float32Array(1));
   const offsetBuffer = createInputBuffer(device, offsets);
   const outputBuffer = createOutputBuffer(device, segmentCount);
@@ -90,9 +88,7 @@ async function runImplementation(
     segmentCount,
     input: importGraphBuffer(graph, 'input', inputBuffer, 'float32', values.length),
     segmentOffsets: importGraphBuffer(graph, 'offsets', offsetBuffer, 'uint32', offsets.length),
-    output: importGraphBuffer(graph, 'output', outputBuffer, 'float32', segmentCount),
-    offsetsWithinInput,
-    implementation
+    output: importGraphBuffer(graph, 'output', outputBuffer, 'float32', segmentCount)
   });
   graph.add(node);
   const compiled = graph.compile();
@@ -121,50 +117,37 @@ function expectSameBits(actual: Uint32Array, expected: Float32Array): void {
   expect(mismatches, 'segments whose f32 bits differ').toBe(0);
 }
 
-it('createSegmentSumNode: upstream path is bit-identical to the local kernel and the CPU order', async () => {
+it('createSegmentSumNode: matches the CPU order bit for bit', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const testCase = createCase(3000, 7);
-  const upstream = await runImplementation(device, testCase, 'auto', true);
-  const kernel = await runImplementation(device, testCase, 'kernel', true);
-  expectSameBits(upstream.bits, new Float32Array(kernel.bits.buffer));
-  expectSameBits(kernel.bits, sumSegmentsOnCpu(testCase.values, testCase.offsets));
-  const sums = new Float32Array(upstream.bits.buffer);
+  const result = await runSegmentSum(device, testCase);
+  expectSameBits(result.bits, sumSegmentsOnCpu(testCase.values, testCase.offsets));
+  const sums = new Float32Array(result.bits.buffer);
   if (testCase.nanPopulated) expect(Number.isNaN(sums[testCase.nanSegment])).toBe(true);
-  // Empty segments are exactly +0 on both paths.
+  // Empty segments are exactly +0.
   for (let segment = 0; segment < sums.length; segment++) {
     if (testCase.offsets[segment] === testCase.offsets[segment + 1]) {
-      expect(upstream.bits[segment]).toBe(0);
-      expect(kernel.bits[segment]).toBe(0);
+      expect(result.bits[segment]).toBe(0);
     }
   }
-  console.log(
-    `segment-sum 3000 segments: upstream ${upstream.milliseconds.toFixed(1)} ms, kernel ${kernel.milliseconds.toFixed(1)} ms`
-  );
 });
 
-it('createSegmentSumNode: above 65535 segments falls back to the local kernel and stays correct', async () => {
+it('createSegmentSumNode: above 65535 segments stays correct', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const testCase = createCase(70000, 11);
-  // 'auto' with offsetsWithinInput would exceed upstream's x-dimension limit, so it must fall back.
-  const automatic = await runImplementation(device, testCase, 'auto', true);
-  const kernel = await runImplementation(device, testCase, 'kernel', true);
-  expectSameBits(automatic.bits, new Float32Array(kernel.bits.buffer));
-  expectSameBits(kernel.bits, sumSegmentsOnCpu(testCase.values, testCase.offsets));
-  console.log(
-    `segment-sum 70000 segments: auto ${automatic.milliseconds.toFixed(1)} ms, kernel ${kernel.milliseconds.toFixed(1)} ms`
-  );
+  const result = await runSegmentSum(device, testCase);
+  expectSameBits(result.bits, sumSegmentsOnCpu(testCase.values, testCase.offsets));
 });
 
-it('createSegmentSumNode: offsets beyond the input stay clamped when not declared within the input', async () => {
+it('createSegmentSumNode: offsets beyond the input stay clamped', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const base = createCase(50, 3);
   // Last segment end runs past the input, as an excluded-key offset can.
   const offsets = Uint32Array.from(base.offsets);
   offsets[offsets.length - 1] += 1000;
-  const testCase = {...base, offsets};
-  const automatic = await runImplementation(device, testCase, 'auto', false);
-  expectSameBits(automatic.bits, sumSegmentsOnCpu(base.values, offsets));
+  const result = await runSegmentSum(device, {...base, offsets});
+  expectSameBits(result.bits, sumSegmentsOnCpu(base.values, offsets));
 });

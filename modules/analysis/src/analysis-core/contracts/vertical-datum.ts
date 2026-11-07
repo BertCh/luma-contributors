@@ -29,3 +29,14 @@ export function assertCompatibleGPUVerticalDatums(
     );
   }
 }
+
+/**
+ * Resolves the declared elevation datum: the explicit operator prop, else the `verticalDatum`
+ * that `makeGPURasterBand` attaches to a band (published bands carry no datum metadata).
+ */
+export function resolveGPUElevationVerticalDatum(
+  elevation: object,
+  elevationVerticalDatum?: string
+): string | undefined {
+  return elevationVerticalDatum ?? (elevation as {verticalDatum?: string}).verticalDatum;
+}

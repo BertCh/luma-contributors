@@ -6,7 +6,7 @@
 Writes fixtures/dataframe-class-breaks.json next to this script (consumed by
 test/gpu-dataframe/column-classification/class-breaks-reference.node.spec.ts and the
 'mapclassify and jenkspy references' case of gpu-class-breaks.spec.ts). Run from anywhere with
-    <venv>/bin/python -I modules/analysis/test/oracles/dataframe-class-breaks.py
+    <venv>/bin/python -I modules/graph/test/oracles/dataframe-class-breaks.py
 in a venv with numpy, mapclassify and jenkspy (versions are recorded in the fixture).
 
 Scenes are float32 columns from numpy's seeded PCG64 generator; the fixture stores the exact

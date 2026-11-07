@@ -7,7 +7,7 @@ import {CITY_FRAMES, labelsFor, MONTREAL} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
-import narrative from './bixi-communities.md?raw?raw';
+import narrative from './bixi-communities.md?raw';
 import type {BixiCommunitiesOptions} from './bixi-communities.compute';
 import {getCommunityLegends} from './bixi-communities-style';
 import {FLOW_CREDITS} from './flows-style';

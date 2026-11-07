@@ -5,9 +5,7 @@
 
 All original Chicago nodes/arcs, preserving CSR occurrence order and original IDs.
 No geometry/CRS arithmetic or weighted routing: both APIs ignore supplied weights.
-Analytics: MultiDiGraph in/out degrees, uniform PageRank (f32 damping, dangling
-redistribution), simple weak core numbers (remove loops/parallel adjacency), weak
-components labeled by minimum row. Undirected synthetic input is symmetric CSR;
+Analytics: MultiDiGraph in/out degrees, weak components labeled by minimum row. Undirected synthetic input is symmetric CSR;
 loops count once per CSR occurrence. Normalize complete columns by (x-min)/(max-min),
 zero for constant columns. No betweenness/closeness or heuristic communities claim.
 Neighborhood: networkx.multi_source_dijkstra_path_length(weight=None,cutoff=k),
@@ -59,16 +57,12 @@ def generate(output,name,count,edges,directed,source,nodeIds=None):
     graph.add_edges_from(zip(sources,neighbors))
     weak=networkx.Graph(graph)
     weak.remove_edges_from(networkx.selfloop_edges(weak))
-    cores=networkx.core_number(weak)
-    ranks=networkx.pagerank(graph,alpha=float(numpy.float32(.85)),weight=None,tol=1e-15/count,max_iter=4096)
     components={node:min(component) for component in networkx.connected_components(weak) for node in component}
     metrics={'degree':[graph.out_degree(node) for node in graph],
         'inDegree':[graph.in_degree(node) for node in graph],
-        'coreNumber':[cores[node] for node in graph],
-        'pageRank':[ranks[node] for node in graph],
         'components':[components[node] for node in graph]}
     references={'degree':'networkx.MultiDiGraph.out_degree','inDegree':'networkx.MultiDiGraph.in_degree',
-        'coreNumber':'networkx.core_number','pageRank':'networkx.pagerank','components':'networkx.connected_components'}
+        'components':'networkx.connected_components'}
     for metric,values in metrics.items():
         minimum,maximum=min(values),max(values)
         normalized=[(value-minimum)/(maximum-minimum) if maximum>minimum else 0 for value in values]

@@ -90,7 +90,7 @@ The output buffers are allocated by the application. `coverage` is the output of
 `GPURasterFractionalCoverage` producer in the same graph.
 
 ```typescript
-import {GPURasterFractionalZonalDistribution} from '@luma-contributors/graph/gpu-raster';
+import {GPURasterFractionalZonalDistribution} from '@luma-contributors/analysis/raster-analysis';
 
 // probabilities contains [0.25, 0.5, 0.75]. Quantile outputs need zoneCount * 3 rows.
 graph.add(new GPURasterFractionalZonalDistribution({
@@ -139,7 +139,7 @@ browser speed advantage or production-scale envelope until dedicated GPU measure
 ## Reference and verification
 
 The pinned generator is
-`modules/graph/test/oracles/fractional-zonal-distribution.py`, using Python 3.12,
+`modules/analysis/test/oracles/fractional-zonal-distribution.py`, using Python 3.12,
 exactextract 0.3.0, NumPy 2.3.4 and Shapely 2.1.2. Direct `exact_extract` calls provide quantiles,
 mean, population variance and coverage count. `numpy.cov(aweights=coverage, ddof=1)` independently
 provides sample variance; sum/dot composition provides effective support. Geometry fixtures use

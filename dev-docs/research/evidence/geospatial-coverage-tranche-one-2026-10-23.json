@@ -1,0 +1,577 @@
+{
+  "metadata": {
+    "schemaVersion": 1,
+    "seed": 1592598566,
+    "recordedAt": "2026-10-23T23:16:08.671Z",
+    "sourceRevision": "3dd6bdb150e4bad8480cd14c1d2d53188b6f5e26",
+    "sourceState": "uncommitted isolated coverage tranche one; no concurrent GPU verification",
+    "device": {
+      "type": "webgpu",
+      "vendor": "apple",
+      "renderer": "",
+      "version": "",
+      "gpu": "apple",
+      "gpuType": "unknown",
+      "gpuBackend": "unknown",
+      "gpuArchitecture": "metal-3",
+      "fallback": false,
+      "featureLevel": "max",
+      "subgroupMinSize": 32,
+      "subgroupMaxSize": 32,
+      "shadingLanguage": "wgsl",
+      "shadingLanguageVersion": 100
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "limits": {
+      "maxStorageBuffersPerShaderStage": 10,
+      "maxStorageBufferBindingSize": 4294967292,
+      "maxComputeInvocationsPerWorkgroup": 1024
+    },
+    "method": "Setup includes allocation/declaration, upload includes queue completion, compile is synchronous host work, execution includes encode+submit+queue. One extra warmup then five repetitions; three alternating input updates. Readback and assertions outside execution samples. Capture retention enabled; caches not cleared.",
+    "unavailable": [
+      "GPU timestamp measurements",
+      "driver peak memory",
+      "optimized CPU library throughput"
+    ],
+    "scope": "Focal pairs, fractional distribution and prepared-coverage dasymetric; categorical and spectral throughput unmeasured. Observed bounded workloads only, no performance thresholds or speed ratios."
+  },
+  "measurements": [
+    {
+      "workload": "focal-pairs",
+      "side": 8,
+      "shape": {
+        "cells": 64,
+        "radius": 2,
+        "maximumWindowPairs": 25
+      },
+      "setupMilliseconds": 3.0999999940395355,
+      "uploadMilliseconds": 2.9000000059604645,
+      "compileHostMilliseconds": 10.299999997019768,
+      "firstExecution": {
+        "encodeSubmitQueueMilliseconds": 82.3999999910593,
+        "cpuEncodeMilliseconds": 1.0999999940395355
+      },
+      "repeatedExecution": [
+        {
+          "encodeSubmitQueueMilliseconds": 0.3999999910593033,
+          "cpuEncodeMilliseconds": 0.19999998807907104
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0.20000000298023224
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.20000000298023224,
+          "cpuEncodeMilliseconds": 0
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.4000000059604645,
+          "cpuEncodeMilliseconds": 0.10000000894069672
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.3999999910593033,
+          "cpuEncodeMilliseconds": 0.09999999403953552
+        }
+      ],
+      "initialReadbackMilliseconds": 7,
+      "repeatedReadbackMilliseconds": 4,
+      "updatedSamples": [
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.20000000298023224,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0.09999999403953552
+          },
+          "readbackMilliseconds": 1.7000000029802322
+        },
+        {
+          "updated": false,
+          "updateUploadMilliseconds": 0.10000000894069672,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0.19999998807907104
+          },
+          "readbackMilliseconds": 3.7999999970197678
+        },
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.09999999403953552,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 0.5,
+            "cpuEncodeMilliseconds": 0.09999999403953552
+          },
+          "readbackMilliseconds": 1.6000000089406967
+        }
+      ],
+      "changedInput": "response",
+      "updateBytes": 256,
+      "inputBytes": 512,
+      "graphNodes": 4,
+      "graphPhysicalTransientBytes": 2048,
+      "graphImportedBytes": 2560,
+      "driverPeakBytes": null,
+      "gpuTimestampMilliseconds": null,
+      "numericalChecks": "Independent analytic fits or CPU weighted sums checked initially, after repetitions and after each alternating update"
+    },
+    {
+      "workload": "focal-pairs",
+      "side": 32,
+      "shape": {
+        "cells": 1024,
+        "radius": 2,
+        "maximumWindowPairs": 25
+      },
+      "setupMilliseconds": 1,
+      "uploadMilliseconds": 0.5,
+      "compileHostMilliseconds": 1.699999988079071,
+      "firstExecution": {
+        "encodeSubmitQueueMilliseconds": 64.20000000298023,
+        "cpuEncodeMilliseconds": 0
+      },
+      "repeatedExecution": [
+        {
+          "encodeSubmitQueueMilliseconds": 1,
+          "cpuEncodeMilliseconds": 0.10000000894069672
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.4000000059604645,
+          "cpuEncodeMilliseconds": 0.20000000298023224
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.3999999910593033,
+          "cpuEncodeMilliseconds": 0.09999999403953552
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0.10000000894069672
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.29999999701976776,
+          "cpuEncodeMilliseconds": 0.10000000894069672
+        }
+      ],
+      "initialReadbackMilliseconds": 6.799999997019768,
+      "repeatedReadbackMilliseconds": 4.600000008940697,
+      "updatedSamples": [
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.29999999701976776,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 0.800000011920929,
+            "cpuEncodeMilliseconds": 0.20000000298023224
+          },
+          "readbackMilliseconds": 2.699999988079071
+        },
+        {
+          "updated": false,
+          "updateUploadMilliseconds": 0.5,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 1.2999999970197678,
+            "cpuEncodeMilliseconds": 0.20000000298023224
+          },
+          "readbackMilliseconds": 1.9000000059604645
+        },
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.6000000089406967,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 1.0999999940395355,
+            "cpuEncodeMilliseconds": 0.09999999403953552
+          },
+          "readbackMilliseconds": 2.2999999970197678
+        }
+      ],
+      "changedInput": "response",
+      "updateBytes": 4096,
+      "inputBytes": 8192,
+      "graphNodes": 4,
+      "graphPhysicalTransientBytes": 32768,
+      "graphImportedBytes": 40960,
+      "driverPeakBytes": null,
+      "gpuTimestampMilliseconds": null,
+      "numericalChecks": "Independent analytic fits or CPU weighted sums checked initially, after repetitions and after each alternating update"
+    },
+    {
+      "workload": "fractional-distribution",
+      "side": 8,
+      "shape": {
+        "cells": 64,
+        "tuples": 64,
+        "zones": 8,
+        "quantiles": 3
+      },
+      "setupMilliseconds": 2.199999988079071,
+      "uploadMilliseconds": 1.2000000029802322,
+      "compileHostMilliseconds": 2.2000000029802322,
+      "firstExecution": {
+        "encodeSubmitQueueMilliseconds": 138.5,
+        "cpuEncodeMilliseconds": 0.5
+      },
+      "repeatedExecution": [
+        {
+          "encodeSubmitQueueMilliseconds": 0.6000000089406967,
+          "cpuEncodeMilliseconds": 0.20000000298023224
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.7999999970197678,
+          "cpuEncodeMilliseconds": 0.10000000894069672
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 1,
+          "cpuEncodeMilliseconds": 0.20000000298023224
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.5,
+          "cpuEncodeMilliseconds": 0.09999999403953552
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 0.7000000029802322,
+          "cpuEncodeMilliseconds": 0.20000000298023224
+        }
+      ],
+      "initialReadbackMilliseconds": 8.599999994039536,
+      "repeatedReadbackMilliseconds": 2.3999999910593033,
+      "updatedSamples": [
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 1.8999999910593033,
+            "cpuEncodeMilliseconds": 0.3999999910593033
+          },
+          "readbackMilliseconds": 4.5
+        },
+        {
+          "updated": false,
+          "updateUploadMilliseconds": 0.09999999403953552,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 0.7999999970197678,
+            "cpuEncodeMilliseconds": 0.20000000298023224
+          },
+          "readbackMilliseconds": 3.5
+        },
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.5999999940395355,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 1.2000000029802322,
+            "cpuEncodeMilliseconds": 0.20000000298023224
+          },
+          "readbackMilliseconds": 2.5999999940395355
+        }
+      ],
+      "changedInput": "sourceValues",
+      "updateBytes": 256,
+      "inputBytes": 1080,
+      "graphNodes": 17,
+      "graphPhysicalTransientBytes": 2924,
+      "graphImportedBytes": 1592,
+      "driverPeakBytes": null,
+      "gpuTimestampMilliseconds": null,
+      "numericalChecks": "Independent analytic fits or CPU weighted sums checked initially, after repetitions and after each alternating update"
+    },
+    {
+      "workload": "fractional-distribution",
+      "side": 32,
+      "shape": {
+        "cells": 1024,
+        "tuples": 1024,
+        "zones": 8,
+        "quantiles": 3
+      },
+      "setupMilliseconds": 4,
+      "uploadMilliseconds": 1.2999999970197678,
+      "compileHostMilliseconds": 2.0999999940395355,
+      "firstExecution": {
+        "encodeSubmitQueueMilliseconds": 88.40000000596046,
+        "cpuEncodeMilliseconds": 1.3999999910593033
+      },
+      "repeatedExecution": [
+        {
+          "encodeSubmitQueueMilliseconds": 3.2000000029802322,
+          "cpuEncodeMilliseconds": 0.7000000029802322
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 4.5,
+          "cpuEncodeMilliseconds": 0.7000000029802322
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 2.8999999910593033,
+          "cpuEncodeMilliseconds": 0.5999999940395355
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 3.5,
+          "cpuEncodeMilliseconds": 0.7000000029802322
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 3,
+          "cpuEncodeMilliseconds": 0.5
+        }
+      ],
+      "initialReadbackMilliseconds": 3.7999999970197678,
+      "repeatedReadbackMilliseconds": 3.7000000029802322,
+      "updatedSamples": [
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.09999999403953552,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 3.5,
+            "cpuEncodeMilliseconds": 0.5
+          },
+          "readbackMilliseconds": 4.299999997019768
+        },
+        {
+          "updated": false,
+          "updateUploadMilliseconds": 0.09999999403953552,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 3.2000000029802322,
+            "cpuEncodeMilliseconds": 0.5
+          },
+          "readbackMilliseconds": 3.7000000029802322
+        },
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.20000000298023224,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 2.8999999910593033,
+            "cpuEncodeMilliseconds": 0.5
+          },
+          "readbackMilliseconds": 2.7000000029802322
+        }
+      ],
+      "changedInput": "sourceValues",
+      "updateBytes": 4096,
+      "inputBytes": 16440,
+      "graphNodes": 86,
+      "graphPhysicalTransientBytes": 49228,
+      "graphImportedBytes": 16952,
+      "driverPeakBytes": null,
+      "gpuTimestampMilliseconds": null,
+      "numericalChecks": "Independent analytic fits or CPU weighted sums checked initially, after repetitions and after each alternating update"
+    },
+    {
+      "workload": "dasymetric",
+      "side": 8,
+      "shape": {
+        "cells": 64,
+        "tuples": 64,
+        "sourceZones": 8,
+        "targetZones": 4
+      },
+      "setupMilliseconds": 4.100000008940697,
+      "uploadMilliseconds": 1.0999999940395355,
+      "compileHostMilliseconds": 2.2000000029802322,
+      "firstExecution": {
+        "encodeSubmitQueueMilliseconds": 312.5,
+        "cpuEncodeMilliseconds": 0.5999999940395355
+      },
+      "repeatedExecution": [
+        {
+          "encodeSubmitQueueMilliseconds": 1.5,
+          "cpuEncodeMilliseconds": 0.19999998807907104
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 1.2999999970197678,
+          "cpuEncodeMilliseconds": 0.19999998807907104
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 1.5999999940395355,
+          "cpuEncodeMilliseconds": 0.29999999701976776
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 1.4000000059604645,
+          "cpuEncodeMilliseconds": 0.29999999701976776
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 1.3999999910593033,
+          "cpuEncodeMilliseconds": 0.29999999701976776
+        }
+      ],
+      "initialReadbackMilliseconds": 4.700000002980232,
+      "repeatedReadbackMilliseconds": 4.300000011920929,
+      "updatedSamples": [
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.09999999403953552,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 1.1000000089406967,
+            "cpuEncodeMilliseconds": 0.4000000059604645
+          },
+          "readbackMilliseconds": 3.2000000029802322
+        },
+        {
+          "updated": false,
+          "updateUploadMilliseconds": 0.4000000059604645,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 1.3999999910593033,
+            "cpuEncodeMilliseconds": 0.29999999701976776
+          },
+          "readbackMilliseconds": 4.100000008940697
+        },
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.09999999403953552,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 1.300000011920929,
+            "cpuEncodeMilliseconds": 0.30000001192092896
+          },
+          "readbackMilliseconds": 3
+        }
+      ],
+      "changedInput": "sourceTotals",
+      "updateBytes": 32,
+      "inputBytes": 1356,
+      "graphNodes": 49,
+      "graphPhysicalTransientBytes": 3880,
+      "graphImportedBytes": 1548,
+      "driverPeakBytes": null,
+      "gpuTimestampMilliseconds": null,
+      "numericalChecks": "Independent analytic fits or CPU weighted sums checked initially, after repetitions and after each alternating update"
+    },
+    {
+      "workload": "dasymetric",
+      "side": 32,
+      "shape": {
+        "cells": 1024,
+        "tuples": 1024,
+        "sourceZones": 8,
+        "targetZones": 4
+      },
+      "setupMilliseconds": 2.5,
+      "uploadMilliseconds": 0.6000000089406967,
+      "compileHostMilliseconds": 2,
+      "firstExecution": {
+        "encodeSubmitQueueMilliseconds": 299.29999999701977,
+        "cpuEncodeMilliseconds": 0.5999999940395355
+      },
+      "repeatedExecution": [
+        {
+          "encodeSubmitQueueMilliseconds": 2.5999999940395355,
+          "cpuEncodeMilliseconds": 0.5
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 2.6000000089406967,
+          "cpuEncodeMilliseconds": 0.5
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 2.3999999910593033,
+          "cpuEncodeMilliseconds": 0.3999999910593033
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 2.2000000029802322,
+          "cpuEncodeMilliseconds": 0.4000000059604645
+        },
+        {
+          "encodeSubmitQueueMilliseconds": 2,
+          "cpuEncodeMilliseconds": 0.29999999701976776
+        }
+      ],
+      "initialReadbackMilliseconds": 3.7000000029802322,
+      "repeatedReadbackMilliseconds": 4,
+      "updatedSamples": [
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.10000000894069672,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 2.0999999940395355,
+            "cpuEncodeMilliseconds": 0.3999999910593033
+          },
+          "readbackMilliseconds": 3.1000000089406967
+        },
+        {
+          "updated": false,
+          "updateUploadMilliseconds": 0,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 2.0999999940395355,
+            "cpuEncodeMilliseconds": 0.4000000059604645
+          },
+          "readbackMilliseconds": 1.9000000059604645
+        },
+        {
+          "updated": true,
+          "updateUploadMilliseconds": 0.10000000894069672,
+          "execution": {
+            "encodeSubmitQueueMilliseconds": 2.7999999970197678,
+            "cpuEncodeMilliseconds": 0.29999999701976776
+          },
+          "readbackMilliseconds": 2.7000000029802322
+        }
+      ],
+      "changedInput": "sourceTotals",
+      "updateBytes": 32,
+      "inputBytes": 20556,
+      "graphNodes": 61,
+      "graphPhysicalTransientBytes": 69668,
+      "graphImportedBytes": 20748,
+      "driverPeakBytes": null,
+      "gpuTimestampMilliseconds": null,
+      "numericalChecks": "Independent analytic fits or CPU weighted sums checked initially, after repetitions and after each alternating update"
+    }
+  ],
+  "sourceFileSha256": {
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-dasymetric.example.ts": "f29ca5101619388f155532d491dd1d61bca2565b257e3466b38a7535ccc1dea5",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-evi.example.ts": "1687d1e90d7b926922934a444e47864c0b324b152fede05b3c97270aab009066",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-focal-pairs.example.ts": "145d68dc34ad8b44cc5782d385acb0b55b240735f461074420e66c87c83b4b52",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-fractional-categorical-statistics.example.ts": "42748b0098e3cbc9a56d41f202476a96196ec6b6f4b569ca75453ad3dd361664",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-fractional-zonal-distribution.example.ts": "36ddea853e2b29cc8e395d27e0dac529a45e8a503d0e62611ae2a86f83c814ee",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-nbr.example.ts": "60b5d23b2fa66814193b3aebbef68e20b7a98a047de67c1a3dc5ff976a666d82",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-ndwi.example.ts": "31b1b87f5fc889ac9c611c54888b0162a467b941549ae1e528419b27b7606498",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-runner.ts": "a91d9dd584a18540b434f0d096893dd8fd5e026df3ea0bbe09604c8cfc329afe",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-savi.example.ts": "d5e4110e7733fe942fcf0db040a048db1dd164374b1d5700663f3198c8bd0583",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one.scenarios.ts": "3c0ee0f4e54bc1f77167441c30d1c20711f5541913975b96cd69a659af78c530",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/index.ts": "9daca2aa2cbb3e5fb8da798a3bee9fb4842caf72dc211cb88ca33d17fe58a8dc",
+    "modules/graph/src/computation-lenses/scenarios/gpu-raster/raster-lens-harness.ts": "ea6c8a01fbc83742be7c0b9cc27f1567351356d27589a6a44563d530fc971545",
+    "modules/graph/src/gpu-raster/computation-pack/index.ts": "3d5239ba6ba04044e4b1fd5e7e12a2c2cc0d19662637eecb41a831ca3a452742",
+    "modules/graph/src/gpu-raster/computation-pack/operators/coverage-tranche-one.ts": "7879051366501efcddff5b5ee8734b5f8931f420d0d53a5858ac15fa0ce9b087",
+    "modules/graph/src/gpu-raster/focal-pairs/gpu-raster-focal-pairs.ts": "a29d91f354b11408aa7d0e8e86a2612168da153b8d1ed04baaf8cf83ec068d61",
+    "modules/graph/src/gpu-raster/focal-pairs/index.ts": "0f3be87e64e121597b580b07b539671b5cfb004447fb1de964e1db0689526059",
+    "modules/graph/src/gpu-raster/focal-pairs/raster-focal-pairs-wgsl.ts": "5ea58599d9e91405bfb1157aadc37fa731cb40bd4c7d70661de00a7a5059423d",
+    "modules/graph/src/gpu-raster/gpu-raster-fractional-categorical-statistics.ts": "1c4aa145abeb1fd82bff3164b50a4aebca791321e29a759a68bfe8063cdf4ece",
+    "modules/graph/src/gpu-raster/gpu-raster-fractional-zonal-distribution.ts": "a89e9367429e05e24b73e8b1655bb6697f6f66eb95ed34cd80de4ba7c06e804d",
+    "modules/graph/src/gpu-raster/gpu-raster-spectral-indices.ts": "ae0078932385184ec5e78cc444c66f214f4354b45411f73dbd200b6e6cae2b0f",
+    "modules/graph/src/gpu-raster/index.ts": "1dd2bc446d018fc2d9093371a0c54dcc3af863a019482cc87ca7d1958f6c476e",
+    "modules/graph/src/gpu-spatial-analysis/computation-pack/index.ts": "91a90dea217ea96adf47384fe0b9498a89517dc66f8ce0b75f27df397918c08b",
+    "modules/graph/src/gpu-spatial-analysis/computation-pack/operators/coverage-tranche-one.ts": "453f48958bb6cfb6640b7ae2c580e6dccdf5f3753b5ada3c342780822041ffc5",
+    "modules/graph/src/gpu-spatial-analysis/ontology/spatial-analysis-catalog.ts": "6472175a1505b0e47aeb5b1209995cd65d10ca31065e852b652608587cf2674c",
+    "modules/graph/src/gpu-spatial-analysis/ontology/spatial-analysis-operators.ts": "e444ca0c12f81cc95bb5200cd5eda3a6cc63f730f682e5dfc59a459d703aff8b",
+    "modules/graph/src/gpu-spatial-analysis/recipes/dasymetric-redistribution-recipe.ts": "5c2f4f0da10d7f7cf6fb1d662715b2e578b1f1387767af89a637d5fb2dd4cc7d",
+    "modules/graph/src/gpu-spatial-analysis/recipes/index.ts": "44b685747367d3fdba30172b4c35ca30818a7277f0d9cb869b900eed481905e2",
+    "modules/graph/test/analysis-core/kernel-audit-coverage-tranche-one.node.spec.ts": "8466804e16049d620bcb1f579ae80ba15878c32191bbaa6351f22a21a04543f5",
+    "modules/graph/test/analysis-core/kernel-audit/cases-coverage-tranche-one.ts": "5224c17c1c4f5ae440fe15ae71d33648b33cd4ee4489b7cf6cdf53b2053a39a4",
+    "modules/graph/test/analysis-core/kernel-audit/kernel-audit-cases.ts": "2bda0c1ed422e5b8e66d7109ac95571494045040f96ca9e0c34582ecc7ef63ce",
+    "modules/graph/test/computation-lenses/raster-terrain/coverage-tranche-one-benchmark.md": "400867e00276592637331ebd84631643ddd7c025362d1cc2a2a7e927583cb63f",
+    "modules/graph/test/computation-lenses/raster-terrain/coverage-tranche-one-benchmark.spec.ts": "e578fa8903dc6b0c6ec8c51425987637e589ef08e5ce04ac7b2fc6f8dad8d808",
+    "modules/graph/test/computation-lenses/raster-terrain/coverage-tranche-one-harness.ts": "fc7c9329d30a6bd4be52f5df1cb1470e5ee2a6e4d5d27b99e41dff2b1147e58f",
+    "modules/graph/test/computation-lenses/raster-terrain/coverage-tranche-one.node.spec.ts": "dc64c33feee0f8c12b911871b8409e0b72ef3123b44dee554f19bd9b7dd5d5c7",
+    "modules/graph/test/computation-lenses/raster-terrain/coverage-tranche-one.spec.ts": "f016aadbdf49e1f0f6b96a417069c5f51351ea8717c52fcb5e593199d869bdbb",
+    "modules/graph/test/geospatial-expansion/rs02-fractional-categories.node.spec.ts": "0fe30d1adbd9200ed5d809afbf71f63cf3cfae6b9318d8fadad6f7ea6d9d984c",
+    "modules/graph/test/geospatial-expansion/rs02-fractional-categories.spec.ts": "896c79cdaffc494c260e00dd5b7d8eced739c6730d1e3894cf7dbebd042602ba",
+    "modules/graph/test/gpu-raster/focal-pairs/focal-pairs-fixtures.ts": "f79c0ab5ab6a5563149df1bf1ad36dac69b3519a0f7a5cc4fa91f1954ad3ded8",
+    "modules/graph/test/gpu-raster/focal-pairs/raster-focal-pairs.node.spec.ts": "bf6d5ad6636772a38cdcd73f4024e9f67ec77374d4e24ccf33b75f9f9e9649f3",
+    "modules/graph/test/gpu-raster/focal-pairs/raster-focal-pairs.spec.ts": "5ce47c49b523c5bc477211a1c21855e3f042e10f68ea16c7f737f5e635924f9e",
+    "modules/graph/test/gpu-raster/fractional-zonal-distribution/fractional-zonal-distribution.node.spec.ts": "9fa3d74e526bf15230aca5896b9196e7a72ca4374feb32a015bf48cf25be192c",
+    "modules/graph/test/gpu-raster/fractional-zonal-distribution/fractional-zonal-distribution.spec.ts": "31b499c6db01256bac89ba28080b3fde091e4deddda940b141b8dc126b5693b1",
+    "modules/graph/test/gpu-raster/gpu-raster-spectral-indices.node.spec.ts": "e5ed8364be7dff6a941f9444fb6e9b49ca60f04b2252fa9b0b3e5448708c455a",
+    "modules/graph/test/gpu-raster/gpu-raster-spectral-indices.spec.ts": "431127316ea5d08c97dc97fa306a678c8f3337e989c07f60976b921dba559c28",
+    "modules/graph/test/gpu-raster/raster-spectral-indices-test-utils.ts": "8b5efcc19dd87380f05a0fee86e9df33518995e707352e7ee8ad9aa8f85fb14c",
+    "modules/graph/test/gpu-spatial-analysis/recipes/dasymetric-redistribution-recipe.node.spec.ts": "439b294509ca18cf828f2a3a549d4594bbfc7c3493b84ad9c30448d068125c85",
+    "modules/graph/test/gpu-spatial-analysis/recipes/dasymetric-redistribution.spec.ts": "b3980f5495c417050be35ef78be41a0b6a69b5223fbb8e3bcd869f8d74f404a0",
+    "modules/graph/test/oracles/dasymetric-redistribution.py": "61f7cd8d4875e8c9e7d9c92f0a4f21851f241e9c5947a68ecc876a6f0d540d4a",
+    "modules/graph/test/oracles/fixtures/dasymetric-redistribution.json": "34567c96332e89f27a1200cc59286cce63d9a1eafa22543407bcae5f2344ff35",
+    "modules/graph/test/oracles/fixtures/fractional-zonal-distribution.json": "c015589efa483a4efbbe3adf8f7e1c068b991adc0ee772f3beae7007ca115f6d",
+    "modules/graph/test/oracles/fixtures/raster-focal-pairs.json": "ffb21c13d6fc523879838a31f57df3ecef4ad4e9c7bfbb2023387a7e8f59f202",
+    "modules/graph/test/oracles/fixtures/raster-spectral-indices.json": "0e15df524ddd204b6327e207e1453c78d6043c4ca86bb9cb86521121c89dfbb2",
+    "modules/graph/test/oracles/fixtures/rs02-fractional-categories.json": "0ab6041104f3efa4eddfea36b01ac4a4b4e4dfd7e3080341f62b061b66d66b93",
+    "modules/graph/test/oracles/fractional-zonal-distribution.py": "54f1ed6469a4b5214172fb78ff8dd47d4676db1b54a3d8fa07b09dc8fe49424e",
+    "modules/graph/test/oracles/raster-focal-pairs.py": "f5f95103f06e66973df0c329f9964b01821935e9451d723cbcefdd7e7c95a84b",
+    "modules/graph/test/oracles/raster-spectral-indices.py": "72a7a999c8546890aeebfd952cbf4b5ad6d08988314670cd987febf3a9b3d51b",
+    "modules/graph/test/oracles/rs02-fractional-categories.py": "532eb89e170c1eb0fb4969f0caa8a3e1788644af07f9e834f2b6c2e68b1ceb23"
+  },
+  "limitations": [
+    "Only 64 and 1024 cells measured, not capacity-scale or highly skewed zones.",
+    "Categorical and spectral throughput unmeasured.",
+    "No competing GPU verification browser; repository builds and node tests were active, so host timings may include CPU contention.",
+    "No optimized CPU comparator, GPU timestamps, driver peak memory, or speedup claim."
+  ]
+}

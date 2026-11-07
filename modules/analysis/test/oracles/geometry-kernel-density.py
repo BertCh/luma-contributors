@@ -25,7 +25,7 @@ import numpy as np
 from scipy.stats import gaussian_kde
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GENERATOR = 'modules/analysis/test/oracles/geometry-kernel-density.py'
+GENERATOR = 'modules/graph/test/oracles/geometry-kernel-density.py'
 WIDTH = HEIGHT = 20
 SIZE = 100.0
 CELLS = [[3, 4], [10, 10], [15, 6], [19, 19], [0, 0]]

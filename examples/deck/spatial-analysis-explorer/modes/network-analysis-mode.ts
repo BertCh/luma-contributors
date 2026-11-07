@@ -4,7 +4,7 @@
 
 /**
  * Network analysis over the New York road network: shortest-route extraction, six-facility service
- * areas, k-hop neighborhoods and node analytics (PageRank, degree, core number, communities).
+ * areas, k-hop neighborhoods and node analytics (degree and weak components; published PageRank/core/label propagation need physical topology and are dropped).
  *
  * One small graph converts the sorted COO edge list to CSR once. Every analysis graph imports the
  * resulting caller-owned CSR buffers, is compiled once in `create()`, and is re-encoded only when
@@ -41,7 +41,7 @@ import type {
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 
 type View = 'route' | 'service-areas' | 'neighborhood' | 'analytics';
-type Metric = 'pageRank' | 'degree' | 'coreNumber' | 'community';
+type Metric = 'degree' | 'component';
 
 const VIEWS: readonly View[] = ['route', 'service-areas', 'neighborhood', 'analytics'];
 const WALK_SPEED = 1.4;
@@ -98,10 +98,8 @@ const DEFAULT_FACILITIES: readonly (readonly [number, number])[] = [
   [-73.9442, 40.7983] // East Harlem, 116th Street
 ];
 const METRIC_THRESHOLDS: Record<Metric, number> = {
-  pageRank: 0.4,
   degree: 0.6,
-  coreNumber: 1,
-  community: 0
+  component: 0
 };
 
 /** Explores road-network costs with picking in the New York AEQD frame. */
@@ -116,7 +114,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
     'GPUNetworkAnalyticsColumns'
   ],
   description:
-    'Routes, service areas, k-hop neighborhoods and PageRank/core/community columns on the New ' +
+    'Routes, service areas, k-hop neighborhoods and degree/weak-component columns on the New ' +
     'York street graph. One CSR is built once; each analysis re-encodes only when you click or ' +
     'move a slider.',
   initialViewState: {longitude: -73.975, latitude: 40.755, zoom: 12.4},
@@ -152,7 +150,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
 
     // State.
     let view: View = readInitialView();
-    let metric: Metric = 'pageRank';
+    let metric: Metric = 'degree';
     let costLimitMinutes = 15;
     let hops = 12;
     let originNode = lonLatToNode(TIMES_SQUARE);
@@ -258,15 +256,8 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
     // Analytics buffers.
     const degreeRaw = resources.createBuffer('degree', nodeCount * 4);
     const degreeNormalized = resources.createBuffer('degree-normalized', nodeCount * 4);
-    const pageRankRaw = resources.createBuffer('page-rank', nodeCount * 4);
-    const pageRankNormalized = resources.createBuffer('page-rank-normalized', nodeCount * 4);
-    const pageRankResidual = resources.createBuffer('page-rank-residual', 4);
-    const coreRaw = resources.createBuffer('core', nodeCount * 4);
-    const coreNormalized = resources.createBuffer('core-normalized', nodeCount * 4);
-    const coreDegeneracy = resources.createBuffer('core-degeneracy', 4);
-    const coreConverged = resources.createBuffer('core-converged', 4);
-    const communityLabels = resources.createBuffer('communities', nodeCount * 4);
-    const communityConverged = resources.createBuffer('community-converged', 4);
+    const componentLabels = resources.createBuffer('components', nodeCount * 4);
+    const componentConverged = resources.createBuffer('component-converged', 4);
 
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {id: 'network-summary', byteLength: 64})
@@ -487,40 +478,13 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
           nodeCount
         )
       },
-      pageRank: {
-        output: importOutput(analyticsGraph, 'page-rank', pageRankRaw, 'float32', nodeCount),
-        normalized: importOutput(
-          analyticsGraph,
-          'page-rank-normalized',
-          pageRankNormalized,
-          'float32',
-          nodeCount
-        ),
-        iterationCount: 100,
-        residual: importOutput(analyticsGraph, 'page-rank-residual', pageRankResidual, 'float32', 1)
-      },
-      coreNumber: {
-        output: importOutput(analyticsGraph, 'core', coreRaw, 'uint32', nodeCount),
-        normalized: importOutput(
-          analyticsGraph,
-          'core-normalized',
-          coreNormalized,
-          'float32',
-          nodeCount
-        ),
-        maximumIterations: 256,
-        degeneracy: importOutput(analyticsGraph, 'core-degeneracy', coreDegeneracy, 'uint32', 1),
-        status: {
-          converged: importOutput(analyticsGraph, 'core-converged', coreConverged, 'uint32', 1)
-        }
-      },
-      communities: {
-        output: importOutput(analyticsGraph, 'communities', communityLabels, 'uint32', nodeCount),
+      components: {
+        output: importOutput(analyticsGraph, 'components', componentLabels, 'uint32', nodeCount),
         status: {
           converged: importOutput(
             analyticsGraph,
-            'community-converged',
-            communityConverged,
+            'component-converged',
+            componentConverged,
             'uint32',
             1
           )
@@ -602,10 +566,8 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
     const metricSelect = controls.addSelect<Metric>({
       label: 'Analytics: metric',
       options: [
-        {value: 'pageRank', label: 'PageRank'},
         {value: 'degree', label: 'Degree'},
-        {value: 'coreNumber', label: 'Core number'},
-        {value: 'community', label: 'Community (label propagation)'}
+        {value: 'component', label: 'Weak component'}
       ],
       value: metric,
       onChange: value => {
@@ -729,12 +691,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
             [hoodEdgeOverflow, 1]
           ];
         default:
-          return [
-            [pageRankResidual, 1],
-            [coreDegeneracy, 1],
-            [coreConverged, 1],
-            [communityConverged, 1]
-          ];
+          return [[componentConverged, 1]];
       }
     };
 
@@ -774,13 +731,8 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
           );
           break;
         default:
-          analyticsReadout.setValue(
-            `PageRank residual ${floats[0].toExponential(1)}, degeneracy ${words[1]}`
-          );
-          solverReadout.setValue(
-            `core ${words[2] ? 'converged' : 'NOT converged'}, communities ` +
-              `${words[3] ? 'converged' : 'NOT converged (bounded heuristic)'}`
-          );
+          analyticsReadout.setValue('degree and weak components');
+          solverReadout.setValue(`components ${words[0] ? 'converged' : 'NOT converged'}`);
       }
     };
 
@@ -959,17 +911,11 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
             point('network-seed', seedPosition, [255, 255, 255, 255], 8)
           );
         } else {
-          const columns: Record<Metric, Buffer> = {
-            pageRank: pageRankNormalized,
-            degree: degreeNormalized,
-            coreNumber: coreNormalized,
-            community: communityLabels
-          };
-          if (metric === 'community') {
+          if (metric === 'component') {
             layers.push(
-              roadLayer('network-analytics-community', {
+              roadLayer('network-analytics-component', {
                 widthPixels: 2.5,
-                values: columns.community,
+                values: componentLabels,
                 valueFormat: 'uint32',
                 colormap: 'category',
                 palette: COMMUNITY_COLORS
@@ -977,25 +923,20 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
             );
           } else {
             const style = {
-              values: columns[metric],
+              values: degreeNormalized,
               valueFormat: 'float32' as const,
               colormap: 'inferno' as const,
-              valueRange: (metric === 'pageRank' ? [0.1, 0.6] : [0, 1]) as [number, number],
-
+              valueRange: [0, 1] as [number, number],
               noDataColor: NO_DATA_COLOR
             };
             layers.push(roadLayer('network-analytics', {...style, widthPixels: 1.5}));
-            // Road-network core numbers are almost all equal, so only the other metrics get a
-            // wider "width by value" emphasis layer.
-            if (metric !== 'coreNumber') {
-              layers.push(
-                roadLayer('network-analytics-emphasis', {
-                  ...style,
-                  widthPixels: 4,
-                  discardAtOrBelow: METRIC_THRESHOLDS[metric]
-                })
-              );
-            }
+            layers.push(
+              roadLayer('network-analytics-emphasis', {
+                ...style,
+                widthPixels: 4,
+                discardAtOrBelow: METRIC_THRESHOLDS[metric]
+              })
+            );
           }
         }
         return layers;
