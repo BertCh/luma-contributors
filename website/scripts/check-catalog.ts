@@ -13,17 +13,27 @@
 // three sentences, more than eight params, example over 25 lines, unknown related ids, missing
 // lens scenario, unknown reference slug, param or output descriptions over 80 characters, and
 // preview captions over 80 characters.
+// Also errors: types containing an ellipsis, types that are just `object` or `unknown`, and more than
+// eight outputs. Warnings: omitted required props (`output` is exempt: the Returns section covers it) and documented
+// defaults that are not listed.
 // Warnings: params that are not in the props but only because the symbol has no resolved props,
 // and the coverage report (inventory symbols without an entry, grouped by directory).
+// Output checks (when the inventory lists output fields): ERROR for an output that is not a field,
+// or a required field that is omitted; WARNING for omitted optional fields when fewer than three
+// outputs are listed. Errors are also written to the machine-readable report (REPORT_FILE) grouped
+// by entry file.
 // Pass --quiet to hide the per-directory coverage listing.
 
-import {existsSync, readdirSync, readFileSync} from 'node:fs';
+import {existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import ts from 'typescript';
 
 const websiteDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const entriesDirectory = join(websiteDirectory, 'src/catalog/entries');
+const REPORT_FILE =
+  '/private/tmp/claude-501/-Users-robertchristie-Documents-GitHub-vis-gl-build-luma-contributors/8b3242ff-688f-4f91-850e-f132a3086553/scratchpad/site2/checker/report.json';
+const MINIMUM_OUTPUTS_FOR_QUIET_OPTIONAL = 3;
 
 type InventoryFile = {
   entryPoints: string[];
@@ -34,7 +44,8 @@ type InventoryFile = {
     kind: string;
     importPath: string;
     directory: string;
-    props: {name: string}[];
+    props: {name: string; optional?: boolean; jsdoc?: string}[];
+    outputs?: {name: string; optional: boolean}[];
   }[];
 };
 
@@ -72,6 +83,7 @@ async function main(): Promise<void> {
     : [];
 
   const errors: string[] = [];
+  const errorsByFile: Record<string, string[]> = {};
   const warnings: string[] = [];
   const entries: {file: string; entry: LooseEntry}[] = [];
   for (const file of files) {
@@ -97,7 +109,10 @@ async function main(): Promise<void> {
 
   for (const {file, entry} of entries) {
     const label = `${file}: ${entry.id ?? '(no id)'}`;
-    const fail = (message: string) => errors.push(`${label}: ${message}`);
+    const fail = (message: string) => {
+      errors.push(`${label}: ${message}`);
+      (errorsByFile[file] ??= []).push(`${entry.id ?? '(no id)'}: ${message}`);
+    };
     if (typeof entry.id !== 'string' || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(entry.id)) fail('id must be kebab-case');
 
     const inventorySymbol = inventoryBySymbol.get(entry.symbol);
@@ -108,7 +123,36 @@ async function main(): Promise<void> {
       if (entry.importPath !== inventorySymbol.importPath) fail(`importPath "${entry.importPath}" should be "${inventorySymbol.importPath}"`);
       if (entry.kind !== inventorySymbol.kind) fail(`kind "${entry.kind}" should be "${inventorySymbol.kind}"`);
       const propNames = new Set(inventorySymbol.props.map(prop => prop.name));
+      const outputFields = inventorySymbol.outputs ?? [];
+      if (outputFields.length > 0 && Array.isArray(entry.outputs)) {
+        const fieldNames = new Set(outputFields.map(field => field.name));
+        // Entries may group fields ("a / b") or document nested members ("status.converged",
+        // "levels[i].vertices"); each part counts as naming its root field.
+        const listed = new Set<string>();
+        const unknownNames: string[] = [];
+        for (const output of entry.outputs as {name: string}[]) {
+          for (const part of output.name.split(/\s*[\/,]\s*/)) {
+            const root = part.split(/[.\[]/)[0];
+            if (fieldNames.has(root)) listed.add(root);
+            else if (propNames.has(root)) continue; // a result nested in an input, e.g. raster.output.triangles
+            else unknownNames.push(part);
+          }
+        }
+        for (const name of unknownNames) fail(`output "${name}" is not a field of ${entry.symbol} outputs (fields: ${[...fieldNames].join(', ')})`);
+        for (const field of outputFields) {
+          if (listed.has(field.name)) continue;
+          if (!field.optional) fail(`required output "${field.name}" is not listed`);
+          else if (listed.size < MINIMUM_OUTPUTS_FOR_QUIET_OPTIONAL) warnings.push(`${label}: optional output "${field.name}" is not listed`);
+        }
+      }
+      const listedParams = new Set((entry.params ?? []).map((param: {name: string}) => param.name));
+      const omittedRequired = inventorySymbol.props.filter(prop => prop.optional === false && prop.name !== 'output' && !listedParams.has(prop.name)).map(prop => prop.name);
+      if (omittedRequired.length > 0) warnings.push(`${label}: required props not listed: ${omittedRequired.join(', ')}`);
       for (const param of entry.params ?? []) {
+        const documented = inventorySymbol.props.find(prop => prop.name === param.name);
+        if (documented?.jsdoc && /\bdefaults? (to|is)\b/i.test(documented.jsdoc) && !param.default && !param.required) {
+          warnings.push(`${label}: param "${param.name}" has a documented default but lists none`);
+        }
         if (propNames.size === 0) warnings.push(`${label}: param "${param.name}" cannot be checked (symbol has no resolved props)`);
         else if (!propNames.has(param.name)) fail(`param "${param.name}" is not a prop of ${entry.symbol} (props: ${[...propNames].join(', ')})`);
       }
@@ -140,6 +184,11 @@ async function main(): Promise<void> {
       if (!param.description) fail(`param "${param.name}" has no description`);
     }
     if (!Array.isArray(entry.outputs) || entry.outputs.length === 0) fail('outputs must list at least one output');
+    else if (entry.outputs.length > 8) fail(`${entry.outputs.length} outputs (max 8)`);
+    for (const item of [...(entry.params ?? []), ...(entry.outputs ?? [])] as {name: string; type: string}[]) {
+      if (/…|\.\.\./.test(item.type)) fail(`"${item.name}" has a truncated type: ${item.type}`);
+      if (/^(object|unknown)$/.test(item.type)) fail(`"${item.name}" has a vague type "${item.type}"; name the real type or shape`);
+    }
     for (const output of entry.outputs ?? []) {
       if ((output.description?.length ?? 0) > 80) fail(`output "${output.name}" description is over 80 characters`);
     }
@@ -177,6 +226,9 @@ async function main(): Promise<void> {
   for (const warning of warnings) console.log(`warning: ${warning}`);
   for (const error of errors) console.log(`error: ${error}`);
   console.log(`${errors.length} errors, ${warnings.length} warnings`);
+  mkdirSync(dirname(REPORT_FILE), {recursive: true});
+  const counts = Object.fromEntries(Object.entries(errorsByFile).map(([file, list]) => [file, list.length]));
+  writeFileSync(REPORT_FILE, JSON.stringify({totalErrors: errors.length, totalWarnings: warnings.length, counts, errorsByFile, warnings}, null, 2));
   process.exitCode = errors.length > 0 ? 1 : 0;
 }
 

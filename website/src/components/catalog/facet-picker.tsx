@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {useEffect, useState} from 'react';
 import {FACETS, FACET_TITLES, type FacetCounts, type FacetKind} from '../../catalog';
 import {FacetIcon} from '../brand/facet-icon';
 
@@ -16,11 +17,35 @@ export function FacetPicker({
   counts: FacetCounts;
   onSelect: (kind: FacetKind, id: string | undefined) => void;
 }) {
+  // Rows are open on desktop; on phones they start collapsed to a labelled summary line.
+  const [collapsed, setCollapsed] = useState<Partial<Record<FacetKind, boolean>>>({});
+  useEffect(() => {
+    if (window.matchMedia('(max-width: 640px)').matches) {
+      setCollapsed({data: true, use: true, domain: true});
+    }
+  }, []);
   return (
     <div className="facet-picker">
       {(Object.keys(FACETS) as FacetKind[]).map(kind => (
-        <fieldset key={kind} className="facet-row">
-          <legend>{FACET_TITLES[kind]}</legend>
+        <details
+          key={kind}
+          className="facet-row"
+          open={!collapsed[kind]}
+          onToggle={event => {
+            const isOpen = event.currentTarget.open;
+            setCollapsed(previous =>
+              previous[kind] === !isOpen ? previous : {...previous, [kind]: !isOpen}
+            );
+          }}
+        >
+          <summary>
+            <span>{FACET_TITLES[kind]}</span>
+            {selection[kind] ? (
+              <span className="facet-selected">
+                {FACETS[kind].find(facet => facet.id === selection[kind])?.label}
+              </span>
+            ) : null}
+          </summary>
           <div className="facet-chips">
             {[...FACETS[kind]]
               .filter(facet => (counts[kind][facet.id] ?? 0) > 0 || selection[kind] === facet.id)
@@ -44,7 +69,7 @@ export function FacetPicker({
                 );
               })}
           </div>
-        </fieldset>
+        </details>
       ))}
     </div>
   );

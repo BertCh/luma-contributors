@@ -22,11 +22,17 @@ import {
   SPRITE_WGSL
 } from './shaders.ts';
 import {
+  getDefaultParameterValues,
+  POINTER_KINDS,
+  type PreviewParameterValues
+} from './parameters.ts';
+import {
   SCENE_HEIGHT,
   SCENE_WIDTH,
   type FieldLayer,
   type FillLayer,
   type PathItem,
+  type Point,
   type PolygonItem,
   type PreviewLayer,
   type SpriteLayer,
@@ -286,7 +292,8 @@ class PreviewRenderer {
     model: Model,
     uniformBuffer: Buffer,
     getAnimation: () => [number, number, number, number],
-    extraResources: {destroy(): void}[] = []
+    extraResources: {destroy(): void}[] = [],
+    getExtra: () => [number, number] = () => [0, 0]
   ): LayerRenderer {
     return {
       model,
@@ -302,8 +309,7 @@ class PreviewRenderer {
           0,
           0,
           ...getAnimation(),
-          0,
-          0,
+          ...getExtra(),
           0,
           0
         ]);
@@ -390,7 +396,8 @@ class PreviewRenderer {
     );
     const mode = STROKE_MODES[layer.animation ?? 'static'];
     const speed = layer.type === 'strokes' ? (layer.speed ?? 0.3) : 0.3;
-    return this.createLayerRenderer(model, uniformBuffer, () => [mode, speed, 0, 0]);
+    const trail = layer.type === 'strokes' ? (layer.trail ?? 1) : 1;
+    return this.createLayerRenderer(model, uniformBuffer, () => [mode, speed, trail, 0]);
   }
 
   private createFieldRenderer(layer: FieldLayer): LayerRenderer {
@@ -469,7 +476,13 @@ class PreviewRenderer {
       model,
       uniformBuffer,
       () => [style, layer.levels ?? 1, layer.speed ?? 0.1, layer.style === 'ramp' ? strength : 0],
-      [fieldTexture, rampTexture]
+      [fieldTexture, rampTexture],
+      () =>
+        layer.style === 'hillshade' && layer.light !== undefined
+          ? [layer.light, 1]
+          : layer.style === 'expand' && layer.cutoff !== undefined
+            ? [layer.cutoff, 1]
+            : [0, 0]
     );
   }
 
@@ -493,20 +506,100 @@ class PreviewRenderer {
   }
 }
 
+/** Scene units per canvas pixel is 1 / scale; scenes cover the canvas, so the larger ratio wins. */
+function getSceneScale(width: number, height: number): number {
+  return Math.max(width / SCENE_WIDTH, height / SCENE_HEIGHT);
+}
+
+/** Pointer positions snap to this many scene units, so a rebuild is not triggered by every pixel. */
+const POINTER_QUANTUM = 2;
+
+/** Kinds whose pointer choice (a source or focus node) stays after the pointer leaves. */
+const STICKY_POINTER_KINDS: ReadonlySet<PreviewKind> = new Set<PreviewKind>([
+  'network',
+  'shortest-path',
+  'isochrones',
+  'spatial-weights'
+]);
+
 /** Creates the luma.gl scene for one preview kind. */
 export function createPreviewScene(kind: PreviewKind): GpuScene {
   return (context: GpuSceneContext): GpuSceneInstance => {
-    const renderer = new PreviewRenderer(
-      context.device,
-      buildPreview(kind, context.seed).layers,
-      readPalette()
-    );
     const canvasContext = context.device.getDefaultCanvasContext();
+    const palette = readPalette();
+    const usesPointer = POINTER_KINDS.has(kind);
+    const parameters: PreviewParameterValues = {
+      ...getDefaultParameterValues(kind),
+      ...context.parameters
+    };
+    let pointer: Point | null = null;
+    let pointerKey = '';
+    let isDirty = false;
+    let data = buildPreview(kind, context.seed, parameters, null);
+    let renderer = new PreviewRenderer(context.device, data.layers, palette);
+    // Point clouds turn on the CPU: spin integrates every frame, the pointer adds an offset.
+    let turnAngle = 0;
+    let turnOffset = 0;
+    let lastSeconds = -1;
+
+    const rebuild = () => {
+      isDirty = false;
+      const next = buildPreview(kind, context.seed, parameters, pointer);
+      renderer.destroy();
+      data = next;
+      renderer = new PreviewRenderer(context.device, data.layers, palette);
+    };
+
     return {
       render(timeMilliseconds) {
         const [width, height] = canvasContext.getDrawingBufferSize();
         if (width === 0 || height === 0) return;
-        renderer.render(timeMilliseconds / 1000, context.reducedMotion, width, height);
+        const seconds = timeMilliseconds / 1000;
+        if (kind === 'point-cloud') {
+          const elapsed = lastSeconds < 0 || context.reducedMotion ? 0 : seconds - lastSeconds;
+          turnAngle += ((parameters.spin * Math.PI) / 180) * elapsed;
+          lastSeconds = seconds;
+          // Parameters change only the perspective here, so no rebuild is needed for spin.
+          for (const layer of data.layers) {
+            if (layer.type === 'sprites' && layer.turntable) {
+              layer.turntable.angle = 0.5 + turnAngle + turnOffset;
+              layer.turntable.perspective = parameters.depth / 1000;
+            }
+          }
+        }
+        if (isDirty) rebuild();
+        renderer.render(seconds, context.reducedMotion, width, height);
+      },
+      setPointer(position) {
+        if (!usesPointer) return;
+        const [width, height] = canvasContext.getDrawingBufferSize();
+        if (kind === 'point-cloud') {
+          turnOffset = position && width > 0 ? (position[0] / width - 0.5) * Math.PI : 0;
+          return;
+        }
+        let key = '';
+        let next: Point | null = null;
+        if (position && width > 0 && height > 0) {
+          const scale = getSceneScale(width, height);
+          next = [
+            Math.round((SCENE_WIDTH / 2 + (position[0] - width / 2) / scale) / POINTER_QUANTUM) *
+              POINTER_QUANTUM,
+            Math.round((SCENE_HEIGHT / 2 + (position[1] - height / 2) / scale) / POINTER_QUANTUM) *
+              POINTER_QUANTUM
+          ];
+          key = next.join(',');
+        } else if (STICKY_POINTER_KINDS.has(kind)) {
+          return;
+        }
+        if (key === pointerKey) return;
+        pointerKey = key;
+        pointer = next;
+        isDirty = true;
+      },
+      setParameters(values) {
+        Object.assign(parameters, values);
+        // Point clouds read spin and perspective every frame; nothing needs rebuilding.
+        if (kind !== 'point-cloud') isDirty = true;
       },
       destroy() {
         renderer.destroy();

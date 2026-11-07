@@ -51,7 +51,7 @@ export const entries: CatalogEntry[] = [
     title: 'Slope, aspect and hillshade',
     summary: "Horn's 3x3 slope, aspect and hillshade for an elevation tile.",
     explanation:
-      'Use it as the first step of suitability, erosion and mapping work. Two Sobel gradients feed one fused shade kernel; the light direction and z factor change per frame without recompiling.',
+      'The first step of suitability, erosion and mapping work. Two Sobel gradients feed one fused shade kernel; the light direction and z factor change per frame without recompiling.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure', 'classify'],
     domains: ['hydrology', 'cartography'],
@@ -122,7 +122,7 @@ parameters.write(getGPUTerrainDerivativesParameterValues(
     preview: {
       kind: 'terrain',
       caption: 'Hillshade of a synthetic ridge, sun from the northwest.',
-      seed: 11
+      seed: 401
     },
     related: ['relief-shading', 'terrain-curvature', 'terrain-ruggedness'],
     lensScenario: 'gpu-terrain.terrain-derivatives',
@@ -137,7 +137,7 @@ parameters.write(getGPUTerrainDerivativesParameterValues(
     title: 'Terrain curvature',
     summary: 'Profile, plan, mean, Gaussian and other second-order curvatures of a surface.',
     explanation:
-      'Use it to separate ridges, valleys and flow-convergent ground. Choose the derivative estimator with `method`; positive is convex, negative is concave.',
+      'Separates ridges, valleys and flow-convergent ground. Choose the derivative estimator with `method`; positive is convex, negative is concave.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure', 'find-patterns'],
     domains: ['hydrology', 'cartography'],
@@ -198,7 +198,7 @@ parameters.write(getGPUTerrainCurvatureParameterValues({zFactor: 1}, grid));`,
     preview: {
       kind: 'terrain',
       caption: 'Convex crests positive, concave hollows negative.',
-      seed: 12
+      seed: 402
     },
     related: ['slope-aspect-hillshade', 'geomorphons', 'terrain-critical-points'],
     lensScenario: 'gpu-terrain.terrain-curvature',
@@ -213,7 +213,7 @@ parameters.write(getGPUTerrainCurvatureParameterValues({zFactor: 1}, grid));`,
     title: 'TPI, TRI and roughness',
     summary: 'gdaldem-compatible TPI, TRI and roughness over a 3x3 window in one pass.',
     explanation:
-      'Use it for quick habitat and hazard roughness layers. All three indices share one fused kernel; `edgeMode` picks the gdaldem border behavior.',
+      'Best for quick habitat and hazard roughness layers. All three indices share one fused kernel; `edgeMode` picks the gdaldem border behavior.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure'],
     domains: ['ecology', 'hydrology'],
@@ -265,7 +265,7 @@ graph.add(new GPUTerrainRuggedness({
   terrainRuggednessAlgorithm: 'riley',
   output: {terrainRuggednessIndex, roughness}
 }));`,
-    preview: {kind: 'terrain', caption: 'Rough ground bright, plains dark.', seed: 13},
+    preview: {kind: 'terrain', caption: 'Rough ground bright, plains dark.', seed: 403},
     related: ['vector-ruggedness', 'topographic-position', 'slope-aspect-hillshade'],
     lensScenario: 'gpu-terrain.terrain-ruggedness',
     reference: REFERENCE,
@@ -279,7 +279,7 @@ graph.add(new GPUTerrainRuggedness({
     title: 'Vector ruggedness (VRM)',
     summary: 'Vector ruggedness measure: how much surface normals disagree in a window.',
     explanation:
-      'Use it for roughness that ignores plain steepness (Sappington et al. 2007). The window radius is read per frame, so changing it never recompiles.',
+      'Best for roughness that ignores plain steepness (Sappington et al. 2007). The window radius is read per frame, so changing it never recompiles.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure'],
     domains: ['ecology', 'hydrology'],
@@ -328,7 +328,7 @@ parameters.write(getGPUTerrainVectorRuggednessParameterValues({radius: 3}, grid)
     preview: {
       kind: 'terrain',
       caption: 'Chaotic slopes light up; smooth slopes stay dark.',
-      seed: 14
+      seed: 404
     },
     related: ['terrain-ruggedness', 'topographic-position'],
     lensScenario: 'gpu-terrain.terrain-vector-ruggedness',
@@ -343,7 +343,7 @@ parameters.write(getGPUTerrainVectorRuggednessParameterValues({radius: 3}, grid)
     title: 'Terrain contours',
     summary: 'Marching-squares contour segments for several elevation levels into bounded buffers.',
     explanation:
-      'Use it for live contour lines drawn straight from GPU buffers. Each level owns a vertex buffer and a count; one flag reports overflow.',
+      'Best for live contour lines drawn straight from GPU buffers. Each level owns a vertex buffer and a count; one flag reports overflow.',
     dataTypes: {input: ['terrain'], output: ['lines']},
     useCases: ['transform', 'classify'],
     domains: ['cartography', 'hydrology'],
@@ -365,19 +365,9 @@ parameters.write(getGPUTerrainVectorRuggednessParameterValues({radius: 3}, grid)
     ],
     outputs: [
       {
-        name: 'levels[i].vertices',
-        type: 'GraphDataView<"float32x2">',
-        description: 'Segment endpoints for that level.'
-      },
-      {
-        name: 'levels[i].status',
-        type: 'GPUCardinalityPort',
-        description: 'Segment count and, optionally, required count.'
-      },
-      {
-        name: 'output.status.overflow',
-        type: 'GraphDataView<"uint32">',
-        description: 'Nonzero if any level exceeded its capacity.'
+        name: 'status',
+        type: 'GPUTerrainContoursStatus',
+        description: 'Overflow flag; nonzero if any level exceeded capacity.'
       }
     ],
     example: `import {GPUTerrainContours} from '${IMPORT_PATH}';
@@ -392,7 +382,7 @@ graph.add(new GPUTerrainContours({
   ],
   output: {status: {overflow}}
 }));`,
-    preview: {kind: 'contours', caption: 'Contour lines from a synthetic mountain.', seed: 15},
+    preview: {kind: 'contours', caption: 'Contour lines from a synthetic mountain.', seed: 405},
     related: ['slope-aspect-hillshade', 'relief-shading'],
     lensScenario: 'gpu-terrain.terrain-contours',
     reference: REFERENCE,
@@ -407,7 +397,7 @@ graph.add(new GPUTerrainContours({
     title: 'Geomorphons',
     summary: 'Classifies each cell into one of ten landforms from its lines of sight.',
     explanation:
-      'Use it for scale-aware landform maps: peak, ridge, shoulder, spur, slope, hollow, footslope, valley, pit and flat. Eight rays compare higher and lower horizons, following GRASS `r.geomorphon` (Jasiewicz and Stepinski 2013).',
+      'Best for scale-aware landform maps: peak, ridge, shoulder, spur, slope, hollow, footslope, valley, pit and flat. Eight rays compare higher and lower horizons, following GRASS `r.geomorphon` (Jasiewicz and Stepinski 2013).',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['classify', 'find-patterns'],
     domains: ['hydrology', 'ecology'],
@@ -475,7 +465,7 @@ parameters.write(getGPUGeomorphonsParameterValues({flatThresholdDegrees: 1}, gri
     preview: {
       kind: 'classification',
       caption: 'Ten landform classes across a ridged terrain.',
-      seed: 16
+      seed: 406
     },
     related: ['weiss-landforms', 'terrain-critical-points', 'topographic-position'],
     lensScenario: 'gpu-terrain.geomorphons',
@@ -490,7 +480,7 @@ parameters.write(getGPUGeomorphonsParameterValues({flatThresholdDegrees: 1}, gri
     title: 'Weiss landforms',
     summary: 'Ten landform classes from topographic position at two scales plus slope.',
     explanation:
-      'Use it for canyons, valleys, ridges and plains from a DEM alone (Weiss 2001). Small- and large-scale TPI are standardized, thresholded into low, mid and high, then combined with slope.',
+      'Best for canyons, valleys, ridges and plains from a DEM alone (Weiss 2001). Small- and large-scale TPI are standardized, thresholded into low, mid and high, then combined with slope.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['classify'],
     domains: ['hydrology', 'ecology'],
@@ -553,7 +543,7 @@ parameters.write(getGPUTerrainWeissLandformsParameterValues({slopeThresholdDegre
     preview: {
       kind: 'classification',
       caption: 'Valleys, slopes and ridges classified from one DEM.',
-      seed: 17
+      seed: 407
     },
     related: ['geomorphons', 'topographic-position'],
     lensScenario: 'gpu-terrain.terrain-weiss-landforms',
@@ -569,7 +559,7 @@ parameters.write(getGPUTerrainWeissLandformsParameterValues({slopeThresholdDegre
     summary:
       'TPI over square annuli, deviation from mean elevation and the scale of maximum deviation.',
     explanation:
-      'Use it to see which scale a ridge or hollow belongs to (Lindsay et al. 2015). Exact summed-area tables make every radius cost the same.',
+      'Shows which scale a ridge or hollow belongs to (Lindsay et al. 2015). Exact summed-area tables make every radius cost the same.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure', 'find-patterns'],
     domains: ['ecology', 'hydrology'],
@@ -627,7 +617,7 @@ graph.add(new GPUTerrainTopographicPosition({
     preview: {
       kind: 'terrain',
       caption: 'Ridges and hollows, strongest at their own scale.',
-      seed: 18
+      seed: 408
     },
     related: ['weiss-landforms', 'simple-local-relief', 'multi-scale-relief'],
     lensScenario: 'gpu-terrain.terrain-topographic-position',
@@ -643,7 +633,7 @@ graph.add(new GPUTerrainTopographicPosition({
     title: 'Critical points',
     summary: 'Labels every pixel as regular, peak, pit, saddle, boundary or no-data.',
     explanation:
-      'Use it to find the topological skeleton of a surface. Counting sign changes of the height difference around each pixel ring separates peaks, pits and saddles.',
+      'Finds the topological skeleton of a surface. Counting sign changes of the height difference around each pixel ring separates peaks, pits and saddles.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['find-patterns', 'classify'],
     domains: ['hydrology', 'ecology'],
@@ -684,9 +674,9 @@ graph.add(new GPUTerrainCriticalPoints({
   output: {classes, counts}
 }));`,
     preview: {
-      kind: 'classification',
+      kind: 'points',
       caption: 'Peaks, pits and saddles on a bumpy surface.',
-      seed: 19
+      seed: 409
     },
     related: ['terrain-summits', 'peak-prominence', 'geomorphons'],
     lensScenario: 'gpu-terrain.terrain-critical-points',
@@ -701,7 +691,7 @@ graph.add(new GPUTerrainCriticalPoints({
     title: 'Summits',
     summary: 'DEM summits: the highest point of a metric disc that stands out from its ring.',
     explanation:
-      'Use it to list real peaks and ignore noise bumps. A pixel is a summit if it tops its disc and drops by at least `minimumDrop` to the boundary; the radius is per frame.',
+      'Lists real peaks and ignore noise bumps. A pixel is a summit if it tops its disc and drops by at least `minimumDrop` to the boundary; the radius is per frame.',
     dataTypes: {input: ['terrain'], output: ['points', 'raster']},
     useCases: ['find-patterns'],
     domains: ['hydrology', 'ecology'],
@@ -764,7 +754,7 @@ graph.add(new GPUTerrainSummits({
   output: {summitMask, drop}
 }));
 parameters.write(getGPUTerrainSummitsParameterValues({radius: 8, minimumDrop: 30}, grid));`,
-    preview: {kind: 'terrain', caption: 'Summits marked on a noisy mountain range.', seed: 20},
+    preview: {kind: 'terrain', caption: 'Summits marked on a noisy mountain range.', seed: 410},
     related: ['peak-prominence', 'peak-snap', 'terrain-critical-points'],
     lensScenario: 'gpu-terrain.terrain-summits',
     reference: REFERENCE,
@@ -779,7 +769,7 @@ parameters.write(getGPUTerrainSummitsParameterValues({radius: 8, minimumDrop: 30
     summary:
       'Topographic prominence of every peak, key saddle and parent peak, entirely on the GPU.',
     explanation:
-      'Use it to rank peaks by how far they rise above the saddle that connects them to higher ground. It builds the upper excursion-set merge tree (elder rule, zero-dimensional persistence).',
+      'Ranks peaks by how far they rise above the saddle that connects them to higher ground. It builds the upper excursion-set merge tree (elder rule, zero-dimensional persistence).',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure', 'find-patterns'],
     domains: ['hydrology', 'ecology'],
@@ -817,7 +807,7 @@ graph.add(new GPUTerrainPeakProminence({
   grid, elevation,
   output: {prominence, keySaddle, parentPeak}
 }));`,
-    preview: {kind: 'terrain', caption: 'Peaks sized by prominence, not height.', seed: 21},
+    preview: {kind: 'terrain', caption: 'Peaks sized by prominence, not height.', seed: 411},
     related: ['terrain-summits', 'peak-snap', 'terrain-critical-points'],
     lensScenario: 'gpu-terrain.terrain-peak-prominence',
     reference: REFERENCE,
@@ -831,7 +821,7 @@ graph.add(new GPUTerrainPeakProminence({
     title: 'Peak snap',
     summary: 'Snaps catalogue peak points to the DEM summit near them.',
     explanation:
-      'Use it to reconcile peak databases with the terrain model. Each candidate searches a disc and moves only if the move and height change are within limits; a status code says what happened.',
+      'Reconciles peak databases with the terrain model. Each candidate searches a disc and moves only if the move and height change are within limits; a status code says what happened.',
     dataTypes: {input: ['terrain', 'points'], output: ['points']},
     useCases: ['relate', 'transform'],
     domains: ['hydrology', 'cartography'],
@@ -898,7 +888,7 @@ parameters.write(getGPUTerrainPeakSnapParameterValues(
     preview: {
       kind: 'points',
       caption: 'Catalogue points pulled onto the nearest summit.',
-      seed: 22
+      seed: 412
     },
     related: ['terrain-summits', 'peak-prominence'],
     lensScenario: 'gpu-terrain.terrain-peak-snap',
@@ -913,7 +903,7 @@ parameters.write(getGPUTerrainPeakSnapParameterValues(
     title: 'Profile peaks',
     summary: 'Local maxima of many 1-D profiles with prominence and sub-sample refinement.',
     explanation:
-      'Use it for skylines, elevation profiles and any ragged batch of series. Each profile is a CSR span; peaks need a windowed prominence, are refined by a parabola and thinned by non-maximum suppression.',
+      'Best for skylines, elevation profiles and any ragged batch of series. Each profile is a CSR span; peaks need a windowed prominence, are refined by a parabola and thinned by non-maximum suppression.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['find-patterns'],
     domains: ['hydrology', 'data-engineering'],
@@ -990,7 +980,7 @@ graph.add(new GPUProfilePeaks({
   output: {peakMask, refinedIndex}
 }));
 parameters.write(getGPUProfilePeaksParameterValues({minimumProminence: 0.5}));`,
-    preview: {kind: 'time-series', caption: 'Peaks found along a skyline profile.', seed: 23},
+    preview: {kind: 'histogram', caption: 'Peaks found along a skyline profile.', seed: 413},
     related: ['point-horizon-profile', 'peak-prominence'],
     lensScenario: 'gpu-terrain.profile-peaks',
     reference: REFERENCE,
@@ -1005,7 +995,7 @@ parameters.write(getGPUProfilePeaksParameterValues({minimumProminence: 0.5}));`,
     title: 'Viewshed',
     summary: 'Which cells one observer can see over an elevation tile.',
     explanation:
-      'Use it for tower siting, scenic views and exposure. Sight lines run to every cell, with earth-curvature drop and a distance cap; the observer moves per frame without recompiling.',
+      'Best for tower siting, scenic views and exposure. Sight lines reach every cell with earth-curvature drop; the observer moves per frame.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['relate', 'measure'],
     domains: ['hydrology', 'three-d'],
@@ -1068,7 +1058,7 @@ parameters.write(getGPUTerrainViewshedParameterValues(
     preview: {
       kind: 'terrain',
       caption: 'Visible ground from one observer, hidden ground in shadow.',
-      seed: 24
+      seed: 414
     },
     related: ['cumulative-viewshed', 'line-of-sight', 'point-horizon-visibility'],
     lensScenario: 'gpu-terrain.terrain-viewshed',
@@ -1083,7 +1073,7 @@ parameters.write(getGPUTerrainViewshedParameterValues(
     title: 'Cumulative viewshed',
     summary: 'Counts, for every cell, how many observers can see it.',
     explanation:
-      'Use it to rank scenic spots, plan sensor networks or find places nobody sees. Observers are the dispatch dimension, like `gdal_viewshed` cumulative mode, and are processed in batches.',
+      'Use it to rank scenic spots, plan sensor networks or find places nobody sees. Observers are processed in batches.',
     dataTypes: {input: ['terrain', 'points'], output: ['raster']},
     useCases: ['summarize', 'relate'],
     domains: ['hydrology', 'urban'],
@@ -1143,7 +1133,7 @@ graph.add(new GPUTerrainCumulativeViewshed({
 parameters.write(getGPUTerrainLineOfSightParameterValues(
   {observerHeight: 30, maximumDistance: 20000}, grid
 ));`,
-    preview: {kind: 'hotspots', caption: 'Brighter cells are seen by more towers.', seed: 25},
+    preview: {kind: 'hotspots', caption: 'Brighter cells are seen by more towers.', seed: 415},
     related: ['viewshed', 'line-of-sight'],
     lensScenario: 'gpu-terrain.terrain-cumulative-viewshed',
     reference: REFERENCE,
@@ -1157,7 +1147,7 @@ parameters.write(getGPUTerrainLineOfSightParameterValues(
     title: 'Line of sight',
     summary: 'Tests many explicit observer-target pairs against an elevation tile.',
     explanation:
-      'Use it for point-to-point checks such as tower links or peak-to-peak visibility. Every pair is a row, and optional clearance says how far a target could sink and stay visible.',
+      'Best for point-to-point checks such as tower links or peak-to-peak visibility. Every pair is a row, and optional clearance says how far a target could sink and stay visible.',
     dataTypes: {input: ['terrain', 'table'], output: ['table']},
     useCases: ['relate'],
     domains: ['hydrology', 'three-d'],
@@ -1217,7 +1207,7 @@ graph.add(new GPUTerrainLineOfSight({
 parameters.write(getGPUTerrainLineOfSightParameterValues(
   {observerHeight: 10, targetHeight: 2, curvatureCoefficient: 0.0000000785}, grid
 ));`,
-    preview: {kind: 'lines', caption: 'Sight lines clear or blocked by terrain.', seed: 26},
+    preview: {kind: 'lines', caption: 'Sight lines clear or blocked by terrain.', seed: 416},
     related: ['viewshed', 'cumulative-viewshed', 'point-horizon-visibility'],
     lensScenario: 'gpu-terrain.terrain-line-of-sight',
     reference: REFERENCE,
@@ -1231,7 +1221,7 @@ parameters.write(getGPUTerrainLineOfSightParameterValues(
     title: 'Point horizon profile',
     summary: 'The skyline seen from many observers: elevation angle for every azimuth.',
     explanation:
-      'Use it for panoramas, peak identification and sunrise checks. Each observer casts `azimuthCount` rays over the terrain window and keeps the highest angle.',
+      'Best for panoramas, peak identification and sunrise checks. Each observer casts `azimuthCount` rays over the terrain window and keeps the highest angle.',
     dataTypes: {input: ['terrain', 'points'], output: ['table']},
     useCases: ['measure'],
     domains: ['three-d', 'hydrology'],
@@ -1251,14 +1241,15 @@ parameters.write(getGPUTerrainLineOfSightParameterValues(
       },
       {
         name: 'maximumDistance',
-        type: 'number | undefined',
-        description: 'Longest ray in ground meters.'
+        type: 'number',
+        required: true,
+        description: 'Longest ray in ground meters (compile-time).'
       },
       {
-        name: 'projection',
-        type: 'GPUPointHorizonProjection | undefined',
-        default: "'planar'",
-        description: "Grid projection: 'planar' or 'web-mercator'."
+        name: 'cellSize',
+        type: 'number',
+        required: true,
+        description: 'Nominal ground meters per pixel; sizes the step lattice.'
       },
       parametersParameter,
       {
@@ -1294,6 +1285,7 @@ ${SETUP_NOTE}
 // observers: float32x4 rows of [column, row, height, 0]
 graph.add(new GPUPointHorizonProfile({
   grid, elevation, observers, azimuthCount: 360,
+  maximumDistance: 50000, cellSize: 30,
   parameters: parameters.importToGraph(graph),
   output: {skylineAngle, distance}
 }));
@@ -1303,7 +1295,7 @@ parameters.write(getGPUPointHorizonProfileParameterValues(
     preview: {
       kind: 'time-series',
       caption: 'Skyline angle around a full circle of azimuths.',
-      seed: 27
+      seed: 417
     },
     related: ['point-horizon-visibility', 'profile-peaks', 'horizon-angles'],
     lensScenario: 'gpu-terrain.point-horizon-profile',
@@ -1319,7 +1311,7 @@ parameters.write(getGPUPointHorizonProfileParameterValues(
     summary:
       'Classifies targets as hidden, marginal or visible from observers, and flags skyline ones.',
     explanation:
-      'Use it to ask which peaks or towers you can see from a place. Each target is tested against the observer horizon with an angular tolerance, then checked against the skyline.',
+      'Finds which peaks or towers you can see from a place. Each target is tested against the observer horizon with an angular tolerance, then checked against the skyline.',
     dataTypes: {input: ['terrain', 'points'], output: ['table']},
     useCases: ['relate'],
     domains: ['three-d', 'hydrology'],
@@ -1339,14 +1331,16 @@ parameters.write(getGPUPointHorizonProfileParameterValues(
         description: 'Rows of [column, row, height, observerIndex].'
       },
       {
-        name: 'azimuthCount',
-        type: 'number | undefined',
-        description: 'Rays per observer around the horizon.'
+        name: 'maximumDistance',
+        type: 'number',
+        required: true,
+        description: 'Longest ray in ground meters (compile-time).'
       },
       {
-        name: 'targetsPerDispatch',
-        type: 'number | undefined',
-        description: 'Targets per node; bounds work per submit.'
+        name: 'cellSize',
+        type: 'number',
+        required: true,
+        description: 'Nominal ground meters per pixel; sizes the step lattice.'
       },
       parametersParameter,
       {
@@ -1377,13 +1371,18 @@ ${SETUP_NOTE}
 // targets: [column, row, height, observerIndex] per peak
 graph.add(new GPUPointHorizonVisibility({
   grid, elevation, observers, targets,
+  maximumDistance: 80000, cellSize: 30,
   parameters: parameters.importToGraph(graph),
   output: {visibility, details}
 }));
 parameters.write(getGPUPointHorizonVisibilityParameterValues(
   {maximumDistance: 80000, toleranceDegrees: 0.05}, grid
 ));`,
-    preview: {kind: 'lines', caption: 'Peaks seen above, or hidden behind, the skyline.', seed: 28},
+    preview: {
+      kind: 'lines',
+      caption: 'Peaks seen above, or hidden behind, the skyline.',
+      seed: 418
+    },
     related: ['point-horizon-profile', 'line-of-sight', 'viewshed'],
     lensScenario: 'gpu-terrain.point-horizon-visibility',
     reference: REFERENCE,
@@ -1398,7 +1397,7 @@ parameters.write(getGPUPointHorizonVisibilityParameterValues(
     title: 'Horizon angles and sky view',
     summary: 'Horizon-angle maps per azimuth, plus sky-view factor and openness.',
     explanation:
-      'Use it as the shared input for shadows, solar irradiance and sky-view shading. Rays march in `directionCount` sectors to `maximumRadius`; the horizon can be stored as float32 or packed unorm16.',
+      'The shared input for shadows, solar irradiance and sky-view shading. Rays march in `directionCount` sectors to `maximumRadius`; the horizon can be stored as float32 or packed unorm16.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure', 'simulate'],
     domains: ['hydrology', 'remote-sensing'],
@@ -1471,7 +1470,11 @@ graph.add(new GPUTerrainHorizon({
   output: {horizon, skyViewFactor}
 }));
 parameters.write(getGPUTerrainHorizonParameterValues({zFactor: 1}, grid));`,
-    preview: {kind: 'terrain', caption: 'Sky-view factor: valleys dark, summits bright.', seed: 29},
+    preview: {
+      kind: 'terrain',
+      caption: 'Sky-view factor: valleys dark, summits bright.',
+      seed: 419
+    },
     related: ['solar-shadow-mask', 'solar-irradiance', 'terrain-cast-shadow', 'relief-shading'],
     lensScenario: 'gpu-terrain.terrain-horizon',
     reference: REFERENCE,
@@ -1485,7 +1488,7 @@ parameters.write(getGPUTerrainHorizonParameterValues({zFactor: 1}, grid));`,
     title: 'Terrain cast shadow',
     summary: 'Single-sun terrain shadows without a horizon map.',
     explanation:
-      'Use it for one live sun position. Each cell marches toward the sun and reports soft sun visibility; it is cheaper than a horizon map when the sun moves every frame.',
+      'Best for one live sun position. Each cell marches toward the sun and reports soft sun visibility; it is cheaper than a horizon map when the sun moves every frame.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['simulate'],
     domains: ['cartography', 'hydrology'],
@@ -1539,7 +1542,7 @@ graph.add(new GPUTerrainCastShadow({
 parameters.write(getGPUTerrainCastShadowParameterValues(
   {azimuthDegrees: 250, altitudeDegrees: 12}, grid
 ));`,
-    preview: {kind: 'terrain', caption: 'Long evening shadows cast by ridges.', seed: 30},
+    preview: {kind: 'terrain', caption: 'Long evening shadows cast by ridges.', seed: 420},
     related: ['solar-shadow-mask', 'horizon-angles', 'solar-position'],
     lensScenario: 'gpu-terrain.terrain-cast-shadow',
     reference: REFERENCE,
@@ -1553,7 +1556,7 @@ parameters.write(getGPUTerrainCastShadowParameterValues(
     title: 'Solar shadow mask',
     summary: 'Soft or hard terrain shadows from a horizon map and a per-frame sun.',
     explanation:
-      'Use it to animate the sun over a fixed terrain. Horizon angles are computed once; each frame only compares them with the sun and mixes sun and ambient light.',
+      'Animates the sun over a fixed terrain. Horizon angles are computed once; each frame only compares them with the sun and mixes sun and ambient light.',
     dataTypes: {input: ['terrain', 'raster'], output: ['raster']},
     useCases: ['simulate'],
     domains: ['cartography', 'remote-sensing'],
@@ -1605,6 +1608,16 @@ parameters.write(getGPUTerrainCastShadowParameterValues(
         name: 'illumination',
         type: 'GraphDataView<"float32">',
         description: 'Sun plus ambient light, scaled by intensities.'
+      },
+      {
+        name: 'sunVisibilityTexture',
+        type: 'GraphTextureView<"r32float" | "rgba32float">',
+        description: 'Optional storage texture receiving sunVisibility.'
+      },
+      {
+        name: 'illuminationTexture',
+        type: 'GraphTextureView<"r32float" | "rgba32float">',
+        description: 'Optional storage texture receiving illumination.'
       }
     ],
     example: `import {
@@ -1625,7 +1638,7 @@ parameters.write(getGPUSolarShadowMaskParameterValues(
     preview: {
       kind: 'terrain',
       caption: 'Morning sun: east faces lit, west faces in shade.',
-      seed: 31
+      seed: 421
     },
     related: ['horizon-angles', 'terrain-cast-shadow', 'solar-irradiance', 'solar-position'],
     lensScenario: 'gpu-terrain.solar-shadow-mask',
@@ -1641,7 +1654,7 @@ parameters.write(getGPUSolarShadowMaskParameterValues(
     title: 'Solar position',
     summary: 'Sun azimuth and altitude for every longitude/latitude row at one instant.',
     explanation:
-      'Use it to drive shadows, lighting and daylight masks for many places at once. It follows the NOAA solar calculator; the timestamp is a per-frame setting.',
+      'Drives shadows, lighting and daylight masks for many places at once. It follows the NOAA solar calculator; the timestamp is a per-frame setting.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['measure', 'simulate'],
     domains: ['remote-sensing', 'urban'],
@@ -1697,7 +1710,7 @@ graph.add(new GPUSolarPosition({
 parameters.write(getGPUSolarPositionParameterValues(
   {timestamp: new Date('2026-06-21T12:00:00Z')}
 ));`,
-    preview: {kind: 'points', caption: 'Day and night across a field of places.', seed: 32},
+    preview: {kind: 'points', caption: 'Day and night across a field of places.', seed: 422},
     related: ['solar-shadow-mask', 'solar-irradiance', 'terrain-cast-shadow'],
     lensScenario: 'gpu-terrain.solar-position',
     reference: REFERENCE,
@@ -1711,7 +1724,7 @@ parameters.write(getGPUSolarPositionParameterValues(
     title: 'Solar irradiance',
     summary: 'Sun-hours and insolation over a day or date range from a horizon map.',
     explanation:
-      'Use it for solar siting and snow or vegetation modeling. A sun table lists sun positions over time; each cell integrates direct and diffuse light that clears its horizon.',
+      'Best for solar siting and snow or vegetation modeling. A sun table lists sun positions over time; each cell integrates direct and diffuse light that clears its horizon.',
     dataTypes: {input: ['terrain', 'raster'], output: ['raster']},
     useCases: ['simulate', 'summarize'],
     domains: ['remote-sensing', 'urban'],
@@ -1744,13 +1757,9 @@ parameters.write(getGPUSolarPositionParameterValues(
       {
         name: 'slope',
         type: 'GraphDataView<"float32"> | undefined',
-        description: 'Surface tilt for the incidence angle.'
+        description: 'Surface tilt; pass with aspect for the incidence angle.'
       },
-      {
-        name: 'aspect',
-        type: 'GraphDataView<"float32"> | undefined',
-        description: 'Surface facing for the incidence angle.'
-      },
+      parametersParameter,
       {
         name: 'output',
         type: 'GPUSolarIrradianceOutput',
@@ -1792,7 +1801,7 @@ parameters.write(getGPUSolarIrradianceParameterValues({sampleCount: 96}));`,
     preview: {
       kind: 'hotspots',
       caption: 'Sun-hours: south slopes bright, north slopes dim.',
-      seed: 33
+      seed: 423
     },
     related: ['horizon-angles', 'solar-shadow-mask', 'solar-position'],
     lensScenario: 'gpu-terrain.solar-irradiance',
@@ -1808,7 +1817,7 @@ parameters.write(getGPUSolarIrradianceParameterValues({sampleCount: 96}));`,
     title: 'Relief shading',
     summary: 'Multidirectional hillshade and a Swiss/Imhof-style cartographic relief blend.',
     explanation:
-      'Use it for map-ready terrain. Several lights are weighted by aspect, then mixed with optional sky-view, texture shade, curvature and elevation tints.',
+      'Best for map-ready terrain. Several lights are weighted by aspect, then mixed with optional sky-view, texture shade, curvature and elevation tints.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['classify', 'transform'],
     domains: ['cartography'],
@@ -1877,7 +1886,7 @@ parameters.write(getGPUReliefShadingParameterValues(
     preview: {
       kind: 'terrain',
       caption: 'Multidirectional relief with warm and cool tints.',
-      seed: 34
+      seed: 424
     },
     related: ['slope-aspect-hillshade', 'texture-shading', 'horizon-angles', 'relief-blend'],
     lensScenario: 'gpu-terrain.relief-shading',
@@ -1892,7 +1901,7 @@ parameters.write(getGPUReliefShadingParameterValues(
     title: 'Texture shading',
     summary: "Leland Brown's texture shading: crisp ridge and valley detail at every scale.",
     explanation:
-      'Use it to reveal fine structure that hillshade flattens. A fractional Laplacian is approximated by a multi-scale Gaussian cascade; `detail` trades small and large features.',
+      'Reveals fine structure that hillshade flattens. A fractional Laplacian is approximated by a multi-scale Gaussian cascade; `detail` trades small and large features.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['classify', 'transform'],
     domains: ['cartography'],
@@ -1937,7 +1946,12 @@ parameters.write(getGPUReliefShadingParameterValues(
         type: 'GraphDataView<"float32">',
         description: 'Signed texture value, ridges up and valleys down.'
       },
-      validityOutput
+      validityOutput,
+      {
+        name: 'textureShadeTexture',
+        type: 'GraphTextureView<"r32float" | "rgba32float">',
+        description: 'Optional storage texture receiving textureShade.'
+      }
     ],
     example: `import {
   GPUTextureShading,
@@ -1951,7 +1965,7 @@ graph.add(new GPUTextureShading({
   output: {textureShade}
 }));
 parameters.write(getGPUTextureShadingParameterValues({detail: 0.5, gain: 1}));`,
-    preview: {kind: 'terrain', caption: 'Ridge and valley texture at every scale.', seed: 35},
+    preview: {kind: 'terrain', caption: 'Ridge and valley texture at every scale.', seed: 425},
     related: ['relief-shading', 'slope-aspect-hillshade'],
     lensScenario: 'gpu-terrain.texture-shading',
     reference: REFERENCE,
@@ -1966,7 +1980,7 @@ parameters.write(getGPUTextureShadingParameterValues({detail: 0.5, gain: 1}));`,
     title: 'Simple local relief (SLRM)',
     summary: 'Elevation minus its local mean: small features pop out of the regional trend.',
     explanation:
-      'Use it to find archaeological banks, ditches and mounds. The mean comes from an exact summed-area table, so any radius costs the same; the radius is read per frame.',
+      'Finds archaeological banks, ditches and mounds. The mean comes from an exact summed-area table, so any radius costs the same; the radius is read per frame.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['detect-change', 'find-patterns'],
     domains: ['remote-sensing', 'cartography'],
@@ -2015,7 +2029,7 @@ parameters.write(getGPUSimpleLocalReliefParameterValues({radius: 10}));`,
     preview: {
       kind: 'raster',
       caption: 'Subtle mounds revealed after the trend is removed.',
-      seed: 36
+      seed: 426
     },
     related: ['multi-scale-relief', 'local-dominance', 'relief-blend', 'topographic-position'],
     lensScenario: 'gpu-terrain.simple-local-relief',
@@ -2030,7 +2044,7 @@ parameters.write(getGPUSimpleLocalReliefParameterValues({radius: 10}));`,
     title: 'Multi-scale relief (MSRM)',
     summary: 'Mean difference of successive low-pass surfaces: features between two sizes.',
     explanation:
-      'Use it to isolate features within a size band, such as house platforms or field banks. Choose `featureMinimum`, `featureMaximum` and a `scalingFactor`; the filters use exact summed-area tables.',
+      'Isolates features within a size band, such as house platforms or field banks. Choose `featureMinimum`, `featureMaximum` and a `scalingFactor`; the filters use exact summed-area tables.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['detect-change', 'find-patterns'],
     domains: ['remote-sensing', 'cartography'],
@@ -2089,7 +2103,7 @@ parameters.write(getGPUMultiScaleReliefParameterValues({verticalExaggeration: 1}
     preview: {
       kind: 'raster',
       caption: 'Only features inside the chosen size band remain.',
-      seed: 37
+      seed: 427
     },
     related: ['simple-local-relief', 'local-dominance', 'topographic-position'],
     lensScenario: 'gpu-terrain.multi-scale-relief',
@@ -2104,7 +2118,7 @@ parameters.write(getGPUMultiScaleReliefParameterValues({verticalExaggeration: 1}
     title: 'Local dominance',
     summary: 'How far an observer on the surface rises above terrain in a ring of distances.',
     explanation:
-      'Use it for subtle mounds and banks without shadows or a light direction (Hesse 2010). Sample directions and distances set the ring; the observer height is per frame.',
+      'Best for subtle mounds and banks without shadows or a light direction (Hesse 2010). Sample directions and distances set the ring; the observer height is per frame.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['detect-change', 'find-patterns'],
     domains: ['remote-sensing', 'cartography'],
@@ -2160,7 +2174,7 @@ graph.add(new GPULocalDominance({
   output: {dominance}
 }));
 parameters.write(getGPULocalDominanceParameterValues({observerHeight: 1.7}));`,
-    preview: {kind: 'raster', caption: 'Mounds stand out; flat ground fades.', seed: 38},
+    preview: {kind: 'raster', caption: 'Mounds stand out; flat ground fades.', seed: 428},
     related: ['simple-local-relief', 'multi-scale-relief', 'relief-blend'],
     lensScenario: 'gpu-terrain.local-dominance',
     reference: REFERENCE,
@@ -2174,7 +2188,7 @@ parameters.write(getGPULocalDominanceParameterValues({observerHeight: 1.7}));`,
     title: 'Relief blend (VAT)',
     summary: 'Blends up to five single-band visualizations into one greyscale image.',
     explanation:
-      'Use it to combine hillshade, sky-view, openness and local relief into the Visualization for Archaeological Topography. Each layer is stretched, optionally inverted, and blended with a mode and opacity.',
+      'Combines hillshade, sky-view, openness and local relief into the Visualization for Archaeological Topography. Each layer is stretched, optionally inverted, and blended with a mode and opacity.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['classify', 'transform'],
     domains: ['remote-sensing', 'cartography'],
@@ -2215,7 +2229,7 @@ graph.add(new GPUReliefBlend({
 parameters.write(getGPUReliefBlendParameterValues(
   GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL
 ));`,
-    preview: {kind: 'raster', caption: 'Five layers blended into one readable image.', seed: 39},
+    preview: {kind: 'raster', caption: 'Five layers blended into one readable image.', seed: 429},
     related: ['relief-shading', 'simple-local-relief', 'local-dominance', 'horizon-angles'],
     lensScenario: 'gpu-terrain.relief-blend',
     reference: REFERENCE,
@@ -2230,7 +2244,7 @@ parameters.write(getGPUReliefBlendParameterValues(
     title: 'Terrain-RGB decode',
     summary: 'Decodes Terrarium or Mapbox RGB elevation tiles into float32 heights and validity.',
     explanation:
-      'Use it to turn web terrain tiles into a DEM on the GPU. Pick the `encoding`, then mark no-data by alpha, color or a valid range.',
+      'Turns web terrain tiles into a DEM on the GPU. Pick the `encoding`, then mark no-data by alpha, color or a valid range.',
     dataTypes: {input: ['raster'], output: ['terrain']},
     useCases: ['transform'],
     domains: ['data-engineering', 'hydrology'],
@@ -2293,7 +2307,7 @@ graph.add(new GPUTerrainRGBDecode({
   alphaNoData: true,
   output: {values: elevationValues, outputValidity}
 }));`,
-    preview: {kind: 'raster', caption: 'RGB-encoded tile decoded into heights.', seed: 40},
+    preview: {kind: 'raster', caption: 'RGB-encoded tile decoded into heights.', seed: 430},
     related: ['spike-repair', 'slope-aspect-hillshade'],
     lensScenario: 'gpu-terrain.terrain-rgb-decode',
     reference: REFERENCE,
@@ -2307,7 +2321,7 @@ graph.add(new GPUTerrainRGBDecode({
     title: 'Spike repair',
     summary: 'Repairs +/-1 high-byte errors in Terrarium-style elevation tiles.',
     explanation:
-      'Use it when decoded web tiles show 256 m steps or cliffs. It groups pixels into components and shifts those whose borders agree on a multiple of the step; this is opt-in and bounded by an iteration budget.',
+      'Best when decoded web tiles show 256 m steps or cliffs. It groups pixels into components and shifts those whose borders agree on a multiple of the step; this is opt-in and bounded by an iteration budget.',
     dataTypes: {input: ['terrain'], output: ['terrain']},
     useCases: ['transform'],
     domains: ['data-engineering', 'hydrology'],
@@ -2373,7 +2387,11 @@ graph.add(new GPUTerrainSpikeRepair({
   maximumComponentIterations: 32,
   output: {values: repaired, outputValidity, statistics}
 }));`,
-    preview: {kind: 'raster', caption: 'Stair-step defects removed from a decoded tile.', seed: 41},
+    preview: {
+      kind: 'raster',
+      caption: 'Stair-step defects removed from a decoded tile.',
+      seed: 431
+    },
     related: ['terrain-rgb-decode', 'slope-aspect-hillshade'],
     lensScenario: 'gpu-terrain.terrain-spike-repair',
     reference: REFERENCE,

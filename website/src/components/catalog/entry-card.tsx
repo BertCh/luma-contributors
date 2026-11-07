@@ -18,7 +18,7 @@ export function EntryCard({entry}: {entry: CatalogEntryReference}) {
         interactive
         media={
           <>
-            <EntryPreview entry={entry} live={live} aspectRatio={16 / 10} />
+            <EntryPreview entry={entry} live={live} aspectRatio={16 / 10} interactive />
             {entry.maturity !== 'stable' ? (
               <span className="entry-card-badge">{entry.maturity}</span>
             ) : null}

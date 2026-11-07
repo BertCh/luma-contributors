@@ -18,7 +18,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'One fused pass gives count, nulls, moments, histogram, distinct estimate and top categories per column.',
     explanation:
-      'Use it for a dataset statistics panel that recomputes every frame as filters change. Up to 16 columns share one mask; distinct counts use HyperLogLog and categories come from dictionary codes.',
+      'Best for a dataset statistics panel that recomputes every frame as filters change. Up to 16 columns share one mask; distinct counts use HyperLogLog and categories come from dictionary codes.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize', 'measure'],
     domains: ['data-engineering', 'spatial-statistics'],
@@ -86,7 +86,7 @@ graph.add(new GPUColumnProfile({
 }));`,
     preview: {
       kind: 'histogram',
-      seed: 11,
+      seed: 9101,
       caption: 'Per-column histogram and summary, recomputed on the GPU.'
     },
     related: ['column-quantiles', 'group-statistics', 'variable-standardization'],
@@ -103,7 +103,7 @@ graph.add(new GPUColumnProfile({
     summary:
       'Exact quantiles of a float32 column by radix selection, plus a percentile-range filter mask.',
     explanation:
-      'Use it for exact medians, quartiles and trimmed ranges that stay on the GPU. There is no sort and no readback, so brushing a percentile range is a parameter write.',
+      'Best for exact medians, quartiles and trimmed ranges that stay on the GPU. There is no sort and no readback, so brushing a percentile range is a parameter write.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize', 'classify'],
     domains: ['data-engineering', 'spatial-statistics'],
@@ -164,7 +164,7 @@ parameters.write(getGPUColumnQuantilesParameterValues({
 }));`,
     preview: {
       kind: 'histogram',
-      seed: 12,
+      seed: 9102,
       caption: 'Quartiles and a 5 to 95 percent filter band over one column.'
     },
     related: ['class-breaks', 'column-profile'],
@@ -181,7 +181,7 @@ parameters.write(getGPUColumnQuantilesParameterValues({
     summary:
       'Choropleth class breaks on the GPU every frame: equal interval, quantile, natural breaks and more.',
     explanation:
-      'Use it to classify a column for a map without reading data back. The method, class count and custom edges are per-frame parameters, so switching never recompiles.',
+      'Classifies a column for a map without reading data back. The method, class count and custom edges are per-frame parameters, so switching never recompiles.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['classify'],
     domains: ['cartography', 'spatial-statistics'],
@@ -246,7 +246,7 @@ graph.add(new GPUClassBreaks({
 parameters.write(getGPUClassBreaksParameterValues({method: 'natural-breaks', classCount: 5}, 7));`,
     preview: {
       kind: 'classification',
-      seed: 13,
+      seed: 9103,
       caption: 'Five natural-breaks classes over a skewed column.'
     },
     related: ['column-quantiles', 'color-scale', 'bivariate-classification', 'class-assignment'],
@@ -263,7 +263,7 @@ parameters.write(getGPUClassBreaksParameterValues({method: 'natural-breaks', cla
     summary:
       'Maps a column to RGBA with linear, log, threshold or ordinal scales, all chosen per frame.',
     explanation:
-      'Use it to color features from data on the GPU. Scale type, domain and palette are data, so animating a legend never rebuilds the graph.',
+      'Colors features from data on the GPU. Scale type, domain and palette are data, so animating a legend never rebuilds the graph.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['classify'],
     domains: ['cartography'],
@@ -329,7 +329,7 @@ graph.add(new GPUColorScale({
 scale.write(getGPUColorScaleParameterValues({scale: 'threshold', domainCount: 8, paletteCount: 9}));`,
     preview: {
       kind: 'classification',
-      seed: 14,
+      seed: 9104,
       caption: 'A threshold palette applied to a column.'
     },
     related: ['class-breaks', 'scalar-scale', 'bivariate-classification'],
@@ -346,7 +346,7 @@ scale.write(getGPUColorScaleParameterValues({scale: 'threshold', domainCount: 8,
     summary:
       'Maps a column to a numeric range, such as radius or width, with source-aligned output and no readback.',
     explanation:
-      'Use it to drive size, width or elevation from data. It mirrors native scale semantics (linear, log, point) and keeps invalid rows flagged instead of compacting them.',
+      'Drives size, width or elevation from data. It mirrors native scale semantics (linear, log, point) and keeps invalid rows flagged instead of compacting them.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['classify'],
     domains: ['cartography'],
@@ -411,7 +411,7 @@ graph.add(new GPUScalarScale({
   output: {values: widths}
 }));
 scale.write(getGPUScalarScaleParameterValues({scale: 'linear', domainCount: 2}));`,
-    preview: {kind: 'classification', seed: 15, caption: 'Values mapped to a radius range.'},
+    preview: {kind: 'classification', seed: 9105, caption: 'Values mapped to a radius range.'},
     related: ['color-scale', 'class-breaks'],
     lensScenario: 'gpu-dataframe.scalar-scale',
     reference: 'api/gpu-dataframe-analysis',
@@ -425,7 +425,7 @@ scale.write(getGPUScalarScaleParameterValues({scale: 'linear', domainCount: 2}))
     title: 'Bivariate Classification',
     summary: 'Classifies two columns into an n by n grid and colors rows from a bivariate palette.',
     explanation:
-      'Use it for bivariate choropleths, such as income against transit access. Each axis has its own breaks; an optional third column fades the alpha.',
+      'Best for bivariate choropleths, such as income against transit access. Each axis has its own breaks; an optional third column fades the alpha.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['classify'],
     domains: ['cartography', 'demographics'],
@@ -499,7 +499,7 @@ graph.add(new GPUBivariateClassification({
   output: {colors}
 }));
 classes.write(getGPUBivariateClassificationParameterValues({classCountX: 3, classCountY: 3}));`,
-    preview: {kind: 'classification', seed: 16, caption: 'A 3 by 3 bivariate class grid.'},
+    preview: {kind: 'classification', seed: 9106, caption: 'A 3 by 3 bivariate class grid.'},
     related: ['class-breaks', 'color-scale'],
     lensScenario: 'gpu-dataframe.bivariate-classification',
     reference: 'api/gpu-dataframe-analysis',
@@ -514,7 +514,7 @@ classes.write(getGPUBivariateClassificationParameterValues({classCountX: 3, clas
     summary:
       'Z-score, deviation, MAD, range-adjust and range-standardize recipes for a float32 column.',
     explanation:
-      'Use it to put variables on a common scale before clustering, scoring or regression. Reductions span the whole column; masked and non-finite rows become NaN.',
+      'Puts variables on a common scale before clustering, scoring or regression. Reductions span the whole column; masked and non-finite rows become NaN.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering', 'spatial-statistics'],
@@ -561,7 +561,7 @@ graph.add(new GPUVariableStandardization({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'histogram', seed: 17, caption: 'A skewed column recentered and rescaled.'},
+    preview: {kind: 'histogram', seed: 9107, caption: 'A skewed column recentered and rescaled.'},
     related: ['composite-score', 'column-profile'],
     lensScenario: 'gpu-dataframe.variable-standardization',
     reference: 'api/variable-standardization',
@@ -576,7 +576,7 @@ device.submit();`,
     summary:
       'Builds one index per row from several indicators with scaling, weights, directions and PCA.',
     explanation:
-      'Use it for vulnerability, deprivation or suitability indices. Scale each indicator (min-max, z-score, rank), flip those where higher is worse, then combine them by weighted sum, geometric mean or principal component.',
+      'Best for vulnerability, deprivation or suitability indices. Scale each indicator (min-max, z-score, rank), flip those where higher is worse, then combine them by weighted sum, geometric mean or principal component.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize', 'measure'],
     domains: ['demographics', 'urban'],
@@ -639,7 +639,11 @@ parameters.write(getGPUCompositeScoreParameterValues({
   scaler: 'rank', aggregation: 'weighted-sum',
   weights: [1, 2, 0.5, 1], directions: [1, -1, 1, 1]
 }));`,
-    preview: {kind: 'cells', seed: 18, caption: 'Four indicators folded into one index per cell.'},
+    preview: {
+      kind: 'classification',
+      seed: 9108,
+      caption: 'Four indicators folded into one index per cell.'
+    },
     related: ['variable-standardization', 'inequality', 'class-breaks'],
     lensScenario: 'gpu-dataframe.composite-score',
     reference: 'api/gpu-dataframe-analysis',
@@ -654,7 +658,7 @@ parameters.write(getGPUCompositeScoreParameterValues({
     summary:
       'Per-zone Gini, Theil, Atkinson, Hoover and Palma indices and the Lorenz curve from a value column.',
     explanation:
-      'Use it to compare how unevenly income or access is distributed inside each zone. Optional population weights turn rows into shares.',
+      'Compares how unevenly income or access is distributed inside each zone. Optional population weights turn rows into shares.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['measure', 'summarize'],
     domains: ['demographics', 'urban'],
@@ -708,7 +712,7 @@ graph.add(new GPUInequality({
   output: {gini, lorenzKnots}
 }));
 parameters.write(getGPUInequalityParameterValues({epsilon: 1}));`,
-    preview: {kind: 'histogram', seed: 19, caption: 'Lorenz curves and Gini per zone.'},
+    preview: {kind: 'histogram', seed: 9109, caption: 'Lorenz curves and Gini per zone.'},
     related: ['composite-score', 'group-statistics'],
     lensScenario: 'gpu-dataframe.inequality',
     reference: 'api/gpu-dataframe-analysis',
@@ -723,7 +727,7 @@ parameters.write(getGPUInequalityParameterValues({epsilon: 1}));`,
     summary:
       'Groups rows by a 32- or 64-bit key and computes moments, median, percentiles and mode per group.',
     explanation:
-      'Use it for a group-by that never leaves the GPU, such as stats per tract or per category. Results land in a capacity-bounded table with an overflow flag.',
+      'Best for a group-by that never leaves the GPU, such as stats per tract or per category. Results land in a capacity-bounded table with an overflow flag.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering', 'spatial-statistics'],
@@ -778,7 +782,7 @@ graph.add(new GPUGroupStatistics({
   variance: 'sample',
   output: {keys: groupKeys, counts: groupCounts, status}
 }));`,
-    preview: {kind: 'histogram', seed: 20, caption: 'Mean and spread per group.'},
+    preview: {kind: 'histogram', seed: 9110, caption: 'Mean and spread per group.'},
     related: ['column-profile', 'key-join', 'temporal-reduction'],
     lensScenario: 'gpu-dataframe.group-statistics',
     reference: 'api/gpu-dataframe-analysis',
@@ -793,7 +797,7 @@ graph.add(new GPUGroupStatistics({
     summary:
       'Attribute join of a left table onto a right table by 32- or 64-bit key, entirely on the GPU.',
     explanation:
-      'Use it to attach attributes by id, such as census fields onto features. Gather copies the first match; aggregates reduce all matches (count, sum, mean, minimum, maximum).',
+      'Attaches attributes by id, such as census fields onto features. Gather copies the first match; aggregates reduce all matches (count, sum, mean, minimum, maximum).',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['relate'],
     domains: ['data-engineering'],
@@ -853,7 +857,7 @@ graph.add(new GPUKeyJoin({
 }));`,
     preview: {
       kind: 'pipeline',
-      seed: 21,
+      seed: 9111,
       caption: 'Right-table columns gathered onto left rows by key.'
     },
     related: ['group-statistics', 'transfer-mask', 'point-in-polygon-join'],
@@ -870,7 +874,7 @@ graph.add(new GPUKeyJoin({
     summary:
       'Decodes epoch-millisecond timestamps into year, month, hour, weekday, ISO week and more.',
     explanation:
-      'Use it to bucket events by hour of day or weekday with no CPU date math. Exact Int64 words, per-row UTC offsets or a time-zone table keep local time right.',
+      'Buckets events by hour of day or weekday with no CPU date math. Exact Int64 words, per-row UTC offsets or a time-zone table keep local time right.',
     dataTypes: {input: ['time-series'], output: ['table']},
     useCases: ['summarize'],
     domains: ['urban', 'data-engineering'],
@@ -921,7 +925,11 @@ graph.add(new GPUCalendarBuckets({
 }));
 // UTC-5, weeks start on Monday
 parameters.write(getGPUCalendarBucketsParameterValues(-300, 0));`,
-    preview: {kind: 'time-series', seed: 22, caption: 'Events folded into hour and weekday cells.'},
+    preview: {
+      kind: 'time-series',
+      seed: 9112,
+      caption: 'Events folded into hour and weekday cells.'
+    },
     related: ['temporal-reduction', 'time-window-filter'],
     lensScenario: 'gpu-dataframe.calendar-buckets',
     reference: 'api/gpu-dataframe-analysis',
@@ -936,7 +944,7 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300, 0));`,
     summary:
       'Filters timestamped rows or intervals against a per-frame window and publishes compact ids and fade weights.',
     explanation:
-      'Use it to scrub a timeline over events or trails. The window is a parameter write; exact Int64 time words and sorted-range mode give O(log n) frames.',
+      'Scrubs a timeline over events or trails. The window is a parameter write; exact Int64 time words and sorted-range mode give O(log n) frames.',
     dataTypes: {input: ['time-series', 'trajectories'], output: ['table']},
     useCases: ['summarize', 'find-patterns'],
     domains: ['urban', 'data-engineering'],
@@ -1003,7 +1011,7 @@ window.write(getGPUTimeWindowFilterParameterValues({start: now - 60, end: now}))
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'time-series',
-      seed: 23,
+      seed: 9113,
       caption: 'A moving window selecting events on a timeline.'
     },
     related: ['temporal-reduction', 'calendar-buckets'],
@@ -1085,6 +1093,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'last',
         type: "GraphDataView<'float32'>",
         description: 'Last value per cell and bucket.'
+      },
+      {
+        name: 'occupiedSlots',
+        type: 'GPUCompactOutput',
+        description: 'Occupied slot ids (cell * bucketCount + bucket) and count.'
       }
     ],
     example: `import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -1099,7 +1112,7 @@ graph.add(new GPUTemporalReduction({
   output: {counts, minimums, maximums, first, last, occupiedSlots}
 }));
 buckets.write(getGPUTemporalReductionParameterValues(originTime, 3600));`,
-    preview: {kind: 'time-series', seed: 24, caption: 'Hourly min and max per cell.'},
+    preview: {kind: 'time-series', seed: 9114, caption: 'Hourly min and max per cell.'},
     related: ['time-window-filter', 'calendar-buckets', 'group-statistics', 'cell-aggregation'],
     lensScenario: 'gpu-dataframe.temporal-reduction',
     reference: 'api/gpu-dataframe-analysis',
@@ -1114,7 +1127,7 @@ buckets.write(getGPUTemporalReductionParameterValues(originTime, 3600));`,
     summary:
       "Ripley's K, Besag's L and the pair-correlation function of a point pattern, with edge correction.",
     explanation:
-      'Use it to test whether points cluster or repel across distance scales. One deterministic pass counts pairs per radius inside a rectangle or polygon window.',
+      'Tests whether points cluster or repel across distance scales. One deterministic pass counts pairs per radius inside a rectangle or polygon window.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1177,7 +1190,7 @@ parameters.write(getGPURipleyParameterValues({
 }));`,
     preview: {
       kind: 'point-clusters',
-      seed: 31,
+      seed: 9115,
       caption: 'Clustered points and the K curve above random.'
     },
     related: [
@@ -1198,7 +1211,7 @@ parameters.write(getGPURipleyParameterValues({
     title: "Ripley's Envelope",
     summary: 'Monte Carlo complete-spatial-randomness envelopes for K, L or L(r) minus r.',
     explanation:
-      'Use it to judge whether an observed Ripley curve leaves what random patterns produce. Simulations run on the GPU in the same window; pointwise and global bands come back with the theoretical curve.',
+      'Judges whether an observed Ripley curve leaves what random patterns produce. Simulations run on the GPU in the same window; pointwise and global bands come back with the theoretical curve.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1283,7 +1296,7 @@ graph.add(new GPURipleyEnvelope({
 }));`,
     preview: {
       kind: 'regression',
-      seed: 32,
+      seed: 9116,
       caption: 'An observed curve against a simulated random band.'
     },
     related: ['ripley-k', 'point-pattern-envelope'],
@@ -1300,7 +1313,7 @@ graph.add(new GPURipleyEnvelope({
     summary:
       'Nearest-neighbor G, empty-space F and J = (1 - G) / (1 - F) of a point pattern in a window.',
     explanation:
-      'Use it as a complement to K when you care about gaps and nearest neighbors. J below 1 suggests clustering and above 1 regularity.',
+      'Complements K when you care about gaps and nearest neighbors. J below 1 suggests clustering and above 1 regularity.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1366,7 +1379,7 @@ graph.add(new GPURipleyDistanceFunctions({
 parameters.write(getGPURipleyDistanceFunctionsParameterValues({
   bounds: [0, 0, 1000, 1000], maximumDistance: 100
 }));`,
-    preview: {kind: 'points', seed: 33, caption: 'Nearest-neighbor and empty-space distances.'},
+    preview: {kind: 'points', seed: 9117, caption: 'Nearest-neighbor and empty-space distances.'},
     related: ['ripley-k', 'point-pattern-indices'],
     lensScenario: 'gpu-dataframe.ripley-distance-functions',
     reference: 'api/gpu-dataframe-analysis',
@@ -1381,7 +1394,7 @@ parameters.write(getGPURipleyDistanceFunctionsParameterValues({
     summary:
       'Clark-Evans nearest-neighbor index and quadrat-count dispersion tests for a point pattern.',
     explanation:
-      'Use it for a quick yes-or-no on clustering versus randomness. Clark-Evans compares mean nearest-neighbor distance with random; the quadrat test compares cell counts with Poisson.',
+      'Best for a quick yes-or-no on clustering versus randomness. Clark-Evans compares mean nearest-neighbor distance with random; the quadrat test compares cell counts with Poisson.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1452,7 +1465,7 @@ parameters.write(getGPUPointPatternIndicesParameterValues({
 }));`,
     preview: {
       kind: 'points',
-      seed: 34,
+      seed: 9118,
       caption: 'Nearest-neighbor links and an 8 by 8 quadrat grid.'
     },
     related: ['ripley-k', 'ripley-distance-functions'],
@@ -1469,7 +1482,7 @@ parameters.write(getGPUPointPatternIndicesParameterValues({
     summary:
       'Cross-type K and L, inhomogeneous K and annular pair and mark correlation on a rectangle.',
     explanation:
-      'Use it when points carry a type or a mark, such as two species or trees with sizes. It tests whether types attract each other or whether marks are spatially correlated.',
+      'Best when points carry a type or a mark, such as two species or trees with sizes. It tests whether types attract each other or whether marks are spatially correlated.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1520,19 +1533,24 @@ parameters.write(getGPUPointPatternIndicesParameterValues({
         name: 'pairCounts',
         type: "GraphDataView<'uint32'>",
         description: 'Pairs counted per radius.'
+      },
+      {
+        name: 'status',
+        type: "GraphDataView<'uint32'>",
+        description: 'Per radius: 0 valid, 1 invalid, 2 nonfinite.'
       }
     ],
     example: `import {GPUMarkedPointStatistics} from '@luma-contributors/analysis/dataframe-analysis';
 
-// positions, types, parameters, statistics, pairCounts: views on graph
+// positions, types, parameters, statistics, pairCounts, status: views on graph
 graph.add(new GPUMarkedPointStatistics({
   positions, types, typePair: [0, 1],
   parameters, radiusCount: 32,
-  output: {statistics, pairCounts}
+  output: {statistics, pairCounts, status}
 }));`,
     preview: {
       kind: 'point-clusters',
-      seed: 35,
+      seed: 9119,
       caption: 'Two point types and their cross-K curve.'
     },
     related: ['ripley-k', 'point-pattern-indices', 'inhomogeneous-point-pattern'],
@@ -1549,7 +1567,7 @@ graph.add(new GPUMarkedPointStatistics({
     summary:
       'Empirical semivariogram of point values, optionally directional, from one deterministic pair pass.',
     explanation:
-      'Use it to see how similarity decays with distance before kriging. Pairs fall into equal-width lag bins, optionally split by direction sector, with robust and fixed-point accumulation.',
+      'Shows how similarity decays with distance before kriging. Pairs fall into equal-width lag bins, optionally split by direction sector, with robust and fixed-point accumulation.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['model', 'interpolate'],
     domains: ['spatial-statistics', 'hydrology', 'ecology'],
@@ -1614,7 +1632,7 @@ graph.add(new GPUVariogram({
 parameters.write(getGPUVariogramParameterValues({bounds: [0, 0, 1000, 1000], maximumDistance: 500}));`,
     preview: {
       kind: 'regression',
-      seed: 36,
+      seed: 9120,
       caption: 'Semivariance rising with lag distance to a sill.'
     },
     related: ['variogram-model-fit', 'cross-variogram', 'space-time-variogram', 'kriging'],
@@ -1631,7 +1649,7 @@ parameters.write(getGPUVariogramParameterValues({bounds: [0, 0, 1000, 1000], max
     summary:
       'Fits spherical, exponential or Gaussian models to empirical semivariances entirely on the GPU.',
     explanation:
-      'Use it to turn an empirical variogram into nugget, sill and range for kriging without a CPU fit. It searches a log-range ladder with golden-section refinement and weights bins by Cressie, pairs or none.',
+      'Turns an empirical variogram into nugget, sill and range for kriging without a CPU fit. It searches a log-range ladder with golden-section refinement and weights bins by Cressie, pairs or none.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['model', 'interpolate'],
     domains: ['spatial-statistics', 'hydrology'],
@@ -1699,7 +1717,7 @@ graph.add(new GPUVariogramModelFit({
 }));`,
     preview: {
       kind: 'regression',
-      seed: 37,
+      seed: 9121,
       caption: 'Three candidate models fitted to the same bins.'
     },
     related: ['variogram', 'cross-variogram', 'kriging'],
@@ -1715,7 +1733,7 @@ graph.add(new GPUVariogramModelFit({
     title: 'Cross Variogram',
     summary: 'Pair accumulation of (x_i - x_j)(y_i - y_j) / 2 between two variables at each lag.',
     explanation:
-      'Use it to see how two variables co-vary with distance, for cokriging. Without secondValues it reduces to the ordinary Matheron semivariogram.',
+      'Shows how two variables co-vary with distance, for cokriging. Without secondValues it reduces to the ordinary Matheron semivariogram.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['model', 'interpolate'],
     domains: ['spatial-statistics', 'hydrology'],
@@ -1758,17 +1776,22 @@ graph.add(new GPUVariogramModelFit({
         type: "GraphDataView<'float32'>",
         description: 'Cross semivariance per lag.'
       },
-      {name: 'pairCounts', type: "GraphDataView<'uint32'>", description: 'Pairs per lag.'}
+      {name: 'pairCounts', type: "GraphDataView<'uint32'>", description: 'Pairs per lag.'},
+      {
+        name: 'status',
+        type: "GraphDataView<'uint32'>",
+        description: 'Per lag: 0 valid, 1 empty, 2 nonfinite.'
+      }
     ],
     example: `import {GPUCrossVariogram} from '@luma-contributors/analysis/dataframe-analysis';
 
-// positions, ozone, pm25, parameters, semivariances, pairCounts: views on graph
+// positions, ozone, pm25, parameters, semivariances, pairCounts, status: views on graph
 graph.add(new GPUCrossVariogram({
   positions, values: ozone, secondValues: pm25,
   parameters, lagCount: 20,
-  output: {semivariances, pairCounts}
+  output: {semivariances, pairCounts, status}
 }));`,
-    preview: {kind: 'regression', seed: 38, caption: 'Two variables co-varying with distance.'},
+    preview: {kind: 'regression', seed: 9122, caption: 'Two variables co-varying with distance.'},
     related: ['variogram', 'space-time-variogram', 'variogram-model-fit'],
     lensScenario: 'gpu-dataframe.cross-variogram',
     reference: 'api/gpu-dataframe-analysis',
@@ -1782,7 +1805,7 @@ graph.add(new GPUCrossVariogram({
     title: 'Space-Time Variogram',
     summary: 'Semivariance across both spatial and temporal lags of timestamped point values.',
     explanation:
-      'Use it to check whether similarity decays with distance and with time before space-time kriging. Output is a spatial by temporal lag grid.',
+      'Checks whether similarity decays with distance and with time before space-time kriging. Output is a spatial by temporal lag grid.',
     dataTypes: {input: ['points', 'time-series'], output: ['table']},
     useCases: ['model', 'interpolate'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1825,19 +1848,24 @@ graph.add(new GPUCrossVariogram({
         name: 'pairCounts',
         type: "GraphDataView<'uint32'>",
         description: 'Pairs per spatial and temporal lag.'
+      },
+      {
+        name: 'status',
+        type: "GraphDataView<'uint32'>",
+        description: 'Per lag: 0 valid, 1 empty, 2 nonfinite.'
       }
     ],
     example: `import {GPUSpaceTimeVariogram} from '@luma-contributors/analysis/dataframe-analysis';
 
-// positions, values, times, parameters, semivariances, pairCounts: views on graph
+// positions, values, times, parameters, semivariances, pairCounts, status: views on graph
 graph.add(new GPUSpaceTimeVariogram({
   positions, values, times, parameters,
   lagCount: 16, temporalLagCount: 8,
-  output: {semivariances, pairCounts}
+  output: {semivariances, pairCounts, status}
 }));`,
     preview: {
       kind: 'density-surface',
-      seed: 39,
+      seed: 9123,
       caption: 'Semivariance over space lag by time lag.'
     },
     related: ['variogram', 'cross-variogram', 'variogram-model-fit'],
@@ -1854,7 +1882,7 @@ graph.add(new GPUSpaceTimeVariogram({
     summary:
       "Global Moran's I at a ladder of distance bands, with analytic z-scores, in one pair pass.",
     explanation:
-      'Use it to find the distance at which spatial autocorrelation fades, and so pick a neighborhood scale. Bands are cumulative or annular; peakBands flags the strongest.',
+      'Finds the distance at which spatial autocorrelation fades, and so pick a neighborhood scale. Bands are cumulative or annular; peakBands flags the strongest.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics', 'demographics'],
@@ -1916,7 +1944,7 @@ graph.add(new GPUSpatialCorrelogram({
 parameters.write(getGPUSpatialCorrelogramParameterValues({
   bounds: [0, 0, 1000, 1000], maximumDistance: 600
 }));`,
-    preview: {kind: 'time-series', seed: 40, caption: "Moran's I falling across distance bands."},
+    preview: {kind: 'histogram', seed: 9124, caption: "Moran's I falling across distance bands."},
     related: ['variogram', 'global-spatial-statistics'],
     lensScenario: 'gpu-dataframe.spatial-correlogram',
     reference: 'api/gpu-dataframe-analysis',
@@ -1931,7 +1959,7 @@ parameters.write(getGPUSpatialCorrelogramParameterValues({
     summary:
       'Exact 3D radius neighborhoods with nearest-k capacity, optional grid acceleration and observable truncation.',
     explanation:
-      'Use it as the first step of normals, shape features and outlier filtering. Each row keeps its nearest 1 to 64 neighbors within the radius, and counts reports the full support so truncation is visible.',
+      'The first step of normals, shape features and outlier filtering. Each row keeps its nearest 1 to 64 neighbors within the radius, and counts reports the full support so truncation is visible.',
     dataTypes: {input: ['point-cloud'], output: ['table']},
     useCases: ['index', 'relate'],
     domains: ['three-d'],
@@ -2018,7 +2046,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'point-cloud',
-      seed: 51,
+      seed: 9125,
       caption: 'Radius neighbors found around each lidar point.'
     },
     related: [
@@ -2039,7 +2067,7 @@ device.submit();`,
     summary:
       'Normals, eigenvalues and linearity, planarity and scattering from 3D neighborhoods via covariance and Jacobi.',
     explanation:
-      'Use it to tell ground, walls, poles and vegetation apart. It builds a population covariance per neighborhood and solves its eigenvectors with a bounded Jacobi sweep.',
+      'Separates ground, walls, poles and vegetation. It builds a population covariance per neighborhood and solves its eigenvectors with a bounded Jacobi sweep.',
     dataTypes: {input: ['point-cloud'], output: ['table']},
     useCases: ['measure', 'find-patterns'],
     domains: ['three-d', 'remote-sensing'],
@@ -2123,7 +2151,7 @@ graph.add(new GPUPointCloudFeatures({
 }));`,
     preview: {
       kind: 'point-cloud',
-      seed: 52,
+      seed: 9126,
       caption: 'Points colored by planarity and normal direction.'
     },
     related: ['pointcloud-neighborhoods', 'pointcloud-statistical-filter'],
@@ -2139,7 +2167,7 @@ graph.add(new GPUPointCloudFeatures({
     summary:
       'Flags points whose mean neighbor distance exceeds the cloud mean by k standard deviations.',
     explanation:
-      'Use it to drop noise points before surfacing or registration. It consumes neighborhood distances and writes a row-preserving inlier mask, with no compaction.',
+      'Drops noise points before surfacing or registration. It consumes neighborhood distances and writes a row-preserving inlier mask, with no compaction.',
     dataTypes: {input: ['point-cloud'], output: ['point-cloud']},
     useCases: ['transform', 'find-patterns'],
     domains: ['three-d', 'remote-sensing'],
@@ -2205,7 +2233,7 @@ graph.add(new GPUPointCloudStatisticalFilter({
 }));`,
     preview: {
       kind: 'point-cloud',
-      seed: 53,
+      seed: 9127,
       caption: 'Sparse noise points rejected from a dense cloud.'
     },
     related: ['pointcloud-neighborhoods', 'pointcloud-voxel-merge'],
@@ -2221,7 +2249,7 @@ graph.add(new GPUPointCloudStatisticalFilter({
     summary:
       'Merges per-tile voxel counts, centroids and representatives with associative sufficient statistics.',
     explanation:
-      'Use it to combine tiled voxel downsampling into one global result. The caller certifies disjoint owned rows; halo copies are never inferred or deduplicated.',
+      'Combines tiled voxel downsampling into one global result. The caller certifies disjoint owned rows; halo copies are never inferred or deduplicated.',
     dataTypes: {input: ['point-cloud'], output: ['point-cloud']},
     useCases: ['summarize', 'transform'],
     domains: ['three-d'],
@@ -2234,7 +2262,7 @@ graph.add(new GPUPointCloudStatisticalFilter({
       },
       {
         name: 'parts',
-        type: "readonly {counts: GraphDataView<'uint32'>; centroids: GraphDataView<'float32x3'>; representatives: GraphDataView<'uint32'>; sourceRowOffset: number; attribute?: {...}}[]",
+        type: 'readonly {counts, centroids, representatives, sourceRowOffset, attribute?}}[]',
         required: true,
         description: 'Per-partition counts, centroids and representatives.'
       },
@@ -2295,7 +2323,7 @@ graph.add(new GPUPointCloudVoxelMerge({
 }));`,
     preview: {
       kind: 'point-cloud',
-      seed: 54,
+      seed: 9128,
       caption: 'Tile-wise voxel centroids merged into one grid.'
     },
     related: ['pointcloud-statistical-filter', 'pointcloud-neighborhoods'],
@@ -2311,7 +2339,7 @@ graph.add(new GPUPointCloudVoxelMerge({
     summary:
       'Cell-minimum terrain (DTM), cell-maximum surface (DSM) and canopy height from classified points.',
     explanation:
-      'Use it to rasterize a classified lidar cloud on a planar grid. Terrain is the minimum ground-class elevation per cell, surface the maximum of all points, and coverage tells you which cells are supported.',
+      'Rasterizes a classified lidar cloud on a planar grid. Terrain is the minimum ground-class elevation per cell, surface the maximum of all points, and coverage tells you which cells are supported.',
     dataTypes: {input: ['point-cloud'], output: ['terrain', 'raster']},
     useCases: ['transform', 'measure'],
     domains: ['three-d', 'remote-sensing', 'hydrology'],
@@ -2380,7 +2408,7 @@ graph.add(new GPUPointCloudSurfaces({
 }));`,
     preview: {
       kind: 'terrain',
-      seed: 55,
+      seed: 9129,
       caption: 'Ground and canopy surfaces rasterized from points.'
     },
     related: ['pointcloud-height', 'pointcloud-ground', 'pointcloud-smrf'],
@@ -2395,7 +2423,7 @@ graph.add(new GPUPointCloudSurfaces({
     title: 'Height Above Ground',
     summary: 'Height of each point above the containing terrain cell, preserving negative heights.',
     explanation:
-      'Use it to normalize a cloud to terrain so trees, buildings and cars share one baseline. Sampling is cell-constant by default, with optional bilinear or inverse-distance interpolation.',
+      'Normalizes a cloud to terrain so trees, buildings and cars share one baseline. Sampling is cell-constant by default, with optional bilinear or inverse-distance interpolation.',
     dataTypes: {input: ['point-cloud', 'terrain'], output: ['point-cloud']},
     useCases: ['measure', 'transform'],
     domains: ['three-d', 'remote-sensing'],
@@ -2467,7 +2495,7 @@ graph.add(new GPUPointCloudHeight({
 }));`,
     preview: {
       kind: 'terrain',
-      seed: 56,
+      seed: 9130,
       caption: 'Point heights measured up from the terrain grid.'
     },
     related: ['pointcloud-surfaces', 'pointcloud-ground'],
@@ -2483,7 +2511,7 @@ graph.add(new GPUPointCloudHeight({
     summary:
       'Bounded progressive morphological filter that classifies ground points over growing square windows.',
     explanation:
-      'Use it for a quick ground classification from a cell-minimum surface. Each stage opens the surface with a larger window and rejects points that rise above a slope-based threshold; it is a PMF, not SMRF.',
+      'Best for a quick ground classification from a cell-minimum surface. Each stage opens the surface with a larger window and rejects points that rise above a slope-based threshold; it is a PMF, not SMRF.',
     dataTypes: {input: ['point-cloud'], output: ['point-cloud']},
     useCases: ['classify', 'transform'],
     domains: ['three-d', 'remote-sensing', 'hydrology'],
@@ -2562,7 +2590,7 @@ graph.add(new GPUPointCloudGround({
 }));`,
     preview: {
       kind: 'terrain',
-      seed: 57,
+      seed: 9131,
       caption: 'Ground points separated from canopy and buildings.'
     },
     related: ['pointcloud-smrf', 'pointcloud-surfaces', 'pointcloud-height'],
@@ -2578,7 +2606,7 @@ graph.add(new GPUPointCloudGround({
     summary:
       'Simple morphological filter following the PDAL SMRF stages to classify ground points.',
     explanation:
-      'Use it for production-style ground classification of airborne lidar. It runs diamond openings, low-outlier and net-cut steps and inpaints a provisional terrain before thresholding points.',
+      'Best for production-style ground classification of airborne lidar. It runs diamond openings, low-outlier and net-cut steps and inpaints a provisional terrain before thresholding points.',
     dataTypes: {input: ['point-cloud'], output: ['point-cloud', 'terrain']},
     useCases: ['classify', 'transform'],
     domains: ['three-d', 'remote-sensing', 'hydrology'],
@@ -2639,7 +2667,7 @@ graph.add(new GPUPointCloudSMRF({
   slope: 0.15, threshold: 0.5, window: 16,
   groundSurface, groundMask, outputClassifications: outputClasses, status
 }));`,
-    preview: {kind: 'terrain', seed: 58, caption: 'SMRF ground surface under a vegetated cloud.'},
+    preview: {kind: 'terrain', seed: 9132, caption: 'SMRF ground surface under a vegetated cloud.'},
     related: ['pointcloud-ground', 'pointcloud-surfaces', 'pointcloud-height'],
     reference: 'api/pointcloud-analysis',
     maturity: 'stable'
@@ -2653,7 +2681,7 @@ graph.add(new GPUPointCloudSMRF({
     summary:
       'Bounded GPU iterative closest point with distance rejection, point-to-plane and robust weighting.',
     explanation:
-      'Use it to register one scan onto another. Each iteration matches nearest points within maximumDistance and solves a rigid transform by Horn least squares; history reports inliers and RMSE per step.',
+      'Registers one scan onto another. Each iteration matches nearest points within maximumDistance and solves a rigid transform by Horn least squares; history reports inliers and RMSE per step.',
     dataTypes: {input: ['point-cloud'], output: ['table']},
     useCases: ['detect-change', 'transform'],
     domains: ['three-d', 'remote-sensing'],
@@ -2727,7 +2755,7 @@ graph.add(new GPUPointCloudICP({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'point-cloud', seed: 59, caption: 'Two scans converging onto each other.'},
+    preview: {kind: 'point-cloud', seed: 9133, caption: 'Two scans converging onto each other.'},
     related: ['pointcloud-change', 'pointcloud-local-positions'],
     reference: 'api/pointcloud-analysis',
     maturity: 'stable'
@@ -2741,7 +2769,7 @@ device.submit();`,
     summary:
       'M3C2-style signed change along normals with confidence bounds, roughness and registration error.',
     explanation:
-      'Use it to measure erosion, deformation or growth between two aligned scans. For each core point it compares cylindrical neighborhoods along the normal and reports the displacement with a 95 percent detection bound.',
+      'Measures erosion, deformation or growth between two aligned scans. For each core point it compares cylindrical neighborhoods along the normal and reports the displacement with a 95 percent detection bound.',
     dataTypes: {input: ['point-cloud'], output: ['table']},
     useCases: ['detect-change', 'measure'],
     domains: ['three-d', 'remote-sensing', 'hydrology'],
@@ -2821,7 +2849,7 @@ graph.add(new GPUPointCloudChange({
 }));`,
     preview: {
       kind: 'point-cloud',
-      seed: 60,
+      seed: 9134,
       caption: 'Signed change colored along surface normals.'
     },
     related: ['pointcloud-icp', 'pointcloud-features', 'pointcloud-local-positions'],
@@ -2837,20 +2865,20 @@ graph.add(new GPUPointCloudChange({
     summary:
       'Float32 positions relative to a float64 origin, so projected coordinates keep millimetre precision.',
     explanation:
-      'Use it before uploading any cloud with large coordinates. Absolute float32 eastings lose about 6 cm at 1e6 m; subtracting a shared origin in float64 first avoids it, and every cloud compared together needs the same origin.',
+      'Best before uploading any cloud with large coordinates. Absolute float32 eastings lose about 6 cm at 1e6 m; subtracting a shared origin in float64 first avoids it, and every cloud compared together needs the same origin.',
     dataTypes: {input: ['point-cloud'], output: ['point-cloud']},
     useCases: ['transform'],
     domains: ['three-d', 'data-engineering'],
     params: [
       {
         name: 'positions',
-        type: 'unknown',
+        type: 'ArrayLike<number>',
         required: true,
         description: 'Interleaved xyz coordinates in any ArrayLike<number>.'
       },
       {
         name: 'origin',
-        type: 'unknown',
+        type: 'readonly [number, number, number]',
         required: true,
         description: 'Shared [x, y, z] origin, subtracted in float64.'
       }
@@ -2870,7 +2898,7 @@ const local = makePointCloudLocalPositions(absolute, origin);
 // upload local as float32x3; add origin back when reading results`,
     preview: {
       kind: 'point-cloud',
-      seed: 61,
+      seed: 9135,
       caption: 'A far-from-origin cloud recentered for float32.'
     },
     related: ['pointcloud-icp', 'pointcloud-change', 'pointcloud-neighborhoods'],
@@ -2886,7 +2914,7 @@ const local = makePointCloudLocalPositions(absolute, origin);
     summary:
       'Bilinear horizontal and vertical datum shifts from caller-decoded grids, forward or inverse.',
     explanation:
-      'Use it to move positions between datums or vertical references, as NADCON or geoid grids define. The first grid covering a point wins, nodata fails the row, and inverse runs a bounded iteration.',
+      'Moves positions between datums or vertical references, as NADCON or geoid grids define. The first grid covering a point wins, nodata fails the row, and inverse runs a bounded iteration.',
     dataTypes: {input: ['points'], output: ['points']},
     useCases: ['transform'],
     domains: ['cartography', 'three-d'],
@@ -2933,6 +2961,11 @@ const local = makePointCloudLocalPositions(absolute, origin);
     outputs: [
       {name: 'positions', type: "GraphDataView<'float32x3'>", description: 'Shifted positions.'},
       {
+        name: 'positionsLow',
+        type: "GraphDataView<'float32x3'>",
+        description: 'Optional residual words keeping sub-float32 detail.'
+      },
+      {
         name: 'status',
         type: "GraphDataView<'uint32'>",
         description: 'success, invalid, noCoverage, nodata or inverseExhausted.'
@@ -2947,7 +2980,11 @@ graph.add(new GPUDatumGridTransform({
   operation: 'combined', direction: 'forward',
   output: {positions: shiftedPositions, status: statusWords}
 }));`,
-    preview: {kind: 'raster', seed: 62, caption: 'A shift grid warping positions between datums.'},
+    preview: {
+      kind: 'raster',
+      seed: 9136,
+      caption: 'A shift grid warping positions between datums.'
+    },
     related: ['local-frame-projection'],
     reference: 'api/geospatial',
     maturity: 'stable'
@@ -2961,7 +2998,7 @@ graph.add(new GPUDatumGridTransform({
     summary:
       'Generates inscribed circle vertices around points, in geographic or planar coordinates.',
     explanation:
-      'Use it to draw radius circles around many points with a per-frame radius. Geographic offsets are degrees you add to float64 centers, so small radii keep precision.',
+      'Draws radius circles around many points with a per-frame radius. Geographic offsets are degrees you add to float64 centers, so small radii keep precision.',
     dataTypes: {input: ['points'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'urban'],
@@ -3013,7 +3050,7 @@ graph.add(new GPUPointBuffer({
 }));
 // 250 m radius
 const radiusValues = getGPUPointBufferParameterValues(250);`,
-    preview: {kind: 'buffers', seed: 63, caption: 'Circles of one radius around every point.'},
+    preview: {kind: 'buffers', seed: 9137, caption: 'Circles of one radius around every point.'},
     related: ['buffer-selection', 'buffer-surface'],
     reference: 'api/geospatial',
     maturity: 'stable'
@@ -3027,7 +3064,7 @@ const radiusValues = getGPUPointBufferParameterValues(250);`,
     summary:
       'Records a command graph under construction, with scopes, nodes and sources, for a computation record.',
     explanation:
-      'Use it to capture what a graph does so it can be drawn and replayed on the lens pages. Wrap node creation in withScope and describe the compiled graph afterwards.',
+      'Captures what a graph does so it can be drawn and replayed on the lens pages. Wrap node creation in withScope and describe the compiled graph afterwards.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering'],
@@ -3058,7 +3095,7 @@ const record = createGPUComputationRecord({
 });`,
     preview: {
       kind: 'pipeline',
-      seed: 71,
+      seed: 9138,
       caption: 'Nodes of a command graph captured as they are added.'
     },
     related: ['computation-record', 'snapshot-tap', 'snapshot-arena'],
@@ -3074,7 +3111,7 @@ const record = createGPUComputationRecord({
     summary:
       'Assembles a portable record of graphs, sources, formulas and decisions, deduplicating sources by id.',
     explanation:
-      'Use it to publish a reproducible description of a run: which graphs ran on which adapter, with which data version and seed. Validate it with validateGPUComputationRecord before sharing.',
+      'Publishes a reproducible description of a run: which graphs ran on which adapter, with which data version and seed. Validate it with validateGPUComputationRecord before sharing.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering'],
@@ -3112,7 +3149,26 @@ const record = createGPUComputationRecord({
       {name: 'seed', type: 'string | number', description: 'Random seed of the run.'}
     ],
     outputs: [
-      {name: 'record', type: 'GPUComputationRecord', description: 'Plain JSON-serializable record.'}
+      {name: 'schema', type: 'string', description: 'Schema identifier.'},
+      {name: 'id', type: 'string', description: 'Record id.'},
+      {name: 'runId', type: 'string', description: 'Run identity hash; sidecars join on it.'},
+      {name: 'createdAt', type: 'string', description: 'ISO 8601 creation time.'},
+      {
+        name: 'adapter',
+        type: 'GPUComputationAdapter',
+        description: 'Adapter that ran the computation.'
+      },
+      {name: 'domains', type: 'readonly string[]', description: 'Domain packs of the record.'},
+      {
+        name: 'graphs',
+        type: 'readonly GPUComputationGraph[]',
+        description: 'Graph forms, intent to encoded.'
+      },
+      {
+        name: 'axes, refs, decisions, choices, workflow',
+        type: 'mixed views',
+        description: 'Further result fields; see the reference.'
+      }
     ],
     example: `import {createGPUComputationRecord, describeGPUCommandGraph, getGPUComputationAdapter, validateGPUComputationRecord} from '@luma-contributors/analysis/computation-record';
 
@@ -3127,7 +3183,7 @@ const record = createGPUComputationRecord({
 const report = validateGPUComputationRecord(record);`,
     preview: {
       kind: 'pipeline',
-      seed: 72,
+      seed: 9139,
       caption: 'A graph, its adapter and its data version in one record.'
     },
     related: ['computation-recorder', 'computation-metrics', 'computation-captures'],
@@ -3143,7 +3199,7 @@ const report = validateGPUComputationRecord(record);`,
     summary:
       'Builds per-node nanosecond timing relative to the earliest GPU begin, plus counters and series.',
     explanation:
-      'Use it to attach GPU and CPU timings to a record so a lens page can animate the run. Timestamps disable pass coalescing, which the encoding flags record.',
+      'Attaches GPU and CPU timings to a record so a lens page can animate the run. Timestamps disable pass coalescing, which the encoding flags record.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['measure'],
     domains: ['data-engineering'],
@@ -3185,10 +3241,29 @@ const report = validateGPUComputationRecord(record);`,
       }
     ],
     outputs: [
+      {name: 'schema', type: 'string', description: 'Schema identifier.'},
+      {name: 'runId', type: 'string', description: 'Run the metrics measure.'},
+      {name: 'graph', type: 'string', description: 'Id of the measured graph.'},
+      {name: 'timebase', type: '"ns" | "ms"', description: 'Unit of GPU begin and end times.'},
       {
-        name: 'metrics',
-        type: 'GPUComputationMetrics',
-        description: 'Node timings in nanoseconds relative to the first begin.'
+        name: 'adapter',
+        type: 'GPUComputationAdapter',
+        description: 'Optional adapter description.'
+      },
+      {
+        name: 'encoding',
+        type: 'GPUComputationEncodingFlags',
+        description: 'Observer effects in force.'
+      },
+      {
+        name: 'nodes',
+        type: 'Record<string, GPUComputationNodeMetrics>',
+        description: 'Timings and counters keyed by node id.'
+      },
+      {
+        name: 'series',
+        type: 'readonly GPUComputationSeries[]',
+        description: 'Optional per-iteration counter series.'
       }
     ],
     example: `import {createGPUComputationMetrics} from '@luma-contributors/analysis/computation-record';
@@ -3204,7 +3279,7 @@ const metrics = createGPUComputationMetrics({
 });`,
     preview: {
       kind: 'time-series',
-      seed: 73,
+      seed: 9140,
       caption: 'Node durations laid out along a GPU timeline.'
     },
     related: ['computation-record', 'computation-captures'],
@@ -3220,7 +3295,7 @@ const metrics = createGPUComputationMetrics({
     summary:
       'Builds the captures sidecar of a record: snapshots, stamps and replays, with empty arrays filled in.',
     explanation:
-      'Use it to bundle the data frames you read back from snapshot taps with the run id. Validate record and captures together with validateGPUComputationSidecars.',
+      'Bundles the data frames you read back from snapshot taps with the run id. Validate record and captures together with validateGPUComputationSidecars.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering'],
@@ -3248,10 +3323,22 @@ const metrics = createGPUComputationMetrics({
       }
     ],
     outputs: [
+      {name: 'schema', type: 'string', description: 'Schema identifier.'},
+      {name: 'runId', type: 'string', description: 'Run the captures belong to.'},
       {
-        name: 'captures',
-        type: 'GPUComputationCaptures',
-        description: 'Sidecar with schema, runId and the three arrays.'
+        name: 'snapshots',
+        type: 'readonly GPUComputationCapture[]',
+        description: 'Resource copies at taps and steps.'
+      },
+      {
+        name: 'stamps',
+        type: 'readonly GPUComputationCapture[]',
+        description: 'Per-datum stamps such as settle round.'
+      },
+      {
+        name: 'replays',
+        type: 'readonly GPUComputationCapture[]',
+        description: 'GPU replays of folded state.'
       }
     ],
     example: `import {createGPUComputationCaptures, validateGPUComputationSidecars} from '@luma-contributors/analysis/computation-record';
@@ -3261,7 +3348,7 @@ const captures = createGPUComputationCaptures({runId: record.runId, snapshots});
 const report = validateGPUComputationSidecars(record, {captures});`,
     preview: {
       kind: 'pipeline',
-      seed: 74,
+      seed: 9141,
       caption: 'Snapshot frames attached to the run they came from.'
     },
     related: ['computation-record', 'snapshot-arena', 'snapshot-tap'],
@@ -3276,7 +3363,7 @@ const report = validateGPUComputationSidecars(record, {captures});`,
     title: 'Snapshot Arena',
     summary: 'A bounded readback buffer that collects snapshot frames and maps once.',
     explanation:
-      'Use it to observe intermediate state of a graph without stalling it per frame. Slots name what is copied; capacity bounds how many frames fit before one mapped read.',
+      'Observes intermediate state of a graph without stalling it per frame. Slots name what is copied; capacity bounds how many frames fit before one mapped read.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering'],
@@ -3304,7 +3391,11 @@ const arena = new GPUSnapshotArena(device, {
 graph.add(new GPUSnapshotTap({
   id: 'tap-residual', arena, views: {residual: residualView}, afterNode: 'relax'
 }));`,
-    preview: {kind: 'pipeline', seed: 75, caption: 'Frames collected in one buffer along a graph.'},
+    preview: {
+      kind: 'pipeline',
+      seed: 9142,
+      caption: 'Frames collected in one buffer along a graph.'
+    },
     related: ['snapshot-tap', 'computation-captures'],
     reference: 'api/computation-record',
     maturity: 'stable'
@@ -3318,7 +3409,7 @@ graph.add(new GPUSnapshotTap({
     summary:
       'A copy node that snapshots views of a graph into an arena at a chosen point in the sequence.',
     explanation:
-      'Use it to watch a value evolve across iterations, such as a residual. Place it after a node, give it views, and each encoding adds one frame to the arena.',
+      'Watches a value evolve across iterations, such as a residual. Place it after a node, give it views, and each encoding adds one frame to the arena.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering'],
@@ -3373,7 +3464,11 @@ graph.add(new GPUSnapshotTap({
   label: 'residual after relax',
   recorder
 }));`,
-    preview: {kind: 'pipeline', seed: 76, caption: 'A tap copying a view between two graph nodes.'},
+    preview: {
+      kind: 'pipeline',
+      seed: 9143,
+      caption: 'A tap copying a view between two graph nodes.'
+    },
     related: ['snapshot-arena', 'computation-recorder', 'computation-captures'],
     reference: 'api/computation-record',
     maturity: 'stable'
@@ -3386,7 +3481,7 @@ graph.add(new GPUSnapshotTap({
     title: 'Transfer Mask',
     summary: 'Clears and scatters a selection mask across a GPU-resident index or CSR relation.',
     explanation:
-      'Use it to carry a selection from one table to another, such as picked tracts to their parcels. Mode any marks reached targets; count tallies selected incoming entries.',
+      'Carries a selection from one table to another, such as picked tracts to their parcels. Mode any marks reached targets; count tallies selected incoming entries.',
     dataTypes: {input: ['table', 'spatial-weights'], output: ['table']},
     useCases: ['relate'],
     domains: ['data-engineering'],
@@ -3445,7 +3540,7 @@ graph.add(new GPUTransferMask({
 }));`,
     preview: {
       kind: 'pipeline',
-      seed: 77,
+      seed: 9144,
       caption: 'A selection carried across a relation to another table.'
     },
     related: ['key-join', 'snapshot-tap'],

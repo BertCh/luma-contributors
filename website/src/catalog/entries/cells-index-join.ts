@@ -20,7 +20,7 @@ export const entries: CatalogEntry[] = [
     title: 'Point to cell',
     summary: 'Converts longitude/latitude points to 64-bit grid cell keys, one key per row.',
     explanation:
-      'Use it as the first step of any grid workflow: H3, Quadbin, quadkey, geohash and S2 keys come out of one kernel. Keys are `uint32x2` (low, high) words, the Arrow `Uint64` layout. Rewrite positions or the mask and the same graph re-encodes without recompiling.',
+      'The first step of any grid workflow: H3, Quadbin, quadkey, geohash and S2 keys come out of one kernel. Keys are `uint32x2` (low, high) words, the Arrow `Uint64` layout. Rewrite positions or the mask and the same graph re-encodes without recompiling.',
     dataTypes: {input: ['points'], output: ['cells']},
     useCases: ['index'],
     domains: ['data-engineering', 'urban'],
@@ -83,7 +83,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'cells',
-      seed: 11,
+      seed: 9001,
       caption: 'Each point falls into exactly one hexagon at the chosen resolution.'
     },
     related: ['cell-geometry', 'cell-aggregation', 'cell-topology'],
@@ -99,7 +99,7 @@ device.submit();`,
     title: 'Cell geometry',
     summary: 'Decodes cell keys to centers and boundary polygons in longitude/latitude degrees.',
     explanation:
-      'Use it to draw any grid column, or to turn cells into polygons for joins. H3 boundaries match h3-js `cellToBoundary` exactly, including pentagons and face-crossing vertices. Boundaries use a fixed vertex stride with a per-row vertex count.',
+      'Draws any grid column, or to turn cells into polygons for joins. H3 boundaries match h3-js `cellToBoundary` exactly, including pentagons and face-crossing vertices. Boundaries use a fixed vertex stride with a per-row vertex count.',
     dataTypes: {input: ['cells'], output: ['points', 'polygons']},
     useCases: ['transform', 'index'],
     domains: ['cartography', 'data-engineering'],
@@ -166,7 +166,7 @@ graph.add(new GPUCellGeometry({
   output: {centers, boundaries, vertexCounts}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 12, caption: 'Keys become hexagon outlines and centers.'},
+    preview: {kind: 'cells', seed: 9002, caption: 'Keys become hexagon outlines and centers.'},
     related: ['point-to-cell', 'cell-set-outline', 'cell-measures'],
     lensScenario: 'gpu-spatial-analysis.cell-geometry',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -181,7 +181,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Computes exact spherical area, perimeter, edge length and pentagon flag for H3 cells.',
     explanation:
-      'Use it to normalize counts by true cell area, since H3 cells are not all the same size. Areas come from the spherical boundary, not a table of averages. Pentagons are flagged and have five edges.',
+      'Normalizes counts by true cell area, since H3 cells are not all the same size. Areas come from the spherical boundary, not a table of averages. Pentagons are flagged and have five edges.',
     dataTypes: {input: ['cells'], output: ['table']},
     useCases: ['measure'],
     domains: ['cartography', 'demographics'],
@@ -230,7 +230,7 @@ graph.add(new GPUCellMeasures({
   family: 'h3', cells, units: 'kilometers', output: {areas, pentagons}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 13, caption: 'Hexagons differ in area; pentagons stand out.'},
+    preview: {kind: 'cells', seed: 9003, caption: 'Hexagons differ in area; pentagons stand out.'},
     related: ['s2-cell-measures', 'cell-geometry'],
     lensScenario: 'gpu-spatial-analysis.cell-measures',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -245,7 +245,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Derives exact H3 directed-edge or canonical vertex identities for cells, including pentagons.',
     explanation:
-      'Use it to build flow graphs between cells or to share vertices across neighboring cells. The identities are exact integers, so they join and deduplicate without tolerance. Choose `directed-edges` or `vertices` at compile time.',
+      'Builds flow graphs between cells or to share vertices across neighboring cells. The identities are exact integers, so they join and deduplicate without tolerance. Choose `directed-edges` or `vertices` at compile time.',
     dataTypes: {input: ['cells'], output: ['cells', 'network']},
     useCases: ['index'],
     domains: ['data-engineering', 'transport'],
@@ -285,7 +285,7 @@ const edges = graph.importGPUData('edges', edgeData); // GPUData<'uint32x2'>, 6 
 
 graph.add(new GPUH3CellIdentities({cells, operation: 'directed-edges', output: edges}));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 14, caption: 'Six directed edges leave every hexagon.'},
+    preview: {kind: 'cells', seed: 9004, caption: 'Six directed edges leave every hexagon.'},
     related: ['cell-topology', 'cell-grid-path'],
     lensScenario: 'gpu-spatial-analysis.h3-cell-identities',
     reference: 'api/gpu-spatial-analysis/expansion-lenses',
@@ -303,7 +303,7 @@ const compiled = await graph.compileAsync();`,
     title: 'Cell aggregation',
     summary: 'Bins rows into grid cells and reduces them to a compact, sorted per-cell table.',
     explanation:
-      'Use it to turn millions of points into a heat grid. Rows are keyed, sorted and reduced with integer atomics, so counts and sums are exact and repeatable. Output capacity is fixed; on overflow the smallest keys are kept and a flag is set.',
+      'Turns millions of points into a heat grid. Rows are keyed, sorted and reduced with integer atomics, so counts and sums are exact and repeatable. Output capacity is fixed; on overflow the smallest keys are kept and a flag is set.',
     dataTypes: {input: ['points', 'cells'], output: ['cells', 'table']},
     useCases: ['summarize', 'index'],
     domains: ['urban', 'data-engineering'],
@@ -375,7 +375,7 @@ graph.add(new GPUCellAggregation({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'density-surface', seed: 21, caption: 'Points collapse into counted cells.'},
+    preview: {kind: 'cells', seed: 9005, caption: 'Points collapse into counted cells.'},
     related: ['cell-rollup', 'cell-pyramid', 'point-to-cell', 'cell-table-compare'],
     lensScenario: 'gpu-spatial-analysis.cell-aggregation',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -390,7 +390,7 @@ device.submit();`,
     summary:
       'Rolls a sorted cell table up to a coarser resolution without re-reading the source rows.',
     explanation:
-      'Use it to zoom out a grid you already aggregated. Parent keys truncate the cell path, which keeps key order, so no sort is needed. Counts and sums are integer sums and match direct aggregation bit for bit.',
+      'Zooms out a grid you already aggregated. Parent keys truncate the cell path, which keeps key order, so no sort is needed. Counts and sums are integer sums and match direct aggregation bit for bit.',
     dataTypes: {input: ['cells', 'table'], output: ['cells', 'table']},
     useCases: ['summarize'],
     domains: ['urban', 'data-engineering'],
@@ -439,7 +439,7 @@ graph.add(new GPUCellRollup({
   family: 'quadbin', sourceResolution: 16, resolution: 12, source: fine, output: coarse
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 22, caption: 'Four children sum into one parent.'},
+    preview: {kind: 'cells', seed: 9006, caption: 'Four children sum into one parent.'},
     related: ['cell-aggregation', 'cell-pyramid', 'cell-level-selection'],
     lensScenario: 'gpu-spatial-analysis.cell-rollup',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -454,7 +454,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Aggregates rows once at the finest level, then rolls each coarser level out of the one below.',
     explanation:
-      'Use it for zoomable heat maps: every zoom level is ready before the user pans. List `resolutions` finest first. Pair it with level selection to switch levels without recomputing.',
+      'Best for zoomable heat maps: every zoom level is ready before the user pans. List `resolutions` finest first. Pair it with level selection to switch levels without recomputing.',
     dataTypes: {input: ['points', 'cells'], output: ['cells', 'table']},
     useCases: ['summarize', 'index'],
     domains: ['urban', 'cartography'],
@@ -514,7 +514,7 @@ graph.add(new GPUCellPyramid({
   output: {levels, levelCounts}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 23, caption: 'The same points at four zoom levels.'},
+    preview: {kind: 'cells', seed: 9007, caption: 'The same points at four zoom levels.'},
     related: ['cell-rollup', 'cell-level-selection', 'cell-aggregation'],
     lensScenario: 'gpu-spatial-analysis.cell-pyramid',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -529,7 +529,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Publishes the active pyramid level count, first row and draw arguments from one per-frame index.',
     explanation:
-      'Use it to switch zoom levels in a layer with no readback and no recompute. It reads one `activeLevel` word and writes the level count and indirect draw arguments. Keep it in its own small graph beside the pyramid.',
+      'Switches zoom levels in a layer with no readback and no recompute. It reads one `activeLevel` word and writes the level count and indirect draw arguments. Keep it in its own small graph beside the pyramid.',
     dataTypes: {input: ['cells', 'table'], output: ['table']},
     useCases: ['summarize', 'classify'],
     domains: ['cartography', 'data-engineering'],
@@ -585,7 +585,7 @@ graph.add(new GPUCellLevelSelection({
   output: {status: {count}, drawArguments}
 }));
 activeLevel.write(Uint32Array.of(2)); // switch zoom: no recompile`,
-    preview: {kind: 'cells', seed: 24, caption: 'One index picks which level is drawn.'},
+    preview: {kind: 'cells', seed: 9008, caption: 'One index picks which level is drawn.'},
     related: ['cell-pyramid', 'cell-rollup'],
     lensScenario: 'gpu-spatial-analysis.cell-level-selection',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -599,7 +599,7 @@ activeLevel.write(Uint32Array.of(2)); // switch zoom: no recompile`,
     title: 'Cell table compare',
     summary: 'Outer-joins two sorted cell tables into a before/after diff map.',
     explanation:
-      'Use it for period-over-period or A-versus-B maps on the same grid. Cells present in only one table are kept and marked in `presence`. Choose `count` or `sum` as the measure, and request delta, ratio, percent change or a z-score.',
+      'Best for period-over-period or A-versus-B maps on the same grid. Cells present in only one table are kept and marked in `presence`. Choose `count` or `sum` as the measure, and request delta, ratio, percent change or a z-score.',
     dataTypes: {input: ['cells', 'table'], output: ['cells', 'table']},
     useCases: ['detect-change', 'summarize'],
     domains: ['urban', 'spatial-statistics'],
@@ -653,7 +653,12 @@ activeLevel.write(Uint32Array.of(2)); // switch zoom: no recompile`,
         type: 'GraphDataView<"float32">',
         description: 'Relative change in percent.'
       },
-      {name: 'zScore', type: 'GraphDataView<"float32">', description: 'Standardized change.'}
+      {name: 'zScore', type: 'GraphDataView<"float32">', description: 'Standardized change.'},
+      {
+        name: 'status',
+        type: '{count, overflow, requiredCount?}',
+        description: 'Union cell count and overflow flag.'
+      }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUCellTableCompare} from '${IMPORT_PATH}';
@@ -669,7 +674,7 @@ graph.add(new GPUCellTableCompare({
   before, after, measure: 'count', output: {cells, delta, status}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 25, caption: 'Red where counts grew, blue where they fell.'},
+    preview: {kind: 'cells', seed: 9009, caption: 'Red where counts grew, blue where they fell.'},
     related: ['cell-aggregation', 'cell-rollup'],
     lensScenario: 'gpu-spatial-analysis.cell-table-compare',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -688,7 +693,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Finds disks, rings, parents and children of Quadbin and H3 cells with a fixed fan-out per cell.',
     explanation:
-      'Use it for neighborhoods on a grid: `gridDisk`, `gridRing`, `cellToParent` and `cellToChildren`. Each input cell owns a fixed block of output slots, so results stay aligned with the input rows. An optional mask skips rows.',
+      'Best for neighborhoods on a grid: `gridDisk`, `gridRing`, `cellToParent` and `cellToChildren`. Each input cell owns a fixed block of output slots, so results stay aligned with the input rows. An optional mask skips rows.',
     dataTypes: {input: ['cells'], output: ['cells', 'spatial-weights']},
     useCases: ['relate', 'index'],
     domains: ['urban', 'spatial-statistics'],
@@ -745,7 +750,7 @@ graph.add(new GPUCellTopology({
   family: 'h3', operation: {type: 'disk', k: 2}, cells, output: {cells: disk, counts}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 31, caption: 'A disk of radius two around the chosen cell.'},
+    preview: {kind: 'cells', seed: 9010, caption: 'A disk of radius two around the chosen cell.'},
     related: ['cell-compaction', 'cell-grid-path', 'cell-cover', 's2-cell-hierarchy'],
     lensScenario: 'gpu-spatial-analysis.cell-topology',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -819,7 +824,7 @@ graph.add(new GPUCellCompaction({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'tessellation',
-      seed: 32,
+      seed: 9011,
       caption: 'Complete sibling groups merge into larger cells.'
     },
     related: ['cell-topology', 'cell-cover', 's2-cell-hierarchy'],
@@ -836,7 +841,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Computes H3 grid distance and the cell path between arbitrary origin and destination pairs.',
     explanation:
-      'Use it to measure steps between cells or to trace a route of cells between two places. Neighbor tests are just `distance == 1`. Paths are written at a fixed stride, with a per-pair length.',
+      'Measures steps between cells or to trace a route of cells between two places. Neighbor tests are just `distance == 1`. Paths are written at a fixed stride, with a per-pair length.',
     dataTypes: {input: ['cells'], output: ['cells', 'table']},
     useCases: ['measure', 'route'],
     domains: ['transport', 'urban'],
@@ -884,7 +889,7 @@ graph.add(new GPUCellGridPath({family: 'h3', origins, destinations, output: {dis
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'shortest-path',
-      seed: 33,
+      seed: 9012,
       caption: 'A chain of cells joins origin and destination.'
     },
     related: ['cell-topology', 'h3-cell-identities'],
@@ -900,7 +905,7 @@ const compiled = await graph.compileAsync();`,
     title: 'Cell cover',
     summary: 'Polyfills polygon features with Quadbin or H3 cells.',
     explanation:
-      'Use it to turn zones into grid cells for joins and rollups. `center` keeps cells whose center is inside; Quadbin also supports `full` and `intersects`. Results are bounded by `candidateCapacity`, with overflow flagged on the GPU.',
+      'Turns zones into grid cells for joins and rollups. `center` keeps cells whose center is inside; Quadbin also supports `full` and `intersects`. Results are bounded by `candidateCapacity`, with overflow flagged on the GPU.',
     dataTypes: {input: ['polygons'], output: ['cells']},
     useCases: ['transform', 'relate'],
     domains: ['cartography', 'data-engineering'],
@@ -963,7 +968,7 @@ const compiled = await graph.compileAsync();`,
       },
       {
         name: 'status',
-        type: 'object',
+        type: '{count, overflow}',
         description: 'count, overflow, candidateOverflow and diagnostics.'
       }
     ],
@@ -982,8 +987,8 @@ graph.add(new GPUCellCover({
 }));
 const compiled = await graph.compileAsync();`,
     preview: {
-      kind: 'polygons',
-      seed: 34,
+      kind: 'cell-cover',
+      seed: 9013,
       caption: 'A polygon filled with the cells whose centers it contains.'
     },
     related: ['cell-set-outline', 'cell-compaction', 'cell-aggregation', 's2-polygon-covering'],
@@ -999,7 +1004,7 @@ const compiled = await graph.compileAsync();`,
     title: 'Cell set outline',
     summary: 'Extracts the boundary edges of a set of H3 or Quadbin cells.',
     explanation:
-      'Use it to draw the outline of a region made of cells, as `cellsToMultiPolygon` does, without ring assembly. Edges shared by two cells in the set drop out. Add `rings` to stitch the edges into closed rings.',
+      'Draws the outline of a region made of cells, as `cellsToMultiPolygon` does, without ring assembly. Edges shared by two cells in the set drop out. Add `rings` to stitch the edges into closed rings.',
     dataTypes: {input: ['cells'], output: ['lines']},
     useCases: ['transform'],
     domains: ['cartography'],
@@ -1040,6 +1045,11 @@ const compiled = await graph.compileAsync();`,
     ],
     outputs: [
       {
+        name: 'rows',
+        type: "GraphDataView<'uint32'>",
+        description: 'Input row of the cell owning each edge.'
+      },
+      {
         name: 'endpoints',
         type: 'GraphDataView<"float32x4">',
         description: 'Boundary edge as start and end lon/lat.'
@@ -1068,7 +1078,11 @@ graph.add(new GPUCellSetOutline({
   output: {rows, cells: edgeCells, edgeIndices, endpoints, status}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 35, caption: 'Only the outer edges of the cell set remain.'},
+    preview: {
+      kind: 'polygons',
+      seed: 9014,
+      caption: 'Only the outer edges of the cell set remain.'
+    },
     related: ['cell-cover', 'cell-geometry'],
     lensScenario: 'gpu-spatial-analysis.cell-set-outline',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -1087,7 +1101,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Computes exact S2 parents, children, leaf ranges and edge neighbors at all 31 levels.',
     explanation:
-      'Use it to move up and down the S2 tree or step to adjacent cells across cube faces. All arithmetic is integer, so it is exact, including mixed-level batches. Invalid keys and impossible requests report a status code.',
+      'Moves up and down the S2 tree or step to adjacent cells across cube faces. All arithmetic is integer, so it is exact, including mixed-level batches. Invalid keys and impossible requests report a status code.',
     dataTypes: {input: ['cells'], output: ['cells']},
     useCases: ['index', 'relate'],
     domains: ['data-engineering', 'cartography'],
@@ -1136,7 +1150,7 @@ graph.add(new GPUS2CellHierarchy({
   cells, operation: 'parent', level: 10, output: {cells: parents, status}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'tessellation', seed: 41, caption: 'Each cell splits into four children.'},
+    preview: {kind: 'tessellation', seed: 9015, caption: 'Each cell splits into four children.'},
     related: ['s2-cell-measures', 's2-polygon-covering', 's2-cap-covering', 'cell-topology'],
     lensScenario: 'gpu-spatial-analysis.s2-cell-hierarchy',
     reference: 'api/gpu-spatial-analysis/global-coordinates',
@@ -1150,7 +1164,7 @@ const compiled = await graph.compileAsync();`,
     title: 'S2 cell measures',
     summary: 'Measures S2 cell area in steradians and perimeter in radians at levels 0 to 30.',
     explanation:
-      'Use it to normalize by true cell size on the sphere. Local increments avoid the cancellation that plagues fine cells. Multiply by the squared or plain radius of your sphere for physical units.',
+      'Normalizes by true cell size on the sphere. Local increments avoid the cancellation that plagues fine cells. Multiply by the squared or plain radius of your sphere for physical units.',
     dataTypes: {input: ['cells'], output: ['table']},
     useCases: ['measure'],
     domains: ['cartography', 'demographics'],
@@ -1188,7 +1202,7 @@ graph.add(new GPUS2CellMeasures({cells, output: {measures, status}}));
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'cells',
-      seed: 42,
+      seed: 9016,
       caption: 'Area and perimeter of each S2 cell on the sphere.'
     },
     related: ['s2-cell-hierarchy', 'cell-measures'],
@@ -1204,7 +1218,7 @@ const compiled = await graph.compileAsync();`,
     title: 'S2 cap covering',
     summary: 'Covers spherical caps (a center and an angular radius) with S2 cells at one level.',
     explanation:
-      'Use it for "everything within this radius" on a sphere, as a set of cells. `exterior` returns every cell touching the cap; `interior` only cells fully inside. Levels 0 to 8, results in ascending key order.',
+      'Best for "everything within this radius" on a sphere, as a set of cells. `exterior` returns every cell touching the cap; `interior` only cells fully inside. Levels 0 to 8, results in ascending key order.',
     dataTypes: {input: ['points'], output: ['cells']},
     useCases: ['relate', 'index'],
     domains: ['data-engineering', 'cartography'],
@@ -1268,7 +1282,7 @@ graph.add(new GPUS2CapCovering({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'buffers',
-      seed: 43,
+      seed: 9017,
       caption: 'A circular cap on the sphere, covered by cells.'
     },
     related: ['s2-polygon-covering', 's2-cell-hierarchy', 'spherical-convex-contains'],
@@ -1284,7 +1298,7 @@ const compiled = await graph.compileAsync();`,
     title: 'S2 polygon covering',
     summary: 'Builds an adaptive mixed-level S2 interior or exterior cover of spherical polygons.',
     explanation:
-      'Use it to index polygons on the sphere with the fewest cells, large inside and fine at the edge. The traversal is bounded and runs entirely on the GPU, up to level 15. Set `complement` to cover the outside instead.',
+      'Indexes polygons on the sphere with the fewest cells, large inside and fine at the edge. The traversal is bounded and runs entirely on the GPU, up to level 15. Set `complement` to cover the outside instead.',
     dataTypes: {input: ['polygons'], output: ['cells']},
     useCases: ['transform', 'index'],
     domains: ['cartography', 'data-engineering'],
@@ -1354,7 +1368,11 @@ graph.add(new GPUS2PolygonCovering({
   positions, ringOffsets, maximumLevel: 12, capacity: 512, output: {cells, counts, status}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'polygons', seed: 44, caption: 'Big cells inside, small cells along the edge.'},
+    preview: {
+      kind: 'tessellation',
+      seed: 9018,
+      caption: 'Big cells inside, small cells along the edge.'
+    },
     related: ['s2-cap-covering', 's2-cell-hierarchy', 'cell-cover', 'spherical-polygon-contains'],
     lensScenario: 'gpu-spatial-analysis.s2-polygon-covering',
     reference: 'api/gpu-spatial-analysis/global-coordinates',
@@ -1369,7 +1387,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Tests points against convex spherical polygons with explicit boundary and complement rules.',
     explanation:
-      'Use it for fast containment on the globe when polygons are convex and inside a hemisphere, such as cell boundaries. Choose `closed` or `open` boundaries and flip to the complement region. Status separates invalid, boundary and clean results.',
+      'Best for fast containment on the globe when polygons are convex and inside a hemisphere, such as cell boundaries. Choose `closed` or `open` boundaries and flip to the complement region. Status separates invalid, boundary and clean results.',
     dataTypes: {input: ['points', 'polygons'], output: ['table']},
     useCases: ['relate'],
     domains: ['cartography', 'data-engineering'],
@@ -1445,7 +1463,7 @@ graph.add(new GPUSphericalConvexContains({
   positions, offsets, queries, polygonIndices, output: {contains, status}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'points', seed: 45, caption: 'Points inside a convex region on the globe.'},
+    preview: {kind: 'polygons', seed: 9019, caption: 'Points inside a convex region on the globe.'},
     related: ['spherical-polygon-contains', 'spherical-convex-intersection', 's2-cap-covering'],
     lensScenario: 'gpu-spatial-analysis.spherical-convex-contains',
     reference: 'api/gpu-spatial-analysis/global-coordinates',
@@ -1459,7 +1477,7 @@ const compiled = await graph.compileAsync();`,
     title: 'Spherical polygon contains',
     summary: 'Tests points against nonconvex spherical polygons with holes, using winding numbers.',
     explanation:
-      'Use it for containment on the globe when polygons have holes, concavities or enclose a pole. Rings follow GeoArrow offsets. Boundary and complement semantics are explicit.',
+      'Best for containment on the globe when polygons have holes, concavities or enclose a pole. Rings follow GeoArrow offsets. Boundary and complement semantics are explicit.',
     dataTypes: {input: ['points', 'polygons'], output: ['table']},
     useCases: ['relate'],
     domains: ['cartography', 'data-engineering'],
@@ -1538,7 +1556,7 @@ graph.add(new GPUSphericalPolygonContains({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'polygons',
-      seed: 46,
+      seed: 9020,
       caption: 'A polygon with a hole: inside, outside, on the edge.'
     },
     related: ['spherical-convex-contains', 'spherical-polygon-overlay', 's2-polygon-covering'],
@@ -1555,7 +1573,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Intersects paired convex spherical polygons and optionally reports overlap area fractions.',
     explanation:
-      'Use it for overlap weights between prepared cell boundaries, for example when regridding between grids. Each pair must sit strictly inside an open hemisphere. Optional measures give intersection and union area in steradians.',
+      'Best for overlap weights between prepared cell boundaries, for example when regridding between grids. Each pair must sit strictly inside an open hemisphere. Optional measures give intersection and union area in steradians.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['relate', 'transform'],
     domains: ['cartography', 'data-engineering'],
@@ -1642,7 +1660,7 @@ graph.add(new GPUSphericalConvexIntersection({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'polygon-overlay',
-      seed: 47,
+      seed: 9021,
       caption: 'Two convex cells overlap in a smaller convex polygon.'
     },
     related: ['spherical-convex-contains', 'spherical-polygon-overlay'],
@@ -1659,7 +1677,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Computes Boolean overlay (intersection, union, difference) of nonconvex polygons on the sphere.',
     explanation:
-      'Use it to combine regions with holes on the globe. Operands are projected into a hemisphere chart around `chartCenter`, so keep both inside it. Capacity is bounded and overflow is reported, not hidden.',
+      'Combines regions with holes on the globe. Operands are projected into a hemisphere chart around `chartCenter`, so keep both inside it. Capacity is bounded and overflow is reported, not hidden.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform', 'relate'],
     domains: ['cartography'],
@@ -1715,7 +1733,7 @@ const compiled = await graph.compileAsync();`,
     outputs: [
       {
         name: 'geometry',
-        type: 'object',
+        type: 'Record<string, GraphDataView>',
         description: 'Result positions (xyz) and ring, polygon offsets.'
       },
       {
@@ -1723,7 +1741,12 @@ const compiled = await graph.compileAsync();`,
         type: 'GraphDataView<"uint32">',
         description: '1 when a result is the complement region.'
       },
-      {name: 'status', type: 'object', description: 'Overflow and uncertainty flags.'}
+      {
+        name: 'boundary',
+        type: 'Record<string, GraphDataView>',
+        description: 'Boundary edges, operand and source ids, and status.'
+      },
+      {name: 'status', type: '{count, overflow}', description: 'Overflow and uncertainty flags.'}
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUSphericalPolygonOverlay} from '${IMPORT_PATH}';
@@ -1742,7 +1765,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'polygon-overlay',
-      seed: 48,
+      seed: 9022,
       caption: 'Intersection of two polygons on the sphere.'
     },
     related: [
@@ -1763,7 +1786,7 @@ device.submit();`,
     summary:
       'Intersects great-circle arc rings directly on the sphere, including regions larger than a hemisphere.',
     explanation:
-      'Use it when a region exceeds a hemisphere and chart-based overlay would fail. It arranges arcs and assembles rings intrinsically. Work is bounded to 128 input and 1024 output vertices.',
+      'Best when a region exceeds a hemisphere and chart-based overlay would fail. It arranges arcs and assembles rings intrinsically. Work is bounded to 128 input and 1024 output vertices.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform', 'relate'],
     domains: ['cartography'],
@@ -1841,7 +1864,7 @@ graph.add(new GPUSphericalArcOverlay({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'polygon-overlay',
-      seed: 49,
+      seed: 9023,
       caption: 'Union of two caps larger than a hemisphere.'
     },
     related: ['spherical-polygon-overlay', 'spherical-polygon-contains'],
@@ -1862,7 +1885,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Computes 2D Hilbert curve indices for points or box centers, optionally sorting rows along the curve.',
     explanation:
-      'Use it to order data so neighbors in space are neighbors in memory, which speeds up joins, indexes and tile building. Hilbert order clusters better than Morton. Orders 1 to 16; invalid rows get a sentinel key and sort last.',
+      'Orders data so neighbors in space are neighbors in memory, which speeds up joins, indexes and tile building. Hilbert order clusters better than Morton. Orders 1 to 16; invalid rows get a sentinel key and sort last.',
     dataTypes: {input: ['points', 'polygons'], output: ['table']},
     useCases: ['index'],
     domains: ['data-engineering'],
@@ -1911,7 +1934,7 @@ const sortedRows = graph.importGPUData('sorted-rows', rowData); // GPUData<'uint
 
 graph.add(new GPUHilbertKeys({positions, order: 10, output: {keys, sortedRows}}));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'lines', seed: 51, caption: 'A space-filling curve visits every cell once.'},
+    preview: {kind: 'lines', seed: 9024, caption: 'A space-filling curve visits every cell once.'},
     related: ['spatial-join-prepared', 'spatial-predicate-join', 'point-to-cell'],
     lensScenario: 'gpu-spatial-analysis.hilbert-keys',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -1930,7 +1953,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Joins two feature sets by a spatial predicate: the GPU equivalent of GeoPandas sjoin.',
     explanation:
-      'Use it for intersects, contains, within, dwithin, touches, crosses, overlaps or any DE-9IM pattern between points, lines and polygons. A BVH narrows candidates, then exact predicates decide each pair. Pairs come back sorted, with overflow reported on the GPU.',
+      'Best for intersects, contains, within, dwithin, touches, crosses, overlaps or any DE-9IM pattern between points, lines and polygons. A BVH narrows candidates, then exact predicates decide each pair. Pairs come back sorted, with overflow reported on the GPU.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table', 'spatial-weights']},
     useCases: ['relate'],
     domains: ['data-engineering', 'urban'],
@@ -2014,7 +2037,7 @@ graph.add(new GPUSpatialPredicateJoin({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'polygon-overlay',
-      seed: 61,
+      seed: 9025,
       caption: 'Parks matched to the tracts they intersect.'
     },
     related: [
@@ -2035,7 +2058,7 @@ const compiled = await graph.compileAsync();`,
     title: 'Point in polygon join',
     summary: 'Joins planar points to the polygon features that contain them.',
     explanation:
-      'Use it to tag points with the zone they fall in, or to count points per zone. Candidates come from a BVH and an exact test decides each pair. Choose a `half-open`, `closed` or `open` boundary rule for points on an edge.',
+      'Tags points with the zone they fall in, or to count points per zone. Candidates come from a BVH and an exact test decides each pair. Choose a `half-open`, `closed` or `open` boundary rule for points on an edge.',
     dataTypes: {input: ['points', 'polygons'], output: ['table']},
     useCases: ['relate', 'summarize'],
     domains: ['data-engineering', 'urban'],
@@ -2097,7 +2120,11 @@ const compiled = await graph.compileAsync();`,
         type: 'GPUCompactOutput',
         description: 'Optional compact list of matched points.'
       },
-      {name: 'status', type: 'object', description: 'overflow, candidateCount and uncertainCount.'}
+      {
+        name: 'status',
+        type: '{count, overflow}',
+        description: 'overflow, candidateCount and uncertainCount.'
+      }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUPointInPolygonJoin} from '${IMPORT_PATH}';
@@ -2113,8 +2140,8 @@ graph.add(new GPUPointInPolygonJoin({
 }));
 const compiled = await graph.compileAsync();`,
     preview: {
-      kind: 'point-clusters',
-      seed: 62,
+      kind: 'polygons',
+      seed: 9026,
       caption: 'Points take the color of the zone that contains them.'
     },
     related: ['spatial-predicate-join', 'spatial-join-prepared', 'buffer-selection'],
@@ -2131,7 +2158,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Lists every left/right feature pair whose bounding boxes overlap, optionally expanded by a distance.',
     explanation:
-      'Use it as the broad phase when you run your own exact test, or to inspect how much work a join will do. The right side is indexed in a BVH. Pairs land in a compact, capacity-bounded list.',
+      'The broad phase for your own exact test, or a way to inspect how much work a join will do. The right side is indexed in a BVH. Pairs land in a compact, capacity-bounded list.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table']},
     useCases: ['relate', 'index'],
     domains: ['data-engineering'],
@@ -2163,7 +2190,7 @@ const compiled = await graph.compileAsync();`,
         type: 'GraphDataView<"uint32">',
         description: 'Right feature of each pair.'
       },
-      {name: 'status', type: 'object', description: 'count, overflow and requiredCount.'}
+      {name: 'status', type: '{count, overflow}', description: 'count, overflow and requiredCount.'}
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUSpatialJoinCandidates} from '${IMPORT_PATH}';
@@ -2177,7 +2204,7 @@ graph.add(new GPUSpatialJoinCandidates({left, right, output: {leftIds, rightIds,
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'polygons',
-      seed: 63,
+      seed: 9027,
       caption: 'Bounding boxes that overlap become candidate pairs.'
     },
     related: ['spatial-predicate-join', 'spatial-join-prepared', 'hilbert-keys'],
@@ -2193,7 +2220,7 @@ const compiled = await graph.compileAsync();`,
     title: 'Prepared join index',
     summary: 'Builds the bounds and BVH of a static feature set once, then reuses it across joins.',
     explanation:
-      'Use it when the right-hand features rarely change but the left side moves every frame. Pass it as `prepared` to predicate, point-in-polygon, candidate and nearest joins. It rebuilds only when `rebuildWhen` says so.',
+      'Best when the right-hand features rarely change but the left side moves every frame. Pass it as `prepared` to predicate, point-in-polygon, candidate and nearest joins. It rebuilds only when `rebuildWhen` says so.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table']},
     useCases: ['index', 'relate'],
     domains: ['data-engineering'],
@@ -2249,7 +2276,7 @@ graph.add(new GPUSpatialPredicateJoin({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'tessellation',
-      seed: 64,
+      seed: 9028,
       caption: 'Build the index once; query it every frame.'
     },
     related: [
@@ -2326,7 +2353,7 @@ const compiled = await graph.compileAsync();`,
         type: 'GraphDataView<"float32">',
         description: 'Distances for each neighbor slot.'
       },
-      {name: 'status', type: 'object', description: 'overflow and candidateCount.'}
+      {name: 'status', type: '{count, overflow}', description: 'overflow and candidateCount.'}
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUNearestFeatureJoin} from '${IMPORT_PATH}';
@@ -2343,7 +2370,7 @@ graph.add(new GPUNearestFeatureJoin({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'spatial-weights',
-      seed: 65,
+      seed: 9029,
       caption: 'Each query reaches for its closest feature.'
     },
     related: ['nearest-feature-weights', 'buffer-selection', 'spatial-predicate-join'],
@@ -2360,7 +2387,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Turns k-nearest join output into a spatial weights graph, binary or inverse-distance.',
     explanation:
-      'Use it to feed k-nearest-neighbor weights into spatial statistics such as Moran or Getis-Ord, as libpysal `KNN` does. It reads the neighbor columns of a nearest join. Exclude self-matches for point sets joined to themselves.',
+      'Feeds k-nearest-neighbor weights into spatial statistics such as Moran or Getis-Ord, as libpysal `KNN` does. It reads the neighbor columns of a nearest join. Exclude self-matches for point sets joined to themselves.',
     dataTypes: {input: ['table'], output: ['spatial-weights']},
     useCases: ['relate', 'find-patterns'],
     domains: ['spatial-statistics'],
@@ -2407,7 +2434,7 @@ const compiled = await graph.compileAsync();`,
       {name: 'offsets', type: 'GraphDataView<"uint32">', description: 'CSR row offsets.'},
       {name: 'neighbors', type: 'GraphDataView<"uint32">', description: 'CSR neighbor ids.'},
       {name: 'weights', type: 'GraphDataView<"float32">', description: 'CSR weight per neighbor.'},
-      {name: 'status', type: 'object', description: 'overflow and requiredCount.'}
+      {name: 'status', type: '{count, overflow}', description: 'overflow and requiredCount.'}
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUNearestFeatureWeights} from '${IMPORT_PATH}';
@@ -2424,7 +2451,7 @@ graph.add(new GPUNearestFeatureWeights({
 const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'spatial-weights',
-      seed: 66,
+      seed: 9030,
       caption: 'Each point links to its k nearest neighbors.'
     },
     related: ['nearest-feature-join', 'buffer-selection'],
@@ -2440,7 +2467,7 @@ const compiled = await graph.compileAsync();`,
     title: 'Buffer selection',
     summary: 'Selects points within a per-frame planar distance of point or polyline features.',
     explanation:
-      'Use it for interactive "within X of this road" filters: drag the distance and the selection updates with no recompile. It writes a mask, a compact id list and an instance count for indirect draws. Overflow is flagged on the GPU.',
+      'Best for interactive "within X of this road" filters: drag the distance and the selection updates with no recompile. It writes a mask, a compact id list and an instance count for indirect draws. Overflow is flagged on the GPU.',
     dataTypes: {input: ['points', 'lines'], output: ['points']},
     useCases: ['relate', 'transform'],
     domains: ['transport', 'urban'],
@@ -2509,7 +2536,11 @@ graph.add(new GPUBufferSelection({
   candidateCapacity: 1 << 18, output: {outputMask}
 }));
 distance.write(Float32Array.of(250)); // drag the slider: no recompile`,
-    preview: {kind: 'buffers', seed: 67, caption: 'Points inside the distance band stay selected.'},
+    preview: {
+      kind: 'buffers',
+      seed: 9031,
+      caption: 'Points inside the distance band stay selected.'
+    },
     related: ['nearest-feature-join', 'point-in-polygon-join', 'spatial-predicate-join'],
     lensScenario: 'gpu-spatial-analysis.buffer-selection',
     reference: 'api/gpu-spatial-analysis/operators-joins',

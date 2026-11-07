@@ -7,7 +7,19 @@
 //
 // Look up by catalog entry id (getDemoScene) or by exported symbol (getDemoSceneForSymbol).
 
-import type {GpuSceneLoader} from '../types';
+import type {GpuSceneLoader, GpuSceneParameters} from '../types';
+import {
+  DBSCAN_PARAMETERS,
+  DELAUNAY_VORONOI_PARAMETERS,
+  HOT_SPOTS_PARAMETERS,
+  IDW_PARAMETERS,
+  KERNEL_DENSITY_PARAMETERS,
+  K_MEANS_PARAMETERS,
+  LOCAL_MORANS_I_PARAMETERS,
+  NETWORK_ISOCHRONES_PARAMETERS,
+  SHORTEST_PATH_PARAMETERS,
+  TERRAIN_HYDROLOGY_PARAMETERS
+} from './parameters';
 
 export type DemoDescriptor = {
   /** Stable demo id, also the file name in this folder. */
@@ -22,6 +34,8 @@ export type DemoDescriptor = {
   entryIds: string[];
   /** True when the pointer steers the analysis. */
   interactive: boolean;
+  /** Slider parameters, known without loading the scene (match the module's `parameters`). */
+  parameters: GpuSceneParameters;
   /** Preferred canvas aspect ratio (width / height). */
   aspectRatio: number;
   loader: GpuSceneLoader;
@@ -31,10 +45,11 @@ export const DEMOS: readonly DemoDescriptor[] = [
   {
     id: 'kernel-density',
     title: 'Kernel density',
-    caption: 'Bandwidth sweeps; GPUKernelDensity re-evaluates the surface every frame.',
+    caption: 'Drag the hotspot; bandwidth and kernel re-evaluate the surface on the GPU.',
     symbols: ['GPUKernelDensity'],
     entryIds: ['kernel-density'],
-    interactive: false,
+    interactive: true,
+    parameters: KERNEL_DENSITY_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./kernel-density')
   },
@@ -45,6 +60,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     symbols: ['GPULocalMoran', 'GPUNeighborSearch'],
     entryIds: ['local-morans-i'],
     interactive: false,
+    parameters: LOCAL_MORANS_I_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./local-morans-i')
   },
@@ -55,6 +71,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     symbols: ['GPUSpatialClustering'],
     entryIds: ['dbscan-clustering'],
     interactive: false,
+    parameters: DBSCAN_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./dbscan')
   },
@@ -65,6 +82,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     symbols: ['GPUKMeans'],
     entryIds: ['k-means-clustering'],
     interactive: false,
+    parameters: K_MEANS_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./k-means')
   },
@@ -75,6 +93,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     symbols: ['GPUInverseDistanceWeighting'],
     entryIds: ['inverse-distance-weighting'],
     interactive: true,
+    parameters: IDW_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./idw')
   },
@@ -86,6 +105,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     symbols: ['GPUDelaunayTessellation', 'GPUVoronoiDiagram'],
     entryIds: ['delaunay-tessellation', 'voronoi-diagram'],
     interactive: true,
+    parameters: DELAUNAY_VORONOI_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./delaunay-voronoi')
   },
@@ -96,6 +116,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     symbols: ['GPUTerrainDerivatives', 'GPUTerrainFlow'],
     entryIds: ['terrain-flow', 'slope-aspect-hillshade', 'hillshade'],
     interactive: false,
+    parameters: TERRAIN_HYDROLOGY_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./terrain-hydrology')
   },
@@ -107,8 +128,32 @@ export const DEMOS: readonly DemoDescriptor[] = [
     symbols: ['GPUNetworkReachability'],
     entryIds: ['network-reachability'],
     interactive: true,
+    parameters: NETWORK_ISOCHRONES_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./network-isochrones')
+  },
+  {
+    id: 'hot-spots',
+    title: 'Hot spots (Getis-Ord Gi*)',
+    caption:
+      'Noisy points hide hot and cold patches; Gi* z-scores reveal them. A patch follows the pointer.',
+    symbols: ['GPUHotSpotAnalysis'],
+    entryIds: ['hot-spot-analysis-gi-star', 'hot-spot-analysis'],
+    interactive: true,
+    parameters: HOT_SPOTS_PARAMETERS,
+    aspectRatio: 16 / 9,
+    loader: () => import('./hot-spots')
+  },
+  {
+    id: 'shortest-path',
+    title: 'Shortest path',
+    caption: 'Point at a destination; predecessors become a route. Congestion makes it detour.',
+    symbols: ['GPUNetworkPathExtraction'],
+    entryIds: ['network-path-extraction', 'shortest-path'],
+    interactive: true,
+    parameters: SHORTEST_PATH_PARAMETERS,
+    aspectRatio: 16 / 9,
+    loader: () => import('./shortest-path')
   }
 ];
 
@@ -136,4 +181,9 @@ export function getDemoScene(entryId: string): GpuSceneLoader | undefined {
 /** Scene loader for an exported symbol. */
 export function getDemoSceneForSymbol(symbol: string): GpuSceneLoader | undefined {
   return getDemoForSymbol(symbol)?.loader;
+}
+
+/** Slider parameters for a catalog entry id or an analysis symbol, without loading the scene. */
+export function getDemoParameters(entryIdOrSymbol: string): GpuSceneParameters | undefined {
+  return (getDemo(entryIdOrSymbol) ?? getDemoForSymbol(entryIdOrSymbol))?.parameters;
 }

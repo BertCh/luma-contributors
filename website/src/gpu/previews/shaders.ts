@@ -106,7 +106,7 @@ void main() {
 }
 `;
 
-// Meshes (stroke ribbons and fill triangles). anim = (mode, speed, 0, 0);
+// Meshes (stroke ribbons and fill triangles). anim = (mode, speed, trail length, 0);
 // mode 0 static, 1 flow along the path, 2 draw in, 3 pulse.
 export const MESH_WGSL = /* wgsl */ `${WGSL_UNIFORMS}
 struct VertexInputs {
@@ -140,6 +140,7 @@ fn fragmentMain(inputs: FragmentInputs) -> @location(0) vec4<f32> {
   let still = sceneUniforms.timing.z > 0.5;
   let mode = sceneUniforms.anim.x;
   let speed = sceneUniforms.anim.y;
+  let trail = max(sceneUniforms.anim.z, 0.05);
   let along = inputs.track.x;
   let phase = inputs.track.y;
   var rgb = inputs.color.rgb;
@@ -148,8 +149,8 @@ fn fragmentMain(inputs: FragmentInputs) -> @location(0) vec4<f32> {
     var head = fract(time * speed + phase);
     if (still) { head = fract(phase + 0.4); }
     let behind = fract(head - along);
-    alpha = alpha * (0.2 + 0.8 * exp(-behind * 5.0));
-    rgb = rgb + rgb * 0.8 * exp(-behind * 18.0);
+    alpha = alpha * (0.2 + 0.8 * exp(-behind * 5.0 / trail));
+    rgb = rgb + rgb * 0.8 * exp(-behind * 18.0 / trail);
   } else if (mode > 1.5 && mode < 2.5) {
     let cycle = fract(time * speed + phase * 0.3) * 1.35;
     var visible = 1.0 - smoothstep(cycle - 0.04, cycle, along);
@@ -190,6 +191,7 @@ void main() {
   bool still = timing.z > 0.5;
   float mode = anim.x;
   float speed = anim.y;
+  float trail = max(anim.z, 0.05);
   float along = vTrack.x;
   float phase = vTrack.y;
   vec3 rgb = vColor.rgb;
@@ -198,8 +200,8 @@ void main() {
     float head = fract(time * speed + phase);
     if (still) { head = fract(phase + 0.4); }
     float behind = fract(head - along);
-    alpha = alpha * (0.2 + 0.8 * exp(-behind * 5.0));
-    rgb = rgb + rgb * 0.8 * exp(-behind * 18.0);
+    alpha = alpha * (0.2 + 0.8 * exp(-behind * 5.0 / trail));
+    rgb = rgb + rgb * 0.8 * exp(-behind * 18.0 / trail);
   } else if (mode > 1.5 && mode < 2.5) {
     float cycle = fract(time * speed + phase * 0.3) * 1.35;
     float visible = 1.0 - smoothstep(cycle - 0.04, cycle, along);
@@ -216,6 +218,7 @@ void main() {
 
 // Field: textured quad. fieldTexture = (value, phase or gradient x, gradient y), rampTexture = colors.
 // anim = (style, levels, speed, strength); style 0 ramp, 1 contours, 2 hillshade, 3 expand.
+// extra = (light angle or cutoff, 1 when fixed, 0, 0).
 export const FIELD_WGSL = /* wgsl */ `${WGSL_UNIFORMS}
 @group(0) @binding(1) var fieldTexture: texture_2d<f32>;
 @group(0) @binding(2) var fieldTextureSampler: sampler;
@@ -277,13 +280,15 @@ fn fragmentMain(inputs: FragmentInputs) -> @location(0) vec4<f32> {
   } else if (style < 2.5) {
     let gradient = (sampled.gb - vec2<f32>(0.5, 0.5)) * 8.0;
     let normal = normalize(vec3<f32>(-gradient.x, -gradient.y, 1.0));
-    let angle = 2.2 + time * speed;
+    var angle = 2.2 + time * speed;
+    if (sceneUniforms.extra.y > 0.5) { angle = sceneUniforms.extra.x; }
     let light = normalize(vec3<f32>(cos(angle) * 0.6, sin(angle) * 0.6, 0.55));
     let shade = clamp(dot(normal, light), 0.0, 1.0);
     rgb = getRamp(value) * (0.35 + 0.9 * shade);
   } else {
-    var cutoff = 0.12 + 0.75 * fract(time * speed);
-    if (still) { cutoff = 0.55; }
+    let stopAt = select(0.55, sceneUniforms.extra.x, sceneUniforms.extra.y > 0.5);
+    var cutoff = 0.12 + (stopAt - 0.12) * clamp(fract(time * speed) * 1.25, 0.0, 1.0);
+    if (still) { cutoff = stopAt; }
     let inside = 1.0 - smoothstep(cutoff - 0.004, cutoff + 0.004, value);
     let scaled = value * levels * 2.0;
     let band = 1.0 - smoothstep(0.0, 2.0 * fwidth(scaled), abs(scaled - round(scaled)));
@@ -348,12 +353,14 @@ void main() {
     vec2 gradient = (sampled.gb - vec2(0.5)) * 8.0;
     vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 1.0));
     float angle = 2.2 + time * speed;
+    if (extra.y > 0.5) { angle = extra.x; }
     vec3 light = normalize(vec3(cos(angle) * 0.6, sin(angle) * 0.6, 0.55));
     float shade = clamp(dot(normal, light), 0.0, 1.0);
     rgb = getRamp(value) * (0.35 + 0.9 * shade);
   } else {
-    float cutoff = 0.12 + 0.75 * fract(time * speed);
-    if (still) { cutoff = 0.55; }
+    float stopAt = extra.y > 0.5 ? extra.x : 0.55;
+    float cutoff = 0.12 + (stopAt - 0.12) * clamp(fract(time * speed) * 1.25, 0.0, 1.0);
+    if (still) { cutoff = stopAt; }
     float inside = 1.0 - smoothstep(cutoff - 0.004, cutoff + 0.004, value);
     float scaled = value * levels * 2.0;
     float band = 1.0 - smoothstep(0.0, 2.0 * fwidth(scaled), abs(scaled - round(scaled)));

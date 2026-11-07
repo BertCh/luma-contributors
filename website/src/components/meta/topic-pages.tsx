@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// The five how-it-works pages. Each leads with a picture; captions stay at one or two sentences.
+// The eight how-it-works pages. Each leads with a picture; captions stay at one or two sentences.
 
 import {Link} from '@tanstack/react-router';
 import type {ReactNode} from 'react';
@@ -12,12 +12,14 @@ import {CodeBlock} from '../ui/code-block';
 import {PageHeader} from '../ui/page-header';
 import {Section} from '../ui/section';
 import {ColumnsDemo} from './columns-demo';
+import {KernelDemo} from './kernel-demo';
 import {HazardDiagram} from './hazard-diagram';
 import {LensGraphPanel} from './lens-graph-panel';
 import {PackageLayers} from './package-layers';
 import {PipelineDiagram} from './pipeline-diagram';
 import {ResourceBars} from './resource-bars';
 import {SnapshotMap} from './snapshot-map';
+import {ThisPageDemo} from './this-page-demo';
 import {TOPICS, type Topic, type TopicSlug} from './topics';
 import {WorkgroupDemo} from './workgroup-demo';
 import './meta.css';
@@ -267,7 +269,7 @@ function DataOnTheGpuPage({topic, models}: {topic: Topic; models: TopicModels}) 
       {density ? (
         <Section title="In a real run">
           <Figure
-            caption={`Kernel density holds ${formatBytes(density.resources.totalBytes)} in ${density.resources.count} buffers. The output raster and the points dominate.`}
+            caption={`Kernel density holds ${formatBytes(density.resources.totalBytes)} in ${density.resources.count} buffers. The output raster and the points are about ${Math.round((((density.resources.largest[0]?.bytes ?? 0) * (density.resources.largest[0]?.count ?? 1) + (density.resources.largest[1]?.bytes ?? 0) * (density.resources.largest[1]?.count ?? 1)) / Math.max(1, density.resources.totalBytes)) * 100)}% of the bytes.`}
           >
             <ResourceBars model={density} />
           </Figure>
@@ -357,7 +359,8 @@ function LensesPage({topic, models}: {topic: Topic; models: TopicModels}) {
 
 // Upstream first
 
-const BEFORE_AFTER = `// Not available on published luma.gl:
+const BEFORE_AFTER = `// sketch (props.record is pseudocode)
+// Not available on published luma.gl:
 const graph = new GPUCommandGraph(device, {id: 'scan', recording: {sourceText: true}});
 
 // Recording belongs to the analysis package:
@@ -397,12 +400,102 @@ function UpstreamFirstPage({topic}: {topic: Topic; models: TopicModels}) {
   );
 }
 
+// Scheduling
+
+function SchedulingPage({topic, models}: {topic: Topic; models: TopicModels}) {
+  const density = requireModel(models, FEATURED_LENS_SCENARIOS.kernelDensity);
+  if (!density) {
+    return (
+      <TopicShell topic={topic}>
+        <Missing scenarioId={FEATURED_LENS_SCENARIOS.kernelDensity} />
+      </TopicShell>
+    );
+  }
+  const {hazards} = density;
+  return (
+    <TopicShell topic={topic}>
+      <Section title="Walk the order">
+        <Figure caption="A recorded trace, replayed as SVG. Drag the step slider. Lit nodes come earlier in the compiled order; each follows the kernels that write its inputs.">
+          <LensGraphPanel
+            scenario={density}
+            showHazards
+            defaultStep={Math.ceil(density.nodes.length * 0.45)}
+          />
+        </Figure>
+      </Section>
+      <Section title="Buffers live and die">
+        <Figure
+          caption={
+            density.resources.transientBytes > 0
+              ? `A bar fills at the first write and fades after the last reader. Peak is what the GPU must hold at once, not the ${formatBytes(density.resources.totalBytes)} total.`
+              : `Logical lifetime: a buffer is needed from its first write to its last read. All ${density.resources.count} are imported, so all ${formatBytes(density.resources.totalBytes)} stay allocated for the run.`
+          }
+        >
+          <LensGraphPanel
+            scenario={density}
+            defaultView="buffers"
+            defaultStep={Math.ceil(density.nodes.length * 0.45)}
+          />
+        </Figure>
+      </Section>
+      <Section title="Hazards are edges">
+        <Figure
+          caption={`${formatCount(hazards.raw)} read-after-write, ${formatCount(hazards.war)} write-after-read, ${formatCount(hazards.waw)} write-after-write. Each one is an ordering the compiler found by comparing read and write sets.`}
+        >
+          <div className="meta-panel">
+            <HazardDiagram model={density} />
+          </div>
+        </Figure>
+      </Section>
+    </TopicShell>
+  );
+}
+
+// Kernels
+
+function KernelsPage({topic}: {topic: Topic; models: TopicModels}) {
+  return (
+    <TopicShell topic={topic}>
+      <Section title="Invocations, workgroups, elements">
+        <Figure caption="Each tile is one invocation and the pixel it owns, colored by workgroup. Abridged from GPUTerrainRGBDecode; the library picks the workgroup size itself, so the slider is a teaching knob. Hover a workgroup to light its lines.">
+          <KernelDemo />
+        </Figure>
+      </Section>
+      <Section title="One dispatch in time">
+        <Figure caption="Illustration: real GPUs run workgroups in any order, as many at once as the hardware allows. Hollow lanes sit past the element count and return at the guard.">
+          <WorkgroupDemo />
+        </Figure>
+      </Section>
+    </TopicShell>
+  );
+}
+
+// This page
+
+function ThisPagePage({topic}: {topic: Topic; models: TopicModels}) {
+  return (
+    <TopicShell topic={topic}>
+      <Section title="Measured now">
+        <Figure caption="Every number is read from the canvas on this page, in this tab. Reload to watch the steps light in order.">
+          <ThisPageDemo />
+        </Figure>
+      </Section>
+    </TopicShell>
+  );
+}
+
 export function TopicPage({topic, models}: {topic: Topic; models: TopicModels}) {
   switch (topic.slug) {
     case 'anatomy':
       return <AnatomyPage topic={topic} models={models} />;
     case 'command-graph':
       return <CommandGraphPage topic={topic} models={models} />;
+    case 'scheduling':
+      return <SchedulingPage topic={topic} models={models} />;
+    case 'kernels':
+      return <KernelsPage topic={topic} models={models} />;
+    case 'this-page':
+      return <ThisPagePage topic={topic} models={models} />;
     case 'data-on-the-gpu':
       return <DataOnTheGpuPage topic={topic} models={models} />;
     case 'lenses':

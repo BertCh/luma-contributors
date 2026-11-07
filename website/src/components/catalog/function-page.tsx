@@ -8,11 +8,15 @@ import {LensGraphPanel} from '../meta/lens-graph-panel';
 import {Chip} from '../ui/chip';
 import './catalog.css';
 import {CodeBlock} from '../ui/code-block';
-import {ParamTable} from '../ui/param-table';
+import {OutputTable, ParamTable} from '../ui/param-table';
 import {Section} from '../ui/section';
 import {DataFlow} from './data-flow';
 import {EntryGrid} from './entry-grid';
+import {getDemoScene} from '../../gpu/demos';
 import {EntryPreview} from './entry-preview';
+
+/** Preview kinds drawn from the function's own parameters, not a generic stand-in. */
+const BESPOKE_PREVIEW_KINDS: ReadonlySet<string> = new Set(['affine-transform', 'cell-cover']);
 
 /** Inline `code` spans in entry prose. */
 function renderInlineCode(text: string) {
@@ -51,20 +55,45 @@ export function FunctionPage({
   entry: CatalogEntry;
   exampleHtml: string | null;
 }) {
+  // Each entry appears once: next steps win over before, and both win over related.
   const nextSteps = getNextSteps(entry, 3);
-  const previousSteps = getPreviousSteps(entry, 3);
-  const related = resolveRelated(entry);
+  const nextIds = new Set(nextSteps.map(step => step.id));
+  const previousSteps = getPreviousSteps(entry, 3).filter(step => !nextIds.has(step.id));
+  const shownIds = new Set([...nextIds, ...previousSteps.map(step => step.id)]);
+  const related = resolveRelated(entry).filter(step => !shownIds.has(step.id));
+  const primaryDataType =
+    entry.dataTypes.input.find(id => id !== 'table') ?? entry.dataTypes.input[0] ?? 'table';
   const importLine = `import {${entry.symbol}} from '${entry.importPath}';`;
+  const hasImport = entry.example.includes(entry.importPath);
+  // Generic scenes per preview kind are stand-ins; only demos and bespoke previews run the function.
+  const illustrativeNote =
+    getDemoScene(entry.id) || BESPOKE_PREVIEW_KINDS.has(entry.preview.kind)
+      ? null
+      : "Illustrative scene, not this function's output.";
 
   return (
     <main className="page function-page">
       <nav className="eyebrow" aria-label="Breadcrumb">
         <Link to="/explore">Explore</Link>
+        <span className="crumb-separator">/</span>
+        <Link to="/explore/data/$id" params={{id: primaryDataType}}>
+          {getFacet('data', primaryDataType)?.label ?? primaryDataType}
+        </Link>
+        <span className="crumb-separator">/</span>
+        <Link to="/explore/use/$id" params={{id: entry.useCases[0]}}>
+          {getFacet('use', entry.useCases[0])?.label ?? entry.useCases[0]}
+        </Link>
       </nav>
 
       <div className="function-visual">
-        <EntryPreview entry={entry} aspectRatio={16 / 9} />
-        {entry.preview.caption ? <p className="function-caption">{entry.preview.caption}</p> : null}
+        <EntryPreview entry={entry} aspectRatio={16 / 9} controls interactive />
+        {entry.preview.caption || illustrativeNote ? (
+          <p className="function-caption">
+            {entry.preview.caption}
+            {entry.preview.caption && illustrativeNote ? ' ' : null}
+            {illustrativeNote ? <span className="function-hint">{illustrativeNote}</span> : null}
+          </p>
+        ) : null}
       </div>
 
       <header className="function-header">
@@ -72,14 +101,17 @@ export function FunctionPage({
         <p className="lead">{entry.summary}</p>
         <div className="function-meta">
           <DataFlow input={entry.dataTypes.input} output={entry.dataTypes.output} />
-          <details className="function-more">
-            <summary>+{entry.useCases.length + entry.domains.length + 1} tags</summary>
-            <span className="function-chips">
+          <div className="function-facets">
+            <span className="function-facets-group">
+              <span className="function-facets-label">Use</span>
               <FacetChips kind="use" ids={entry.useCases} />
-              <FacetChips kind="domain" ids={entry.domains} />
-              <Chip>{entry.maturity}</Chip>
             </span>
-          </details>
+            <span className="function-facets-group">
+              <span className="function-facets-label">Domain</span>
+              <FacetChips kind="domain" ids={entry.domains} />
+            </span>
+            {entry.maturity !== 'stable' ? <Chip>{entry.maturity}</Chip> : null}
+          </div>
         </div>
       </header>
 
@@ -91,41 +123,41 @@ export function FunctionPage({
         </Section>
       ) : null}
 
-      <Section title="Use it">
-        <CodeBlock code={importLine} language="typescript" />
+      {entry.outputs.length > 0 ? (
+        <Section title="Returns">
+          <OutputTable outputs={entry.outputs} />
+        </Section>
+      ) : null}
+
+      <Section title="Example">
+        {hasImport ? null : <CodeBlock code={importLine} language="typescript" />}
         <CodeBlock code={entry.example} language="typescript" html={exampleHtml ?? undefined} />
       </Section>
 
-      {entry.outputs.length > 0 ? (
-        <Section title="Returns">
-          <ParamTable params={entry.outputs} />
-        </Section>
-      ) : null}
-
-      {entry.lensScenario ? (
-        <Section title="How this runs">
-          <LensGraphPanel scenario={entry.lensScenario} />
-          <p>
-            <Link to="/how-it-works/$topic" params={{topic: 'lenses'}}>
-              How lenses record a run
-            </Link>
-          </p>
-        </Section>
-      ) : null}
-
       {previousSteps.length > 0 ? (
-        <Section title="Before this">
+        <Section title="Before">
           <EntryGrid entries={previousSteps} />
         </Section>
       ) : null}
       {nextSteps.length > 0 ? (
-        <Section title="Next steps">
+        <Section title="Next">
           <EntryGrid entries={nextSteps} />
         </Section>
       ) : null}
       {related.length > 0 ? (
         <Section title="Related">
           <EntryGrid entries={related} />
+        </Section>
+      ) : null}
+
+      {entry.lensScenario ? (
+        <Section title="Recorded run">
+          <LensGraphPanel scenario={entry.lensScenario} />
+          <p>
+            <Link to="/how-it-works/$topic" params={{topic: 'lenses'}}>
+              How lenses record a run
+            </Link>
+          </p>
         </Section>
       ) : null}
 

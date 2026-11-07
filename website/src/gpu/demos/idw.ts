@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUInverseDistanceWeighting. Scattered samples become a surface; the distance power sweeps
-// from smooth to spiky, and one sample follows the pointer so you can pull the surface around.
+// Demo: GPUInverseDistanceWeighting. Scattered samples become a surface; power and search
+// radius are sliders, and one sample follows the pointer so you can pull the surface around.
 
 import {
   getGPUInverseDistanceWeightingParameterValues,
@@ -10,11 +10,13 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import type {GpuScene} from '../types';
+import {IDW_PARAMETERS, readParameterValues} from './parameters';
 import {
   assertWebGPU,
   createEmptyStorageBuffer,
   createStorageBuffer,
   DotLayer,
+  DrawScheduler,
   drawLayers,
   getDemoTheme,
   getWorldPosition,
@@ -25,6 +27,8 @@ import {
   type DemoView
 } from './kit';
 
+export const parameters = IDW_PARAMETERS;
+
 const ROWS = 90;
 const SAMPLE_COUNT = 64;
 
@@ -32,6 +36,7 @@ const scene: GpuScene = async context => {
   const {device} = context;
   assertWebGPU(device);
   const theme = getDemoTheme(context.theme);
+  const parameterValues = readParameterValues(parameters, context.parameters);
   const columns = Math.max(32, Math.min(200, Math.round((ROWS * context.width) / context.height)));
   const cellSize = 1 / ROWS;
   const worldWidth = columns * cellSize;
@@ -80,41 +85,58 @@ const scene: GpuScene = async context => {
   const dots = new DotLayer(device, positionBuffer, valueBuffer, SAMPLE_COUNT);
   let pointer: [number, number] | null = null;
 
+  let timeSeconds = context.reducedMotion ? 3 : 0;
+  const draw = () => {
+    const seconds = timeSeconds;
+    for (let index = 1; index < SAMPLE_COUNT; index++) {
+      positions[index * 2] = homes[index * 2] + Math.sin(seconds * 0.5 + index) * 0.012;
+      positions[index * 2 + 1] =
+        homes[index * 2 + 1] + Math.cos(seconds * 0.45 + index * 1.7) * 0.012;
+    }
+    const [x, y] = pointer ?? [
+      worldWidth * (0.5 + 0.38 * Math.cos(seconds * 0.35)),
+      0.5 + 0.34 * Math.sin(seconds * 0.5)
+    ];
+    positions[0] = x;
+    positions[1] = y;
+    positionBuffer.write(positions);
+    parameterBuffer.write(
+      getGPUInverseDistanceWeightingParameterValues(
+        {
+          searchRadius: parameterValues.searchRadius / 100,
+          power: parameterValues.power,
+          minimumNeighborCount: 1
+        },
+        grid
+      )
+    );
+    runner.run();
+    raster.update(view, theme, {range: [0, 1.15], smoothing: true});
+    dots.update(view, theme, {mode: -1, radius: 3.4, solid: [...theme.ink, 0.95], hillshade: 1});
+    drawLayers(device, theme, [raster, dots]);
+  };
+  const scheduler = new DrawScheduler(draw);
+
   return {
     render(timeMilliseconds) {
-      const seconds = context.reducedMotion ? 3 : timeMilliseconds / 1000;
-      const power = 1 + 3 * (0.5 + 0.5 * Math.sin(seconds * 0.7));
-      for (let index = 1; index < SAMPLE_COUNT; index++) {
-        positions[index * 2] = homes[index * 2] + Math.sin(seconds * 0.5 + index) * 0.012;
-        positions[index * 2 + 1] =
-          homes[index * 2 + 1] + Math.cos(seconds * 0.45 + index * 1.7) * 0.012;
-      }
-      const [x, y] = pointer ?? [
-        worldWidth * (0.5 + 0.38 * Math.cos(seconds * 0.35)),
-        0.5 + 0.34 * Math.sin(seconds * 0.5)
-      ];
-      positions[0] = x;
-      positions[1] = y;
-      positionBuffer.write(positions);
-      parameterBuffer.write(
-        getGPUInverseDistanceWeightingParameterValues(
-          {searchRadius: 0.6, power, minimumNeighborCount: 1},
-          grid
-        )
-      );
-      runner.run();
-      raster.update(view, theme, {range: [0, 1.15], smoothing: true});
-      dots.update(view, theme, {mode: -1, radius: 3.4, solid: [...theme.ink, 0.95], hillshade: 1});
-      drawLayers(device, theme, [raster, dots]);
+      if (!context.reducedMotion) timeSeconds = timeMilliseconds / 1000;
+      scheduler.flush();
+    },
+    setParameters(update) {
+      Object.assign(parameterValues, update);
+      scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      scheduler.request();
     },
     setPointer(position) {
       pointer = position ? getWorldPosition(view, position) : null;
+      scheduler.request();
     },
     destroy() {
+      scheduler.cancel();
       raster.destroy();
       dots.destroy();
       runner.destroy();

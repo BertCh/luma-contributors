@@ -82,7 +82,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Fills depressions, routes D8 flow and accumulates upslope area from a DEM, then marks streams.',
     explanation:
-      'Start here for any drainage analysis. Optional depression filling feeds steepest-descent directions, an exact accumulation count and a threshold stream mask. Switch `flowRouting` to `d-infinity` or an MFD scheme to spread flow over several receivers.',
+      'Start here for any drainage analysis. Optional depression filling feeds steepest-descent directions, an exact accumulation count and a threshold stream mask. Set `flowRouting` to `d-infinity` or an MFD scheme to split flow.',
     dataTypes: {input: ['terrain'], output: ['terrain', 'raster']},
     useCases: ['simulate', 'measure'],
     domains: ['hydrology'],
@@ -176,7 +176,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'flow-accumulation',
-      seed: 11,
+      seed: 301,
       caption: 'Upslope area gathers into a stream network.'
     },
     related: [
@@ -198,7 +198,7 @@ device.submit();`,
     title: 'Watershed delineation',
     summary: 'Labels every cell with the outlet or pour point its D8 flow path drains to.',
     explanation:
-      'Use it to carve a DEM into catchments, either by natural outlets or by your own pour points. Pointer jumping follows each path in logarithmic rounds, entirely on the GPU.',
+      'Carves a DEM into catchments, either by natural outlets or by your own pour points.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['summarize', 'simulate'],
     domains: ['hydrology'],
@@ -235,7 +235,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'flow-accumulation',
-      seed: 23,
+      seed: 302,
       caption: 'Each color is the area draining to one outlet.'
     },
     related: ['terrain-flow', 'terrain-catchment-summary', 'terrain-stream-order'],
@@ -252,7 +252,7 @@ device.submit();`,
     summary:
       'Assigns Strahler order to every stream cell: headwaters are 1, equal tributaries raise the order.',
     explanation:
-      'Use it to rank rivers by branching hierarchy. It reads D8 directions and a stream mask, then ranks the receiver forest on the GPU with an Euler tour.',
+      'Ranks rivers by branching hierarchy. It reads D8 directions and a stream mask, then ranks the receiver forest on the GPU with an Euler tour.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['classify', 'measure'],
     domains: ['hydrology'],
@@ -278,7 +278,7 @@ graph.add(new GPUTerrainStreamOrder({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'network', seed: 5, caption: 'Line weight grows with Strahler order.'},
+    preview: {kind: 'network', seed: 303, caption: 'Line weight grows with Strahler order.'},
     related: ['terrain-flow', 'terrain-stream-network', 'terrain-watersheds'],
     lensScenario: 'gpu-terrain.terrain-stream-order',
     reference: TERRAIN_OPERATORS,
@@ -293,7 +293,7 @@ device.submit();`,
     summary:
       "Computes HAND: each cell's elevation above the stream cell its D8 path reaches first.",
     explanation:
-      'Use it for flood-inundation screening and wetland mapping, where relative height beats absolute elevation. Feed it the filled elevation, D8 directions and a stream mask.',
+      'Best for flood-inundation screening and wetland mapping, where relative height beats absolute elevation. Feed it the filled elevation, D8 directions and a stream mask.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure', 'simulate'],
     domains: ['hydrology'],
@@ -344,7 +344,7 @@ graph.add(new GPUTerrainHeightAboveDrainage({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'terrain', seed: 31, caption: 'Low-lying cells near streams stand out.'},
+    preview: {kind: 'terrain', seed: 304, caption: 'Low-lying cells near streams stand out.'},
     related: ['terrain-flow', 'terrain-hydrologic-indices', 'terrain-flow-distance'],
     lensScenario: 'gpu-terrain.terrain-height-above-drainage',
     reference: TERRAIN_OPERATORS,
@@ -359,7 +359,7 @@ device.submit();`,
     summary:
       'Derives slope, specific catchment area, the topographic wetness index and stream power from accumulation.',
     explanation:
-      'Use it to find where soil stays wet or where flow can erode. It combines upslope area with local slope: wetness is `ln(a / tan(beta))`, stream power is `a * tan(beta)`.',
+      'Finds where soil stays wet or where flow can erode. It combines upslope area with local slope: wetness is `ln(a / tan(beta))`, stream power is `a * tan(beta)`.',
     dataTypes: {input: ['terrain', 'raster'], output: ['raster']},
     useCases: ['measure', 'model'],
     domains: ['hydrology', 'ecology'],
@@ -433,7 +433,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'raster',
-      seed: 17,
+      seed: 305,
       caption: 'Wetness peaks in flat, high-accumulation valleys.'
     },
     related: ['terrain-flow', 'terrain-height-above-drainage'],
@@ -449,7 +449,7 @@ device.submit();`,
     title: 'Downstream flow distance',
     summary: 'Measures the D8 path length from each cell downstream to a stream or outlet.',
     explanation:
-      'Use it for travel time to the channel, or flow-path length weighted by your own edge costs. Invalid directions and bounded-search failures are preserved, never guessed.',
+      'Best for travel time to the channel, or flow-path length weighted by your own edge costs. Invalid directions and bounded-search failures are preserved, never guessed.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['measure', 'route'],
     domains: ['hydrology'],
@@ -500,7 +500,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'isochrones',
-      seed: 41,
+      seed: 306,
       caption: 'Distance to the channel grows up the hillslopes.'
     },
     related: ['terrain-flow', 'terrain-height-above-drainage', 'terrain-branching-flow'],
@@ -517,7 +517,7 @@ device.submit();`,
     summary:
       'Extracts directed stream reaches between headwaters, confluences and terminals as compact polylines.',
     explanation:
-      'Use it to turn a stream mask into vector lines you can draw or analyze as a network. Each reach keeps its source and target cell ids so attributes can be joined back to the raster.',
+      'Turns a stream mask into vector lines you can draw or analyze as a network. Each reach keeps its source and target cell ids so attributes can be joined back to the raster.',
     dataTypes: {input: ['terrain'], output: ['lines', 'network']},
     useCases: ['transform', 'measure'],
     domains: ['hydrology', 'cartography'],
@@ -532,7 +532,7 @@ device.submit();`,
       },
       {
         name: 'output',
-        type: '{ sourceCells: GraphDataView<"uint32">; targetCells: GraphDataView<"uint32">; … }',
+        type: '{sourceCells, targetCells}',
         required: true,
         description: 'Reach, vertex and count views you own.'
       }
@@ -558,7 +558,18 @@ device.submit();`,
         type: 'GraphDataView<"float32x2">',
         description: 'Reach polyline vertices.'
       },
-      {name: 'lengths', type: 'GraphDataView<"float32">', description: 'Length of each reach.'}
+      {name: 'lengths', type: 'GraphDataView<"float32">', description: 'Length of each reach.'},
+      {name: 'reachCount', type: 'GraphDataView<"uint32">', description: 'Number of reaches.'},
+      {
+        name: 'vertexCount',
+        type: 'GraphDataView<"uint32">',
+        description: 'Number of polyline vertices.'
+      },
+      {
+        name: 'status, unresolvedCount',
+        type: 'mixed views',
+        description: 'Further result fields; see the reference.'
+      }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUTerrainStreamNetwork} from '@luma-contributors/analysis/gpu-terrain';
@@ -576,7 +587,7 @@ graph.add(new GPUTerrainStreamNetwork({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'network', seed: 8, caption: 'Reaches split at every confluence.'},
+    preview: {kind: 'network', seed: 307, caption: 'Reaches split at every confluence.'},
     related: ['terrain-stream-order', 'terrain-flow', 'terrain-watersheds'],
     lensScenario: 'gpu-terrain.terrain-stream-network',
     reference: 'api/gpu-raster/expansion',
@@ -590,7 +601,7 @@ device.submit();`,
     title: 'Terrain-following wind field',
     summary: 'Deflects a uniform horizontal wind over a DEM so it flows around and over relief.',
     explanation:
-      'Use it to make a plausible vector field from elevation alone. The output (u, v) rows plug straight into particle advection, streamlines or line integral convolution.',
+      'Makes a plausible vector field from elevation alone. The output (u, v) rows plug straight into particle advection, streamlines or line integral convolution.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['simulate'],
     domains: ['hydrology', 'cartography'],
@@ -643,7 +654,11 @@ const compiled = await graph.compileAsync();
 parameters.write(getGPUTerrainFlowFieldParameterValues({wind: [8, 0], verticalExaggeration: 2}, grid));
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'flows', seed: 3, caption: 'Wind bends around ridges and speeds over summits.'},
+    preview: {
+      kind: 'flows',
+      seed: 308,
+      caption: 'Wind bends around ridges and speeds over summits.'
+    },
     related: ['particle-advection', 'streamlines', 'line-integral-convolution'],
     lensScenario: 'gpu-terrain.terrain-flow-field',
     reference: TERRAIN_OPERATORS,
@@ -658,7 +673,7 @@ device.submit();`,
     summary:
       'Writes the eight per-neighbor flow fractions of D-infinity or MFD routing for branching consumers.',
     explanation:
-      'Use it when downstream steps need explicit splits instead of one receiver. It reuses the exact routing kernel of `GPUTerrainFlow`, so the fractions match its accumulation.',
+      'Best when downstream steps need explicit splits instead of one receiver. It reuses the exact routing kernel of `GPUTerrainFlow`, so the fractions match its accumulation.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['simulate'],
     domains: ['hydrology'],
@@ -716,7 +731,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'flow-accumulation',
-      seed: 52,
+      seed: 309,
       caption: 'Flow splits across neighbors on divergent slopes.'
     },
     related: ['terrain-branching-flow', 'terrain-flow', 'terrain-tiled-flow'],
@@ -733,7 +748,7 @@ device.submit();`,
     summary:
       'Propagates mass, flow distance or outlet probability through a DAG of eight-neighbor flow fractions.',
     explanation:
-      'Pick a `mode`: `transport` accumulates injected mass, the distance modes give expected, minimum or maximum path length, and `fractional-catchment` gives the chance each cell drains to an outlet. Each cell publishes value and readiness in one atomic word, so results are deterministic.',
+      'Pick a `mode`: `transport` accumulates injected mass, the distance modes give expected, minimum or maximum path length, and `fractional-catchment` gives the chance each cell drains to an outlet. Results are deterministic.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['simulate', 'measure'],
     domains: ['hydrology'],
@@ -806,7 +821,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'flow-accumulation',
-      seed: 64,
+      seed: 310,
       caption: 'Mass fans out and rejoins along multiple paths.'
     },
     related: ['terrain-flow-fractions', 'terrain-tiled-flow', 'terrain-flow-distance'],
@@ -823,7 +838,7 @@ device.submit();`,
     summary:
       'Accumulates flow across tiles of a large DEM by exchanging owned cells in one resident global graph.',
     explanation:
-      'Use it when the DEM arrives as tiles with halos and flow must cross tile seams. Disjoint owned rectangles cover the domain; atomic transport and pointer jumping keep accumulation and reach ids exact across seams.',
+      'Best when the DEM arrives as tiles with halos and flow must cross tile seams. Owned rectangles keep accumulation and reach ids exact across seams.',
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['simulate', 'summarize'],
     domains: ['hydrology'],
@@ -882,7 +897,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'flow-accumulation',
-      seed: 77,
+      seed: 311,
       caption: 'Streams stay continuous across tile seams.'
     },
     related: ['terrain-flow', 'terrain-branching-flow', 'terrain-flow-fractions'],
@@ -899,7 +914,7 @@ device.submit();`,
     summary:
       'Cuts the cheapest bounded channel from each pit to an outlet, with optional explicit stream burning.',
     explanation:
-      'Use it instead of filling when you want to preserve terrain: it minimizes total excavation depth for the pits you name. Simultaneous edits take the minimum elevation, so results do not depend on thread order.',
+      'Best instead of filling when you want to preserve terrain: it minimizes total excavation depth for the pits you name. Simultaneous edits take the minimum elevation, so results do not depend on thread order.',
     dataTypes: {input: ['terrain'], output: ['terrain']},
     useCases: ['transform', 'simulate'],
     domains: ['hydrology'],
@@ -953,14 +968,25 @@ device.submit();`,
         description: 'Depth removed from each cell.'
       },
       {
+        name: 'modificationMask',
+        type: 'GraphDataView<"uint32">',
+        description: 'Bit 1 breach, 2 burn, 4 invalid burn depth.'
+      },
+      {
         name: 'pathCells',
         type: 'GraphDataView<"uint32">',
         description: 'Breach path cells per pit, pit first.'
       },
+      {name: 'pathLengths', type: 'GraphDataView<"uint32">', description: 'Path length per pit.'},
       {
         name: 'pitStatus',
         type: 'GraphDataView<"uint32">',
         description: '0 invalid, 1 breached, 2 no outlet within bounds.'
+      },
+      {
+        name: 'unresolvedCount',
+        type: 'GraphDataView<"uint32">',
+        description: 'Pits left unresolved.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -980,7 +1006,7 @@ graph.add(new GPUTerrainBreach({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'terrain', seed: 14, caption: 'A narrow cut opens the pit to its outlet.'},
+    preview: {kind: 'terrain', seed: 312, caption: 'A narrow cut opens the pit to its outlet.'},
     related: ['terrain-depression-hierarchy', 'terrain-flow'],
     lensScenario: 'gpu-terrain.terrain-breach',
     reference: TERRAIN_PROCESSING,
@@ -995,7 +1021,7 @@ device.submit();`,
     summary:
       'Builds the merge tree of nested depressions with area and volume curves at chosen elevation stages.',
     explanation:
-      'Use it to see which sinks fill first, where they spill and how much water they hold. Cells activate in elevation order into a union-find tree; the build is serial on the GPU, so keep grids moderate.',
+      'Shows which sinks fill first, where they spill and how much water they hold. The build is serial on the GPU, so keep grids moderate.',
     dataTypes: {input: ['terrain'], output: ['table', 'raster']},
     useCases: ['measure', 'simulate'],
     domains: ['hydrology'],
@@ -1069,7 +1095,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'terrain',
-      seed: 29,
+      seed: 313,
       caption: 'Basins merge into one as the water level rises.'
     },
     related: ['terrain-breach', 'terrain-flow', 'terrain-catchment-summary'],
@@ -1086,7 +1112,7 @@ device.submit();`,
     summary:
       'Summarizes each basin: area, elevation statistics, drainage density, hypsometry and stream profiles.',
     explanation:
-      'Use it to describe watersheds after delineation. It reduces elevation per basin and measures downstream stream profiles by pointer jumping.',
+      'Describes watersheds after delineation. It reduces elevation per basin and measures downstream stream profiles by pointer jumping.',
     dataTypes: {input: ['terrain', 'raster'], output: ['table']},
     useCases: ['summarize', 'measure'],
     domains: ['hydrology'],
@@ -1156,7 +1182,7 @@ graph.add(new GPUTerrainCatchmentSummary({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'histogram', seed: 36, caption: 'Hypsometric curve per catchment.'},
+    preview: {kind: 'histogram', seed: 314, caption: 'Hypsometric curve per catchment.'},
     related: ['terrain-watersheds', 'terrain-stream-network', 'terrain-depression-hierarchy'],
     lensScenario: 'gpu-terrain.terrain-catchment-summary',
     reference: TERRAIN_PROCESSING,
@@ -1171,7 +1197,7 @@ device.submit();`,
     summary:
       'Estimates a robust vertical shift between two DEMs on stable ground and returns the corrected difference.',
     explanation:
-      "Use it before change detection, to remove a constant bias between epochs. It fits the median of the difference over a stable mask, like xDEM's `VerticalShift`, and propagates uncertainty from a known variance and correlation length.",
+      "Best before change detection, to remove a constant bias between epochs. It fits the median difference over a stable mask, like xDEM's `VerticalShift`.",
     dataTypes: {input: ['terrain'], output: ['raster']},
     useCases: ['detect-change'],
     domains: ['hydrology', 'remote-sensing'],
@@ -1246,7 +1272,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'raster',
-      seed: 90,
+      seed: 315,
       caption: 'Elevation change after removing the vertical bias.'
     },
     related: ['terrain-flow', 'terrain-breach'],
@@ -1263,7 +1289,7 @@ device.submit();`,
     summary:
       'Computes least accumulated travel cost from source cells across a friction raster, with back-links and bands.',
     explanation:
-      'Use it for accessibility, habitat connectivity and least-cost corridors. Eight-connected moves cost ground distance times mean friction; invalid or negative friction is a barrier. Relaxation runs in gated GPU tiles until the surface converges.',
+      'Best for accessibility, habitat connectivity and least-cost corridors. Eight-connected moves cost distance times mean friction; invalid or negative friction is a barrier.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['route', 'measure'],
     domains: ['ecology', 'transport', 'hydrology'],
@@ -1345,7 +1371,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'isochrones',
-      seed: 12,
+      seed: 316,
       caption: 'Cost rings bend around high-friction terrain.'
     },
     related: ['cost-distance-path', 'distance-field', 'isolines'],
@@ -1362,7 +1388,7 @@ device.submit();`,
     summary:
       'Traces the least-cost path from a target cell back to its source by following cost-distance back-links.',
     explanation:
-      'Use it after `GPUCostDistance` to pull out one route: a corridor, a pipeline or an evacuation path. The target is a per-frame value, so you can move it without recompiling.',
+      'Best after `GPUCostDistance` to pull out one route: a corridor, a pipeline or an evacuation path. The target is a per-frame value, so you can move it without recompiling.',
     dataTypes: {input: ['raster'], output: ['lines']},
     useCases: ['route'],
     domains: ['ecology', 'transport'],
@@ -1412,7 +1438,7 @@ graph.add(new GPUCostDistancePath({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'shortest-path', seed: 19, caption: 'The route follows the cheapest valley.'},
+    preview: {kind: 'shortest-path', seed: 317, caption: 'The route follows the cheapest valley.'},
     related: ['cost-distance', 'distance-field'],
     lensScenario: 'gpu-raster.cost-distance-path',
     reference: RASTER_REFERENCE,
@@ -1427,7 +1453,7 @@ device.submit();`,
     summary:
       'Computes Euclidean distance and nearest-seed allocation (Voronoi zones) on a raster from seed points or a mask.',
     explanation:
-      'Use it for proximity surfaces, buffers-as-rasters and straight-line catchments. `exact` mode is an exact distance transform; `jump-flood` trades exactness for speed.',
+      'Best for proximity surfaces, buffers-as-rasters and straight-line catchments. `exact` mode is an exact distance transform; `jump-flood` trades exactness for speed.',
     dataTypes: {input: ['points', 'raster'], output: ['raster']},
     useCases: ['measure', 'route'],
     domains: ['urban', 'ecology'],
@@ -1504,7 +1530,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'cells',
-      seed: 7,
+      seed: 318,
       caption: 'Voronoi zones and distance rings from seed points.'
     },
     related: ['cost-distance', 'isolines', 'isobands'],
@@ -1521,7 +1547,7 @@ device.submit();`,
     summary:
       'Extracts marching-squares contour lines of a raster at several levels, as segments and stitched polylines.',
     explanation:
-      'Use it for elevation contours, isochrone edges or any threshold line on a surface. Levels and extent are per-frame buffer writes, so sliding a level never recompiles.',
+      'Best for elevation contours, isochrone edges or any threshold line on a surface. Levels and extent are per-frame buffer writes, so sliding a level never recompiles.',
     dataTypes: {input: ['raster', 'terrain'], output: ['lines']},
     useCases: ['transform', 'classify'],
     domains: ['cartography', 'hydrology'],
@@ -1590,7 +1616,11 @@ const compiled = await graph.compileAsync();
 parameters.write(getGPUIsolinesParameterValues({levelCount: 3, extent: [minX, minY, maxX, maxY]}, grid));
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'contours', seed: 21, caption: 'Contour lines at fixed levels over a surface.'},
+    preview: {
+      kind: 'contours',
+      seed: 319,
+      caption: 'Contour lines at fixed levels over a surface.'
+    },
     related: ['isobands', 'isoband-rings', 'cost-distance'],
     lensScenario: 'gpu-raster.isolines',
     reference: RASTER_REFERENCE,
@@ -1605,7 +1635,7 @@ device.submit();`,
     summary:
       'Builds filled contour bands of a float32 raster as triangles, with band classes per sample and boundary edges.',
     explanation:
-      'Use it for filled contour maps and isochrone polygons. Breaks are a per-frame buffer; each triangle carries its band index, ready to draw with a color ramp.',
+      'Best for filled contour maps and isochrone polygons. Breaks are a per-frame buffer; each triangle carries its band index, ready to draw with a color ramp.',
     dataTypes: {input: ['raster', 'terrain'], output: ['polygons']},
     useCases: ['classify', 'transform'],
     domains: ['cartography', 'transport'],
@@ -1674,7 +1704,7 @@ const compiled = await graph.compileAsync();
 parameters.write(getGPUIsobandsParameterValues({breakCount: 4, extent: [minX, minY, maxX, maxY]}, grid));
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'contours', seed: 33, caption: 'Filled bands between breaks, one color each.'},
+    preview: {kind: 'contours', seed: 320, caption: 'Filled bands between breaks, one color each.'},
     related: ['isoband-rings', 'isolines', 'cost-distance'],
     lensScenario: 'gpu-raster.isobands',
     reference: RASTER_REFERENCE,
@@ -1689,7 +1719,7 @@ device.submit();`,
     summary:
       'Assembles every isoband into closed polygon rings, shells and holes, in GeoArrow layout.',
     explanation:
-      'Use it when you need vector polygons, not triangles: export, overlay or style by band. Boundary edges are chained into band-pure rings and holes attach to shells of their own band.',
+      'Best when you need vector polygons, not triangles: export, overlay or style by band. Boundary edges are chained into band-pure rings and holes attach to shells of their own band.',
     dataTypes: {input: ['raster', 'terrain'], output: ['polygons']},
     useCases: ['transform', 'classify'],
     domains: ['cartography'],
@@ -1739,9 +1769,9 @@ device.submit();`,
         description: 'Optional: 1 for hole rings.'
       },
       {
-        name: 'status.edgeOverflow',
-        type: 'GraphDataView<"uint32">',
-        description: '1 when edgeCapacity was too small.'
+        name: 'status',
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & GPUIsobandRingsStatus',
+        description: 'Ring count, overflow flag and edgeOverflow (1 if edgeCapacity too small).'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -1751,11 +1781,11 @@ import {GPUIsobandRings, getGPUIsobandsParameterValues} from '@luma-contributors
 const graph = new GPUCommandGraph(device, {id: 'rings'});
 const parameters = new GPUParameterBuffer(device, {id: 'ring-parameters', format: 'float32', length: 8});
 
-// output holds ring views plus status counters; capacities bound the result size
+// status holds one-row scalars: ring count, overflow and edge overflow
 graph.add(new GPUIsobandRings({
   grid, values, breaks, parameters: parameters.importToGraph(graph),
   edgeCapacity: 100000,
-  output: {ringOffsets, positions, ringIsHole, count, overflow, status: {edgeOverflow}}
+  output: {ringOffsets, positions, ringIsHole, status: {count, overflow, edgeOverflow}}
 }));
 const compiled = await graph.compileAsync();
 parameters.write(getGPUIsobandsParameterValues({breakCount: 4, extent: [minX, minY, maxX, maxY]}, grid));
@@ -1763,7 +1793,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'polygons',
-      seed: 45,
+      seed: 321,
       caption: 'Nested shells and holes, one ring set per band.'
     },
     related: ['isobands', 'isolines'],
@@ -1780,25 +1810,27 @@ device.submit();`,
     summary:
       'Draws evenly spaced streamlines through a 2D vector field, independent of GPU thread order.',
     explanation:
-      'Use it to show wind, currents or flow direction as a clean line map. Jobard-Lefer seeding with GPU-resolved priorities prunes lines that crowd each other, so the same field always gives the same lines.',
+      'Shows wind, currents or flow direction as a clean line map. Jobard-Lefer seeding prunes crowded lines, so the same field always gives the same lines.',
     dataTypes: {input: ['raster'], output: ['lines']},
     useCases: ['simulate', 'classify'],
     domains: ['cartography', 'hydrology'],
     params: [
       velocitiesParameter,
-      fieldWidthParameter,
-      fieldHeightParameter,
+      {
+        ...fieldWidthParameter,
+        description: 'Vector field width in cells; fieldHeight is the height.'
+      },
+      {
+        name: 'gridWidth',
+        type: 'number',
+        required: true,
+        description: 'Output grid width; gridHeight is the height.'
+      },
       {
         name: 'seedColumns',
         type: 'number',
         required: true,
-        description: 'Seed lattice columns over the grid extent.'
-      },
-      {
-        name: 'seedRows',
-        type: 'number',
-        required: true,
-        description: 'Seed lattice rows over the grid extent.'
+        description: 'Seed lattice columns; seedRows is the row count.'
       },
       {
         name: 'stepsPerDirection',
@@ -1807,9 +1839,16 @@ device.submit();`,
         description: 'Integration steps each way from a seed.'
       },
       {
-        name: 'maximumIterations',
-        type: 'number | undefined',
-        description: 'GPU-gated pruning rounds.'
+        name: 'parameters',
+        type: 'GraphDataView<"float32">',
+        required: true,
+        description: 'Extents and step length from getGPUStreamlinesParameterValues.'
+      },
+      {
+        name: 'uint32Parameters',
+        type: 'GraphDataView<"uint32">',
+        required: true,
+        description: 'Per-frame counts from getGPUStreamlinesUint32ParameterValues.'
       },
       {
         name: 'output',
@@ -1857,7 +1896,7 @@ const compiled = await graph.compileAsync();
 // then write both packers with fieldExtent, gridExtent and stepLength, and encode
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
-    preview: {kind: 'flows', seed: 27, caption: 'Evenly spaced lines follow the vector field.'},
+    preview: {kind: 'flows', seed: 322, caption: 'Evenly spaced lines follow the vector field.'},
     related: ['line-integral-convolution', 'particle-advection', 'terrain-flow-field'],
     lensScenario: 'gpu-raster.streamlines',
     reference: RASTER_REFERENCE,
@@ -1872,7 +1911,7 @@ device.submit();`,
     summary:
       'Renders a texture that smears white noise along the streamlines of a vector field, optionally animated.',
     explanation:
-      'Use it to show the whole field at once, down to eddies and saddles. Each pixel averages noise along its streamline for `stepCount` steps each way (Cabral and Leedom 1993); advance the phase each frame to animate.',
+      'Shows the whole field at once, down to eddies and saddles. Each pixel averages noise along its streamline for `stepCount` steps each way (Cabral and Leedom 1993); advance the phase each frame to animate.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['simulate', 'classify'],
     domains: ['cartography', 'hydrology'],
@@ -1935,7 +1974,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'flows',
-      seed: 38,
+      seed: 323,
       caption: 'Noise stretched along the flow reveals its structure.'
     },
     related: ['streamlines', 'particle-advection', 'terrain-flow-field'],
@@ -1952,7 +1991,7 @@ device.submit();`,
     summary:
       'Moves particles through a 2D vector field one frame per encoding, with exact, replayable randomness.',
     explanation:
-      'Use it for animated wind, current or flow maps. State updates in place; respawns come from a counter-based random generator, so the same parameters always replay the same frames.',
+      'Best for animated wind, current or flow maps. Respawns are counter-based, so the same parameters replay the same frames.',
     dataTypes: {input: ['raster'], output: ['points', 'trajectories']},
     useCases: ['simulate'],
     domains: ['hydrology', 'cartography'],
@@ -1980,11 +2019,6 @@ device.submit();`,
       }
     ],
     outputs: [
-      {
-        name: 'state.positions',
-        type: 'GraphDataView<"float32x2">',
-        description: 'Current particle positions, updated in place.'
-      },
       {
         name: 'previousPositions',
         type: 'GraphDataView<"float32x2">',
@@ -2019,7 +2053,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
       kind: 'trajectories',
-      seed: 9,
+      seed: 324,
       caption: 'Particles drift along the field and respawn.'
     },
     related: ['terrain-flow-field', 'streamlines', 'line-integral-convolution'],

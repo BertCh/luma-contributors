@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUTerrainDerivatives and GPUTerrainFlow. A seeded synthetic landscape, a sun that circles
-// it (Horn hillshade, recomputed on the GPU), and a stream network extracted by depression
-// filling, D8 routing and flow accumulation as the stream threshold breathes.
+// Demo: GPUTerrainDerivatives and GPUTerrainFlow. A seeded synthetic landscape, sliders for the sun
+// (Horn hillshade, recomputed on the GPU), slope exaggeration, and the stream threshold of a network
+// extracted by depression filling, D8 routing and flow accumulation.
 
 import {
   getGPUTerrainDerivativesParameterValues,
@@ -13,10 +13,12 @@ import {
 } from '@luma-contributors/analysis/gpu-terrain';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import type {GpuScene} from '../types';
+import {readParameterValues, TERRAIN_HYDROLOGY_PARAMETERS} from './parameters';
 import {
   assertWebGPU,
   createEmptyStorageBuffer,
   createStorageBuffer,
+  DrawScheduler,
   drawLayers,
   getDemoTheme,
   GraphRunner,
@@ -26,6 +28,8 @@ import {
   type Color,
   type DemoView
 } from './kit';
+
+export const parameters = TERRAIN_HYDROLOGY_PARAMETERS;
 
 const ROWS = 96;
 const CELL_SIZE = 60;
@@ -44,6 +48,7 @@ const scene: GpuScene = async context => {
   const {device} = context;
   assertWebGPU(device);
   const theme = getDemoTheme(context.theme);
+  const values = readParameterValues(parameters, context.parameters);
   const columns = Math.max(48, Math.min(256, Math.round((ROWS * context.width) / context.height)));
   const worldWidth = columns / ROWS;
   const view: DemoView = {worldWidth, worldHeight: 1, width: context.width, height: context.height};
@@ -136,47 +141,59 @@ const scene: GpuScene = async context => {
     [water[0], water[1], water[2], 0],
     [0.35, 0.8, 1, 1]
   ] as const;
-  let lastKey = '';
+  let isDirty = true;
+
+  const draw = () => {
+    if (isDirty) {
+      isDirty = false;
+      derivativeParameters.write(
+        getGPUTerrainDerivativesParameterValues(
+          {
+            azimuthDegrees: values.azimuthDegrees,
+            altitudeDegrees: values.altitudeDegrees,
+            zFactor: values.zFactor
+          },
+          grid
+        )
+      );
+      flowParameters.write(
+        getGPUTerrainFlowParameterValues(
+          {streamThreshold: Math.round(values.streamThreshold), fillEpsilon: 0.02},
+          grid
+        )
+      );
+      runner.run();
+    }
+    land.update(view, theme, {range: [low, high], ramp: LAND_RAMP, smoothing: true});
+    // Hillshade 0..1 inverted into black with alpha: dark where the slope faces away from the sun.
+    shade.update(view, theme, {
+      range: [0.95, 0.3],
+      ramp: [[0, 0, 0]],
+      fade: true,
+      alpha: 0.55,
+      smoothing: true
+    });
+    rivers.update(view, theme, {mode: 2, categories: riverColors});
+    drawLayers(device, theme, [land, shade, rivers]);
+  };
+  const scheduler = new DrawScheduler(draw);
 
   return {
-    render(timeMilliseconds) {
-      const seconds = context.reducedMotion ? 5 : timeMilliseconds / 1000;
-      const azimuthDegrees = (seconds * 22) % 360;
-      const threshold = 55 + 45 * (0.5 + 0.5 * Math.sin(seconds * 0.5));
-      const key = `${azimuthDegrees.toFixed(1)}:${threshold.toFixed(0)}`;
-      if (key !== lastKey) {
-        lastKey = key;
-        derivativeParameters.write(
-          getGPUTerrainDerivativesParameterValues(
-            {azimuthDegrees, altitudeDegrees: 38, zFactor: 1},
-            grid
-          )
-        );
-        flowParameters.write(
-          getGPUTerrainFlowParameterValues(
-            {streamThreshold: Math.round(threshold), fillEpsilon: 0.02},
-            grid
-          )
-        );
-        runner.run();
-      }
-      land.update(view, theme, {range: [low, high], ramp: LAND_RAMP, smoothing: true});
-      // Hillshade 0..1 inverted into black with alpha: dark where the slope faces away from the sun.
-      shade.update(view, theme, {
-        range: [0.95, 0.3],
-        ramp: [[0, 0, 0]],
-        fade: true,
-        alpha: 0.55,
-        smoothing: true
-      });
-      rivers.update(view, theme, {mode: 2, categories: riverColors});
-      drawLayers(device, theme, [land, shade, rivers]);
+    render() {
+      scheduler.flush();
+    },
+    setParameters(update) {
+      Object.assign(values, update);
+      isDirty = true;
+      scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      scheduler.request();
     },
     destroy() {
+      scheduler.cancel();
       land.destroy();
       shade.destroy();
       rivers.destroy();

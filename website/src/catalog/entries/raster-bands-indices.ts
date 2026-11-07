@@ -44,7 +44,7 @@ function makeExample(options: ExampleOptions): string {
     `import {${[...options.symbols].sort().join(', ')}} from '${IMPORT_PATH}';`,
     '',
     `const graph = new GPUCommandGraph(device, {id: 'demo'});`,
-    `const view = (id: string, format: 'float32' | 'uint32' | 'float32x2', length: number) => createTransientView(graph, id, format, length);`,
+    `const view = <Format extends 'float32' | 'uint32' | 'float32x2'>(id: string, format: Format, length: number) => createTransientView(graph, id, format, length);`,
     ...(options.setup ?? []),
     ...(parameters
       ? [
@@ -130,7 +130,11 @@ export const entries: CatalogEntry[] = [
         '[number, number, number, number, number, number]',
         'Pixel-to-world transform.'
       ),
-      makeOutput('GPURasterMetadata', 'object', 'Width, height, affine and pixel interpretation.')
+      makeOutput(
+        'GPURasterMetadata',
+        'GPURasterMetadata',
+        'Width, height, affine and pixel interpretation.'
+      )
     ],
     example: [
       `import {makeGPURasterMetadata} from '${IMPORT_PATH}';`,
@@ -157,7 +161,7 @@ export const entries: CatalogEntry[] = [
     title: 'Make raster band',
     summary: 'Wraps one value per pixel as a band, with optional validity, nodata and calibration.',
     explanation:
-      'Use it to feed the output of one operation into the next without a hand-written band literal. Calibration (`scale`, `offset`) and raw `noDataValue` travel with the band, so downstream operations read reflectance, not digital numbers.',
+      'Feeds the output of one operation into the next without a hand-written band literal. Calibration (`scale`, `offset`) and raw `noDataValue` travel with the band, so downstream operations read reflectance, not digital numbers.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform'],
     domains: ['remote-sensing', 'data-engineering'],
@@ -212,7 +216,7 @@ export const entries: CatalogEntry[] = [
     title: 'Normalized difference water index',
     summary: 'NDWI water mask from calibrated bands, by McFeeters (green, NIR) or Gao (NIR, SWIR).',
     explanation:
-      'Use it to map open water or canopy moisture. The `method` is required because the two published recipes use different bands.',
+      'Maps open water or canopy moisture. The `method` is required because the two published recipes use different bands.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['classify', 'detect-change'],
     domains: ['remote-sensing', 'hydrology'],
@@ -227,8 +231,8 @@ export const entries: CatalogEntry[] = [
       makeParam('outputValidity', 'GraphDataView<"uint32">', 'Flag per pixel; 1 where valid.', {
         required: true
       }),
-      makeParam('epsilon', 'number', 'Denominator magnitude must exceed this.', {default: '0'}),
-      makeParam('clamp', 'readonly [number, number]', 'Clamp the index to [min, max].')
+      makeParam('width', 'number', 'Raster width in pixels.', {required: true}),
+      makeParam('height', 'number', 'Raster height in pixels.', {required: true})
     ],
     outputs: [
       makeOutput('output', 'GraphDataView<"float32">', 'Dimensionless ratio in [-1, 1].'),
@@ -271,7 +275,7 @@ export const entries: CatalogEntry[] = [
     title: 'Normalized burn ratio',
     summary: 'NBR = (NIR - SWIR2) / (NIR + SWIR2), the standard burn-severity index.',
     explanation:
-      'Use it before and after a fire; subtract the two for burn severity. SWIR2 is the band near 2.2 micrometers.',
+      'Best before and after a fire; subtract the two for burn severity. SWIR2 is the band near 2.2 micrometers.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['detect-change', 'classify'],
     domains: ['remote-sensing', 'ecology'],
@@ -328,7 +332,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'EVI = 2.5 (NIR - red) / (NIR + 6 red - 7.5 blue + 1), vegetation vigor with less saturation.',
     explanation:
-      'Use it over dense canopy where NDVI saturates. The blue band corrects for atmosphere; supply calibrated reflectance fractions.',
+      'Best over dense canopy where NDVI saturates. The blue band corrects for atmosphere; supply calibrated reflectance fractions.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['measure', 'detect-change'],
     domains: ['remote-sensing', 'ecology'],
@@ -388,7 +392,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'SAVI = (1 + L)(NIR - red) / (NIR + red + L), vegetation with a soil-brightness correction.',
     explanation:
-      'Use it over sparse vegetation where bare soil biases NDVI. `soilAdjustment` is L in [0, 1]; zero gives NDVI.',
+      'Best over sparse vegetation where bare soil biases NDVI. `soilAdjustment` is L in [0, 1]; zero gives NDVI.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['measure'],
     domains: ['remote-sensing', 'ecology'],
@@ -452,7 +456,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Per-cell calculator: add, divide, power, normalized difference and more, with optional clamp.',
     explanation:
-      'Use it for band math and unit conversion; chain operations for longer formulas. The operation is a per-frame parameter, so changing it never recompiles.',
+      'Best for band math and unit conversion; chain operations for longer formulas. The operation is a per-frame parameter, so changing it never recompiles.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform', 'measure'],
     domains: ['remote-sensing', 'data-engineering'],
@@ -495,7 +499,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Per-cell minimum, maximum, range, sum, mean, standard deviation or majority across a raster stack.',
     explanation:
-      'Use it to collapse layers (dates, scenarios, ensemble members) into one raster. Request only the outputs you need.',
+      'Collapses layers (dates, scenarios, ensemble members) into one raster. Request only the outputs you need.',
     dataTypes: {input: ['raster', 'time-series'], output: ['raster']},
     useCases: ['summarize'],
     domains: ['remote-sensing', 'spatial-statistics'],
@@ -514,7 +518,9 @@ export const entries: CatalogEntry[] = [
       })
     ],
     outputs: [
-      makeOutput('minimum / maximum / range', FLOAT, 'Per-cell extremes across layers (optional).'),
+      makeOutput('minimum', FLOAT, 'Per-cell minimum across layers.'),
+      makeOutput('maximum', FLOAT, 'Per-cell maximum across layers.'),
+      makeOutput('range', FLOAT, 'Per-cell maximum minus minimum.'),
       makeOutput(
         'sum / mean / standardDeviation',
         FLOAT,
@@ -540,7 +546,7 @@ export const entries: CatalogEntry[] = [
         '}'
       ]
     }),
-    preview: {kind: 'histogram', seed: 32, caption: 'Twelve layers collapse to one mean.'},
+    preview: {kind: 'raster', seed: 32, caption: 'Twelve layers collapse to one mean.'},
     related: ['raster-arithmetic', 'weighted-overlay', 'temporal-composite'],
     lensScenario: 'gpu-raster.raster-cell-statistics',
     reference: 'api/gpu-raster/operations-analysis',
@@ -554,7 +560,7 @@ export const entries: CatalogEntry[] = [
     title: 'Raster conditional',
     summary: 'Per-cell where(condition, a, b), like ArcGIS Con or numpy where.',
     explanation:
-      'Use it to mask, threshold or patch one raster with another. The condition is a comparison against a threshold, or a ready-made `mask`.',
+      'Masks, thresholds or patches one raster with another. The condition is a comparison against a threshold, or a ready-made `mask`.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['classify', 'transform'],
     domains: ['remote-sensing', 'data-engineering'],
@@ -607,7 +613,7 @@ export const entries: CatalogEntry[] = [
     title: 'Reclassify',
     summary: 'Maps raster values to classes through a per-frame break table.',
     explanation:
-      'Use it to bin continuous values into classes or to remap codes. The break table is a buffer, so editing breaks is a write, not a recompile.',
+      'Bins continuous values into classes or to remap codes. The break table is a buffer, so editing breaks is a write, not a recompile.',
     dataTypes: {input: ['raster', 'table'], output: ['raster']},
     useCases: ['classify'],
     domains: ['remote-sensing', 'cartography'],
@@ -661,7 +667,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Suitability score from up to 16 rasters, each rescaled or remapped, then weighted and summed.',
     explanation:
-      'Use it for site selection and multi-criteria suitability. Per-layer weights, ranges and inversion are per-frame parameters, so sliders never recompile.',
+      'Best for site selection and multi-criteria suitability. Per-layer weights, ranges and inversion are per-frame parameters, so sliders never recompile.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['model', 'classify'],
     domains: ['ecology', 'urban'],
@@ -713,7 +719,7 @@ export const entries: CatalogEntry[] = [
     title: 'Polygon rasterization',
     summary: 'Scan-converts polygons into a zone-ID raster, with an optional boundary-cell flag.',
     explanation:
-      'Use it to turn zones into a grid for zonal statistics or raster joins. Each cell takes the smallest feature row containing its center.',
+      'Turns zones into a grid for zonal statistics or raster joins. Each cell takes the smallest feature row containing its center.',
     dataTypes: {input: ['polygons'], output: ['raster']},
     useCases: ['transform', 'relate'],
     domains: ['data-engineering', 'cartography'],
@@ -777,7 +783,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Per-zone count, sum, mean, minimum and maximum of a raster band over a zone-ID raster.',
     explanation:
-      'Use it to summarize imagery or surfaces by parcel, tract or watershed. Zones come from `GPUPolygonRasterization` or any dense ID raster.',
+      'Summarizes imagery or surfaces by parcel, tract or watershed. Zones come from `GPUPolygonRasterization` or any dense ID raster.',
     dataTypes: {input: ['raster'], output: ['table']},
     useCases: ['summarize'],
     domains: ['remote-sensing', 'demographics', 'ecology'],
@@ -802,9 +808,12 @@ export const entries: CatalogEntry[] = [
       })
     ],
     outputs: [
-      makeOutput('cellCounts / valueCounts', UINT, 'Cells and valid cells per zone.'),
-      makeOutput('sums / means', FLOAT, 'Per-zone sum and mean.'),
-      makeOutput('minimums / maximums', FLOAT, 'Per-zone extremes.'),
+      makeOutput('cellCounts', UINT, 'Cells per zone.'),
+      makeOutput('valueCounts', UINT, 'Valid cells per zone.'),
+      makeOutput('sums', FLOAT, 'Per-zone sum.'),
+      makeOutput('means', FLOAT, 'Per-zone mean.'),
+      makeOutput('minimums', FLOAT, 'Per-zone minimum.'),
+      makeOutput('maximums', FLOAT, 'Per-zone maximum.'),
       makeOutput('status.overflow', UINT, '1 when a zone ID exceeded zoneCapacity.')
     ],
     example: makeExample({
@@ -836,7 +845,7 @@ export const entries: CatalogEntry[] = [
     title: 'Raster join',
     summary: 'Approximate point-in-polygon counts and sums by looking points up in a zone raster.',
     explanation:
-      'Use it to aggregate millions of points into zones fast. Only points in boundary cells can differ from an exact join, and the output bounds that error.',
+      'Aggregates millions of points into zones fast. Only points in boundary cells can differ from an exact join, and the output bounds that error.',
     dataTypes: {input: ['points', 'raster'], output: ['table']},
     useCases: ['relate', 'summarize'],
     domains: ['urban', 'data-engineering'],
@@ -897,7 +906,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Exact fraction of each pixel covered by each polygon, as compact (zone, cell, fraction) tuples.',
     explanation:
-      'Use it when zones are small relative to pixels and center sampling would misjudge coverage. Triangles are clipped exactly against pixels; the tuples feed the fractional statistics.',
+      'Best when zones are small relative to pixels and center sampling would misjudge coverage. Triangles are clipped exactly against pixels; the tuples feed the fractional statistics.',
     dataTypes: {input: ['polygons', 'raster'], output: ['table']},
     useCases: ['relate', 'measure'],
     domains: ['remote-sensing', 'cartography'],
@@ -909,14 +918,15 @@ export const entries: CatalogEntry[] = [
         'Polygon fields: positions and three offset views.',
         {required: true}
       ),
-      makeParam('output', 'object', 'zoneIds, cellIds, fractions, status, zoneValidity.', {
+      makeParam('output', '{zoneIds}', 'zoneIds, cellIds, fractions, status, zoneValidity.', {
         required: true
       })
     ],
     outputs: [
-      makeOutput('zoneIds / cellIds', UINT, 'Zone and cell of each tuple.'),
+      makeOutput('zoneIds', UINT, 'Zone of each tuple.'),
+      makeOutput('cellIds', UINT, 'Cell of each tuple.'),
       makeOutput('fractions', FLOAT, 'Covered fraction of the cell, in (0, 1].'),
-      makeOutput('status', 'object', 'count, requiredCount and overflow words.'),
+      makeOutput('status', '{count, overflow}', 'count, requiredCount and overflow words.'),
       makeOutput('zoneValidity', UINT, '1 where the zone triangulated cleanly.')
     ],
     example: makeExample({
@@ -958,7 +968,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Area-weighted zone totals and means that respect partial pixel coverage and missing data.',
     explanation:
-      'Use it after `GPURasterFractionalCoverage` for exact zonal numbers. `quantity` says whether pixel values are totals, intensities or densities.',
+      'Best after `GPURasterFractionalCoverage` for exact zonal numbers. `quantity` says whether pixel values are totals, intensities or densities.',
     dataTypes: {input: ['raster', 'table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['remote-sensing', 'demographics'],
@@ -966,20 +976,26 @@ export const entries: CatalogEntry[] = [
       makeParam('grid', 'GPURasterMetadata', 'Pixel grid.', {required: true}),
       makeParam('input', 'GPURasterBufferBand', 'Band to aggregate.', {required: true}),
       makeParam('zoneCount', 'number', 'Number of zones.', {required: true}),
-      makeParam('coverage', 'object', 'Output tuples of GPURasterFractionalCoverage.', {
-        required: true
-      }),
+      makeParam(
+        'coverage',
+        'Record<string, GraphDataView>',
+        'Output tuples of GPURasterFractionalCoverage.',
+        {
+          required: true
+        }
+      ),
       makeParam('quantity', '"extensive" | "intensive" | "density"', 'Meaning of pixel values.', {
         required: true
       }),
-      makeParam('output', 'object', 'totals, means, coveredArea, validArea, validity.', {
+      makeParam('output', '{totals}', 'totals, means, coveredArea, validArea, validity.', {
         required: true
       })
     ],
     outputs: [
       makeOutput('totals', FLOAT, 'Area-weighted total per zone.'),
       makeOutput('means', FLOAT, 'Area-weighted mean per zone.'),
-      makeOutput('coveredArea / validArea', FLOAT, 'Covered area and area with valid data.'),
+      makeOutput('coveredArea', FLOAT, 'Covered area per zone.'),
+      makeOutput('validArea', FLOAT, 'Area with valid data per zone.'),
       makeOutput('validity', UINT, '1 where the zone has a usable result.')
     ],
     example: makeExample({
@@ -1020,7 +1036,7 @@ export const entries: CatalogEntry[] = [
     title: 'Fractional zonal distribution',
     summary: 'Coverage-weighted mean, variance, effective sample size and quantiles per zone.',
     explanation:
-      'Use it when you need the shape of values inside a zone, not just a mean. `probabilities` selects the quantiles; `observationWeights` adds per-pixel weights.',
+      'Best when you need the shape of values inside a zone, not just a mean. `probabilities` selects the quantiles; `observationWeights` adds per-pixel weights.',
     dataTypes: {input: ['raster', 'table'], output: ['table']},
     useCases: ['summarize', 'measure'],
     domains: ['remote-sensing', 'spatial-statistics'],
@@ -1028,7 +1044,7 @@ export const entries: CatalogEntry[] = [
       makeParam('grid', 'GPURasterMetadata', 'Pixel grid.', {required: true}),
       makeParam('input', 'GPURasterBufferBand', 'Calibrated band to summarize.', {required: true}),
       makeParam('zoneCount', 'number', 'Number of zones.', {required: true}),
-      makeParam('coverage', 'object', 'Output tuples of GPURasterFractionalCoverage.', {
+      makeParam('coverage', '{zoneIds}', 'Output tuples of GPURasterFractionalCoverage.', {
         required: true
       }),
       makeParam('probabilities', FLOAT, 'Quantile probabilities in [0, 1].', {required: true}),
@@ -1040,9 +1056,21 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       makeOutput('means', FLOAT, 'Weighted mean per zone.'),
-      makeOutput('populationVariances / sampleVariances', FLOAT, 'Weighted variances.'),
+      makeOutput('populationVariances', FLOAT, 'Weighted population variance per zone.'),
+      makeOutput('sampleVariances', FLOAT, 'Weighted sample variance per zone.'),
       makeOutput('effectiveSampleSizes', FLOAT, 'Kish effective sample size.'),
-      makeOutput('quantiles / quantileValidity', FLOAT, 'Requested quantiles and their flags.')
+      makeOutput('quantiles', FLOAT, 'Requested quantiles per zone.'),
+      makeOutput('quantileValidity', FLOAT, 'Flag per requested quantile.'),
+      {
+        name: 'weightSums',
+        type: 'GraphDataView<"float32">',
+        description: 'Sum of fractional weights per zone.'
+      },
+      {
+        name: 'squaredWeightSums, coveredArea, validArea, validity, status',
+        type: 'mixed views',
+        description: 'Further result fields; see the reference.'
+      }
     ],
     example: makeExample({
       symbols: ['GPURasterFractionalZonalDistribution'],
@@ -1080,7 +1108,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Area and proportion of each land-cover class per zone, with majority and minority class.',
     explanation:
-      'Use it to answer "how much of this parcel is forest?" from a classified raster. Class areas come from exact pixel coverage and sum in a stable order.',
+      'Answers "how much of this parcel is forest?" from a classified raster. Class areas come from exact pixel coverage and sum in a stable order.',
     dataTypes: {input: ['raster', 'polygons'], output: ['table']},
     useCases: ['summarize'],
     domains: ['ecology', 'remote-sensing', 'urban'],
@@ -1091,18 +1119,26 @@ export const entries: CatalogEntry[] = [
       }),
       makeParam('zoneCount', 'number', 'Number of zones.', {required: true}),
       makeParam('categoryCapacity', 'number', 'Largest category code plus one.', {required: true}),
-      makeParam('coverage', 'object', 'Output tuples of GPURasterFractionalCoverage.', {
+      makeParam('coverage', '{zoneIds}', 'Output tuples of GPURasterFractionalCoverage.', {
         required: true
       }),
-      makeParam('output', 'object', 'Class areas, proportions, majority, minority.', {
+      makeParam('output', '{coverageSums}', 'Class areas, proportions, majority, minority.', {
         required: true
       })
     ],
     outputs: [
       makeOutput('classAreas', FLOAT, 'Area per zone and class.'),
       makeOutput('proportions', FLOAT, 'Share of valid area per zone and class.'),
-      makeOutput('majority / minority', UINT, 'Most and least frequent class per zone.'),
-      makeOutput('coveredArea / validArea / missingArea', FLOAT, 'Area accounting per zone.')
+      makeOutput('majority', UINT, 'Most frequent class per zone.'),
+      makeOutput('minority', UINT, 'Least frequent class per zone.'),
+      makeOutput('coveredArea', FLOAT, 'Covered area per zone.'),
+      makeOutput('validArea', FLOAT, 'Valid-data area per zone.'),
+      makeOutput('missingArea', FLOAT, 'Missing-data area per zone.'),
+      {
+        name: 'coverageSums, validity',
+        type: 'mixed views',
+        description: 'Further result fields; see the reference.'
+      }
     ],
     example: makeExample({
       symbols: ['GPURasterFractionalCategoricalStatistics'],
@@ -1136,7 +1172,7 @@ export const entries: CatalogEntry[] = [
     title: 'Raster sampling',
     summary: 'Extracts raster values at points with nearest, bilinear or bicubic interpolation.',
     explanation:
-      'Use it to attach elevation, temperature or land cover to point features. Method and nodata policy are per-frame parameters.',
+      'Attaches elevation, temperature or land cover to point features. Method and nodata policy are per-frame parameters.',
     dataTypes: {input: ['raster', 'points'], output: ['table']},
     useCases: ['interpolate', 'relate'],
     domains: ['remote-sensing', 'data-engineering'],
@@ -1192,7 +1228,7 @@ export const entries: CatalogEntry[] = [
     title: 'Raster profile',
     summary: 'Elevation profiles: samples a raster along polylines at a per-frame spacing.',
     explanation:
-      'Use it for cross sections, line-of-travel elevation and transect sampling. Spacing is a parameter, so zooming a profile is a buffer write.',
+      'Best for cross sections, line-of-travel elevation and transect sampling. Spacing is a parameter, so zooming a profile is a buffer write.',
     dataTypes: {input: ['raster', 'lines'], output: ['table']},
     useCases: ['measure', 'interpolate'],
     domains: ['hydrology', 'transport', 'three-d'],
@@ -1214,7 +1250,7 @@ export const entries: CatalogEntry[] = [
       makeOutput('sampleValues', FLOAT, 'Raster value at each sample.'),
       makeOutput('sampleDistances', FLOAT, 'Distance along the line (optional).'),
       makeOutput('samplePositions', 'GraphDataView<"float32x2">', 'Sample locations (optional).'),
-      makeOutput('status', 'object', 'Count and overflow words.')
+      makeOutput('status', '{count, overflow}', 'Count and overflow words.')
     ],
     example: makeExample({
       symbols: ['getGPURasterProfileParameterValues', 'GPURasterProfile', 'makeGPURasterMetadata'],
@@ -1251,7 +1287,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Linear, percentile or histogram-equalized stretch with a colormap lookup and statistics.',
     explanation:
-      'Use it to make imagery readable: pick a mode, a domain and a gamma, then get display values and colors. Statistics come from the GPU with integer atomics.',
+      'Makes imagery readable: pick a mode, a domain and a gamma, then get display values and colors. Statistics come from the GPU with integer atomics.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['classify'],
     domains: ['remote-sensing', 'cartography'],
@@ -1268,7 +1304,8 @@ export const entries: CatalogEntry[] = [
     outputs: [
       makeOutput('stretched', FLOAT, 'Stretched value in [0, 1] per cell (optional).'),
       makeOutput('colors', UINT, 'Packed color per cell from the palette (optional).'),
-      makeOutput('histogram / statistics', UINT, 'Histogram counts and summary row (optional).')
+      makeOutput('histogram', UINT, 'Histogram counts.'),
+      makeOutput('statistics', UINT, 'Summary row.')
     ],
     example: makeExample({
       symbols: ['getGPURasterStretchParameterValues', 'GPURasterStretch', 'makeGPURasterMetadata'],
@@ -1320,11 +1357,16 @@ export const entries: CatalogEntry[] = [
         '"ignore" | "propagate"',
         'Skip or propagate nodata in the window.'
       ),
-      makeParam('output', 'object', 'values and validity views.', {required: true})
+      makeParam('output', '{values}', 'values and validity views.', {required: true})
     ],
     outputs: [
       makeOutput('values', FLOAT, 'Filtered value per pixel.'),
-      makeOutput('validity', UINT, '1 where the window had enough valid data.')
+      makeOutput('validity', UINT, '1 where the window had enough valid data.'),
+      {
+        name: 'changed',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: '1 where the filter changed the value.'
+      }
     ],
     example: makeExample({
       symbols: ['GPURasterRankFilter', 'makeGPURasterBand', 'makeGPURasterMetadata'],
@@ -1352,7 +1394,7 @@ export const entries: CatalogEntry[] = [
     title: 'Focal correlation and regression',
     summary: 'Moving-window covariance, correlation and simple regression between two rasters.',
     explanation:
-      'Use it to see where two variables move together locally, such as vegetation versus rainfall. Slope, intercept and R-squared come from an OLS fit in each window.',
+      'Shows where two variables move together locally, such as vegetation versus rainfall. Slope, intercept and R-squared come from an OLS fit in each window.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics', 'remote-sensing', 'ecology'],
@@ -1369,9 +1411,13 @@ export const entries: CatalogEntry[] = [
       })
     ],
     outputs: [
-      makeOutput('pairedCount / status', UINT, 'Valid pairs per window and status word.'),
-      makeOutput('covariance / correlation', FLOAT, 'Local covariance and Pearson r (optional).'),
-      makeOutput('slope / intercept / rSquared', FLOAT, 'Local OLS fit (optional).')
+      makeOutput('pairedCount', UINT, 'Valid pairs per window.'),
+      makeOutput('status', UINT, 'Status word per window.'),
+      makeOutput('covariance', FLOAT, 'Local covariance.'),
+      makeOutput('correlation', FLOAT, 'Local Pearson r.'),
+      makeOutput('slope', FLOAT, 'Local OLS slope.'),
+      makeOutput('intercept', FLOAT, 'Local OLS intercept.'),
+      makeOutput('rSquared', FLOAT, 'Local OLS R squared.')
     ],
     example: makeExample({
       symbols: ['GPURasterFocalPairs', 'makeGPURasterBand', 'makeGPURasterMetadata'],
@@ -1403,7 +1449,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Local gray-level co-occurrence texture: contrast, homogeneity, energy, correlation, entropy.',
     explanation:
-      'Use it to separate surfaces that look alike in value but differ in pattern, such as orchards and forest. Values are quantized to `levels` bins, then paired at `offset` inside a `radius` window.',
+      'Separates surfaces that look alike in value but differ in pattern, such as orchards and forest. Values are quantized to `levels` bins, then paired at `offset` inside a `radius` window.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['find-patterns', 'classify'],
     domains: ['remote-sensing', 'ecology'],
@@ -1462,7 +1508,7 @@ export const entries: CatalogEntry[] = [
     title: 'Morphological reconstruction',
     summary: 'Geodesic dilation or erosion of a marker under a mask, run in bounded GPU rounds.',
     explanation:
-      'Use it to keep only the features that touch your markers, or to flood basins and fill pits. Dilation grows the marker up to the mask; erosion shrinks it down to the mask.',
+      'Keeps only the features that touch your markers, or floods basins and fills pits. Dilation grows the marker up to the mask; erosion shrinks it down to the mask.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform'],
     domains: ['hydrology', 'remote-sensing'],
@@ -1473,7 +1519,7 @@ export const entries: CatalogEntry[] = [
       makeParam('method', '"dilation" | "erosion"', 'Growth direction.'),
       makeParam('connectivity', '4 | 8', 'Neighbor connectivity.'),
       makeParam('maximumIterations', 'number', 'Bounded number of rounds.'),
-      makeParam('output', 'object', 'values, validity and a converged status.', {required: true})
+      makeParam('output', '{values}', 'values, validity and a converged status.', {required: true})
     ],
     outputs: [
       makeOutput('values', FLOAT, 'Reconstructed raster.'),
@@ -1509,7 +1555,7 @@ export const entries: CatalogEntry[] = [
     title: 'Fill holes',
     summary: 'Fills background regions of a binary mask that do not connect to the raster edge.',
     explanation:
-      'Use it to close lakes inside land, gaps inside footprints or voids in classified patches. Background connectivity decides what counts as enclosed.',
+      'Closes lakes inside land, gaps inside footprints or voids in classified patches. Background connectivity decides what counts as enclosed.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform'],
     domains: ['remote-sensing', 'cartography'],
@@ -1518,7 +1564,7 @@ export const entries: CatalogEntry[] = [
       makeParam('input', UINT, 'Binary mask; nonzero is foreground.', {required: true}),
       makeParam('connectivity', '4 | 8', 'Background connectivity.'),
       makeParam('maximumIterations', 'number', 'Bounded number of rounds.'),
-      makeParam('output', 'object', 'values and a converged status.', {required: true})
+      makeParam('output', '{values}', 'values and a converged status.', {required: true})
     ],
     outputs: [
       makeOutput('values', UINT, 'Mask with enclosed holes filled.'),
@@ -1535,7 +1581,7 @@ export const entries: CatalogEntry[] = [
         `output: {values: view('filled', 'uint32', 512 * 512), status: {converged: view('converged', 'uint32', 1)}}`
       ]
     }),
-    preview: {kind: 'classification', seed: 65, caption: 'Enclosed holes fill; open water stays.'},
+    preview: {kind: 'raster', seed: 65, caption: 'Enclosed holes fill; open water stays.'},
     related: ['morphological-reconstruction', 'sieve', 'skeleton'],
     lensScenario: 'gpu-raster.raster-fill-holes',
     reference: 'api/gpu-raster/expansion-lenses',
@@ -1550,7 +1596,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Fills nodata gaps by bounded nearest, inverse-distance or four-quadrant interpolation.',
     explanation:
-      'Use it to patch cloud gaps and sensor dropouts before analysis. `maximumDistance` bounds how far donors are searched, so unresolved cells stay honest.',
+      'Patches cloud gaps and sensor dropouts before analysis. `maximumDistance` bounds how far donors are searched, so unresolved cells stay honest.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['interpolate', 'transform'],
     domains: ['remote-sensing', 'hydrology'],
@@ -1603,7 +1649,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Per-patch area, perimeter and bounding box of a labeled raster, for landscape metrics.',
     explanation:
-      'Use it after connected-component labeling to measure habitat patches, burn scars or lakes. Perimeter is an exact count of exposed pixel faces.',
+      'Best after connected-component labeling to measure habitat patches, burn scars or lakes. Perimeter is an exact count of exposed pixel faces.',
     dataTypes: {input: ['raster'], output: ['table']},
     useCases: ['measure'],
     domains: ['ecology', 'remote-sensing'],
@@ -1636,7 +1682,7 @@ export const entries: CatalogEntry[] = [
         '}'
       ]
     }),
-    preview: {kind: 'classification', seed: 71, caption: 'Each patch gets area and perimeter.'},
+    preview: {kind: 'raster', seed: 71, caption: 'Each patch gets area and perimeter.'},
     related: ['sieve', 'region-adjacency-graph', 'fractional-category-composition'],
     lensScenario: 'gpu-raster.raster-patch-metrics',
     reference: 'api/gpu-raster/raster-patches',
@@ -1650,7 +1696,7 @@ export const entries: CatalogEntry[] = [
     title: 'Sieve',
     summary: 'Removes or merges patches smaller than a pixel threshold, like gdal_sieve.',
     explanation:
-      'Use it to clean speckle from a classification. `remove` zeroes small patches; `merge` gives them to their largest neighbor.',
+      'Cleans speckle from a classification. `remove` zeroes small patches; `merge` gives them to their largest neighbor.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform', 'classify'],
     domains: ['remote-sensing', 'ecology', 'cartography'],
@@ -1689,7 +1735,7 @@ export const entries: CatalogEntry[] = [
       ]
     }),
     preview: {
-      kind: 'classification',
+      kind: 'raster',
       seed: 72,
       caption: 'Small patches vanish into their neighbors.'
     },
@@ -1706,7 +1752,7 @@ export const entries: CatalogEntry[] = [
     title: 'Skeleton',
     summary: 'Thins a binary mask to a one-pixel centerline with Zhang-Suen thinning.',
     explanation:
-      'Use it to extract road, river or crack centerlines from a mask. Iteration is bounded, and `status.converged` tells you whether it finished.',
+      'Extracts road, river or crack centerlines from a mask. Iteration is bounded, and `status.converged` tells you whether it finished.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform', 'measure'],
     domains: ['hydrology', 'transport', 'cartography'],
@@ -1714,7 +1760,7 @@ export const entries: CatalogEntry[] = [
       makeParam('grid', 'GPURasterMetadata', 'Grid of the mask.', {required: true}),
       makeParam('input', UINT, 'Binary mask; nonzero is foreground.', {required: true}),
       makeParam('maximumIterations', 'number', 'Bounded number of thinning rounds.'),
-      makeParam('output', 'object', 'skeleton and a converged status.', {required: true})
+      makeParam('output', '{skeleton}', 'skeleton and a converged status.', {required: true})
     ],
     outputs: [
       makeOutput('skeleton', UINT, 'One-pixel-wide centerline mask.'),
@@ -1745,14 +1791,16 @@ export const entries: CatalogEntry[] = [
     title: 'Medial axis',
     summary: 'Centers and Euclidean radii of the largest disks that fit inside a binary mask.',
     explanation:
-      'Use it to measure local width: river channels, corridors, road gaps. The radius at each axis pixel is the half-width in pixels.',
+      'Measures local width: river channels, corridors, road gaps. The radius at each axis pixel is the half-width in pixels.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['measure'],
     domains: ['hydrology', 'ecology', 'urban'],
     params: [
       makeParam('grid', 'GPURasterMetadata', 'Grid of the mask.', {required: true}),
       makeParam('input', UINT, 'Binary mask; nonzero is foreground.', {required: true}),
-      makeParam('output', 'object', 'medialAxis, radius and a status.', {required: true})
+      makeParam('output', '{medialAxis}', 'Caller-owned medialAxis and radius views.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('medialAxis', UINT, '1 at disk centers.'),
@@ -1760,15 +1808,14 @@ export const entries: CatalogEntry[] = [
     ],
     example: makeExample({
       symbols: ['GPURasterMedialAxis', 'makeGPURasterMetadata'],
-      setup: [GRID_LINE, '// `mask` is a uint32 graph view; `status` is the output status bag.'],
+      setup: [GRID_LINE, '// `mask` is a uint32 graph view.'],
       constructorSymbol: 'GPURasterMedialAxis',
       props: [
         'grid,',
         'input: mask,',
         'output: {',
         `  medialAxis: view('axis', 'uint32', 512 * 512),`,
-        `  radius: view('radius', 'float32', 512 * 512),`,
-        '  status',
+        `  radius: view('radius', 'float32', 512 * 512)`,
         '}'
       ]
     }),
@@ -1786,7 +1833,7 @@ export const entries: CatalogEntry[] = [
     title: 'Region adjacency graph',
     summary: 'Builds four-neighbor region adjacency and merges similar regions by mean difference.',
     explanation:
-      'Use it to turn over-segmented imagery into coherent objects. Fixed or adaptive thresholds merge neighbors in bounded rounds.',
+      'Turns over-segmented imagery into coherent objects. Fixed or adaptive thresholds merge neighbors in bounded rounds.',
     dataTypes: {input: ['raster'], output: ['network']},
     useCases: ['find-patterns', 'classify'],
     domains: ['remote-sensing', 'ecology'],
@@ -1798,7 +1845,7 @@ export const entries: CatalogEntry[] = [
       makeParam('mergeMode', '"fixed" | "adaptive"', 'Threshold rule for merging.'),
       makeParam('mergeThreshold', 'number', 'Mean-difference threshold.', {required: true}),
       makeParam('maximumIterations', 'number', 'Bounded merge rounds.', {required: true}),
-      makeParam('output', 'object', 'adjacency, weights, mapping, status.', {required: true})
+      makeParam('output', '{adjacency}', 'adjacency, weights, mapping, status.', {required: true})
     ],
     outputs: [
       makeOutput('adjacency', UINT, 'Region pairs that touch.'),
@@ -1838,7 +1885,7 @@ export const entries: CatalogEntry[] = [
     title: 'Watershed segmentation',
     summary: 'Marker-controlled segmentation that floods a surface outward from seed labels.',
     explanation:
-      'Use it to split touching objects such as crowns, cells or catchments. Each seed grows through the lowest-cost route; `method` picks FIFO flooding or a minimum-spanning forest.',
+      'Splits touching objects such as crowns, cells or catchments. Each seed grows through the lowest-cost route; `method` picks FIFO flooding or a minimum-spanning forest.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['classify', 'find-patterns'],
     domains: ['hydrology', 'remote-sensing', 'ecology'],
@@ -1855,7 +1902,7 @@ export const entries: CatalogEntry[] = [
       makeParam('method', '"fifo" | "minimum-spanning-forest"', 'Flooding semantics.'),
       makeParam('maximumSteps', 'number', 'Bounded flood steps.'),
       makeParam('maximumIterations', 'number', 'Bounded outer rounds.'),
-      makeParam('output', 'object', 'labels and a converged status.', {required: true})
+      makeParam('output', '{labels}', 'labels and a converged status.', {required: true})
     ],
     outputs: [
       makeOutput('labels', UINT, 'Segment label per pixel.'),
@@ -1893,7 +1940,7 @@ export const entries: CatalogEntry[] = [
     title: 'Extrema pyramid',
     summary: 'Min/max mipmap of a raster band for fast range queries, peaks and culling.',
     explanation:
-      'Use it to ask "what is the highest cell in this region?" in a few lookups. Each level stores the exact minimum and maximum of a block, doubling in size per level.',
+      'Answers "what is the highest cell in this region?" in a few lookups. Each level stores the exact minimum and maximum of a block, doubling in size per level.',
     dataTypes: {input: ['raster', 'terrain'], output: ['raster']},
     useCases: ['index', 'summarize'],
     domains: ['hydrology', 'three-d'],
@@ -1946,7 +1993,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Least-cost travel over terrain with a slope-aware walking model and surface friction.',
     explanation:
-      'Use it for hiking time, emergency access and wildlife movement. The model is Tobler or a GRASS-style energy model; costs relax to a fixpoint from the source cells.',
+      'Best for hiking time, emergency access and wildlife movement. The model is Tobler or a GRASS-style energy model; costs relax to a fixpoint from the source cells.',
     dataTypes: {input: ['terrain', 'raster'], output: ['raster']},
     useCases: ['route', 'simulate'],
     domains: ['hydrology', 'ecology', 'transport'],
@@ -1962,7 +2009,7 @@ export const entries: CatalogEntry[] = [
         'Energy model.'
       ),
       makeParam('maximumIterations', 'number', 'Bounded relaxation rounds.'),
-      makeParam('output', 'object', 'costs, validity and a converged status.', {required: true})
+      makeParam('output', '{costs}', 'costs, validity and a converged status.', {required: true})
     ],
     outputs: [
       makeOutput('costs', FLOAT, 'Accumulated cost from the nearest source.'),
@@ -2004,7 +2051,7 @@ export const entries: CatalogEntry[] = [
     title: 'Raster reprojection',
     summary: 'Resamples a band onto another grid, pulling each destination pixel from the source.',
     explanation:
-      'Use it to align rasters on a common grid or projection before combining them. Nearest keeps categories; bilinear smooths measurements; `renormalize` handles partial nodata.',
+      'Aligns rasters on a common grid or projection before combining them. Nearest keeps categories; bilinear smooths measurements; `renormalize` handles partial nodata.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform'],
     domains: ['remote-sensing', 'cartography'],
@@ -2019,7 +2066,7 @@ export const entries: CatalogEntry[] = [
       ),
       makeParam('method', '"nearest" | "bilinear"', 'Resampling kernel.'),
       makeParam('noDataPolicy', '"strict" | "renormalize"', 'How nodata neighbors are handled.'),
-      makeParam('output', 'object', 'values and validity on the destination grid.', {
+      makeParam('output', '{values}', 'values and validity on the destination grid.', {
         required: true
       })
     ],
@@ -2058,7 +2105,7 @@ export const entries: CatalogEntry[] = [
     title: 'Tile mosaic reprojection',
     summary: 'Assembles source tiles into a mosaic on the GPU, then reprojects it in one pass.',
     explanation:
-      'Use it for tiled imagery such as COGs and map tiles. Each tile carries its pixel bounds, so halos and partial tiles need no CPU stitching.',
+      'Best for tiled imagery such as COGs and map tiles. Each tile carries its pixel bounds, so halos and partial tiles need no CPU stitching.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform'],
     domains: ['remote-sensing', 'cartography', 'data-engineering'],
@@ -2078,7 +2125,7 @@ export const entries: CatalogEntry[] = [
       ),
       makeParam('method', '"nearest" | "bilinear"', 'Resampling kernel.'),
       makeParam('noDataPolicy', '"strict" | "renormalize"', 'How nodata neighbors are handled.'),
-      makeParam('output', 'object', 'values and validity on the destination grid.', {
+      makeParam('output', '{values}', 'values and validity on the destination grid.', {
         required: true
       })
     ],
@@ -2116,7 +2163,7 @@ export const entries: CatalogEntry[] = [
     title: 'Conservative remapping',
     summary: 'Regrids values by exact rectangle overlap, so totals are preserved.',
     explanation:
-      'Use it to move counts, mass or area-weighted values between grids, such as population onto a coarser mesh. `normalization` chooses totals, density or covered-area mean; weights can be prepared once and reused.',
+      'Moves counts, mass or area-weighted values between grids, such as population onto a coarser mesh. `normalization` chooses totals, density or covered-area mean; weights can be prepared once and reused.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['transform', 'summarize'],
     domains: ['remote-sensing', 'demographics'],
@@ -2135,7 +2182,7 @@ export const entries: CatalogEntry[] = [
       ),
       makeParam('weightMode', '"prepare" | "reuse"', 'Build or reuse overlap weights.'),
       makeParam('preparedWeights', '{indices, areas}', 'Caller-owned weights to retain.'),
-      makeParam('output', 'object', 'values, coveredArea and status.', {required: true})
+      makeParam('output', '{values}', 'values, coveredArea and status.', {required: true})
     ],
     outputs: [
       makeOutput('values', FLOAT, 'Remapped value per destination cell.'),
@@ -2186,7 +2233,7 @@ export const entries: CatalogEntry[] = [
       makeParam('maximumShift', 'readonly [number, number]', 'Largest shift searched, in pixels.'),
       makeParam('upsampleFactor', 'number', 'Sub-pixel refinement factor.'),
       makeParam('minimumCorrelation', 'number', 'Reject peaks weaker than this.'),
-      makeParam('output', 'object', 'shift, peak, status and optional overlap.', {required: true})
+      makeParam('output', '{shift}', 'shift, peak, status and optional overlap.', {required: true})
     ],
     outputs: [
       makeOutput(
@@ -2224,7 +2271,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Solves each pixel as a mix of endmember spectra, with optional non-negative or simplex limits.',
     explanation:
-      'Use it to estimate sub-pixel fractions of vegetation, soil and water. Up to 256 bands and 8 endmembers; the residual shows how well the mix fits.',
+      'Estimates sub-pixel fractions of vegetation, soil and water. Up to 256 bands and 8 endmembers; the residual shows how well the mix fits.',
     dataTypes: {input: ['raster'], output: ['raster']},
     useCases: ['model', 'classify'],
     domains: ['remote-sensing', 'ecology'],
@@ -2240,14 +2287,15 @@ export const entries: CatalogEntry[] = [
         'Abundance constraint.'
       ),
       makeParam('validity', UINT, 'Per-pixel validity flags.'),
-      makeParam('output', 'object', 'abundances, residual, status, iterationCounts.', {
+      makeParam('output', '{abundances}', 'abundances, residual, status, iterationCounts.', {
         required: true
       })
     ],
     outputs: [
       makeOutput('abundances', FLOAT, 'Fraction of each endmember per pixel.'),
       makeOutput('residual', FLOAT, 'Fit error per pixel.'),
-      makeOutput('status / iterationCounts', UINT, 'Solver status and iterations used.')
+      makeOutput('status', UINT, 'Solver status per cell.'),
+      makeOutput('iterationCounts', UINT, 'Iterations used per cell.')
     ],
     example: makeExample({
       symbols: ['GPURasterSpectralUnmixing'],
@@ -2266,7 +2314,7 @@ export const entries: CatalogEntry[] = [
         '}'
       ]
     }),
-    preview: {kind: 'histogram', seed: 95, caption: 'Each pixel splits into endmember fractions.'},
+    preview: {kind: 'raster', seed: 95, caption: 'Each pixel splits into endmember fractions.'},
     related: ['soil-adjusted-vegetation-index', 'glcm-texture', 'temporal-composite'],
     lensScenario: 'gpu-raster.raster-spectral-unmixing',
     reference: 'api/gpu-raster/remote-sensing',
@@ -2283,7 +2331,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Per-cell change between dates: difference, log ratio, t-test, Theil-Sen slope and Mann-Kendall trend.',
     explanation:
-      'Use it to find where a landscape changed and whether the change is significant. Request outputs for two-slice comparison, group tests or trends; multiband stacks give change magnitude and direction.',
+      'Finds where a landscape changed and whether the change is significant. Request outputs for two-slice comparison, group tests or trends; multiband stacks give change magnitude and direction.',
     dataTypes: {input: ['raster', 'time-series'], output: ['raster']},
     useCases: ['detect-change'],
     domains: ['remote-sensing', 'ecology'],
@@ -2304,9 +2352,13 @@ export const entries: CatalogEntry[] = [
       makeParam('output', 'GPUChangeDetectionOutput', 'Requested change layers.', {required: true})
     ],
     outputs: [
-      makeOutput('difference / logRatio / percentChange', FLOAT, 'Two-slice change measures.'),
-      makeOutput('tStatistic / tPValue', FLOAT, 'Welch test between before and after groups.'),
-      makeOutput('senSlope / mannKendallZ', FLOAT, 'Trend magnitude and significance.'),
+      makeOutput('difference', FLOAT, 'After minus before.'),
+      makeOutput('logRatio', FLOAT, 'Log ratio of after to before.'),
+      makeOutput('percentChange', FLOAT, 'Percent change from before.'),
+      makeOutput('tStatistic', FLOAT, 'Welch t statistic between groups.'),
+      makeOutput('tPValue', FLOAT, 'Welch test p-value.'),
+      makeOutput('senSlope', FLOAT, 'Sen slope per cell.'),
+      makeOutput('mannKendallZ', FLOAT, 'Mann-Kendall z per cell.'),
       makeOutput('significance', UINT, '0 none, 1 significant increase, 2 decrease.')
     ],
     example: makeExample({
@@ -2360,7 +2412,8 @@ export const entries: CatalogEntry[] = [
     outputs: [
       makeOutput('breakIndex', UINT, 'Slice of the detected break per cell.'),
       makeOutput('improvement', FLOAT, 'BIC improvement from adding the break.'),
-      makeOutput('coefficients / components', FLOAT, 'Fitted model terms per cell.'),
+      makeOutput('coefficients', FLOAT, 'Fitted coefficients per cell.'),
+      makeOutput('components', FLOAT, 'Model components per cell.'),
       makeOutput('status', UINT, '0 fit, 1 insufficient support, 2 rank failure.')
     ],
     example: makeExample({
@@ -2390,7 +2443,7 @@ export const entries: CatalogEntry[] = [
     title: 'Temporal composite',
     summary: 'Per-cell mean, median, minimum, maximum or Savitzky-Golay smoothing over time.',
     explanation:
-      'Use it to build cloud-free composites or to smooth noisy index series. Composites write one row per cell; smoothing writes one per cell and slice.',
+      'Builds cloud-free composites or to smooth noisy index series. Composites write one row per cell; smoothing writes one per cell and slice.',
     dataTypes: {input: ['raster', 'time-series'], output: ['raster']},
     useCases: ['summarize', 'transform'],
     domains: ['remote-sensing', 'ecology'],
@@ -2407,7 +2460,7 @@ export const entries: CatalogEntry[] = [
       ),
       makeParam('windowLength', 'number', 'Savitzky-Golay window, odd 3 to 15.'),
       makeParam('polynomialOrder', 'number', 'Savitzky-Golay polynomial order.'),
-      makeParam('output', 'object', 'values, counts, chosenSlice, status.', {required: true})
+      makeParam('output', '{values}', 'values, counts, chosenSlice, status.', {required: true})
     ],
     outputs: [
       makeOutput('values', FLOAT, 'Composite or smoothed values.'),

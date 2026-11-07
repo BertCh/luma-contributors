@@ -79,7 +79,7 @@ export const entries: CatalogEntry[] = [
     title: 'Geometry measures',
     summary: 'Length, area, centroid, bounds and vertex count of every line or polygon at once.',
     explanation:
-      'Use it to size, rank or filter features without leaving the GPU. Polygon area is shell minus holes, never negative. Planar, spherical and ellipsoidal metrics come from `spatialContext`.',
+      'Sizes, ranks or filters features without leaving the GPU. Polygon area is shell minus holes, never negative. Planar, spherical and ellipsoidal metrics come from `spatialContext`.',
     dataTypes: {input: ['lines', 'polygons'], output: ['table']},
     useCases: ['measure'],
     domains: ['cartography', 'urban'],
@@ -116,7 +116,7 @@ export const entries: CatalogEntry[] = [
     ]),
     preview: {
       kind: 'polygons',
-      seed: 11,
+      seed: 4201,
       caption: 'Area and perimeter of each parcel, in one dispatch.'
     },
     related: ['shape-descriptors', 'label-point', 'minimum-bounds'],
@@ -132,7 +132,7 @@ export const entries: CatalogEntry[] = [
     title: 'Shape descriptors',
     summary: 'Compactness, convexity, elongation, orientation and sliver flags for every polygon.',
     explanation:
-      'Use it to tell compact districts from slivers and sprawl. Polsby-Popper and Schwartzberg score roundness; convexity compares area to the convex hull. A sliver threshold is a per-frame parameter.',
+      'Separates compact districts from slivers and sprawl. Polsby-Popper and Schwartzberg score roundness; convexity compares area to the convex hull. A sliver threshold is a per-frame parameter.',
     dataTypes: {input: ['polygons'], output: ['table']},
     useCases: ['measure'],
     domains: ['cartography', 'urban'],
@@ -173,7 +173,7 @@ export const entries: CatalogEntry[] = [
       'parameters, // getGPUShapeDescriptorsParameterValues({sliverThreshold: 0.1})',
       'output: {polsbyPopper, convexity, elongation, sliver}'
     ]),
-    preview: {kind: 'polygons', seed: 12, caption: 'Round, convex and sliver shapes, scored.'},
+    preview: {kind: 'polygons', seed: 4202, caption: 'Round, convex and sliver shapes, scored.'},
     related: ['geometry-measures', 'minimum-bounds', 'maximum-inscribed-circle'],
     lensScenario: 'gpu-spatial-analysis.shape-descriptors',
     reference: 'api/gpu-spatial-analysis',
@@ -188,7 +188,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'The pole of inaccessibility of each polygon: the interior point farthest from its edge.',
     explanation:
-      'Use it to anchor labels and pins inside awkward shapes where the centroid falls outside. A coarse grid finds the best cells, then refinement rounds sharpen the answer.',
+      'Anchors labels and pins inside awkward shapes where the centroid falls outside. A coarse grid finds the best cells, then refinement rounds sharpen the answer.',
     dataTypes: {input: ['polygons'], output: ['points']},
     useCases: ['measure', 'classify'],
     domains: ['cartography'],
@@ -226,7 +226,7 @@ export const entries: CatalogEntry[] = [
     ]),
     preview: {
       kind: 'polygons',
-      seed: 13,
+      seed: 4203,
       caption: 'Each label sits at the widest part of its shape.'
     },
     related: ['maximum-inscribed-circle', 'geometry-measures'],
@@ -243,7 +243,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'The largest circle that fits inside each polygon, with its radius and touching points.',
     explanation:
-      'Use it for guaranteed-fit placement and tight label anchors. A best-first quadtree search runs over all rings under even-odd fill and stops at `tolerance`.',
+      'Best for guaranteed-fit placement and tight label anchors. A best-first quadtree search runs over all rings under even-odd fill and stops at `tolerance`.',
     dataTypes: {input: ['polygons'], output: ['points', 'table']},
     useCases: ['measure'],
     domains: ['cartography', 'urban'],
@@ -261,12 +261,7 @@ export const entries: CatalogEntry[] = [
       makeParam('maximumIterations', 'number | undefined', 'Cell splits per feature.', {
         default: '1024'
       }),
-      makeParam(
-        'output',
-        '{ circles: GraphDataView<"float32x4">; witnesses: GraphDataView<"float32x4">; ... }',
-        'Caller-owned circle outputs.',
-        {required: true}
-      )
+      makeParam('output', '{circles, witnesses}', 'Caller-owned circle outputs.', {required: true})
     ],
     outputs: [
       makeOutput('circles', 'GraphDataView<"float32x4">', 'Center and radius per polygon.'),
@@ -274,14 +269,15 @@ export const entries: CatalogEntry[] = [
         'witnesses',
         'GraphDataView<"float32x4">',
         'Boundary points that touch the circle.'
-      )
+      ),
+      makeOutput('status', "GraphDataView<'uint32'>", 'Per-feature search status code.')
     ],
     example: makeExample('GPUMaximumInscribedCircle', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
       'tolerance: 0.5,',
       'output: {circles, witnesses, status}'
     ]),
-    preview: {kind: 'polygons', seed: 14, caption: 'The biggest circle that still fits.'},
+    preview: {kind: 'polygons', seed: 4204, caption: 'The biggest circle that still fits.'},
     related: ['label-point', 'minimum-clearance', 'shape-descriptors'],
     lensScenario: 'gpu-spatial-analysis.maximum-inscribed-circle',
     reference: 'api/gpu-geometry-refinement',
@@ -296,7 +292,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Minimum rotated rectangle, bounding circle and longest line of each feature or group.',
     explanation:
-      'Use it for oriented footprints, enclosing circles and feature extent. It builds a convex hull per group, then rotating calipers find the tightest shapes.',
+      'Best for oriented footprints, enclosing circles and feature extent. It builds a convex hull per group, then rotating calipers find the tightest shapes.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['polygons', 'table']},
     useCases: ['measure'],
     domains: ['cartography', 'urban'],
@@ -326,13 +322,14 @@ export const entries: CatalogEntry[] = [
       ),
       makeOutput('circles', 'GraphDataView<"float32x3">', 'Minimum bounding circle: x, y, radius.'),
       makeOutput('longestLines', 'GraphDataView<"float32x4">', 'Diameter segment endpoints.'),
-      makeOutput('diameters', 'GraphDataView<"float32">', 'Length of the longest line.')
+      makeOutput('diameters', 'GraphDataView<"float32">', 'Length of the longest line.'),
+      makeOutput('status', '{overflow}', 'Nonzero when the hull vertex cap was exceeded.')
     ],
     example: makeExample('GPUMinimumBounds', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
       'output: {rectangleCorners, circles, diameters, status}'
     ]),
-    preview: {kind: 'polygons', seed: 15, caption: 'Tightest rotated box around each shape.'},
+    preview: {kind: 'polygons', seed: 4205, caption: 'Tightest rotated box around each shape.'},
     related: ['geometry-measures', 'shape-descriptors', 'ratio-concave-hull'],
     lensScenario: 'gpu-spatial-analysis.minimum-bounds',
     reference: 'api/gpu-spatial-analysis',
@@ -347,7 +344,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'How far each feature can be perturbed before it becomes invalid, with the witness line.',
     explanation:
-      'Use it to find fragile geometry before simplifying or rounding. It is the smallest distance between a vertex and a nonadjacent edge, found with a BVH over segments.',
+      'Finds fragile geometry before simplifying or rounding. It is the smallest distance between a vertex and a nonadjacent edge, found with a BVH over segments.',
     dataTypes: {input: ['lines', 'polygons'], output: ['table', 'lines']},
     useCases: ['measure'],
     domains: ['cartography', 'data-engineering'],
@@ -370,7 +367,7 @@ export const entries: CatalogEntry[] = [
       'geometry, // line or polygon rows in the GeoArrow layout',
       'output: {clearances, lines}'
     ]),
-    preview: {kind: 'lines', seed: 16, caption: 'The thinnest gap in each shape.'},
+    preview: {kind: 'lines', seed: 4206, caption: 'The thinnest gap in each shape.'},
     related: ['geometry-validity', 'maximum-inscribed-circle', 'polygon-precision-reduction'],
     lensScenario: 'gpu-spatial-analysis.minimum-clearance',
     reference: 'api/gpu-spatial-analysis',
@@ -385,7 +382,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Per-feature is-simple, is-ring, is-closed and winding flags plus coordinate and part counts.',
     explanation:
-      'Use it to profile a layer before analysis: which lines self-cross, which rings are closed, how many parts. Give it a second geometry for element-wise `equalsExact`.',
+      'Profiles a layer before analysis: which lines self-cross, which rings are closed, how many parts. Give it a second geometry for element-wise `equalsExact`.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table']},
     useCases: ['relate', 'measure'],
     domains: ['data-engineering', 'cartography'],
@@ -430,7 +427,7 @@ export const entries: CatalogEntry[] = [
     ]),
     preview: {
       kind: 'lines',
-      seed: 17,
+      seed: 4207,
       caption: 'Simple lines pass; self-crossing lines are flagged.'
     },
     related: ['geometry-validity', 'segment-intersection'],
@@ -446,7 +443,7 @@ export const entries: CatalogEntry[] = [
     title: 'Geometry validity',
     summary: 'A validity bitmask per feature: self-intersections, bad rings, holes outside shells.',
     explanation:
-      'Use it as the gate before overlay, buffering or joins, the GPU analog of `ST_IsValidReason`. Each bit names one failure so you can count, filter or route to repair.',
+      'The gate before overlay, buffering or joins, the GPU analog of `ST_IsValidReason`. Each bit names one failure so you can count, filter or route to repair.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table']},
     useCases: ['relate', 'transform'],
     domains: ['data-engineering', 'cartography'],
@@ -487,7 +484,7 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       makeOutput('mask', 'GraphDataView<"uint32">', 'Bitmask per feature; 0 is valid.'),
-      makeOutput('status', 'object', 'Overflow and uncertainty counters.')
+      makeOutput('status', '{count, overflow}', 'Overflow and uncertainty counters.')
     ],
     example: makeExample('GPUGeometryValidity', [
       "polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},",
@@ -495,7 +492,7 @@ export const entries: CatalogEntry[] = [
     ]),
     preview: {
       kind: 'polygon-overlay',
-      seed: 18,
+      seed: 4208,
       caption: 'Bow-ties and overlaps light up as invalid.'
     },
     related: ['make-valid', 'geometry-predicates', 'polygonize'],
@@ -509,9 +506,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Make valid',
-    summary: 'Rebuild valid polygons from invalid boundaries, one source feature at a time.',
+    summary: 'Rebuilds valid polygons from invalid boundaries, one source feature at a time.',
     explanation:
-      'Use it to repair bow-ties and overlapping rings before overlay. It nodes every boundary exactly, then polygonizes the bounded faces under even-odd fill.',
+      'Repairs bow-ties and overlapping rings before overlay. It nodes every boundary exactly, then polygonizes the bounded faces under even-odd fill.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'data-engineering'],
@@ -541,9 +538,19 @@ export const entries: CatalogEntry[] = [
       makeParam('leafCapacity', 'number | undefined', 'Power-of-two BVH leaf slots.')
     ],
     outputs: [
-      makeOutput('polygons', 'GPUPolygonGeometryPort', 'Repaired polygons with source ids.'),
-      makeOutput('nodedSegments', 'GPUNodedSegmentPort', 'Atomic segments with provenance.'),
-      makeOutput('status', 'GPUTopologyStatusPort', 'Capacity and uncertainty counters.')
+      makeOutput('nodedSegments', 'GPUNodedSegmentPort', 'Noded input segments.'),
+      makeOutput(
+        'directedEdges',
+        'GPUDirectedEdgePort',
+        'Directed half-edges built from the noded segments.'
+      ),
+      makeOutput('polygons', 'GPUPolygonGeometryPort', 'Repaired valid polygons.'),
+      makeOutput(
+        'diagnostics',
+        'GPUPolygonizeDiagnosticsPort',
+        'Counts of dangles, cuts and invalid rings.'
+      ),
+      makeOutput('status', 'GPUTopologyStatusPort', 'Capacity and completeness flags.')
     ],
     example: makeExample('GPUMakeValid', [
       "polygons: {kind: 'polygons', featureOffsets, polygonOffsets, ringOffsets, positions},",
@@ -551,7 +558,11 @@ export const entries: CatalogEntry[] = [
       `precision: {vertexTolerance: 1e-6, predicates: 'exact-or-uncertain', storage: 'float32'},`,
       'output // nodedSegments, directedEdges, polygons, diagnostics, status'
     ]),
-    preview: {kind: 'polygon-overlay', seed: 19, caption: 'A bow-tie becomes two valid triangles.'},
+    preview: {
+      kind: 'polygon-overlay',
+      seed: 4209,
+      caption: 'A bow-tie becomes two valid triangles.'
+    },
     related: ['geometry-validity', 'polygonize', 'line-noding'],
     lensScenario: 'gpu-spatial-analysis.make-valid',
     reference: 'api/gpu-spatial-analysis',
@@ -563,7 +574,7 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Polygonize',
-    summary: 'Turn arbitrary planar linework into bounded polygons.',
+    summary: 'Turns arbitrary planar linework into bounded polygons.',
     explanation:
       'Use it to build areas from street, boundary or cut lines. Lines are noded exactly, linked into half-edges, and every bounded face becomes a polygon.',
     dataTypes: {input: ['lines'], output: ['polygons']},
@@ -604,9 +615,19 @@ export const entries: CatalogEntry[] = [
       )
     ],
     outputs: [
-      makeOutput('polygons', 'GPUPolygonGeometryPort', 'Bounded faces with source ids.'),
-      makeOutput('directedEdges', 'GPUDirectedEdgePort', 'Half-edge topology with twins.'),
-      makeOutput('diagnostics', 'GPUPolygonizeDiagnosticsPort', 'Dangles and cut edges.')
+      makeOutput('nodedSegments', 'GPUNodedSegmentPort', 'Noded input segments.'),
+      makeOutput(
+        'directedEdges',
+        'GPUDirectedEdgePort',
+        'Directed half-edges built from the noded segments.'
+      ),
+      makeOutput('polygons', 'GPUPolygonGeometryPort', 'Polygons assembled from closed rings.'),
+      makeOutput(
+        'diagnostics',
+        'GPUPolygonizeDiagnosticsPort',
+        'Counts of dangles, cuts and invalid rings.'
+      ),
+      makeOutput('status', 'GPUTopologyStatusPort', 'Capacity and completeness flags.')
     ],
     example: makeExample('GPUPolygonize', [
       "lines: {kind: 'lines', positions, lineOffsets},",
@@ -614,7 +635,7 @@ export const entries: CatalogEntry[] = [
       `precision: {vertexTolerance: 1e-6, predicates: 'exact-or-uncertain', storage: 'float32'},`,
       'output // nodedSegments, directedEdges, polygons, diagnostics, status'
     ]),
-    preview: {kind: 'polygon-overlay', seed: 20, caption: 'Crossing lines enclose faces.'},
+    preview: {kind: 'polygon-overlay', seed: 4210, caption: 'Crossing lines enclose faces.'},
     related: ['line-noding', 'make-valid', 'segment-intersection'],
     lensScenario: 'gpu-spatial-analysis.polygonize',
     reference: 'api/gpu-spatial-analysis',
@@ -626,9 +647,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Line noding',
-    summary: 'Split planar linework at every crossing into atomic segments with provenance.',
+    summary: 'Splits planar linework at every crossing into atomic segments with provenance.',
     explanation:
-      'Use it as the first step of any topology build. Exact intersection events cut each line, and every output row remembers its source feature, ring and edge.',
+      'The first step of any topology build. Exact intersection events cut each line, and every output row remembers its source feature, ring and edge.',
     dataTypes: {input: ['lines'], output: ['lines']},
     useCases: ['transform', 'relate'],
     domains: ['cartography', 'transport'],
@@ -649,14 +670,25 @@ export const entries: CatalogEntry[] = [
       makeOutput('endpoints', 'GraphDataView<"float32x4">', 'Segment endpoints x0, y0, x1, y1.'),
       makeOutput('sourceFeatureIds', 'GraphDataView<"uint32">', 'Source feature per segment.'),
       makeOutput('sourceEdgeIds', 'GraphDataView<"uint32">', 'Source edge per segment.'),
-      makeOutput('status', 'GPUTopologyStatusPort', 'Capacity and overflow counters.')
+      makeOutput('status', 'GPUTopologyStatusPort', 'Capacity and overflow counters.'),
+      makeOutput('sourceRingIds', "GraphDataView<'uint32'>", 'Source ring of each noded segment.'),
+      makeOutput(
+        'sourceStartParameters',
+        "GraphDataView<'float32'>",
+        'Start parameter along the source edge, 0 to 1.'
+      ),
+      makeOutput(
+        'sourceEndParameters',
+        "GraphDataView<'float32'>",
+        'End parameter along the source edge, 0 to 1.'
+      )
     ],
     example: makeExample('GPULineNoding', [
       "lines: {kind: 'lines', positions, lineOffsets},",
       'intersectionCapacity: 4096,',
-      'output // endpoints, sourceFeatureIds, sourceEdgeIds, status'
+      'output // endpoints, sourceFeatureIds, sourceRingIds, sourceEdgeIds, status'
     ]),
-    preview: {kind: 'network', seed: 21, caption: 'Every crossing becomes a node.'},
+    preview: {kind: 'network', seed: 4211, caption: 'Every crossing becomes a node.'},
     related: ['polygonize', 'segment-intersection', 'line-loop-removal'],
     lensScenario: 'gpu-spatial-analysis.line-noding',
     reference: 'api/gpu-spatial-analysis',
@@ -668,9 +700,10 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Segment intersection',
-    summary: 'Every intersecting pair of line segments between two geometries, or within one.',
+    summary:
+      'Finds every intersecting pair of line segments, between two geometries or within one.',
     explanation:
-      'Use it to find crossings, overlaps and touch points exactly. A BVH over one side prunes pairs; predicates are exact with an explicit uncertain count.',
+      'Finds crossings, overlaps and touch points exactly. A BVH over one side prunes pairs; predicates are exact with an explicit uncertain count.',
     dataTypes: {input: ['lines', 'polygons'], output: ['table', 'points']},
     useCases: ['relate'],
     domains: ['cartography', 'transport'],
@@ -690,14 +723,40 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       makeOutput('pairs', 'GPUSegmentIntersectionPairs', 'Left and right segment ids per hit.'),
-      makeOutput('status', 'object', 'Count, overflow and uncertain counters.')
+      makeOutput('status', '{count, overflow}', 'Count, overflow and uncertain counters.'),
+      makeOutput('kinds', "GraphDataView<'uint32'> | undefined", 'Intersection kind per pair.'),
+      makeOutput(
+        'points',
+        "GraphDataView<'float32x2'> | undefined",
+        'Intersection point, or start of an overlap.'
+      ),
+      makeOutput(
+        'endPoints',
+        "GraphDataView<'float32x2'> | undefined",
+        'End of an overlap; equals points otherwise.'
+      ),
+      makeOutput(
+        'leftFeatures',
+        "GraphDataView<'uint32'> | undefined",
+        'Feature row of the left segment.'
+      ),
+      makeOutput(
+        'rightFeatures',
+        "GraphDataView<'uint32'> | undefined",
+        'Feature row of the right segment.'
+      ),
+      {
+        name: 'leftRings, rightRings',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Further result fields; see the reference.'
+      }
     ],
     example: makeExample('GPUSegmentIntersection', [
       'left, // streets',
       'right, // rivers; omit for self-intersections',
       'output // pairs plus intersection columns and status'
     ]),
-    preview: {kind: 'lines', seed: 22, caption: 'Crossings between two line sets.'},
+    preview: {kind: 'lines', seed: 4212, caption: 'Crossings between two line sets.'},
     related: ['line-noding', 'geometry-validity', 'polygonize'],
     lensScenario: 'gpu-spatial-analysis.segment-intersection',
     reference: 'api/gpu-spatial-analysis',
@@ -710,9 +769,9 @@ export const entries: CatalogEntry[] = [
     importPath: IMPORT_PATH,
     title: 'Bounds filter',
     summary:
-      'Select features whose bounding boxes intersect, sit within or contain a per-frame box.',
+      'Selects features whose bounding boxes intersect, sit within or contain a per-frame box.',
     explanation:
-      'Use it for map-window culling and fast pre-filters, a GPU `GeoDataFrame.cx[...]`. The box is a parameter, so panning rewrites four floats and never recompiles.',
+      'Best for map-window culling and fast pre-filters, a GPU `GeoDataFrame.cx[...]`. The box is a parameter, so panning rewrites four floats and never recompiles.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table']},
     useCases: ['relate', 'index'],
     domains: ['data-engineering', 'cartography'],
@@ -738,7 +797,7 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       makeOutput('ids', 'GraphDataView<"uint32">', 'Accepted feature rows, ascending.'),
-      makeOutput('status', 'object', 'Overflow count of the bounded list.'),
+      makeOutput('status', '{count, overflow}', 'Overflow count of the bounded list.'),
       makeOutput('outputMask', 'GraphDataView<"uint32">', 'Optional 0 or 1 mask per feature.')
     ],
     example: makeExample(
@@ -749,7 +808,7 @@ export const entries: CatalogEntry[] = [
         'box.write(getGPUBoundsFilterParameterValues({minX, minY, maxX, maxY}));'
       ]
     ),
-    preview: {kind: 'points', seed: 23, caption: 'Only features touching the window survive.'},
+    preview: {kind: 'points', seed: 4213, caption: 'Only features touching the window survive.'},
     related: ['rectangle-clip', 'geometry-measures'],
     lensScenario: 'gpu-spatial-analysis.bounds-filter',
     reference: 'api/gpu-spatial-analysis/operators-joins',
@@ -761,9 +820,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Rectangle clip',
-    summary: 'Clip lines and polygon rings to an axis-aligned rectangle.',
+    summary: 'Clips lines and polygon rings to an axis-aligned rectangle.',
     explanation:
-      'Use it to cut features to a tile, viewport or study box (`clip_by_rect`). Lines use Liang-Barsky; the rectangle is a per-frame parameter.',
+      'Cuts features to a tile, viewport or study box (`clip_by_rect`). Lines use Liang-Barsky; the rectangle is a per-frame parameter.',
     dataTypes: {input: ['lines', 'polygons'], output: ['lines', 'polygons']},
     useCases: ['transform'],
     domains: ['cartography'],
@@ -786,7 +845,7 @@ export const entries: CatalogEntry[] = [
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Clipped vertices.'),
       makeOutput('lineOffsets', 'GraphDataView<"uint32">', 'Clipped feature offsets.'),
-      makeOutput('status', 'object', 'Count and overflow counters.')
+      makeOutput('status', '{count, overflow}', 'Count and overflow counters.')
     ],
     example: makeExample(
       'GPURectangleClip',
@@ -795,7 +854,7 @@ export const entries: CatalogEntry[] = [
     ),
     preview: {
       kind: 'polygon-overlay',
-      seed: 24,
+      seed: 4214,
       caption: 'Everything outside the window is cut away.'
     },
     related: ['bounds-filter', 'lon-lat-polygon-preparation'],
@@ -809,9 +868,10 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Affine transform',
-    summary: 'Translate, scale, rotate or skew many features at once with per-feature matrices.',
+    summary:
+      'Translates, scales, rotates or skews many features at once with per-feature matrices.',
     explanation:
-      'Use it for layout, animation and alignment (`shapely.affinity`). Per-feature `[a, b, d, e, xoff, yoff]` rows can be rewritten every frame without recompiling.',
+      'Best for layout, animation and alignment (`shapely.affinity`). Per-feature `[a, b, d, e, xoff, yoff]` rows can be rewritten every frame without recompiling.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['points', 'lines', 'polygons']},
     useCases: ['transform'],
     domains: ['cartography'],
@@ -847,7 +907,11 @@ export const entries: CatalogEntry[] = [
       'featureTransforms, // [a, b, d, e, xoff, yoff] per feature',
       'output: {positions: transformed}'
     ]),
-    preview: {kind: 'polygons', seed: 25, caption: 'Each shape moves with its own matrix.'},
+    preview: {
+      kind: 'affine-transform',
+      seed: 4215,
+      caption: 'One matrix: gridlines and basis vectors show [a b; d e].'
+    },
     related: ['geometry-orientation', 'local-frame-projection'],
     lensScenario: 'gpu-spatial-analysis.affine-transform',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -859,9 +923,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Geometry orientation',
-    summary: 'Reverse rings or force polygon winding to GeoJSON or shapefile convention.',
+    summary: 'Reverses rings or forces polygon winding to GeoJSON or shapefile convention.',
     explanation:
-      'Use it when a renderer or format needs a fixed winding (`ST_ForcePolygonCW`, `orient_polygons`). `exteriorClockwise` is a per-frame setting; counter-clockwise exteriors are the default.',
+      'Best when a renderer or format needs a fixed winding (`ST_ForcePolygonCW`, `orient_polygons`). `exteriorClockwise` is a per-frame setting; counter-clockwise exteriors are the default.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['points', 'lines', 'polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'data-engineering'],
@@ -898,7 +962,11 @@ export const entries: CatalogEntry[] = [
       ],
       ['// parameters: getGPUGeometryOrientationParameterValues({exteriorClockwise: false})']
     ),
-    preview: {kind: 'polygons', seed: 26, caption: 'Exteriors counter-clockwise, holes clockwise.'},
+    preview: {
+      kind: 'polygons',
+      seed: 4216,
+      caption: 'Exteriors counter-clockwise, holes clockwise.'
+    },
     related: ['geometry-cleanup', 'normalize-polygons', 'geometry-predicates'],
     lensScenario: 'gpu-spatial-analysis.geometry-orientation',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -911,9 +979,9 @@ export const entries: CatalogEntry[] = [
     importPath: IMPORT_PATH,
     title: 'Geometry cleanup',
     summary:
-      'Snap coordinates to a grid and drop repeated vertices from points, lines or polygons.',
+      'Snaps coordinates to a grid and drops repeated vertices from points, lines or polygons.',
     explanation:
-      'Use it to shed redundant vertices and noise before storage or rendering. Grid size and repeat tolerance are per-frame parameters, so you can scrub them live.',
+      'Sheds redundant vertices and noise before storage or rendering. Grid size and repeat tolerance are per-frame parameters, so you can scrub them live.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['points', 'lines', 'polygons']},
     useCases: ['transform'],
     domains: ['data-engineering', 'cartography'],
@@ -941,15 +1009,25 @@ export const entries: CatalogEntry[] = [
       )
     ],
     outputs: [
-      makeOutput('positions', 'GraphDataView<"float32x2">', 'Snapped, deduplicated vertices.'),
-      makeOutput('offsets', 'GraphDataView<"uint32">', 'Updated feature or ring offsets.')
+      makeOutput('positions', "GraphDataView<'float32x2'>", 'Snapped, deduplicated vertices.'),
+      makeOutput(
+        'lineOffsets',
+        "GraphDataView<'uint32'> | undefined",
+        'Optional line start offsets.'
+      ),
+      makeOutput(
+        'ringOffsets',
+        "GraphDataView<'uint32'> | undefined",
+        'Optional ring start offsets.'
+      ),
+      makeOutput('status', 'GPUGeometryCleanupStatus', 'Written counts and overflow flags.')
     ],
     example: makeExample(
       'GPUGeometryCleanup',
       [`geometryType: 'lines', positions, lineOffsets, parameters, output`],
       ['// parameters: getGPUGeometryCleanupParameterValues({gridSize: 0.01, tolerance: 0.001})']
     ),
-    preview: {kind: 'lines', seed: 27, caption: 'Noisy vertices collapse onto a grid.'},
+    preview: {kind: 'lines', seed: 4217, caption: 'Noisy vertices collapse onto a grid.'},
     related: ['line-precision-reduction', 'polygon-precision-reduction', 'vertex-snap'],
     lensScenario: 'gpu-spatial-analysis.geometry-cleanup',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -961,9 +1039,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Vertex snap',
-    summary: 'Move each vertex onto the nearest reference vertex within a tolerance.',
+    summary: 'Moves each vertex onto the nearest reference vertex within a tolerance.',
     explanation:
-      'Use it to close gaps between layers that should share corners (`shapely.snap`). The layout is unchanged, so attributes stay aligned; tolerance is a per-frame parameter.',
+      'Closes gaps between layers that should share corners (`shapely.snap`). The layout is unchanged, so attributes stay aligned; tolerance is a per-frame parameter.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['points', 'lines', 'polygons']},
     useCases: ['transform', 'relate'],
     domains: ['cartography', 'data-engineering'],
@@ -1007,7 +1085,7 @@ export const entries: CatalogEntry[] = [
       ['positions, referencePositions, parameters,', 'output: {positions: snapped, referenceRows}'],
       ['// parameters: getGPUVertexSnapParameterValues({tolerance: 50})']
     ),
-    preview: {kind: 'lines', seed: 28, caption: 'Park corners jump onto neighbor corners.'},
+    preview: {kind: 'lines', seed: 4218, caption: 'Park corners jump onto neighbor corners.'},
     related: ['segment-snap', 'geometry-cleanup'],
     lensScenario: 'gpu-spatial-analysis.vertex-snap',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -1020,9 +1098,9 @@ export const entries: CatalogEntry[] = [
     importPath: IMPORT_PATH,
     title: 'Segment snap',
     summary:
-      'Snap line endpoints to reference vertices and insert nearby reference vertices along segments.',
+      'Snaps line endpoints to reference vertices and insert nearby reference vertices along segments.',
     explanation:
-      'Use it to make lines pass exactly through shared nodes, as in coverage cleanup. Endpoints snap first, then every reference vertex within `tolerance` is inserted in projection order.',
+      'Makes lines pass exactly through shared nodes, as in coverage cleanup. Endpoints snap first, then every reference vertex within `tolerance` is inserted in projection order.',
     dataTypes: {input: ['lines'], output: ['lines']},
     useCases: ['transform'],
     domains: ['cartography', 'transport'],
@@ -1040,14 +1118,9 @@ export const entries: CatalogEntry[] = [
       makeParam('maximumVerticesPerLine', 'number', 'Fixed output slots per input line.', {
         required: true
       }),
-      makeParam(
-        'output',
-        '{ positions: GraphDataView<"float32x2">; sourceEdges: ... }',
-        'Snapped lines.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{positions, sourceEdges}', 'Snapped lines.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput(
@@ -1055,7 +1128,12 @@ export const entries: CatalogEntry[] = [
         'GraphDataView<"float32x2">',
         'Snapped vertices with inserted nodes.'
       ),
-      makeOutput('sourceEdges', 'GraphDataView<"uint32">', 'Source edge of each output vertex.')
+      makeOutput('sourceEdges', 'GraphDataView<"uint32">', 'Source edge of each output vertex.'),
+      makeOutput(
+        'counts',
+        "GraphDataView<'uint32x4'>",
+        'Per line: written, required, overflow and invalid flags.'
+      )
     ],
     example: makeExample('GPUSegmentSnap', [
       'positions, lineOffsets, referencePositions,',
@@ -1063,7 +1141,7 @@ export const entries: CatalogEntry[] = [
       'maximumVerticesPerLine: 64,',
       'output // positions, lineOffsets, sourceEdges, status'
     ]),
-    preview: {kind: 'network', seed: 29, caption: 'Lines pick up the nodes they pass near.'},
+    preview: {kind: 'lines', seed: 4219, caption: 'Lines pick up the nodes they pass near.'},
     related: ['vertex-snap', 'line-noding'],
     lensScenario: 'gpu-spatial-analysis.segment-snap',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1075,9 +1153,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Line precision reduction',
-    summary: 'Round lines to a grid with an explicit policy for lines that collapse.',
+    summary: 'Rounds lines to a grid with an explicit policy for lines that collapse.',
     explanation:
-      'Use it to shrink coordinates for storage or matching while knowing what happened to every line. `valid-output` drops collapsed lines; `keep-collapsed` keeps them with a status.',
+      'Shrinks coordinates for storage or matching while knowing what happened to every line. `valid-output` drops collapsed lines; `keep-collapsed` keeps them with a status.',
     dataTypes: {input: ['lines'], output: ['lines']},
     useCases: ['transform'],
     domains: ['data-engineering', 'cartography'],
@@ -1088,19 +1166,14 @@ export const entries: CatalogEntry[] = [
       }),
       makeParam('gridSize', 'number', 'Grid step to round to.', {required: true}),
       makeParam('mode', '"valid-output" | "keep-collapsed"', 'Collapse policy.', {required: true}),
-      makeParam(
-        'output',
-        '{ positions: GraphDataView<"float32x2">; lineOffsets: ... }',
-        'Rounded lines and status.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{positions, lineOffsets}', 'Rounded lines and status.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Rounded vertices.'),
       makeOutput('lineOffsets', 'GraphDataView<"uint32">', 'Offsets of the rounded lines.'),
-      makeOutput('status', 'object', 'Per-source line status.')
+      makeOutput('status', '{count, overflow}', 'Per-source line status.')
     ],
     example: makeExample('GPULinePrecisionReduction', [
       'positions, lineOffsets,',
@@ -1108,7 +1181,7 @@ export const entries: CatalogEntry[] = [
       `mode: 'valid-output',`,
       'output // positions, lineOffsets, status'
     ]),
-    preview: {kind: 'lines', seed: 30, caption: 'Lines rounded to a coarse grid.'},
+    preview: {kind: 'lines', seed: 4220, caption: 'Lines rounded to a coarse grid.'},
     related: ['polygon-precision-reduction', 'geometry-cleanup'],
     lensScenario: 'gpu-spatial-analysis.line-precision-reduction',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1120,9 +1193,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Polygon precision reduction',
-    summary: 'Round polygons to a grid and rebuild them valid, like GEOS set_precision.',
+    summary: 'Rounds polygons to a grid and rebuild them valid, like GEOS set_precision.',
     explanation:
-      'Use it to snap polygons to a lattice without creating gaps or bow-ties. Hot-pixel noding rounds the linework, then even-odd reconstruction rebuilds each polygon.',
+      'Snaps polygons to a lattice without creating gaps or bow-ties. Hot-pixel noding rounds the linework, then even-odd reconstruction rebuilds each polygon.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['data-engineering', 'cartography'],
@@ -1145,15 +1218,26 @@ export const entries: CatalogEntry[] = [
       makeParam('output', 'GPUPolygonizeOutput', 'Caller-owned outputs.', {required: true})
     ],
     outputs: [
-      makeOutput('polygons', 'GPUPolygonGeometryPort', 'Rounded, valid polygons.'),
-      makeOutput('status', 'GPUTopologyStatusPort', 'Capacity and uncertainty counters.')
+      makeOutput('nodedSegments', 'GPUNodedSegmentPort', 'Noded input segments.'),
+      makeOutput(
+        'directedEdges',
+        'GPUDirectedEdgePort',
+        'Directed half-edges built from the noded segments.'
+      ),
+      makeOutput('polygons', 'GPUPolygonGeometryPort', 'Polygons with reduced precision.'),
+      makeOutput(
+        'diagnostics',
+        'GPUPolygonizeDiagnosticsPort',
+        'Counts of dangles, cuts and invalid rings.'
+      ),
+      makeOutput('status', 'GPUTopologyStatusPort', 'Capacity and completeness flags.')
     ],
     example: makeExample('GPUPolygonPrecisionReduction', [
       "polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},",
       'gridSize: 1, lattice, intersectionCapacity: 4096,',
       'output // polygons, nodedSegments, directedEdges, status'
     ]),
-    preview: {kind: 'cells', seed: 31, caption: 'Polygons snapped onto a visible lattice.'},
+    preview: {kind: 'cells', seed: 4221, caption: 'Polygons snapped onto a visible lattice.'},
     related: ['line-precision-reduction', 'make-valid', 'geometry-cleanup'],
     lensScenario: 'gpu-spatial-analysis.polygon-precision-reduction',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1165,9 +1249,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Line loop removal',
-    summary: 'Erase self-loops from open curves in the order they were drawn.',
+    summary: 'Erases self-loops from open curves in the order they were drawn.',
     explanation:
-      'Use it to clean offset curves and tracks that curl back on themselves. Curves are noded first, then each loop is cut out chronologically.',
+      'Cleans offset curves and tracks that curl back on themselves. Curves are noded first, then each loop is cut out chronologically.',
     dataTypes: {input: ['lines'], output: ['lines']},
     useCases: ['transform'],
     domains: ['cartography', 'transport'],
@@ -1178,26 +1262,27 @@ export const entries: CatalogEntry[] = [
       makeParam('intersectionCapacity', 'number', 'Capacity of the intersection event list.', {
         required: true
       }),
-      makeParam(
-        'output',
-        '{ positions: GraphDataView<"float32x2">; lineOffsets: ... }',
-        'Loop-free lines.',
-        {
-          required: true
-        }
-      ),
+      makeParam('output', '{positions, lineOffsets}', 'Loop-free lines.', {
+        required: true
+      }),
       SPATIAL_CONTEXT
     ],
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Vertices after loop erasure.'),
-      makeOutput('lineOffsets', 'GraphDataView<"uint32">', 'Offsets of the cleaned lines.')
+      makeOutput('lineOffsets', 'GraphDataView<"uint32">', 'Offsets of the cleaned lines.'),
+      makeOutput('sourceEdges', "GraphDataView<'uint32'>", 'Source edge of each output vertex.'),
+      makeOutput(
+        'status',
+        "GraphDataView<'uint32x4'>",
+        'Written, required, overflow and incomplete-noding words.'
+      )
     ],
     example: makeExample('GPULineLoopRemoval', [
       "lines: {kind: 'lines', positions, lineOffsets},",
       'intersectionCapacity: 1024,',
       'output // positions, lineOffsets, status'
     ]),
-    preview: {kind: 'lines', seed: 32, caption: 'A curl is cut out of the path.'},
+    preview: {kind: 'lines', seed: 4222, caption: 'A curl is cut out of the path.'},
     related: ['offset-curve-components', 'line-noding'],
     lensScenario: 'gpu-spatial-analysis.line-loop-removal',
     reference: 'api/gpu-geometry-refinement',
@@ -1209,7 +1294,7 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Offset curve components',
-    summary: 'Turn raw one-sided offsets into clean multipart curves at the requested distance.',
+    summary: 'Turns raw one-sided offsets into clean multipart curves at the requested distance.',
     explanation:
       'Use it to finish an offset: node the raw curve, discard parts closer to the source than `distance`, keep the requested side and compact the components.',
     dataTypes: {input: ['lines'], output: ['lines']},
@@ -1228,18 +1313,19 @@ export const entries: CatalogEntry[] = [
         required: true
       }),
       makeParam('segmentCapacity', 'number', 'Capacity of kept segments.', {required: true}),
-      makeParam(
-        'output',
-        '{ positions: GraphDataView<"float32x2">; components: ... }',
-        'Compacted components.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{positions, components}', 'Compacted components.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Vertices of the kept components.'),
-      makeOutput('components', 'GraphDataView<"uint32">', 'Component offsets per source line.')
+      makeOutput('components', 'GraphDataView<"uint32">', 'Component offsets per source line.'),
+      makeOutput('sourceEdges', "GraphDataView<'uint32'>", 'Source edge of each output vertex.'),
+      makeOutput(
+        'status',
+        "GraphDataView<'uint32x4'>",
+        'Written and required component and vertex counts.'
+      )
     ],
     example: makeExample('GPUOffsetCurveComponents', [
       'original, raw, // GPULineGeometryFields',
@@ -1247,7 +1333,7 @@ export const entries: CatalogEntry[] = [
       'intersectionCapacity: 4096, segmentCapacity: 4096,',
       'output // positions, components, ...'
     ]),
-    preview: {kind: 'buffers', seed: 33, caption: 'A street offset 20 m to one side.'},
+    preview: {kind: 'buffers', seed: 4223, caption: 'A street offset 20 m to one side.'},
     related: ['line-loop-removal', 'line-noding'],
     lensScenario: 'gpu-spatial-analysis.offset-curve-components',
     reference: 'api/gpu-geometry-refinement',
@@ -1259,9 +1345,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Normalize polygons',
-    summary: 'Put polygons in one canonical form: ring order, start vertex and winding.',
+    summary: 'Puts polygons in one canonical form: ring order, start vertex and winding.',
     explanation:
-      'Use it before comparing or hashing polygons that describe the same shape differently. The output is stable, so equal shapes produce equal arrays.',
+      'Best before comparing or hashing polygons that describe the same shape differently. The output is stable, so equal shapes produce equal arrays.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['data-engineering', 'cartography'],
@@ -1270,18 +1356,18 @@ export const entries: CatalogEntry[] = [
       FEATURE_OFFSETS,
       POLYGON_OFFSETS,
       RING_OFFSETS,
-      makeParam(
-        'output',
-        '{ positions: GraphDataView<"float32x2">; ringOffsets: ... }',
-        'Canonical polygons.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{positions, ringOffsets}', 'Canonical polygons.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Canonical vertices.'),
-      makeOutput('ringOffsets', 'GraphDataView<"uint32">', 'Canonical ring offsets.')
+      makeOutput('ringOffsets', 'GraphDataView<"uint32">', 'Canonical ring offsets.'),
+      makeOutput(
+        'polygonOffsets',
+        "GraphDataView<'uint32'>",
+        'Polygon-to-ring offsets after normalization.'
+      )
     ],
     example: makeExample('GPUNormalizePolygons', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
@@ -1289,7 +1375,7 @@ export const entries: CatalogEntry[] = [
     ]),
     preview: {
       kind: 'polygons',
-      seed: 34,
+      seed: 4224,
       caption: 'Same shape, many encodings, one canonical form.'
     },
     related: ['canonical-polygon-equality', 'normalize-geometry', 'geometry-orientation'],
@@ -1303,9 +1389,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Canonical polygon equality',
-    summary: 'Compare two normalized polygon sets feature by feature, without hashing.',
+    summary: 'Compares two normalized polygon sets feature by feature, without hashing.',
     explanation:
-      'Use it to test that two pipelines produced the same polygons. Inputs are `GPUNormalizePolygons` outputs; coordinates are compared within an absolute tolerance.',
+      'Tests that two pipelines produced the same polygons. Inputs are `GPUNormalizePolygons` outputs; coordinates are compared within an absolute tolerance.',
     dataTypes: {input: ['polygons'], output: ['table']},
     useCases: ['relate'],
     domains: ['data-engineering', 'cartography'],
@@ -1332,7 +1418,7 @@ export const entries: CatalogEntry[] = [
       'tolerance: 1e-6,',
       'output: equalFlags'
     ]),
-    preview: {kind: 'polygon-overlay', seed: 35, caption: 'Matching shapes overlay exactly.'},
+    preview: {kind: 'polygon-overlay', seed: 4225, caption: 'Matching shapes overlay exactly.'},
     related: ['normalize-polygons', 'canonical-geometry-equality'],
     lensScenario: 'gpu-spatial-analysis.canonical-polygon-equality',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1345,9 +1431,9 @@ export const entries: CatalogEntry[] = [
     importPath: IMPORT_PATH,
     title: 'Normalize geometry',
     summary:
-      'Canonicalize points, lines, polygons, multis and nested collections, keeping their structure.',
+      'Canonicalizes points, lines, polygons, multis and nested collections, keeping their structure.',
     explanation:
-      'Use it for mixed geometry trees where `GPUNormalizePolygons` is too narrow. Nodes are `[type, firstVertexOrChildSlot, count, sourceId]` rows and nothing is flattened.',
+      'Best for mixed geometry trees where `GPUNormalizePolygons` is too narrow. Nodes are `[type, firstVertexOrChildSlot, count, sourceId]` rows and nothing is flattened.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['points', 'lines', 'polygons']},
     useCases: ['transform'],
     domains: ['data-engineering', 'cartography'],
@@ -1369,25 +1455,21 @@ export const entries: CatalogEntry[] = [
         'number | undefined',
         'Maximum collection depth (compile-time).'
       ),
-      makeParam(
-        'output',
-        '{ positions: GraphDataView<"float32x2">; children: ... }',
-        'Canonical tree.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{positions, children}', 'Canonical tree.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Canonical vertices.'),
-      makeOutput('children', 'GraphDataView<"uint32">', 'Canonical child ids.')
+      makeOutput('children', 'GraphDataView<"uint32">', 'Canonical child ids.'),
+      makeOutput('status', "GraphDataView<'uint32'>", 'Per node: 0 success, nonzero error code.')
     ],
     example: makeExample('GPUNormalizeGeometry', [
       'positions, nodes, children,',
       'maximumNestingDepth: 4,',
       'output // positions, nodes, children'
     ]),
-    preview: {kind: 'polygons', seed: 36, caption: 'Nested collections keep their shape.'},
+    preview: {kind: 'polygons', seed: 4226, caption: 'Nested collections keep their shape.'},
     related: ['canonical-geometry-equality', 'normalize-polygons'],
     lensScenario: 'gpu-spatial-analysis.normalize-geometry',
     reference: 'api/gpu-geometry-refinement',
@@ -1402,7 +1484,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Structural equality of normalized geometry trees, including nested empty collections.',
     explanation:
-      'Use it to compare any normalized geometry, not only polygons. Give it root node pairs from two `GPUNormalizeGeometry` trees and read one flag per pair.',
+      'Compares any normalized geometry, not only polygons. Give it root node pairs from two `GPUNormalizeGeometry` trees and read one flag per pair.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table']},
     useCases: ['relate'],
     domains: ['data-engineering'],
@@ -1432,7 +1514,7 @@ export const entries: CatalogEntry[] = [
       'pairs, // [leftRoot, rightRoot] per comparison',
       'output: equalFlags'
     ]),
-    preview: {kind: 'polygon-overlay', seed: 37, caption: 'Two trees, one verdict per pair.'},
+    preview: {kind: 'polygon-overlay', seed: 4227, caption: 'Two trees, one verdict per pair.'},
     related: ['normalize-geometry', 'canonical-polygon-equality'],
     lensScenario: 'gpu-spatial-analysis.canonical-geometry-equality',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1444,9 +1526,9 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Subdivide polygons',
-    summary: 'Split complex polygons into small convex or rectilinear pieces.',
+    summary: 'Splits complex polygons into small convex or rectilinear pieces.',
     explanation:
-      'Use it to speed up joins, clipping and rendering of huge polygons. Interiors are triangulated with holes, then edge-adjacent triangles merge while the union stays convex.',
+      'Speeds up joins, clipping and rendering of huge polygons. Interiors are triangulated with holes, then edge-adjacent triangles merge while the union stays convex.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform', 'index'],
     domains: ['cartography', 'data-engineering'],
@@ -1459,25 +1541,25 @@ export const entries: CatalogEntry[] = [
         default: "'convex'"
       }),
       makeParam('maximumVertices', 'number | undefined', 'Vertices per convex piece, 3 to 128.'),
-      makeParam(
-        'output',
-        '{ positions: GraphDataView<"float32x2">; pieces: ... }',
-        'Pieces and offsets.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{positions, pieces}', 'Pieces and offsets.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Vertices of all pieces.'),
-      makeOutput('pieces', 'GraphDataView<"uint32">', 'Piece offsets with source feature ids.')
+      makeOutput('pieces', 'GraphDataView<"uint32">', 'Piece offsets with source feature ids.'),
+      makeOutput(
+        'status',
+        "GraphDataView<'uint32x4'>",
+        'Written pieces, required pieces and overflow flags.'
+      )
     ],
     example: makeExample('GPUSubdividePolygons', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
       `method: 'convex', maximumVertices: 16,`,
       'output // positions, pieces, ...'
     ]),
-    preview: {kind: 'tessellation', seed: 38, caption: 'One coastline, many convex pieces.'},
+    preview: {kind: 'tessellation', seed: 4228, caption: 'One coastline, many convex pieces.'},
     related: ['convex-straight-skeleton', 'vector-straight-skeleton'],
     lensScenario: 'gpu-spatial-analysis.subdivide-polygons',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1491,7 +1573,7 @@ export const entries: CatalogEntry[] = [
     title: 'Ratio concave hull',
     summary: 'A concave hull around points, tightened by an edge-length ratio.',
     explanation:
-      'Use it to outline clusters more honestly than a convex hull. Delaunay border triangles are eroded while their edges exceed `ratio`, a fraction of the edge length range.',
+      'Outlines clusters more honestly than a convex hull. Delaunay border triangles are eroded while their edges exceed `ratio`, a fraction of the edge length range.',
     dataTypes: {input: ['points'], output: ['polygons', 'lines']},
     useCases: ['transform', 'find-patterns'],
     domains: ['cartography', 'ecology'],
@@ -1502,25 +1584,31 @@ export const entries: CatalogEntry[] = [
       }),
       makeParam('allowHoles', 'boolean | undefined', 'Allow interior erosion to start holes.'),
       makeParam('maximumIterations', 'number | undefined', 'Maximum triangle removals.'),
-      makeParam(
-        'output',
-        '{ boundaryEdges: GraphDataView<"uint32x2">; edgeValidity: ... }',
-        'Hull edges.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{boundaryEdges, edgeValidity}', 'Hull edges.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('boundaryEdges', 'GraphDataView<"uint32x2">', 'Hull edges as point index pairs.'),
-      makeOutput('edgeValidity', 'GraphDataView<"uint32">', '1 for edges that are on the hull.')
+      makeOutput('edgeValidity', 'GraphDataView<"uint32">', '1 for edges that are on the hull.'),
+      makeOutput('triangles', "GraphDataView<'uint32x3'>", 'Retained Delaunay triangles.'),
+      makeOutput(
+        'triangleValidity',
+        "GraphDataView<'uint32'>",
+        '1 for each triangle kept in the hull.'
+      ),
+      makeOutput('status', '{converged}', 'One row; 0 if tessellation did not finish.')
     ],
     example: makeExample('GPURatioConcaveHull', [
       'positions, // float32x2 points',
       'ratio: 0.3,',
       'output // boundaryEdges, edgeValidity, ...'
     ]),
-    preview: {kind: 'point-clusters', seed: 39, caption: 'The hull hugs the cluster at ratio 0.3.'},
+    preview: {
+      kind: 'point-clusters',
+      seed: 4229,
+      caption: 'The hull hugs the cluster at ratio 0.3.'
+    },
     related: ['minimum-bounds', 'subdivide-polygons'],
     lensScenario: 'gpu-spatial-analysis.ratio-concave-hull',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1534,7 +1622,7 @@ export const entries: CatalogEntry[] = [
     title: 'Vector straight skeleton',
     summary: 'The straight skeleton and inward offsets of polygons with holes and reflex corners.',
     explanation:
-      'Use it for medial axes, roof lines and inset outlines. A wavefront shrinks the boundary, handling edge collapses, reflex splits and hole merges as events.',
+      'Best for medial axes, roof lines and inset outlines. A wavefront shrinks the boundary, handling edge collapses, reflex splits and hole merges as events.',
     dataTypes: {input: ['polygons'], output: ['lines']},
     useCases: ['transform', 'measure'],
     domains: ['cartography', 'urban'],
@@ -1550,18 +1638,28 @@ export const entries: CatalogEntry[] = [
       makeParam('maximumEvents', 'number | undefined', 'Collapse and split events per polygon.', {
         default: '128'
       }),
-      makeParam(
-        'output',
-        '{ segments: GraphDataView<"float32x4">; sourceEdges: ... }',
-        'Skeleton arcs.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{segments, sourceEdges}', 'Skeleton arcs.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('segments', 'GraphDataView<"float32x4">', 'Skeleton arcs x0, y0, x1, y1.'),
-      makeOutput('sourceEdges', 'GraphDataView<"uint32">', 'Source edges that generate each arc.')
+      makeOutput('sourceEdges', 'GraphDataView<"uint32">', 'Source edges that generate each arc.'),
+      makeOutput(
+        'offsetPositions',
+        "GraphDataView<'float32x2'>",
+        'Offset wavefront vertices, fixed block per polygon.'
+      ),
+      makeOutput(
+        'offsetLinks',
+        "GraphDataView<'uint32x2'>",
+        'Previous and next offset vertex ids.'
+      ),
+      makeOutput(
+        'status',
+        "GraphDataView<'uint32x4'>",
+        'Written and required arcs, active vertices, flags.'
+      )
     ],
     example: makeExample('GPUVectorStraightSkeleton', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
@@ -1570,7 +1668,7 @@ export const entries: CatalogEntry[] = [
     ]),
     preview: {
       kind: 'tessellation',
-      seed: 40,
+      seed: 4230,
       caption: 'Skeleton arcs run down the middle of a block.'
     },
     related: ['convex-straight-skeleton', 'maximum-inscribed-circle'],
@@ -1586,7 +1684,7 @@ export const entries: CatalogEntry[] = [
     title: 'Convex straight skeleton',
     summary: 'Straight skeleton and inward offset for independent strictly convex polygons.',
     explanation:
-      'Use it for the fast convex case of roof lines and insets. It is a wavefront prototype; reach for the vector skeleton when polygons have reflex corners or holes.',
+      'Best for the fast convex case of roof lines and insets. It is a wavefront prototype; reach for the vector skeleton when polygons have reflex corners or holes.',
     dataTypes: {input: ['polygons'], output: ['lines']},
     useCases: ['transform', 'measure'],
     domains: ['cartography', 'urban'],
@@ -1606,25 +1704,30 @@ export const entries: CatalogEntry[] = [
       makeParam('eventTolerance', 'number | undefined', 'Relative simultaneous-event tolerance.', {
         default: '1e-5'
       }),
-      makeParam(
-        'output',
-        '{ segments: GraphDataView<"float32x4">; sourceEdges: ... }',
-        'Skeleton arcs.',
-        {
-          required: true
-        }
-      )
+      makeParam('output', '{segments, sourceEdges}', 'Skeleton arcs.', {
+        required: true
+      })
     ],
     outputs: [
       makeOutput('segments', 'GraphDataView<"float32x4">', 'Skeleton arcs x0, y0, x1, y1.'),
-      makeOutput('sourceEdges', 'GraphDataView<"uint32">', 'Source edges that generate each arc.')
+      makeOutput('sourceEdges', 'GraphDataView<"uint32">', 'Source edges that generate each arc.'),
+      makeOutput(
+        'offsetPositions',
+        "GraphDataView<'float32x2'>",
+        'Inward offset vertices, fixed block per polygon.'
+      ),
+      makeOutput(
+        'status',
+        "GraphDataView<'uint32x4'>",
+        'Written and required arcs, offset vertices, flags.'
+      )
     ],
     example: makeExample('GPUConvexStraightSkeleton', [
       'positions, ringOffsets, // one convex polygon per ring',
       'offsetDistance: 5,',
       'output // segments, sourceEdges, ...'
     ]),
-    preview: {kind: 'tessellation', seed: 41, caption: 'A convex lot shrinks to a ridge.'},
+    preview: {kind: 'tessellation', seed: 4231, caption: 'A convex lot shrinks to a ridge.'},
     related: ['vector-straight-skeleton', 'subdivide-polygons'],
     lensScenario: 'gpu-spatial-analysis.convex-straight-skeleton',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1638,7 +1741,7 @@ export const entries: CatalogEntry[] = [
     title: 'Geodesic pairs',
     summary: 'Distance, bearings and midpoint between many origin and target pairs on the globe.',
     explanation:
-      'Use it for great-circle or ellipsoidal distances between aligned point columns (`turf.distance`, `ST_Distance`). `spatialContext` sets the sphere or WGS84 model and the output unit.',
+      'Best for great-circle or ellipsoidal distances between aligned point columns (`turf.distance`, `ST_Distance`). `spatialContext` sets the sphere or WGS84 model and the output unit.',
     dataTypes: {input: ['points'], output: ['table', 'points']},
     useCases: ['measure'],
     domains: ['transport', 'urban'],
@@ -1668,7 +1771,7 @@ export const entries: CatalogEntry[] = [
       'origins, targets,',
       'output: {distances, initialBearings, midpoints}'
     ]),
-    preview: {kind: 'flows', seed: 42, caption: 'Great-circle arcs between city pairs.'},
+    preview: {kind: 'flows', seed: 4232, caption: 'Great-circle arcs between city pairs.'},
     related: ['geodesic-destination', 'local-frame-projection', 'geometry-measures'],
     lensScenario: 'gpu-spatial-analysis.geodesic-pairs',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1682,7 +1785,7 @@ export const entries: CatalogEntry[] = [
     title: 'Geodesic destination',
     summary: 'The point reached from each origin along a bearing for a distance on the globe.',
     explanation:
-      'Use it for range rings, sector wedges and direct geodesic problems (`turf.destination`, `ST_Project`). Bearings are degrees clockwise from north.',
+      'Best for range rings, sector wedges and direct geodesic problems (`turf.destination`, `ST_Project`). Bearings are degrees clockwise from north.',
     dataTypes: {input: ['points'], output: ['points']},
     useCases: ['measure', 'transform'],
     domains: ['transport', 'urban'],
@@ -1706,7 +1809,8 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       makeOutput('destinations', 'GraphDataView<"float32x2">', 'Destination longitude/latitude.'),
-      makeOutput('finalBearings', 'GraphDataView<"float32">', 'Bearing on arrival, in degrees.')
+      makeOutput('finalBearings', 'GraphDataView<"float32">', 'Bearing on arrival, in degrees.'),
+      makeOutput('status', '{converged?}', 'Per-row convergence flag.')
     ],
     example: makeExample('GPUGeodesicDestination', [
       `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal', units: 'meters'},`,
@@ -1715,7 +1819,7 @@ export const entries: CatalogEntry[] = [
     ]),
     preview: {
       kind: 'buffers',
-      seed: 43,
+      seed: 4233,
       caption: 'A 50 km range ring, one destination per bearing.'
     },
     related: ['geodesic-pairs', 'local-frame-projection'],
@@ -1730,9 +1834,9 @@ export const entries: CatalogEntry[] = [
     importPath: IMPORT_PATH,
     title: 'Local frame projection',
     summary:
-      'Project longitude/latitude into a meter-based local frame so planar operators can use it.',
+      'Projects longitude/latitude into a meter-based local frame so planar operators can use it.',
     explanation:
-      'Use it for sub-17 m work where raw float32 degrees are too coarse. Create a frame at your study origin, project on the GPU, run planar operators, then read meters.',
+      'Best for sub-17 m work where raw float32 degrees are too coarse. Create a frame at your study origin, project on the GPU, run planar operators, then read meters.',
     dataTypes: {input: ['points'], output: ['points']},
     useCases: ['transform'],
     domains: ['cartography', 'urban'],
@@ -1776,7 +1880,7 @@ export const entries: CatalogEntry[] = [
       ],
       [`const frame = createGPULocalFrame({origin: [-87.7, 41.9]});`]
     ),
-    preview: {kind: 'points', seed: 44, caption: 'Degrees in, meters out, no CPU round trip.'},
+    preview: {kind: 'points', seed: 4234, caption: 'Degrees in, meters out, no CPU round trip.'},
     related: ['geodesic-pairs', 'geometry-measures', 'lon-lat-polygon-preparation'],
     lensScenario: 'gpu-spatial-analysis.local-frame-projection',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -1789,9 +1893,9 @@ export const entries: CatalogEntry[] = [
     importPath: IMPORT_PATH,
     title: 'Lon/lat polygon preparation',
     summary:
-      'Densify, split at the antimeridian, cap at poles and clip longitude/latitude polygons.',
+      'Densifies, splits at the antimeridian, caps at poles and clips longitude/latitude polygons.',
     explanation:
-      'Use it before gridding or rendering polygons that cross +/-180 degrees or enclose a pole. Each ring is classified, then split or capped by the chosen policy.',
+      'Best before gridding or rendering polygons that cross +/-180 degrees or enclose a pole. Each ring is classified, then split or capped by the chosen policy.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'data-engineering'],
@@ -1830,7 +1934,22 @@ export const entries: CatalogEntry[] = [
         'GraphDataView<"uint32">',
         'Crossing, capped and invalid flags per ring.'
       ),
-      makeOutput('status', 'object', 'Completeness and validity diagnostics.')
+      makeOutput('status', '{count, overflow}', 'Completeness and validity diagnostics.'),
+      makeOutput(
+        'featureOffsets',
+        "GraphDataView<'uint32'>",
+        'Feature-to-polygon offsets, one row per input feature.'
+      ),
+      makeOutput(
+        'polygonOffsets',
+        "GraphDataView<'uint32'>",
+        'Polygon-to-ring offsets, main then east copies.'
+      ),
+      makeOutput(
+        'ringOffsets',
+        "GraphDataView<'uint32'>",
+        'Ring-to-vertex offsets; empty copies keep ring roles.'
+      )
     ],
     example: makeExample('GPULonLatPolygonPreparation', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
@@ -1838,7 +1957,11 @@ export const entries: CatalogEntry[] = [
       `antimeridian: 'split', poleRings: 'cap',`,
       'output'
     ]),
-    preview: {kind: 'polygons', seed: 45, caption: 'A polygon across the date line splits in two.'},
+    preview: {
+      kind: 'polygons',
+      seed: 4235,
+      caption: 'A polygon across the date line splits in two.'
+    },
     related: ['rectangle-clip', 'local-frame-projection'],
     lensScenario: 'gpu-spatial-analysis.lon-lat-polygon-preparation',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -1851,9 +1974,9 @@ export const entries: CatalogEntry[] = [
     importPath: IMPORT_PATH,
     title: 'Study window preparation',
     summary:
-      'Prepare one polygon as an analysis window: oriented edges, area, perimeter, bounds and mask.',
+      'Prepares one polygon as an analysis window: oriented edges, area, perimeter, bounds and mask.',
     explanation:
-      'Use it to give point-pattern and density operators a shared boundary. It orients edges with the interior on the left and rasterizes a sampling grid for fast inside tests.',
+      'Gives point-pattern and density operators a shared boundary. It orients edges with the interior on the left and rasterizes a sampling grid for fast inside tests.',
     dataTypes: {input: ['polygons'], output: ['raster', 'table']},
     useCases: ['measure', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1880,10 +2003,9 @@ export const entries: CatalogEntry[] = [
     outputs: [
       makeOutput(
         'summary',
-        'GraphDataView<"float32">',
+        "GraphDataView<'float32'> | undefined",
         'Eight floats: area, perimeter, bounds and more.'
-      ),
-      makeOutput('window', 'GPUStudyWindow', 'Shared edges and mask for downstream operators.')
+      )
     ],
     example: makeExample('GPUStudyWindowPreparation', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
@@ -1892,7 +2014,7 @@ export const entries: CatalogEntry[] = [
     ]),
     preview: {
       kind: 'polygons',
-      seed: 46,
+      seed: 4236,
       caption: 'One boundary, shared by every point-pattern test.'
     },
     related: ['geometry-measures', 'shape-descriptors'],

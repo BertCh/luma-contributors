@@ -9,6 +9,8 @@ import {FacetPicker} from '../../components/catalog/facet-picker';
 import '../../components/catalog/catalog.css';
 import {SITE_NAME} from '../__root';
 
+const PAGE_SIZE = 36;
+
 export type ExploreSearch = {q?: string; data?: string; use?: string; domain?: string};
 
 function readText(value: unknown): string | undefined {
@@ -39,7 +41,12 @@ function ExplorePage() {
     domain: search.domain,
     query: search.q
   };
-  const entries = filterEntries(filters);
+  const allEntries = filterEntries(filters);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const filterKey = [search.q, search.data, search.use, search.domain].join('|');
+  // A new filter starts again from the first page.
+  useEffect(() => setVisibleCount(PAGE_SIZE), [filterKey]);
+  const entries = allEntries.slice(0, visibleCount);
   const counts = getFacetCounts(filters);
   const isFiltered = Boolean(search.q || search.data || search.use || search.domain);
 
@@ -68,7 +75,7 @@ function ExplorePage() {
         }
       />
       <p className="explore-count" aria-live="polite">
-        {entries.length} {entries.length === 1 ? 'function' : 'functions'}
+        {allEntries.length} {allEntries.length === 1 ? 'function' : 'functions'}
         {isFiltered ? (
           <>
             {' · '}
@@ -83,6 +90,20 @@ function ExplorePage() {
         ) : null}
       </p>
       <EntryGrid entries={entries} emptyMessage="No function matches. Try fewer filters." />
+      {allEntries.length > entries.length ? (
+        <div className="explore-more">
+          <button
+            type="button"
+            className="explore-more-button"
+            onClick={() => setVisibleCount(count => count + PAGE_SIZE)}
+          >
+            Show {Math.min(PAGE_SIZE, allEntries.length - entries.length)} more
+          </button>
+          <span className="explore-count">
+            {entries.length} of {allEntries.length}
+          </span>
+        </div>
+      ) : null}
     </main>
   );
 }

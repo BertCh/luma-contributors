@@ -20,7 +20,7 @@ export const entries: CatalogEntry[] = [
     title: 'Buffer surface',
     summary: 'Grows a polygon buffer of a given distance around lines and polygons.',
     explanation:
-      'Use it for proximity zones, setbacks and exclusion areas. Offset curves are generated per side, then merged by a nonzero polygon overlay into one clean surface. Distance is a per-frame parameter, so the buffer can animate without recompiling.',
+      'Best for proximity zones, setbacks and exclusion areas. Offset curves are generated per side, then merged by a nonzero polygon overlay into one clean surface. Distance is a per-frame parameter, so the buffer can animate without recompiling.',
     dataTypes: {input: ['lines', 'polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'urban'],
@@ -84,6 +84,11 @@ export const entries: CatalogEntry[] = [
         name: 'status',
         type: 'GPUBoundedResultStatusPort',
         description: 'Count, overflow and required counts for capacity checks.'
+      },
+      {
+        name: 'boundary',
+        type: 'GPUPolygonOverlayBoundaryPort',
+        description: 'Boundary rings of the buffer, for downstream assembly.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -109,7 +114,7 @@ parameters.write(getGPUOffsetCurveParameterValues({distance: 50}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'buffers',
-      seed: 11,
+      seed: 4101,
       caption: 'Round-joined 50 m buffers around street centerlines.'
     },
     related: ['offset-curve', 'polygon-overlay', 'outline-geometry'],
@@ -125,7 +130,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Offset curve',
     summary: 'Shifts lines or rings sideways by a signed distance, keeping them one-sided.',
     explanation:
-      'Use it for parallel lanes, lane edges and inset rings (Shapely `offset_curve`). Positive distances go left of the line direction, negative go right. Joins are round, mitre or bevel, and inside turns are resolved per vertex.',
+      'Best for parallel lanes, lane edges and inset rings (Shapely `offset_curve`). Positive distances go left of the line direction, negative go right. Joins are round, mitre or bevel, and inside turns are resolved per vertex.',
     dataTypes: {input: ['lines', 'polygons'], output: ['lines']},
     useCases: ['transform'],
     domains: ['cartography', 'transport'],
@@ -176,16 +181,15 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     outputs: [
-      {name: 'positions', type: "GraphDataView<'float32x2'>", description: 'Offset vertices.'},
       {
-        name: 'lineOffsets',
-        type: "GraphDataView<'uint32'>",
-        description: 'Row range of every offset line.'
+        name: 'positions',
+        type: "GraphDataView<'float32x2'>",
+        description: 'Offset points, a fixed number of rows per input vertex.'
       },
       {
         name: 'counts',
-        type: "GraphDataView<'uint32'>",
-        description: 'Optional vertex count per offset line.'
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Optional distinct offset points per input vertex.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -208,7 +212,7 @@ graph.add(new GPUOffsetCurve({
 const compiled = await graph.compileAsync();
 parameters.write(getGPUOffsetCurveParameterValues({distance: -12, mitreLimit: 5}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'buffers', seed: 12, caption: 'A street offset 12 m to its right.'},
+    preview: {kind: 'buffers', seed: 4102, caption: 'A street offset 12 m to its right.'},
     related: ['buffer-surface', 'outline-geometry', 'line-smooth'],
     lensScenario: 'gpu-spatial-analysis.offset-curve',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -223,16 +227,16 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Builds render-only buffer outlines for points, lines and rings, one round join per vertex.',
     explanation:
-      'Use it to draw halos and buffer-like glows fast, without computing a true dissolved buffer. Each vertex gets a join disc and each segment a stroke, ready for instanced drawing. For analysis-grade buffers use the buffer surface.',
+      'Draws halos and buffer-like glows fast, without computing a true dissolved buffer. Each vertex gets a join disc and each segment a stroke, ready for instanced drawing. For analysis-grade buffers use the buffer surface.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography'],
     params: [
       {
         name: 'geometryType',
-        type: '"points"',
+        type: '"points" | "lines" | "polygons"',
         required: true,
-        description: 'Input kind; lines and rings omit it and pass offsets.'
+        description: 'Input kind; lines need lineOffsets, polygons need ringOffsets.'
       },
       {
         name: 'positions',
@@ -243,12 +247,12 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       {
         name: 'lineOffsets',
         type: "GraphDataView<'uint32'>",
-        description: 'Line start rows, for line input.'
+        description: 'Line start rows; lines only.'
       },
       {
         name: 'ringOffsets',
         type: "GraphDataView<'uint32'>",
-        description: 'Ring start rows, for polygon input.'
+        description: 'Ring start rows; polygons only.'
       },
       {name: 'joinSegments', type: 'number', description: 'Segments per round join disc.'},
       {
@@ -292,7 +296,11 @@ graph.add(new GPUOutlineGeometry({
 const compiled = await graph.compileAsync();
 parameters.write(getGPUOutlineGeometryParameterValues({distance: 30}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'buffers', seed: 13, caption: 'Round halos around points, drawn as triangles.'},
+    preview: {
+      kind: 'buffers',
+      seed: 4103,
+      caption: 'Round halos around points, drawn as triangles.'
+    },
     related: ['buffer-surface', 'offset-curve'],
     lensScenario: 'gpu-spatial-analysis.outline-geometry',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -307,7 +315,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Intersects, unions, subtracts or dissolves polygon sets over a snap-rounded planar arrangement.',
     explanation:
-      'Use it for clip, merge and erase workflows on parcels, zones and footprints. Edges are noded and snapped, then faces are kept by a winding rule per operand. Capacities are explicit, and status reports when they were too small.',
+      'Best for clip, merge and erase workflows on parcels, zones and footprints. Edges are noded and snapped, then faces are kept by a winding rule per operand. Capacities are explicit, and status reports when they were too small.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['relate', 'transform'],
     domains: ['cartography', 'data-engineering'],
@@ -388,7 +396,11 @@ graph.add(new GPUPolygonOverlay({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // then read \`output.status.count\` and check \`output.status.overflow\` before using the rings`,
-    preview: {kind: 'polygon-overlay', seed: 14, caption: 'Parcels intersected with a flood zone.'},
+    preview: {
+      kind: 'polygon-overlay',
+      seed: 4104,
+      caption: 'Parcels intersected with a flood zone.'
+    },
     related: ['buffer-surface', 'coverage-dissolve', 'segment-ring-assembly'],
     lensScenario: 'gpu-spatial-analysis.polygon-overlay',
     reference: 'api/gpu-spatial-analysis',
@@ -402,7 +414,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     title: 'Coverage dissolve',
     summary: 'Merges the polygons of a gap-free coverage by label, dropping shared interior edges.',
     explanation:
-      'Use it to roll tracts up into districts or counties (GeoPandas `dissolve`). Shared edges cancel, and the remaining boundary segments are chained into rings. It assumes a clean coverage; validate first if unsure.',
+      'Rolls tracts up into districts or counties (GeoPandas `dissolve`). Shared edges cancel, and the remaining boundary segments are chained into rings. It assumes a clean coverage; validate first if unsure.',
     dataTypes: {input: ['polygons', 'table'], output: ['polygons']},
     useCases: ['summarize', 'transform'],
     domains: ['cartography', 'demographics'],
@@ -465,6 +477,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         name: 'ringIsHole',
         type: "GraphDataView<'uint32'>",
         description: 'Optional hole flag per ring.'
+      },
+      {
+        name: 'status',
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & {openSegmentCount?}',
+        description: 'Ring count, overflow and boundary segments left open.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -483,7 +500,7 @@ graph.add(new GPUCoverageDissolve({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'polygons', seed: 15, caption: 'Tracts dissolved into districts.'},
+    preview: {kind: 'polygons', seed: 4105, caption: 'Tracts dissolved into districts.'},
     related: [
       'coverage-validity',
       'coverage-simplification',
@@ -502,7 +519,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Coverage simplification',
     summary: 'Simplifies a polygon coverage without opening gaps or overlaps between neighbors.',
     explanation:
-      'Use it to generalize administrative boundaries for small scales (Shapely `simplify_coverage`). Shared edges are simplified once, so both neighbors move together. Tolerance is a per-frame parameter.',
+      'Generalizes administrative boundaries for small scales (Shapely `simplify_coverage`). Shared edges are simplified once, so both neighbors move together. Tolerance is a per-frame parameter.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography'],
@@ -569,6 +586,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'outputMask',
         type: "GraphDataView<'uint32'>",
         description: 'Optional kept-vertex flag per source row.'
+      },
+      {
+        name: 'status',
+        type: '{converged?, overflow?}',
+        description: 'Convergence and overflow scalars.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -592,7 +614,7 @@ parameters.write(getGPULineSimplificationParameterValues({tolerance: 250}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'polygons',
-      seed: 16,
+      seed: 4106,
       caption: 'Counties simplified; shared borders stay shared.'
     },
     related: ['line-simplification', 'coverage-dissolve', 'coverage-validity'],
@@ -608,7 +630,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Coverage validity',
     summary: 'Flags overlaps, gaps and mismatched edges in a polygon coverage, segment by segment.',
     explanation:
-      'Use it to check that a boundary dataset is a clean coverage before dissolving or simplifying (Shapely `coverage_is_valid`). Each segment gets a bit mask of problems and each feature a count. A gap wider than `gapWidth` is an error.',
+      'Checks that a boundary dataset is a clean coverage before dissolving or simplifying (Shapely `coverage_is_valid`). Each segment gets a bit mask of problems and each feature a count. A gap wider than `gapWidth` is an error.',
     dataTypes: {input: ['polygons'], output: ['lines', 'table']},
     useCases: ['transform', 'measure'],
     domains: ['cartography', 'data-engineering'],
@@ -693,7 +715,7 @@ parameters.write(getGPUCoverageValidityParameterValues({gapWidth: 0.5}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'polygons',
-      seed: 17,
+      seed: 4107,
       caption: 'Invalid edges of a county coverage, highlighted.'
     },
     related: ['coverage-dissolve', 'coverage-simplification', 'shared-paths'],
@@ -709,7 +731,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Segment ring assembly',
     summary: 'Chains loose directed boundary segments into closed rings, with hole and area flags.',
     explanation:
-      'Use it as the last step of overlays, dissolves and cell outlines, where you end up with unordered edges. Endpoints are matched within a tolerance and walked into rings. Optional outputs give winding, area and hole ownership.',
+      'The last step of overlays, dissolves and cell outlines, where you end up with unordered edges. Endpoints are matched within a tolerance and walked into rings. Optional outputs give winding, area and hole ownership.',
     dataTypes: {input: ['lines'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'data-engineering'],
@@ -768,6 +790,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'ringIsHole',
         type: "GraphDataView<'uint32'>",
         description: 'Optional hole flag per ring.'
+      },
+      {
+        name: 'status',
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & {openSegmentCount?}',
+        description: 'Ring count, overflow and open segment count.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -785,7 +812,7 @@ graph.add(new GPUSegmentRingAssembly({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'polygons', seed: 18, caption: 'Loose boundary edges closed into rings.'},
+    preview: {kind: 'polygons', seed: 4108, caption: 'Loose boundary edges closed into rings.'},
     related: ['polygon-overlay', 'coverage-dissolve', 'concave-hull'],
     lensScenario: 'gpu-spatial-analysis.segment-ring-assembly',
     reference: 'api/gpu-spatial-analysis',
@@ -804,7 +831,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Wraps a point set in an alpha-shape footprint that follows its real outline, holes included.',
     explanation:
-      'Use it for building footprints from points, habitat extents and service areas. Delaunay triangles with a circumradius above `maximumCircumradius` are dropped, and the oriented boundary of the rest is returned. It is radius-based alpha-shape, not the ratio-based GEOS hull.',
+      'Best for building footprints from points, habitat extents and service areas. Delaunay triangles with a circumradius above `maximumCircumradius` are dropped, and the oriented boundary of the rest is returned. It is radius-based alpha-shape, not the ratio-based GEOS hull.',
     dataTypes: {input: ['points'], output: ['polygons']},
     useCases: ['transform', 'measure'],
     domains: ['cartography', 'ecology'],
@@ -849,6 +876,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'status',
         type: "{converged: GraphDataView<'uint32'>}",
         description: 'Zero if tessellation did not finish.'
+      },
+      {
+        name: 'triangleValidity',
+        type: "GraphDataView<'uint32'>",
+        description: '1 for each triangle kept in the hull.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -866,7 +898,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 // feed \`boundaryEdges\` to GPUSegmentRingAssembly for polygon rings`,
     preview: {
       kind: 'point-clusters',
-      seed: 21,
+      seed: 4109,
       caption: 'A concave footprint around scattered points.'
     },
     related: ['group-concave-hull', 'group-convex-hull', 'delaunay-tessellation'],
@@ -882,7 +914,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     title: 'Group concave hull',
     summary: 'Builds one alpha-shape hull per cluster label, all in a single GPU pass.',
     explanation:
-      'Use it to outline clusters from DBSCAN-style labels, or any group id column. Each group gets its own Delaunay complex, so hulls never bridge between groups. Boundaries are oriented edges ready for ring assembly.',
+      'Outlines clusters from DBSCAN-style labels, or any group id column. Each group gets its own Delaunay complex, so hulls never bridge between groups. Boundaries are oriented edges ready for ring assembly.',
     dataTypes: {input: ['points', 'table'], output: ['polygons']},
     useCases: ['find-patterns', 'transform'],
     domains: ['spatial-statistics', 'cartography'],
@@ -929,6 +961,16 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         name: 'triangles',
         type: "GraphDataView<'uint32x3'>",
         description: 'Retained triangles across groups.'
+      },
+      {
+        name: 'triangleValidity',
+        type: "GraphDataView<'uint32'>",
+        description: '1 for each triangle kept in the hull.'
+      },
+      {
+        name: 'status',
+        type: '{converged}',
+        description: 'One row; 0 if tessellation did not finish.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -945,7 +987,7 @@ graph.add(new GPUGroupConcaveHull({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'point-clusters', seed: 22, caption: 'One concave hull per cluster.'},
+    preview: {kind: 'point-clusters', seed: 4110, caption: 'One concave hull per cluster.'},
     related: ['concave-hull', 'group-convex-hull', 'group-geometry'],
     lensScenario: 'gpu-spatial-analysis.group-concave-hull',
     reference: 'api/gpu-raster/expansion',
@@ -960,7 +1002,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Finds the convex hull of every labeled group of points, with exact orientation tests.',
     explanation:
-      "Use it for quick cluster outlines, extents and minimum bounds. It runs Andrew's monotone chain per label after an optional extreme-point prefilter. Noise labels can be skipped.",
+      "Best for quick cluster outlines, extents and minimum bounds. It runs Andrew's monotone chain per label after an optional extreme-point prefilter. Noise labels can be skipped.",
     dataTypes: {input: ['points', 'table'], output: ['polygons']},
     useCases: ['find-patterns', 'measure'],
     domains: ['spatial-statistics', 'cartography'],
@@ -1011,7 +1053,16 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         description: 'Optional hull vertex coordinates.'
       },
       {name: 'offsets', type: "GraphDataView<'uint32'>", description: 'Start of every group hull.'},
-      {name: 'counts', type: "GraphDataView<'uint32'>", description: 'Vertex count per group hull.'}
+      {
+        name: 'counts',
+        type: "GraphDataView<'uint32'>",
+        description: 'Vertex count per group hull.'
+      },
+      {
+        name: 'status',
+        type: '{overflow}',
+        description: 'Nonzero when the output capacity was too small.'
+      }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUGroupConvexHull} from '${IMPORT_PATH}';
@@ -1029,7 +1080,7 @@ graph.add(new GPUGroupConvexHull({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'point-clusters', seed: 23, caption: 'Convex hulls of labeled clusters.'},
+    preview: {kind: 'point-clusters', seed: 4111, caption: 'Convex hulls of labeled clusters.'},
     related: ['group-concave-hull', 'group-geometry', 'concave-hull'],
     lensScenario: 'gpu-spatial-analysis.group-convex-hull',
     reference: 'api/gpu-spatial-analysis',
@@ -1044,7 +1095,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Summarizes each labeled point group: bounds, centers, medoid and standard-distance ellipse.',
     explanation:
-      'Use it to describe clusters: where they are, how big and which way they lean. All requested summaries come from one pass over the label column. Weights give weighted centers.',
+      'Describes clusters: where they are, how big and which way they lean. All requested summaries come from one pass over the label column. Weights give weighted centers.',
     dataTypes: {input: ['points', 'table'], output: ['table', 'points']},
     useCases: ['measure', 'summarize'],
     domains: ['spatial-statistics'],
@@ -1117,7 +1168,7 @@ const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'point-clusters',
-      seed: 24,
+      seed: 4112,
       caption: 'Bounds, centers and medoids of three groups.'
     },
     related: ['group-convex-hull', 'group-concave-hull', 'dorling-cartogram'],
@@ -1137,7 +1188,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Delaunay tessellation',
     summary: 'Triangulates a point set into a Delaunay mesh on the GPU, optionally per group.',
     explanation:
-      'Use it for neighbor graphs, surface meshes and as the base of Voronoi and alpha hulls. Triangles are built by parallel insertion and flipping, with exact predicates. Groups triangulate independently in one pass.',
+      'Best for neighbor graphs, surface meshes and as the base of Voronoi and alpha hulls. Triangles are built by parallel insertion and flipping, with exact predicates. Groups triangulate independently in one pass.',
     dataTypes: {input: ['points'], output: ['polygons', 'spatial-weights']},
     useCases: ['transform', 'relate'],
     domains: ['cartography', 'spatial-statistics'],
@@ -1171,6 +1222,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'status',
         type: 'GPUBoundedResultStatusPort',
         description: 'Triangle count, overflow and required count.'
+      },
+      {
+        name: 'groups',
+        type: '{triangleCounts, triangleOffsets?} | undefined',
+        description: 'Per-group triangle counts, when grouped.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -1185,7 +1241,7 @@ graph.add(new GPUDelaunayTessellation({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // \`output.triangles\` is a uint32x3 index buffer, ready for a mesh or Voronoi`,
-    preview: {kind: 'tessellation', seed: 31, caption: 'Delaunay triangles over random sites.'},
+    preview: {kind: 'tessellation', seed: 4113, caption: 'Delaunay triangles over random sites.'},
     related: ['voronoi-diagram', 'constrained-delaunay-triangulation', 'concave-hull'],
     lensScenario: 'gpu-spatial-analysis.delaunay-tessellation',
     reference: 'api/gpu-spatial-analysis',
@@ -1200,7 +1256,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     summary:
       'Derives clipped Voronoi cell edges from a Delaunay triangulation, entirely on the GPU.',
     explanation:
-      'Use it for service areas, nearest-site regions and proximity partitions. Circumcenters of adjacent triangles become edges, clipped to `clipBounds`. Each edge reports the pair of sites it separates.',
+      'Best for service areas, nearest-site regions and proximity partitions. Circumcenters of adjacent triangles become edges, clipped to `clipBounds`. Each edge reports the pair of sites it separates.',
     dataTypes: {input: ['points'], output: ['lines', 'polygons']},
     useCases: ['transform', 'route'],
     domains: ['cartography', 'urban'],
@@ -1269,7 +1325,7 @@ graph.add(new GPUVoronoiDiagram({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'tessellation', seed: 32, caption: 'Voronoi cells around 40 sites.'},
+    preview: {kind: 'tessellation', seed: 4114, caption: 'Voronoi cells around 40 sites.'},
     related: ['delaunay-tessellation', 'building-tessellation-recipe', 'dorling-cartogram'],
     lensScenario: 'gpu-spatial-analysis.voronoi-diagram',
     reference: 'api/gpu-spatial-analysis',
@@ -1283,7 +1339,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Polygon triangulation',
     summary: 'Triangulates polygons with holes into index buffers on the GPU, the Earcut way.',
     explanation:
-      'Use it to render large polygon sets without CPU tessellation. Every polygon gets its own triangle slice, with a validity flag. Large polygons can use a monotone method to bound the work.',
+      'Renders large polygon sets without CPU tessellation. Every polygon gets its own triangle slice, with a validity flag. Large polygons can use a monotone method to bound the work.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'three-d'],
@@ -1369,7 +1425,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 // draw \`output.indices\` with the same \`positions\` as vertex buffer`,
     preview: {
       kind: 'tessellation',
-      seed: 33,
+      seed: 4115,
       caption: 'Polygons with holes, split into triangles.'
     },
     related: ['constrained-delaunay-triangulation', 'delaunay-tessellation'],
@@ -1385,7 +1441,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     title: 'Constrained Delaunay triangulation',
     summary: 'Triangulates polygons, then flips shared edges toward the Delaunay criterion.',
     explanation:
-      'Use it when triangle quality matters: meshes for simulation, interpolation or smooth shading. Shell and hole edges are never flipped, so they stay in the mesh. Flips are bounded by `maximumFlips`.',
+      'Best when triangle quality matters: meshes for simulation, interpolation or smooth shading. Shell and hole edges are never flipped, so they stay in the mesh. Flips are bounded by `maximumFlips`.',
     dataTypes: {input: ['polygons'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'three-d'],
@@ -1464,7 +1520,7 @@ graph.add(new GPUConstrainedDelaunayTriangulation({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'tessellation', seed: 34, caption: 'A polygon mesh after Delaunay flips.'},
+    preview: {kind: 'tessellation', seed: 4116, caption: 'A polygon mesh after Delaunay flips.'},
     related: ['polygon-triangulation', 'delaunay-tessellation'],
     lensScenario: 'gpu-spatial-analysis.constrained-delaunay-triangulation',
     reference: 'api/gpu-spatial-analysis/expansion-lenses',
@@ -1482,7 +1538,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Line segmentize',
     summary: 'Densifies lines so no segment is longer than a maximum length.',
     explanation:
-      'Use it before reprojecting, snapping or sampling along lines (PostGIS `ST_Segmentize`). Original vertices are kept and long segments are cut into equal pieces. In a longitude-latitude context, new points follow the great circle.',
+      'Best before reprojecting, snapping or sampling along lines (PostGIS `ST_Segmentize`). Original vertices are kept and long segments are cut into equal pieces. In a longitude-latitude context, new points follow the great circle.',
     dataTypes: {input: ['lines'], output: ['lines']},
     useCases: ['transform'],
     domains: ['cartography', 'transport'],
@@ -1535,6 +1591,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'measures',
         type: "GraphDataView<'float32'>",
         description: 'Optional distance along the source line per vertex.'
+      },
+      {
+        name: 'status',
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & {lineCount?}',
+        description: 'Written vertex count and overflow flag.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -1556,7 +1617,7 @@ graph.add(new GPULineSegmentize({
 const compiled = await graph.compileAsync();
 parameters.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: 25}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 41, caption: 'Streets densified to 25 m segments.'},
+    preview: {kind: 'lines', seed: 4117, caption: 'Streets densified to 25 m segments.'},
     related: ['line-chunk', 'line-smooth', 'great-circle-arcs'],
     lensScenario: 'gpu-spatial-analysis.line-segmentize',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1570,7 +1631,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Great-circle arcs',
     summary: 'Tessellates a great-circle arc for every origin and destination pair.',
     explanation:
-      'Use it for flight paths and flow maps on a globe (turf `greatCircle`). Each pair becomes one line with equal-angle vertices and exact endpoints. Longitudes are unwrapped, never split at the antimeridian.',
+      'Best for flight paths and flow maps on a globe (turf `greatCircle`). Each pair becomes one line with equal-angle vertices and exact endpoints. Longitudes are unwrapped, never split at the antimeridian.',
     dataTypes: {input: ['points'], output: ['lines', 'network']},
     useCases: ['transform'],
     domains: ['transport', 'cartography'],
@@ -1638,7 +1699,7 @@ graph.add(new GPUGreatCircleArcs({
 const compiled = await graph.compileAsync();
 parameters.write(getGPUGreatCircleArcsParameterValues({maximumSegmentLength: 0, minimumSegments: 32}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'flows', seed: 42, caption: 'Arcs from one hub to 40 destinations.'},
+    preview: {kind: 'flows', seed: 4118, caption: 'Arcs from one hub to 40 destinations.'},
     related: ['line-segmentize', 'line-chunk'],
     lensScenario: 'gpu-spatial-analysis.great-circle-arcs',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1652,7 +1713,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Line smooth',
     summary: 'Rounds the corners of lines or rings by Chaikin corner cutting.',
     explanation:
-      'Use it to soften digitized tracks, contours and generalized boundaries (turf `polygonSmooth`). Each pass replaces every edge with two points at the cut ratio, so vertex counts double. Planar only.',
+      'Softens digitized tracks, contours and generalized boundaries (turf `polygonSmooth`). Each pass replaces every edge with two points at the cut ratio, so vertex counts double. Planar only.',
     dataTypes: {input: ['lines', 'polygons'], output: ['lines']},
     useCases: ['transform'],
     domains: ['cartography'],
@@ -1695,6 +1756,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'lineOffsets',
         type: "GraphDataView<'uint32'>",
         description: 'Row range of every smoothed line.'
+      },
+      {
+        name: 'status',
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & {lineCount?}',
+        description: 'Written vertex count and overflow flag.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -1717,7 +1783,7 @@ graph.add(new GPULineSmooth({
 const compiled = await graph.compileAsync();
 parameters.write(getGPULineSmoothParameterValues({ratio: 0.25}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 43, caption: 'Two Chaikin rounds on angular streets.'},
+    preview: {kind: 'lines', seed: 4119, caption: 'Two Chaikin rounds on angular streets.'},
     related: ['line-simplification', 'line-segmentize', 'offset-curve'],
     lensScenario: 'gpu-spatial-analysis.line-smooth',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1731,7 +1797,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Line chunk',
     summary: 'Splits lines into equal-length pieces, or cuts a measure range from every line.',
     explanation:
-      'Use it for fixed-length road segments, stationing and extracting sub-lines (turf `lineChunk`, PostGIS `ST_LineSubstring`). Mode `chunk` yields pieces of `chunkLength`; `substring` keeps the range between a start and end measure.',
+      'Best for fixed-length road segments, stationing and extracting sub-lines (turf `lineChunk`, PostGIS `ST_LineSubstring`). Mode `chunk` yields pieces of `chunkLength`; `substring` keeps the range between a start and end measure.',
     dataTypes: {input: ['lines'], output: ['lines']},
     useCases: ['transform', 'measure'],
     domains: ['transport', 'cartography'],
@@ -1778,6 +1844,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'sourceLineIndices',
         type: "GraphDataView<'uint32'>",
         description: 'Input line of every piece.'
+      },
+      {
+        name: 'status',
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & {lineCount?}',
+        description: 'Written vertex count and overflow flag.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -1800,7 +1871,7 @@ graph.add(new GPULineChunk({
 const compiled = await graph.compileAsync();
 parameters.write(getGPULineChunkParameterValues({chunkLength: 100}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 44, caption: 'Streets cut into 100 m chunks.'},
+    preview: {kind: 'lines', seed: 4120, caption: 'Streets cut into 100 m chunks.'},
     related: ['line-segmentize', 'line-locate', 'linear-referencing'],
     lensScenario: 'gpu-spatial-analysis.line-chunk',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1814,7 +1885,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Line split',
     summary: 'Splits lines at every crossing, touch or overlap with each other or themselves.',
     explanation:
-      'Use it to node a street layer so each piece runs between intersections (turf `lineSplit`, PostGIS `ST_Node`). It is the first step of building a routable network from raw centerlines. Capacity must cover the intersection count.',
+      'Nodes a street layer so each piece runs between intersections (turf `lineSplit`, PostGIS `ST_Node`). It is the first step of building a routable network from raw centerlines. Capacity must cover the intersection count.',
     dataTypes: {input: ['lines'], output: ['lines', 'network']},
     useCases: ['transform', 'relate'],
     domains: ['transport', 'data-engineering'],
@@ -1870,7 +1941,7 @@ graph.add(new GPULineSplit({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // \`output.pieces.geometry\` holds the noded lines, \`pieces.sourceIds\` the origin line`,
-    preview: {kind: 'lines', seed: 45, caption: 'Streets noded at every intersection.'},
+    preview: {kind: 'lines', seed: 4121, caption: 'Streets noded at every intersection.'},
     related: ['line-merge', 'shared-paths', 'line-clip-by-polygon'],
     lensScenario: 'gpu-spatial-analysis.line-split',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1884,7 +1955,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     title: 'Line merge',
     summary: 'Joins lines that share endpoints into maximal chains.',
     explanation:
-      'Use it to reassemble a road or river from segments (Shapely `linemerge`, turf `lineMerge`). Chains stop at junctions where three or more lines meet. Set `directed` to respect line direction.',
+      'Reassembles a road or river from segments (Shapely `linemerge`, turf `lineMerge`). Chains stop at junctions where three or more lines meet. Set `directed` to respect line direction.',
     dataTypes: {input: ['lines'], output: ['lines']},
     useCases: ['transform'],
     domains: ['transport', 'hydrology'],
@@ -1925,6 +1996,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         name: 'lineChains',
         type: "GraphDataView<'uint32'>",
         description: 'Optional chain index of every input line.'
+      },
+      {
+        name: 'status',
+        type: 'GPUCardinalityPort',
+        description: '`count` is the number of merged chains.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -1940,7 +2016,7 @@ graph.add(new GPULineMerge({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 46, caption: 'Segments joined into continuous chains.'},
+    preview: {kind: 'lines', seed: 4122, caption: 'Segments joined into continuous chains.'},
     related: ['line-split', 'line-simplification', 'shared-paths'],
     lensScenario: 'gpu-spatial-analysis.line-merge',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1954,7 +2030,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Line simplification',
     summary: 'Simplifies many polylines or tracks with Douglas-Peucker, TD-TR or Visvalingam.',
     explanation:
-      'Use it to thin tracks and boundaries for drawing or storage. It scores every vertex by importance once, then keeps the vertices above the tolerance, so changing the tolerance is cheap. With timestamps and the `time-ratio` metric it becomes TD-TR for trajectories.',
+      'Thins tracks and boundaries for drawing or storage. It scores every vertex by importance once, then keeps the vertices above the tolerance, so changing the tolerance is cheap. With timestamps and the `time-ratio` metric it becomes TD-TR for trajectories.',
     dataTypes: {input: ['lines', 'trajectories'], output: ['lines']},
     useCases: ['transform'],
     domains: ['cartography', 'transport'],
@@ -2020,6 +2096,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'lineCounts',
         type: "GraphDataView<'uint32'>",
         description: 'Optional kept vertices per line.'
+      },
+      {
+        name: 'status',
+        type: 'GPULineSimplificationStatus & GPUCardinalityPort & GPUOverflowStatusPort',
+        description: 'Kept-row count, overflow and convergence diagnostics.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -2040,7 +2121,7 @@ graph.add(new GPULineSimplification({
 const compiled = await graph.compileAsync();
 parameters.write(getGPULineSimplificationParameterValues({tolerance: 15}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 47, caption: 'A GPS track thinned at 15 m tolerance.'},
+    preview: {kind: 'lines', seed: 4123, caption: 'A GPS track thinned at 15 m tolerance.'},
     related: ['coverage-simplification', 'line-smooth', 'line-segmentize'],
     lensScenario: 'gpu-spatial-analysis.line-simplification',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2054,7 +2135,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Line clip by polygon',
     summary: 'Clips lines to the inside or outside of polygons.',
     explanation:
-      'Use it to cut roads by a district, or remove stretches inside water (GeoPandas `clip`). Lines are split at polygon edges and each piece is kept by its side. Pieces keep their source line id.',
+      'Cuts roads by a district, or remove stretches inside water (GeoPandas `clip`). Lines are split at polygon edges and each piece is kept by its side. Pieces keep their source line id.',
     dataTypes: {input: ['lines', 'polygons'], output: ['lines']},
     useCases: ['transform', 'relate'],
     domains: ['cartography', 'transport'],
@@ -2124,7 +2205,7 @@ graph.add(new GPULineClipByPolygon({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 48, caption: 'Streets clipped to a district.'},
+    preview: {kind: 'lines', seed: 4124, caption: 'Streets clipped to a district.'},
     related: ['line-split', 'polygon-overlay', 'shared-paths'],
     lensScenario: 'gpu-spatial-analysis.line-clip-by-polygon',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2138,7 +2219,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Shared paths',
     summary: 'Finds the stretches that two sets of lines have in common.',
     explanation:
-      'Use it to find shared walls between buildings, duplicate road geometry or overlapping routes (Shapely `shared_paths`). Each run reports both source lines and its direction on each. Results feed adjacency analyses.',
+      'Finds shared walls between buildings, duplicate road geometry or overlapping routes (Shapely `shared_paths`). Each run reports both source lines and its direction on each. Results feed adjacency analyses.',
     dataTypes: {input: ['lines'], output: ['lines', 'table']},
     useCases: ['relate'],
     domains: ['urban', 'data-engineering'],
@@ -2182,7 +2263,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       },
       {
         name: 'status',
-        type: "{count: GraphDataView<'uint32'>; ...}",
+        type: '{count}',
         description: 'Run count, overflow and required counts.'
       }
     ],
@@ -2202,7 +2283,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 // \`output.runs\` lists each shared stretch; \`output.status.count\` says how many`,
     preview: {
       kind: 'lines',
-      seed: 49,
+      seed: 4125,
       caption: 'Party walls shared between neighboring buildings.'
     },
     related: ['building-adjacency-recipe', 'line-split', 'coverage-validity'],
@@ -2218,7 +2299,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     title: 'Linear referencing',
     summary: 'Snaps points to the nearest line and reports line, measure, offset and side.',
     explanation:
-      'Use it to place crashes, sensors or addresses along a road network (PostGIS `ST_LineLocatePoint`). Each query finds the nearest line within its radius using a BVH. Outputs include the foot point and signed offset.',
+      'Places crashes, sensors or addresses along a road network (PostGIS `ST_LineLocatePoint`). Each query finds the nearest line within its radius using a BVH. Outputs include the foot point and signed offset.',
     dataTypes: {input: ['points', 'lines'], output: ['table', 'points']},
     useCases: ['relate', 'measure'],
     domains: ['transport', 'urban'],
@@ -2285,6 +2366,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         name: 'signedOffsets',
         type: "GraphDataView<'float32'>",
         description: 'Signed distance from the line; left is positive.'
+      },
+      {
+        name: 'status',
+        type: '{overflow, candidateCount?}',
+        description: 'Whether the nearest-line search was complete.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -2297,11 +2383,11 @@ graph.add(new GPULinearReferencing({
   lineOffsets,
   queryPositions: crashes,
   radius: radii,
-  output: {lineIndices, measures, footPoints, signedOffsets}
+  output: {lineIndices, measures, footPoints, signedOffsets, status}
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 50, caption: 'Points snapped to the nearest street.'},
+    preview: {kind: 'lines', seed: 4126, caption: 'Points snapped to the nearest street.'},
     related: ['line-locate', 'line-chunk'],
     lensScenario: 'gpu-spatial-analysis.linear-referencing',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2315,7 +2401,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Line locate',
     summary: 'Places events at a measure along their line and returns position and heading.',
     explanation:
-      'Use it to animate vehicles or place markers by distance or fraction along a route (turf `along`, PostGIS `ST_LineInterpolatePoint`). Measure scale and offset are per-frame parameters, so playback never recompiles. Tangent and angle help orient icons.',
+      'Animates vehicles or place markers by distance or fraction along a route (turf `along`, PostGIS `ST_LineInterpolatePoint`). Measure scale and offset are per-frame parameters, so playback never recompiles. Tangent and angle help orient icons.',
     dataTypes: {input: ['lines', 'table'], output: ['points']},
     useCases: ['relate', 'simulate'],
     domains: ['transport', 'urban'],
@@ -2402,7 +2488,7 @@ const compiled = await graph.compileAsync();
 // every frame: advance the vehicles by 12 m
 parameters.write(getGPULineLocateParameterValues({measureOffset: frame * 12}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'trajectories', seed: 51, caption: 'Markers advancing along routes.'},
+    preview: {kind: 'trajectories', seed: 4127, caption: 'Markers advancing along routes.'},
     related: ['linear-referencing', 'line-chunk'],
     lensScenario: 'gpu-spatial-analysis.line-locate',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2420,7 +2506,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Grid generator',
     summary: 'Generates square, hexagon, triangle or point grids from an origin and cell size.',
     explanation:
-      'Use it for fishnets, hex bins and sampling lattices (turf `squareGrid`, GeoPandas `make_grid`). Origin and cell size are per-frame parameters, so a grid can pan and zoom without recompiling. Optionally clip to an extent.',
+      'Best for fishnets, hex bins and sampling lattices (turf `squareGrid`, GeoPandas `make_grid`). Origin and cell size are per-frame parameters, so a grid can pan and zoom without recompiling. Optionally clip to an extent.',
     dataTypes: {input: ['table'], output: ['polygons', 'points']},
     useCases: ['index', 'summarize'],
     domains: ['cartography', 'data-engineering'],
@@ -2486,7 +2572,7 @@ graph.add(new GPUGridGenerator({
 const compiled = await graph.compileAsync();
 parameters.write(getGPUGridGeneratorParameterValues({minX: -122.5, minY: 37.7, cellWidth: 0.01, cellHeight: 0.01}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'cells', seed: 61, caption: 'A hexagon grid generated on the GPU.'},
+    preview: {kind: 'cells', seed: 4128, caption: 'A hexagon grid generated on the GPU.'},
     related: ['shape-generator', 'delaunay-tessellation'],
     lensScenario: 'gpu-spatial-analysis.grid-generator',
     reference: 'api/gpu-spatial-analysis',
@@ -2500,7 +2586,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Shape generator',
     summary: 'Generates circle, sector or ellipse rings around per-feature centers.',
     explanation:
-      'Use it for radius rings, coverage wedges and error ellipses (turf `circle`, `sector`, `ellipse`). Each feature has its own radius, bearings and rotation. Segment count and radius scale are per-frame parameters.',
+      'Best for radius rings, coverage wedges and error ellipses (turf `circle`, `sector`, `ellipse`). Each feature has its own radius, bearings and rotation. Segment count and radius scale are per-frame parameters.',
     dataTypes: {input: ['points', 'table'], output: ['polygons']},
     useCases: ['transform'],
     domains: ['cartography', 'urban'],
@@ -2557,6 +2643,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'offsets',
         type: "GraphDataView<'uint32'>",
         description: 'Vertex range of every shape.'
+      },
+      {
+        name: 'vertexCount',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Optional one-row total vertex count.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -2580,7 +2671,7 @@ graph.add(new GPUShapeGenerator({
 const compiled = await graph.compileAsync();
 parameters.write(getGPUShapeGeneratorParameterValues({segmentCount: 48}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'buffers', seed: 62, caption: 'Circles and sectors around towers.'},
+    preview: {kind: 'buffers', seed: 4129, caption: 'Circles and sectors around towers.'},
     related: ['grid-generator', 'buffer-surface', 'outline-geometry'],
     lensScenario: 'gpu-spatial-analysis.shape-generator',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -2595,7 +2686,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Turns areas into circles sized by value and relaxes them until they stop overlapping.',
     explanation:
-      'Use it to show a count or rate without large empty regions dominating the map. Circle area follows the value, and circles are pushed apart while a weak pull keeps them near their true location. Iterations are bounded and reported.',
+      'Shows a count or rate without large empty regions dominating the map. Circle area follows the value, and circles are pushed apart while a weak pull keeps them near their true location. Iterations are bounded and reported.',
     dataTypes: {input: ['points', 'table'], output: ['points']},
     useCases: ['classify', 'summarize'],
     domains: ['cartography', 'demographics'],
@@ -2648,6 +2739,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         name: 'status',
         type: "GraphDataView<'uint32'>",
         description: 'Converged flag and iteration count.'
+      },
+      {
+        name: 'sourceIds',
+        type: "GraphDataView<'uint32'>",
+        description: 'Source feature id of each circle.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -2665,7 +2761,7 @@ graph.add(new GPUDorlingCartogram({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'point-clusters', seed: 63, caption: 'Counties as non-overlapping circles.'},
+    preview: {kind: 'point-clusters', seed: 4130, caption: 'Counties as non-overlapping circles.'},
     related: ['group-geometry', 'map-coloring', 'voronoi-diagram'],
     lensScenario: 'gpu-spatial-analysis.dorling-cartogram',
     reference: 'api/gpu-spatial-analysis/gpu-dorling-cartogram',
@@ -2679,7 +2775,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Map coloring',
     summary: 'Assigns each polygon a class so that no two neighbors share one.',
     explanation:
-      'Use it to color a categorical map with few distinct colors. A parallel greedy method (Jones-Plassmann) colors rows from contiguity weights, largest degree first. A seed picks among valid colorings.',
+      'Colors a categorical map with few distinct colors. A parallel greedy method (Jones-Plassmann) colors rows from contiguity weights, largest degree first. A seed picks among valid colorings.',
     dataTypes: {input: ['spatial-weights', 'polygons'], output: ['table']},
     useCases: ['classify'],
     domains: ['cartography'],
@@ -2747,11 +2843,11 @@ graph.add(new GPUMapColoring({
   output: {colors, colorCount}
 }));
 const compiled = await graph.compileAsync();
-parameters.write(getGPUMapColoringParameterValues({seed: 7}));
+parameters.write(getGPUMapColoringParameterValues({seed: 4131}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'classification',
-      seed: 64,
+      seed: 4132,
       caption: 'Counties in five colors, no neighbors alike.'
     },
     related: ['dorling-cartogram', 'coverage-dissolve'],
@@ -2767,7 +2863,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Offset expansion',
     summary: 'Expands an offsets array into an owner index per child row.',
     explanation:
-      'Use it to turn ragged layouts (lines of vertices, polygons of rings) into flat per-child columns. It is the GPU form of `repeat` with counts. Joins and gathers build on it.',
+      'Turns ragged layouts (lines of vertices, polygons of rings) into flat per-child columns. It is the GPU form of `repeat` with counts. Joins and gathers build on it.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['index', 'relate'],
     domains: ['data-engineering'],
@@ -2819,7 +2915,7 @@ graph.add(new GPUOffsetExpansion({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // offsets [0, 3, 5] expand to owners [0, 0, 0, 1, 1]`,
-    preview: {kind: 'pipeline', seed: 65, caption: 'Offsets expanded to one owner per row.'},
+    preview: {kind: 'pipeline', seed: 4133, caption: 'Offsets expanded to one owner per row.'},
     related: ['parameter-buffer', 'line-split'],
     lensScenario: 'gpu-spatial-analysis.offset-expansion',
     reference: 'api/gpu-spatial-analysis/operators-joins',
@@ -2834,7 +2930,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     summary:
       'A small buffer for per-frame values, so tolerances and distances change without recompiling.',
     explanation:
-      'Use it for any setting you want to animate or tweak: distances, tolerances, seeds. Import it into the graph once, compile once, then write new values before each encode. Values can be float32, uint32 or sint32.',
+      'Best for any setting you want to animate or tweak: distances, tolerances, seeds. Import it into the graph once, compile once, then write new values before each encode. Values can be float32, uint32 or sint32.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['index'],
     domains: ['data-engineering'],
@@ -2880,7 +2976,7 @@ const compiled = await graph.compileAsync(); // once
 // on every slider change: write, encode, no recompile
 parameters.write(getGPULineSimplificationParameterValues({tolerance}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'pipeline', seed: 66, caption: 'One compiled graph, new values every frame.'},
+    preview: {kind: 'pipeline', seed: 4134, caption: 'One compiled graph, new values every frame.'},
     related: ['offset-expansion', 'line-simplification', 'buffer-surface'],
     reference: 'api/gpu-raster/operations-analysis',
     maturity: 'stable'
@@ -2897,7 +2993,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Building adjacency',
     summary: 'Finds shared walls between buildings and summarizes adjacency and axial alignment.',
     explanation:
-      'Use it for urban-form studies of terraces, blocks and contiguity. It consumes shared-path runs, pairs buildings, and measures the wall lengths and orientation agreement. Components group connected buildings.',
+      'Best for urban-form studies of terraces, blocks and contiguity. It consumes shared-path runs, pairs buildings, and measures the wall lengths and orientation agreement. Components group connected buildings.',
     dataTypes: {input: ['lines', 'polygons'], output: ['table', 'network']},
     useCases: ['relate', 'measure'],
     domains: ['urban'],
@@ -2939,24 +3035,24 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     ],
     outputs: [
       {
-        name: 'pairs',
-        type: "GraphDataView<'float32x4'>",
-        description: 'Adjacent building pairs with wall data.'
+        name: 'outputs',
+        type: '{pairs, lengths, morphology, components}',
+        description: 'Adjacent building pairs, shared wall lengths, morphology and components.'
       },
       {
-        name: 'lengths',
-        type: "GraphDataView<'float32'>",
-        description: 'Shared wall length per run.'
+        name: 'structures',
+        type: '{perimeters, overlays}',
+        description: 'Intermediate perimeters and overlay results.'
       },
       {
-        name: 'morphology',
-        type: "GraphDataView<'float32x4'>",
-        description: 'Per-building adjacency morphology summary.'
+        name: 'status',
+        type: '{complete}',
+        description: '1 when every stage finished within capacity.'
       },
       {
-        name: 'components',
-        type: "GraphDataView<'uint32'>",
-        description: 'Connected component per building.'
+        name: 'provenance',
+        type: '{sharedPaths, lineBuildingIds}',
+        description: 'Source ids tying outputs back to buildings.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -2973,7 +3069,7 @@ const {outputs, status} = addBuildingAdjacencyRecipe(graph, {
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // read outputs.pairs, outputs.morphology and outputs.components`,
-    preview: {kind: 'polygons', seed: 71, caption: 'Buildings linked across shared walls.'},
+    preview: {kind: 'polygons', seed: 4135, caption: 'Buildings linked across shared walls.'},
     related: ['shared-paths', 'building-tessellation-recipe', 'street-profiles-recipe'],
     lensScenario: 'gpu-spatial-analysis.building-adjacency-recipe',
     reference: 'api/gpu-spatial-analysis/urban-ecology-lenses',
@@ -2988,7 +3084,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     summary:
       'Divides the space around buildings into one cell per building, clipped to an enclosure.',
     explanation:
-      'Use it for morphological tessellation: the plot of land each building would claim. Building boundaries are sampled, Voronoi fragments are clipped to the enclosure, then dissolved by owner. Sample and fragment capacities are explicit.',
+      'Best for morphological tessellation: the plot of land each building would claim. Building boundaries are sampled, Voronoi fragments are clipped to the enclosure, then dissolved by owner. Sample and fragment capacities are explicit.',
     dataTypes: {input: ['polygons', 'lines'], output: ['polygons']},
     useCases: ['transform', 'measure'],
     domains: ['urban'],
@@ -3052,6 +3148,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         name: 'status',
         type: '{sampling, complete}',
         description: 'Sampling status and a completion flag.'
+      },
+      {
+        name: 'provenance',
+        type: '{segments, segmentBuildingIds}',
+        description: 'Boundary segments and their owning buildings.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -3067,13 +3168,13 @@ const {outputs, status} = addBuildingTessellationRecipe(graph, {
   sampleSpacing: 2,
   sampleCapacity: 100000,
   vertexTolerance: 1e-3,
-  capacity: {intersections: 200000, nodedSegments: 400000, vertices: 400000}
+  capacity: {intersections: 200000, nodedSegments: 400000, vertices: 400000, rings: 200000}
 });
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'tessellation',
-      seed: 72,
+      seed: 4136,
       caption: 'One cell per building, clipped to the block.'
     },
     related: ['voronoi-diagram', 'building-adjacency-recipe', 'polygon-overlay'],
@@ -3090,7 +3191,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Computes the visible area from each viewpoint among obstacles, as a polygon fan of rays.',
     explanation:
-      'Use it for visibility, openness and sightline studies in streets and plazas. Rays are cast counterclockwise from +X to the nearest obstacle within `maximumDistance`. Vertex sampling adds rays at obstacle corners.',
+      'Best for visibility, openness and sightline studies in streets and plazas. Rays are cast counterclockwise from +X to the nearest obstacle within `maximumDistance`. Vertex sampling adds rays at obstacle corners.',
     dataTypes: {input: ['points', 'lines'], output: ['polygons', 'table']},
     useCases: ['measure', 'relate'],
     domains: ['urban', 'three-d'],
@@ -3130,24 +3231,14 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     ],
     outputs: [
       {
-        name: 'endpoints',
-        type: "GraphDataView<'float32x2'>",
-        description: 'Ray hit point per viewpoint and ray.'
+        name: 'outputs',
+        type: '{endpoints, distances, measures, validity}',
+        description: 'Ray hits, ray lengths, isovist measures and viewpoint validity.'
       },
       {
-        name: 'distances',
-        type: "GraphDataView<'float32'>",
-        description: 'Ray length until the first obstacle.'
-      },
-      {
-        name: 'measures',
-        type: "GraphDataView<'float32x4'>",
-        description: 'Isovist area, perimeter and shape measures.'
-      },
-      {
-        name: 'validity',
-        type: "GraphDataView<'uint32'>",
-        description: 'Flag for viewpoints that are valid.'
+        name: 'provenance',
+        type: '{positions, obstacles}',
+        description: 'Resolved viewpoints and obstacle inputs.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -3165,7 +3256,7 @@ const {outputs} = addIsovistsRecipe(graph, {
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // outputs.endpoints are ray hits; outputs.measures hold area and perimeter`,
-    preview: {kind: 'polygons', seed: 73, caption: 'What is visible from one street corner.'},
+    preview: {kind: 'polygons', seed: 4137, caption: 'What is visible from one street corner.'},
     related: ['visibility-graph-recipe', 'street-profiles-recipe'],
     lensScenario: 'gpu-spatial-analysis.isovists-recipe',
     reference: 'api/gpu-spatial-analysis/urban-ecology-lenses',
@@ -3180,7 +3271,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     summary:
       'Measures distance and height of the first building on each side of every street sample.',
     explanation:
-      'Use it for canyon width, height-to-width ratio and frontage studies. Rays cast left and right of each sample along its normal. A side with no building stays range-censored and is never reported as open space.',
+      'Best for canyon width, height-to-width ratio and frontage studies. Rays cast left and right of each sample along its normal. A side with no building stays range-censored and is never reported as open space.',
     dataTypes: {input: ['points', 'lines', 'table'], output: ['table']},
     useCases: ['measure'],
     domains: ['urban'],
@@ -3230,24 +3321,19 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     ],
     outputs: [
       {
-        name: 'profiles',
-        type: "GraphDataView<'float32x4'>",
-        description: 'Left and right distance per sample.'
+        name: 'outputs',
+        type: '{profiles, buildings, canyon, validity}',
+        description: 'Side distances, building ids, canyon measures and validity.'
       },
       {
-        name: 'buildings',
-        type: "GraphDataView<'uint32x2'>",
-        description: 'First building id on each side.'
+        name: 'facades',
+        type: '{lengths, frontage}',
+        description: 'Facade lengths and frontage per sample.'
       },
       {
-        name: 'canyon',
-        type: "GraphDataView<'float32x4'>",
-        description: 'Canyon width and height measures.'
-      },
-      {
-        name: 'validity',
-        type: "GraphDataView<'uint32'>",
-        description: 'Which sides hit a building.'
+        name: 'provenance',
+        type: '{positions, normals}',
+        description: 'Sample positions and normals along each street.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -3267,7 +3353,11 @@ const {outputs} = addStreetProfilesRecipe(graph, {
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // outputs.profiles: distance to the building on each side`,
-    preview: {kind: 'lines', seed: 74, caption: 'Perpendicular rays from a street to its facades.'},
+    preview: {
+      kind: 'lines',
+      seed: 4138,
+      caption: 'Perpendicular rays from a street to its facades.'
+    },
     related: ['isovists-recipe', 'building-adjacency-recipe', 'visibility-graph-recipe'],
     lensScenario: 'gpu-spatial-analysis.street-profiles-recipe',
     reference: 'api/gpu-spatial-analysis/urban-ecology-lenses',
@@ -3282,7 +3372,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     summary:
       'Links every pair of mutually visible points among obstacles and derives graph metrics.',
     explanation:
-      'Use it for space syntax: integration, choice and depth over a plaza or building plan. Closed obstacles block sightlines, and visible pairs become edges within `maximumDistance`. Edge capacity bounds the result.',
+      'Best for space syntax: integration, choice and depth over a plaza or building plan. Closed obstacles block sightlines, and visible pairs become edges within `maximumDistance`. Edge capacity bounds the result.',
     dataTypes: {input: ['points', 'lines'], output: ['network', 'table']},
     useCases: ['relate', 'measure'],
     domains: ['urban', 'transport'],
@@ -3320,26 +3410,20 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
       }
     ],
     outputs: [
-      {name: 'edges', type: "GraphDataView<'uint32x2'>", description: 'Visible point pairs.'},
       {
-        name: 'adjacency',
-        type: "GraphDataView<'uint32'>",
-        description: 'Adjacency lists of the visibility graph.'
+        name: 'outputs',
+        type: '{edges, adjacency, metrics, integration, choice}',
+        description: 'Visible pairs, adjacency lists and per-viewpoint graph measures.'
       },
       {
-        name: 'metrics',
-        type: "GraphDataView<'float32x4'>",
-        description: 'Degree, clustering and related measures.'
+        name: 'status',
+        type: "GraphDataView<'uint32x4'>",
+        description: 'Completeness and overflow words.'
       },
       {
-        name: 'integration',
-        type: "GraphDataView<'float32x4'>",
-        description: 'Integration measures per viewpoint.'
-      },
-      {
-        name: 'choice',
-        type: "GraphDataView<'float32'>",
-        description: 'Choice (betweenness) per viewpoint.'
+        name: 'provenance',
+        type: '{positions, obstacles}',
+        description: 'Resolved viewpoints and obstacle inputs.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -3356,7 +3440,7 @@ const {outputs, status} = addVisibilityGraphRecipe(graph, {
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // outputs.edges lists visible pairs; outputs.integration scores each point`,
-    preview: {kind: 'network', seed: 75, caption: 'Sightlines between points on a plaza.'},
+    preview: {kind: 'network', seed: 4139, caption: 'Sightlines between points on a plaza.'},
     related: ['isovists-recipe', 'street-profiles-recipe'],
     lensScenario: 'gpu-spatial-analysis.visibility-graph-recipe',
     reference: 'api/gpu-spatial-analysis/urban-ecology-lenses',

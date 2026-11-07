@@ -88,7 +88,9 @@ export type PreviewKind =
   | 'time-series'
   | 'trajectories'
   | 'point-cloud'
-  | 'pipeline';
+  | 'pipeline'
+  | 'affine-transform'
+  | 'cell-cover';
 
 export type PreviewSpec = {
   kind: PreviewKind;

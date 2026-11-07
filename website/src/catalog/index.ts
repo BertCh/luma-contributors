@@ -186,10 +186,15 @@ function scoreSharedTypes(
   return score;
 }
 
+/** Chaining only makes sense inside a field: neighbors must share a domain. */
+function sharesDomain(entry: CatalogEntryReference, other: CatalogEntryReference): boolean {
+  return other.domains.some(domain => entry.domains.includes(domain));
+}
+
 /** What to do next: entries whose inputs match this entry's outputs, best match first. */
 export function getNextSteps(entry: CatalogEntryReference, limit = 6): CatalogSummary[] {
   return catalog
-    .filter(other => other.id !== entry.id)
+    .filter(other => other.id !== entry.id && sharesDomain(entry, other))
     .map(other => ({other, score: scoreSharedTypes(entry.dataTypes.output, other.dataTypes.input)}))
     .filter(({score}) => score > 0)
     .sort(
@@ -202,7 +207,7 @@ export function getNextSteps(entry: CatalogEntryReference, limit = 6): CatalogSu
 /** What feeds this entry: entries whose outputs match this entry's inputs. */
 export function getPreviousSteps(entry: CatalogEntryReference, limit = 6): CatalogSummary[] {
   return catalog
-    .filter(other => other.id !== entry.id)
+    .filter(other => other.id !== entry.id && sharesDomain(entry, other))
     .map(other => ({other, score: scoreSharedTypes(other.dataTypes.output, entry.dataTypes.input)}))
     .filter(({score}) => score > 0)
     .sort(

@@ -14,12 +14,12 @@ export const PACKAGE_LAYERS: readonly LayerSpec[] = [
   {name: '@luma-contributors/kepler', role: 'kepler.gl adapters', owner: 'ours'},
   {name: '@luma-contributors/lenses', role: 'records to pictures', owner: 'ours'},
   {name: '@luma-contributors/analysis', role: 'GPU operations', owner: 'ours'},
-  {name: '@luma.gl/graph', role: 'kernels and command graphs', owner: 'upstream'},
+  {name: '@luma.gl/graph', role: 'kernels, command graphs', owner: 'upstream'},
   {name: '@luma.gl/core', role: 'device, buffers, passes', owner: 'upstream'},
   {name: '@luma.gl/shaders', role: 'shader modules', owner: 'upstream'}
 ];
 
-const NODE_WIDTH = 168;
+const NODE_WIDTH = 188;
 const NODE_HEIGHT = 58;
 const GAP = 40;
 const PADDING = 22;

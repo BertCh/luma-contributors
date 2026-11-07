@@ -51,6 +51,8 @@ export type StrokeLayer = {
   animation?: 'static' | 'flow' | 'draw' | 'pulse';
   /** Cycles per second. */
   speed?: number;
+  /** Flow animation only: length of the bright trail, 1 is the default. */
+  trail?: number;
   blend?: 'add' | 'alpha';
 };
 
@@ -80,6 +82,10 @@ export type FieldLayer = {
   /** Breathing amplitude (ramp) or hillshade relief strength. */
   strength?: number;
   speed?: number;
+  /** Hillshade only: fixed light direction in radians (image space, y down). Sweeps when unset. */
+  light?: number;
+  /** Isochrone expansion only: the value the expansion stops at, in 0..1. */
+  cutoff?: number;
 };
 
 export type PreviewLayer = SpriteLayer | StrokeLayer | FillLayer | FieldLayer;

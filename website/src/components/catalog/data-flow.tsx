@@ -19,7 +19,14 @@ function DataTypeChips({ids, compact}: {ids: DataTypeId[]; compact?: boolean}) {
           </Link>
         );
       })}
-      {compact && ids.length > 1 ? <Chip>+{ids.length - 1}</Chip> : null}
+      {compact && ids.length > 1 ? (
+        <span
+          className="chip-count"
+          title={ids.map(id => getFacet('data', id)?.label ?? id).join(', ')}
+        >
+          <Chip>+{ids.length - 1}</Chip>
+        </span>
+      ) : null}
     </span>
   );
 }

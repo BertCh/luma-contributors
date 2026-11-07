@@ -30,7 +30,7 @@ export const entries: CatalogEntry[] = [
     title: 'Point density',
     summary: 'Bins points into square or hexagon cells and writes a count, sum or mean raster.',
     explanation:
-      'Use it for fast heat maps of millions of points. This is binned counting, not a kernel estimate, so values change with `gridSize`. Optional `smoothing` convolves the field in cell units.',
+      'Best for fast heat maps of millions of points. This is binned counting, not a kernel estimate, so values change with `gridSize`. Optional `smoothing` convolves the field in cell units.',
     dataTypes: {input: ['points'], output: ['raster']},
     useCases: ['summarize', 'find-patterns'],
     domains: ['spatial-statistics', 'urban'],
@@ -100,8 +100,8 @@ graph.add(
 const compiled = graph.compile();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
-      kind: 'point-clusters',
-      seed: 11,
+      kind: 'raster',
+      seed: 9201,
       caption: 'Points binned into cells; brighter means more.'
     },
     related: ['kernel-density', 'line-density', 'dot-density'],
@@ -118,7 +118,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Estimates event intensity on a raster with a planar kernel, a ground-unit bandwidth and edge correction.',
     explanation:
-      'Use it when you need intensity per unit area, not counts. Each cell sums `K_h(distance)` over nearby points; pick gaussian, quartic or epanechnikov. Bandwidth and window are per-frame parameters, so changing them never recompiles.',
+      'Best when you need intensity per unit area, not counts. Each cell sums `K_h(distance)` over nearby points; pick gaussian, quartic or epanechnikov. Bandwidth and window are per-frame parameters, so changing them never recompiles.',
     dataTypes: {input: ['points'], output: ['raster']},
     useCases: ['find-patterns', 'interpolate'],
     domains: ['spatial-statistics', 'ecology'],
@@ -196,7 +196,7 @@ kdeParameters.write(getGPUKernelDensityParameterValues({bandwidth: 250}, grid));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'density-surface',
-      seed: 12,
+      seed: 9202,
       caption: 'Smooth intensity surface from scattered events.'
     },
     related: ['point-density', 'inhomogeneous-point-pattern', 'line-density'],
@@ -213,7 +213,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Accumulates the length of line segments falling in each grid cell and divides by cell area.',
     explanation:
-      'Use it for road, river or track density maps. Segments are clipped to cells exactly, so length is conserved. Grid origin and cell size are per-frame parameters.',
+      'Best for road, river or track density maps. Segments are clipped to cells exactly, so length is conserved. Grid origin and cell size are per-frame parameters.',
     dataTypes: {input: ['lines'], output: ['raster']},
     useCases: ['summarize', 'measure'],
     domains: ['urban', 'transport'],
@@ -266,7 +266,7 @@ graph.add(new GPULineDensity({
   output: {lengths, densities, status: {overflow}}
 }));
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 13, caption: 'Line length per cell, drawn as a heat grid.'},
+    preview: {kind: 'lines', seed: 9203, caption: 'Line length per cell, drawn as a heat grid.'},
     related: ['line-length-per-polygon', 'kernel-density', 'point-density'],
     lensScenario: 'gpu-spatial-analysis.line-density',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -280,7 +280,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Line length per polygon',
     summary: 'Sums the length of lines that fall inside each polygon, optionally weighted.',
     explanation:
-      'Use it for road length per tract or river length per watershed. Each line is split at polygon edges and measured exactly. Weights give length-weighted attributes such as lanes.',
+      'Best for road length per tract or river length per watershed. Each line is split at polygon edges and measured exactly. Weights give length-weighted attributes such as lanes.',
     dataTypes: {input: ['lines', 'polygons'], output: ['table']},
     useCases: ['measure', 'summarize'],
     domains: ['urban', 'transport'],
@@ -315,7 +315,12 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     outputs: [
       {name: 'lengths', type: F32, description: 'Line length per polygon.'},
       {name: 'weightedLengths', type: F32, description: 'Optional weight-multiplied length.'},
-      {name: 'segmentCounts', type: U32, description: 'Optional segments counted per polygon.'}
+      {name: 'segmentCounts', type: U32, description: 'Optional segments counted per polygon.'},
+      {
+        name: 'status',
+        type: 'GPUOverflowStatusPort',
+        description: 'Overflow flag; lengths can be low when 1.'
+      }
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
 import {GPULineLengthPerPolygon} from '${ANALYSIS}';
@@ -334,7 +339,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'polygon-overlay',
-      seed: 14,
+      seed: 9204,
       caption: 'Lines clipped to polygons and measured.'
     },
     related: ['line-density', 'zonal-statistics'],
@@ -350,7 +355,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Dot density',
     summary: 'Scatters one dot per unit of a polygon attribute, with a category per dot.',
     explanation:
-      'Use it for dot maps of population or land use. Dots are placed uniformly inside each polygon by rejection sampling, seeded so results repeat. Output is compacted so it renders directly.',
+      'Best for dot maps of population or land use. Dots are placed uniformly inside each polygon by rejection sampling, seeded so results repeat. Output is compacted so it renders directly.',
     dataTypes: {input: ['polygons', 'table'], output: ['points']},
     useCases: ['transform', 'classify'],
     domains: ['demographics', 'cartography'],
@@ -399,7 +404,7 @@ graph.add(new GPUDotDensity({
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'points',
-      seed: 15,
+      seed: 9205,
       caption: 'One colored dot per 100 people, inside each tract.'
     },
     related: ['random-points-in-polygon', 'random-points-on-line', 'point-density'],
@@ -415,7 +420,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Random points in polygon',
     summary: 'Draws a requested number of uniform random points inside each polygon.',
     explanation:
-      'Use it to seed simulations, null models or synthetic populations. Counts are per polygon; sampling is by seeded rejection, so reruns repeat. Output is a compact point list.',
+      'Seeds simulations, null models or synthetic populations. Counts are per polygon; sampling is by seeded rejection, so reruns repeat. Output is a compact point list.',
     dataTypes: {input: ['polygons'], output: ['points']},
     useCases: ['simulate', 'transform'],
     domains: ['spatial-statistics', 'ecology'],
@@ -472,7 +477,7 @@ graph.add(new GPURandomPointsInPolygon({
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'points',
-      seed: 16,
+      seed: 9206,
       caption: 'Uniform random points inside irregular polygons.'
     },
     related: ['dot-density', 'random-points-on-line', 'continuous-spatial-sample'],
@@ -488,7 +493,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Random points on line',
     summary: 'Draws a requested number of uniform random points along each line.',
     explanation:
-      'Use it to sample roads, rivers or tracks. Points are uniform by length, not by vertex. Optional `fractions` returns each point as a position along its line.',
+      'Samples roads, rivers or tracks. Points are uniform by length, not by vertex. Optional `fractions` returns each point as a position along its line.',
     dataTypes: {input: ['lines'], output: ['points']},
     useCases: ['simulate', 'transform'],
     domains: ['transport', 'ecology'],
@@ -531,7 +536,7 @@ graph.add(new GPURandomPointsOnLine({
   output: {positions: samples, points, fractions}
 }));
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 17, caption: 'Points placed uniformly by length along roads.'},
+    preview: {kind: 'lines', seed: 9207, caption: 'Points placed uniformly by length along roads.'},
     related: ['random-points-in-polygon', 'dot-density'],
     lensScenario: 'gpu-spatial-analysis.random-points-on-line',
     reference: 'api/gpu-spatial-analysis/operators-density',
@@ -547,7 +552,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Interpolates a raster from scattered samples, weighting neighbors by inverse distance.',
     explanation:
-      'Use it for a quick, assumption-light surface from stations or soundings. Nearer samples count more, controlled by `power`; a Shepard taper smooths the search edge. It cannot predict beyond the sample range.',
+      'Best for a quick, assumption-light surface from stations or soundings. Nearer samples count more, controlled by `power`; a Shepard taper smooths the search edge. It cannot predict beyond the sample range.',
     dataTypes: {input: ['points'], output: ['raster']},
     useCases: ['interpolate'],
     domains: ['remote-sensing', 'ecology'],
@@ -603,7 +608,7 @@ graph.add(new GPUInverseDistanceWeighting({
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'interpolation',
-      seed: 21,
+      seed: 9208,
       caption: 'A continuous surface through scattered stations.'
     },
     related: ['kriging', 'natural-neighbor', 'local-rbf'],
@@ -619,7 +624,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Kriging',
     summary: 'Ordinary kriging of scattered samples onto a raster, with prediction variance.',
     explanation:
-      'Use it when you can fit a variogram and want uncertainty with the surface. Each cell solves a local kriging system over its nearest samples using a spherical, exponential or gaussian model. Optional leave-one-out outputs validate the fit.',
+      'Best when you can fit a variogram and want uncertainty with the surface. Each cell solves a local kriging system over its nearest samples using a spherical, exponential or gaussian model. Optional leave-one-out outputs validate the fit.',
     dataTypes: {input: ['points'], output: ['raster']},
     useCases: ['interpolate', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -685,7 +690,7 @@ graph.add(new GPUKriging({
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'interpolation',
-      seed: 22,
+      seed: 9209,
       caption: 'Predicted surface; uncertainty grows away from samples.'
     },
     related: ['local-kriging', 'conditional-gaussian-simulation', 'inverse-distance-weighting'],
@@ -702,7 +707,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Simple, ordinary, universal, external-drift or co-kriging at arbitrary query supports.',
     explanation:
-      'Use it for prediction at points or blocks rather than a raster, or when you need drift terms or a second variable. Each query solves its own neighborhood system with per-observation error variance. Supports carry quadrature weights for block averages.',
+      'Best for prediction at points or blocks rather than a raster, or when you need drift terms or a second variable. Each query solves its own neighborhood system with per-observation error variance. Supports carry quadrature weights for block averages.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['interpolate', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -734,7 +739,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       },
       {name: 'neighborCount', type: 'number', description: 'Nearest samples per query.'},
       {name: 'searchRadius', type: 'number', description: 'Maximum neighbor distance.'},
-      {name: 'output', type: 'object', required: true, description: 'Destination views.'}
+      {name: 'output', type: '{values}', required: true, description: 'Destination views.'}
     ],
     outputs: [
       {
@@ -762,7 +767,7 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'interpolation', seed: 23, caption: 'Predictions at chosen query locations.'},
+    preview: {kind: 'interpolation', seed: 9210, caption: 'Predictions at chosen query locations.'},
     related: ['kriging', 'local-rbf', 'conditional-gaussian-simulation'],
     lensScenario: 'gpu-spatial-analysis.local-kriging',
     reference: 'api/gpu-spatial-analysis/interpolation-expansion',
@@ -834,7 +839,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'interpolation',
-      seed: 24,
+      seed: 9211,
       caption: 'One of many surfaces consistent with the data.'
     },
     related: ['kriging', 'local-kriging'],
@@ -850,7 +855,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Local radial basis functions',
     summary: 'Interpolates scattered values with local radial basis functions at query points.',
     explanation:
-      'Use it for smooth surfaces through exact or lightly smoothed samples when no variogram is available. Each query fits a small RBF system with a gaussian, thin-plate or polynomial kernel. Smoothing relaxes the exact fit.',
+      'Best for smooth surfaces through exact or lightly smoothed samples when no variogram is available. Each query fits a small RBF system with a gaussian, thin-plate or polynomial kernel. Smoothing relaxes the exact fit.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['interpolate'],
     domains: ['spatial-statistics', 'three-d'],
@@ -892,7 +897,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'interpolation',
-      seed: 25,
+      seed: 9212,
       caption: 'Smooth surface fit through the sample points.'
     },
     related: ['local-kriging', 'natural-neighbor', 'inverse-distance-weighting'],
@@ -909,7 +914,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Interpolates at query points using Voronoi-area (Sibson) weights of neighboring samples.',
     explanation:
-      'Use it for a parameter-free surface that adapts to uneven sample spacing. Weights come from how much of each sample’s Voronoi cell a new point would steal. Results stay inside the data range.',
+      'Best for a parameter-free surface that adapts to uneven sample spacing. Weights come from how much of each sample’s Voronoi cell a new point would steal. Results stay inside the data range.',
     dataTypes: {input: ['points'], output: ['table']},
     useCases: ['interpolate'],
     domains: ['spatial-statistics', 'hydrology'],
@@ -924,8 +929,13 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
         type: 'number',
         description: 'Capacity for the internal triangulation.'
       },
-      {name: 'maximumNeighborCount', type: 'number', description: 'Compile-time neighbor cap.'},
-      {name: 'output', type: 'object', required: true, description: 'Destination views.'}
+      {
+        name: 'maximumNeighborCount',
+        default: '32',
+        type: 'number',
+        description: 'Compile-time neighbor cap.'
+      },
+      {name: 'output', type: '{values}', required: true, description: 'Destination views.'}
     ],
     outputs: [
       {name: 'values', type: F32X4, description: 'Prediction and related terms per query.'},
@@ -953,7 +963,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'tessellation',
-      seed: 26,
+      seed: 9213,
       caption: 'Each sample owns a Voronoi cell; queries blend neighbors.'
     },
     related: ['inverse-distance-weighting', 'local-rbf', 'kriging'],
@@ -1020,7 +1030,7 @@ graph.add(new GPUFocalStatistics({
   output: {mean, standardDeviation, counts}
 }));
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'raster', seed: 27, caption: 'A circular window slides over every cell.'},
+    preview: {kind: 'raster', seed: 9214, caption: 'A circular window slides over every cell.'},
     related: ['zonal-statistics', 'kernel-density'],
     lensScenario: 'gpu-spatial-analysis.focal-statistics',
     reference: 'api/gpu-spatial-analysis/operators-statistics',
@@ -1034,7 +1044,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Areal interpolation',
     summary: 'Transfers values between two zone systems by overlap area, extensive or intensive.',
     explanation:
-      'Use it to move census counts or rates onto new boundaries. Both zone sets are rasterized on a fine grid, and each source-target pair gets an area share. Optional `cellWeights` make it dasymetric.',
+      'Moves census counts or rates onto new boundaries. Both zone sets are rasterized on a fine grid, and each source-target pair gets an area share. Optional `cellWeights` make it dasymetric.',
     dataTypes: {input: ['polygons', 'raster'], output: ['spatial-weights']},
     useCases: ['relate', 'summarize'],
     domains: ['demographics', 'urban'],
@@ -1094,7 +1104,7 @@ graph.add(new GPUSpatialLag({
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'polygon-overlay',
-      seed: 28,
+      seed: 9215,
       caption: 'Source zones re-aggregated onto target zones.'
     },
     related: ['pycnophylactic', 'zonal-statistics'],
@@ -1111,7 +1121,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Smooths zone totals into a continuous density surface that preserves each zone’s total.',
     explanation:
-      'Use it to turn polygon counts into a surface without sharp zone jumps (Tobler 1979). It alternates neighbor smoothing with a mass correction until the change drops below `tolerance`. The result sums back to each zone total.',
+      'Turns polygon counts into a surface without sharp zone jumps (Tobler 1979). It alternates neighbor smoothing with a mass correction until the change drops below `tolerance`. The result sums back to each zone total.',
     dataTypes: {input: ['polygons', 'table'], output: ['raster']},
     useCases: ['interpolate', 'transform'],
     domains: ['demographics', 'urban'],
@@ -1159,7 +1169,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'density-surface',
-      seed: 29,
+      seed: 9216,
       caption: 'Zone totals relaxed into a smooth, mass-true surface.'
     },
     related: ['areal-interpolation', 'kernel-density'],
@@ -1177,7 +1187,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Estimates intensity, K and pair correlation for a point pattern with varying density.',
     explanation:
-      'Use it to test clustering after accounting for a non-uniform background such as population. Intensity comes from a kernel estimate or your own surface; K and g are edge-corrected over a polygon window. Compare against simulated envelopes.',
+      'Tests clustering after accounting for a non-uniform background such as population. Intensity comes from a kernel estimate or your own surface; K and g are edge-corrected over a polygon window. Compare against simulated envelopes.',
     dataTypes: {input: ['points', 'polygons'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1203,15 +1213,17 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'bandwidth', type: 'number', description: 'Kernel bandwidth for intensity.'},
       {
         name: 'edgeCorrection',
+        default: "'border'",
         type: "'border' | 'translation'",
         description: 'Edge correction for K.'
       },
       {
         name: 'selfContribution',
+        default: "'exclude'",
         type: "'exclude' | 'include'",
         description: 'Whether a point counts toward its own intensity.'
       },
-      {name: 'output', type: 'object', required: true, description: 'Destination views.'}
+      {name: 'output', type: '{intensity}', required: true, description: 'Destination views.'}
     ],
     outputs: [
       {name: 'intensity', type: F32, description: 'Intensity at each point.'},
@@ -1238,7 +1250,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'point-clusters',
-      seed: 31,
+      seed: 9217,
       caption: 'Clustering measured against a changing background.'
     },
     related: ['point-pattern-envelope', 'kernel-density'],
@@ -1254,7 +1266,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Point pattern envelope',
     summary: 'Builds simulation envelopes and a Monte Carlo p-value for a point pattern function.',
     explanation:
-      'Use it to judge whether an observed K or g curve is more clustered than chance. Rank the simulated curves to get lower and upper bands, and a deviation statistic for a global test. State the null model and whether parameters were refit.',
+      'Judges whether an observed K or g curve is more clustered than chance. Rank the simulated curves to get lower and upper bands, and a deviation statistic for a global test. State the null model and whether parameters were refit.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics', 'ecology'],
@@ -1289,10 +1301,10 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
         required: true,
         description: 'Number of replicates.'
       },
-      {name: 'rank', type: 'number', description: 'Envelope rank from each end.'},
+      {name: 'rank', default: '1', type: 'number', description: 'Envelope rank from each end.'},
       {
         name: 'statistic',
-        type: "'maximum-deviation' | 'integrated-squared-deviation' | ...",
+        type: "'maximum-deviation' | 'integrated-squared-deviation'",
         description: 'Global deviation statistic.'
       },
       {
@@ -1306,7 +1318,12 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'lower', type: F32, description: 'Lower envelope per radius.'},
       {name: 'upper', type: F32, description: 'Upper envelope per radius.'},
       {name: 'statistics', type: F32, description: 'Global statistics for observed and simulated.'},
-      {name: 'pValueInterval', type: F32, description: 'Optional Monte Carlo p-value bounds.'}
+      {name: 'pValueInterval', type: F32, description: 'Optional Monte Carlo p-value bounds.'},
+      {
+        name: 'status',
+        type: "GraphDataView<'uint32'>",
+        description: '0 valid, 1 invalid or nonfinite curve.'
+      }
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
 import {GPUPointPatternEnvelope} from '${ANALYSIS}';
@@ -1327,7 +1344,11 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'histogram', seed: 32, caption: 'Observed curve against the simulated band.'},
+    preview: {
+      kind: 'regression',
+      seed: 9218,
+      caption: 'Observed curve against the simulated band.'
+    },
     related: ['inhomogeneous-point-pattern'],
     lensScenario: 'gpu-spatial-analysis.point-pattern-envelope',
     reference: 'api/gpu-spatial-analysis/point-process',
@@ -1342,7 +1363,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Draws a well-spread random sample of sites on a line or in an area, with design weights.',
     explanation:
-      'Use it to pick field sites that cover a region evenly yet randomly. Candidates are accepted in waves when they respect a minimum `spacing`. Each site carries a design weight for unbiased estimates.',
+      'Picks field sites that cover a region evenly yet randomly. Candidates are accepted in waves when they respect a minimum `spacing`. Each site carries a design weight for unbiased estimates.',
     dataTypes: {input: ['lines', 'polygons'], output: ['points']},
     useCases: ['simulate', 'summarize'],
     domains: ['ecology', 'spatial-statistics'],
@@ -1363,8 +1384,13 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'capacity', type: 'number', required: true, description: 'Maximum sites returned.'},
       {name: 'replicate', type: 'number', description: 'Independent replicate index.'},
       {name: 'waves', type: 'number', description: 'Candidate rounds.'},
-      {name: 'maximumCandidates', type: 'number', description: 'Candidate cap per wave.'},
-      {name: 'output', type: 'object', required: true, description: 'Destination views.'}
+      {
+        name: 'maximumCandidates',
+        default: '65536',
+        type: 'number',
+        description: 'Candidate cap per wave.'
+      },
+      {name: 'output', type: '{positions}', required: true, description: 'Destination views.'}
     ],
     outputs: [
       {name: 'positions', type: F32X2, description: 'Selected sites.'},
@@ -1387,7 +1413,7 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'points', seed: 33, caption: 'Random yet evenly spread sample sites.'},
+    preview: {kind: 'points', seed: 9219, caption: 'Random yet evenly spread sample sites.'},
     related: ['spatial-balanced-sample', 'random-points-in-polygon'],
     lensScenario: 'gpu-spatial-analysis.continuous-spatial-sample',
     reference: 'api/gpu-spatial-analysis/point-process',
@@ -1402,7 +1428,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Selects units from a finite frame so the sample is spread across space within each stratum.',
     explanation:
-      'Use it to sample parcels, plots or addresses with an even footprint. Allocations set the sample size per stratum, and inclusion probabilities are returned for design-based estimates. A seed and replicate index make draws reproducible.',
+      'Samples parcels, plots or addresses with an even footprint. Allocations set the sample size per stratum, and inclusion probabilities are returned for design-based estimates. A seed and replicate index make draws reproducible.',
     dataTypes: {input: ['points', 'table'], output: ['table']},
     useCases: ['simulate', 'summarize'],
     domains: ['ecology', 'demographics'],
@@ -1423,8 +1449,13 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       },
       {name: 'seed', type: 'number', required: true, description: 'Random seed.'},
       {name: 'strata', type: U32, description: 'Stratum id per unit.'},
-      {name: 'replicate', type: 'number', description: 'Independent replicate index.'},
-      {name: 'output', type: 'object', required: true, description: 'Destination views.'}
+      {
+        name: 'replicate',
+        default: '0',
+        type: 'number',
+        description: 'Independent replicate index.'
+      },
+      {name: 'output', type: '{frameIds}', required: true, description: 'Destination views.'}
     ],
     outputs: [
       {name: 'frameIds', type: U32, description: 'Selected unit ids.'},
@@ -1453,8 +1484,8 @@ graph.add(
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
-      kind: 'point-clusters',
-      seed: 34,
+      kind: 'points',
+      seed: 9220,
       caption: 'A sample drawn evenly across clusters and strata.'
     },
     related: ['continuous-spatial-sample', 'random-points-in-polygon'],
@@ -1471,7 +1502,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Computes mean center, median center, standard distance and directional ellipse per group.',
     explanation:
-      'Use it to summarize where a set of events sits and how it is stretched, such as crime by type or species by year. Weights and group ids allow many groups in one pass. Ellipse vertices are ready to draw.',
+      'Summarizes where a set of events sits and how it is stretched, such as crime by type or species by year. Weights and group ids allow many groups in one pass. Ellipse vertices are ready to draw.',
     dataTypes: {input: ['points'], output: ['table', 'polygons']},
     useCases: ['summarize', 'measure'],
     domains: ['spatial-statistics', 'urban'],
@@ -1520,7 +1551,7 @@ graph.add(new GPUGeographicDistribution({
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'point-clusters',
-      seed: 35,
+      seed: 9221,
       caption: 'Mean center and standard-deviation ellipse per group.'
     },
     related: ['rose-statistic', 'point-density'],
@@ -1537,7 +1568,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Summarizes the directions of line segments as a rose diagram with circular statistics.',
     explanation:
-      'Use it for street orientation, fault trends or movement headings. Bearings are binned into a rose and reduced to a mean direction and concentration. Choose directional (0..360) or axial (0..180) mode.',
+      'Best for street orientation, fault trends or movement headings. Bearings are binned into a rose and reduced to a mean direction and concentration. Choose directional (0..360) or axial (0..180) mode.',
     dataTypes: {input: ['lines', 'points'], output: ['table']},
     useCases: ['measure', 'summarize'],
     domains: ['urban', 'transport'],
@@ -1585,7 +1616,7 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'histogram', seed: 36, caption: 'Street bearings binned into a rose.'},
+    preview: {kind: 'histogram', seed: 9222, caption: 'Street bearings binned into a rose.'},
     related: ['geographic-distribution'],
     lensScenario: 'gpu-spatial-analysis.rose-statistic',
     reference: 'api/gpu-spatial-analysis/operators-statistics',
@@ -1600,7 +1631,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Class assignment',
     summary: 'Assigns every value to a class of shared breaks, one legend across all periods.',
     explanation:
-      'Use it before a transition matrix: classify each period with the same pooled breaks. A value gets the number of inner breaks it meets or exceeds. NaN and masked rows get a no-class sentinel.',
+      'Best before a transition matrix: classify each period with the same pooled breaks. A value gets the number of inner breaks it meets or exceeds. NaN and masked rows get a no-class sentinel.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['classify'],
     domains: ['demographics', 'spatial-statistics'],
@@ -1633,7 +1664,7 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'classification', seed: 41, caption: 'Values mapped to five shared classes.'},
+    preview: {kind: 'classification', seed: 9223, caption: 'Values mapped to five shared classes.'},
     related: ['classification-fit', 'transition-matrix'],
     lensScenario: 'gpu-spatial-analysis.class-assignment',
     reference: 'api/gpu-spatial-analysis/operators-dynamics',
@@ -1648,7 +1679,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Scores how well a classification describes a column: class counts, medians, deviations and GADF.',
     explanation:
-      'Use it to compare class schemes (quantile, natural breaks, equal interval) on one footing. The goodness of absolute deviation fit compares within-class to overall deviation around the median. Higher is better.',
+      'Compares class schemes (quantile, natural breaks, equal interval) on one footing. The goodness of absolute deviation fit compares within-class to overall deviation around the median. Higher is better.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['classify', 'model'],
     domains: ['demographics', 'spatial-statistics'],
@@ -1687,7 +1718,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'classification',
-      seed: 42,
+      seed: 9224,
       caption: 'Within-class spread versus overall spread.'
     },
     related: ['class-assignment'],
@@ -1704,7 +1735,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Counts class-to-class moves between periods and turns them into transition probabilities.',
     explanation:
-      'Use it to see how places move between classes over time, such as income quintiles. Rows are classes at time t, columns at t + lag. A condition class splits the matrix by context.',
+      'Shows how places move between classes over time, such as income quintiles. Rows are classes at time t, columns at t + lag. A condition class splits the matrix by context.',
     dataTypes: {input: ['table', 'time-series'], output: ['table']},
     useCases: ['detect-change', 'model'],
     domains: ['demographics', 'spatial-statistics'],
@@ -1764,7 +1795,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'time-series',
-      seed: 43,
+      seed: 9225,
       caption: 'Probability of moving from one class to another.'
     },
     related: ['spatial-markov', 'lisa-markov', 'rank-markov', 'transition-diagnostics'],
@@ -1780,7 +1811,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Spatial Markov',
     summary: 'Transition matrices conditioned on the class of each place’s spatial lag.',
     explanation:
-      'Use it to ask whether a rich neighbor changes a place’s chances of moving up. It classifies the weights-based lag, then builds one transition matrix per lag class. Compare matrices with the diagnostics.',
+      'Tests whether a rich neighbor changes a place’s chances of moving up. It classifies the weights-based lag, then builds one transition matrix per lag class. Compare matrices with the diagnostics.',
     dataTypes: {input: ['table', 'spatial-weights'], output: ['table']},
     useCases: ['detect-change', 'model'],
     domains: ['spatial-statistics', 'demographics'],
@@ -1812,6 +1843,11 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'counts', type: U32, description: 'Counts per lag class.'},
       {name: 'probabilities', type: F32, description: 'Probabilities per lag class.'},
       {name: 'lagBreaks', type: F32, description: 'Breaks of the lag classification.'},
+      {
+        name: 'lagClassCount',
+        type: 'GraphDataView<"uint32">',
+        description: 'Number of lag classes produced.'
+      },
       {name: 'homogeneity', type: F32, description: 'Optional test of equal matrices.'}
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
@@ -1832,7 +1868,11 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'time-series', seed: 44, caption: 'One transition matrix per neighbor class.'},
+    preview: {
+      kind: 'time-series',
+      seed: 9226,
+      caption: 'One transition matrix per neighbor class.'
+    },
     related: ['transition-matrix', 'lisa-markov', 'transition-diagnostics'],
     lensScenario: 'gpu-spatial-analysis.spatial-markov',
     reference: 'api/gpu-spatial-analysis/operators-dynamics',
@@ -1846,7 +1886,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'LISA Markov',
     summary: 'Transition matrix between local Moran quadrants (HH, LH, LL, HL) across periods.',
     explanation:
-      'Use it to see how hot and cold spots persist or flip over time. Each period gets a local Moran quadrant, optionally gated by significance. Transitions between those states form the matrix.',
+      'Shows how hot and cold spots persist or flip over time. Each period gets a local Moran quadrant, optionally gated by significance. Transitions between those states form the matrix.',
     dataTypes: {input: ['table', 'spatial-weights'], output: ['table']},
     useCases: ['detect-change', 'find-patterns'],
     domains: ['spatial-statistics', 'urban'],
@@ -1899,7 +1939,7 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'hotspots', seed: 45, caption: 'Hot and cold spots moving between periods.'},
+    preview: {kind: 'hotspots', seed: 9227, caption: 'Hot and cold spots moving between periods.'},
     related: ['spatial-markov', 'transition-matrix', 'transition-diagnostics'],
     lensScenario: 'gpu-spatial-analysis.lisa-markov',
     reference: 'api/gpu-spatial-analysis/operators-dynamics',
@@ -1913,7 +1953,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Rank Markov',
     summary: 'Transitions of each place’s rank across periods, with mobility and rank diagnostics.',
     explanation:
-      'Use it to study rank mobility without picking class breaks. Places are ranked each period (full or geographic rank) and rank moves become the transitions. Ties break by the giddy rule or by row id.',
+      'Studies rank mobility without picking class breaks. Places are ranked each period (full or geographic rank) and rank moves become the transitions. Ties break by the giddy rule or by row id.',
     dataTypes: {input: ['table', 'time-series'], output: ['table']},
     useCases: ['detect-change', 'model'],
     domains: ['demographics', 'spatial-statistics'],
@@ -1929,7 +1969,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'mask', type: U32, description: 'Zero excludes a row.'},
       {
         name: 'output',
-        type: 'GPUTransitionDiagnosticsOutput & {...}',
+        type: 'GPUTransitionDiagnosticsOutput',
         required: true,
         description: 'Destination views.'
       }
@@ -1955,7 +1995,7 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'time-series', seed: 46, caption: 'Rank trajectories across periods.'},
+    preview: {kind: 'time-series', seed: 9228, caption: 'Rank trajectories across periods.'},
     related: ['transition-matrix', 'spatial-markov'],
     lensScenario: 'gpu-spatial-analysis.rank-markov',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -1969,7 +2009,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Transition diagnostics',
     summary: 'Tests homogeneity and finds steady states of transition counts.',
     explanation:
-      'Use it to judge whether conditional transition matrices differ and where the process settles. Homogeneity is a chi-square across conditions; steady states come from iterating the normalized matrix. Sparse rows are flagged.',
+      'Judges whether conditional transition matrices differ and where the process settles. Homogeneity is a chi-square across conditions; steady states come from iterating the normalized matrix. Sparse rows are flagged.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['model', 'detect-change'],
     domains: ['spatial-statistics', 'demographics'],
@@ -2017,7 +2057,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'histogram',
-      seed: 47,
+      seed: 9229,
       caption: 'Long-run class shares from a transition matrix.'
     },
     related: ['transition-matrix', 'spatial-markov', 'lisa-markov'],
@@ -2035,7 +2075,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Count, sum, mean, extremes and histogram of values inside a rectangle, polygon, radius or pick.',
     explanation:
-      'Use it for live brush-and-summarize interaction on huge point sets. The region is a per-frame view, so dragging never recompiles. An optional grid index avoids testing every row.',
+      'Best for live brush-and-summarize interaction on huge point sets. The region is a per-frame view, so dragging never recompiles. An optional grid index avoids testing every row.',
     dataTypes: {input: ['points', 'polygons'], output: ['table']},
     useCases: ['summarize', 'find-patterns'],
     domains: ['data-engineering', 'cartography'],
@@ -2091,7 +2131,7 @@ graph.add(new GPURegionStatistics({
 const compiled = graph.compile();
 bounds.write(new Float32Array([minX, minY, maxX, maxY])); // every pointer move
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'points', seed: 51, caption: 'Drag a region; statistics update on the GPU.'},
+    preview: {kind: 'points', seed: 9230, caption: 'Drag a region; statistics update on the GPU.'},
     related: ['region-statistics-readback', 'region-mask', 'pick-region-mask', 'zonal-statistics'],
     lensScenario: 'gpu-spatial-analysis.region-statistics',
     reference: 'api/gpu-spatial-analysis/operators-statistics',
@@ -2106,7 +2146,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Reads a region summary back to the CPU through a small ring, without stalling the frame.',
     explanation:
-      'Use it to show numbers in the UI while the GPU keeps brushing. `encodeRead` copies the summary into a free ring slot and returns a ticket; `read` resolves it later as plain numbers.',
+      'Shows numbers in the UI while the GPU keeps brushing. `encodeRead` copies the summary into a free ring slot and returns a ticket; `read` resolves it later as plain numbers.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering'],
@@ -2133,7 +2173,11 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
       },
       {name: 'sum, mean, minimum, maximum', type: 'number', description: 'Value statistics.'},
       {name: 'histogram', type: 'Uint32Array', description: 'Bin counts.'},
-      {name: 'selectionTruncated, ...', type: 'boolean', description: 'Capacity flags.'}
+      {
+        name: 'selectionTruncated, regionTruncated, candidatesTruncated',
+        type: 'boolean',
+        description: 'Capacity flags.'
+      }
     ],
     example: `import {GPURegionStatisticsReadback} from '${ANALYSIS}';
 
@@ -2148,7 +2192,7 @@ if (ticket) {
 }
 
 readback.destroy();`,
-    preview: {kind: 'pipeline', seed: 52, caption: 'GPU summary slots drained a frame later.'},
+    preview: {kind: 'pipeline', seed: 9231, caption: 'GPU summary slots drained a frame later.'},
     related: ['region-statistics', 'region-mask'],
     reference: 'api/gpu-spatial-analysis/operators-statistics',
     maturity: 'stable'
@@ -2161,7 +2205,7 @@ readback.destroy();`,
     title: 'Region mask',
     summary: 'Marks which points fall inside a rectangle or polygon, as a reusable uint32 mask.',
     explanation:
-      "Use it to filter once and reuse the mask in density, statistics or rendering. The shape is a per-frame view, so dragging is free. Mask feeds `GPURegionStatistics` as `kind: 'mask'`.",
+      "Filters once and reuse the mask in density, statistics or rendering. The shape is a per-frame view, so dragging is free. Mask feeds `GPURegionStatistics` as `kind: 'mask'`.",
     dataTypes: {input: ['points', 'polygons'], output: ['table']},
     useCases: ['relate', 'summarize'],
     domains: ['data-engineering', 'cartography'],
@@ -2209,7 +2253,7 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'points', seed: 53, caption: 'Points inside the shape light up.'},
+    preview: {kind: 'points', seed: 9232, caption: 'Points inside the shape light up.'},
     related: ['pick-region-mask', 'region-statistics'],
     lensScenario: 'gpu-spatial-analysis.region-mask',
     reference: 'api/gpu-spatial-analysis/operators-statistics',
@@ -2223,7 +2267,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Pick region mask',
     summary: 'Turns a screen-space region pick into a per-object mask.',
     explanation:
-      'Use it to select what is visible inside a drawn rectangle: render with picking, then convert object ids to a mask. The mask then drives statistics or highlights, with no CPU readback.',
+      'Selects what is visible inside a drawn rectangle: render with picking, then convert object ids to a mask. The mask then drives statistics or highlights, with no CPU readback.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['relate', 'summarize'],
     domains: ['cartography', 'data-engineering'],
@@ -2259,7 +2303,7 @@ graph.add(
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'polygons', seed: 54, caption: 'Rubber-band selection becomes a mask.'},
+    preview: {kind: 'polygons', seed: 9233, caption: 'Rubber-band selection becomes a mask.'},
     related: ['region-mask', 'region-statistics'],
     lensScenario: 'gpu-spatial-analysis.pick-region-mask',
     reference: 'api/gpu-spatial-analysis/operators-statistics',
@@ -2274,7 +2318,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Count, sum, mean, min, max and deviation of points or raster values within each polygon.',
     explanation:
-      "Use it to roll point events or raster cells up to zones such as tracts or parcels. Polygons are indexed and tested on the GPU, then reduced per zone. `sumOrder: 'sorted'` makes sums bit-reproducible.",
+      "Rolls point events or raster cells up to zones such as tracts or parcels. Polygons are indexed and tested on the GPU, then reduced per zone. `sumOrder: 'sorted'` makes sums bit-reproducible.",
     dataTypes: {input: ['points', 'polygons', 'raster'], output: ['table']},
     useCases: ['summarize', 'relate'],
     domains: ['data-engineering', 'demographics'],
@@ -2326,8 +2370,8 @@ graph.add(
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
-      kind: 'polygon-overlay',
-      seed: 55,
+      kind: 'polygons',
+      seed: 9234,
       caption: 'Points rolled up to the polygons that contain them.'
     },
     related: ['region-statistics', 'focal-statistics', 'line-length-per-polygon'],
@@ -2345,7 +2389,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Builds the minimum spanning tree of a contiguity graph weighted by attribute dissimilarity.',
     explanation:
-      'Use it as the first step of SKATER regionalization. Edges join neighbors and cost their attribute distance; the tree keeps the cheapest connected set. Disconnected islands get separate component labels.',
+      'The first step of SKATER regionalization. Edges join neighbors and cost their attribute distance; the tree keeps the cheapest connected set. Disconnected islands get separate component labels.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['relate', 'find-patterns'],
     domains: ['spatial-statistics', 'demographics'],
@@ -2382,8 +2426,8 @@ graph.add(
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
-      kind: 'spatial-weights',
-      seed: 61,
+      kind: 'network',
+      seed: 9235,
       caption: 'The cheapest tree through neighboring polygons.'
     },
     related: ['skater-regions', 'ward-regions'],
@@ -2399,7 +2443,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'SKATER regions',
     summary: 'Partitions places into contiguous, homogeneous regions by cutting a spanning tree.',
     explanation:
-      'Use it to build regions that stay connected and similar inside. It repeatedly cuts the tree edge that most reduces within-region variance until `regionCount` is reached. A minimum region size guards against slivers.',
+      'Builds regions that stay connected and similar inside. It repeatedly cuts the tree edge that most reduces within-region variance until `regionCount` is reached. A minimum region size guards against slivers.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns', 'classify'],
     domains: ['spatial-statistics', 'demographics'],
@@ -2463,7 +2507,7 @@ graph.add(new GPUSkaterRegions({
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'polygons',
-      seed: 62,
+      seed: 9236,
       caption: 'Tracts grouped into connected, similar regions.'
     },
     related: [
@@ -2483,7 +2527,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Ward regions',
     summary: 'Agglomerative Ward clustering constrained to contiguous neighbors.',
     explanation:
-      'Use it for hierarchical regions that merge the pair raising variance least. Only adjacent regions merge, so every region stays connected. `mutual-nearest` merges many pairs per round for speed.',
+      'Best for hierarchical regions that merge the pair raising variance least. Only adjacent regions merge, so every region stays connected. `mutual-nearest` merges many pairs per round for speed.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns', 'classify'],
     domains: ['spatial-statistics', 'demographics'],
@@ -2533,7 +2577,7 @@ graph.add(new GPUWardRegions({
   output: {labels, objective, status}
 }));
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'polygons', seed: 63, caption: 'Neighbors merge until eight regions remain.'},
+    preview: {kind: 'polygons', seed: 9237, caption: 'Neighbors merge until eight regions remain.'},
     related: ['skater-regions', 'azp-regions', 'max-p-regions'],
     lensScenario: 'gpu-spatial-analysis.ward-regions',
     reference: 'api/gpu-spatial-analysis/operators-statistics',
@@ -2548,7 +2592,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Improves a region partition by moving border places to reduce within-region variance.',
     explanation:
-      'Use it to polish a starting partition (from SKATER or Ward) under contiguity. Moves are batched and deterministic, bounded by `maximumIterations`. Optional extensive thresholds keep regions above a minimum.',
+      'Polishes a starting partition (from SKATER or Ward) under contiguity. Moves are batched and deterministic, bounded by `maximumIterations`. Optional extensive thresholds keep regions above a minimum.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns', 'classify'],
     domains: ['spatial-statistics', 'demographics'],
@@ -2599,7 +2643,7 @@ graph.add(new GPUAZPRegions({
   output: {labels, objective, status}
 }));
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'polygons', seed: 64, caption: 'Border tracts swap regions to tighten them.'},
+    preview: {kind: 'polygons', seed: 9238, caption: 'Border tracts swap regions to tighten them.'},
     related: ['skater-regions', 'ward-regions', 'region-partition-evaluation'],
     lensScenario: 'gpu-spatial-analysis.azp-regions',
     reference: 'api/gpu-spatial-analysis/operators-statistics',
@@ -2613,7 +2657,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Max-p regions',
     summary: 'Finds as many contiguous regions as possible while each meets a minimum threshold.',
     explanation:
-      'Use it when regions must reach a floor, such as 10,000 people, and you want the most regions. It grows regions from several random starts, then improves them. The best start wins.',
+      'Best when regions must reach a floor, such as 10,000 people, and you want the most regions. It grows regions from several random starts, then improves them. The best start wins.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns', 'classify'],
     domains: ['demographics', 'spatial-statistics'],
@@ -2665,7 +2709,7 @@ graph.add(new GPUMaxPRegions({
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'polygons',
-      seed: 65,
+      seed: 9239,
       caption: 'As many regions as the population floor allows.'
     },
     related: ['skater-regions', 'azp-regions', 'region-partition-evaluation'],
@@ -2681,7 +2725,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     title: 'Region partition evaluation',
     summary: 'Scores a region partition: sizes, within-region sum of squares and contiguity.',
     explanation:
-      'Use it to compare candidate partitions from different methods or parameters. Lower within-region sum of squares means more homogeneous regions. Pass weights to also check that every region is connected.',
+      'Compares candidate partitions from different methods or parameters. Lower within-region sum of squares means more homogeneous regions. Pass weights to also check that every region is connected.',
     dataTypes: {input: ['table', 'spatial-weights'], output: ['table']},
     useCases: ['model', 'classify'],
     domains: ['spatial-statistics', 'demographics'],
@@ -2728,7 +2772,7 @@ graph.add(
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'histogram',
-      seed: 66,
+      seed: 9240,
       caption: 'Region sizes and internal spread at a glance.'
     },
     related: ['skater-regions', 'ward-regions', 'azp-regions', 'max-p-regions'],

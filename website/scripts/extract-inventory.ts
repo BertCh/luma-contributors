@@ -38,6 +38,8 @@ type InventorySymbol = {
   directory: string;
   propsType: string | null;
   props: InventoryProp[];
+  /** Resolved output fields: the class \`output\`/\`outputs\` prop type, or the function return type. */
+  outputs: InventoryProp[];
   summary: string;
   docsSlug: string | null;
   lensScenarios: string[];
@@ -192,6 +194,58 @@ function main(): void {
     return {propsType, props};
   };
 
+  const listObjectFields = (type: ts.Type, location: ts.Node): InventoryProp[] => {
+    const fields: InventoryProp[] = [];
+    const members = type.isUnion() ? type.types : [type];
+    const seen = new Set<string>();
+    for (const member of members) {
+      if (!(member.flags & ts.TypeFlags.Object || member.isIntersection())) continue;
+      if (checker.getSignaturesOfType(member, ts.SignatureKind.Call).length > 0) continue;
+      for (const property of checker.getPropertiesOfType(member)) {
+        if (property.name.startsWith('__@') || seen.has(property.name)) continue;
+        const propertyFile = property.declarations?.[0]?.getSourceFile().fileName ?? '';
+        if (propertyFile.includes('node_modules') || propertyFile.includes('lib.')) continue;
+        seen.add(property.name);
+        fields.push({
+          name: property.name,
+          type: formatType(checker.getTypeOfSymbolAtLocation(property, location)),
+          optional: (property.flags & ts.SymbolFlags.Optional) !== 0,
+          jsdoc: summarizeText(ts.displayPartsToString(property.getDocumentationComment(checker)), MAX_JSDOC_LENGTH)
+        });
+      }
+    }
+    return fields;
+  };
+
+  // Functions whose options are not a single props object: report every parameter by name and
+  // flatten object-typed parameters as dotted names such as \`options.scale\`.
+  const resolveParameterProps = (signature: ts.Signature, location: ts.Node): InventoryProp[] => {
+    const props: InventoryProp[] = [];
+    for (const parameter of signature.getParameters()) {
+      if (/^(device|graph|commandGraph)$/.test(parameter.name)) continue;
+      const declaration = parameter.valueDeclaration;
+      const optional = !!declaration && ts.isParameter(declaration) && (!!declaration.questionToken || !!declaration.initializer);
+      const parameterType = checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location));
+      props.push({name: parameter.name, type: formatType(parameterType), optional, jsdoc: ''});
+      const isPlainObject = (parameterType.flags & ts.TypeFlags.Object) !== 0 && checker.getSignaturesOfType(parameterType, ts.SignatureKind.Call).length === 0 && parameterType.symbol?.name !== 'Float32Array' && !checker.isArrayLikeType(parameterType);
+      if (!isPlainObject) continue;
+      for (const field of resolveProps(parameter, location).props) props.push({...field, name: `${parameter.name}.${field.name}`});
+    }
+    return props;
+  };
+
+  const resolveOutputs = (isClass: boolean, props: InventoryProp[], parameter: ts.Symbol | undefined, signature: ts.Signature | undefined, location: ts.Node): InventoryProp[] => {
+    if (isClass) {
+      const outputProp = parameter && checker.getPropertyOfType(checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location)), 'outputs') ||
+        parameter && checker.getPropertyOfType(checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(parameter, location)), 'output');
+      return outputProp ? listObjectFields(checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(outputProp, location)), location) : [];
+    }
+    if (!signature) return [];
+    let returnType = checker.getReturnTypeOfSignature(signature);
+    if (returnType.symbol?.name === 'Promise') returnType = checker.getTypeArguments(returnType as ts.TypeReference)[0] ?? returnType;
+    return listObjectFields(returnType, location);
+  };
+
   const symbols = new Map<string, InventorySymbol>();
   for (const entryPoint of entryPoints) {
     const sourceFile = program.getSourceFile(entryPoint.file);
@@ -221,7 +275,10 @@ function main(): void {
         const typeText = checker.typeToString(checker.getTypeOfSymbolAtLocation(candidate, declaration));
         return !/^(device|graph|commandGraph)$/.test(candidate.name) && !/^(Device|GPUCommandGraph)\b/.test(typeText);
       });
-      const {propsType, props} = resolveProps(parameter, declaration);
+      const resolved = resolveProps(parameter, declaration);
+      const propsType = resolved.propsType;
+      const props = resolved.props.length > 0 || isClass || !signature ? resolved.props : resolveParameterProps(signature, declaration);
+      const outputs = resolveOutputs(isClass, props, parameter, signature, declaration);
 
       const existing = symbols.get(name);
       const importPath = entryPoint.importPath;
@@ -266,6 +323,7 @@ function main(): void {
         directory: relative(analysisSource, dirname(declarationFile)).split('/').slice(0, 2).join('/'),
         propsType,
         props,
+        outputs,
         summary: summarizeText(ts.displayPartsToString(target.getDocumentationComment(checker)), MAX_JSDOC_LENGTH * 2),
         docsSlug: pageScores[0]?.slug ?? null,
         lensScenarios: lensMatches.slice(0, MAX_LENS_SCENARIOS),

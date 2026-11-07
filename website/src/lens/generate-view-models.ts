@@ -15,9 +15,13 @@ const lensDirectory = path.dirname(fileURLToPath(import.meta.url));
 const recordsDirectory = path.resolve(lensDirectory, '../../../docs/lens-records');
 const outputDirectory = path.join(lensDirectory, 'generated');
 
+// Pass scenario ids to regenerate only those (nothing is deleted); no arguments rebuilds them all.
+const onlyScenarioIds = new Set(process.argv.slice(2));
 fs.mkdirSync(outputDirectory, {recursive: true});
-for (const file of fs.readdirSync(outputDirectory)) {
-  if (file.endsWith('.json')) fs.unlinkSync(path.join(outputDirectory, file));
+if (onlyScenarioIds.size === 0) {
+  for (const file of fs.readdirSync(outputDirectory)) {
+    if (file.endsWith('.json')) fs.unlinkSync(path.join(outputDirectory, file));
+  }
 }
 
 let written = 0;
@@ -26,6 +30,7 @@ const failures: string[] = [];
 for (const file of fs.readdirSync(recordsDirectory).sort()) {
   if (!file.endsWith('.json')) continue;
   const scenarioId = file.replace(/\.json$/, '');
+  if (onlyScenarioIds.size > 0 && !onlyScenarioIds.has(scenarioId)) continue;
   try {
     const envelope = fromRecordedLensFile(
       JSON.parse(fs.readFileSync(path.join(recordsDirectory, file), 'utf8'))

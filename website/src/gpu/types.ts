@@ -38,6 +38,11 @@ export type GpuSceneParameter = {
   default: number;
   /** Optional unit shown after the value, for example `px` or `%`. */
   unit?: string;
+  /**
+   * Enumerated choices. The control becomes a segmented selector and the value is the index of the
+   * chosen option (`min` 0, `max` options.length - 1, `step` 1).
+   */
+  options?: readonly string[];
 };
 
 export type GpuSceneInstance = {

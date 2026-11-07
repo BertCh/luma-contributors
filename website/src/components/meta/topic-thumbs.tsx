@@ -124,6 +124,92 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           <circle cx={172} cy={96} r={5} fill="var(--color-signal)" />
         </g>
       ) : null}
+      {slug === 'scheduling' ? (
+        <g>
+          {[
+            [30, 14, 90],
+            [60, 40, 100],
+            [100, 66, 120],
+            [140, 92, 80],
+            [190, 118, 90],
+            [220, 144, 70]
+          ].map(([x, y, width], index) => (
+            <rect
+              key={index}
+              x={x}
+              y={y}
+              width={width}
+              height={18}
+              rx={5}
+              fill="var(--color-accent)"
+              fillOpacity={index === 3 ? 0.9 : 0.22 + index * 0.05}
+              {...(index === 3 ? {} : {stroke: 'var(--color-accent)', strokeWidth: 1.2})}
+            />
+          ))}
+          <path
+            d="M162 8 V176"
+            stroke="var(--color-signal)"
+            strokeWidth={1.6}
+            strokeDasharray="4 4"
+          />
+        </g>
+      ) : null}
+      {slug === 'kernels' ? (
+        <g>
+          {Array.from({length: 12}, (_, column) =>
+            Array.from({length: 8}, (_, row) => {
+              const index = row * 12 + column;
+              const workgroup = Math.floor(index / 16);
+              return (
+                <rect
+                  key={`${column}-${row}`}
+                  x={28 + column * 22}
+                  y={22 + row * 20}
+                  width={17}
+                  height={15}
+                  rx={3}
+                  fill="var(--color-accent)"
+                  fillOpacity={workgroup % 2 === 0 ? 0.85 : 0.35}
+                />
+              );
+            })
+          )}
+          <path d="M28 18 H292" stroke="var(--color-signal)" strokeWidth={1.6} />
+        </g>
+      ) : null}
+      {slug === 'this-page' ? (
+        <g>
+          <rect x={24} y={20} width={272} height={110} rx={8} {...STROKE} strokeOpacity={0.6} />
+          {Array.from({length: 8}, (_, column) =>
+            Array.from({length: 3}, (_, row) => (
+              <rect
+                key={`${column}-${row}`}
+                x={36 + column * 32}
+                y={32 + row * 32}
+                width={24}
+                height={24}
+                rx={4}
+                fill="var(--color-accent)"
+                fillOpacity={0.15 + ((column + row * 3) % 5) * 0.16}
+              />
+            ))
+          )}
+          {[0, 1, 2, 3].map(index => (
+            <rect
+              key={index}
+              x={24 + index * 70}
+              y={142}
+              width={62}
+              height={30}
+              rx={4}
+              fill="none"
+              stroke="var(--color-signal)"
+              strokeWidth={1.4}
+              strokeOpacity={0.8}
+            />
+          ))}
+        </g>
+      ) : null}
       {slug === 'upstream-first' ? (
         <g>
           {[0, 1, 2].map(index => (

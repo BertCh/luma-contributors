@@ -4,9 +4,12 @@
 // <GpuCanvas>: a live luma.gl picture over a static fallback. Prerendering emits the fallback only.
 // In the browser the scene starts when scrolled into view, pauses when offscreen, and the canvas
 // fades in over the fallback once its first frame is drawn. Any failure keeps the fallback.
+// With `controls`, a strip under the canvas holds one slider per scene parameter; the sliders are
+// part of the prerendered HTML (disabled) and come alive with the canvas.
 
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type CSSProperties,
@@ -14,7 +17,14 @@ import {
   type ReactNode
 } from 'react';
 import type {Device} from '@luma.gl/core';
-import type {GpuSceneInstance, GpuSceneLoader, GpuTheme} from './types.ts';
+import type {
+  GpuSceneInstance,
+  GpuSceneLoader,
+  GpuSceneParameter,
+  GpuSceneParameters,
+  GpuTheme
+} from './types.ts';
+import './gpu-canvas.css';
 
 export type GpuCanvasProps = {
   scene: GpuSceneLoader;
@@ -29,7 +39,24 @@ export type GpuCanvasProps = {
   className?: string;
   /** Forward pointer position to the scene. */
   interactive?: boolean;
+  /** Render a slider strip under the canvas, one slider per scene parameter. */
+  controls?: boolean;
+  /** The scene's parameters, known at render time so sliders appear in the prerendered HTML. */
+  parameters?: GpuSceneParameters;
 };
+
+type ParameterValues = Record<string, number>;
+
+function getDefaultValues(parameters: GpuSceneParameters): ParameterValues {
+  const values: ParameterValues = {};
+  for (const parameter of parameters) values[parameter.id] = parameter.default;
+  return values;
+}
+
+function formatValue(parameter: GpuSceneParameter, value: number): string {
+  const decimals = (String(parameter.step).split('.')[1] ?? '').length;
+  return `${value.toFixed(decimals)}${parameter.unit ?? ''}`;
+}
 
 function getTheme(): GpuTheme {
   const attribute = document.documentElement.dataset.theme;
@@ -46,13 +73,24 @@ export function GpuCanvas({
   label,
   aspectRatio = 16 / 10,
   className,
-  interactive = false
+  interactive = false,
+  controls = false,
+  parameters
 }: GpuCanvasProps): ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isReady, setIsReady] = useState(false);
   // Bumped when a canvas is released offscreen, so the next start gets a fresh element.
   const [generation, setGeneration] = useState(0);
+  const [backend, setBackend] = useState<string | null>(null);
+  // Parameters declared by the loaded scene module; used when the page did not pass `parameters`.
+  const [moduleParameters, setModuleParameters] = useState<GpuSceneParameters | null>(null);
+  const activeParameters = parameters ?? moduleParameters ?? [];
+  const [values, setValues] = useState<ParameterValues>(() => getDefaultValues(parameters ?? []));
+  // Current slider values: read by the effect when it creates an instance, so they survive rebuilds.
+  const valuesRef = useRef<ParameterValues>(values);
+  const applyParametersRef = useRef<((changed: ParameterValues) => void) | null>(null);
+  const forwardsPointer = interactive || controls;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -84,6 +122,12 @@ export function GpuCanvas({
         Math.round(container.clientWidth * ratio),
         Math.round(container.clientHeight * ratio)
       ];
+    };
+
+    applyParametersRef.current = changed => {
+      instance?.setParameters?.(changed);
+      // A still frame (reduced motion) has no loop to show the change.
+      if (instance && isVisible && motionQuery.matches) renderFrame(0);
     };
 
     const renderFrame = (time: number) => {
@@ -127,7 +171,8 @@ export function GpuCanvas({
         height,
         theme: getTheme(),
         reducedMotion: motionQuery.matches,
-        seed
+        seed,
+        parameters: {...valuesRef.current}
       });
       if (isDestroyed) {
         created.destroy();
@@ -156,6 +201,7 @@ export function GpuCanvas({
           releaseResources();
           return;
         }
+        setBackend(device.type === 'webgpu' ? 'WebGPU' : 'WebGL2');
         if (isDestroyed) {
           releaseResources();
           return;
@@ -165,6 +211,11 @@ export function GpuCanvas({
         const [initialWidth, initialHeight] = getSize();
         canvasContext.setDrawingBufferSize(Math.max(initialWidth, 1), Math.max(initialHeight, 1));
         sceneFunction = loaded.default;
+        if (loaded.parameters) {
+          valuesRef.current = {...getDefaultValues(loaded.parameters), ...valuesRef.current};
+          setValues(valuesRef.current);
+          setModuleParameters(loaded.parameters);
+        }
         await createInstance();
         if (isDestroyed || !instance) return;
         if (!isVisible) {
@@ -250,8 +301,9 @@ export function GpuCanvas({
       ]);
     };
     const handlePointerLeave = () => instance?.setPointer?.(null);
-    if (interactive) {
+    if (forwardsPointer) {
       container.addEventListener('pointermove', handlePointerMove);
+      container.addEventListener('pointerdown', handlePointerMove);
       container.addEventListener('pointerleave', handlePointerLeave);
     }
 
@@ -263,18 +315,39 @@ export function GpuCanvas({
       themeObserver.disconnect();
       motionQuery.removeEventListener('change', rebuild);
       container.removeEventListener('pointermove', handlePointerMove);
+      container.removeEventListener('pointerdown', handlePointerMove);
       container.removeEventListener('pointerleave', handlePointerLeave);
+      applyParametersRef.current = null;
       releaseResources();
     };
-  }, [scene, seed, interactive]);
+  }, [scene, seed, forwardsPointer]);
 
-  return (
+  // The backend label only makes sense while the canvas is live.
+  useEffect(() => {
+    if (!isReady) setBackend(null);
+  }, [isReady]);
+
+  const changeParameter = (id: string, value: number) => {
+    valuesRef.current = {...valuesRef.current, [id]: value};
+    setValues(valuesRef.current);
+    applyParametersRef.current?.({[id]: value});
+  };
+
+  const resetParameters = () => {
+    const defaults = getDefaultValues(activeParameters);
+    valuesRef.current = {...valuesRef.current, ...defaults};
+    setValues(valuesRef.current);
+    applyParametersRef.current?.(defaults);
+  };
+
+  const canvasBlock = (
     <div
       ref={containerRef}
       className={className ? `gpu-canvas ${className}` : 'gpu-canvas'}
       role="img"
       aria-label={label}
       data-ready={isReady ? 'true' : 'false'}
+      data-interactive={forwardsPointer ? 'true' : undefined}
       style={{
         position: 'relative',
         overflow: 'hidden',
@@ -299,6 +372,109 @@ export function GpuCanvas({
           ...FADE
         }}
       />
+      {forwardsPointer && isReady ? (
+        <span className="gpu-canvas-hint" aria-hidden="true">
+          move pointer
+        </span>
+      ) : null}
+    </div>
+  );
+
+  if (!controls) return canvasBlock;
+  return (
+    <div className="gpu-canvas-frame">
+      {canvasBlock}
+      <GpuControls
+        parameters={activeParameters}
+        values={values}
+        isLive={isReady}
+        backend={backend}
+        onChange={changeParameter}
+        onReset={resetParameters}
+      />
+    </div>
+  );
+}
+
+type GpuControlsProps = {
+  parameters: GpuSceneParameters;
+  values: ParameterValues;
+  isLive: boolean;
+  backend: string | null;
+  onChange(id: string, value: number): void;
+  onReset(): void;
+};
+
+/** Slider strip under a canvas. Disabled (but visible) until the canvas is live. */
+function GpuControls({
+  parameters,
+  values,
+  isLive,
+  backend,
+  onChange,
+  onReset
+}: GpuControlsProps): ReactElement {
+  const identifier = useId();
+  const isChanged = parameters.some(parameter => values[parameter.id] !== parameter.default);
+  return (
+    <div className="gpu-controls" data-live={isLive ? 'true' : 'false'}>
+      <div className="gpu-controls-sliders">
+        {parameters.map(parameter => {
+          const value = values[parameter.id] ?? parameter.default;
+          const inputId = `${identifier}-${parameter.id}`;
+          if (parameter.options) {
+            return (
+              <div className="gpu-control gpu-control--options" key={parameter.id}>
+                <span id={inputId}>{parameter.label}</span>
+                <div className="gpu-segments" role="group" aria-labelledby={inputId}>
+                  {parameter.options.map((option, index) => (
+                    <button
+                      key={option}
+                      type="button"
+                      aria-pressed={index === Math.round(value)}
+                      disabled={!isLive}
+                      onClick={() => onChange(parameter.id, index)}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div className="gpu-control" key={parameter.id}>
+              <label htmlFor={inputId}>{parameter.label}</label>
+              <output htmlFor={inputId}>{formatValue(parameter, value)}</output>
+              <input
+                id={inputId}
+                type="range"
+                min={parameter.min}
+                max={parameter.max}
+                step={parameter.step}
+                value={value}
+                disabled={!isLive}
+                onChange={event => onChange(parameter.id, Number(event.currentTarget.value))}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="gpu-controls-status">
+        <span className="gpu-badge" data-live={isLive ? 'true' : 'false'}>
+          {isLive ? `live · ${backend ?? 'GPU'}` : 'drawn'}
+        </span>
+        {parameters.length > 0 ? (
+          <button
+            type="button"
+            className="gpu-reset"
+            disabled={!isLive || !isChanged}
+            onClick={onReset}
+          >
+            reset
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

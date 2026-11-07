@@ -12,6 +12,7 @@ import type {
   LensParameter,
   LensPointLayer,
   LensRaster,
+  LensResourceLifetime,
   LensResourceSummary,
   LensSeries,
   LensViewEdge,
@@ -108,7 +109,10 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
   });
 
   const order = new Map(nodes.map((node, index) => [node.id, index]));
-  const edgeByKey = new Map<string, {from: string; to: string; resources: Set<string>}>();
+  const edgeByKey = new Map<
+    string,
+    {from: string; to: string; resources: Set<string>; hazards: Set<'raw' | 'war' | 'waw'>}
+  >();
   for (const edge of graph.edges) {
     const from = grouping.groupOfNode.get(edge.from);
     const to = grouping.groupOfNode.get(edge.to);
@@ -116,8 +120,15 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
     // Groups are ordered by first member, so keeping forward edges keeps the quotient graph acyclic.
     if ((order.get(from) ?? 0) >= (order.get(to) ?? 0)) continue;
     const key = `${from}\u0000${to}`;
-    const entry = edgeByKey.get(key) ?? {from, to, resources: new Set<string>()};
+    const entry = edgeByKey.get(key) ?? {
+      from,
+      to,
+      resources: new Set<string>(),
+      hazards: new Set<'raw' | 'war' | 'waw'>()
+    };
     if (edge.resource !== undefined) entry.resources.add(edge.resource);
+    if (edge.kind === 'raw' || edge.kind === 'war' || edge.kind === 'waw')
+      entry.hazards.add(edge.kind);
     edgeByKey.set(key, entry);
   }
   const edges: LensViewEdge[] = [...edgeByKey.values()].map(entry => {
@@ -129,7 +140,8 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
       to: entry.to,
       bytes: sum(names, name => resourceById.get(name)?.bytes ?? 0),
       resources: names.slice(0, 3),
-      resourceCount: names.length
+      resourceCount: names.length,
+      hazards: [...entry.hazards].sort()
     };
   });
 
@@ -160,6 +172,7 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
     nodes,
     edges,
     resources: summarizeResources(graph),
+    ...summarizeLifetimes(graph, grouping.groups),
     hazards: countHazards(graph),
     totals: {
       workgroups: sum(nodes, node => node.workgroups),
@@ -274,6 +287,58 @@ function summarizeResources(graph: RecordGraph): LensResourceSummary {
     allocatedBytes: [...allocations.values()].reduce((total, bytes) => total + bytes, 0),
     largest: summarizeLargest(resources)
   };
+}
+
+const MAXIMUM_LIFETIMES = 28;
+
+/** Per buffer first write and last use in group steps, for the largest buffers. */
+function summarizeLifetimes(
+  graph: RecordGraph,
+  groups: readonly Group[]
+): {lifetimes?: LensResourceLifetime[]; lifetimesOmitted?: number} {
+  const resources = graph.resources ?? [];
+  if (resources.length === 0) return {};
+  const firstWrite = new Map<string, number>();
+  const firstUse = new Map<string, number>();
+  const lastUse = new Map<string, number>();
+  groups.forEach((group, step) => {
+    for (const member of group.members) {
+      for (const id of member.writes) {
+        if (!firstWrite.has(id)) firstWrite.set(id, step);
+        if (!firstUse.has(id)) firstUse.set(id, step);
+        lastUse.set(id, step);
+      }
+      for (const id of member.reads) {
+        if (!firstUse.has(id)) firstUse.set(id, step);
+        lastUse.set(id, step);
+      }
+    }
+  });
+  const used = resources.filter(resource => lastUse.has(resource.id));
+  const largest = [...used]
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, MAXIMUM_LIFETIMES)
+    .sort(
+      (a, b) =>
+        (firstWrite.get(a.id) ?? firstUse.get(a.id) ?? 0) -
+        (firstWrite.get(b.id) ?? firstUse.get(b.id) ?? 0)
+    );
+  const slots = new Map<string, number>();
+  const lifetimes = largest.map(resource => {
+    const lifetime: LensResourceLifetime = {
+      id: resource.id,
+      bytes: resource.bytes,
+      ownership: resource.ownership,
+      first: firstWrite.get(resource.id) ?? firstUse.get(resource.id) ?? 0,
+      last: lastUse.get(resource.id) ?? 0
+    };
+    if (resource.ownership === 'transient' && resource.allocation !== undefined) {
+      if (!slots.has(resource.allocation)) slots.set(resource.allocation, slots.size);
+      lifetime.slot = slots.get(resource.allocation);
+    }
+    return lifetime;
+  });
+  return {lifetimes, lifetimesOmitted: Math.max(0, used.length - lifetimes.length)};
 }
 
 function summarizeLargest(

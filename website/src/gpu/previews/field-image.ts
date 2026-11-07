@@ -54,7 +54,7 @@ function getFieldColor(layer: FieldLayer, u: number, v: number): Rgb {
         0.5
       ) * 8;
     const length = Math.hypot(gradientX, gradientY, 1);
-    const angle = 2.2;
+    const angle = layer.light ?? 2.2;
     const light: Rgb = [Math.cos(angle) * 0.6, Math.sin(angle) * 0.6, 0.55];
     const lightLength = Math.hypot(...light);
     const shade = clamp(
@@ -68,8 +68,9 @@ function getFieldColor(layer: FieldLayer, u: number, v: number): Rgb {
     return getRampColor(layer.ramp, value).map(channel => channel * 0.16) as Rgb;
   }
   if (layer.style === 'expand') {
-    const inside = value < STILL_CUTOFF;
-    const color = getRampColor(layer.ramp, (value / STILL_CUTOFF) * 0.9);
+    const cutoff = layer.cutoff ?? STILL_CUTOFF;
+    const inside = value < cutoff;
+    const color = getRampColor(layer.ramp, (value / cutoff) * 0.9);
     return inside ? color : (color.map(channel => channel * 0.12) as Rgb);
   }
   return getRampColor(layer.ramp, value);
@@ -130,7 +131,8 @@ export function createFieldContours(
   const cellWidth = sceneWidth / columns;
   const cellHeight = sceneHeight / rows;
   const contours: FieldContour[] = [];
-  const maximumLevel = layer.style === 'expand' ? Math.floor(STILL_CUTOFF * levels) : levels;
+  const maximumLevel =
+    layer.style === 'expand' ? Math.floor((layer.cutoff ?? STILL_CUTOFF) * levels) : levels;
   for (let level = 1; level < maximumLevel + (layer.style === 'expand' ? 1 : 0); level++) {
     const threshold = level / levels;
     let path = '';

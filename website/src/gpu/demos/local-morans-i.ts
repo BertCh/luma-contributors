@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // Demo: GPUNeighborSearch feeding GPULocalMoran. A drifting spatial field with noise, neighbors
-// within a sweeping radius, and the HH, LL, LH and HL clusters the GPU finds, redrawn every frame.
+// within a radius, and the HH, LL, LH and HL clusters the GPU finds above a significance level.
 
 import {
   getGPUNeighborSearchParameterValues,
@@ -13,11 +13,13 @@ import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {GpuScene} from '../types';
+import {LOCAL_MORANS_I_PARAMETERS, readParameterValues} from './parameters';
 import {
   assertWebGPU,
   createEmptyStorageBuffer,
   createStorageBuffer,
   DotLayer,
+  DrawScheduler,
   drawLayers,
   getDemoTheme,
   GraphRunner,
@@ -26,6 +28,8 @@ import {
   type DemoView
 } from './kit';
 
+export const parameters = LOCAL_MORANS_I_PARAMETERS;
+
 const POINT_COUNT = 1100;
 const SLOTS_PER_POINT = 48;
 
@@ -33,6 +37,7 @@ const scene: GpuScene = async context => {
   const {device} = context;
   assertWebGPU(device);
   const theme = getDemoTheme(context.theme);
+  const values = readParameterValues(parameters, context.parameters);
   const worldWidth = context.width / context.height;
   const view: DemoView = {worldWidth, worldHeight: 1, width: context.width, height: context.height};
   const random = makeRandom(context.seed);
@@ -45,26 +50,26 @@ const scene: GpuScene = async context => {
     positions[index * 2 + 1] = random();
     noise[index] = random() - 0.5;
   }
-  const values = new Float32Array(POINT_COUNT);
+  const fieldValues = new Float32Array(POINT_COUNT);
   const writeValues = (phase: number) => {
     for (let index = 0; index < POINT_COUNT; index++) {
       const x = positions[index * 2] / worldWidth;
       const y = positions[index * 2 + 1];
-      values[index] =
+      fieldValues[index] =
         Math.sin(x * 7 + phase) * Math.cos(y * 5 - phase * 0.7) +
         0.35 * Math.sin(x * 19 - y * 13) +
-        noise[index] * 1.1;
+        noise[index] * values.noise;
     }
-    valueBuffer.write(values);
+    valueBuffer.write(fieldValues);
   };
 
   const slotCount = POINT_COUNT * SLOTS_PER_POINT;
   const positionBuffer = createStorageBuffer(device, positions);
   const valueBuffer = createEmptyStorageBuffer(device, POINT_COUNT);
   const neighborParameters = createEmptyStorageBuffer(device, GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH);
-  const moranParameters = createStorageBuffer(
+  const moranParameters = createEmptyStorageBuffer(
     device,
-    getGPUSpatialAutocorrelationParameterValues({significanceLevel: 0.05})
+    GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
   );
   const offsets = createEmptyStorageBuffer(device, POINT_COUNT + 1);
   const neighbors = createEmptyStorageBuffer(device, slotCount);
@@ -145,42 +150,66 @@ const scene: GpuScene = async context => {
 
   const field = new DotLayer(device, positionBuffer, valueBuffer, POINT_COUNT);
   const clusters = new DotLayer(device, positionBuffer, quadrants, POINT_COUNT, 'uint32');
-  let lastKey = '';
+  let isDirty = true;
+  let seconds = context.reducedMotion ? 2 : 0;
+
+  const draw = () => {
+    if (isDirty) {
+      isDirty = false;
+      writeValues(seconds * 0.45);
+      neighborParameters.write(
+        getGPUNeighborSearchParameterValues({
+          bounds,
+          radius: values.radius / 100,
+          weightKind: 'binary'
+        })
+      );
+      moranParameters.write(
+        getGPUSpatialAutocorrelationParameterValues({significanceLevel: values.significance})
+      );
+      runner.run();
+    }
+    field.update(view, theme, {
+      mode: 1,
+      range: [-1.6, 1.6],
+      radius: 11,
+      alpha: 0.2,
+      ramp: theme.diverging
+    });
+    clusters.update(view, theme, {
+      mode: 2,
+      categories: quadrantColors,
+      radius: 4,
+      solid: [...theme.muted, 0.4]
+    });
+    drawLayers(device, theme, [field, clusters]);
+  };
+  const scheduler = new DrawScheduler(draw);
 
   return {
     render(timeMilliseconds) {
-      const seconds = context.reducedMotion ? 2 : timeMilliseconds / 1000;
-      const phase = seconds * 0.45;
-      const radius = 0.045 + 0.02 * (0.5 + 0.5 * Math.sin(seconds * 0.6));
-      const key = `${phase.toFixed(3)}:${radius.toFixed(4)}`;
-      if (key !== lastKey) {
-        lastKey = key;
-        writeValues(phase);
-        neighborParameters.write(
-          getGPUNeighborSearchParameterValues({bounds, radius, weightKind: 'binary'})
-        );
-        runner.run();
+      if (!context.reducedMotion) {
+        // The field drifts slowly; recompute when it has moved a visible step.
+        const nextSeconds = timeMilliseconds / 1000;
+        if (Math.abs(nextSeconds - seconds) > 0.03) {
+          seconds = nextSeconds;
+          isDirty = true;
+        }
       }
-      field.update(view, theme, {
-        mode: 1,
-        range: [-1.6, 1.6],
-        radius: 11,
-        alpha: 0.2,
-        ramp: theme.diverging
-      });
-      clusters.update(view, theme, {
-        mode: 2,
-        categories: quadrantColors,
-        radius: 4,
-        solid: [...theme.muted, 0.4]
-      });
-      drawLayers(device, theme, [field, clusters]);
+      scheduler.flush();
+    },
+    setParameters(update) {
+      Object.assign(values, update);
+      isDirty = true;
+      scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      scheduler.request();
     },
     destroy() {
+      scheduler.cancel();
       field.destroy();
       clusters.destroy();
       runner.destroy();

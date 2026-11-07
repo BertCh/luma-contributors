@@ -34,6 +34,21 @@ export type LensViewEdge = {
   resources: string[];
   /** Number of distinct resources behind the edge. */
   resourceCount: number;
+  /** Distinct hazard kinds recorded on the underlying dependencies: read-after-write and so on. */
+  hazards?: ('raw' | 'war' | 'waw')[];
+};
+
+/** When one buffer is alive, in steps of the execution order (indices into `nodes`). */
+export type LensResourceLifetime = {
+  id: string;
+  bytes: number;
+  ownership: 'imported' | 'transient';
+  /** Step of the first kernel that writes the buffer (first user when only read). */
+  first: number;
+  /** Step of the last kernel that reads or writes it. */
+  last: number;
+  /** Transient allocation slot: buffers with the same slot alias one block of memory. */
+  slot?: number;
 };
 
 export type LensResourceSummary = {
@@ -107,6 +122,10 @@ export type LensViewModel = {
   nodes: LensViewNode[];
   edges: LensViewEdge[];
   resources: LensResourceSummary;
+  /** Largest buffers with their first write and last use; absent in older view models. */
+  lifetimes?: LensResourceLifetime[];
+  /** Buffers left out of `lifetimes`. */
+  lifetimesOmitted?: number;
   /** Recorded dependency counts by hazard kind: read-after-write, write-after-read, write-after-write. */
   hazards: {raw: number; war: number; waw: number};
   totals: {workgroups: number; readBytes: number; writeBytes: number};

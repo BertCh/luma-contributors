@@ -27,3 +27,42 @@
   .hero__canvas::after { background: linear-gradient(0deg, var(--color-hero-fade) 0%, color-mix(in srgb, var(--color-hero-fade) 88%, transparent) 55%, transparent 95%); }
   .section__head { flex-direction: column; gap: var(--space-2); }
 }
+
+/* Hero: the pointer reaches the canvas behind the text; only links and the install chip catch it. */
+.hero__content { pointer-events: none; }
+.hero__content a, .hero__install { pointer-events: auto; }
+.hero__hint { margin: 0; font-family: var(--font-code); font-size: var(--text-small); color: var(--color-hero-text); opacity: 0.7; }
+.hero__canvas { overflow: visible; }
+.hero__canvas .gpu-controls { position: absolute; top: var(--space-4); right: var(--gutter); z-index: 3; width: min(300px, calc(100% - 2 * var(--gutter))); height: auto; border: 1px solid var(--color-border); border-radius: var(--radius-medium); background: color-mix(in srgb, var(--color-surface) 82%, transparent); backdrop-filter: blur(8px); color: var(--color-text); }
+.hero__canvas .gpu-canvas-frame { position: absolute; inset: 0; }
+.hero__canvas .gpu-canvas { position: absolute !important; inset: 0; height: 100%; aspect-ratio: auto !important; }
+.hero__canvas .gpu-canvas-hint { display: none; }
+
+/* The hero is a fixed dark panel in both themes: the field is drawn additively on dark. */
+.hero {
+  --color-background: #070a10;
+  --color-surface: #0d121b;
+  --color-surface-raised: #141b27;
+  --color-text: #e8eef6;
+  --color-muted: #93a1b4;
+  --color-border: #1f2a3a;
+  --color-accent: #3de0c5;
+  --color-accent-strong: #7af0dc;
+  --color-accent-soft: rgba(61, 224, 197, 0.12);
+  --color-on-accent: #04110e;
+  --color-code-background: #0a0f17;
+  --color-hero-fade: #070a10;
+  --color-hero-text: #f2f7fc;
+  color-scheme: dark;
+}
+
+/* Phones: the canvas sits above the text and the sliders sit under the canvas, not over it. */
+@media (max-width: 640px) {
+  .hero__canvas { position: relative; inset: auto; z-index: 0; overflow: hidden; }
+  .hero__canvas::after { content: none; }
+  .hero__canvas .gpu-canvas-frame { position: relative; inset: auto; }
+  .hero__canvas .gpu-canvas { position: relative !important; height: 240px; aspect-ratio: auto !important; }
+  .hero__canvas .gpu-controls { position: static; width: 100%; border-radius: 0; border-width: 1px 0 0; backdrop-filter: none; background: var(--color-surface); }
+  .hero__content { min-height: 0; padding-top: var(--space-5); }
+  .hero__hint { display: none; }
+}

@@ -92,7 +92,7 @@ export const entries: CatalogEntry[] = [
     summary:
       'Finds clusters and outliers of similar values among neighbors (LISA), with z-scores and quadrants.',
     explanation:
-      "Use it to map where high values sit beside high values (HH), low beside low (LL), or oppose their neighbors (HL, LH). Each row's value is compared with the weighted mean of its neighbors, and an analytic z-score approximates the esda permutation test.",
+      "Maps where high values sit beside high values (HH), low beside low (LL), or oppose their neighbors (HL, LH). Each row's value is compared with the weighted mean of its neighbors, and an analytic z-score approximates the esda permutation test.",
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table', 'polygons']},
     useCases: ['find-patterns'],
     domains: ['spatial-statistics', 'demographics'],
@@ -166,7 +166,7 @@ graph.add(new GPULocalMoran({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'hotspots', caption: 'HH and LL clusters stand out from the noise.', seed: 11},
+    preview: {kind: 'hotspots', caption: 'HH and LL clusters stand out from the noise.', seed: 501},
     related: [
       'hot-spot-analysis-gi-star',
       'local-permutation-test',
@@ -186,7 +186,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     summary:
       'Scores how different each row is from its neighbors, a dissimilarity complement to local Moran.',
     explanation:
-      'Use it to find places that resemble their surroundings (low c) or contrast with them (high c). It sums squared differences to neighbors, standardized by the population variance.',
+      'Finds places that resemble their surroundings (low c) or contrast with them (high c). It sums squared differences to neighbors, standardized by the population variance.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns'],
     domains: ['spatial-statistics'],
@@ -227,7 +227,7 @@ graph.add(new GPULocalGeary({
     preview: {
       kind: 'hotspots',
       caption: 'Low c where neighbors agree, high c at contrasts.',
-      seed: 12
+      seed: 502
     },
     related: ['local-morans-i', 'multivariate-local-gearys-c', 'local-permutation-test'],
     lensScenario: 'gpu-spatial-analysis.local-geary',
@@ -243,7 +243,7 @@ graph.add(new GPULocalGeary({
     summary:
       'Marks statistically significant hot and cold spots with z-scores and 90, 95 and 99% confidence bins.',
     explanation:
-      'Use it to see where high or low values cluster, as in the ArcGIS Hot Spot Analysis tool. Gi* compares the sum of values in each neighborhood (including the row itself) with what chance would give.',
+      'Shows where high or low values cluster, as in the ArcGIS Hot Spot Analysis tool. Gi* compares the sum of values in each neighborhood (including the row itself) with what chance would give.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table', 'polygons']},
     useCases: ['find-patterns'],
     domains: ['spatial-statistics', 'urban'],
@@ -295,7 +295,7 @@ graph.add(new GPUHotSpotAnalysis({
   multipleTesting: 'benjamini-hochberg',
   output: {zScores, bins}
 }));`,
-    preview: {kind: 'hotspots', caption: 'Red and blue bins mark hot and cold spots.', seed: 3},
+    preview: {kind: 'hotspots', caption: 'Red and blue bins mark hot and cold spots.', seed: 503},
     related: ['local-morans-i', 'emerging-hot-spots', 'multiple-testing-adjustment'],
     lensScenario: 'gpu-spatial-analysis.hot-spot-analysis',
     reference: REFERENCE,
@@ -310,7 +310,7 @@ graph.add(new GPUHotSpotAnalysis({
     summary:
       "Computes Moran's I, Geary's C, Getis-Ord G, bivariate Moran and join counts in one pass.",
     explanation:
-      'Use it to ask whether a whole map is clustered, dispersed or random before mapping local statistics. Each statistic comes with its moments and an analytic z and p.',
+      'Tests whether a whole map is clustered, dispersed or random before mapping local statistics. Each statistic has an analytic z and p.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics'],
@@ -360,7 +360,7 @@ graph.add(new GPUGlobalSpatialStatistics({
   output: {summary}
 }));
 // read summary with GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT`,
-    preview: {kind: 'histogram', caption: 'One number per statistic for the whole map.', seed: 21},
+    preview: {kind: 'histogram', caption: 'One number per statistic for the whole map.', seed: 504},
     related: ['global-permutation-test', 'local-morans-i'],
     lensScenario: 'gpu-spatial-analysis.global-spatial-statistics',
     reference: REFERENCE,
@@ -375,7 +375,7 @@ graph.add(new GPUGlobalSpatialStatistics({
     summary:
       'Correlates one variable at a location with another at its neighbors, across weighted edges.',
     explanation:
-      'Use it for bivariate spatial association: does high income here go with high rents next door? It is the weighted Pearson correlation of x_i and y_j over the directed edges.',
+      'Best for bivariate spatial association: does high income here go with high rents next door? It is the weighted Pearson correlation of x_i and y_j over the directed edges.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics'],
@@ -412,7 +412,11 @@ graph.add(new GPUSpatialPearson({
   secondValues: rent,
   output: {statistic}
 }));`,
-    preview: {kind: 'regression', caption: 'Neighbor values plotted against each other.', seed: 22},
+    preview: {
+      kind: 'regression',
+      caption: 'Neighbor values plotted against each other.',
+      seed: 505
+    },
     related: ['gamma-statistic', 'global-spatial-statistics'],
     lensScenario: 'gpu-spatial-analysis.spatial-pearson',
     reference: REFERENCE,
@@ -427,7 +431,7 @@ graph.add(new GPUSpatialPearson({
     summary:
       'Sums a pairwise similarity over weighted neighbor edges, the general form of spatial association.',
     explanation:
-      'Use it for custom association measures: cross-product gives Moran-like, squared difference Geary-like behavior. Pair it with the global permutation machinery for a pseudo p-value.',
+      'Best for custom association measures: cross-product gives Moran-like, squared difference Geary-like behavior. Pair it with the global permutation machinery for a pseudo p-value.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns', 'model'],
     domains: ['spatial-statistics'],
@@ -470,7 +474,7 @@ graph.add(new GPUGammaStatistic({
     preview: {
       kind: 'spatial-weights',
       caption: 'Every weighted edge contributes one term.',
-      seed: 23
+      seed: 506
     },
     related: ['spatial-pearson', 'global-permutation-test'],
     lensScenario: 'gpu-spatial-analysis.gamma-statistic',
@@ -486,7 +490,7 @@ graph.add(new GPUGammaStatistic({
     summary:
       'Measures how variable values are within each neighborhood, to find unstable or heterogeneous areas.',
     explanation:
-      'Use it to complement local Moran: LOSH says where the spread of neighbors is unusually high or low, not where values are high. It is the neighbor-weighted mean of absolute deviations over the global mean residual.',
+      'Complements local Moran: LOSH says where the spread of neighbors is unusually high or low, not where values are high. It is the neighbor-weighted mean of absolute deviations over the global mean residual.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns', 'measure'],
     domains: ['spatial-statistics'],
@@ -513,7 +517,12 @@ graph.add(new GPUGammaStatistic({
     ],
     outputs: [
       {name: 'statistic', type: 'GraphDataView<"float32">', description: 'LOSH H_i per row.'},
-      {name: 'status', type: 'GraphDataView<"uint32">', description: 'Status code word.'}
+      {name: 'status', type: 'GraphDataView<"uint32">', description: 'Status code word.'},
+      {
+        name: 'normalizedResiduals',
+        type: 'GraphDataView<"float32">',
+        description: 'Optional normalized residual powers for permutation.'
+      }
     ],
     example: `import {GPULocalSpatialHeteroscedasticity} from '${IMPORT_PATH}';
 
@@ -523,7 +532,7 @@ graph.add(new GPULocalSpatialHeteroscedasticity({
   residualPower: 2,
   output: {statistic, status}
 }));`,
-    preview: {kind: 'hotspots', caption: 'High LOSH marks uneven neighborhoods.', seed: 24},
+    preview: {kind: 'hotspots', caption: 'High LOSH marks uneven neighborhoods.', seed: 507},
     related: ['losh-residual-permutation-test', 'local-morans-i'],
     lensScenario: 'gpu-spatial-analysis.local-spatial-heteroscedasticity',
     reference: 'api/gpu-spatial-analysis/expansion-lenses',
@@ -537,7 +546,7 @@ graph.add(new GPULocalSpatialHeteroscedasticity({
     title: "Multivariate local Geary's C",
     summary: 'Finds places that are similar to their neighbors across several variables at once.',
     explanation:
-      'Use it for multi-attribute clustering, such as a socioeconomic profile. It averages the row-standardized local Geary over the variables stored row-major in one column.',
+      'Best for multi-attribute clustering, such as a socioeconomic profile. It averages the row-standardized local Geary over the variables stored row-major in one column.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['find-patterns'],
     domains: ['spatial-statistics', 'demographics'],
@@ -568,6 +577,11 @@ graph.add(new GPULocalSpatialHeteroscedasticity({
         name: 'statistic',
         type: 'GraphDataView<"float32">',
         description: 'Mean local Geary per row; low means alike.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'Per-row completion evidence bitmask.'
       }
     ],
     example: `import {GPUMultivariateLocalGeary} from '${IMPORT_PATH}';
@@ -582,7 +596,7 @@ graph.add(new GPUMultivariateLocalGeary({
     preview: {
       kind: 'hotspots',
       caption: 'Low values: neighbors agree on every variable.',
-      seed: 25
+      seed: 508
     },
     related: ['multivariate-local-geary-permutation-test', 'local-gearys-c'],
     lensScenario: 'gpu-spatial-analysis.multivariate-local-geary',
@@ -598,7 +612,7 @@ graph.add(new GPUMultivariateLocalGeary({
     title: 'Global permutation test',
     summary: 'Gets a pseudo p-value for a global statistic by shuffling values across the map.',
     explanation:
-      "Use it when normal assumptions are doubtful. It reshuffles values, recomputes Moran's I, Geary's C, G, bivariate Moran or Lee's L each time, and ranks the observed value in that reference distribution.",
+      "Best when normal assumptions are doubtful. It reshuffles values, recomputes Moran's I, Geary's C, G, bivariate Moran or Lee's L each time, and ranks the observed value in that reference distribution.",
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics'],
@@ -660,7 +674,7 @@ graph.add(new GPUGlobalPermutationTest({
   maximumPermutations: 999,
   output: {summary, histogram}
 }));`,
-    preview: {kind: 'histogram', caption: 'Observed value against 999 shuffled maps.', seed: 31},
+    preview: {kind: 'histogram', caption: 'Observed value against 999 shuffled maps.', seed: 509},
     related: ['global-spatial-statistics', 'local-permutation-test'],
     lensScenario: 'gpu-spatial-analysis.global-permutation-test',
     reference: REFERENCE,
@@ -675,7 +689,7 @@ graph.add(new GPUGlobalPermutationTest({
     summary:
       'Gives each row a conditional-permutation pseudo p-value for local Moran, Geary, G and join counts.',
     explanation:
-      "Use it for esda-style significance of LISA clusters without normality assumptions. For each row it holds the value fixed and resamples its neighbors' values.",
+      "Best for esda-style significance of LISA clusters without normality assumptions. For each row it holds the value fixed and resamples its neighbors' values.",
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table', 'polygons']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics'],
@@ -714,6 +728,11 @@ graph.add(new GPUGlobalPermutationTest({
         name: 'significant',
         type: 'GraphDataView<"uint32">',
         description: '1 where the pseudo p-value is significant.'
+      },
+      {
+        name: 'status',
+        type: '{overflow: GraphDataView<"uint32">}',
+        description: 'Completeness status; overflow is nonzero on truncation.'
       }
     ],
     example: `import {GPULocalPermutationTest} from '${IMPORT_PATH}';
@@ -727,7 +746,7 @@ graph.add(new GPULocalPermutationTest({
   multipleTesting: 'benjamini-hochberg',
   output: {exceedances, pseudoPValues, significant, status: {overflow}}
 }));`,
-    preview: {kind: 'hotspots', caption: 'Rows that survive 999 reshuffles light up.', seed: 32},
+    preview: {kind: 'hotspots', caption: 'Rows that survive 999 reshuffles light up.', seed: 510},
     related: ['local-morans-i', 'global-permutation-test', 'multiple-testing-adjustment'],
     lensScenario: 'gpu-spatial-analysis.local-permutation-test',
     reference: REFERENCE,
@@ -741,7 +760,7 @@ graph.add(new GPULocalPermutationTest({
     title: 'LOSH permutation test',
     summary: 'Tests local variability (LOSH) by conditional sampling of the normalized residuals.',
     explanation:
-      'Use it to know which high-LOSH areas are more variable than chance. It computes LOSH and resamples the fixed residual field without replacement.',
+      'Finds which high-LOSH areas are more variable than chance. It computes LOSH and resamples the fixed residual field without replacement.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics'],
@@ -774,16 +793,22 @@ graph.add(new GPULocalPermutationTest({
       multipleTestingParameter,
       {
         name: 'output',
-        type: '{ statistic: GraphDataView<"float32">; status: GraphDataView<"uint32"> }',
+        type: '{statistic, status, inference}',
         required: true,
-        description: 'Result views plus optional p-values.'
+        description: 'Result views plus the inference views that hold the p-values.'
       }
     ],
     outputs: [
+      {name: 'statistic', type: 'GraphDataView<"float32">', description: 'LOSH per row.'},
       {
-        name: 'statistic',
-        type: 'GraphDataView<"float32">',
-        description: 'LOSH per row; p-values in the optional outputs.'
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'Per-row completion evidence bitmask.'
+      },
+      {
+        name: 'inference',
+        type: 'GPULocalPermutationTestOutput',
+        description: 'Required: exceedances, pseudoPValues, adjustedPValues, significant, status.'
       }
     ],
     example: `import {GPULOSHResidualPermutationTest} from '${IMPORT_PATH}';
@@ -794,9 +819,12 @@ graph.add(new GPULOSHResidualPermutationTest({
   alternative: 'greater',
   parameters: permutation.importToGraph(graph),
   maximumPermutations: 499,
-  output: {statistic, status}
+  output: {
+    statistic, status,
+    inference: {exceedances, pseudoPValues, adjustedPValues, significant, status: inferenceStatus}
+  }
 }));`,
-    preview: {kind: 'histogram', caption: 'Observed LOSH against its shuffled null.', seed: 33},
+    preview: {kind: 'hotspots', caption: 'Observed LOSH against its shuffled null.', seed: 511},
     related: ['local-spatial-heteroscedasticity', 'local-permutation-test'],
     lensScenario: 'gpu-spatial-analysis.losh-residual-permutation-test',
     reference: 'api/gpu-spatial-analysis/expansion-lenses',
@@ -811,7 +839,7 @@ graph.add(new GPULOSHResidualPermutationTest({
     summary:
       'Tests multivariate local Geary with permutations and classifies clusters, outliers and negative association.',
     explanation:
-      'Use it to get significance and classes for a multi-variable profile. The seed, tail and tiling are plain props, so no parameter buffer is needed.',
+      'Adds significance and classes for a multi-variable profile. The seed, tail and tiling are plain props, so no parameter buffer is needed.',
     dataTypes: {input: ['spatial-weights', 'table'], output: ['table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics', 'demographics'],
@@ -881,9 +909,9 @@ graph.add(new GPUMultivariateLocalGearyPermutationTest({
   output: {statistic, pValues, classes}
 }));`,
     preview: {
-      kind: 'classification',
+      kind: 'hotspots',
       caption: 'Significant multi-variable clusters, classified.',
-      seed: 34
+      seed: 512
     },
     related: ['multivariate-local-gearys-c', 'local-permutation-test'],
     lensScenario: 'gpu-spatial-analysis.multivariate-local-geary-permutation-test',
@@ -899,7 +927,7 @@ graph.add(new GPUMultivariateLocalGearyPermutationTest({
     summary:
       'Corrects thousands of per-row p-values for false positives: Bonferroni, Holm, BH or BY.',
     explanation:
-      'Use it whenever you map many local tests at once, or the map is full of false hot spots. Results match statsmodels multipletests, and a row is significant at alpha exactly when its adjusted p is at most alpha.',
+      'Use it whenever you map many local tests at once, or the map is full of false hot spots. Results match statsmodels multipletests.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['model'],
     domains: ['spatial-statistics'],
@@ -951,7 +979,7 @@ graph.add(new GPUMultipleTestingAdjustment({
     preview: {
       kind: 'histogram',
       caption: 'p-values pushed up; fewer rows stay significant.',
-      seed: 35
+      seed: 513
     },
     related: ['local-permutation-test', 'hot-spot-analysis-gi-star', 'local-morans-i'],
     lensScenario: 'gpu-spatial-analysis.multiple-testing-adjustment',
@@ -968,7 +996,7 @@ graph.add(new GPUMultipleTestingAdjustment({
     summary:
       'Standardizes rates by population so Moran statistics are not driven by small denominators.',
     explanation:
-      'Use it before local or global Moran on rates such as deaths per capita. Each rate becomes an empirical-Bayes z that accounts for its population size, as in esda Moran_Rate.',
+      'Best before local or global Moran on rates such as deaths per capita. Each rate becomes an empirical-Bayes z that accounts for its population size, as in esda Moran_Rate.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['model', 'summarize'],
     domains: ['demographics', 'spatial-statistics'],
@@ -1003,6 +1031,11 @@ graph.add(new GPUMultipleTestingAdjustment({
         name: 'statistics',
         type: 'GraphDataView<"float32">',
         description: '[n, b, s2, a, totalPopulation].'
+      },
+      {
+        name: 'status',
+        type: '{invalidCount?: GraphDataView<"uint32">}',
+        description: 'Optional count of invalid rows.'
       }
     ],
     example: `import {GPUAssuncaoReisStandardization} from '${IMPORT_PATH}';
@@ -1015,9 +1048,9 @@ graph.add(new GPUAssuncaoReisStandardization({
 }));
 // feed standardizedRates to GPULocalMoran as values`,
     preview: {
-      kind: 'classification',
+      kind: 'hotspots',
       caption: 'Noisy small-area rates become comparable.',
-      seed: 41
+      seed: 514
     },
     related: ['empirical-bayes-rates', 'local-morans-i'],
     lensScenario: 'gpu-spatial-analysis.assuncao-reis-standardization',
@@ -1033,7 +1066,7 @@ graph.add(new GPUAssuncaoReisStandardization({
     summary:
       'Shrinks unstable small-population rates toward the global rate and reports excess risk.',
     explanation:
-      'Use it to map rates without the noise of small denominators. The prior is estimated globally from all rows, so extreme raw rates in small places are pulled in the most.',
+      'Maps rates without the noise of small denominators. The global prior pulls extreme rates in small places the most.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize', 'model'],
     domains: ['demographics', 'spatial-statistics'],
@@ -1086,9 +1119,9 @@ graph.add(new GPUEmpiricalBayesRates({
   output: {smoothedRates, rawRates, excessRisk}
 }));`,
     preview: {
-      kind: 'classification',
+      kind: 'polygons',
       caption: 'Raw rates pulled toward the global mean.',
-      seed: 42
+      seed: 515
     },
     related: ['spatial-empirical-bayes-rates', 'assuncao-reis-standardization'],
     lensScenario: 'gpu-spatial-analysis.empirical-bayes-rates',
@@ -1104,7 +1137,7 @@ graph.add(new GPUEmpiricalBayesRates({
     summary:
       'Smooths each rate toward the pooled rate of its neighbors rather than the global rate.',
     explanation:
-      'Use it when risk varies regionally and a global prior would blur real gradients. It matches esda Spatial_Rate and Spatial_Empirical_Bayes.',
+      'Best when risk varies regionally and a global prior would blur real gradients. It matches esda Spatial_Rate and Spatial_Empirical_Bayes.',
     dataTypes: {input: ['table', 'spatial-weights'], output: ['table']},
     useCases: ['summarize', 'model'],
     domains: ['demographics', 'spatial-statistics'],
@@ -1157,9 +1190,9 @@ graph.add(new GPUSpatialEmpiricalBayesRates({
   output: {spatialRates, smoothedRates}
 }));`,
     preview: {
-      kind: 'classification',
+      kind: 'polygons',
       caption: 'Smoothed toward neighbors, not the whole map.',
-      seed: 43
+      seed: 516
     },
     related: ['empirical-bayes-rates', 'assuncao-reis-standardization'],
     lensScenario: 'gpu-spatial-analysis.spatial-empirical-bayes-rates',
@@ -1176,7 +1209,7 @@ graph.add(new GPUSpatialEmpiricalBayesRates({
     summary:
       'Classifies each cell of a space-time cube as new, intensifying, persistent, diminishing or sporadic.',
     explanation:
-      'Use it to see how hot spots change over time on a regular lattice. It runs Gi* on every time slice and a Mann-Kendall trend on each cell series, as in the ArcGIS tool.',
+      'Shows how hot spots change over time on a regular lattice. It runs Gi* on every time slice and a Mann-Kendall trend on each cell series, as in the ArcGIS tool.',
     dataTypes: {input: ['raster', 'time-series'], output: ['raster']},
     useCases: ['find-patterns', 'detect-change'],
     domains: ['spatial-statistics', 'urban'],
@@ -1234,6 +1267,16 @@ graph.add(new GPUSpatialEmpiricalBayesRates({
       },
       {name: 'trendZ', type: 'GraphDataView<"float32">', description: 'Mann-Kendall z per cell.'},
       {
+        name: 'trendP',
+        type: 'GraphDataView<"float32">',
+        description: 'Two-sided Mann-Kendall p-value per cell.'
+      },
+      {
+        name: 'trendS',
+        type: 'GraphDataView<"sint32">',
+        description: 'Mann-Kendall S statistic per cell.'
+      },
+      {
         name: 'category',
         type: 'GraphDataView<"uint32">',
         description: 'Category code 0 to 17 (GPU_EMERGING_HOT_SPOTS_CATEGORIES).'
@@ -1242,6 +1285,11 @@ graph.add(new GPUSpatialEmpiricalBayesRates({
         name: 'hotSliceCount',
         type: 'GraphDataView<"uint32">',
         description: 'Significant hot slices per cell.'
+      },
+      {
+        name: 'coldSliceCount',
+        type: 'GraphDataView<"uint32">',
+        description: 'Significant cold slices per cell.'
       }
     ],
     example: `import {
@@ -1265,7 +1313,7 @@ graph.add(new GPUEmergingHotSpots({
     preview: {
       kind: 'time-series',
       caption: 'Hot spots appear, persist and fade across slices.',
-      seed: 51
+      seed: 517
     },
     related: ['hot-spot-analysis-gi-star', 'spatial-scan-statistic'],
     lensScenario: 'gpu-spatial-analysis.emerging-hot-spots',
@@ -1281,7 +1329,7 @@ graph.add(new GPUEmergingHotSpots({
     summary:
       'Tests whether events close in space are also close in time, such as contagious outbreaks.',
     explanation:
-      'Use it for space-time interaction in event data. It counts pairs close in both space and time and compares the count with permutations of the times.',
+      'Best for space-time interaction in event data. It counts pairs close in both space and time and compares the count with permutations of the times.',
     dataTypes: {input: ['points', 'spatial-weights', 'time-series'], output: ['table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics'],
@@ -1327,6 +1375,11 @@ graph.add(new GPUEmergingHotSpots({
         name: 'summary',
         type: 'GraphDataView<"float32">',
         description: 'Counts and p-values (GPU_SPACE_TIME_SUMMARY).'
+      },
+      {
+        name: 'permutationCount',
+        type: 'GraphDataView<"uint32">',
+        description: 'Optional permutations actually used.'
       }
     ],
     example: `import {
@@ -1345,7 +1398,7 @@ graph.add(new GPUKnoxTest({
   pairs, times, parameters: parameters.importToGraph(graph),
   maximumPermutations: 999, output: {statistics, summary}
 }));`,
-    preview: {kind: 'time-series', caption: 'Pairs near in space and in time.', seed: 52},
+    preview: {kind: 'time-series', caption: 'Pairs near in space and in time.', seed: 518},
     related: ['mantel-test', 'spatial-scan-statistic'],
     lensScenario: 'gpu-spatial-analysis.knox-test',
     reference: 'api/gpu-spatial-analysis/operators-dynamics',
@@ -1360,7 +1413,7 @@ graph.add(new GPUKnoxTest({
     summary:
       'Correlates spatial distance with time difference across event pairs, without a fixed threshold.',
     explanation:
-      'Use it for space-time clustering when you do not want to pick close-in-space and close-in-time cutoffs. It is the Pearson r between d_ij and |t_i - t_j|, with a permutation p-value.',
+      'Best for space-time clustering when you do not want to pick close-in-space and close-in-time cutoffs. It is the Pearson r between d_ij and |t_i - t_j|, with a permutation p-value.',
     dataTypes: {input: ['points', 'spatial-weights', 'time-series'], output: ['table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics'],
@@ -1406,6 +1459,11 @@ graph.add(new GPUKnoxTest({
         name: 'summary',
         type: 'GraphDataView<"float32">',
         description: 'r and p-values (GPU_SPACE_TIME_SUMMARY).'
+      },
+      {
+        name: 'permutationCount',
+        type: 'GraphDataView<"uint32">',
+        description: 'Optional permutations actually used.'
       }
     ],
     example: `import {GPUMantelTest} from '${IMPORT_PATH}';
@@ -1418,7 +1476,11 @@ graph.add(new GPUMantelTest({
   maximumPermutations: 999,
   output: {statistics, summary}
 }));`,
-    preview: {kind: 'regression', caption: 'Distance in space against distance in time.', seed: 53},
+    preview: {
+      kind: 'regression',
+      caption: 'Distance in space against distance in time.',
+      seed: 519
+    },
     related: ['knox-test', 'spatial-scan-statistic'],
     lensScenario: 'gpu-spatial-analysis.mantel-test',
     reference: 'api/gpu-spatial-analysis/operators-dynamics',
@@ -1433,7 +1495,7 @@ graph.add(new GPUMantelTest({
     summary:
       "Detects the most likely clusters of cases in space or space-time (Kulldorff's SaTScan).",
     explanation:
-      'Use it for disease or crime surveillance with a population baseline. It scans circular windows or cylinders for the highest likelihood ratio and tests each by Monte Carlo replicates.',
+      'Best for disease or crime surveillance with a population baseline. It scans circular windows or cylinders for the highest likelihood ratio and tests each by Monte Carlo replicates.',
     dataTypes: {input: ['points', 'cells', 'time-series'], output: ['table']},
     useCases: ['find-patterns', 'detect-change'],
     domains: ['spatial-statistics', 'demographics'],
@@ -1491,6 +1553,11 @@ graph.add(new GPUMantelTest({
         type: 'GraphDataView<"uint32">',
         description: 'Zones and time range of each cluster.'
       },
+      {
+        name: 'statistics',
+        type: 'GraphDataView<"float32">',
+        description: 'Observed statistic then one per permutation.'
+      },
       {name: 'summary', type: 'GraphDataView<"uint32">', description: 'Cluster count and status.'}
     ],
     example: `import {
@@ -1510,7 +1577,7 @@ graph.add(new GPUSpatialScanStatistic({
   parameters: parameters.importToGraph(graph),
   output: {clusterIndices, clusterStatistics, statistics, summary}
 }));`,
-    preview: {kind: 'point-clusters', caption: 'The most likely cluster, circled.', seed: 54},
+    preview: {kind: 'point-clusters', caption: 'The most likely cluster, circled.', seed: 520},
     related: ['knox-test', 'emerging-hot-spots', 'dbscan-clustering'],
     lensScenario: 'gpu-spatial-analysis.spatial-scan-statistic',
     reference: 'api/gpu-spatial-analysis/operators-dynamics',
@@ -1526,7 +1593,7 @@ graph.add(new GPUSpatialScanStatistic({
     summary:
       'Groups nearby points into density-based clusters of any shape and labels the rest as noise.',
     explanation:
-      'Use it for clusters of unknown number, such as incident hot zones or stop locations. A point is core when it has enough neighbors within epsilon; clusters are connected core points.',
+      'Best for clusters of unknown number, such as incident hot zones or stop locations. A point is core when it has enough neighbors within epsilon; clusters are connected core points.',
     dataTypes: {input: ['points'], output: ['points']},
     useCases: ['find-patterns'],
     domains: ['spatial-statistics', 'urban'],
@@ -1572,7 +1639,8 @@ graph.add(new GPUSpatialScanStatistic({
   getGPUSpatialClusteringParameterValues
 } from '${IMPORT_PATH}';
 
-const values = getGPUSpatialClusteringParameterValues({bounds, epsilon: 80, minimumPoints: 6});
+// The demo above: bounds spanning 1 unit, epsilon 2.6% of it, 6 points
+const values = getGPUSpatialClusteringParameterValues({bounds, epsilon: 0.026, minimumPoints: 6});
 const parameters = new GPUParameterBuffer(device, {
   id: 'dbscan', format: 'float32', length: values.length, values
 });
@@ -1584,7 +1652,7 @@ graph.add(new GPUSpatialClustering({
     preview: {
       kind: 'point-clusters',
       caption: 'Dense groups found; scattered points are noise.',
-      seed: 61
+      seed: 521
     },
     related: ['hdbscan-clustering', 'optics-clustering', 'k-means-clustering'],
     lensScenario: 'gpu-spatial-analysis.spatial-clustering',
@@ -1600,7 +1668,7 @@ graph.add(new GPUSpatialClustering({
     summary:
       'Finds clusters of varying density without choosing a distance, matching scikit-learn HDBSCAN.',
     explanation:
-      'Use it when clusters have different densities and one epsilon would fail. It builds a mutual-reachability tree on the GPU and selects the most stable clusters.',
+      'Best when clusters have different densities and one epsilon would fail. It keeps the most stable clusters of a mutual-reachability tree.',
     dataTypes: {input: ['points'], output: ['points']},
     useCases: ['find-patterns'],
     domains: ['spatial-statistics'],
@@ -1635,6 +1703,11 @@ graph.add(new GPUSpatialClustering({
         name: 'coreDistances',
         type: 'GraphDataView<"float32">',
         description: 'Distance to the minimumSamples-th neighbor.'
+      },
+      {
+        name: 'status',
+        type: 'Partial<GPUCardinalityPort>',
+        description: 'Optional; count is the number of selected clusters.'
       }
     ],
     example: `import {GPUHierarchicalDensityClustering} from '${IMPORT_PATH}';
@@ -1649,7 +1722,7 @@ graph.add(new GPUHierarchicalDensityClustering({
     preview: {
       kind: 'point-clusters',
       caption: 'Tight and loose clusters found together.',
-      seed: 62
+      seed: 522
     },
     related: ['dbscan-clustering', 'optics-clustering'],
     lensScenario: 'gpu-spatial-analysis.hierarchical-density-clustering',
@@ -1665,7 +1738,7 @@ graph.add(new GPUHierarchicalDensityClustering({
     summary:
       'Orders points by density reachability and extracts clusters at one or many distance scales.',
     explanation:
-      'Use it to explore density structure before committing to an epsilon. The reachability plot shows valleys as clusters, extracted by DBSCAN cut or xi steepness.',
+      'Explores density structure before committing to an epsilon. The reachability plot shows valleys as clusters, extracted by DBSCAN cut or xi steepness.',
     dataTypes: {input: ['points'], output: ['points']},
     useCases: ['find-patterns'],
     domains: ['spatial-statistics'],
@@ -1711,11 +1784,30 @@ graph.add(new GPUHierarchicalDensityClustering({
     outputs: [
       {name: 'ordering', type: 'GraphDataView<"uint32">', description: 'Row ids in visit order.'},
       {
+        name: 'coreDistances',
+        type: 'GraphDataView<"float32">',
+        description: 'Core distance per row; infinity for non-core rows.'
+      },
+      {
         name: 'reachability',
         type: 'GraphDataView<"float32">',
         description: 'Reachability distance per row.'
       },
-      labelsOutput
+      {
+        name: 'predecessors',
+        type: 'GraphDataView<"uint32">',
+        description: 'Predecessor row, or 0xffffffff.'
+      },
+      {
+        name: 'labels',
+        type: 'GraphDataView<"uint32">',
+        description: 'Cluster id per row, or 0xffffffff for noise.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: '[visitedCount, complete, invalidRowCount].'
+      }
     ],
     example: `import {GPUOPTICS} from '${IMPORT_PATH}';
 
@@ -1727,7 +1819,7 @@ graph.add(new GPUOPTICS({
   extractionMethod: 'xi',
   output: {ordering, coreDistances, reachability, predecessors, labels, status}
 }));`,
-    preview: {kind: 'histogram', caption: 'Reachability valleys are clusters.', seed: 63},
+    preview: {kind: 'point-clusters', caption: 'Reachability valleys are clusters.', seed: 523},
     related: ['dbscan-clustering', 'hdbscan-clustering'],
     lensScenario: 'gpu-spatial-analysis.optics',
     reference: 'api/gpu-spatial-analysis/point-process',
@@ -1742,7 +1834,7 @@ graph.add(new GPUOPTICS({
     summary:
       'Partitions points into k compact groups with deterministic k-means++ and Lloyd iterations.',
     explanation:
-      'Use it to carve points into k service areas or zones when you know k. Seeding is seeded k-means++, empty clusters are relocated like scikit-learn, and the best of several restarts is returned.',
+      'Carves points into k service areas or zones when you know k. Seeded k-means++ with several restarts; the best run is kept.',
     dataTypes: {input: ['points'], output: ['points']},
     useCases: ['find-patterns', 'summarize'],
     domains: ['spatial-statistics', 'urban'],
@@ -1818,7 +1910,7 @@ graph.add(new GPUKMeans({
     preview: {
       kind: 'point-clusters',
       caption: 'Eight centers, each owning its nearest points.',
-      seed: 64
+      seed: 524
     },
     related: ['dbscan-clustering', 'hdbscan-clustering'],
     lensScenario: 'gpu-spatial-analysis.k-means',
@@ -1834,7 +1926,7 @@ graph.add(new GPUKMeans({
     title: 'Local outlier factor',
     summary: 'Scores how much sparser each point is than its neighbors, to flag local outliers.',
     explanation:
-      'Use it to find anomalies relative to their local density, such as a lone sensor in a dense area. A score near 1 is as dense as the neighbors and well above 1 is an outlier.',
+      'Finds anomalies relative to their local density, such as a lone sensor in a dense area. A score near 1 is as dense as the neighbors and well above 1 is an outlier.',
     dataTypes: {input: ['points', 'spatial-weights'], output: ['points']},
     useCases: ['find-patterns'],
     domains: ['spatial-statistics', 'data-engineering'],
@@ -1864,6 +1956,12 @@ graph.add(new GPUKMeans({
       }
     ],
     outputs: [
+      {name: 'kDistance', type: 'GraphDataView<"float32">', description: 'k-distance per row.'},
+      {
+        name: 'localReachabilityDensity',
+        type: 'GraphDataView<"float32">',
+        description: 'Local reachability density per row.'
+      },
       {name: 'lof', type: 'GraphDataView<"float32">', description: 'Local outlier factor per row.'},
       {
         name: 'outlier',
@@ -1891,7 +1989,7 @@ graph.add(new GPULocalOutlierFactor({
   neighbors, parameters: parameters.importToGraph(graph),
   output: {kDistance, localReachabilityDensity, lof, outlier, outlierCount}
 }));`,
-    preview: {kind: 'points', caption: 'Isolated points score high.', seed: 71},
+    preview: {kind: 'points', caption: 'Isolated points score high.', seed: 525},
     related: ['dbscan-clustering', 'similar-locations'],
     lensScenario: 'gpu-spatial-analysis.local-outlier-factor',
     reference: REFERENCE,
@@ -1905,7 +2003,7 @@ graph.add(new GPULocalOutlierFactor({
     title: 'Similar locations',
     summary: 'Ranks every place by how closely its attributes match a chosen reference place.',
     explanation:
-      'Use it for site selection and "find places like this one". Attributes are standardized, then ranked by weighted Euclidean distance to the reference rows.',
+      'Best for site selection and "find places like this one". Attributes are standardized, then ranked by weighted Euclidean distance to the reference rows.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['relate', 'find-patterns'],
     domains: ['urban', 'data-engineering'],
@@ -1967,6 +2065,11 @@ graph.add(new GPULocalOutlierFactor({
         name: 'topIds',
         type: 'GraphDataView<"uint32">',
         description: 'Row ids of the best matches in rank order.'
+      },
+      {
+        name: 'status',
+        type: 'Pick<GPUCardinalityPort, "count">',
+        description: 'count is the number of valid topIds.'
       }
     ],
     example: `import {
@@ -1985,9 +2088,9 @@ graph.add(new GPUSimilarLocations({
   output: {ranks, distances, topIds, status: {count}}
 }));`,
     preview: {
-      kind: 'classification',
+      kind: 'points',
       caption: 'Darker means a closer match to the reference.',
-      seed: 72
+      seed: 526
     },
     related: ['local-outlier-factor', 'k-means-clustering'],
     lensScenario: 'gpu-spatial-analysis.similar-locations',
@@ -2004,7 +2107,7 @@ graph.add(new GPUSimilarLocations({
     summary:
       'Computes dissimilarity, entropy and related segregation indices, aspatial or spatial, global or local.',
     explanation:
-      'Use it to quantify how unevenly population groups are spread across tracts, as in the PySAL segregation package. Scales add spatial smoothing so neighbors share exposure.',
+      'Quantifies how unevenly population groups are spread across tracts, as in the PySAL segregation package. Scales add spatial smoothing so neighbors share exposure.',
     dataTypes: {input: ['table', 'spatial-weights'], output: ['table', 'polygons']},
     useCases: ['measure', 'summarize'],
     domains: ['urban', 'demographics'],
@@ -2078,7 +2181,7 @@ graph.add(new GPUSegregation({
     preview: {
       kind: 'classification',
       caption: 'Local entropy: mixed versus segregated tracts.',
-      seed: 81
+      seed: 527
     },
     related: ['spatial-interaction', 'global-spatial-statistics'],
     lensScenario: 'gpu-spatial-analysis.segregation',
@@ -2143,7 +2246,7 @@ graph.add(new GPUSegregation({
       },
       {
         name: 'output',
-        type: '{ predictions: GraphDataView<"float32">; summary: GraphDataView<"float32">; … }',
+        type: '{predictions, summary}',
         required: true,
         description: 'Predictions, summary, status and candidate scores.'
       }
@@ -2157,7 +2260,17 @@ graph.add(new GPUSegregation({
       {
         name: 'summary',
         type: 'GraphDataView<"float32">',
-        description: 'Selected coefficient and fit.'
+        description: 'Selected coefficient, deviance and balance error.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: '0 converged; 1 no mass; 2 invalid input; 3 no candidate.'
+      },
+      {
+        name: 'candidates',
+        type: 'GraphDataView<"float32">',
+        description: 'Per candidate: deviance, marginal error, iterations, code.'
       },
       {
         name: 'originResiduals',
@@ -2175,7 +2288,7 @@ graph.add(new GPUSpatialInteraction({
   coefficients: [0.5, 1, 1.5, 2],
   output: {predictions, summary, status, candidates}
 }));`,
-    preview: {kind: 'regression', caption: 'Observed flows against the gravity fit.', seed: 82},
+    preview: {kind: 'regression', caption: 'Observed flows against the gravity fit.', seed: 528},
     related: ['spatial-cross-validated-ols', 'segregation-indices'],
     lensScenario: 'gpu-spatial-analysis.spatial-interaction',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -2191,7 +2304,7 @@ graph.add(new GPUSpatialInteraction({
     summary:
       'Builds block holdout folds with a buffer, so test points are not leaked through spatial autocorrelation.',
     explanation:
-      'Use it before scoring any spatial model: random folds overstate accuracy when neighbors are alike. Seeded blocks are held out and training points within the buffer distance are dropped.',
+      'Best before scoring any spatial model: random folds overstate accuracy when neighbors are alike. Seeded blocks are held out and training points within the buffer distance are dropped.',
     dataTypes: {input: ['points', 'table'], output: ['table']},
     useCases: ['model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -2222,7 +2335,7 @@ graph.add(new GPUSpatialInteraction({
       maskParameter,
       {
         name: 'output',
-        type: '{ folds: GraphDataView<"uint32">; training: GraphDataView<"uint32">; … }',
+        type: '{folds, training}',
         required: true,
         description: 'Fold, training and testing masks.'
       }
@@ -2230,7 +2343,17 @@ graph.add(new GPUSpatialInteraction({
     outputs: [
       {name: 'folds', type: 'GraphDataView<"uint32">', description: 'Fold id per point.'},
       {name: 'training', type: 'GraphDataView<"uint32">', description: 'Training mask per fold.'},
-      {name: 'testing', type: 'GraphDataView<"uint32">', description: 'Testing mask per fold.'}
+      {name: 'testing', type: 'GraphDataView<"uint32">', description: 'Testing mask per fold.'},
+      {
+        name: 'counts',
+        type: 'GraphDataView<"uint32">',
+        description: 'Per fold: training, test and buffered-out counts.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'Per fold bitmask: 1 empty training, 2 empty test.'
+      }
     ],
     example: `import {GPUSpatialCrossValidation} from '${IMPORT_PATH}';
 
@@ -2242,7 +2365,7 @@ graph.add(new GPUSpatialCrossValidation({
   bufferDistance: 250,
   output: {folds, training, testing, counts, status}
 }));`,
-    preview: {kind: 'classification', caption: 'Blocks held out, buffer ring dropped.', seed: 91},
+    preview: {kind: 'cells', caption: 'Blocks held out, buffer ring dropped.', seed: 529},
     related: ['spatial-cross-validated-ols', 'nested-interpolation-validation'],
     lensScenario: 'gpu-spatial-analysis.spatial-cross-validation',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -2257,7 +2380,7 @@ graph.add(new GPUSpatialCrossValidation({
     summary:
       'Fits OLS on every spatial fold and reports honest out-of-fold predictions and metrics.',
     explanation:
-      'Use it to check how well a regression transfers to new places. Each fold trains on buffered blocks, predicts the held-out block, and everything stays resident on the GPU.',
+      'Checks how well a regression transfers to new places. Each fold trains on buffered blocks, predicts the held-out block, and everything stays resident on the GPU.',
     dataTypes: {input: ['table', 'points'], output: ['table']},
     useCases: ['model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -2288,7 +2411,7 @@ graph.add(new GPUSpatialCrossValidation({
       },
       {
         name: 'output',
-        type: '{ coefficients: GraphDataView<"float32">; predictions: GraphDataView<"float32">; … }',
+        type: '{coefficients, predictions}',
         required: true,
         description: 'Coefficients, predictions and metrics.'
       }
@@ -2304,7 +2427,13 @@ graph.add(new GPUSpatialCrossValidation({
         type: 'GraphDataView<"float32">',
         description: 'Out-of-fold prediction per row.'
       },
-      {name: 'metrics', type: 'GraphDataView<"float32">', description: 'Error metrics per fold.'}
+      {name: 'fitStatus', type: 'GraphDataView<"uint32">', description: 'Per fold fit status.'},
+      {name: 'metrics', type: 'GraphDataView<"float32">', description: 'Error metrics per fold.'},
+      {
+        name: 'metricStatus',
+        type: 'GraphDataView<"uint32">',
+        description: 'Per fold bitmask: 1 no scored rows, 2 missing outcomes.'
+      }
     ],
     example: `import {GPUSpatialCrossValidatedOLS} from '${IMPORT_PATH}';
 
@@ -2317,7 +2446,7 @@ graph.add(new GPUSpatialCrossValidatedOLS({
     preview: {
       kind: 'regression',
       caption: 'Out-of-fold predictions against observations.',
-      seed: 92
+      seed: 530
     },
     related: ['spatial-cross-validation', 'nested-interpolation-validation'],
     lensScenario: 'gpu-spatial-analysis.spatial-cross-validated-ols',
@@ -2333,7 +2462,7 @@ graph.add(new GPUSpatialCrossValidatedOLS({
     summary:
       'Tunes interpolation hyperparameters on inner folds and scores the winner on outer spatial folds.',
     explanation:
-      'Use it to choose a kernel, degree or smoothing without optimistic bias. An inner buffered search picks the best candidate, then the outer test blocks score it; all on the GPU.',
+      'Chooses a kernel, degree or smoothing without optimistic bias. An inner buffered search picks the best candidate, then the outer test blocks score it; all on the GPU.',
     dataTypes: {input: ['points', 'table'], output: ['table']},
     useCases: ['interpolate', 'model'],
     domains: ['spatial-statistics', 'ecology'],
@@ -2372,7 +2501,7 @@ graph.add(new GPUSpatialCrossValidatedOLS({
       },
       {
         name: 'output',
-        type: '{ selected: GraphDataView<"uint32">; scores: GraphDataView<"float32">; … }',
+        type: '{selected, scores}',
         required: true,
         description: 'Selected candidate, scores and metrics.'
       }
@@ -2388,6 +2517,16 @@ graph.add(new GPUSpatialCrossValidatedOLS({
         name: 'predictions',
         type: 'GraphDataView<"float32">',
         description: 'Outer predictions per point.'
+      },
+      {
+        name: 'metrics',
+        type: 'GraphDataView<"float32">',
+        description: 'Per fold: scored, missing, MSE, MAE, bias, R2.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'Bitmask: 1 overlapping outer masks, 2 no selected candidate.'
       }
     ],
     example: `import {GPUNestedInterpolationValidation} from '${IMPORT_PATH}';
@@ -2403,7 +2542,7 @@ graph.add(new GPUNestedInterpolationValidation({
   ],
   output: {selected, scores, predictions, metrics, status}
 }));`,
-    preview: {kind: 'interpolation', caption: 'Candidates compared on held-out blocks.', seed: 93},
+    preview: {kind: 'interpolation', caption: 'Candidates compared on held-out blocks.', seed: 531},
     related: ['spatial-cross-validation', 'spatial-cross-validated-ols'],
     lensScenario: 'gpu-spatial-analysis.nested-interpolation-validation',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',

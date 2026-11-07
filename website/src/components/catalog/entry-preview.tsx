@@ -5,8 +5,9 @@ import type {ReactNode} from 'react';
 import {useEffect, useRef, useState} from 'react';
 import type {CatalogEntryReference} from '../../catalog';
 import {GpuCanvas} from '../../gpu/gpu-canvas';
-import {getDemoScene} from '../../gpu/demos';
-import {getPreviewScene, PreviewFallback} from '../../gpu/previews';
+import {getDemoParameters, getDemoScene} from '../../gpu/demos';
+import {getPreviewParameters, getPreviewScene, PreviewFallback} from '../../gpu/previews';
+import type {GpuSceneParameter} from '../../gpu/types';
 
 export const DEFAULT_PREVIEW_SEED = 7;
 
@@ -59,16 +60,30 @@ function DeferredFallback({children}: {children: ReactNode}) {
   );
 }
 
+/** Slider parameters of an entry's picture: its demo's when it has a demo, else its preview kind's. */
+export function getEntryParameters(entry: CatalogEntryReference): readonly GpuSceneParameter[] {
+  if (getDemoScene(entry.id)) {
+    return getDemoParameters(entry.symbol) ?? getDemoParameters(entry.id) ?? [];
+  }
+  return getPreviewParameters(entry.preview.kind) ?? [];
+}
+
 /** The picture of an entry: its flagship demo when one exists, else the generic scene for its kind. */
 export function EntryPreview({
   entry,
   live = true,
-  aspectRatio = 16 / 10
+  aspectRatio = 16 / 10,
+  controls = false,
+  interactive = false
 }: {
   entry: CatalogEntryReference;
   /** When false only the static SVG is rendered (cards without a live slot). */
   live?: boolean;
   aspectRatio?: number;
+  /** Render one slider per scene parameter (function pages). */
+  controls?: boolean;
+  /** Forward the pointer to the scene (hover animation on cards). */
+  interactive?: boolean;
 }) {
   const seed = getEntrySeed(entry);
   const fallback = <PreviewFallback kind={entry.preview.kind} seed={seed} />;
@@ -86,6 +101,9 @@ export function EntryPreview({
       seed={seed}
       label={`${entry.title}: ${entry.preview.caption ?? entry.summary}`}
       aspectRatio={aspectRatio}
+      controls={controls}
+      interactive={interactive}
+      parameters={controls ? getEntryParameters(entry) : undefined}
     />
   );
 }

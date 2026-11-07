@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUSpatialClustering (DBSCAN). Blobs, two moons and scattered noise; epsilon sweeps and
-// the clusters merge and split as the GPU relabels every point each frame.
+// Demo: GPUSpatialClustering (DBSCAN). Blobs, two moons and scattered noise; the epsilon and
+// minimum-points sliders relabel every point on the GPU, so clusters merge, split and shed noise.
 
 import {
   getGPUSpatialClusteringParameterValues,
@@ -10,12 +10,14 @@ import {
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {GpuScene} from '../types';
+import {DBSCAN_PARAMETERS, readParameterValues} from './parameters';
 import {
   assertWebGPU,
   createEmptyStorageBuffer,
   createStorageBuffer,
   DotLayer,
   drawGaussianCluster,
+  DrawScheduler,
   drawLayers,
   getDemoTheme,
   GraphRunner,
@@ -24,12 +26,13 @@ import {
   type DemoView
 } from './kit';
 
-const MINIMUM_POINTS = 6;
+export const parameters = DBSCAN_PARAMETERS;
 
 const scene: GpuScene = async context => {
   const {device} = context;
   assertWebGPU(device);
   const theme = getDemoTheme(context.theme);
+  const values = readParameterValues(parameters, context.parameters);
   const worldWidth = context.width / context.height;
   const view: DemoView = {worldWidth, worldHeight: 1, width: context.width, height: context.height};
   const random = makeRandom(context.seed);
@@ -95,32 +98,46 @@ const scene: GpuScene = async context => {
   });
 
   const dots = new DotLayer(device, positionBuffer, labels, pointCount, 'uint32');
-  let lastEpsilon = 0;
+  let isDirty = true;
+
+  const draw = () => {
+    if (isDirty) {
+      isDirty = false;
+      parameterBuffer.write(
+        getGPUSpatialClusteringParameterValues({
+          bounds,
+          epsilon: values.epsilon / 100,
+          minimumPoints: Math.round(values.minimumPoints)
+        })
+      );
+      runner.run();
+    }
+    dots.update(view, theme, {
+      mode: 2,
+      radius: 4.2,
+      solid: [...theme.muted, 0.55],
+      hillshade: 0.4
+    });
+    drawLayers(device, theme, [dots]);
+  };
+  const scheduler = new DrawScheduler(draw);
 
   return {
-    render(timeMilliseconds) {
-      const phase = context.reducedMotion ? 0.55 : 0.5 + 0.5 * Math.sin(timeMilliseconds / 2400);
-      const epsilon = 0.011 + 0.03 * phase;
-      if (Math.abs(epsilon - lastEpsilon) > 2e-4) {
-        lastEpsilon = epsilon;
-        parameterBuffer.write(
-          getGPUSpatialClusteringParameterValues({bounds, epsilon, minimumPoints: MINIMUM_POINTS})
-        );
-        runner.run();
-      }
-      dots.update(view, theme, {
-        mode: 2,
-        radius: 4.2,
-        solid: [...theme.muted, 0.55],
-        hillshade: 0.4
-      });
-      drawLayers(device, theme, [dots]);
+    render() {
+      scheduler.flush();
+    },
+    setParameters(update) {
+      Object.assign(values, update);
+      isDirty = true;
+      scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      scheduler.request();
     },
     destroy() {
+      scheduler.cancel();
       dots.destroy();
       runner.destroy();
       for (const buffer of [positionBuffer, parameterBuffer, labels, clusterCount]) {

@@ -82,6 +82,9 @@ type Frame = {x: number; y: number; width: number; height: number; batch: number
 
 const MODEL = makeLayout();
 
+/** The demo's table layout, reused by the index card. */
+export const COLUMNS_LAYOUT = MODEL.layout;
+
 function ColumnsFallback({layout}: {layout: ColumnsLayout}) {
   return (
     <svg

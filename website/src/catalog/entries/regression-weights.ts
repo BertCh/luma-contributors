@@ -40,8 +40,8 @@ function makeExample(symbols: string[], body: string[]): string {
 }
 
 const REGRESSION_INPUTS = [
-  `const predictors = graph.importGPUData('predictors', predictorData); // row-major, no intercept`,
-  `const response = graph.importGPUData('response', responseData);`
+  `const predictors = graph.importGPUData<'float32'>('predictors', predictorData); // row-major, no intercept`,
+  `const response = graph.importGPUData<'float32'>('response', responseData);`
 ];
 
 const STATUS_OUTPUT = output(
@@ -106,7 +106,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'polygons', seed: 11, caption: 'Tracts that share a vertex become neighbors.'},
+    preview: {kind: 'polygons', seed: 211, caption: 'Tracts that share a vertex become neighbors.'},
     related: [
       'fuzzy-contiguity',
       'lattice-weights',
@@ -125,7 +125,7 @@ export const entries: CatalogEntry[] = [
     title: 'Fuzzy contiguity',
     summary: 'Links polygons whose boundaries come within a distance, forgiving sliver gaps.',
     explanation:
-      'Use it when digitized boundaries do not quite touch. Two polygons are neighbors when their minimum separation is within `tolerance`. Handles multipart geometry and holes.',
+      'Best when digitized boundaries do not quite touch. Two polygons are neighbors when their minimum separation is within `tolerance`. Handles multipart geometry and holes.',
     dataTypes: {input: ['polygons'], output: ['spatial-weights']},
     useCases: ['relate'],
     domains: ['spatial-statistics', 'cartography'],
@@ -147,7 +147,22 @@ export const entries: CatalogEntry[] = [
     outputs: [
       output('offsets', "GraphDataView<'uint32'>", 'CSR row offsets.'),
       output('neighbors', "GraphDataView<'uint32'>", 'Neighbor polygon ids.'),
-      output('weights', "GraphDataView<'float32'>", 'Binary weights.')
+      output('weights', "GraphDataView<'float32'>", 'Binary weights.'),
+      {
+        name: 'status',
+        type: 'GPUBoundedResultStatusPort',
+        description: 'GPU status words; zero means complete.'
+      },
+      {
+        name: 'featureStatus',
+        type: 'GraphDataView<"uint32">',
+        description: 'Per feature: 0 valid, 1 empty, 2 malformed.'
+      },
+      {
+        name: 'added',
+        type: 'GraphDataView<"uint32">',
+        description: '1 for edges added by this operation, 0 for copied.'
+      }
     ],
     example: makeExample(
       ['GPUFuzzyContiguity'],
@@ -162,8 +177,8 @@ export const entries: CatalogEntry[] = [
       ]
     ),
     preview: {
-      kind: 'polygon-overlay',
-      seed: 12,
+      kind: 'spatial-weights',
+      seed: 212,
       caption: 'Near-misses within tolerance still link.'
     },
     related: ['contiguity-weights', 'island-attachment'],
@@ -209,7 +224,12 @@ export const entries: CatalogEntry[] = [
     outputs: [
       output('offsets', "GraphDataView<'uint32'>", 'CSR row offsets.'),
       output('neighbors', "GraphDataView<'uint32'>", 'Neighbor cell ids, y * width + x.'),
-      output('weights', "GraphDataView<'float32'>", 'Binary weights.')
+      output('weights', "GraphDataView<'float32'>", 'Binary weights.'),
+      {
+        name: 'status',
+        type: 'GPUBoundedResultStatusPort',
+        description: 'GPU status words; zero means complete.'
+      }
     ],
     example: makeExample(
       ['GPULatticeWeights'],
@@ -226,7 +246,7 @@ export const entries: CatalogEntry[] = [
     ),
     preview: {
       kind: 'raster',
-      seed: 13,
+      seed: 213,
       caption: 'Eight queen neighbors inside, fewer at the edge.'
     },
     related: ['contiguity-weights', 'spatial-weights-transform', 'spatial-lag'],
@@ -278,7 +298,12 @@ export const entries: CatalogEntry[] = [
       output('offsets', "GraphDataView<'uint32'>", 'CSR row offsets, queryRows + 1.'),
       output('neighbors', "GraphDataView<'uint32'>", 'Neighbor ids, ascending per row.'),
       output('weights', "GraphDataView<'float32'>", 'Weights per link.'),
-      output('distances', "GraphDataView<'float32'> | undefined", 'Optional link distances.')
+      output('distances', "GraphDataView<'float32'> | undefined", 'Optional link distances.'),
+      {
+        name: 'status',
+        type: 'GPUBoundedResultStatusPort',
+        description: 'GPU status words; zero means complete.'
+      }
     ],
     example: makeExample(
       ['GPUNeighborSearch', 'GPUParameterBuffer', 'getGPUNeighborSearchParameterValues'],
@@ -297,7 +322,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'point-clusters', seed: 14, caption: 'Each point links to its four nearest.'},
+    preview: {kind: 'point-clusters', seed: 214, caption: 'Each point links to its four nearest.'},
     related: ['spatial-weights-transform', 'contiguity-weights', 'neighborhood-summary'],
     lensScenario: 'gpu-spatial-analysis.neighbor-search',
     reference: 'api/gpu-spatial-analysis/operators-weights',
@@ -331,7 +356,22 @@ export const entries: CatalogEntry[] = [
     outputs: [
       output('offsets', "GraphDataView<'uint32'>", 'CSR row offsets.'),
       output('neighbors', "GraphDataView<'uint32'>", 'Neighbor ids including attachments.'),
-      output('weights', "GraphDataView<'float32'>", 'Original weights plus binary attachments.')
+      output('weights', "GraphDataView<'float32'>", 'Original weights plus binary attachments.'),
+      {
+        name: 'status',
+        type: 'GPUBoundedResultStatusPort',
+        description: 'GPU status words; zero means complete.'
+      },
+      {
+        name: 'attachment',
+        type: 'GraphDataView<"uint32">',
+        description: 'Selected nearest row, or 0xffffffff when none.'
+      },
+      {
+        name: 'added',
+        type: 'GraphDataView<"uint32">',
+        description: '1 for edges added by this operation, 0 for copied.'
+      }
     ],
     example: makeExample(
       ['GPUIslandAttachment'],
@@ -345,7 +385,11 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'network', seed: 15, caption: 'A stray tract links to its nearest neighbor.'},
+    preview: {
+      kind: 'spatial-weights',
+      seed: 215,
+      caption: 'A stray tract links to its nearest neighbor.'
+    },
     related: ['contiguity-weights', 'spatial-weights-summary'],
     lensScenario: 'gpu-spatial-analysis.island-attachment',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -412,7 +456,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'spatial-weights', seed: 16, caption: 'Each row of weights now sums to one.'},
+    preview: {kind: 'spatial-weights', seed: 216, caption: 'Each row of weights now sums to one.'},
     related: [
       'contiguity-weights',
       'spatial-lag',
@@ -481,8 +525,8 @@ export const entries: CatalogEntry[] = [
       ]
     ),
     preview: {
-      kind: 'network',
-      seed: 17,
+      kind: 'spatial-weights',
+      seed: 217,
       caption: 'Queen links joined with nearest-neighbor links.'
     },
     related: ['spatial-weights-transform', 'chunked-weights-algebra', 'contiguity-weights'],
@@ -498,7 +542,7 @@ export const entries: CatalogEntry[] = [
     title: 'Weights transpose',
     summary: 'Flips who points at whom: the sparse transpose of a weights matrix.',
     explanation:
-      'Use it to get incoming links from outgoing ones, or to test symmetry. Works for square and rectangular weights; output rows are sorted. An optional count tells how many slots are asymmetric.',
+      'Derives incoming links from outgoing ones, or tests symmetry. Works for square and rectangular weights; output rows are sorted. An optional count tells how many slots are asymmetric.',
     dataTypes: {input: ['spatial-weights'], output: ['spatial-weights']},
     useCases: ['transform', 'relate'],
     domains: ['spatial-statistics'],
@@ -534,7 +578,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'spatial-weights', seed: 18, caption: 'Outgoing links become incoming links.'},
+    preview: {kind: 'spatial-weights', seed: 218, caption: 'Outgoing links become incoming links.'},
     related: ['spatial-weights-transform', 'chunked-weights-transpose', 'spatial-weights-summary'],
     lensScenario: 'gpu-spatial-analysis.spatial-weights-transpose',
     reference: 'api/gpu-spatial-analysis/operators-weights',
@@ -601,7 +645,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'histogram', seed: 19, caption: 'Degree distribution of the neighbor graph.'},
+    preview: {kind: 'histogram', seed: 219, caption: 'Degree distribution of the neighbor graph.'},
     related: ['spatial-weights-validation', 'island-attachment', 'spatial-weights-transform'],
     lensScenario: 'gpu-spatial-analysis.spatial-weights-summary',
     reference: 'api/gpu-spatial-analysis/operators-weights',
@@ -646,7 +690,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'spatial-weights', seed: 20, caption: 'Zero flagged rows means safe to use.'},
+    preview: {kind: 'spatial-weights', seed: 220, caption: 'Zero flagged rows means safe to use.'},
     related: ['spatial-weights-summary', 'chunked-weights-validation'],
     lensScenario: 'gpu-spatial-analysis.spatial-weights-validation',
     reference: 'api/gpu-spatial-analysis/operators-weights',
@@ -697,7 +741,7 @@ export const entries: CatalogEntry[] = [
     ),
     preview: {
       kind: 'spatial-weights',
-      seed: 21,
+      seed: 221,
       caption: 'Values smoothed through neighbor links.'
     },
     related: [
@@ -766,7 +810,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'cells', seed: 22, caption: 'Each cell described by its surroundings.'},
+    preview: {kind: 'cells', seed: 222, caption: 'Each cell described by its surroundings.'},
     related: ['spatial-lag', 'neighbor-search'],
     lensScenario: 'gpu-spatial-analysis.neighborhood-summary',
     reference: 'api/gpu-spatial-analysis/operators-statistics',
@@ -831,7 +875,7 @@ export const entries: CatalogEntry[] = [
     ),
     preview: {
       kind: 'polygon-overlay',
-      seed: 23,
+      seed: 223,
       caption: 'Points inherit attributes of their polygon.'
     },
     related: ['neighbor-search', 'contiguity-weights'],
@@ -888,7 +932,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'time-series', seed: 24, caption: 'Traces decay with the power of W.'},
+    preview: {kind: 'spatial-weights', seed: 224, caption: 'Traces decay with the power of W.'},
     related: [
       'spatial-lag-impacts',
       'spatial-lag-maximum-likelihood',
@@ -940,11 +984,7 @@ export const entries: CatalogEntry[] = [
       param('mask', "GraphDataView<'uint32'>", 'Nonzero keeps the row.')
     ],
     outputs: [
-      output(
-        'output',
-        'GPUChunkedSpatialWeightsOutput',
-        'Chunks with offsets, neighbors and weights.'
-      )
+      {name: 'chunks', type: 'readonly {}', description: 'Weights chunks with their row ranges.'}
     ],
     example: makeExample(
       ['GPUChunkedSpatialWeightsAlgebra'],
@@ -960,7 +1000,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'network', seed: 25, caption: 'Union computed chunk by chunk.'},
+    preview: {kind: 'spatial-weights', seed: 225, caption: 'Union computed chunk by chunk.'},
     related: ['spatial-weights-algebra', 'chunked-weights-transform'],
     reference: 'api/gpu-spatial-analysis/operators-weights',
     maturity: 'stable'
@@ -1016,7 +1056,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'spatial-weights', seed: 26, caption: 'Row sums of one, chunk by chunk.'},
+    preview: {kind: 'spatial-weights', seed: 226, caption: 'Row sums of one, chunk by chunk.'},
     related: ['spatial-weights-transform', 'chunked-weights-algebra'],
     reference: 'api/gpu-spatial-analysis/operators-weights',
     maturity: 'stable'
@@ -1029,7 +1069,7 @@ export const entries: CatalogEntry[] = [
     title: 'Chunked weights transpose',
     summary: 'Transposes chunked weights into one whole CSR.',
     explanation:
-      'Use it when the source is too large for a single buffer but the transpose fits. Packing is explicit: the result is one caller-owned CSR. An optional check counts asymmetric slots.',
+      'Best when the source is too large for a single buffer but the transpose fits. Packing is explicit: the result is one caller-owned CSR. An optional check counts asymmetric slots.',
     dataTypes: {input: ['spatial-weights'], output: ['spatial-weights']},
     useCases: ['transform'],
     domains: ['spatial-statistics', 'data-engineering'],
@@ -1059,7 +1099,7 @@ export const entries: CatalogEntry[] = [
     ),
     preview: {
       kind: 'spatial-weights',
-      seed: 27,
+      seed: 227,
       caption: 'Chunks merge into one transposed matrix.'
     },
     related: ['spatial-weights-transpose', 'chunked-weights-transform'],
@@ -1107,7 +1147,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'spatial-weights', seed: 28, caption: 'One pass over every chunk.'},
+    preview: {kind: 'spatial-weights', seed: 228, caption: 'One pass over every chunk.'},
     related: ['spatial-weights-validation', 'chunked-weights-transform'],
     reference: 'api/gpu-spatial-analysis/operators-weights',
     maturity: 'stable'
@@ -1147,7 +1187,12 @@ export const entries: CatalogEntry[] = [
       output('standardErrors', "GraphDataView<'float32'>", 'Standard error per coefficient.'),
       output('tStatistics', "GraphDataView<'float32'>", 't statistic per coefficient.'),
       output('summary', "GraphDataView<'float32'>", 'R2, adjusted R2, sigma squared, tests.'),
-      output('residuals', "GraphDataView<'float32'> | undefined", 'y - fitted per row.')
+      output('residuals', "GraphDataView<'float32'> | undefined", 'y - fitted per row.'),
+      {
+        name: 'status',
+        type: 'Pick<GPUSolverStatusPort, "code">',
+        description: 'GPU status words; zero means complete.'
+      }
     ],
     example: makeExample(
       ['GPUOrdinaryLeastSquares'],
@@ -1169,7 +1214,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'regression', seed: 31, caption: 'A best-fit line through the cloud.'},
+    preview: {kind: 'regression', seed: 231, caption: 'A best-fit line through the cloud.'},
     related: [
       'spatial-regression-diagnostics',
       'spatial-lag-maximum-likelihood',
@@ -1236,7 +1281,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'histogram', seed: 32, caption: 'Which dependence do the residuals show?'},
+    preview: {kind: 'regression', seed: 232, caption: 'Which dependence do the residuals show?'},
     related: [
       'ordinary-least-squares',
       'spatial-lag-maximum-likelihood',
@@ -1265,21 +1310,28 @@ export const entries: CatalogEntry[] = [
       param('mask', "GraphDataView<'uint32'> | undefined", 'Zero excludes the row.'),
       param('maximumIterations', 'number | undefined', 'Fisher scoring iteration cap.'),
       param('tolerance', 'number | undefined', 'Convergence tolerance.'),
-      param(
-        'spatialDiagnostics',
-        '{weights: GPUSpatialWeights; output: {tests: GraphDataView<...>}}',
-        'Optional dependence tests.'
-      ),
-      param(
-        'output',
-        '{coefficients: GraphDataView<...>; standardErrors: ...}',
-        'Caller-owned results.',
-        {required: true}
-      )
+      param('spatialDiagnostics', '{weights, output}}', 'Optional dependence tests.'),
+      param('output', '{coefficients, standardErrors}', 'Caller-owned results.', {required: true})
     ],
     outputs: [
       output('coefficients', "GraphDataView<'float32'>", 'Intercept first, then predictors.'),
-      output('standardErrors', "GraphDataView<'float32'>", 'Standard error per coefficient.')
+      output('standardErrors', "GraphDataView<'float32'>", 'Standard error per coefficient.'),
+      {name: 'fitted', type: 'GraphDataView<"float32">', description: 'Fitted response per row.'},
+      {
+        name: 'marginalEffects',
+        type: 'GraphDataView<"float32">',
+        description: 'Average marginal effect per predictor.'
+      },
+      {
+        name: 'summary',
+        type: 'GraphDataView<"float32">',
+        description: 'Fit summary: log likelihood and iteration counts.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'GPU status words; zero means complete.'
+      }
     ],
     example: makeExample(
       ['GPUProbitRegression'],
@@ -1292,14 +1344,17 @@ export const entries: CatalogEntry[] = [
         '    response, // 0 or 1',
         '    output: {',
         "      coefficients: output('beta', 'float32', 3),",
-        "      standardErrors: output('se', 'float32', 3)",
-        '      // plus the remaining outputs listed in the reference',
+        "      standardErrors: output('se', 'float32', 3),",
+        "      fitted: output('fitted', 'float32', rowCount),",
+        "      marginalEffects: output('effects', 'float32', 2),",
+        "      summary: output('summary', 'float32', 4),",
+        "      status: output('status', 'uint32', 1)",
         '    }',
         '  })',
         ');'
       ]
     ),
-    preview: {kind: 'classification', seed: 33, caption: 'Probability rises across the boundary.'},
+    preview: {kind: 'classification', seed: 233, caption: 'Probability rises across the boundary.'},
     related: ['ordinary-least-squares', 'spatial-regression-diagnostics'],
     lensScenario: 'gpu-spatial-analysis.probit-regression',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -1313,7 +1368,7 @@ export const entries: CatalogEntry[] = [
     title: 'Seemingly unrelated regression',
     summary: 'Fits several equations jointly, using correlation between their errors.',
     explanation:
-      'Use it when related outcomes are modeled together. One-step feasible SUR: equation OLS, a joint residual covariance, then system GLS. An optional `spatial` block adds Kelejian-Prucha spatial errors.',
+      'Best when related outcomes are modeled together. One-step feasible SUR: equation OLS, a joint residual covariance, then system GLS. An optional `spatial` block adds Kelejian-Prucha spatial errors.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['model'],
     domains: ['spatial-statistics', 'demographics'],
@@ -1329,21 +1384,23 @@ export const entries: CatalogEntry[] = [
       ),
       param('responses', "GraphDataView<'float32'>", 'Equation-major responses.', {required: true}),
       param('mask', "GraphDataView<'uint32'> | undefined", 'Common row mask.'),
-      param(
-        'spatial',
-        '{weights: GPUSpatialWeights; output: ...} | undefined',
-        'Spatial-error SUR option.'
-      ),
-      param(
-        'output',
-        '{coefficients: GraphDataView<...>; covariance: ...}',
-        'Caller-owned results.',
-        {required: true}
-      )
+      param('spatial', '{weights, output} | undefined', 'Spatial-error SUR option.'),
+      param('output', '{coefficients, covariance}', 'Caller-owned results.', {required: true})
     ],
     outputs: [
       output('coefficients', "GraphDataView<'float32'>", 'Coefficients for every equation.'),
-      output('covariance', "GraphDataView<'float32'>", 'System coefficient covariance.')
+      output('covariance', "GraphDataView<'float32'>", 'System coefficient covariance.'),
+      {
+        name: 'residualCovariance',
+        type: 'GraphDataView<"float32">',
+        description: 'OLS residual cross-equation covariance for GLS.'
+      },
+      {name: 'residuals', type: 'GraphDataView<"float32">', description: 'Residual per row.'},
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'GPU status words; zero means complete.'
+      }
     ],
     example: makeExample(
       ['GPUSeeminglyUnrelatedRegression'],
@@ -1360,7 +1417,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'regression', seed: 34, caption: 'Two fits sharing correlated errors.'},
+    preview: {kind: 'regression', seed: 234, caption: 'Two fits sharing correlated errors.'},
     related: ['ordinary-least-squares', 'spatial-error-gm'],
     lensScenario: 'gpu-spatial-analysis.seemingly-unrelated-regression',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -1392,12 +1449,7 @@ export const entries: CatalogEntry[] = [
       }),
       param('method', "'HC0' | 'HC1' | 'HAC' | undefined", 'Sandwich estimator.'),
       param('kernel', 'GPUSpatialWeights | undefined', 'HAC kernel weights.'),
-      param(
-        'output',
-        '{covariance: GraphDataView<...>; status: GraphDataView<...>}',
-        'Caller-owned results.',
-        {required: true}
-      )
+      param('output', '{covariance, status}', 'Caller-owned results.', {required: true})
     ],
     outputs: [
       output('covariance', "GraphDataView<'float32'>", 'Coefficient covariance matrix.'),
@@ -1420,7 +1472,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'regression', seed: 35, caption: 'Wider bands where errors cluster.'},
+    preview: {kind: 'regression', seed: 235, caption: 'Wider bands where errors cluster.'},
     related: ['spatial-two-stage-least-squares', 'spatial-panel-regression'],
     lensScenario: 'gpu-spatial-analysis.instrumental-variables-covariance',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -1479,7 +1531,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'regression', seed: 36, caption: "Neighbors' outcomes enter as a predictor."},
+    preview: {kind: 'regression', seed: 236, caption: "Neighbors' outcomes enter as a predictor."},
     related: [
       'spatial-lag-maximum-likelihood',
       'spatial-lag-impacts',
@@ -1552,7 +1604,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'regression', seed: 37, caption: 'rho captures spillover between neighbors.'},
+    preview: {kind: 'regression', seed: 237, caption: 'rho captures spillover between neighbors.'},
     related: [
       'spatial-lag-impacts',
       'spatial-two-stage-least-squares',
@@ -1584,12 +1636,9 @@ export const entries: CatalogEntry[] = [
       param('predictorCount', 'number', 'Predictors whose impacts are written.', {required: true}),
       param('rowCount', 'number', 'Rows n of the weights.', {required: true}),
       param('maximumPower', 'number', 'Series length Q used.', {required: true}),
-      param(
-        'traces',
-        '{powerTraces: ...; powerSums: ...; infinityNorm: ...}',
-        'Traces of the weights.',
-        {required: true}
-      ),
+      param('traces', '{powerTraces, powerSums, infinityNorm}', 'Traces of the weights.', {
+        required: true
+      }),
       param('output', 'GPUSpatialLagImpactsOutput', 'Caller-owned impacts.', {required: true})
     ],
     outputs: [
@@ -1612,7 +1661,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'histogram', seed: 38, caption: 'Direct plus indirect equals total.'},
+    preview: {kind: 'regression', seed: 238, caption: 'Direct plus indirect equals total.'},
     related: [
       'spatial-lag-maximum-likelihood',
       'spatial-two-stage-least-squares',
@@ -1684,7 +1733,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'regression', seed: 39, caption: 'Residual clustering absorbed by lambda.'},
+    preview: {kind: 'regression', seed: 239, caption: 'Residual clustering absorbed by lambda.'},
     related: [
       'spatial-error-gm',
       'spatial-lag-maximum-likelihood',
@@ -1756,7 +1805,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'regression', seed: 40, caption: 'Moment equations pin down lambda.'},
+    preview: {kind: 'regression', seed: 240, caption: 'Moment equations pin down lambda.'},
     related: [
       'spatial-error-maximum-likelihood',
       'seemingly-unrelated-regression',
@@ -1788,13 +1837,19 @@ export const entries: CatalogEntry[] = [
       }),
       param('regimeCount', 'number', 'Number of regimes.', {required: true}),
       param('mask', "GraphDataView<'uint32'> | undefined", 'Zero excludes the row.'),
-      param('output', '{coefficients: GraphDataView<...>; fitted: ...}', 'Caller-owned results.', {
+      param('output', '{coefficients, fitted}', 'Caller-owned results.', {
         required: true
       })
     ],
     outputs: [
       output('coefficients', "GraphDataView<'float32'>", 'Intercept and slopes per regime.'),
-      output('fitted', "GraphDataView<'float32'>", 'Fitted value per row.')
+      output('fitted', "GraphDataView<'float32'>", 'Fitted value per row.'),
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'GPU status words; zero means complete.'
+      },
+      {name: 'counts', type: 'GraphDataView<"uint32">', description: 'Rows per regime.'}
     ],
     example: makeExample(
       ['GPUSpatialRegimeRegression'],
@@ -1811,7 +1866,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'classification', seed: 41, caption: 'One line per region.'},
+    preview: {kind: 'regression', seed: 241, caption: 'One line per region.'},
     related: [
       'restricted-regime-regression',
       'ordinary-least-squares',
@@ -1844,16 +1899,27 @@ export const entries: CatalogEntry[] = [
         required: true
       }),
       param('mask', "GraphDataView<'uint32'> | undefined", 'Zero excludes the row.'),
-      param(
-        'output',
-        '{coefficients: GraphDataView<...>; covariance: ...}',
-        'Caller-owned results.',
-        {required: true}
-      )
+      param('output', '{coefficients, covariance}', 'Caller-owned results.', {required: true})
     ],
     outputs: [
       output('coefficients', "GraphDataView<'float32'>", 'Restricted coefficients.'),
-      output('covariance', "GraphDataView<'float32'>", 'Coefficient covariance.')
+      output('covariance', "GraphDataView<'float32'>", 'Coefficient covariance.'),
+      {
+        name: 'stability',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Coefficient stability diagnostics.'
+      },
+      {name: 'fitted', type: 'GraphDataView<"float32">', description: 'Fitted response per row.'},
+      {
+        name: 'chow',
+        type: 'GraphDataView<"float32">',
+        description: 'Joint Chow F statistic and degrees of freedom.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'GPU status words; zero means complete.'
+      }
     ],
     example: makeExample(
       ['GPURestrictedRegimeRegression'],
@@ -1871,7 +1937,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'classification', seed: 42, caption: 'Shared slope, regional intercepts.'},
+    preview: {kind: 'regression', seed: 242, caption: 'Shared slope, regional intercepts.'},
     related: ['spatial-regime-regression', 'ordinary-least-squares'],
     lensScenario: 'gpu-spatial-analysis.restricted-regime-regression',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -1886,7 +1952,7 @@ export const entries: CatalogEntry[] = [
     title: 'Geographically weighted regression',
     summary: 'A separate regression at every location, with the bandwidth chosen automatically.',
     explanation:
-      'Use it to see where a relationship is strong, weak or reversed. Each location is fit with distance-weighted neighbors; AICc picks the bandwidth by a caller ladder or golden-section search. Output maps of coefficients, t values and local R2.',
+      'Shows where a relationship is strong, weak or reversed. Each location is fit with distance-weighted neighbors; AICc picks the bandwidth by a caller ladder or golden-section search. Output maps of coefficients, t values and local R2.',
     dataTypes: {input: ['points', 'table'], output: ['points', 'table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics', 'urban', 'demographics'],
@@ -1947,7 +2013,7 @@ export const entries: CatalogEntry[] = [
     ),
     preview: {
       kind: 'regression',
-      seed: 43,
+      seed: 243,
       caption: 'A coefficient surface that varies across space.'
     },
     related: [
@@ -1994,7 +2060,12 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       output('coefficients', "GraphDataView<'float32'>", 'Local coefficients per row.'),
-      output('fitted', "GraphDataView<'float32'>", 'Fitted mean per row.')
+      output('fitted', "GraphDataView<'float32'>", 'Fitted mean per row.'),
+      {
+        name: 'status',
+        type: '{count, overflow}',
+        description: 'GPU status words; zero means complete.'
+      }
     ],
     example: makeExample(
       ['GPUGeneralizedGeographicallyWeightedRegression'],
@@ -2014,7 +2085,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'hotspots', seed: 44, caption: 'Local rates that change across the map.'},
+    preview: {kind: 'regression', seed: 244, caption: 'Local rates that change across the map.'},
     related: ['geographically-weighted-regression', 'multiscale-gwr'],
     lensScenario: 'gpu-spatial-analysis.generalized-geographically-weighted-regression',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -2052,7 +2123,22 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       output('coefficients', "GraphDataView<'float32'>", 'Local coefficients per row.'),
-      output('fitted', "GraphDataView<'float32'>", 'Fitted value per row.')
+      output('fitted', "GraphDataView<'float32'>", 'Fitted value per row.'),
+      {
+        name: 'selectedBandwidths',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Selected bandwidth per term.'
+      },
+      {
+        name: 'conditionalStandardErrors',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Standard errors conditional on other terms.'
+      },
+      {
+        name: 'status',
+        type: '{count, overflow}',
+        description: 'GPU status words; zero means complete.'
+      }
     ],
     example: makeExample(
       ['GPUMultiscaleGeographicallyWeightedRegression'],
@@ -2070,7 +2156,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'density-surface', seed: 45, caption: 'Smooth and rough effects together.'},
+    preview: {kind: 'interpolation', seed: 245, caption: 'Smooth and rough effects together.'},
     related: ['geographically-weighted-regression', 'generalized-gwr'],
     lensScenario: 'gpu-spatial-analysis.multiscale-geographically-weighted-regression',
     reference: 'api/gpu-spatial-analysis/expansion-lenses',
@@ -2135,7 +2221,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'histogram', seed: 46, caption: 'Observed spread against permuted spreads.'},
+    preview: {kind: 'regression', seed: 246, caption: 'Observed spread against permuted spreads.'},
     related: ['geographically-weighted-regression', 'local-collinearity'],
     lensScenario: 'gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test',
     reference: 'api/gpu-spatial-analysis/operators-regression',
@@ -2163,12 +2249,7 @@ export const entries: CatalogEntry[] = [
       param('predictors', "GraphDataView<'float32'>", 'Row-major predictors.', {required: true}),
       param('predictorCount', 'number', 'Predictor columns.', {required: true}),
       param('mask', "GraphDataView<'uint32'> | undefined", 'Zero excludes the row.'),
-      param(
-        'output',
-        '{varianceInflationFactors: GraphDataView<...>; ...}',
-        'Caller-owned results.',
-        {required: true}
-      )
+      param('output', '{varianceInflationFactors}', 'Caller-owned results.', {required: true})
     ],
     outputs: [
       output(
@@ -2192,7 +2273,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'hotspots', seed: 47, caption: 'Where predictors become redundant.'},
+    preview: {kind: 'hotspots', seed: 247, caption: 'Where predictors become redundant.'},
     related: ['geographically-weighted-regression', 'gwr-nonstationarity-test'],
     lensScenario: 'gpu-spatial-analysis.local-collinearity',
     reference: 'api/gpu-spatial-analysis/coverage-statistics',
@@ -2207,7 +2288,7 @@ export const entries: CatalogEntry[] = [
     title: 'Spatial panel regression',
     summary: 'Pooled spatial-lag 2SLS on a balanced panel, with optional unit effects.',
     explanation:
-      'Use it for places observed repeatedly over time. Weights are time-invariant across the entity axis; rows are period-major. `unit` effects absorb a separate intercept per entity.',
+      'Best for places observed repeatedly over time. Weights are time-invariant across the entity axis; rows are period-major. `unit` effects absorb a separate intercept per entity.',
     dataTypes: {input: ['table', 'spatial-weights', 'time-series'], output: ['table']},
     useCases: ['model'],
     domains: ['spatial-statistics', 'urban', 'demographics'],
@@ -2253,7 +2334,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'time-series', seed: 48, caption: 'Many places, many periods, one model.'},
+    preview: {kind: 'time-series', seed: 248, caption: 'Many places, many periods, one model.'},
     related: ['spatial-panel-lag-ml', 'spatial-panel-error-ml', 'spatial-two-stage-least-squares'],
     lensScenario: 'gpu-spatial-analysis.spatial-panel-regression',
     reference: 'api/gpu-spatial-analysis/expansion-lenses',
@@ -2281,15 +2362,23 @@ export const entries: CatalogEntry[] = [
       param('response', "GraphDataView<'float32'>", 'Response, same row order.', {required: true}),
       param('effects', "'random' | 'unit' | undefined", 'Random or unit effects.'),
       param('maximumIterations', 'number | undefined', 'Iteration cap.'),
-      param(
-        'hausman',
-        '{tests: GraphDataView<...>; status: ...} | undefined',
-        'Random-versus-unit comparison.'
-      )
+      param('hausman', '{tests, status} | undefined', 'Random-versus-unit comparison.')
     ],
     outputs: [
       output('coefficients', "GraphDataView<'float32'>", 'Estimates including rho.'),
-      output('covariance', "GraphDataView<'float32'>", 'Coefficient covariance.')
+      output('covariance', "GraphDataView<'float32'>", 'Coefficient covariance.'),
+      {
+        name: 'summary',
+        type: 'GraphDataView<"float32">',
+        description: 'Fit summary: log likelihood and iteration counts.'
+      },
+      {
+        name: 'status',
+        type: 'GraphDataView<"uint32">',
+        description: 'GPU status words; zero means complete.'
+      },
+      {name: 'fitted', type: 'GraphDataView<"float32">', description: 'Fitted response per row.'},
+      {name: 'residuals', type: 'GraphDataView<"float32">', description: 'Residual per row.'}
     ],
     example: makeExample(
       ['GPUSpatialPanelLagMaximumLikelihood'],
@@ -2307,7 +2396,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'time-series', seed: 49, caption: 'Spillover estimated across periods.'},
+    preview: {kind: 'time-series', seed: 249, caption: 'Spillover estimated across periods.'},
     related: [
       'spatial-panel-regression',
       'spatial-panel-error-ml',
@@ -2336,11 +2425,7 @@ export const entries: CatalogEntry[] = [
       param('predictorCount', 'number', 'Predictor columns, 1 to 15.', {required: true}),
       param('response', "GraphDataView<'float32'>", 'Response, same row order.', {required: true}),
       param('maximumPower', 'number | undefined', 'Series length Q of the log-determinant.'),
-      param(
-        'diagnostics',
-        '{tests: GraphDataView<...>; status: ...} | undefined',
-        'Pooled-panel LM tests.'
-      ),
+      param('diagnostics', '{tests, status} | undefined', 'Pooled-panel LM tests.'),
       param('output', 'GPUSpatialErrorMaximumLikelihoodOutput', 'Caller-owned outputs.', {
         required: true
       })
@@ -2373,7 +2458,7 @@ export const entries: CatalogEntry[] = [
         ');'
       ]
     ),
-    preview: {kind: 'time-series', seed: 50, caption: 'Correlated errors, fixed place effects.'},
+    preview: {kind: 'time-series', seed: 250, caption: 'Correlated errors, fixed place effects.'},
     related: [
       'spatial-panel-lag-ml',
       'spatial-panel-regression',

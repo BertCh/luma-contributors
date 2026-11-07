@@ -10,7 +10,7 @@ import {Card} from '../components/ui/card';
 import {getChipClassName} from '../components/ui/chip';
 import {Section} from '../components/ui/section';
 import {GpuCanvas} from '../gpu/gpu-canvas';
-import {getPreviewScene, PreviewFallback} from '../gpu/previews';
+import {getPreviewParameters, getPreviewScene, PreviewFallback} from '../gpu/previews';
 
 export const Route = createFileRoute('/')({
   component: HomePage
@@ -33,6 +33,8 @@ const DATA_TYPE_PREVIEW: Record<string, PreviewKind> = {
 };
 
 const HERO_SEED = 7;
+/** One slider on the hero: the first parameter of the density scene. */
+const HERO_PARAMETERS = (getPreviewParameters('density-surface') ?? []).slice(0, 1);
 
 function HomePage() {
   const counts = getFacetCounts();
@@ -45,6 +47,9 @@ function HomePage() {
             fallback={<PreviewFallback kind="density-surface" seed={HERO_SEED} />}
             seed={HERO_SEED}
             label="Live luma.gl density surface drawn on the GPU"
+            interactive
+            controls
+            parameters={HERO_PARAMETERS}
           />
         </div>
         <div className="hero__content">
@@ -63,6 +68,7 @@ function HomePage() {
             </Link>
             <span className="hero__install">npm i @luma-contributors/analysis</span>
           </div>
+          <p className="hero__hint">Live on your GPU. Move the pointer over the field.</p>
         </div>
       </section>
 

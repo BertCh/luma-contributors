@@ -483,6 +483,54 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 }
 `;
 
+// A path of node ids (GPUNetworkPathExtraction output) over node positions: consecutive ids form
+// segments, drawn up to a GPU-written id count.
+const PATH_SHADER = /* wgsl */ `
+${PALETTE_STRUCT}
+@group(0) @binding(1) var<storage, read> nodes: array<vec2f>;
+@group(0) @binding(2) var<storage, read> ids: array<u32>;
+@group(0) @binding(3) var<storage, read> counts: array<u32>;
+
+struct VertexOutput {
+  @builtin(position) position: vec4f,
+  @location(0) across: f32
+};
+
+@vertex
+fn vertexMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  @builtin(instance_index) instanceIndex: u32
+) -> VertexOutput {
+  var output: VertexOutput;
+  output.across = 0.0;
+  if (instanceIndex + 1u >= counts[0]) {
+    output.position = vec4f(2.0, 2.0, 0.0, 1.0);
+    return output;
+  }
+  let startPoint = nodes[ids[instanceIndex]];
+  let endPoint = nodes[ids[instanceIndex + 1u]];
+  let start = (startPoint / look.world * 2.0 - 1.0) * look.scale;
+  let end = (endPoint / look.world * 2.0 - 1.0) * look.scale;
+  var along = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
+  var side = array<f32, 6>(-1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
+  let halfSize = look.size * 0.5;
+  let startPixels = start * halfSize;
+  let endPixels = end * halfSize;
+  let direction = normalize(endPixels - startPixels + vec2f(1.0e-6, 0.0));
+  let normal = vec2f(-direction.y, direction.x);
+  let pixels = mix(startPixels, endPixels, along[vertexIndex]) + normal * side[vertexIndex] * look.radius;
+  output.position = vec4f(pixels / halfSize, 0.0, 1.0);
+  output.across = side[vertexIndex];
+  return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+  let feather = 1.0 - smoothstep(0.6, 1.0, abs(input.across));
+  return vec4f(look.light.rgb, look.light.a * feather * look.alpha);
+}
+`;
+
 // Triangle edges from packed uint32x3 triples (read as flat u32), drawn up to a GPU-written count.
 const TRIANGLE_EDGE_SHADER = /* wgsl */ `
 ${PALETTE_STRUCT}
@@ -639,6 +687,11 @@ abstract class DemoLayer {
     return false;
   }
 
+  /** Draws only the first `count` instances (dots, segments). */
+  setInstanceCount(count: number): void {
+    this.model.setInstanceCount(count);
+  }
+
   protected writeGrid(_values: Float32Array): void {}
 
   draw(renderPass: RenderPass): void {
@@ -713,6 +766,17 @@ export class SegmentListLayer extends DemoLayer {
   }
 }
 
+/** Draws the path `ids[0..counts[0])` of node ids as connected segments over `nodes`. */
+export class PathLayer extends DemoLayer {
+  constructor(device: Device, nodes: Buffer, ids: Buffer, counts: Buffer, capacity: number) {
+    super(device, 'demo-path', PATH_SHADER, {nodes, ids, counts}, capacity);
+  }
+
+  protected get usesSolid(): boolean {
+    return true;
+  }
+}
+
 /** Draws the three edges of every Delaunay triangle, as many as the GPU wrote to `counts[0]`. */
 export class TriangleEdgeLayer extends DemoLayer {
   constructor(
@@ -749,6 +813,37 @@ export function drawLayers(device: Device, theme: DemoTheme, layers: readonly De
 }
 
 export type {DemoLayer};
+
+/**
+ * Coalesces redraw requests to one per animation frame. Controls call `request()`; the scene's own
+ * render loop calls `flush()`, which cancels a pending request so a frame never draws twice.
+ */
+export class DrawScheduler {
+  private readonly draw: () => void;
+  private handle = 0;
+
+  constructor(draw: () => void) {
+    this.draw = draw;
+  }
+
+  request(): void {
+    if (this.handle) return;
+    this.handle = requestAnimationFrame(() => {
+      this.handle = 0;
+      this.draw();
+    });
+  }
+
+  flush(): void {
+    this.cancel();
+    this.draw();
+  }
+
+  cancel(): void {
+    if (this.handle) cancelAnimationFrame(this.handle);
+    this.handle = 0;
+  }
+}
 
 /** Throws unless the device runs WebGPU; the canvas keeps its fallback otherwise. */
 export function assertWebGPU(device: Device): void {

@@ -171,7 +171,10 @@ export function PipelineDiagram() {
           </svg>
         </div>
       </div>
-      <ol className="pipeline-steps" style={{padding: 'var(--space-3) var(--space-4)'}}>
+      <ol
+        className="pipeline-steps pipeline-steps--seven"
+        style={{padding: 'var(--space-3) var(--space-4)'}}
+      >
         {PIPELINE_STAGES.map((stage, index) => (
           <li key={stage.id} data-active={index === active} onPointerEnter={() => select(index)}>
             <strong>{stage.title}</strong>
