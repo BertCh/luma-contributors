@@ -1,0 +1,149 @@
+{
+  "threshold": 0.27,
+  "transformedMasks": {
+    "opening-radius1": {
+      "foregroundCells": 21175,
+      "foregroundAreaHa": 7623.0,
+      "fourNeighbors": {
+        "componentCount": 657,
+        "largestCells": 8736,
+        "largestAreaHa": 3144.96
+      },
+      "eightNeighbors": {
+        "componentCount": 359,
+        "largestCells": 10705,
+        "largestAreaHa": 3853.7999999999997
+      }
+    },
+    "closing-radius1": {
+      "foregroundCells": 23920,
+      "foregroundAreaHa": 8611.199999999999,
+      "fourNeighbors": {
+        "componentCount": 766,
+        "largestCells": 10639,
+        "largestAreaHa": 3830.04
+      },
+      "eightNeighbors": {
+        "componentCount": 408,
+        "largestCells": 12749,
+        "largestAreaHa": 4589.639999999999
+      }
+    },
+    "median-radius1": {
+      "foregroundCells": 22856,
+      "foregroundAreaHa": 8228.16,
+      "fourNeighbors": {
+        "componentCount": 746,
+        "largestCells": 9468,
+        "largestAreaHa": 3408.48
+      },
+      "eightNeighbors": {
+        "componentCount": 399,
+        "largestCells": 11527,
+        "largestAreaHa": 4149.72
+      }
+    },
+    "opening-radius2": {
+      "foregroundCells": 19917,
+      "foregroundAreaHa": 7170.12,
+      "fourNeighbors": {
+        "componentCount": 621,
+        "largestCells": 7163,
+        "largestAreaHa": 2578.68
+      },
+      "eightNeighbors": {
+        "componentCount": 343,
+        "largestCells": 9015,
+        "largestAreaHa": 3245.4
+      }
+    },
+    "closing-radius2": {
+      "foregroundCells": 25221,
+      "foregroundAreaHa": 9079.56,
+      "fourNeighbors": {
+        "componentCount": 778,
+        "largestCells": 11389,
+        "largestAreaHa": 4100.04
+      },
+      "eightNeighbors": {
+        "componentCount": 406,
+        "largestCells": 14004,
+        "largestAreaHa": 5041.44
+      }
+    },
+    "median-radius2": {
+      "foregroundCells": 23013,
+      "foregroundAreaHa": 8284.68,
+      "fourNeighbors": {
+        "componentCount": 722,
+        "largestCells": 10336,
+        "largestAreaHa": 3720.96
+      },
+      "eightNeighbors": {
+        "componentCount": 385,
+        "largestCells": 12473,
+        "largestAreaHa": 4490.28
+      }
+    },
+    "opening-radius3": {
+      "foregroundCells": 18473,
+      "foregroundAreaHa": 6650.28,
+      "fourNeighbors": {
+        "componentCount": 556,
+        "largestCells": 6910,
+        "largestAreaHa": 2487.6
+      },
+      "eightNeighbors": {
+        "componentCount": 302,
+        "largestCells": 8720,
+        "largestAreaHa": 3139.2
+      }
+    },
+    "closing-radius3": {
+      "foregroundCells": 26157,
+      "foregroundAreaHa": 9416.52,
+      "fourNeighbors": {
+        "componentCount": 822,
+        "largestCells": 12606,
+        "largestAreaHa": 4538.16
+      },
+      "eightNeighbors": {
+        "componentCount": 416,
+        "largestCells": 14754,
+        "largestAreaHa": 5311.44
+      }
+    },
+    "median-radius3": {
+      "foregroundCells": 23211,
+      "foregroundAreaHa": 8355.96,
+      "fourNeighbors": {
+        "componentCount": 733,
+        "largestCells": 9685,
+        "largestAreaHa": 3486.6
+      },
+      "eightNeighbors": {
+        "componentCount": 380,
+        "largestCells": 12894,
+        "largestAreaHa": 4641.84
+      }
+    }
+  },
+  "focus": {
+    "column": 176,
+    "row": 56,
+    "width": 64,
+    "height": 64,
+    "projectedBounds": [
+      673360,
+      4448840,
+      677200,
+      4452680
+    ],
+    "validCells": 3647,
+    "rawForegroundCells": 3134,
+    "skeletonCells": 913,
+    "thinningRoundsIncludingFinalNoChange": 15,
+    "maximumInscribedRadiusPixels": 15.132745950421556,
+    "maximumInscribedRadiusMeters": 907.9647570252934
+  }
+}

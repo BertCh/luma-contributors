@@ -1,0 +1,59 @@
+{
+  "seed": 1598,
+  "nodeCount": 61,
+  "edgeCount": 128,
+  "restriction": {
+    "routePair": "east-north",
+    "physicalEndpoints": {
+      "source": 23,
+      "target": 36
+    },
+    "restrictedSequence": [
+      66,
+      38
+    ],
+    "prohibitedDirectedTransition": "66→38",
+    "sequenceNodes": [
+      23,
+      13,
+      7
+    ],
+    "baselineArrivalMinuteAfter0800": 246.89830017089844,
+    "hypotheticalArrivalMinuteAfter0800": 247.7713623046875,
+    "addedMinutes": 0.8730621337890625,
+    "baselinePathEdges": [
+      66,
+      38,
+      19,
+      9,
+      4,
+      2,
+      8,
+      14,
+      28,
+      56
+    ],
+    "detourPathEdges": [
+      66,
+      36,
+      70,
+      38,
+      19,
+      9,
+      4,
+      2,
+      8,
+      14,
+      28,
+      56
+    ],
+    "expanded": {
+      "baselineStates": 61,
+      "restrictedStates": 62,
+      "baselineTransitions": 128,
+      "restrictedTransitions": 131
+    },
+    "model": "FIFO affine duration; departure at 12:00 relative to 08:00; base minutes from bundled OSM edge travel time; duration slope 0.001 per departure-minute",
+    "assumptions": "Synthetic prohibition of one consecutive directed link-identity sequence. chicago-walk bundles no OSM turn restriction relations. Street edges are directed as supplied; this scenario does not assert that either turn is prohibited in reality."
+  }
+}

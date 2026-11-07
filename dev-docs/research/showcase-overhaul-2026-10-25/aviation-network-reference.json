@@ -1,0 +1,383 @@
+{
+  "west": {
+    "airports": 24,
+    "arcs": 338,
+    "scheduledFlightLegs": 66741,
+    "centrality": [
+      {
+        "iata": "LAX",
+        "distanceBetweenness": 5.0,
+        "hopBetweenness": 18.16108336108336
+      },
+      {
+        "iata": "LAS",
+        "distanceBetweenness": 73.0,
+        "hopBetweenness": 33.86249861249861
+      },
+      {
+        "iata": "SEA",
+        "distanceBetweenness": 12.0,
+        "hopBetweenness": 27.574403374403374
+      },
+      {
+        "iata": "PHX",
+        "distanceBetweenness": 56.0,
+        "hopBetweenness": 26.729165279165276
+      },
+      {
+        "iata": "SFO",
+        "distanceBetweenness": 20.0,
+        "hopBetweenness": 17.20242535242535
+      },
+      {
+        "iata": "SLC",
+        "distanceBetweenness": 28.0,
+        "hopBetweenness": 26.495831945831945
+      },
+      {
+        "iata": "SAN",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 18.16108336108336
+      },
+      {
+        "iata": "PDX",
+        "distanceBetweenness": 4.0,
+        "hopBetweenness": 8.642513042513043
+      },
+      {
+        "iata": "SJC",
+        "distanceBetweenness": 8.0,
+        "hopBetweenness": 7.34210789210789
+      },
+      {
+        "iata": "SMF",
+        "distanceBetweenness": 4.0,
+        "hopBetweenness": 5.410939060939061
+      },
+      {
+        "iata": "OAK",
+        "distanceBetweenness": 4.0,
+        "hopBetweenness": 9.257980907980908
+      },
+      {
+        "iata": "SNA",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.503074703074703
+      },
+      {
+        "iata": "BUR",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 2.979337329337329
+      },
+      {
+        "iata": "ONT",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.7172161172161171
+      },
+      {
+        "iata": "ABQ",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.441025641025641
+      },
+      {
+        "iata": "RNO",
+        "distanceBetweenness": 18.0,
+        "hopBetweenness": 2.438644688644689
+      },
+      {
+        "iata": "BOI",
+        "distanceBetweenness": 5.0,
+        "hopBetweenness": 1.7400599400599401
+      },
+      {
+        "iata": "ELP",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.75
+      },
+      {
+        "iata": "GEG",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.0505494505494506
+      },
+      {
+        "iata": "LGB",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 2.3076923076923075
+      },
+      {
+        "iata": "TUS",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.0
+      },
+      {
+        "iata": "FAT",
+        "distanceBetweenness": 1.0,
+        "hopBetweenness": 0.0
+      },
+      {
+        "iata": "BZN",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.0
+      },
+      {
+        "iata": "EUG",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.2323676323676322
+      }
+    ]
+  },
+  "northeast": {
+    "airports": 24,
+    "arcs": 398,
+    "scheduledFlightLegs": 69735,
+    "centrality": [
+      {
+        "iata": "ORD",
+        "distanceBetweenness": 20.0,
+        "hopBetweenness": 13.010405933935347
+      },
+      {
+        "iata": "CLT",
+        "distanceBetweenness": 14.0,
+        "hopBetweenness": 13.861596410125824
+      },
+      {
+        "iata": "LGA",
+        "distanceBetweenness": 2.6666666666666665,
+        "hopBetweenness": 11.357651498827972
+      },
+      {
+        "iata": "BOS",
+        "distanceBetweenness": 6.0,
+        "hopBetweenness": 13.861596410125824
+      },
+      {
+        "iata": "EWR",
+        "distanceBetweenness": 9.0,
+        "hopBetweenness": 11.157651498827972
+      },
+      {
+        "iata": "DCA",
+        "distanceBetweenness": 8.0,
+        "hopBetweenness": 12.24058800676448
+      },
+      {
+        "iata": "JFK",
+        "distanceBetweenness": 0.6666666666666666,
+        "hopBetweenness": 6.549209940386412
+      },
+      {
+        "iata": "DTW",
+        "distanceBetweenness": 65.0,
+        "hopBetweenness": 13.861596410125824
+      },
+      {
+        "iata": "BWI",
+        "distanceBetweenness": 3.0,
+        "hopBetweenness": 11.243972693972696
+      },
+      {
+        "iata": "BNA",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 4.481537580066992
+      },
+      {
+        "iata": "PHL",
+        "distanceBetweenness": 2.0,
+        "hopBetweenness": 8.613128538128539
+      },
+      {
+        "iata": "MDW",
+        "distanceBetweenness": 10.0,
+        "hopBetweenness": 7.884107232636644
+      },
+      {
+        "iata": "RDU",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 4.7454458939753055
+      },
+      {
+        "iata": "IAD",
+        "distanceBetweenness": 11.0,
+        "hopBetweenness": 5.577053502053502
+      },
+      {
+        "iata": "IND",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.4846872082166198
+      },
+      {
+        "iata": "CMH",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.863655462184874
+      },
+      {
+        "iata": "CLE",
+        "distanceBetweenness": 7.666666666666666,
+        "hopBetweenness": 1.863655462184874
+      },
+      {
+        "iata": "PIT",
+        "distanceBetweenness": 0.6666666666666666,
+        "hopBetweenness": 1.863655462184874
+      },
+      {
+        "iata": "CVG",
+        "distanceBetweenness": 1.0,
+        "hopBetweenness": 2.006512605042017
+      },
+      {
+        "iata": "MKE",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.1003734827264238
+      },
+      {
+        "iata": "SDF",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.3279411764705882
+      },
+      {
+        "iata": "ORF",
+        "distanceBetweenness": 12.0,
+        "hopBetweenness": 2.006512605042017
+      },
+      {
+        "iata": "MEM",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.9436274509803921
+      },
+      {
+        "iata": "BUF",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.0938375350140055
+      }
+    ]
+  },
+  "south": {
+    "airports": 24,
+    "arcs": 350,
+    "scheduledFlightLegs": 58627,
+    "centrality": [
+      {
+        "iata": "ATL",
+        "distanceBetweenness": 64.66666666666666,
+        "hopBetweenness": 34.16037830418635
+      },
+      {
+        "iata": "DFW",
+        "distanceBetweenness": 14.0,
+        "hopBetweenness": 32.54717863835511
+      },
+      {
+        "iata": "CLT",
+        "distanceBetweenness": 69.66666666666667,
+        "hopBetweenness": 34.16037830418635
+      },
+      {
+        "iata": "MCO",
+        "distanceBetweenness": 32.0,
+        "hopBetweenness": 13.600782344590394
+      },
+      {
+        "iata": "IAH",
+        "distanceBetweenness": 16.0,
+        "hopBetweenness": 14.801461404092983
+      },
+      {
+        "iata": "MIA",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 11.09371163751969
+      },
+      {
+        "iata": "BNA",
+        "distanceBetweenness": 11.0,
+        "hopBetweenness": 17.851431695239743
+      },
+      {
+        "iata": "AUS",
+        "distanceBetweenness": 6.0,
+        "hopBetweenness": 5.0874845312925805
+      },
+      {
+        "iata": "FLL",
+        "distanceBetweenness": 10.0,
+        "hopBetweenness": 12.572283066091115
+      },
+      {
+        "iata": "DAL",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 13.613845305021774
+      },
+      {
+        "iata": "TPA",
+        "distanceBetweenness": 1.0,
+        "hopBetweenness": 1.3999886937967434
+      },
+      {
+        "iata": "RDU",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.47687847068652023
+      },
+      {
+        "iata": "HOU",
+        "distanceBetweenness": 7.0,
+        "hopBetweenness": 5.934794737426317
+      },
+      {
+        "iata": "MSY",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.7973912911993408
+      },
+      {
+        "iata": "SAT",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 1.3435451373531868
+      },
+      {
+        "iata": "JAX",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.7562435500515996
+      },
+      {
+        "iata": "CHS",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.3340213278293773
+      },
+      {
+        "iata": "RSW",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.10526315789473684
+      },
+      {
+        "iata": "ORF",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.39819245082402976
+      },
+      {
+        "iata": "MEM",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.47687847068652023
+      },
+      {
+        "iata": "OKC",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.2714932126696833
+      },
+      {
+        "iata": "PBI",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.0
+      },
+      {
+        "iata": "MYR",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.10526315789473684
+      },
+      {
+        "iata": "RIC",
+        "distanceBetweenness": 0.0,
+        "hopBetweenness": 0.1111111111111111
+      }
+    ]
+  }
+}

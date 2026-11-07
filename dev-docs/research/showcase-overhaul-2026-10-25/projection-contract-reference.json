@@ -1,0 +1,189 @@
+{
+  "source": "Archived OpenFlights position.bin float32LE; airports.csv index is aligned with source rows.",
+  "sourceSha256": "4c14c7211ff2e7fdd6da37aec39e12efca8d288c8412b55a9b187379dca13037",
+  "sourceRows": 3257,
+  "method": "Independent Python double arithmetic on exact source float32 coordinates: origin minus point; midpoint latitude cosine; 40000/360 km per degree. Wrap longitude delta to [-180,180). Compare GPU float32 output within0.02 km, not bitwise.",
+  "legacySphereRelativeDifferencePercent": -0.07551514171800777,
+  "limitations": "This validates the legacy arithmetic contract, not global metric accuracy, equal area, geodesic distance, current airports, route frequency, traffic or intensity.",
+  "primarySources": [
+    "https://docs.rapids.ai/api/libcuspatial/stable/group__spatial__join",
+    "https://raw.githubusercontent.com/rapidsai/cuspatial/branch-25.04/cpp/include/cuspatial/detail/projection/sinusoidal_projection.cuh",
+    "https://openflights.org/data.php"
+  ],
+  "cases": [
+    {
+      "hub": "ORD",
+      "originRow": 2033,
+      "originLongitudeLatitude": [
+        -87.90480041503906,
+        41.978599548339844
+      ],
+      "wrapLongitude": false,
+      "sourceRows": 3257,
+      "finiteOutputRows": 3257,
+      "minimumX": -29530.1699135188,
+      "maximumX": 9971.308476237125,
+      "minimumY": -4029.722425672743,
+      "maximumY": 10757.988823784723,
+      "originProjection": [
+        0.0,
+        0.0
+      ],
+      "laxRow": 1501,
+      "laxLongitudeLatitude": [
+        -118.40799713134766,
+        33.942501068115234
+      ],
+      "laxProjection": [
+        2672.1968471952373,
+        892.8998311360677
+      ],
+      "changedLongitudeRows": 745
+    },
+    {
+      "hub": "ORD",
+      "originRow": 2033,
+      "originLongitudeLatitude": [
+        -87.90480041503906,
+        41.978599548339844
+      ],
+      "wrapLongitude": true,
+      "sourceRows": 3257,
+      "finiteOutputRows": 3257,
+      "minimumX": -17139.7084143785,
+      "maximumX": 18819.126828398093,
+      "minimumY": -4029.722425672743,
+      "maximumY": 10757.988823784723,
+      "originProjection": [
+        0.0,
+        0.0
+      ],
+      "laxRow": 1501,
+      "laxLongitudeLatitude": [
+        -118.40799713134766,
+        33.942501068115234
+      ],
+      "laxProjection": [
+        2672.1968471952373,
+        892.8998311360677
+      ],
+      "changedLongitudeRows": 745
+    },
+    {
+      "hub": "HND",
+      "originRow": 1071,
+      "originLongitudeLatitude": [
+        139.77999877929688,
+        35.55229949951172
+      ],
+      "wrapLongitude": false,
+      "sourceRows": 3257,
+      "finiteOutputRows": 3257,
+      "minimumX": -4336.958837789788,
+      "maximumX": 35037.393190560106,
+      "minimumY": -4743.755764431424,
+      "maximumY": 10043.955485026041,
+      "originProjection": [
+        0.0,
+        0.0
+      ],
+      "laxRow": 1501,
+      "laxLongitudeLatitude": [
+        -118.40799713134766,
+        33.942501068115234
+      ],
+      "laxProjection": [
+        23571.78372243225,
+        178.86649237738715
+      ],
+      "changedLongitudeRows": 1278
+    },
+    {
+      "hub": "HND",
+      "originRow": 1071,
+      "originLongitudeLatitude": [
+        139.77999877929688,
+        35.55229949951172
+      ],
+      "wrapLongitude": true,
+      "sourceRows": 3257,
+      "finiteOutputRows": 3257,
+      "minimumX": -19814.81793317988,
+      "maximumX": 19597.616667416616,
+      "minimumY": -4743.755764431424,
+      "maximumY": 10043.955485026041,
+      "originProjection": [
+        0.0,
+        0.0
+      ],
+      "laxRow": 1501,
+      "laxLongitudeLatitude": [
+        -118.40799713134766,
+        33.942501068115234
+      ],
+      "laxProjection": [
+        -9295.128273787934,
+        178.86649237738715
+      ],
+      "changedLongitudeRows": 1278
+    },
+    {
+      "hub": "SYD",
+      "originRow": 2589,
+      "originLongitudeLatitude": [
+        151.177001953125,
+        -33.94609832763672
+      ],
+      "wrapLongitude": false,
+      "sourceRows": 3257,
+      "finiteOutputRows": 3257,
+      "minimumX": -2901.8318170888174,
+      "maximumX": 35979.708038720804,
+      "minimumY": -12465.799967447918,
+      "maximumY": 2321.911282009549,
+      "originProjection": [
+        0.0,
+        0.0
+      ],
+      "laxRow": 1501,
+      "laxLongitudeLatitude": [
+        -118.40799713134766,
+        33.942501068115234
+      ],
+      "laxProjection": [
+        29953.888772404473,
+        -7543.177710639106
+      ],
+      "changedLongitudeRows": 1293
+    },
+    {
+      "hub": "SYD",
+      "originRow": 2589,
+      "originLongitudeLatitude": [
+        151.177001953125,
+        -33.94609832763672
+      ],
+      "wrapLongitude": true,
+      "sourceRows": 3257,
+      "finiteOutputRows": 3257,
+      "minimumX": -19720.847920443233,
+      "maximumX": 19972.18061401311,
+      "minimumY": -12465.799967447918,
+      "maximumY": 2321.911282009549,
+      "originProjection": [
+        0.0,
+        0.0
+      ],
+      "laxRow": 1501,
+      "laxLongitudeLatitude": [
+        -118.40799713134766,
+        33.942501068115234
+      ],
+      "laxProjection": [
+        -10046.111207886359,
+        -7543.177710639106
+      ],
+      "changedLongitudeRows": 1293
+    }
+  ]
+}

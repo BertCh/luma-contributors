@@ -1,0 +1,160 @@
+{
+  "sourceRows": 400000,
+  "sourceSorted": true,
+  "adjacentTimestampTies": 293879,
+  "momentConvention": "g1=m3/m2**1.5; g2=m4/m2**2-3, central moments divided by n; sample SD for row z",
+  "windows": {
+    "all": {
+      "includedRows": 400000,
+      "activeGroups": 8202,
+      "groups": {
+        "1": {
+          "count": 50014,
+          "meanDays": 151.11093738540805,
+          "sampleStandardDeviation": 109.97161882419152,
+          "skewness": 0.6504575658401517,
+          "excessKurtosis": -1.5475986014423868,
+          "displaySupported": true,
+          "firstSourceRow": 16,
+          "firstSourceRowZ": -0.7366266437532508
+        },
+        "2": {
+          "count": 17355,
+          "meanDays": 2348.782344743162,
+          "sampleStandardDeviation": 4.672756688420751,
+          "skewness": -0.8856117575501397,
+          "excessKurtosis": 0.02463106966802675,
+          "displaySupported": true,
+          "firstSourceRow": 84280,
+          "firstSourceRowZ": -4.08056790981903
+        },
+        "10": {
+          "count": 4270,
+          "meanDays": 2463.3042216888357,
+          "sampleStandardDeviation": 8.755720800441058,
+          "skewness": -0.16263988457231465,
+          "excessKurtosis": -1.7722299273065174,
+          "displaySupported": true,
+          "firstSourceRow": 120563,
+          "firstSourceRowZ": -1.5177602476104852
+        },
+        "50": {
+          "count": 923,
+          "meanDays": 4779.600006136579,
+          "sampleStandardDeviation": 6.998998084129507,
+          "skewness": -0.9220093977231274,
+          "excessKurtosis": 0.2808911445923119,
+          "displaySupported": true,
+          "firstSourceRow": 195712,
+          "firstSourceRowZ": -2.985486785631581
+        },
+        "100": {
+          "count": 579,
+          "meanDays": 6154.398068126619,
+          "sampleStandardDeviation": 8.570681444110209,
+          "skewness": 0.09420044163239477,
+          "excessKurtosis": -1.6119665473470828,
+          "displaySupported": true,
+          "firstSourceRow": 348937,
+          "firstSourceRowZ": -1.546893498997124
+        },
+        "1000": {
+          "count": 30,
+          "meanDays": 6145.336328125,
+          "sampleStandardDeviation": 0.00724737435966334,
+          "skewness": 1.0552897058690065,
+          "excessKurtosis": -0.8863636365791492,
+          "displaySupported": true,
+          "firstSourceRow": 350211,
+          "firstSourceRowZ": -0.5928871322390747
+        },
+        "11361": {
+          "count": 0,
+          "meanDays": null,
+          "sampleStandardDeviation": null,
+          "skewness": null,
+          "excessKurtosis": null,
+          "displaySupported": false,
+          "firstSourceRow": null,
+          "firstSourceRowZ": null
+        }
+      }
+    },
+    "concentrated-other": {
+      "includedRows": 79601,
+      "activeGroups": 122,
+      "groups": {
+        "1": {
+          "count": 0,
+          "meanDays": null,
+          "sampleStandardDeviation": null,
+          "skewness": null,
+          "excessKurtosis": null,
+          "displaySupported": false,
+          "firstSourceRow": null,
+          "firstSourceRowZ": null
+        },
+        "2": {
+          "count": 17347,
+          "meanDays": 2348.7828325159567,
+          "sampleStandardDeviation": 4.672118577295563,
+          "skewness": -0.8855024594166677,
+          "excessKurtosis": 0.025020102146215972,
+          "displaySupported": true,
+          "firstSourceRow": 84280,
+          "firstSourceRowZ": -4.081229628592625
+        },
+        "10": {
+          "count": 4223,
+          "meanDays": 2463.3114478192338,
+          "sampleStandardDeviation": 8.760177627356796,
+          "skewness": -0.16138226573738146,
+          "excessKurtosis": -1.7740601255030155,
+          "displaySupported": true,
+          "firstSourceRow": 120563,
+          "firstSourceRowZ": -1.517812956093637
+        },
+        "50": {
+          "count": 0,
+          "meanDays": null,
+          "sampleStandardDeviation": null,
+          "skewness": null,
+          "excessKurtosis": null,
+          "displaySupported": false,
+          "firstSourceRow": null,
+          "firstSourceRowZ": null
+        },
+        "100": {
+          "count": 0,
+          "meanDays": null,
+          "sampleStandardDeviation": null,
+          "skewness": null,
+          "excessKurtosis": null,
+          "displaySupported": false,
+          "firstSourceRow": null,
+          "firstSourceRowZ": null
+        },
+        "1000": {
+          "count": 0,
+          "meanDays": null,
+          "sampleStandardDeviation": null,
+          "skewness": null,
+          "excessKurtosis": null,
+          "displaySupported": false,
+          "firstSourceRow": null,
+          "firstSourceRowZ": null
+        },
+        "11361": {
+          "count": 0,
+          "meanDays": null,
+          "sampleStandardDeviation": null,
+          "skewness": null,
+          "excessKurtosis": null,
+          "displaySupported": false,
+          "firstSourceRow": null,
+          "firstSourceRowZ": null
+        }
+      }
+    }
+  }
+}

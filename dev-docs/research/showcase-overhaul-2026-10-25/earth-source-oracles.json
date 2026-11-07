@@ -1,0 +1,7502 @@
+{
+  "kind": "independent source-derived numerical references; not GPU results",
+  "created": "2026-10-25",
+  "ocean": {
+    "cell": 137,
+    "longitude": -146,
+    "latitude": 50,
+    "method": "float64 least squares on shipped float32, harmonic period12, joint single break, minimum segment12, BIC penalty2",
+    "anomaly": {
+      "breakIndex": 22,
+      "breakMonth": "2013-11",
+      "bicImprovement": 59.02763857
+    },
+    "sst": {
+      "breakIndex": 18,
+      "breakMonth": "2013-07",
+      "bicImprovement": 30.03131742
+    }
+  },
+  "composite": {
+    "cell": 13449,
+    "row": 52,
+    "column": 137,
+    "method": "decode original uint8 NDVI as v/127.5-1 then float32; all16 observations valid",
+    "full": {
+      "median": 0.34117648005485535,
+      "mean": 0.3166666775941849,
+      "minimum": -0.1764705926179886,
+      "minimumIndex": 8,
+      "maximum": 0.6705882549285889,
+      "maximumIndex": 7
+    },
+    "window6to11": {
+      "median": 0.19607843458652496
+    },
+    "window9to15": {
+      "mean": 0.22464986784117563
+    }
+  },
+  "terrain": {
+    "method": "decode original Terrarium RGB and32x32mean, direct CPU sublevel sum with float32 planar cell area",
+    "grid": [
+      64,
+      64
+    ],
+    "cellSizeGroundM": 494.08345529507875,
+    "minimumElevationM": 759.51904296875,
+    "maximumElevationM": 2609.5634765625,
+    "interiorLocalMinima": 43,
+    "windowAreaKm2": 999.909184,
+    "sublevelQueries": [
+      {
+        "index": 0,
+        "elevationM": 759.51904296875,
+        "areaKm2": 0.244118453125,
+        "volumeMillionM3": 0
+      },
+      {
+        "index": 3,
+        "elevationM": 1359.51904296875,
+        "areaKm2": 246.315519203125,
+        "volumeMillionM3": 56224.89260100251
+      },
+      {
+        "index": 8,
+        "elevationM": 2359.51904296875,
+        "areaKm2": 883.464681859375,
+        "volumeMillionM3": 600954.0748228274
+      }
+    ]
+  },
+  "dixieSpectral": {
+    "method": "independent finite-mask checks and float64 sums of shipped calibrated float32",
+    "beforeValid": 60971,
+    "beforeLandValid": 59709,
+    "afterValid": 36631,
+    "afterLandValid": 35695,
+    "pairedLandValid": 35583,
+    "pairedLandDnbrQuantiles": [
+      -0.332774817943573,
+      0.07941725850105286,
+      0.4946085810661316,
+      0.8156452178955078,
+      1.2500905990600586
+    ],
+    "probe": {
+      "cell": 26488,
+      "dnbr": 0.1853092759847641
+    },
+    "nirCrop": {
+      "rows": [
+        50,
+        178
+      ],
+      "columns": [
+        60,
+        188
+      ],
+      "cellAreaM2": 3600,
+      "before": {
+        "validCount": 16246,
+        "validAreaM2": 58485600,
+        "integralReflectanceM2": 13132541.86951518,
+        "mean": 0.22454316736966332
+      },
+      "after": {
+        "validCount": 9516,
+        "validAreaM2": 34257600,
+        "integralReflectanceM2": 3626581.951533258,
+        "mean": 0.10586211385307955
+      }
+    }
+  },
+  "spectralTexture": {
+    "cropRow": 56,
+    "cropColumn": 73,
+    "sourceRow": 106,
+    "sourceColumn": 133,
+    "sourceCell": 26633,
+    "date": "after",
+    "radius": 3,
+    "pairedCount": 49,
+    "nir": 0.09607777744531631,
+    "swir22": 0.22094444930553436,
+    "focal": {
+      "sampleCovariance": -0.0004609744096533328,
+      "populationCovariance": -0.0004515667686399995,
+      "correlation": -0.4180680073112397,
+      "slope": -0.40281033697661595,
+      "intercept": 0.22130468533033487,
+      "rSquared": 0.1747808587371908,
+      "residualSumSquares": 0.04208177842992822
+    },
+    "glcm": {
+      "levels": 8,
+      "range": [
+        0,
+        0.6
+      ],
+      "offset": [
+        1,
+        0
+      ],
+      "symmetric": false,
+      "pairCount": 42,
+      "contrast": 0.3571428571428571,
+      "dissimilarity": 0.3571428571428571,
+      "homogeneity": 0.8214285714285714,
+      "ASM": 0.2675736961451248,
+      "energy": 0.5172752614857246,
+      "correlation": 0.5251129352602713,
+      "entropy": 1.5906511653263742
+    }
+  },
+  "pixelBoundaries": {
+    "method": "independent float64 convex polygon/pixel clipping, explicit hole subtraction, positive coverage, calibrated source values; query geometries match drafted makeZones",
+    "records": [
+      {
+        "date": "before",
+        "zone": 0,
+        "positiveTuples": 2254,
+        "coveredAreaM2": 7938000.0,
+        "validAreaM2": 7841999.999999999,
+        "missingAreaM2": 96000.00000000093,
+        "mean": 0.2364277109834376,
+        "populationVariance": 0.0004734497430801467,
+        "sampleVariance": 0.0004736650351598725,
+        "effectiveSampleSize": 2200.104322291484,
+        "inverseCDFQuartiles": [
+          0.22167499363422394,
+          0.23475833237171173,
+          0.24845834076404572
+        ],
+        "classAreasM2": [
+          0.0,
+          191999.99999999997,
+          7583999.999999998,
+          66000.0
+        ]
+      },
+      {
+        "date": "before",
+        "zone": 1,
+        "positiveTuples": 429,
+        "coveredAreaM2": 1306799.9999999988,
+        "validAreaM2": 1306799.9999999988,
+        "missingAreaM2": 0.0,
+        "mean": 0.22613623537726707,
+        "populationVariance": 0.0005218645640837297,
+        "sampleVariance": 0.0005232412105319635,
+        "effectiveSampleSize": 380.08394326900134,
+        "inverseCDFQuartiles": [
+          0.2106499969959259,
+          0.22258611023426056,
+          0.23828889429569244
+        ],
+        "classAreasM2": [
+          0.0,
+          89810.75630252075,
+          1206189.243697478,
+          10800.0
+        ]
+      },
+      {
+        "date": "before",
+        "zone": 2,
+        "positiveTuples": 2144,
+        "coveredAreaM2": 7418000.0,
+        "validAreaM2": 7374800.0,
+        "missingAreaM2": 43200.0,
+        "mean": 0.23012111816924413,
+        "populationVariance": 0.0003385177932059187,
+        "sampleVariance": 0.00033868073057210206,
+        "effectiveSampleSize": 2078.5946066591255,
+        "inverseCDFQuartiles": [
+          0.21747499704360962,
+          0.22842778265476227,
+          0.24098889529705048
+        ],
+        "classAreasM2": [
+          0.0,
+          227999.99999999997,
+          7128800.0,
+          18000.0
+        ]
+      },
+      {
+        "date": "before",
+        "zone": 3,
+        "positiveTuples": 2401,
+        "coveredAreaM2": 8410000.0,
+        "validAreaM2": 8322400.0,
+        "missingAreaM2": 87600.0,
+        "mean": 0.2211812376054986,
+        "populationVariance": 0.0003943483395331414,
+        "sampleVariance": 0.00039451742924947087,
+        "effectiveSampleSize": 2333.1840505346668,
+        "inverseCDFQuartiles": [
+          0.2070833295583725,
+          0.2165638953447342,
+          0.23225000500679016
+        ],
+        "classAreasM2": [
+          0.0,
+          756000.0,
+          7552000.0,
+          14400.0
+        ]
+      },
+      {
+        "date": "after",
+        "zone": 0,
+        "positiveTuples": 2254,
+        "coveredAreaM2": 7938000.0,
+        "validAreaM2": 2650799.9999999995,
+        "missingAreaM2": 5287200.0,
+        "mean": 0.08514795023501054,
+        "populationVariance": 0.0007880952833962568,
+        "sampleVariance": 0.0007891544043088365,
+        "effectiveSampleSize": 745.1032218659337,
+        "inverseCDFQuartiles": [
+          0.06637222319841385,
+          0.07579722255468369,
+          0.09501944482326508
+        ],
+        "classAreasM2": [
+          2073600.0,
+          577199.9999999999,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "date": "after",
+        "zone": 1,
+        "positiveTuples": 429,
+        "coveredAreaM2": 1306799.9999999988,
+        "validAreaM2": 524620.3361344537,
+        "missingAreaM2": 782179.6638655452,
+        "mean": 0.06955646209890488,
+        "populationVariance": 0.000369044812565751,
+        "sampleVariance": 0.000371474974848247,
+        "effectiveSampleSize": 152.86015157256014,
+        "inverseCDFQuartiles": [
+          0.058783333748579025,
+          0.065302774310112,
+          0.07387500256299973
+        ],
+        "classAreasM2": [
+          495271.7647058823,
+          29348.57142857142,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "date": "after",
+        "zone": 2,
+        "positiveTuples": 2144,
+        "coveredAreaM2": 7418000.0,
+        "validAreaM2": 2964399.9999999995,
+        "missingAreaM2": 4453600.0,
+        "mean": 0.08970841336022693,
+        "populationVariance": 0.001137341496061542,
+        "sampleVariance": 0.0011387076445010815,
+        "effectiveSampleSize": 833.516777199399,
+        "inverseCDFQuartiles": [
+          0.06612499803304672,
+          0.07618889212608337,
+          0.10212499648332596
+        ],
+        "classAreasM2": [
+          2210800.0,
+          746399.9999999995,
+          7200.0,
+          0.0
+        ]
+      },
+      {
+        "date": "after",
+        "zone": 3,
+        "positiveTuples": 2401,
+        "coveredAreaM2": 8410000.0,
+        "validAreaM2": 4134399.9999999995,
+        "missingAreaM2": 4275600.0,
+        "mean": 0.10371460649941763,
+        "populationVariance": 0.0011029895044843568,
+        "sampleVariance": 0.0011039415572250536,
+        "effectiveSampleSize": 1159.5382377840967,
+        "inverseCDFQuartiles": [
+          0.07465555518865585,
+          0.09597499668598175,
+          0.13562777638435364
+        ],
+        "classAreasM2": [
+          2232400.0,
+          1898400.0000000002,
+          3600.0,
+          0.0
+        ]
+      }
+    ]
+  },
+  "spectralIndices": {
+    "before": {
+      "sourceCell": 26633,
+      "sourceRow": 106,
+      "sourceColumn": 133,
+      "bands": {
+        "blue": 0.03791944310069084,
+        "green": 0.06250277906656265,
+        "red": 0.08037500083446503,
+        "nir": 0.21794721484184265,
+        "swir16": 0.25447776913642883,
+        "swir22": 0.16705556213855743
+      },
+      "ndvi": 0.46115309815427674,
+      "nbr": 0.13218515747452916,
+      "ndwiGaoSwir1Adaptation": -0.07732561895216437,
+      "ndwiMcFeeters": -0.5542679235216814,
+      "evi": 0.24292286746288894,
+      "saviL0_5": 0.25849001438128294
+    },
+    "after": {
+      "sourceCell": 26633,
+      "sourceRow": 106,
+      "sourceColumn": 133,
+      "bands": {
+        "blue": 0.023463888093829155,
+        "green": 0.0397055558860302,
+        "red": 0.06943611055612564,
+        "nir": 0.09607777744531631,
+        "swir16": 0.21707777678966522,
+        "swir22": 0.22094444930553436
+      },
+      "ndvi": 0.1609633319045624,
+      "nbr": -0.3938735562486329,
+      "ndwiGaoSwir1Adaptation": -0.38638944035319434,
+      "ndwiMcFeeters": -0.4151630408256608,
+      "evi": 0.04982674187660418,
+      "saviL0_5": 0.0600475828593068
+    }
+  },
+  "spectralUnmixing": {
+    "method": "independent NumPy float64 least squares; enumerate every nonnegative active subset; simplex uses equality-constrained KKT solve on each face, choose feasible least residual",
+    "endmemberSourceCells": [
+      14602,
+      20119,
+      26889
+    ],
+    "endmemberSpectra": [
+      [
+        0.0013555556070059538,
+        0.014591666869819164,
+        0.009425000287592411,
+        0.1344500035047531,
+        0.07249999791383743,
+        0.04224444553256035
+      ],
+      [
+        0.013952777720987797,
+        0.01906944438815117,
+        0.030908333137631416,
+        0.040638890117406845,
+        0.11134444177150726,
+        0.1398555487394333
+      ],
+      [
+        0.04641111195087433,
+        0.07859166711568832,
+        0.1233527809381485,
+        0.18850833177566528,
+        0.26314443349838257,
+        0.21298888325691223
+      ]
+    ],
+    "singularValues": [
+      0.47180728381702586,
+      0.09844173821345048,
+      0.04406663323399823
+    ],
+    "probeSourceCell": 26633,
+    "records": {
+      "before": {
+        "unconstrained": {
+          "weights": [
+            0.6670010316202577,
+            -0.019256577415834836,
+            0.7162311052102587
+          ],
+          "squaredResidual": 0.0007608309819015326,
+          "fittedSpectrum": [
+            0.033876556250553226,
+            0.06565524122167733,
+            0.09404039482707519,
+            0.223911255914405,
+            0.2346856889726741,
+            0.1780332128017056
+          ]
+        },
+        "nonnegative": {
+          "weights": [
+            0.675530557421116,
+            0.0,
+            0.7054304752707511
+          ],
+          "squaredResidual": 0.0007620234658766711,
+          "fittedSpectrum": [
+            0.03365553199616537,
+            0.06529807394001284,
+            0.09338368658113842,
+            0.22380460788984086,
+            0.2346060667913809,
+            0.1787862629818666
+          ]
+        },
+        "simplex": {
+          "weights": [
+            0.16237701996918075,
+            0.0,
+            0.8376229800308193
+          ],
+          "squaredResidual": 0.0029219214275420144,
+          "fittedSpectrum": [
+            0.03909512497870347,
+            0.06819953779773726,
+            0.1048535274244087,
+            0.17973050152651884,
+            0.23218815817445768,
+            0.1852639102829186
+          ]
+        }
+      },
+      "after": {
+        "unconstrained": {
+          "weights": [
+            -0.022371815111595406,
+            1.1931110338911037,
+            0.28538165683806266
+          ],
+          "squaredResidual": 0.00023243581758228797,
+          "fittedSpectrum": [
+            0.029861766837164412,
+            0.04485414261143498,
+            0.07186883994154074,
+            0.09927563763392311,
+            0.2063209199105932,
+            0.2267012338189129
+          ]
+        },
+        "nonnegative": {
+          "weights": [
+            0.0,
+            1.2089660418562476,
+            0.27155852324671387
+          ],
+          "squaredResidual": 0.00023501104893120645,
+          "fittedSpectrum": [
+            0.029471767477859998,
+            0.044396547763774594,
+            0.07086462420371556,
+            0.10032208232737358,
+            0.20607076281260645,
+            0.22691955579636
+          ]
+        },
+        "simplex": {
+          "weights": [
+            0.0,
+            0.44357550268306567,
+            0.5564244973169343
+          ],
+          "squaredResidual": 0.0032001091267343643,
+          "fittedSpectrum": [
+            0.032013390028597453,
+            0.05218906724850764,
+            0.08234668853477571,
+            0.12291706986063904,
+            0.19580967586084863,
+            0.1805487276354327
+          ]
+        }
+      }
+    }
+  },
+  "pixelPairedSupport": {
+    "method": "Independent float64 polygon/pixel clipping; zero observation weight unless both calibrated acquisitions finite; explicit uniform planar cellAreas=3600m\u00b2. Source-valid area is unchanged by zero statistical weights.",
+    "records": [
+      {
+        "date": "before",
+        "zone": 0,
+        "supportAreaM2": 2630400.0,
+        "mean": 0.23269144623764673,
+        "populationVariance": 0.0004256681370221696,
+        "sampleVariance": 0.0004262447591564311,
+        "effectiveSampleSize": 739.2098461538461
+      },
+      {
+        "date": "before",
+        "zone": 1,
+        "supportAreaM2": 524620.3361344537,
+        "mean": 0.22308649948799283,
+        "populationVariance": 0.000612617780636418,
+        "sampleVariance": 0.0006166518723602348,
+        "effectiveSampleSize": 152.86015157256014
+      },
+      {
+        "date": "before",
+        "zone": 2,
+        "supportAreaM2": 2935599.9999999995,
+        "mean": 0.22842338123468045,
+        "populationVariance": 0.0002779913002978877,
+        "sampleVariance": 0.0002783284564363836,
+        "effectiveSampleSize": 825.5179860525711
+      },
+      {
+        "date": "before",
+        "zone": 3,
+        "supportAreaM2": 4116399.9999999995,
+        "mean": 0.21699378043398682,
+        "populationVariance": 0.00028123405128203504,
+        "sampleVariance": 0.0002814778524217107,
+        "effectiveSampleSize": 1154.538706406916
+      },
+      {
+        "date": "after",
+        "zone": 0,
+        "supportAreaM2": 2630400.0,
+        "mean": 0.08497250728805406,
+        "populationVariance": 0.0007838181274190351,
+        "sampleVariance": 0.000784879909690706,
+        "effectiveSampleSize": 739.2098461538461
+      },
+      {
+        "date": "after",
+        "zone": 1,
+        "supportAreaM2": 524620.3361344537,
+        "mean": 0.06955646209890488,
+        "populationVariance": 0.000369044812565751,
+        "sampleVariance": 0.000371474974848247,
+        "effectiveSampleSize": 152.86015157256014
+      },
+      {
+        "date": "after",
+        "zone": 2,
+        "supportAreaM2": 2935599.9999999995,
+        "mean": 0.08927848500823075,
+        "populationVariance": 0.0011233440748612568,
+        "sampleVariance": 0.0011247065000525365,
+        "effectiveSampleSize": 825.5179860525711
+      },
+      {
+        "date": "after",
+        "zone": 3,
+        "supportAreaM2": 4116399.9999999995,
+        "mean": 0.10359629024351934,
+        "populationVariance": 0.0010993543686244165,
+        "sampleVariance": 0.0011003073963490333,
+        "effectiveSampleSize": 1154.538706406916
+      }
+    ]
+  },
+  "spectralIndexOptions": {
+    "method": "Independent float64 standard index formulas on source crop; final abs denominator > epsilon; explicit clamp after validity; SAVI L0.5; selected source row106,column133.",
+    "records": [
+      {
+        "date": "before",
+        "epsilon": 1e-06,
+        "clamp": "none",
+        "probeIndices": {
+          "ndvi": 0.46115309815427674,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25849001438128294,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.5542679235216814
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "before",
+        "epsilon": 1e-06,
+        "clamp": "unit-range",
+        "probeIndices": {
+          "ndvi": 0.46115309815427674,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25849001438128294,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.5542679235216814
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "before",
+        "epsilon": 1e-06,
+        "clamp": "sensitivity",
+        "probeIndices": {
+          "ndvi": 0.25,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.25
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "before",
+        "epsilon": 0.01,
+        "clamp": "none",
+        "probeIndices": {
+          "ndvi": 0.46115309815427674,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25849001438128294,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.5542679235216814
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "before",
+        "epsilon": 0.01,
+        "clamp": "unit-range",
+        "probeIndices": {
+          "ndvi": 0.46115309815427674,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25849001438128294,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.5542679235216814
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "before",
+        "epsilon": 0.01,
+        "clamp": "sensitivity",
+        "probeIndices": {
+          "ndvi": 0.25,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.25
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "before",
+        "epsilon": 0.1,
+        "clamp": "none",
+        "probeIndices": {
+          "ndvi": 0.46115309815427674,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25849001438128294,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.5542679235216814
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "before",
+        "epsilon": 0.1,
+        "clamp": "unit-range",
+        "probeIndices": {
+          "ndvi": 0.46115309815427674,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25849001438128294,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.5542679235216814
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "before",
+        "epsilon": 0.1,
+        "clamp": "sensitivity",
+        "probeIndices": {
+          "ndvi": 0.25,
+          "nbr": 0.13218515747452916,
+          "evi": 0.24292286746288894,
+          "savi": 0.25,
+          "ndwi-gao": -0.07732561895216437,
+          "ndwi-mcfeeters": -0.25
+        },
+        "validCounts": {
+          "ndvi": 4096,
+          "nbr": 4096,
+          "evi": 4096,
+          "savi": 4096,
+          "ndwi-gao": 4096,
+          "ndwi-mcfeeters": 4096
+        },
+        "totalValid": 24576
+      },
+      {
+        "date": "after",
+        "epsilon": 1e-06,
+        "clamp": "none",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.3938735562486329,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.38638944035319434,
+          "ndwi-mcfeeters": -0.4151630408256608
+        },
+        "validCounts": {
+          "ndvi": 3049,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 3049
+        },
+        "totalValid": 18294
+      },
+      {
+        "date": "after",
+        "epsilon": 1e-06,
+        "clamp": "unit-range",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.3938735562486329,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.38638944035319434,
+          "ndwi-mcfeeters": -0.4151630408256608
+        },
+        "validCounts": {
+          "ndvi": 3049,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 3049
+        },
+        "totalValid": 18294
+      },
+      {
+        "date": "after",
+        "epsilon": 1e-06,
+        "clamp": "sensitivity",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.25,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.25,
+          "ndwi-mcfeeters": -0.25
+        },
+        "validCounts": {
+          "ndvi": 3049,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 3049
+        },
+        "totalValid": 18294
+      },
+      {
+        "date": "after",
+        "epsilon": 0.01,
+        "clamp": "none",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.3938735562486329,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.38638944035319434,
+          "ndwi-mcfeeters": -0.4151630408256608
+        },
+        "validCounts": {
+          "ndvi": 3049,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 3049
+        },
+        "totalValid": 18294
+      },
+      {
+        "date": "after",
+        "epsilon": 0.01,
+        "clamp": "unit-range",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.3938735562486329,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.38638944035319434,
+          "ndwi-mcfeeters": -0.4151630408256608
+        },
+        "validCounts": {
+          "ndvi": 3049,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 3049
+        },
+        "totalValid": 18294
+      },
+      {
+        "date": "after",
+        "epsilon": 0.01,
+        "clamp": "sensitivity",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.25,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.25,
+          "ndwi-mcfeeters": -0.25
+        },
+        "validCounts": {
+          "ndvi": 3049,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 3049
+        },
+        "totalValid": 18294
+      },
+      {
+        "date": "after",
+        "epsilon": 0.1,
+        "clamp": "none",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.3938735562486329,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.38638944035319434,
+          "ndwi-mcfeeters": -0.4151630408256608
+        },
+        "validCounts": {
+          "ndvi": 2888,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 2405
+        },
+        "totalValid": 17489
+      },
+      {
+        "date": "after",
+        "epsilon": 0.1,
+        "clamp": "unit-range",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.3938735562486329,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.38638944035319434,
+          "ndwi-mcfeeters": -0.4151630408256608
+        },
+        "validCounts": {
+          "ndvi": 2888,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 2405
+        },
+        "totalValid": 17489
+      },
+      {
+        "date": "after",
+        "epsilon": 0.1,
+        "clamp": "sensitivity",
+        "probeIndices": {
+          "ndvi": 0.1609633319045624,
+          "nbr": -0.25,
+          "evi": 0.04982674187660418,
+          "savi": 0.0600475828593068,
+          "ndwi-gao": -0.25,
+          "ndwi-mcfeeters": -0.25
+        },
+        "validCounts": {
+          "ndvi": 2888,
+          "nbr": 3049,
+          "evi": 3049,
+          "savi": 3049,
+          "ndwi-gao": 3049,
+          "ndwi-mcfeeters": 2405
+        },
+        "totalValid": 17489
+      }
+    ]
+  },
+  "gridAlignment": {
+    "method": "Independent double-precision exact local spherical Mercator centered at source UTM crop center; Rasterio/GDAL CRS conversion into WGS84 UTM10N; direct scalar nearest/bilinear sampling. GPU float32 projection may differ near support boundaries.",
+    "centerLngLat": [
+      -121.04152782297535,
+      40.22094600641328
+    ],
+    "centerUtm": [
+      666640.0,
+      4454120.0
+    ],
+    "destinationCornersUtm": [
+      [
+        664676.1069669247,
+        4455992.139394473
+      ],
+      [
+        668519.3408135702,
+        4456077.032431573
+      ],
+      [
+        668604.8691402688,
+        4452247.859588761
+      ],
+      [
+        664759.6829786691,
+        4452162.983871961
+      ]
+    ],
+    "selectedCell": {
+      "row": 32,
+      "column": 32,
+      "index": 2080
+    },
+    "periodicCorrection": [
+      -4,
+      3
+    ],
+    "periodicAlignedCount": 4096,
+    "maskedCorrection": [
+      -3,
+      -2
+    ],
+    "maskedAlignedCount": 3782,
+    "records": [
+      {
+        "date": "before",
+        "method": "nearest",
+        "policy": "strict",
+        "validCount": 4091,
+        "probe": 0.22935277223587036,
+        "finiteMean": 0.22910831225760495
+      },
+      {
+        "date": "before",
+        "method": "nearest",
+        "policy": "renormalize",
+        "validCount": 4091,
+        "probe": 0.22935277223587036,
+        "finiteMean": 0.22910831225760495
+      },
+      {
+        "date": "before",
+        "method": "bilinear",
+        "policy": "strict",
+        "validCount": 4068,
+        "probe": 0.22934935367611045,
+        "finiteMean": 0.22925230351729786
+      },
+      {
+        "date": "before",
+        "method": "bilinear",
+        "policy": "renormalize",
+        "validCount": 4096,
+        "probe": 0.22934935367611045,
+        "finiteMean": 0.2290554814230435
+      },
+      {
+        "date": "after",
+        "method": "nearest",
+        "policy": "strict",
+        "validCount": 3486,
+        "probe": 0.1798083335161209,
+        "finiteMean": 0.16148523934296644
+      },
+      {
+        "date": "after",
+        "method": "nearest",
+        "policy": "renormalize",
+        "validCount": 3486,
+        "probe": 0.1798083335161209,
+        "finiteMean": 0.16148523934296644
+      },
+      {
+        "date": "after",
+        "method": "bilinear",
+        "policy": "strict",
+        "validCount": 2979,
+        "probe": 0.1798014097814376,
+        "finiteMean": 0.16554148344543693
+      },
+      {
+        "date": "after",
+        "method": "bilinear",
+        "policy": "renormalize",
+        "validCount": 3891,
+        "probe": 0.1798014097814376,
+        "finiteMean": 0.15844845602372623
+      }
+    ]
+  },
+  "spectralTextureBothDates": {
+    "method": "Independent NumPy source-window calculations, 7x7 radius3, sigma1.5, 8bins[0,.6],east directed pairs; row106,column133; finite support.",
+    "records": [
+      {
+        "date": "before",
+        "pairedCount": 49,
+        "focal": {
+          "sampleCovariance": 0.00033755941931009855,
+          "populationCovariance": 0.0003306704515690761,
+          "correlation": 0.7310552374654332,
+          "slope": 2.2173030171147987,
+          "intercept": -0.33992625158013795,
+          "rSquared": 0.5344417602256409,
+          "residualSumSquares": 0.0312960947700844
+        },
+        "glcm": {
+          "pairCount": 42,
+          "contrast": 0.09523809523809523,
+          "dissimilarity": 0.09523809523809523,
+          "homogeneity": 0.9523809523809524,
+          "ASM": 0.7040816326530613,
+          "energy": 0.8390957231764808,
+          "correlation": 0.5459459459459461,
+          "entropy": 0.6303932435125685
+        },
+        "layers": {
+          "source": 0.21794721484184265,
+          "smooth": 0.21453277032705198,
+          "box": 0.21412335640313673,
+          "weighted": 0.2143692712415941,
+          "convolution": -0.008847223594784737,
+          "sobelX": -0.008847223594784737,
+          "sobelY": -0.012570833787322044,
+          "scharrX": -0.007836112286895514,
+          "scharrY": -0.013030209112912416,
+          "gradientX": -0.007836112286895514,
+          "gradientY": -0.013030209112912416,
+          "gradient": 0.015204966468199153,
+          "laplacian": -0.018422186374664307
+        },
+        "rectangularConvolution": {
+          "east-derivative": -0.004540625959634781,
+          "south-derivative": -0.009262848645448685
+        }
+      },
+      {
+        "date": "after",
+        "pairedCount": 49,
+        "focal": {
+          "sampleCovariance": -0.0004609744096533328,
+          "populationCovariance": -0.0004515667686399995,
+          "correlation": -0.4180680073112397,
+          "slope": -0.4028103369766158,
+          "intercept": 0.22130468533033484,
+          "rSquared": 0.1747808587371908,
+          "residualSumSquares": 0.04208177842992822
+        },
+        "glcm": {
+          "pairCount": 42,
+          "contrast": 0.3571428571428571,
+          "dissimilarity": 0.3571428571428571,
+          "homogeneity": 0.8214285714285714,
+          "ASM": 0.2675736961451248,
+          "energy": 0.5172752614857246,
+          "correlation": 0.5251129352602713,
+          "entropy": 1.5906511653263742
+        },
+        "layers": {
+          "source": 0.09607777744531631,
+          "smooth": 0.09779235812187648,
+          "box": 0.10243713163903781,
+          "weighted": 0.09878174930054229,
+          "convolution": -0.00519895926117897,
+          "sobelX": -0.00519895926117897,
+          "sobelY": -0.012084376066923141,
+          "scharrX": -0.0024360250681638718,
+          "scharrY": -0.012612240388989449,
+          "gradientX": -0.0024360250681638718,
+          "gradientY": -0.012612240388989449,
+          "gradient": 0.01284534257084565,
+          "laplacian": -0.0006916671991348267
+        },
+        "rectangularConvolution": {
+          "east-derivative": -0.005278820171952248,
+          "south-derivative": -0.00711909681558609
+        }
+      }
+    ]
+  },
+  "missingObservations": {
+    "method": "Independent NumPy float64 disk donors for nearest/IDW; Rasterio GDAL fillnodata smoothing0 for quadrant; NumPy grayscale max/min and fixed point reconstruction; deque exterior flood for support holes; source threshold cases. Source64\u00b2 rows50:114 cols101:165, probe31,31.",
+    "fills": [
+      {
+        "scenario": "isolated",
+        "radius": 2,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.01249205277836749,
+        "mae": 0.009305155638492468,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 2,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010643329636389504,
+        "mae": 0.007986242622203545,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 2,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010303385400389505,
+        "mae": 0.007869314851931987,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 4,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.01249205277836749,
+        "mae": 0.009305155638492468,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 4,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.011951723542057544,
+        "mae": 0.00893549016510431,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 4,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010303385400389505,
+        "mae": 0.007869314851931987,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 8,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.01249205277836749,
+        "mae": 0.009305155638492468,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 8,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.013401342356265052,
+        "mae": 0.009547048776364815,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 8,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010303385400389505,
+        "mae": 0.007869314851931987,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 12,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.01249205277836749,
+        "mae": 0.009305155638492468,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 12,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.01417305107053432,
+        "mae": 0.009866927437622627,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 12,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010303385400389505,
+        "mae": 0.007869314851931987,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "block",
+        "radius": 2,
+        "method": "nearest",
+        "validCount": 4071,
+        "filledCount": 56,
+        "unresolved": 25,
+        "heldoutCount": 81,
+        "rmse": 0.011735123932402301,
+        "mae": 0.009094046960983957,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "radius": 2,
+        "method": "inverse-distance",
+        "validCount": 4071,
+        "filledCount": 56,
+        "unresolved": 25,
+        "heldoutCount": 81,
+        "rmse": 0.011010907910828323,
+        "mae": 0.008513717862766066,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "radius": 2,
+        "method": "gdal-four-quadrant",
+        "validCount": 4071,
+        "filledCount": 56,
+        "unresolved": 25,
+        "heldoutCount": 81,
+        "rmse": 0.010414124666136618,
+        "mae": 0.008040028242000527,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "radius": 4,
+        "method": "nearest",
+        "validCount": 4095,
+        "filledCount": 80,
+        "unresolved": 1,
+        "heldoutCount": 81,
+        "rmse": 0.011129958250176753,
+        "mae": 0.008742673322558403,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "radius": 4,
+        "method": "inverse-distance",
+        "validCount": 4095,
+        "filledCount": 80,
+        "unresolved": 1,
+        "heldoutCount": 81,
+        "rmse": 0.009855927014942797,
+        "mae": 0.007662999493629396,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "radius": 4,
+        "method": "gdal-four-quadrant",
+        "validCount": 4095,
+        "filledCount": 80,
+        "unresolved": 1,
+        "heldoutCount": 81,
+        "rmse": 0.009554496843919421,
+        "mae": 0.007641607232541694,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "radius": 8,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 81,
+        "unresolved": 0,
+        "heldoutCount": 81,
+        "rmse": 0.01134455405568871,
+        "mae": 0.008914780285623338,
+        "probe": 0.24453888833522797
+      },
+      {
+        "scenario": "block",
+        "radius": 8,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 81,
+        "unresolved": 0,
+        "heldoutCount": 81,
+        "rmse": 0.011007826251716703,
+        "mae": 0.008606527745232165,
+        "probe": 0.21889494882457225
+      },
+      {
+        "scenario": "block",
+        "radius": 8,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 81,
+        "unresolved": 0,
+        "heldoutCount": 81,
+        "rmse": 0.009386714207331235,
+        "mae": 0.007360316941889282,
+        "probe": 0.2222822374746399
+      },
+      {
+        "scenario": "block",
+        "radius": 12,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 81,
+        "unresolved": 0,
+        "heldoutCount": 81,
+        "rmse": 0.01134455405568871,
+        "mae": 0.008914780285623338,
+        "probe": 0.24453888833522797
+      },
+      {
+        "scenario": "block",
+        "radius": 12,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 81,
+        "unresolved": 0,
+        "heldoutCount": 81,
+        "rmse": 0.010647577449903686,
+        "mae": 0.00828472336657225,
+        "probe": 0.22016109663013636
+      },
+      {
+        "scenario": "block",
+        "radius": 12,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 81,
+        "unresolved": 0,
+        "heldoutCount": 81,
+        "rmse": 0.009409750550696592,
+        "mae": 0.007382976814265965,
+        "probe": 0.2222822374746399
+      },
+      {
+        "scenario": "september",
+        "radius": 2,
+        "method": "nearest",
+        "validCount": 4061,
+        "filledCount": 1012,
+        "unresolved": 35,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 2,
+        "method": "inverse-distance",
+        "validCount": 4061,
+        "filledCount": 1012,
+        "unresolved": 35,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 2,
+        "method": "gdal-four-quadrant",
+        "validCount": 4061,
+        "filledCount": 1012,
+        "unresolved": 35,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 4,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 4,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 4,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 8,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 8,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 8,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 12,
+        "method": "nearest",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 12,
+        "method": "inverse-distance",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 12,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      }
+    ],
+    "morphology": [
+      {
+        "element": "square",
+        "radius": 1,
+        "probe": {
+          "dilate": 0.2343166619539261,
+          "erode": 0.20831944048404694,
+          "opening": 0.21064166724681854,
+          "closing": 0.22519443929195404
+        }
+      },
+      {
+        "element": "square",
+        "radius": 2,
+        "probe": {
+          "dilate": 0.24968333542346954,
+          "erode": 0.20444722473621368,
+          "opening": 0.20942221581935883,
+          "closing": 0.22625833749771118
+        }
+      },
+      {
+        "element": "square",
+        "radius": 4,
+        "probe": {
+          "dilate": 0.25440555810928345,
+          "erode": 0.19228610396385193,
+          "opening": 0.2029111087322235,
+          "closing": 0.22625833749771118
+        }
+      },
+      {
+        "element": "cross",
+        "radius": 1,
+        "probe": {
+          "dilate": 0.2343166619539261,
+          "erode": 0.20831944048404694,
+          "opening": 0.2218555510044098,
+          "closing": 0.2218555510044098
+        }
+      },
+      {
+        "element": "cross",
+        "radius": 2,
+        "probe": {
+          "dilate": 0.24968333542346954,
+          "erode": 0.2044694423675537,
+          "opening": 0.21263332664966583,
+          "closing": 0.22649721801280975
+        }
+      },
+      {
+        "element": "cross",
+        "radius": 4,
+        "probe": {
+          "dilate": 0.24968333542346954,
+          "erode": 0.20262500643730164,
+          "opening": 0.21064166724681854,
+          "closing": 0.2309555560350418
+        }
+      }
+    ],
+    "reconstruction": [
+      {
+        "mode": "opening",
+        "connectivity": 8,
+        "changingRounds": 74,
+        "probe": 0.2218555510044098
+      },
+      {
+        "mode": "closing",
+        "connectivity": 8,
+        "changingRounds": 68,
+        "probe": 0.2218555510044098
+      },
+      {
+        "mode": "opening",
+        "connectivity": 4,
+        "changingRounds": 73,
+        "probe": 0.2218555510044098
+      },
+      {
+        "mode": "closing",
+        "connectivity": 4,
+        "changingRounds": 50,
+        "probe": 0.2218555510044098
+      }
+    ],
+    "holes": [
+      {
+        "scenario": "isolated",
+        "connectivity": 4,
+        "filledCount": 124
+      },
+      {
+        "scenario": "isolated",
+        "connectivity": 8,
+        "filledCount": 124
+      },
+      {
+        "scenario": "block",
+        "connectivity": 4,
+        "filledCount": 81
+      },
+      {
+        "scenario": "block",
+        "connectivity": 8,
+        "filledCount": 81
+      },
+      {
+        "scenario": "september",
+        "connectivity": 4,
+        "filledCount": 561
+      },
+      {
+        "scenario": "september",
+        "connectivity": 8,
+        "filledCount": 436
+      }
+    ],
+    "contours": [
+      {
+        "level": 0.1,
+        "segments": 0,
+        "crossingCells": 0,
+        "cases": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3969
+        ]
+      },
+      {
+        "level": 0.2,
+        "segments": 848,
+        "crossingCells": 808,
+        "cases": [
+          6,
+          13,
+          15,
+          25,
+          12,
+          21,
+          41,
+          147,
+          11,
+          45,
+          19,
+          150,
+          24,
+          142,
+          143,
+          3155
+        ]
+      },
+      {
+        "level": 0.3,
+        "segments": 6,
+        "crossingCells": 6,
+        "cases": [
+          3963,
+          1,
+          1,
+          0,
+          1,
+          0,
+          1,
+          0,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "nativeGdalFills": [
+      {
+        "scenario": "isolated",
+        "radius": 2,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010303385921776565,
+        "mae": 0.007869314515229427,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 4,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010303385921776565,
+        "mae": 0.007869314515229427,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 8,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010303385921776565,
+        "mae": 0.007869314515229427,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "radius": 12,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 132,
+        "unresolved": 0,
+        "heldoutCount": 132,
+        "rmse": 0.010303385921776565,
+        "mae": 0.007869314515229427,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "block",
+        "radius": 2,
+        "method": "gdal-four-quadrant",
+        "validCount": 4071,
+        "filledCount": 56,
+        "unresolved": 25,
+        "heldoutCount": 81,
+        "rmse": 0.010414124382506586,
+        "mae": 0.008040027160729681,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "radius": 4,
+        "method": "gdal-four-quadrant",
+        "validCount": 4095,
+        "filledCount": 80,
+        "unresolved": 1,
+        "heldoutCount": 81,
+        "rmse": 0.009608351351925093,
+        "mae": 0.007681987434625626,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "radius": 8,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 81,
+        "unresolved": 0,
+        "heldoutCount": 81,
+        "rmse": 0.009449572315389128,
+        "mae": 0.0074072568504898635,
+        "probe": 0.22228223085403442
+      },
+      {
+        "scenario": "block",
+        "radius": 12,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 81,
+        "unresolved": 0,
+        "heldoutCount": 81,
+        "rmse": 0.009464500873486648,
+        "mae": 0.0074185436522519145,
+        "probe": 0.22228223085403442
+      },
+      {
+        "scenario": "september",
+        "radius": 2,
+        "method": "gdal-four-quadrant",
+        "validCount": 4061,
+        "filledCount": 1012,
+        "unresolved": 35,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 4,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 8,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      },
+      {
+        "scenario": "september",
+        "radius": 12,
+        "method": "gdal-four-quadrant",
+        "validCount": 4096,
+        "filledCount": 1047,
+        "unresolved": 0,
+        "heldoutCount": null,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07939722388982773
+      }
+    ],
+    "quadrantTieAudit": {
+      "method": "Independent quadrant enumeration chooses lexicographic exact(integer squared distance,horizontal step,vertical distance), preserving first exact tie. NativeGDAL3.9.3 uses sqrt(distanceSquared) squared in QUAD_CHECK, whose float64roundoff can replace an equal-distance earlier donor. This is an intentional stated GPU tie convention, not bitwise GDAL compatibility. NativeGDAL metrics retained separately.",
+      "source": "https://raw.githubusercontent.com/OSGeo/gdal/v3.9.3/alg/rasterfill.cpp",
+      "records": [
+        {
+          "scenario": "isolated",
+          "radius": 2,
+          "differentNativeGdalCells": 0,
+          "maximumNativeGdalDifference": 0,
+          "cells": []
+        },
+        {
+          "scenario": "isolated",
+          "radius": 4,
+          "differentNativeGdalCells": 0,
+          "maximumNativeGdalDifference": 0,
+          "cells": []
+        },
+        {
+          "scenario": "isolated",
+          "radius": 8,
+          "differentNativeGdalCells": 0,
+          "maximumNativeGdalDifference": 0,
+          "cells": []
+        },
+        {
+          "scenario": "isolated",
+          "radius": 12,
+          "differentNativeGdalCells": 0,
+          "maximumNativeGdalDifference": 0,
+          "cells": []
+        },
+        {
+          "scenario": "block",
+          "radius": 2,
+          "differentNativeGdalCells": 0,
+          "maximumNativeGdalDifference": 0,
+          "cells": []
+        },
+        {
+          "scenario": "block",
+          "radius": 4,
+          "differentNativeGdalCells": 2,
+          "maximumNativeGdalDifference": 0.00298405951416017,
+          "cells": [
+            [
+              33,
+              33
+            ],
+            [
+              34,
+              34
+            ]
+          ]
+        },
+        {
+          "scenario": "block",
+          "radius": 8,
+          "differentNativeGdalCells": 3,
+          "maximumNativeGdalDifference": 0.00260537584798079,
+          "cells": [
+            [
+              29,
+              29
+            ],
+            [
+              33,
+              33
+            ],
+            [
+              34,
+              34
+            ]
+          ]
+        },
+        {
+          "scenario": "block",
+          "radius": 12,
+          "differentNativeGdalCells": 4,
+          "maximumNativeGdalDifference": 0.00260537584798079,
+          "cells": [
+            [
+              27,
+              27
+            ],
+            [
+              29,
+              29
+            ],
+            [
+              33,
+              33
+            ],
+            [
+              34,
+              34
+            ]
+          ]
+        },
+        {
+          "scenario": "september",
+          "radius": 2,
+          "differentNativeGdalCells": 0,
+          "maximumNativeGdalDifference": 0,
+          "cells": []
+        },
+        {
+          "scenario": "september",
+          "radius": 4,
+          "differentNativeGdalCells": 171,
+          "maximumNativeGdalDifference": 0.014400147229019888,
+          "cells": [
+            [
+              0,
+              4
+            ],
+            [
+              1,
+              5
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              2,
+              4
+            ],
+            [
+              2,
+              23
+            ],
+            [
+              3,
+              24
+            ],
+            [
+              3,
+              30
+            ],
+            [
+              4,
+              14
+            ],
+            [
+              4,
+              15
+            ],
+            [
+              4,
+              29
+            ],
+            [
+              6,
+              9
+            ],
+            [
+              6,
+              11
+            ],
+            [
+              6,
+              14
+            ],
+            [
+              6,
+              27
+            ],
+            [
+              6,
+              60
+            ],
+            [
+              6,
+              61
+            ],
+            [
+              7,
+              12
+            ],
+            [
+              7,
+              26
+            ],
+            [
+              7,
+              28
+            ],
+            [
+              7,
+              61
+            ],
+            [
+              8,
+              7
+            ],
+            [
+              8,
+              9
+            ],
+            [
+              8,
+              25
+            ],
+            [
+              8,
+              27
+            ],
+            [
+              8,
+              54
+            ],
+            [
+              8,
+              56
+            ],
+            [
+              8,
+              59
+            ],
+            [
+              9,
+              0
+            ],
+            [
+              9,
+              50
+            ],
+            [
+              10,
+              5
+            ],
+            [
+              11,
+              6
+            ],
+            [
+              11,
+              21
+            ],
+            [
+              12,
+              2
+            ],
+            [
+              12,
+              52
+            ],
+            [
+              13,
+              53
+            ],
+            [
+              14,
+              2
+            ],
+            [
+              14,
+              51
+            ],
+            [
+              17,
+              49
+            ],
+            [
+              17,
+              50
+            ],
+            [
+              18,
+              1
+            ],
+            [
+              18,
+              48
+            ],
+            [
+              19,
+              1
+            ],
+            [
+              19,
+              2
+            ],
+            [
+              20,
+              12
+            ],
+            [
+              20,
+              15
+            ],
+            [
+              21,
+              8
+            ],
+            [
+              21,
+              15
+            ],
+            [
+              22,
+              3
+            ],
+            [
+              22,
+              7
+            ],
+            [
+              22,
+              8
+            ],
+            [
+              22,
+              10
+            ],
+            [
+              22,
+              14
+            ],
+            [
+              22,
+              16
+            ],
+            [
+              23,
+              12
+            ],
+            [
+              25,
+              8
+            ],
+            [
+              25,
+              11
+            ],
+            [
+              25,
+              39
+            ],
+            [
+              26,
+              9
+            ],
+            [
+              27,
+              6
+            ],
+            [
+              28,
+              7
+            ],
+            [
+              28,
+              36
+            ],
+            [
+              29,
+              35
+            ],
+            [
+              29,
+              46
+            ],
+            [
+              30,
+              4
+            ],
+            [
+              30,
+              41
+            ],
+            [
+              31,
+              2
+            ],
+            [
+              31,
+              3
+            ],
+            [
+              31,
+              38
+            ],
+            [
+              31,
+              40
+            ],
+            [
+              32,
+              2
+            ],
+            [
+              32,
+              3
+            ],
+            [
+              32,
+              59
+            ],
+            [
+              33,
+              1
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              33,
+              42
+            ],
+            [
+              34,
+              30
+            ],
+            [
+              34,
+              31
+            ],
+            [
+              34,
+              36
+            ],
+            [
+              34,
+              41
+            ],
+            [
+              34,
+              42
+            ],
+            [
+              34,
+              56
+            ],
+            [
+              35,
+              42
+            ],
+            [
+              36,
+              34
+            ],
+            [
+              36,
+              49
+            ],
+            [
+              38,
+              28
+            ],
+            [
+              39,
+              12
+            ],
+            [
+              39,
+              26
+            ],
+            [
+              39,
+              35
+            ],
+            [
+              39,
+              36
+            ],
+            [
+              39,
+              49
+            ],
+            [
+              40,
+              9
+            ],
+            [
+              40,
+              12
+            ],
+            [
+              40,
+              13
+            ],
+            [
+              40,
+              14
+            ],
+            [
+              40,
+              16
+            ],
+            [
+              41,
+              9
+            ],
+            [
+              41,
+              12
+            ],
+            [
+              41,
+              15
+            ],
+            [
+              41,
+              34
+            ],
+            [
+              41,
+              45
+            ],
+            [
+              42,
+              9
+            ],
+            [
+              42,
+              27
+            ],
+            [
+              42,
+              28
+            ],
+            [
+              42,
+              33
+            ],
+            [
+              43,
+              29
+            ],
+            [
+              44,
+              0
+            ],
+            [
+              44,
+              25
+            ],
+            [
+              45,
+              25
+            ],
+            [
+              45,
+              26
+            ],
+            [
+              46,
+              5
+            ],
+            [
+              46,
+              9
+            ],
+            [
+              46,
+              26
+            ],
+            [
+              46,
+              30
+            ],
+            [
+              46,
+              35
+            ],
+            [
+              46,
+              48
+            ],
+            [
+              46,
+              56
+            ],
+            [
+              47,
+              8
+            ],
+            [
+              47,
+              27
+            ],
+            [
+              47,
+              34
+            ],
+            [
+              47,
+              45
+            ],
+            [
+              48,
+              11
+            ],
+            [
+              48,
+              14
+            ],
+            [
+              48,
+              32
+            ],
+            [
+              48,
+              35
+            ],
+            [
+              49,
+              25
+            ],
+            [
+              49,
+              47
+            ],
+            [
+              49,
+              48
+            ],
+            [
+              50,
+              48
+            ],
+            [
+              50,
+              49
+            ],
+            [
+              51,
+              28
+            ],
+            [
+              51,
+              29
+            ],
+            [
+              51,
+              49
+            ],
+            [
+              51,
+              51
+            ],
+            [
+              52,
+              15
+            ],
+            [
+              52,
+              28
+            ],
+            [
+              52,
+              48
+            ],
+            [
+              53,
+              14
+            ],
+            [
+              53,
+              26
+            ],
+            [
+              53,
+              27
+            ],
+            [
+              53,
+              46
+            ],
+            [
+              53,
+              58
+            ],
+            [
+              54,
+              0
+            ],
+            [
+              54,
+              23
+            ],
+            [
+              54,
+              53
+            ],
+            [
+              54,
+              57
+            ],
+            [
+              54,
+              62
+            ],
+            [
+              55,
+              1
+            ],
+            [
+              55,
+              23
+            ],
+            [
+              55,
+              52
+            ],
+            [
+              56,
+              3
+            ],
+            [
+              56,
+              52
+            ],
+            [
+              57,
+              1
+            ],
+            [
+              57,
+              13
+            ],
+            [
+              57,
+              23
+            ],
+            [
+              57,
+              24
+            ],
+            [
+              57,
+              56
+            ],
+            [
+              58,
+              12
+            ],
+            [
+              58,
+              60
+            ],
+            [
+              59,
+              27
+            ],
+            [
+              59,
+              46
+            ],
+            [
+              60,
+              2
+            ],
+            [
+              60,
+              27
+            ],
+            [
+              60,
+              28
+            ],
+            [
+              60,
+              29
+            ],
+            [
+              60,
+              45
+            ],
+            [
+              60,
+              62
+            ],
+            [
+              61,
+              28
+            ],
+            [
+              61,
+              45
+            ],
+            [
+              62,
+              13
+            ],
+            [
+              62,
+              44
+            ],
+            [
+              63,
+              15
+            ]
+          ]
+        },
+        {
+          "scenario": "september",
+          "radius": 8,
+          "differentNativeGdalCells": 172,
+          "maximumNativeGdalDifference": 0.014400147229019888,
+          "cells": [
+            [
+              0,
+              4
+            ],
+            [
+              1,
+              5
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              2,
+              4
+            ],
+            [
+              2,
+              23
+            ],
+            [
+              3,
+              24
+            ],
+            [
+              3,
+              30
+            ],
+            [
+              4,
+              14
+            ],
+            [
+              4,
+              15
+            ],
+            [
+              4,
+              29
+            ],
+            [
+              5,
+              59
+            ],
+            [
+              6,
+              9
+            ],
+            [
+              6,
+              11
+            ],
+            [
+              6,
+              14
+            ],
+            [
+              6,
+              27
+            ],
+            [
+              6,
+              60
+            ],
+            [
+              6,
+              61
+            ],
+            [
+              7,
+              12
+            ],
+            [
+              7,
+              26
+            ],
+            [
+              7,
+              28
+            ],
+            [
+              7,
+              61
+            ],
+            [
+              8,
+              7
+            ],
+            [
+              8,
+              9
+            ],
+            [
+              8,
+              25
+            ],
+            [
+              8,
+              27
+            ],
+            [
+              8,
+              54
+            ],
+            [
+              8,
+              56
+            ],
+            [
+              8,
+              59
+            ],
+            [
+              9,
+              0
+            ],
+            [
+              9,
+              50
+            ],
+            [
+              10,
+              5
+            ],
+            [
+              11,
+              6
+            ],
+            [
+              11,
+              21
+            ],
+            [
+              12,
+              2
+            ],
+            [
+              12,
+              52
+            ],
+            [
+              13,
+              53
+            ],
+            [
+              14,
+              2
+            ],
+            [
+              14,
+              51
+            ],
+            [
+              17,
+              49
+            ],
+            [
+              17,
+              50
+            ],
+            [
+              18,
+              1
+            ],
+            [
+              18,
+              48
+            ],
+            [
+              19,
+              1
+            ],
+            [
+              19,
+              2
+            ],
+            [
+              20,
+              12
+            ],
+            [
+              20,
+              15
+            ],
+            [
+              21,
+              8
+            ],
+            [
+              21,
+              15
+            ],
+            [
+              22,
+              3
+            ],
+            [
+              22,
+              7
+            ],
+            [
+              22,
+              8
+            ],
+            [
+              22,
+              10
+            ],
+            [
+              22,
+              14
+            ],
+            [
+              22,
+              16
+            ],
+            [
+              23,
+              12
+            ],
+            [
+              25,
+              8
+            ],
+            [
+              25,
+              11
+            ],
+            [
+              25,
+              39
+            ],
+            [
+              26,
+              9
+            ],
+            [
+              27,
+              6
+            ],
+            [
+              28,
+              7
+            ],
+            [
+              28,
+              36
+            ],
+            [
+              29,
+              35
+            ],
+            [
+              29,
+              46
+            ],
+            [
+              30,
+              4
+            ],
+            [
+              30,
+              41
+            ],
+            [
+              31,
+              2
+            ],
+            [
+              31,
+              3
+            ],
+            [
+              31,
+              38
+            ],
+            [
+              31,
+              40
+            ],
+            [
+              32,
+              2
+            ],
+            [
+              32,
+              3
+            ],
+            [
+              32,
+              59
+            ],
+            [
+              33,
+              1
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              33,
+              42
+            ],
+            [
+              34,
+              30
+            ],
+            [
+              34,
+              31
+            ],
+            [
+              34,
+              36
+            ],
+            [
+              34,
+              41
+            ],
+            [
+              34,
+              42
+            ],
+            [
+              34,
+              56
+            ],
+            [
+              35,
+              42
+            ],
+            [
+              36,
+              34
+            ],
+            [
+              36,
+              49
+            ],
+            [
+              38,
+              28
+            ],
+            [
+              39,
+              12
+            ],
+            [
+              39,
+              26
+            ],
+            [
+              39,
+              35
+            ],
+            [
+              39,
+              36
+            ],
+            [
+              39,
+              49
+            ],
+            [
+              40,
+              9
+            ],
+            [
+              40,
+              12
+            ],
+            [
+              40,
+              13
+            ],
+            [
+              40,
+              14
+            ],
+            [
+              40,
+              16
+            ],
+            [
+              41,
+              9
+            ],
+            [
+              41,
+              12
+            ],
+            [
+              41,
+              15
+            ],
+            [
+              41,
+              34
+            ],
+            [
+              41,
+              45
+            ],
+            [
+              42,
+              9
+            ],
+            [
+              42,
+              27
+            ],
+            [
+              42,
+              28
+            ],
+            [
+              42,
+              33
+            ],
+            [
+              43,
+              29
+            ],
+            [
+              44,
+              0
+            ],
+            [
+              44,
+              25
+            ],
+            [
+              45,
+              25
+            ],
+            [
+              45,
+              26
+            ],
+            [
+              46,
+              5
+            ],
+            [
+              46,
+              9
+            ],
+            [
+              46,
+              26
+            ],
+            [
+              46,
+              30
+            ],
+            [
+              46,
+              35
+            ],
+            [
+              46,
+              48
+            ],
+            [
+              46,
+              56
+            ],
+            [
+              47,
+              8
+            ],
+            [
+              47,
+              27
+            ],
+            [
+              47,
+              34
+            ],
+            [
+              47,
+              45
+            ],
+            [
+              48,
+              11
+            ],
+            [
+              48,
+              14
+            ],
+            [
+              48,
+              32
+            ],
+            [
+              48,
+              35
+            ],
+            [
+              49,
+              25
+            ],
+            [
+              49,
+              47
+            ],
+            [
+              49,
+              48
+            ],
+            [
+              50,
+              48
+            ],
+            [
+              50,
+              49
+            ],
+            [
+              51,
+              28
+            ],
+            [
+              51,
+              29
+            ],
+            [
+              51,
+              49
+            ],
+            [
+              51,
+              51
+            ],
+            [
+              52,
+              15
+            ],
+            [
+              52,
+              28
+            ],
+            [
+              52,
+              48
+            ],
+            [
+              53,
+              14
+            ],
+            [
+              53,
+              26
+            ],
+            [
+              53,
+              27
+            ],
+            [
+              53,
+              46
+            ],
+            [
+              53,
+              58
+            ],
+            [
+              54,
+              0
+            ],
+            [
+              54,
+              23
+            ],
+            [
+              54,
+              53
+            ],
+            [
+              54,
+              57
+            ],
+            [
+              54,
+              62
+            ],
+            [
+              55,
+              1
+            ],
+            [
+              55,
+              23
+            ],
+            [
+              55,
+              52
+            ],
+            [
+              56,
+              3
+            ],
+            [
+              56,
+              52
+            ],
+            [
+              57,
+              1
+            ],
+            [
+              57,
+              13
+            ],
+            [
+              57,
+              23
+            ],
+            [
+              57,
+              24
+            ],
+            [
+              57,
+              56
+            ],
+            [
+              58,
+              12
+            ],
+            [
+              58,
+              60
+            ],
+            [
+              59,
+              27
+            ],
+            [
+              59,
+              46
+            ],
+            [
+              60,
+              2
+            ],
+            [
+              60,
+              27
+            ],
+            [
+              60,
+              28
+            ],
+            [
+              60,
+              29
+            ],
+            [
+              60,
+              45
+            ],
+            [
+              60,
+              62
+            ],
+            [
+              61,
+              28
+            ],
+            [
+              61,
+              45
+            ],
+            [
+              62,
+              13
+            ],
+            [
+              62,
+              44
+            ],
+            [
+              63,
+              15
+            ]
+          ]
+        },
+        {
+          "scenario": "september",
+          "radius": 12,
+          "differentNativeGdalCells": 172,
+          "maximumNativeGdalDifference": 0.014400147229019888,
+          "cells": [
+            [
+              0,
+              4
+            ],
+            [
+              1,
+              5
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              2,
+              4
+            ],
+            [
+              2,
+              23
+            ],
+            [
+              3,
+              24
+            ],
+            [
+              3,
+              30
+            ],
+            [
+              4,
+              14
+            ],
+            [
+              4,
+              15
+            ],
+            [
+              4,
+              29
+            ],
+            [
+              5,
+              59
+            ],
+            [
+              6,
+              9
+            ],
+            [
+              6,
+              11
+            ],
+            [
+              6,
+              14
+            ],
+            [
+              6,
+              27
+            ],
+            [
+              6,
+              60
+            ],
+            [
+              6,
+              61
+            ],
+            [
+              7,
+              12
+            ],
+            [
+              7,
+              26
+            ],
+            [
+              7,
+              28
+            ],
+            [
+              7,
+              61
+            ],
+            [
+              8,
+              7
+            ],
+            [
+              8,
+              9
+            ],
+            [
+              8,
+              25
+            ],
+            [
+              8,
+              27
+            ],
+            [
+              8,
+              54
+            ],
+            [
+              8,
+              56
+            ],
+            [
+              8,
+              59
+            ],
+            [
+              9,
+              0
+            ],
+            [
+              9,
+              50
+            ],
+            [
+              10,
+              5
+            ],
+            [
+              11,
+              6
+            ],
+            [
+              11,
+              21
+            ],
+            [
+              12,
+              2
+            ],
+            [
+              12,
+              52
+            ],
+            [
+              13,
+              53
+            ],
+            [
+              14,
+              2
+            ],
+            [
+              14,
+              51
+            ],
+            [
+              17,
+              49
+            ],
+            [
+              17,
+              50
+            ],
+            [
+              18,
+              1
+            ],
+            [
+              18,
+              48
+            ],
+            [
+              19,
+              1
+            ],
+            [
+              19,
+              2
+            ],
+            [
+              20,
+              12
+            ],
+            [
+              20,
+              15
+            ],
+            [
+              21,
+              8
+            ],
+            [
+              21,
+              15
+            ],
+            [
+              22,
+              3
+            ],
+            [
+              22,
+              7
+            ],
+            [
+              22,
+              8
+            ],
+            [
+              22,
+              10
+            ],
+            [
+              22,
+              14
+            ],
+            [
+              22,
+              16
+            ],
+            [
+              23,
+              12
+            ],
+            [
+              25,
+              8
+            ],
+            [
+              25,
+              11
+            ],
+            [
+              25,
+              39
+            ],
+            [
+              26,
+              9
+            ],
+            [
+              27,
+              6
+            ],
+            [
+              28,
+              7
+            ],
+            [
+              28,
+              36
+            ],
+            [
+              29,
+              35
+            ],
+            [
+              29,
+              46
+            ],
+            [
+              30,
+              4
+            ],
+            [
+              30,
+              41
+            ],
+            [
+              31,
+              2
+            ],
+            [
+              31,
+              3
+            ],
+            [
+              31,
+              38
+            ],
+            [
+              31,
+              40
+            ],
+            [
+              32,
+              2
+            ],
+            [
+              32,
+              3
+            ],
+            [
+              32,
+              59
+            ],
+            [
+              33,
+              1
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              33,
+              42
+            ],
+            [
+              34,
+              30
+            ],
+            [
+              34,
+              31
+            ],
+            [
+              34,
+              36
+            ],
+            [
+              34,
+              41
+            ],
+            [
+              34,
+              42
+            ],
+            [
+              34,
+              56
+            ],
+            [
+              35,
+              42
+            ],
+            [
+              36,
+              34
+            ],
+            [
+              36,
+              49
+            ],
+            [
+              38,
+              28
+            ],
+            [
+              39,
+              12
+            ],
+            [
+              39,
+              26
+            ],
+            [
+              39,
+              35
+            ],
+            [
+              39,
+              36
+            ],
+            [
+              39,
+              49
+            ],
+            [
+              40,
+              9
+            ],
+            [
+              40,
+              12
+            ],
+            [
+              40,
+              13
+            ],
+            [
+              40,
+              14
+            ],
+            [
+              40,
+              16
+            ],
+            [
+              41,
+              9
+            ],
+            [
+              41,
+              12
+            ],
+            [
+              41,
+              15
+            ],
+            [
+              41,
+              34
+            ],
+            [
+              41,
+              45
+            ],
+            [
+              42,
+              9
+            ],
+            [
+              42,
+              27
+            ],
+            [
+              42,
+              28
+            ],
+            [
+              42,
+              33
+            ],
+            [
+              43,
+              29
+            ],
+            [
+              44,
+              0
+            ],
+            [
+              44,
+              25
+            ],
+            [
+              45,
+              25
+            ],
+            [
+              45,
+              26
+            ],
+            [
+              46,
+              5
+            ],
+            [
+              46,
+              9
+            ],
+            [
+              46,
+              26
+            ],
+            [
+              46,
+              30
+            ],
+            [
+              46,
+              35
+            ],
+            [
+              46,
+              48
+            ],
+            [
+              46,
+              56
+            ],
+            [
+              47,
+              8
+            ],
+            [
+              47,
+              27
+            ],
+            [
+              47,
+              34
+            ],
+            [
+              47,
+              45
+            ],
+            [
+              48,
+              11
+            ],
+            [
+              48,
+              14
+            ],
+            [
+              48,
+              32
+            ],
+            [
+              48,
+              35
+            ],
+            [
+              49,
+              25
+            ],
+            [
+              49,
+              47
+            ],
+            [
+              49,
+              48
+            ],
+            [
+              50,
+              48
+            ],
+            [
+              50,
+              49
+            ],
+            [
+              51,
+              28
+            ],
+            [
+              51,
+              29
+            ],
+            [
+              51,
+              49
+            ],
+            [
+              51,
+              51
+            ],
+            [
+              52,
+              15
+            ],
+            [
+              52,
+              28
+            ],
+            [
+              52,
+              48
+            ],
+            [
+              53,
+              14
+            ],
+            [
+              53,
+              26
+            ],
+            [
+              53,
+              27
+            ],
+            [
+              53,
+              46
+            ],
+            [
+              53,
+              58
+            ],
+            [
+              54,
+              0
+            ],
+            [
+              54,
+              23
+            ],
+            [
+              54,
+              53
+            ],
+            [
+              54,
+              57
+            ],
+            [
+              54,
+              62
+            ],
+            [
+              55,
+              1
+            ],
+            [
+              55,
+              23
+            ],
+            [
+              55,
+              52
+            ],
+            [
+              56,
+              3
+            ],
+            [
+              56,
+              52
+            ],
+            [
+              57,
+              1
+            ],
+            [
+              57,
+              13
+            ],
+            [
+              57,
+              23
+            ],
+            [
+              57,
+              24
+            ],
+            [
+              57,
+              56
+            ],
+            [
+              58,
+              12
+            ],
+            [
+              58,
+              60
+            ],
+            [
+              59,
+              27
+            ],
+            [
+              59,
+              46
+            ],
+            [
+              60,
+              2
+            ],
+            [
+              60,
+              27
+            ],
+            [
+              60,
+              28
+            ],
+            [
+              60,
+              29
+            ],
+            [
+              60,
+              45
+            ],
+            [
+              60,
+              62
+            ],
+            [
+              61,
+              28
+            ],
+            [
+              61,
+              45
+            ],
+            [
+              62,
+              13
+            ],
+            [
+              62,
+              44
+            ],
+            [
+              63,
+              15
+            ]
+          ]
+        }
+      ]
+    },
+    "morphologyContract": {
+      "method": "Independent NumPy local extrema and fixed-point reconstruction on measured finite July values. Cross means Manhattan distance <= radius, not only axis arms. Clamp border. Probe row31,column31 in64\u00b2 crop rows50:114,columns101:165.",
+      "fixture": "Radius2 center includes diagonal offset[1,1] value7, excludes offset[2,1] value11;13 included offsets. Square includes11."
+    }
+  },
+  "spectralDisplay": {
+    "method": "Independent NumPy scalar contrast/CDF and explicit geometric polyline sampling on exact float32 source values, evaluated in float64. Profile vertices are east/south distances from the crop NW origin, then converted to center-addressed source coordinates. July/September128\u00b2 rows50:178 cols60:188.",
+    "display": [
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "linear",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.21794721484184268,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "linear",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.25897360742092135,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "linear",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.13589442968368534,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "gamma",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.21794721484184268,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "gamma",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.3941879811112368,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "gamma",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.030778826698423502,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "equalize",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.3497073140674102,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "equalize",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.4414886116540528,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "calibrated",
+        "mode": "equalize",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.07484403894997735,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "linear",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.21794721484184265,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "linear",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.26853540912270546,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "linear",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.17053888738155365,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "gamma",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.21794721484184265,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "gamma",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.3411893216268507,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "gamma",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.17053888738155365,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "equalize",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.3222806968954446,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "equalize",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.3817826600959957,
+        "invalid": 138
+      },
+      {
+        "date": "before",
+        "domain": "gpu",
+        "mode": "equalize",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.20937093275275853,
+        "invalid": 138
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "linear",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.09607777744531631,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "linear",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.19803888872265815,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "linear",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.0,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "gamma",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.09607777744531631,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "gamma",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.3447076054188461,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "gamma",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.0,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "equalize",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.34456132968651376,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "equalize",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.4397367381808736,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "calibrated",
+        "mode": "equalize",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.19428997000891096,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "linear",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.09607777744531631,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "linear",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.14741805475205183,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "linear",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.040638890117406845,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "gamma",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.09607777744531631,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "gamma",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.22439885269357226,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "gamma",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.040638890117406845,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "equalize",
+        "contrast": 1,
+        "gamma": 1,
+        "bins": 64,
+        "probe": 0.21676310081312603,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "equalize",
+        "contrast": 0.5,
+        "gamma": 2,
+        "bins": 64,
+        "probe": 0.2705310818669894,
+        "invalid": 6868
+      },
+      {
+        "date": "after",
+        "domain": "gpu",
+        "mode": "equalize",
+        "contrast": 2,
+        "gamma": 0.5,
+        "bins": 256,
+        "probe": 0.14380020512477076,
+        "invalid": 6868
+      }
+    ],
+    "profiles": [
+      {
+        "date": "before",
+        "spacing": 60,
+        "method": "nearest",
+        "policy": "strict",
+        "count": 164,
+        "finite": 164,
+        "length": 9720.261512898182,
+        "minimum": 0.17053888738155365,
+        "maximum": 0.3066527843475342
+      },
+      {
+        "date": "before",
+        "spacing": 60,
+        "method": "nearest",
+        "policy": "renormalize",
+        "count": 164,
+        "finite": 164,
+        "length": 9720.261512898182,
+        "minimum": 0.17053888738155365,
+        "maximum": 0.3066527843475342
+      },
+      {
+        "date": "before",
+        "spacing": 60,
+        "method": "bilinear",
+        "policy": "strict",
+        "count": 164,
+        "finite": 164,
+        "length": 9720.261512898182,
+        "minimum": 0.17824760423339625,
+        "maximum": 0.2962473674754242
+      },
+      {
+        "date": "before",
+        "spacing": 60,
+        "method": "bilinear",
+        "policy": "renormalize",
+        "count": 164,
+        "finite": 164,
+        "length": 9720.261512898182,
+        "minimum": 0.17824760423339625,
+        "maximum": 0.2962473674754242
+      },
+      {
+        "date": "before",
+        "spacing": 120,
+        "method": "nearest",
+        "policy": "strict",
+        "count": 83,
+        "finite": 83,
+        "length": 9720.261512898182,
+        "minimum": 0.18142777681350708,
+        "maximum": 0.2867972254753113
+      },
+      {
+        "date": "before",
+        "spacing": 120,
+        "method": "nearest",
+        "policy": "renormalize",
+        "count": 83,
+        "finite": 83,
+        "length": 9720.261512898182,
+        "minimum": 0.18142777681350708,
+        "maximum": 0.2867972254753113
+      },
+      {
+        "date": "before",
+        "spacing": 120,
+        "method": "bilinear",
+        "policy": "strict",
+        "count": 83,
+        "finite": 83,
+        "length": 9720.261512898182,
+        "minimum": 0.18960935066247128,
+        "maximum": 0.26114004010207015
+      },
+      {
+        "date": "before",
+        "spacing": 120,
+        "method": "bilinear",
+        "policy": "renormalize",
+        "count": 83,
+        "finite": 83,
+        "length": 9720.261512898182,
+        "minimum": 0.18960935066247128,
+        "maximum": 0.26114004010207015
+      },
+      {
+        "date": "before",
+        "spacing": 240,
+        "method": "nearest",
+        "policy": "strict",
+        "count": 42,
+        "finite": 42,
+        "length": 9720.261512898182,
+        "minimum": 0.19269444048404694,
+        "maximum": 0.2867972254753113
+      },
+      {
+        "date": "before",
+        "spacing": 240,
+        "method": "nearest",
+        "policy": "renormalize",
+        "count": 42,
+        "finite": 42,
+        "length": 9720.261512898182,
+        "minimum": 0.19269444048404694,
+        "maximum": 0.2867972254753113
+      },
+      {
+        "date": "before",
+        "spacing": 240,
+        "method": "bilinear",
+        "policy": "strict",
+        "count": 42,
+        "finite": 42,
+        "length": 9720.261512898182,
+        "minimum": 0.19434331875732552,
+        "maximum": 0.26114004010207015
+      },
+      {
+        "date": "before",
+        "spacing": 240,
+        "method": "bilinear",
+        "policy": "renormalize",
+        "count": 42,
+        "finite": 42,
+        "length": 9720.261512898182,
+        "minimum": 0.19434331875732552,
+        "maximum": 0.26114004010207015
+      },
+      {
+        "date": "after",
+        "spacing": 60,
+        "method": "nearest",
+        "policy": "strict",
+        "count": 164,
+        "finite": 76,
+        "length": 9720.261512898182,
+        "minimum": 0.05824166536331177,
+        "maximum": 0.20956943929195404
+      },
+      {
+        "date": "after",
+        "spacing": 60,
+        "method": "nearest",
+        "policy": "renormalize",
+        "count": 164,
+        "finite": 76,
+        "length": 9720.261512898182,
+        "minimum": 0.05824166536331177,
+        "maximum": 0.20956943929195404
+      },
+      {
+        "date": "after",
+        "spacing": 60,
+        "method": "bilinear",
+        "policy": "strict",
+        "count": 164,
+        "finite": 36,
+        "length": 9720.261512898182,
+        "minimum": 0.06422047623703549,
+        "maximum": 0.19217517762332278
+      },
+      {
+        "date": "after",
+        "spacing": 60,
+        "method": "bilinear",
+        "policy": "renormalize",
+        "count": 164,
+        "finite": 112,
+        "length": 9720.261512898182,
+        "minimum": 0.058243430154170425,
+        "maximum": 0.19217517762332278
+      },
+      {
+        "date": "after",
+        "spacing": 120,
+        "method": "nearest",
+        "policy": "strict",
+        "count": 83,
+        "finite": 37,
+        "length": 9720.261512898182,
+        "minimum": 0.06101110950112343,
+        "maximum": 0.20956943929195404
+      },
+      {
+        "date": "after",
+        "spacing": 120,
+        "method": "nearest",
+        "policy": "renormalize",
+        "count": 83,
+        "finite": 37,
+        "length": 9720.261512898182,
+        "minimum": 0.06101110950112343,
+        "maximum": 0.20956943929195404
+      },
+      {
+        "date": "after",
+        "spacing": 120,
+        "method": "bilinear",
+        "policy": "strict",
+        "count": 83,
+        "finite": 19,
+        "length": 9720.261512898182,
+        "minimum": 0.06422047623703549,
+        "maximum": 0.19217517762332278
+      },
+      {
+        "date": "after",
+        "spacing": 120,
+        "method": "bilinear",
+        "policy": "renormalize",
+        "count": 83,
+        "finite": 56,
+        "length": 9720.261512898182,
+        "minimum": 0.06062479339187397,
+        "maximum": 0.19217517762332278
+      },
+      {
+        "date": "after",
+        "spacing": 240,
+        "method": "nearest",
+        "policy": "strict",
+        "count": 42,
+        "finite": 20,
+        "length": 9720.261512898182,
+        "minimum": 0.0649000033736229,
+        "maximum": 0.16833055019378662
+      },
+      {
+        "date": "after",
+        "spacing": 240,
+        "method": "nearest",
+        "policy": "renormalize",
+        "count": 42,
+        "finite": 20,
+        "length": 9720.261512898182,
+        "minimum": 0.0649000033736229,
+        "maximum": 0.16833055019378662
+      },
+      {
+        "date": "after",
+        "spacing": 240,
+        "method": "bilinear",
+        "policy": "strict",
+        "count": 42,
+        "finite": 10,
+        "length": 9720.261512898182,
+        "minimum": 0.07169322875955166,
+        "maximum": 0.16926818830178983
+      },
+      {
+        "date": "after",
+        "spacing": 240,
+        "method": "bilinear",
+        "policy": "renormalize",
+        "count": 42,
+        "finite": 28,
+        "length": 9720.261512898182,
+        "minimum": 0.06364650658780623,
+        "maximum": 0.16926818830178983
+      }
+    ],
+    "population": [
+      {
+        "date": "before",
+        "count": 16246,
+        "sum": 3647.92829708755,
+        "mean": 0.22454316736966332,
+        "minimum": 0.17053888738155365,
+        "maximum": 0.4677083194255829
+      },
+      {
+        "date": "after",
+        "count": 9516,
+        "sum": 1007.383875425905,
+        "mean": 0.10586211385307955,
+        "minimum": 0.040638890117406845,
+        "maximum": 0.35687777400016785
+      }
+    ]
+  },
+  "tiledObservations": {
+    "method": "Independent NumPy source reductions, rank-midpoint histogram percentiles and horizontal-then-vertical normalized Gaussian (radius 3, sigma 1.5). Every pass preserves invalid center samples. Categories use 4x4 support, upper-left center nearest and lower-label mode ties. Float64 arithmetic on pinned Float32 input; rows 50:178, columns 60:188, strict source QA.",
+    "knownMissingCenterFixture": {
+      "shape": [
+        5,
+        5
+      ],
+      "constantValue": 1,
+      "missingCell": [
+        2,
+        2
+      ],
+      "radius": 1,
+      "border": "clamp",
+      "ignoreFiniteCount": 24,
+      "propagateFiniteCount": 16,
+      "propagateMissingExtent": [
+        1,
+        1,
+        3,
+        3
+      ],
+      "passed": true
+    },
+    "records": [
+      {
+        "date": "before",
+        "count": 16246,
+        "sum": 3647.92829708755,
+        "mean": 0.22454316736966332,
+        "minimum": 0.17053888738155365,
+        "maximum": 0.4677083194255829,
+        "histograms": [
+          {
+            "bins": 32,
+            "counts": [
+              21,
+              104,
+              572,
+              2236,
+              3624,
+              3319,
+              2562,
+              1635,
+              931,
+              526,
+              287,
+              177,
+              90,
+              61,
+              35,
+              19,
+              17,
+              10,
+              6,
+              2,
+              3,
+              1,
+              3,
+              1,
+              0,
+              1,
+              0,
+              0,
+              2,
+              0,
+              0,
+              1
+            ],
+            "quantiles": {
+              "0": 0.17053888738155365,
+              "0.1": 0.20304179401136935,
+              "0.5": 0.22161488351412117,
+              "0.9": 0.24947451776824892,
+              "1": 0.4677083194255829
+            }
+          },
+          {
+            "bins": 128,
+            "counts": [
+              4,
+              5,
+              7,
+              5,
+              12,
+              13,
+              30,
+              49,
+              70,
+              107,
+              159,
+              236,
+              349,
+              479,
+              644,
+              764,
+              843,
+              883,
+              940,
+              958,
+              888,
+              855,
+              840,
+              736,
+              752,
+              687,
+              598,
+              525,
+              484,
+              441,
+              366,
+              344,
+              309,
+              246,
+              212,
+              164,
+              168,
+              135,
+              126,
+              97,
+              92,
+              72,
+              64,
+              59,
+              49,
+              52,
+              44,
+              32,
+              30,
+              18,
+              27,
+              15,
+              15,
+              21,
+              12,
+              13,
+              10,
+              6,
+              8,
+              11,
+              4,
+              7,
+              3,
+              5,
+              5,
+              0,
+              6,
+              6,
+              4,
+              2,
+              1,
+              3,
+              2,
+              2,
+              1,
+              1,
+              1,
+              0,
+              1,
+              0,
+              1,
+              0,
+              1,
+              1,
+              0,
+              0,
+              1,
+              0,
+              1,
+              1,
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1
+            ],
+            "quantiles": {
+              "0": 0.17053888738155365,
+              "0.1": 0.20420261210529134,
+              "0.5": 0.22045406542019919,
+              "0.9": 0.24831369967432693,
+              "1": 0.4677083194255829
+            }
+          }
+        ],
+        "cases": [
+          {
+            "border": "nodata",
+            "policy": "ignore-renormalize",
+            "validBlur": 16246,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 1017,
+                "support": 16153,
+                "classes": [
+                  0,
+                  2,
+                  1014,
+                  1
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 1024,
+                "support": 16246,
+                "classes": [
+                  0,
+                  2,
+                  1021,
+                  1
+                ]
+              }
+            ]
+          },
+          {
+            "border": "nodata",
+            "policy": "propagate",
+            "validBlur": 12813,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 773,
+                "support": 12088,
+                "classes": [
+                  0,
+                  0,
+                  773,
+                  0
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 941,
+                "support": 12813,
+                "classes": [
+                  0,
+                  0,
+                  941,
+                  0
+                ]
+              }
+            ]
+          },
+          {
+            "border": "clamp",
+            "policy": "ignore-renormalize",
+            "validBlur": 16246,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 1017,
+                "support": 16153,
+                "classes": [
+                  0,
+                  2,
+                  1014,
+                  1
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 1024,
+                "support": 16246,
+                "classes": [
+                  0,
+                  2,
+                  1021,
+                  1
+                ]
+              }
+            ]
+          },
+          {
+            "border": "clamp",
+            "policy": "propagate",
+            "validBlur": 14098,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 878,
+                "support": 13744,
+                "classes": [
+                  0,
+                  0,
+                  877,
+                  1
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 945,
+                "support": 14098,
+                "classes": [
+                  0,
+                  0,
+                  944,
+                  1
+                ]
+              }
+            ]
+          },
+          {
+            "border": "reflect",
+            "policy": "ignore-renormalize",
+            "validBlur": 16246,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 1017,
+                "support": 16153,
+                "classes": [
+                  0,
+                  2,
+                  1014,
+                  1
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 1024,
+                "support": 16246,
+                "classes": [
+                  0,
+                  2,
+                  1021,
+                  1
+                ]
+              }
+            ]
+          },
+          {
+            "border": "reflect",
+            "policy": "propagate",
+            "validBlur": 14098,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 878,
+                "support": 13744,
+                "classes": [
+                  0,
+                  0,
+                  877,
+                  1
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 945,
+                "support": 14098,
+                "classes": [
+                  0,
+                  0,
+                  944,
+                  1
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "date": "after",
+        "count": 9516,
+        "sum": 1007.383875425905,
+        "mean": 0.10586211385307955,
+        "minimum": 0.040638890117406845,
+        "maximum": 0.35687777400016785,
+        "histograms": [
+          {
+            "bins": 32,
+            "counts": [
+              44,
+              693,
+              1550,
+              1404,
+              936,
+              675,
+              506,
+              398,
+              437,
+              574,
+              633,
+              523,
+              392,
+              259,
+              138,
+              71,
+              62,
+              56,
+              46,
+              37,
+              30,
+              22,
+              12,
+              6,
+              3,
+              3,
+              2,
+              1,
+              0,
+              0,
+              2,
+              1
+            ],
+            "quantiles": {
+              "0": 0.040638890117406845,
+              "0.1": 0.06534505292074755,
+              "0.5": 0.09499244828475639,
+              "0.9": 0.16416970413411036,
+              "1": 0.35687777400016785
+            }
+          },
+          {
+            "bins": 128,
+            "counts": [
+              1,
+              4,
+              13,
+              26,
+              77,
+              136,
+              193,
+              287,
+              356,
+              369,
+              421,
+              404,
+              372,
+              374,
+              363,
+              295,
+              261,
+              224,
+              224,
+              227,
+              198,
+              192,
+              155,
+              130,
+              128,
+              138,
+              124,
+              116,
+              105,
+              108,
+              91,
+              94,
+              99,
+              118,
+              99,
+              121,
+              140,
+              138,
+              144,
+              152,
+              173,
+              148,
+              170,
+              142,
+              116,
+              126,
+              162,
+              119,
+              117,
+              95,
+              98,
+              82,
+              60,
+              80,
+              65,
+              54,
+              33,
+              40,
+              35,
+              30,
+              24,
+              16,
+              15,
+              16,
+              21,
+              16,
+              15,
+              10,
+              17,
+              12,
+              13,
+              14,
+              12,
+              12,
+              11,
+              11,
+              11,
+              9,
+              8,
+              9,
+              5,
+              4,
+              13,
+              8,
+              9,
+              4,
+              5,
+              4,
+              4,
+              1,
+              2,
+              5,
+              3,
+              2,
+              0,
+              1,
+              0,
+              1,
+              1,
+              1,
+              1,
+              0,
+              0,
+              2,
+              1,
+              1,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              1,
+              0,
+              0,
+              0,
+              1
+            ],
+            "quantiles": {
+              "0": 0.040638890117406845,
+              "0.1": 0.06163912850024644,
+              "0.5": 0.09128652386425529,
+              "0.9": 0.16293439599394333,
+              "1": 0.35687777400016785
+            }
+          }
+        ],
+        "cases": [
+          {
+            "border": "nodata",
+            "policy": "ignore-renormalize",
+            "validBlur": 9516,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 584,
+                "support": 7401,
+                "classes": [
+                  330,
+                  236,
+                  18,
+                  0
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 981,
+                "support": 9516,
+                "classes": [
+                  566,
+                  398,
+                  17,
+                  0
+                ]
+              }
+            ]
+          },
+          {
+            "border": "nodata",
+            "policy": "propagate",
+            "validBlur": 725,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 49,
+                "support": 520,
+                "classes": [
+                  41,
+                  8,
+                  0,
+                  0
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 113,
+                "support": 725,
+                "classes": [
+                  80,
+                  30,
+                  3,
+                  0
+                ]
+              }
+            ]
+          },
+          {
+            "border": "clamp",
+            "policy": "ignore-renormalize",
+            "validBlur": 9516,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 584,
+                "support": 7401,
+                "classes": [
+                  330,
+                  236,
+                  18,
+                  0
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 981,
+                "support": 9516,
+                "classes": [
+                  568,
+                  396,
+                  17,
+                  0
+                ]
+              }
+            ]
+          },
+          {
+            "border": "clamp",
+            "policy": "propagate",
+            "validBlur": 963,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 67,
+                "support": 767,
+                "classes": [
+                  55,
+                  12,
+                  0,
+                  0
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 125,
+                "support": 963,
+                "classes": [
+                  91,
+                  31,
+                  3,
+                  0
+                ]
+              }
+            ]
+          },
+          {
+            "border": "reflect",
+            "policy": "ignore-renormalize",
+            "validBlur": 9516,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 584,
+                "support": 7401,
+                "classes": [
+                  330,
+                  236,
+                  18,
+                  0
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 981,
+                "support": 9516,
+                "classes": [
+                  566,
+                  398,
+                  17,
+                  0
+                ]
+              }
+            ]
+          },
+          {
+            "border": "reflect",
+            "policy": "propagate",
+            "validBlur": 963,
+            "categorical": [
+              {
+                "policy": "nearest",
+                "valid": 67,
+                "support": 767,
+                "classes": [
+                  55,
+                  12,
+                  0,
+                  0
+                ]
+              },
+              {
+                "policy": "mode",
+                "valid": 125,
+                "support": 963,
+                "classes": [
+                  89,
+                  33,
+                  3,
+                  0
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "habitatCircuit": {
+    "method": "Independent float64 NumPy Jacobi-preconditioned conjugate gradient on actual WorldCover crop row506/column555; conductances rounded to exact uploaded float32 before solve; unit source, grounded sink. Terminals/crop indices must match runtime readout before assertions. No GPU result is used in this reference.",
+    "records": [
+      {
+        "resistance": "mild",
+        "waterBarrier": false,
+        "connectivity": 4,
+        "size": 16,
+        "source": 131,
+        "sink": 140,
+        "edgeCount": 480,
+        "effectiveResistance": 197.95151868802694,
+        "energy": 197.95151868802702,
+        "maximumResidual": 2.3121088377209276e-12,
+        "iterations": 113
+      },
+      {
+        "resistance": "mild",
+        "waterBarrier": false,
+        "connectivity": 4,
+        "size": 64,
+        "source": 2075,
+        "sink": 2084,
+        "edgeCount": 8064,
+        "effectiveResistance": 171.52576191899396,
+        "energy": 171.52576191899453,
+        "maximumResidual": 8.178345153875277e-13,
+        "iterations": 487
+      },
+      {
+        "resistance": "mild",
+        "waterBarrier": false,
+        "connectivity": 8,
+        "size": 16,
+        "source": 131,
+        "sink": 140,
+        "edgeCount": 930,
+        "effectiveResistance": 92.40133101312567,
+        "energy": 92.40133101312571,
+        "maximumResidual": 1.451710279765095e-12,
+        "iterations": 83
+      },
+      {
+        "resistance": "mild",
+        "waterBarrier": false,
+        "connectivity": 8,
+        "size": 64,
+        "source": 2075,
+        "sink": 2084,
+        "edgeCount": 16002,
+        "effectiveResistance": 80.20207908557552,
+        "energy": 80.20207908557549,
+        "maximumResidual": 9.983838842458903e-13,
+        "iterations": 352
+      },
+      {
+        "resistance": "mild",
+        "waterBarrier": true,
+        "connectivity": 4,
+        "size": 16,
+        "source": 131,
+        "sink": 140,
+        "edgeCount": 480,
+        "effectiveResistance": 197.95151868802694,
+        "energy": 197.95151868802702,
+        "maximumResidual": 2.3121088377209276e-12,
+        "iterations": 113
+      },
+      {
+        "resistance": "mild",
+        "waterBarrier": true,
+        "connectivity": 4,
+        "size": 64,
+        "source": 2075,
+        "sink": 2084,
+        "edgeCount": 8042,
+        "effectiveResistance": 171.5282316298402,
+        "energy": 171.52823162984038,
+        "maximumResidual": 1.1247877629294578e-12,
+        "iterations": 486
+      },
+      {
+        "resistance": "mild",
+        "waterBarrier": true,
+        "connectivity": 8,
+        "size": 16,
+        "source": 131,
+        "sink": 140,
+        "edgeCount": 930,
+        "effectiveResistance": 92.40133101312567,
+        "energy": 92.40133101312571,
+        "maximumResidual": 1.451710279765095e-12,
+        "iterations": 83
+      },
+      {
+        "resistance": "mild",
+        "waterBarrier": true,
+        "connectivity": 8,
+        "size": 64,
+        "source": 2075,
+        "sink": 2084,
+        "edgeCount": 15955,
+        "effectiveResistance": 80.20316190631605,
+        "energy": 80.20316190631605,
+        "maximumResidual": 1.0140831317034804e-12,
+        "iterations": 352
+      },
+      {
+        "resistance": "strong",
+        "waterBarrier": false,
+        "connectivity": 4,
+        "size": 16,
+        "source": 131,
+        "sink": 140,
+        "edgeCount": 480,
+        "effectiveResistance": 1901.5178467358853,
+        "energy": 1901.5178467358846,
+        "maximumResidual": 3.1512396858612846e-12,
+        "iterations": 125
+      },
+      {
+        "resistance": "strong",
+        "waterBarrier": false,
+        "connectivity": 4,
+        "size": 64,
+        "source": 2075,
+        "sink": 2084,
+        "edgeCount": 8064,
+        "effectiveResistance": 1633.5623572031247,
+        "energy": 1633.5623572031286,
+        "maximumResidual": 9.208623447110043e-13,
+        "iterations": 607
+      },
+      {
+        "resistance": "strong",
+        "waterBarrier": false,
+        "connectivity": 8,
+        "size": 16,
+        "source": 131,
+        "sink": 140,
+        "edgeCount": 930,
+        "effectiveResistance": 883.8928099583585,
+        "energy": 883.8928099583591,
+        "maximumResidual": 1.4490735000816102e-12,
+        "iterations": 95
+      },
+      {
+        "resistance": "strong",
+        "waterBarrier": false,
+        "connectivity": 8,
+        "size": 64,
+        "source": 2075,
+        "sink": 2084,
+        "edgeCount": 16002,
+        "effectiveResistance": 763.3115331901115,
+        "energy": 763.3115331901079,
+        "maximumResidual": 1.4856918338401791e-12,
+        "iterations": 436
+      },
+      {
+        "resistance": "strong",
+        "waterBarrier": true,
+        "connectivity": 4,
+        "size": 16,
+        "source": 131,
+        "sink": 140,
+        "edgeCount": 480,
+        "effectiveResistance": 1901.5178467358853,
+        "energy": 1901.5178467358846,
+        "maximumResidual": 3.1512396858612846e-12,
+        "iterations": 125
+      },
+      {
+        "resistance": "strong",
+        "waterBarrier": true,
+        "connectivity": 4,
+        "size": 64,
+        "source": 2075,
+        "sink": 2084,
+        "edgeCount": 8042,
+        "effectiveResistance": 1633.563290027952,
+        "energy": 1633.563290027948,
+        "maximumResidual": 9.547206775151196e-13,
+        "iterations": 607
+      },
+      {
+        "resistance": "strong",
+        "waterBarrier": true,
+        "connectivity": 8,
+        "size": 16,
+        "source": 131,
+        "sink": 140,
+        "edgeCount": 930,
+        "effectiveResistance": 883.8928099583585,
+        "energy": 883.8928099583591,
+        "maximumResidual": 1.4490735000816102e-12,
+        "iterations": 95
+      },
+      {
+        "resistance": "strong",
+        "waterBarrier": true,
+        "connectivity": 8,
+        "size": 64,
+        "source": 2075,
+        "sink": 2084,
+        "edgeCount": 15955,
+        "effectiveResistance": 763.3119684427784,
+        "energy": 763.3119684427811,
+        "maximumResidual": 1.5578726366720819e-12,
+        "iterations": 436
+      }
+    ]
+  },
+  "surfacePreparation": {
+    "method": "Independent original-donor nearest fill from known oracle followed by NumPy upper-median order statistic; clamp repeats edge samples, nodata excludes out-of-grid samples; center validity required; ignore omits invalid samples, propagate invalidates if any sample is missing. Exact float32 nearest values; 64\u00d764 source.",
+    "records": [
+      {
+        "scenario": "isolated",
+        "distance": 2,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3508,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.010648125007968514,
+        "mae": 0.00807072843114535,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "distance": 2,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3508,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.010648125007968514,
+        "mae": 0.00807072843114535,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "distance": 2,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3539,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.010594994644797023,
+        "mae": 0.00799806427323457,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "distance": 2,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3335,
+        "unresolved": 252,
+        "evaluated": 124,
+        "rmse": 0.010075746972797965,
+        "mae": 0.007816196449341313,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "distance": 2,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3894,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.012070994060113058,
+        "mae": 0.009040803281646786,
+        "probe": 0.22104722261428833
+      },
+      {
+        "scenario": "isolated",
+        "distance": 2,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3894,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.012070994060113058,
+        "mae": 0.009040803281646786,
+        "probe": 0.22104722261428833
+      },
+      {
+        "scenario": "isolated",
+        "distance": 2,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3900,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.01202106241677273,
+        "mae": 0.009012373107852358,
+        "probe": 0.22104722261428833
+      },
+      {
+        "scenario": "isolated",
+        "distance": 2,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3441,
+        "unresolved": 496,
+        "evaluated": 116,
+        "rmse": 0.011383039674721032,
+        "mae": 0.008636062643651304,
+        "probe": 0.22104722261428833
+      },
+      {
+        "scenario": "isolated",
+        "distance": 8,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3508,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.010648125007968514,
+        "mae": 0.00807072843114535,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "distance": 8,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3508,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.010648125007968514,
+        "mae": 0.00807072843114535,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "distance": 8,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3539,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.010594994644797023,
+        "mae": 0.00799806427323457,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "distance": 8,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3335,
+        "unresolved": 252,
+        "evaluated": 124,
+        "rmse": 0.010075746972797965,
+        "mae": 0.007816196449341313,
+        "probe": 0.2218555510044098
+      },
+      {
+        "scenario": "isolated",
+        "distance": 8,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3894,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.012070994060113058,
+        "mae": 0.009040803281646786,
+        "probe": 0.22104722261428833
+      },
+      {
+        "scenario": "isolated",
+        "distance": 8,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3894,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.012070994060113058,
+        "mae": 0.009040803281646786,
+        "probe": 0.22104722261428833
+      },
+      {
+        "scenario": "isolated",
+        "distance": 8,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3900,
+        "unresolved": 0,
+        "evaluated": 132,
+        "rmse": 0.01202106241677273,
+        "mae": 0.009012373107852358,
+        "probe": 0.22104722261428833
+      },
+      {
+        "scenario": "isolated",
+        "distance": 8,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 3964,
+        "filled": 132,
+        "filtered": 3441,
+        "unresolved": 496,
+        "evaluated": 116,
+        "rmse": 0.011383039674721032,
+        "mae": 0.008636062643651304,
+        "probe": 0.22104722261428833
+      },
+      {
+        "scenario": "block",
+        "distance": 2,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 4015,
+        "filled": 56,
+        "filtered": 3512,
+        "unresolved": 25,
+        "evaluated": 56,
+        "rmse": 0.009583815560508403,
+        "mae": 0.007522320640938622,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "distance": 2,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 4015,
+        "filled": 56,
+        "filtered": 3494,
+        "unresolved": 49,
+        "evaluated": 32,
+        "rmse": 0.010894302025747354,
+        "mae": 0.008779773488640785,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "distance": 2,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 4015,
+        "filled": 56,
+        "filtered": 3538,
+        "unresolved": 25,
+        "evaluated": 56,
+        "rmse": 0.009583815560508403,
+        "mae": 0.007522320640938622,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "distance": 2,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 4015,
+        "filled": 56,
+        "filtered": 3311,
+        "unresolved": 301,
+        "evaluated": 32,
+        "rmse": 0.010894302025747354,
+        "mae": 0.008779773488640785,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "distance": 2,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 4015,
+        "filled": 56,
+        "filtered": 3873,
+        "unresolved": 25,
+        "evaluated": 56,
+        "rmse": 0.009686459836314066,
+        "mae": 0.0075590283210788456,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "distance": 2,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 4015,
+        "filled": 56,
+        "filtered": 3824,
+        "unresolved": 81,
+        "evaluated": 0,
+        "rmse": null,
+        "mae": null,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "distance": 2,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 4015,
+        "filled": 56,
+        "filtered": 3876,
+        "unresolved": 25,
+        "evaluated": 56,
+        "rmse": 0.009686459836314066,
+        "mae": 0.0075590283210788456,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "distance": 2,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 4015,
+        "filled": 56,
+        "filtered": 3367,
+        "unresolved": 577,
+        "evaluated": 0,
+        "rmse": null,
+        "mae": null,
+        "probe": null
+      },
+      {
+        "scenario": "block",
+        "distance": 8,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 4015,
+        "filled": 81,
+        "filtered": 3529,
+        "unresolved": 0,
+        "evaluated": 81,
+        "rmse": 0.009271203558473886,
+        "mae": 0.0074989363367174875,
+        "probe": 0.22046667337417603
+      },
+      {
+        "scenario": "block",
+        "distance": 8,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 4015,
+        "filled": 81,
+        "filtered": 3529,
+        "unresolved": 0,
+        "evaluated": 81,
+        "rmse": 0.009271203558473886,
+        "mae": 0.0074989363367174875,
+        "probe": 0.22046667337417603
+      },
+      {
+        "scenario": "block",
+        "distance": 8,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 4015,
+        "filled": 81,
+        "filtered": 3555,
+        "unresolved": 0,
+        "evaluated": 81,
+        "rmse": 0.009271203558473886,
+        "mae": 0.0074989363367174875,
+        "probe": 0.22046667337417603
+      },
+      {
+        "scenario": "block",
+        "distance": 8,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 4015,
+        "filled": 81,
+        "filtered": 3346,
+        "unresolved": 252,
+        "evaluated": 81,
+        "rmse": 0.009271203558473886,
+        "mae": 0.0074989363367174875,
+        "probe": 0.22046667337417603
+      },
+      {
+        "scenario": "block",
+        "distance": 8,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 4015,
+        "filled": 81,
+        "filtered": 3895,
+        "unresolved": 0,
+        "evaluated": 81,
+        "rmse": 0.00943760096158294,
+        "mae": 0.007410699570620501,
+        "probe": 0.21859166026115417
+      },
+      {
+        "scenario": "block",
+        "distance": 8,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 4015,
+        "filled": 81,
+        "filtered": 3895,
+        "unresolved": 0,
+        "evaluated": 81,
+        "rmse": 0.00943760096158294,
+        "mae": 0.007410699570620501,
+        "probe": 0.21859166026115417
+      },
+      {
+        "scenario": "block",
+        "distance": 8,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 4015,
+        "filled": 81,
+        "filtered": 3898,
+        "unresolved": 0,
+        "evaluated": 81,
+        "rmse": 0.00943760096158294,
+        "mae": 0.007410699570620501,
+        "probe": 0.21859166026115417
+      },
+      {
+        "scenario": "block",
+        "distance": 8,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 4015,
+        "filled": 81,
+        "filtered": 3438,
+        "unresolved": 496,
+        "evaluated": 81,
+        "rmse": 0.00943760096158294,
+        "mae": 0.007410699570620501,
+        "probe": 0.21859166026115417
+      },
+      {
+        "scenario": "september",
+        "distance": 2,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 3049,
+        "filled": 1012,
+        "filtered": 2927,
+        "unresolved": 35,
+        "evaluated": 1012,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.06859999895095825
+      },
+      {
+        "scenario": "september",
+        "distance": 2,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 3049,
+        "filled": 1012,
+        "filtered": 2892,
+        "unresolved": 144,
+        "evaluated": 903,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.06859999895095825
+      },
+      {
+        "scenario": "september",
+        "distance": 2,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 3049,
+        "filled": 1012,
+        "filtered": 2955,
+        "unresolved": 35,
+        "evaluated": 1012,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.06859999895095825
+      },
+      {
+        "scenario": "september",
+        "distance": 2,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 3049,
+        "filled": 1012,
+        "filtered": 2772,
+        "unresolved": 383,
+        "evaluated": 840,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.06859999895095825
+      },
+      {
+        "scenario": "september",
+        "distance": 2,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 3049,
+        "filled": 1012,
+        "filtered": 3635,
+        "unresolved": 35,
+        "evaluated": 1012,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07240000367164612
+      },
+      {
+        "scenario": "september",
+        "distance": 2,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 3049,
+        "filled": 1012,
+        "filtered": 3452,
+        "unresolved": 293,
+        "evaluated": 807,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07240000367164612
+      },
+      {
+        "scenario": "september",
+        "distance": 2,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 3049,
+        "filled": 1012,
+        "filtered": 3686,
+        "unresolved": 35,
+        "evaluated": 1012,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07240000367164612
+      },
+      {
+        "scenario": "september",
+        "distance": 2,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 3049,
+        "filled": 1012,
+        "filtered": 3093,
+        "unresolved": 750,
+        "evaluated": 684,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07240000367164612
+      },
+      {
+        "scenario": "september",
+        "distance": 8,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 3049,
+        "filled": 1047,
+        "filtered": 2938,
+        "unresolved": 0,
+        "evaluated": 1047,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.06859999895095825
+      },
+      {
+        "scenario": "september",
+        "distance": 8,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 3049,
+        "filled": 1047,
+        "filtered": 2938,
+        "unresolved": 0,
+        "evaluated": 1047,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.06859999895095825
+      },
+      {
+        "scenario": "september",
+        "distance": 8,
+        "radius": 1,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 3049,
+        "filled": 1047,
+        "filtered": 2968,
+        "unresolved": 0,
+        "evaluated": 1047,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.06859999895095825
+      },
+      {
+        "scenario": "september",
+        "distance": 8,
+        "radius": 1,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 3049,
+        "filled": 1047,
+        "filtered": 2818,
+        "unresolved": 252,
+        "evaluated": 971,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.06859999895095825
+      },
+      {
+        "scenario": "september",
+        "distance": 8,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "clamp",
+        "original": 3049,
+        "filled": 1047,
+        "filtered": 3661,
+        "unresolved": 0,
+        "evaluated": 1047,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07240000367164612
+      },
+      {
+        "scenario": "september",
+        "distance": 8,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "clamp",
+        "original": 3049,
+        "filled": 1047,
+        "filtered": 3661,
+        "unresolved": 0,
+        "evaluated": 1047,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07240000367164612
+      },
+      {
+        "scenario": "september",
+        "distance": 8,
+        "radius": 2,
+        "policy": "ignore",
+        "borderMode": "nodata",
+        "original": 3049,
+        "filled": 1047,
+        "filtered": 3707,
+        "unresolved": 0,
+        "evaluated": 1047,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07240000367164612
+      },
+      {
+        "scenario": "september",
+        "distance": 8,
+        "radius": 2,
+        "policy": "propagate",
+        "borderMode": "nodata",
+        "original": 3049,
+        "filled": 1047,
+        "filtered": 3282,
+        "unresolved": 496,
+        "evaluated": 888,
+        "rmse": null,
+        "mae": null,
+        "probe": 0.07240000367164612
+      }
+    ]
+  },
+  "pixelQuantityRounding": {
+    "method": "Independent exactfraction float32 row-major sum. Order-independent conservative bound exploits nonnegative fractions<=1: each partialfraction addition <=half finalsum ulp; adding1 is exact except at binade crossings; add summed inputfraction representation error, finalarea multiplication halfULP and0.5m\u00b2 display rounding. Coveragegeometry verification remains separately tighter. Bound does not cover arbitrary negative weights.",
+    "records": [
+      {
+        "date": "before",
+        "zone": 0,
+        "tupleCount": 2227,
+        "partialCount": 97,
+        "float32RowMajorArea": 7841985.5,
+        "exactArea": 7841999.999999999,
+        "conservativeAreaToleranceM2": 46,
+        "halfFinalSumUlp": 0.0001220703125
+      },
+      {
+        "date": "before",
+        "zone": 1,
+        "tupleCount": 429,
+        "partialCount": 131,
+        "float32RowMajorArea": 1306800.25,
+        "exactArea": 1306799.9999999988,
+        "conservativeAreaToleranceM2": 8,
+        "halfFinalSumUlp": 1.52587890625e-05
+      },
+      {
+        "date": "before",
+        "zone": 2,
+        "tupleCount": 2133,
+        "partialCount": 135,
+        "float32RowMajorArea": 7374800.5,
+        "exactArea": 7374800.0,
+        "conservativeAreaToleranceM2": 62,
+        "halfFinalSumUlp": 0.0001220703125
+      },
+      {
+        "date": "before",
+        "zone": 3,
+        "tupleCount": 2376,
+        "partialCount": 96,
+        "float32RowMajorArea": 8322386.0,
+        "exactArea": 8322400.0,
+        "conservativeAreaToleranceM2": 45,
+        "halfFinalSumUlp": 0.0001220703125
+      },
+      {
+        "date": "after",
+        "zone": 0,
+        "tupleCount": 759,
+        "partialCount": 39,
+        "float32RowMajorArea": 2650797.75,
+        "exactArea": 2650799.9999999995,
+        "conservativeAreaToleranceM2": 6,
+        "halfFinalSumUlp": 3.0517578125e-05
+      },
+      {
+        "date": "after",
+        "zone": 1,
+        "tupleCount": 173,
+        "partialCount": 52,
+        "float32RowMajorArea": 524620.4375,
+        "exactArea": 524620.3361344537,
+        "conservativeAreaToleranceM2": 3,
+        "halfFinalSumUlp": 7.62939453125e-06
+      },
+      {
+        "date": "after",
+        "zone": 2,
+        "tupleCount": 852,
+        "partialCount": 46,
+        "float32RowMajorArea": 2964399.75,
+        "exactArea": 2964400.0,
+        "conservativeAreaToleranceM2": 7,
+        "halfFinalSumUlp": 3.0517578125e-05
+      },
+      {
+        "date": "after",
+        "zone": 3,
+        "tupleCount": 1182,
+        "partialCount": 50,
+        "float32RowMajorArea": 4134401.75,
+        "exactArea": 4134399.9999999995,
+        "conservativeAreaToleranceM2": 13,
+        "halfFinalSumUlp": 6.103515625e-05
+      }
+    ]
+  },
+  "habitatPatchPerimeter": {
+    "method": "Independent exposed-face count over the shipped ESA WorldCover crop at source row 506, column 555 (64\u00d764, 20 m). Selected classes match the scene tree/woody/broad groups. Eight-neighbor flood fill independently checks component count. Each selected pixel contributes one face for a 4-neighbor outside the selected mask; raster-exterior faces are included only when countRasterBorder is true. No GPU output is used.",
+    "sourceCrop": {
+      "firstRow": 506,
+      "lastRow": 569,
+      "firstColumn": 555,
+      "lastColumn": 618,
+      "cellSizeMeters": 20
+    },
+    "records": [
+      {
+        "group": "tree",
+        "label": "tree cover + mangroves",
+        "countRasterBorder": true,
+        "selectedCells": 2876,
+        "components8": 19,
+        "interiorExposedFaces": 855,
+        "outerExposedFaces": 201,
+        "exposedFaces": 1056,
+        "perimeterMeters": 21120
+      },
+      {
+        "group": "tree",
+        "label": "tree cover + mangroves",
+        "countRasterBorder": false,
+        "selectedCells": 2876,
+        "components8": 19,
+        "interiorExposedFaces": 855,
+        "outerExposedFaces": 201,
+        "exposedFaces": 855,
+        "perimeterMeters": 17100
+      },
+      {
+        "group": "woody",
+        "label": "tree + shrub + mangroves",
+        "countRasterBorder": true,
+        "selectedCells": 2876,
+        "components8": 19,
+        "interiorExposedFaces": 855,
+        "outerExposedFaces": 201,
+        "exposedFaces": 1056,
+        "perimeterMeters": 21120
+      },
+      {
+        "group": "woody",
+        "label": "tree + shrub + mangroves",
+        "countRasterBorder": false,
+        "selectedCells": 2876,
+        "components8": 19,
+        "interiorExposedFaces": 855,
+        "outerExposedFaces": 201,
+        "exposedFaces": 855,
+        "perimeterMeters": 17100
+      },
+      {
+        "group": "broad",
+        "label": "woody + grass + crops + wetland + moss/lichen",
+        "countRasterBorder": true,
+        "selectedCells": 3161,
+        "components8": 18,
+        "interiorExposedFaces": 778,
+        "outerExposedFaces": 232,
+        "exposedFaces": 1010,
+        "perimeterMeters": 20200
+      },
+      {
+        "group": "broad",
+        "label": "woody + grass + crops + wetland + moss/lichen",
+        "countRasterBorder": false,
+        "selectedCells": 3161,
+        "components8": 18,
+        "interiorExposedFaces": 778,
+        "outerExposedFaces": 232,
+        "exposedFaces": 778,
+        "perimeterMeters": 15560
+      }
+    ]
+  },
+  "tiledObservationTopology": {
+    "method": "independent stdlib flood-fill over bundled calibrated NIR and strict QA validity; 8-neighbor components, four-neighbor unique edge contacts",
+    "cellSizeMeters": 60,
+    "records": [
+      {
+        "date": "2021-07-13",
+        "source": "nir_before.bin",
+        "validPopulation": 4057,
+        "threshold": 0.2,
+        "connectivity": 8,
+        "focus": {
+          "sourceRowsHalfOpen": [
+            82,
+            146
+          ],
+          "sourceColumnsHalfOpen": [
+            92,
+            156
+          ],
+          "ownedCoreSize": 32,
+          "ownedCoreOrigins": [
+            [
+              0,
+              0
+            ],
+            [
+              32,
+              0
+            ],
+            [
+              0,
+              32
+            ],
+            [
+              32,
+              32
+            ]
+          ]
+        },
+        "classes": {
+          "low": {
+            "validPopulation": 272,
+            "globalComponentCount": 96,
+            "globalComponentPopulations": [
+              1,
+              4,
+              2,
+              6,
+              1,
+              4,
+              1,
+              4,
+              3,
+              5,
+              3,
+              1,
+              2,
+              3,
+              1,
+              1,
+              1,
+              7,
+              1,
+              2,
+              2,
+              5,
+              2,
+              1,
+              1,
+              1,
+              2,
+              1,
+              1,
+              1,
+              3,
+              12,
+              3,
+              1,
+              1,
+              1,
+              2,
+              1,
+              3,
+              1,
+              8,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              5,
+              7,
+              1,
+              1,
+              2,
+              3,
+              7,
+              1,
+              28,
+              1,
+              2,
+              2,
+              2,
+              10,
+              1,
+              5,
+              1,
+              1,
+              1,
+              3,
+              3,
+              3,
+              3,
+              1,
+              5,
+              6,
+              8,
+              1,
+              1,
+              1,
+              1,
+              18,
+              1,
+              1,
+              1,
+              1,
+              1,
+              2,
+              8,
+              1,
+              1,
+              1,
+              1,
+              1
+            ],
+            "localComponentCounts": [
+              48,
+              33,
+              10,
+              12
+            ],
+            "localComponentCountSum": 103,
+            "seamMerges": 7
+          },
+          "high": {
+            "validPopulation": 3785,
+            "globalComponentCount": 2,
+            "globalComponentPopulations": [
+              3784,
+              1
+            ],
+            "localComponentCounts": [
+              1,
+              2,
+              1,
+              2
+            ],
+            "localComponentCountSum": 6,
+            "seamMerges": 4
+          }
+        },
+        "adjacency": {
+          "connectivity": 4,
+          "lowHighRegionPairCount": 97,
+          "lowHighSharedEdgeContacts": 763,
+          "focusSeamContacts": 16,
+          "horizontalFocusSeamContacts": 3,
+          "verticalFocusSeamContacts": 13,
+          "pairs": [
+            {
+              "lowRegion": 0,
+              "highRegion": 0,
+              "sharedEdges": 3
+            },
+            {
+              "lowRegion": 1,
+              "highRegion": 0,
+              "sharedEdges": 9
+            },
+            {
+              "lowRegion": 2,
+              "highRegion": 0,
+              "sharedEdges": 5
+            },
+            {
+              "lowRegion": 3,
+              "highRegion": 0,
+              "sharedEdges": 16
+            },
+            {
+              "lowRegion": 4,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 5,
+              "highRegion": 0,
+              "sharedEdges": 12
+            },
+            {
+              "lowRegion": 6,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 7,
+              "highRegion": 0,
+              "sharedEdges": 10
+            },
+            {
+              "lowRegion": 8,
+              "highRegion": 0,
+              "sharedEdges": 8
+            },
+            {
+              "lowRegion": 9,
+              "highRegion": 0,
+              "sharedEdges": 12
+            },
+            {
+              "lowRegion": 10,
+              "highRegion": 0,
+              "sharedEdges": 10
+            },
+            {
+              "lowRegion": 11,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 12,
+              "highRegion": 0,
+              "sharedEdges": 8
+            },
+            {
+              "lowRegion": 13,
+              "highRegion": 0,
+              "sharedEdges": 10
+            },
+            {
+              "lowRegion": 14,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 15,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 16,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 17,
+              "highRegion": 0,
+              "sharedEdges": 18
+            },
+            {
+              "lowRegion": 18,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 19,
+              "highRegion": 0,
+              "sharedEdges": 6
+            },
+            {
+              "lowRegion": 20,
+              "highRegion": 0,
+              "sharedEdges": 6
+            },
+            {
+              "lowRegion": 21,
+              "highRegion": 0,
+              "sharedEdges": 16
+            },
+            {
+              "lowRegion": 22,
+              "highRegion": 0,
+              "sharedEdges": 6
+            },
+            {
+              "lowRegion": 23,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 24,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 25,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 26,
+              "highRegion": 0,
+              "sharedEdges": 6
+            },
+            {
+              "lowRegion": 27,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 28,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 29,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 30,
+              "highRegion": 0,
+              "sharedEdges": 10
+            },
+            {
+              "lowRegion": 31,
+              "highRegion": 0,
+              "sharedEdges": 32
+            },
+            {
+              "lowRegion": 32,
+              "highRegion": 0,
+              "sharedEdges": 10
+            },
+            {
+              "lowRegion": 33,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 34,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 35,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 36,
+              "highRegion": 0,
+              "sharedEdges": 6
+            },
+            {
+              "lowRegion": 37,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 38,
+              "highRegion": 0,
+              "sharedEdges": 8
+            },
+            {
+              "lowRegion": 39,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 40,
+              "highRegion": 0,
+              "sharedEdges": 24
+            },
+            {
+              "lowRegion": 41,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 42,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 43,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 44,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 45,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 46,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 47,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 48,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 49,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 50,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 51,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 52,
+              "highRegion": 0,
+              "sharedEdges": 17
+            },
+            {
+              "lowRegion": 53,
+              "highRegion": 0,
+              "sharedEdges": 20
+            },
+            {
+              "lowRegion": 54,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 55,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 56,
+              "highRegion": 0,
+              "sharedEdges": 8
+            },
+            {
+              "lowRegion": 57,
+              "highRegion": 0,
+              "sharedEdges": 8
+            },
+            {
+              "lowRegion": 58,
+              "highRegion": 0,
+              "sharedEdges": 16
+            },
+            {
+              "lowRegion": 59,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 60,
+              "highRegion": 0,
+              "sharedEdges": 44
+            },
+            {
+              "lowRegion": 60,
+              "highRegion": 1,
+              "sharedEdges": 2
+            },
+            {
+              "lowRegion": 61,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 62,
+              "highRegion": 0,
+              "sharedEdges": 6
+            },
+            {
+              "lowRegion": 63,
+              "highRegion": 0,
+              "sharedEdges": 7
+            },
+            {
+              "lowRegion": 64,
+              "highRegion": 0,
+              "sharedEdges": 8
+            },
+            {
+              "lowRegion": 65,
+              "highRegion": 0,
+              "sharedEdges": 26
+            },
+            {
+              "lowRegion": 66,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 67,
+              "highRegion": 0,
+              "sharedEdges": 14
+            },
+            {
+              "lowRegion": 68,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 69,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 70,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 71,
+              "highRegion": 0,
+              "sharedEdges": 10
+            },
+            {
+              "lowRegion": 72,
+              "highRegion": 0,
+              "sharedEdges": 5
+            },
+            {
+              "lowRegion": 73,
+              "highRegion": 0,
+              "sharedEdges": 10
+            },
+            {
+              "lowRegion": 74,
+              "highRegion": 0,
+              "sharedEdges": 8
+            },
+            {
+              "lowRegion": 75,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 76,
+              "highRegion": 0,
+              "sharedEdges": 11
+            },
+            {
+              "lowRegion": 77,
+              "highRegion": 0,
+              "sharedEdges": 13
+            },
+            {
+              "lowRegion": 78,
+              "highRegion": 0,
+              "sharedEdges": 20
+            },
+            {
+              "lowRegion": 79,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 80,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 81,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 82,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 83,
+              "highRegion": 0,
+              "sharedEdges": 28
+            },
+            {
+              "lowRegion": 84,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 85,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 86,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 87,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 88,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 89,
+              "highRegion": 0,
+              "sharedEdges": 8
+            },
+            {
+              "lowRegion": 90,
+              "highRegion": 0,
+              "sharedEdges": 16
+            },
+            {
+              "lowRegion": 91,
+              "highRegion": 0,
+              "sharedEdges": 3
+            },
+            {
+              "lowRegion": 92,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 93,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 94,
+              "highRegion": 0,
+              "sharedEdges": 4
+            },
+            {
+              "lowRegion": 95,
+              "highRegion": 0,
+              "sharedEdges": 4
+            }
+          ]
+        }
+      },
+      {
+        "date": "2021-09-21",
+        "source": "nir_after.bin",
+        "validPopulation": 1935,
+        "threshold": 0.2,
+        "connectivity": 8,
+        "focus": {
+          "sourceRowsHalfOpen": [
+            82,
+            146
+          ],
+          "sourceColumnsHalfOpen": [
+            92,
+            156
+          ],
+          "ownedCoreSize": 32,
+          "ownedCoreOrigins": [
+            [
+              0,
+              0
+            ],
+            [
+              32,
+              0
+            ],
+            [
+              0,
+              32
+            ],
+            [
+              32,
+              32
+            ]
+          ]
+        },
+        "classes": {
+          "low": {
+            "validPopulation": 1934,
+            "globalComponentCount": 65,
+            "globalComponentPopulations": [
+              5,
+              1,
+              1384,
+              1,
+              1,
+              1,
+              29,
+              1,
+              2,
+              9,
+              1,
+              1,
+              8,
+              16,
+              1,
+              9,
+              1,
+              3,
+              30,
+              4,
+              2,
+              2,
+              1,
+              3,
+              2,
+              1,
+              1,
+              4,
+              1,
+              25,
+              204,
+              1,
+              1,
+              1,
+              1,
+              67,
+              3,
+              1,
+              5,
+              2,
+              1,
+              1,
+              2,
+              7,
+              2,
+              2,
+              2,
+              5,
+              3,
+              1,
+              1,
+              32,
+              1,
+              1,
+              3,
+              1,
+              11,
+              6,
+              2,
+              5,
+              2,
+              1,
+              1,
+              1,
+              4
+            ],
+            "localComponentCounts": [
+              4,
+              13,
+              30,
+              31
+            ],
+            "localComponentCountSum": 78,
+            "seamMerges": 13
+          },
+          "high": {
+            "validPopulation": 1,
+            "globalComponentCount": 1,
+            "globalComponentPopulations": [
+              1
+            ],
+            "localComponentCounts": [
+              0,
+              0,
+              1,
+              0
+            ],
+            "localComponentCountSum": 1,
+            "seamMerges": 0
+          }
+        },
+        "adjacency": {
+          "connectivity": 4,
+          "lowHighRegionPairCount": 1,
+          "lowHighSharedEdgeContacts": 1,
+          "focusSeamContacts": 0,
+          "horizontalFocusSeamContacts": 0,
+          "verticalFocusSeamContacts": 0,
+          "pairs": [
+            {
+              "lowRegion": 2,
+              "highRegion": 0,
+              "sharedEdges": 1
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

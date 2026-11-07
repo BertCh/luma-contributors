@@ -1,0 +1,76 @@
+{
+  "source": "dixie-spectral, pinned July 13 / September 21 2021 Sentinel-2",
+  "supportRule": "Both strict land masks, finite bands, positive NIR+SWIR2 sums",
+  "calculation": "Float32-rounded NBR arithmetic; raw dNBR >= float32 threshold; no smoothing",
+  "width": 250,
+  "height": 250,
+  "cellSizeM": 60,
+  "cellAreaHa": 0.36,
+  "validCells": 35583,
+  "thresholds": {
+    "0.1": {
+      "validClassContactEdges": 2616,
+      "validClassContactLengthKm": 156.96,
+      "foregroundCells": 26094,
+      "foregroundAreaHa": 9393.84,
+      "fourNeighbors": {
+        "componentCount": 1117,
+        "largestCells": 11772,
+        "largestAreaHa": 4237.92
+      },
+      "eightNeighbors": {
+        "componentCount": 619,
+        "largestCells": 14600,
+        "largestAreaHa": 5256.0
+      }
+    },
+    "0.27": {
+      "validClassContactEdges": 3858,
+      "validClassContactLengthKm": 231.48,
+      "foregroundCells": 22375,
+      "foregroundAreaHa": 8055.0,
+      "fourNeighbors": {
+        "componentCount": 953,
+        "largestCells": 9026,
+        "largestAreaHa": 3249.3599999999997
+      },
+      "eightNeighbors": {
+        "componentCount": 531,
+        "largestCells": 11209,
+        "largestAreaHa": 4035.24
+      }
+    },
+    "0.44": {
+      "validClassContactEdges": 5276,
+      "validClassContactLengthKm": 316.56,
+      "foregroundCells": 18948,
+      "foregroundAreaHa": 6821.28,
+      "fourNeighbors": {
+        "componentCount": 885,
+        "largestCells": 6634,
+        "largestAreaHa": 2388.24
+      },
+      "eightNeighbors": {
+        "componentCount": 515,
+        "largestCells": 8326,
+        "largestAreaHa": 2997.3599999999997
+      }
+    },
+    "0.66": {
+      "validClassContactEdges": 6739,
+      "validClassContactLengthKm": 404.34,
+      "foregroundCells": 13741,
+      "foregroundAreaHa": 4946.76,
+      "fourNeighbors": {
+        "componentCount": 999,
+        "largestCells": 3645,
+        "largestAreaHa": 1312.2
+      },
+      "eightNeighbors": {
+        "componentCount": 586,
+        "largestCells": 4217,
+        "largestAreaHa": 1518.12
+      }
+    }
+  }
+}

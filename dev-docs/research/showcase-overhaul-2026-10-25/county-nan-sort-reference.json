@@ -1,0 +1,938 @@
+{
+  "sourceFile": "us-elections/demTwoParty2024.bin aligned to us-counties/fips.bin and stateFips.bin",
+  "sourceSha256": "6ff8432b26600821b2f04acbc72d12b04b90bc5908c450a43e0bcbaa946a5cfd",
+  "rows": 3109,
+  "finite": 2859,
+  "unavailableNaNPayloadRows": 250,
+  "allNaNPayloadBits": [
+    2143289344
+  ],
+  "diagnosticValidity": {
+    "valid": 3109,
+    "null": 0,
+    "interpretation": "same source float32 bits and rows; validity sidecar set to one for every row"
+  },
+  "variants": [
+    {
+      "representation": "source-null",
+      "direction": "ascending",
+      "placement": "first",
+      "globalFirstEight": [
+        {
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "row": 280,
+          "fips": 9120
+        },
+        {
+          "row": 281,
+          "fips": 9130
+        },
+        {
+          "row": 282,
+          "fips": 9140
+        },
+        {
+          "row": 283,
+          "fips": 9150
+        },
+        {
+          "row": 284,
+          "fips": 9160
+        },
+        {
+          "row": 285,
+          "fips": 9170
+        },
+        {
+          "row": 286,
+          "fips": 9180
+        }
+      ],
+      "globalLastEight": [
+        {
+          "row": 2911,
+          "fips": 51760
+        },
+        {
+          "row": 1378,
+          "fips": 28021
+        },
+        {
+          "row": 389,
+          "fips": 13063
+        },
+        {
+          "row": 2885,
+          "fips": 51540
+        },
+        {
+          "row": 2907,
+          "fips": 51730
+        },
+        {
+          "row": 1183,
+          "fips": 24510
+        },
+        {
+          "row": 1175,
+          "fips": 24033
+        },
+        {
+          "row": 291,
+          "fips": 11001
+        }
+      ],
+      "stateBatchFirstRows": [
+        {
+          "stateFips": 1,
+          "row": 14,
+          "fips": 1029
+        },
+        {
+          "stateFips": 4,
+          "row": 75,
+          "fips": 4015
+        },
+        {
+          "stateFips": 5,
+          "row": 145,
+          "fips": 5127
+        },
+        {
+          "stateFips": 6,
+          "row": 174,
+          "fips": 6035
+        },
+        {
+          "stateFips": 8,
+          "row": 224,
+          "fips": 8017
+        },
+        {
+          "stateFips": 9,
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "stateFips": 10,
+          "row": 290,
+          "fips": 10005
+        },
+        {
+          "stateFips": 11,
+          "row": 291,
+          "fips": 11001
+        }
+      ]
+    },
+    {
+      "representation": "source-null",
+      "direction": "ascending",
+      "placement": "last",
+      "globalFirstEight": [
+        {
+          "row": 2686,
+          "fips": 48393
+        },
+        {
+          "row": 1663,
+          "fips": 31085
+        },
+        {
+          "row": 1658,
+          "fips": 31075
+        },
+        {
+          "row": 2506,
+          "fips": 48033
+        },
+        {
+          "row": 1679,
+          "fips": 31117
+        },
+        {
+          "row": 2624,
+          "fips": 48269
+        },
+        {
+          "row": 1581,
+          "fips": 30033
+        },
+        {
+          "row": 2662,
+          "fips": 48345
+        }
+      ],
+      "globalLastEight": [
+        {
+          "row": 1850,
+          "fips": 36111
+        },
+        {
+          "row": 1851,
+          "fips": 36113
+        },
+        {
+          "row": 1852,
+          "fips": 36115
+        },
+        {
+          "row": 1853,
+          "fips": 36117
+        },
+        {
+          "row": 1854,
+          "fips": 36119
+        },
+        {
+          "row": 1855,
+          "fips": 36121
+        },
+        {
+          "row": 1856,
+          "fips": 36123
+        },
+        {
+          "row": 2379,
+          "fips": 46102
+        }
+      ],
+      "stateBatchFirstRows": [
+        {
+          "stateFips": 1,
+          "row": 14,
+          "fips": 1029
+        },
+        {
+          "stateFips": 4,
+          "row": 75,
+          "fips": 4015
+        },
+        {
+          "stateFips": 5,
+          "row": 145,
+          "fips": 5127
+        },
+        {
+          "stateFips": 6,
+          "row": 174,
+          "fips": 6035
+        },
+        {
+          "stateFips": 8,
+          "row": 224,
+          "fips": 8017
+        },
+        {
+          "stateFips": 9,
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "stateFips": 10,
+          "row": 290,
+          "fips": 10005
+        },
+        {
+          "stateFips": 11,
+          "row": 291,
+          "fips": 11001
+        }
+      ]
+    },
+    {
+      "representation": "source-null",
+      "direction": "descending",
+      "placement": "first",
+      "globalFirstEight": [
+        {
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "row": 280,
+          "fips": 9120
+        },
+        {
+          "row": 281,
+          "fips": 9130
+        },
+        {
+          "row": 282,
+          "fips": 9140
+        },
+        {
+          "row": 283,
+          "fips": 9150
+        },
+        {
+          "row": 284,
+          "fips": 9160
+        },
+        {
+          "row": 285,
+          "fips": 9170
+        },
+        {
+          "row": 286,
+          "fips": 9180
+        }
+      ],
+      "globalLastEight": [
+        {
+          "row": 2662,
+          "fips": 48345
+        },
+        {
+          "row": 1581,
+          "fips": 30033
+        },
+        {
+          "row": 2624,
+          "fips": 48269
+        },
+        {
+          "row": 1679,
+          "fips": 31117
+        },
+        {
+          "row": 2506,
+          "fips": 48033
+        },
+        {
+          "row": 1658,
+          "fips": 31075
+        },
+        {
+          "row": 1663,
+          "fips": 31085
+        },
+        {
+          "row": 2686,
+          "fips": 48393
+        }
+      ],
+      "stateBatchFirstRows": [
+        {
+          "stateFips": 1,
+          "row": 43,
+          "fips": 1087
+        },
+        {
+          "stateFips": 4,
+          "row": 69,
+          "fips": 4005
+        },
+        {
+          "stateFips": 5,
+          "row": 141,
+          "fips": 5119
+        },
+        {
+          "stateFips": 6,
+          "row": 194,
+          "fips": 6075
+        },
+        {
+          "stateFips": 8,
+          "row": 231,
+          "fips": 8031
+        },
+        {
+          "stateFips": 9,
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "stateFips": 10,
+          "row": 289,
+          "fips": 10003
+        },
+        {
+          "stateFips": 11,
+          "row": 291,
+          "fips": 11001
+        }
+      ]
+    },
+    {
+      "representation": "source-null",
+      "direction": "descending",
+      "placement": "last",
+      "globalFirstEight": [
+        {
+          "row": 291,
+          "fips": 11001
+        },
+        {
+          "row": 1175,
+          "fips": 24033
+        },
+        {
+          "row": 1183,
+          "fips": 24510
+        },
+        {
+          "row": 2907,
+          "fips": 51730
+        },
+        {
+          "row": 2885,
+          "fips": 51540
+        },
+        {
+          "row": 389,
+          "fips": 13063
+        },
+        {
+          "row": 1378,
+          "fips": 28021
+        },
+        {
+          "row": 2911,
+          "fips": 51760
+        }
+      ],
+      "globalLastEight": [
+        {
+          "row": 1850,
+          "fips": 36111
+        },
+        {
+          "row": 1851,
+          "fips": 36113
+        },
+        {
+          "row": 1852,
+          "fips": 36115
+        },
+        {
+          "row": 1853,
+          "fips": 36117
+        },
+        {
+          "row": 1854,
+          "fips": 36119
+        },
+        {
+          "row": 1855,
+          "fips": 36121
+        },
+        {
+          "row": 1856,
+          "fips": 36123
+        },
+        {
+          "row": 2379,
+          "fips": 46102
+        }
+      ],
+      "stateBatchFirstRows": [
+        {
+          "stateFips": 1,
+          "row": 43,
+          "fips": 1087
+        },
+        {
+          "stateFips": 4,
+          "row": 69,
+          "fips": 4005
+        },
+        {
+          "stateFips": 5,
+          "row": 141,
+          "fips": 5119
+        },
+        {
+          "stateFips": 6,
+          "row": 194,
+          "fips": 6075
+        },
+        {
+          "stateFips": 8,
+          "row": 231,
+          "fips": 8031
+        },
+        {
+          "stateFips": 9,
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "stateFips": 10,
+          "row": 289,
+          "fips": 10003
+        },
+        {
+          "stateFips": 11,
+          "row": 291,
+          "fips": 11001
+        }
+      ]
+    },
+    {
+      "representation": "valid-nan",
+      "direction": "ascending",
+      "placement": "first",
+      "globalFirstEight": [
+        {
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "row": 280,
+          "fips": 9120
+        },
+        {
+          "row": 281,
+          "fips": 9130
+        },
+        {
+          "row": 282,
+          "fips": 9140
+        },
+        {
+          "row": 283,
+          "fips": 9150
+        },
+        {
+          "row": 284,
+          "fips": 9160
+        },
+        {
+          "row": 285,
+          "fips": 9170
+        },
+        {
+          "row": 286,
+          "fips": 9180
+        }
+      ],
+      "globalLastEight": [
+        {
+          "row": 2911,
+          "fips": 51760
+        },
+        {
+          "row": 1378,
+          "fips": 28021
+        },
+        {
+          "row": 389,
+          "fips": 13063
+        },
+        {
+          "row": 2885,
+          "fips": 51540
+        },
+        {
+          "row": 2907,
+          "fips": 51730
+        },
+        {
+          "row": 1183,
+          "fips": 24510
+        },
+        {
+          "row": 1175,
+          "fips": 24033
+        },
+        {
+          "row": 291,
+          "fips": 11001
+        }
+      ],
+      "stateBatchFirstRows": [
+        {
+          "stateFips": 1,
+          "row": 14,
+          "fips": 1029
+        },
+        {
+          "stateFips": 4,
+          "row": 75,
+          "fips": 4015
+        },
+        {
+          "stateFips": 5,
+          "row": 145,
+          "fips": 5127
+        },
+        {
+          "stateFips": 6,
+          "row": 174,
+          "fips": 6035
+        },
+        {
+          "stateFips": 8,
+          "row": 224,
+          "fips": 8017
+        },
+        {
+          "stateFips": 9,
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "stateFips": 10,
+          "row": 290,
+          "fips": 10005
+        },
+        {
+          "stateFips": 11,
+          "row": 291,
+          "fips": 11001
+        }
+      ]
+    },
+    {
+      "representation": "valid-nan",
+      "direction": "ascending",
+      "placement": "last",
+      "globalFirstEight": [
+        {
+          "row": 2686,
+          "fips": 48393
+        },
+        {
+          "row": 1663,
+          "fips": 31085
+        },
+        {
+          "row": 1658,
+          "fips": 31075
+        },
+        {
+          "row": 2506,
+          "fips": 48033
+        },
+        {
+          "row": 1679,
+          "fips": 31117
+        },
+        {
+          "row": 2624,
+          "fips": 48269
+        },
+        {
+          "row": 1581,
+          "fips": 30033
+        },
+        {
+          "row": 2662,
+          "fips": 48345
+        }
+      ],
+      "globalLastEight": [
+        {
+          "row": 1850,
+          "fips": 36111
+        },
+        {
+          "row": 1851,
+          "fips": 36113
+        },
+        {
+          "row": 1852,
+          "fips": 36115
+        },
+        {
+          "row": 1853,
+          "fips": 36117
+        },
+        {
+          "row": 1854,
+          "fips": 36119
+        },
+        {
+          "row": 1855,
+          "fips": 36121
+        },
+        {
+          "row": 1856,
+          "fips": 36123
+        },
+        {
+          "row": 2379,
+          "fips": 46102
+        }
+      ],
+      "stateBatchFirstRows": [
+        {
+          "stateFips": 1,
+          "row": 14,
+          "fips": 1029
+        },
+        {
+          "stateFips": 4,
+          "row": 75,
+          "fips": 4015
+        },
+        {
+          "stateFips": 5,
+          "row": 145,
+          "fips": 5127
+        },
+        {
+          "stateFips": 6,
+          "row": 174,
+          "fips": 6035
+        },
+        {
+          "stateFips": 8,
+          "row": 224,
+          "fips": 8017
+        },
+        {
+          "stateFips": 9,
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "stateFips": 10,
+          "row": 290,
+          "fips": 10005
+        },
+        {
+          "stateFips": 11,
+          "row": 291,
+          "fips": 11001
+        }
+      ]
+    },
+    {
+      "representation": "valid-nan",
+      "direction": "descending",
+      "placement": "first",
+      "globalFirstEight": [
+        {
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "row": 280,
+          "fips": 9120
+        },
+        {
+          "row": 281,
+          "fips": 9130
+        },
+        {
+          "row": 282,
+          "fips": 9140
+        },
+        {
+          "row": 283,
+          "fips": 9150
+        },
+        {
+          "row": 284,
+          "fips": 9160
+        },
+        {
+          "row": 285,
+          "fips": 9170
+        },
+        {
+          "row": 286,
+          "fips": 9180
+        }
+      ],
+      "globalLastEight": [
+        {
+          "row": 2662,
+          "fips": 48345
+        },
+        {
+          "row": 1581,
+          "fips": 30033
+        },
+        {
+          "row": 2624,
+          "fips": 48269
+        },
+        {
+          "row": 1679,
+          "fips": 31117
+        },
+        {
+          "row": 2506,
+          "fips": 48033
+        },
+        {
+          "row": 1658,
+          "fips": 31075
+        },
+        {
+          "row": 1663,
+          "fips": 31085
+        },
+        {
+          "row": 2686,
+          "fips": 48393
+        }
+      ],
+      "stateBatchFirstRows": [
+        {
+          "stateFips": 1,
+          "row": 43,
+          "fips": 1087
+        },
+        {
+          "stateFips": 4,
+          "row": 69,
+          "fips": 4005
+        },
+        {
+          "stateFips": 5,
+          "row": 141,
+          "fips": 5119
+        },
+        {
+          "stateFips": 6,
+          "row": 194,
+          "fips": 6075
+        },
+        {
+          "stateFips": 8,
+          "row": 231,
+          "fips": 8031
+        },
+        {
+          "stateFips": 9,
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "stateFips": 10,
+          "row": 289,
+          "fips": 10003
+        },
+        {
+          "stateFips": 11,
+          "row": 291,
+          "fips": 11001
+        }
+      ]
+    },
+    {
+      "representation": "valid-nan",
+      "direction": "descending",
+      "placement": "last",
+      "globalFirstEight": [
+        {
+          "row": 291,
+          "fips": 11001
+        },
+        {
+          "row": 1175,
+          "fips": 24033
+        },
+        {
+          "row": 1183,
+          "fips": 24510
+        },
+        {
+          "row": 2907,
+          "fips": 51730
+        },
+        {
+          "row": 2885,
+          "fips": 51540
+        },
+        {
+          "row": 389,
+          "fips": 13063
+        },
+        {
+          "row": 1378,
+          "fips": 28021
+        },
+        {
+          "row": 2911,
+          "fips": 51760
+        }
+      ],
+      "globalLastEight": [
+        {
+          "row": 1850,
+          "fips": 36111
+        },
+        {
+          "row": 1851,
+          "fips": 36113
+        },
+        {
+          "row": 1852,
+          "fips": 36115
+        },
+        {
+          "row": 1853,
+          "fips": 36117
+        },
+        {
+          "row": 1854,
+          "fips": 36119
+        },
+        {
+          "row": 1855,
+          "fips": 36121
+        },
+        {
+          "row": 1856,
+          "fips": 36123
+        },
+        {
+          "row": 2379,
+          "fips": 46102
+        }
+      ],
+      "stateBatchFirstRows": [
+        {
+          "stateFips": 1,
+          "row": 43,
+          "fips": 1087
+        },
+        {
+          "stateFips": 4,
+          "row": 69,
+          "fips": 4005
+        },
+        {
+          "stateFips": 5,
+          "row": 141,
+          "fips": 5119
+        },
+        {
+          "stateFips": 6,
+          "row": 194,
+          "fips": 6075
+        },
+        {
+          "stateFips": 8,
+          "row": 231,
+          "fips": 8031
+        },
+        {
+          "stateFips": 9,
+          "row": 279,
+          "fips": 9110
+        },
+        {
+          "stateFips": 10,
+          "row": 289,
+          "fips": 10003
+        },
+        {
+          "stateFips": 11,
+          "row": 291,
+          "fips": 11001
+        }
+      ]
+    }
+  ],
+  "orderingOracle": "Stable source-row order within finite values and within the NaN group; global rows are sorted together, while application-created contiguous state slices are independently sorted. In the diagnostic, valid NaNs use their own first/last class; no NaN is treated as a measured share."
+}

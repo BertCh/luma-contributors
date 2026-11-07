@@ -1,0 +1,271 @@
+{
+  "hubs": [
+    "Amsterdam Centraal",
+    "Utrecht Centraal",
+    "Rotterdam Centraal",
+    "Zwolle"
+  ],
+  "demandStations": [
+    "Hilversum",
+    "Leiden Centraal",
+    "Gouda",
+    "Amersfoort Centraal",
+    "Apeldoorn",
+    "Alkmaar",
+    "Delft",
+    "Deventer"
+  ],
+  "assumptions": {
+    "unitDemandPerSampledStation": 1,
+    "selectedFacilityCount": 2,
+    "hardCapacityPerFacility": 4
+  },
+  "serviceAreas": [
+    {
+      "direction": "inbound",
+      "costLimitMinutes": 30,
+      "countsByHub": [
+        52,
+        55,
+        36,
+        32
+      ],
+      "unassigned": 310,
+      "eligiblePairs": 217,
+      "exactBoundaryPairs": 13,
+      "summedDecayWeights": {
+        "none": 217,
+        "exponentialBeta002PerMinute": 148.68731585821735,
+        "powerExponent002MinuteFloor1": 205.04538717724216,
+        "powerExponent1MinuteFloor1": 17.900794537462858,
+        "gaussian": 102.07520601282224
+      }
+    },
+    {
+      "direction": "inbound",
+      "costLimitMinutes": 60,
+      "countsByHub": [
+        64,
+        112,
+        66,
+        77
+      ],
+      "unassigned": 166,
+      "eligiblePairs": 718,
+      "exactBoundaryPairs": 14,
+      "summedDecayWeights": {
+        "none": 718,
+        "exponentialBeta002PerMinute": 349.4672984278701,
+        "powerExponent002MinuteFloor1": 669.1910410690892,
+        "powerExponent1MinuteFloor1": 29.07592178482569,
+        "gaussian": 352.4826436205958
+      }
+    },
+    {
+      "direction": "inbound",
+      "costLimitMinutes": 90,
+      "countsByHub": [
+        65,
+        137,
+        82,
+        127
+      ],
+      "unassigned": 74,
+      "eligiblePairs": 1197,
+      "exactBoundaryPairs": 13,
+      "summedDecayWeights": {
+        "none": 1197,
+        "exponentialBeta002PerMinute": 456.3979695449212,
+        "powerExponent002MinuteFloor1": 1108.541559881023,
+        "powerExponent1MinuteFloor1": 35.485206220922315,
+        "gaussian": 656.503041932529
+      }
+    },
+    {
+      "direction": "outbound",
+      "costLimitMinutes": 30,
+      "countsByHub": [
+        52,
+        60,
+        37,
+        33
+      ],
+      "unassigned": 303,
+      "eligiblePairs": 226,
+      "exactBoundaryPairs": 21,
+      "summedDecayWeights": {
+        "none": 226,
+        "exponentialBeta002PerMinute": 155.19757688499578,
+        "powerExponent002MinuteFloor1": 213.59896365211318,
+        "powerExponent1MinuteFloor1": 18.975390085220642,
+        "gaussian": 106.65663755188633
+      }
+    },
+    {
+      "direction": "outbound",
+      "costLimitMinutes": 60,
+      "countsByHub": [
+        62,
+        115,
+        66,
+        78
+      ],
+      "unassigned": 164,
+      "eligiblePairs": 722,
+      "exactBoundaryPairs": 16,
+      "summedDecayWeights": {
+        "none": 722,
+        "exponentialBeta002PerMinute": 354.00580417148234,
+        "powerExponent002MinuteFloor1": 673.1136863459021,
+        "powerExponent1MinuteFloor1": 30.038904503008276,
+        "gaussian": 358.65257951222793
+      }
+    },
+    {
+      "direction": "outbound",
+      "costLimitMinutes": 90,
+      "countsByHub": [
+        64,
+        136,
+        83,
+        128
+      ],
+      "unassigned": 74,
+      "eligiblePairs": 1199,
+      "exactBoundaryPairs": 13,
+      "summedDecayWeights": {
+        "none": 1199,
+        "exponentialBeta002PerMinute": 461.26426306211715,
+        "powerExponent002MinuteFloor1": 1110.6721422019368,
+        "powerExponent1MinuteFloor1": 36.452763954076026,
+        "gaussian": 663.9511417600437
+      }
+    }
+  ],
+  "demandMajorCostsMinutes": [
+    [
+      20.0,
+      18.0,
+      52.0,
+      46.0
+    ],
+    [
+      29.0,
+      36.0,
+      27.0,
+      80.0
+    ],
+    [
+      44.0,
+      18.0,
+      18.0,
+      66.0
+    ],
+    [
+      31.0,
+      13.0,
+      49.0,
+      35.0
+    ],
+    [
+      55.0,
+      37.0,
+      73.0,
+      34.0
+    ],
+    [
+      29.0,
+      55.0,
+      60.0,
+      88.0
+    ],
+    [
+      48.0,
+      46.0,
+      11.0,
+      94.0
+    ],
+    [
+      65.0,
+      47.0,
+      83.0,
+      24.0
+    ]
+  ],
+  "symmetricBottleneckHubCostsMinutes": [
+    [
+      0.0,
+      26.0,
+      40.0,
+      60.0
+    ],
+    [
+      26.0,
+      0.0,
+      36.0,
+      48.0
+    ],
+    [
+      40.0,
+      36.0,
+      0.0,
+      84.0
+    ],
+    [
+      60.0,
+      48.0,
+      84.0,
+      0.0
+    ]
+  ],
+  "dispersion": {
+    "minimumSeparationMinutes": 84.0,
+    "selectedHubs": [
+      "Rotterdam Centraal",
+      "Zwolle"
+    ]
+  },
+  "backupCoverage": [
+    {
+      "thresholdMinutes": 30,
+      "result": null
+    },
+    {
+      "thresholdMinutes": 60,
+      "result": {
+        "selectedHubs": [
+          "Amsterdam Centraal",
+          "Utrecht Centraal"
+        ],
+        "backedUpUnitDemand": 7
+      }
+    },
+    {
+      "thresholdMinutes": 90,
+      "result": {
+        "selectedHubs": [
+          "Amsterdam Centraal",
+          "Utrecht Centraal"
+        ],
+        "backedUpUnitDemand": 8
+      }
+    }
+  ],
+  "capacitatedMedian": {
+    "weightedTravelMinutes": 231.0,
+    "selectedHubs": [
+      "Utrecht Centraal",
+      "Rotterdam Centraal"
+    ],
+    "assignment": [
+      "Utrecht Centraal",
+      "Rotterdam Centraal",
+      "Rotterdam Centraal",
+      "Utrecht Centraal",
+      "Utrecht Centraal",
+      "Rotterdam Centraal",
+      "Rotterdam Centraal",
+      "Utrecht Centraal"
+    ]
+  }
+}

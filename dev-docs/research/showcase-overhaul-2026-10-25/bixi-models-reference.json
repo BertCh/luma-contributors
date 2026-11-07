@@ -1,0 +1,325 @@
+{
+  "status": "passed",
+  "provenance": "CPU reference independently reconstructs the induced monthly pair support and LocalMetricProjection station distances from bundled binary columns; allocation positions and costs are rounded to float32 as in production before exhaustive objective evaluation.",
+  "sample": {
+    "stationIds": [
+      237,
+      304,
+      229,
+      826,
+      216,
+      214,
+      735,
+      729,
+      301,
+      825,
+      309,
+      736,
+      353,
+      567,
+      359,
+      165
+    ],
+    "stationNames": [
+      "Métro Mont-Royal (Utilités publiques / Rivard)",
+      "du Mont-Royal / Clark",
+      "Marquette / du Mont-Royal",
+      "de la Commune / Place Jacques-Cartier",
+      "Laurier / de Brébeuf",
+      "Laurier / St-Denis",
+      "Métro Papineau (Dorion / De Maisonneuve)",
+      "Métro Atwater (Atwater / Ste-Catherine)",
+      "des Pins / St-Laurent",
+      "de la Commune / King",
+      "Émile-Duployé / Sherbrooke",
+      "Métro Peel (de Maisonneuve / Stanley)",
+      "Peel / Ottawa",
+      "Métro Beaubien (de Chateaubriand / Beaubien)",
+      "Smith / Peel",
+      "Boyer / du Mont-Royal"
+    ],
+    "stationCount": 16,
+    "observedPairCount": 225,
+    "structuralZeroCount": 16,
+    "missingPairCount": 15,
+    "observedCountTotal": 16929,
+    "coefficientGrid": [
+      -1.5,
+      -1.3125,
+      -1.125,
+      -0.9375,
+      -0.75,
+      -0.5625,
+      -0.375,
+      -0.1875,
+      0
+    ]
+  },
+  "gridFits": {
+    "unconstrained": {
+      "coefficient": -0.9375,
+      "deviance": 10348.23696733809,
+      "marginalError": 0
+    },
+    "origin": {
+      "coefficient": -0.9375,
+      "deviance": 7999.395366548565,
+      "marginalError": 4.97172759715522e-16
+    },
+    "destination": {
+      "coefficient": -0.9375,
+      "deviance": 7461.992266952029,
+      "marginalError": 3.3486550138914883e-16
+    },
+    "doubly": {
+      "coefficient": -1.125,
+      "deviance": 4094.211943431924,
+      "marginalError": 8.21691267253715e-9
+    }
+  },
+  "boundedFits": {
+    "unconstrained": {
+      "coefficient": -0.955,
+      "deviance": 10344.799655190765,
+      "marginalError": 0
+    },
+    "origin": {
+      "coefficient": -0.95,
+      "deviance": 7997.4893740958505,
+      "marginalError": 3.916859180761965e-16
+    },
+    "destination": {
+      "coefficient": -0.975,
+      "deviance": 7446.20028860859,
+      "marginalError": 3.8845160952716184e-16
+    },
+    "doubly": {
+      "coefficient": -1.03,
+      "deviance": 4034.4348039366173,
+      "marginalError": 9.549504626471954e-9
+    }
+  },
+  "allocation": {
+    "candidateOriginalStationIds": [
+      237,
+      359,
+      735,
+      729,
+      567,
+      826,
+      736,
+      301
+    ],
+    "demandWeightTotal": 324104,
+    "coverageRadiusKm": 1.5,
+    "pMedianExactSmallSet": {
+      "selected": [
+        0,
+        1,
+        2
+      ],
+      "assignments": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        2,
+        1,
+        0,
+        1,
+        2,
+        1,
+        1,
+        0,
+        1,
+        0
+      ],
+      "objective": 274927.694860816,
+      "unassignedCount": 0
+    },
+    "maximumCoverageExactSmallSet": {
+      "selected": [
+        0,
+        5,
+        6
+      ],
+      "assignments": [
+        0,
+        0,
+        0,
+        5,
+        0,
+        0,
+        5,
+        6,
+        0,
+        5,
+        0,
+        6,
+        6,
+        0,
+        6,
+        0
+      ],
+      "objective": 273329,
+      "unassignedCount": 0
+    },
+    "setCoveringExactSmallSet": {
+      "selected": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "assignments": [
+        0,
+        0,
+        0,
+        5,
+        0,
+        0,
+        2,
+        3,
+        0,
+        1,
+        2,
+        3,
+        1,
+        4,
+        1,
+        0
+      ],
+      "objective": 0,
+      "unassignedCount": 0
+    },
+    "pCenterExact": {
+      "selected": [
+        4,
+        6,
+        7
+      ],
+      "assignments": [
+        7,
+        7,
+        7,
+        6,
+        4,
+        4,
+        7,
+        6,
+        7,
+        6,
+        7,
+        6,
+        6,
+        4,
+        6,
+        7
+      ],
+      "objective": 2.0132007598876953,
+      "unassignedCount": 0
+    },
+    "capacitatedByStationIdOrder": {
+      "selected": [
+        0,
+        1,
+        7
+      ],
+      "assignments": [
+        0,
+        7,
+        0,
+        1,
+        0,
+        0,
+        7,
+        1,
+        7,
+        1,
+        7,
+        7,
+        1,
+        7,
+        1,
+        0
+      ],
+      "objective": 327242.601354599,
+      "unassignedCount": 0
+    },
+    "capacitatedByDescendingActivity": {
+      "selected": [
+        0,
+        1,
+        7
+      ],
+      "assignments": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        7,
+        7,
+        1,
+        7,
+        1,
+        0,
+        7,
+        1,
+        7,
+        1,
+        7
+      ],
+      "objective": 351624.1780735254,
+      "unassignedCount": 0
+    },
+    "sparseCostCutoffKm": 3,
+    "sparseEntryCount": 76,
+    "sparseMissingDemandRows": 0,
+    "pMedianSparseExactSmallSet": {
+      "selected": [
+        0,
+        1,
+        2
+      ],
+      "assignments": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        2,
+        1,
+        0,
+        1,
+        2,
+        1,
+        1,
+        0,
+        1,
+        0
+      ],
+      "objective": 274927.694860816,
+      "unassignedCount": 0
+    }
+  },
+  "objectiveDirectionFixture": {
+    "candidateObjectives": [
+      2,
+      7
+    ],
+    "minimumWinner": {
+      "id": "lower",
+      "objective": 2
+    },
+    "maximumWinner": {
+      "id": "higher",
+      "objective": 7
+    }
+  }
+}

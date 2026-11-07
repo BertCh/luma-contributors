@@ -1,0 +1,403 @@
+{
+  "dataset": "dixie-spectral",
+  "acquisitionDates": {
+    "before": "2021-07-13",
+    "after": "2021-09-21"
+  },
+  "crop": {
+    "row": 50,
+    "column": 101,
+    "width": 64,
+    "height": 64,
+    "sourceWidth": 250,
+    "order": "row-major, north-first",
+    "exactProjectedBoundsMeters": [
+      668860,
+      4449200,
+      672700,
+      4453040
+    ],
+    "sourceResolutionMeters": 60,
+    "note": "Reflectance means from native 10/20 m Sentinel-2 samples on a 60 m UTM grid; not native 60 m measurements."
+  },
+  "validity": {
+    "rule": "per-date source validity byte is nonzero and all six calibrated reflectance bands are finite, matching createSpectralEvidence",
+    "beforeValid": 4096,
+    "afterValid": 3049,
+    "commonValid": 3049
+  },
+  "zones": {
+    "definition": "Four dense uint32 whole-cell quadrants; IDs 0 NW, 1 NE, 2 SW, 3 SE; each exactly 32×32 cells.",
+    "areaDefinition": "3600 m² per projected UTM cell; sums are planar, not geodesic.",
+    "probabilities": [
+      0,
+      0.25,
+      0.5,
+      0.75,
+      1
+    ],
+    "thresholdDefinition": "changed when absolute September-minus-July reflectance difference is greater than or equal to the selected threshold; paired common support only.",
+    "expectedStatus": {
+      "stages": [
+        {
+          "stage": "total-area",
+          "overflow": 0
+        },
+        {
+          "stage": "valid-area",
+          "overflow": 0
+        },
+        {
+          "stage": "changed-area",
+          "overflow": 0
+        },
+        {
+          "stage": "change-summary",
+          "overflow": 0
+        },
+        {
+          "stage": "change-threshold",
+          "invalidCount": 0
+        }
+      ],
+      "reasoning": "There are four dense zone IDs with four-row output capacity; the selected cutoff is finite and nonnegative."
+    },
+    "note": "GPU region recipe passes the strict validity mask into GPUGroupStatistics. Therefore output rowCounts count retained valid-mask rows, not every assigned cell; current readout wording should distinguish assigned cells, valid rows and masked-out rows. CPU row statistics here include only valid six-band cells, as the GPU should.",
+    "checksums": {
+      "validity_before.bin": "79e4c8e609ecdcd1712b233de98531e302fedfa420919d60db9aa150194d8094",
+      "validity_after.bin": "b1de911c8e70b208aa4ce46c6b008c13331c1011fba14fbf7aefebf8a9c9b27a",
+      "nir_before.bin": "489f3e4f92956bef5c84f2b13c0b6b45afc63d0e834ae24e2e2b11727899a6ff",
+      "nir_after.bin": "a2626f7aa051290a4b204ae7d6fac4f86aabbb8b22882401297042ac869f1efe"
+    },
+    "values": [
+      {
+        "id": 0,
+        "label": "north-west",
+        "rowRangeInclusive": [
+          0,
+          31
+        ],
+        "columnRangeInclusive": [
+          0,
+          31
+        ],
+        "totalAssignedCells": 1024,
+        "totalAreaM2": 3686400,
+        "totalAreaKm2": 3.6864,
+        "before": {
+          "assignedCells": 1024,
+          "validRows": 1024,
+          "validFiniteValues": 1024,
+          "maskedOutRows": 0,
+          "uniqueValues": 999,
+          "sum": 226.08570557832718,
+          "mean": 0.22078682185383514,
+          "median": 0.21767640113830566,
+          "mode": 0.21633611619472504,
+          "modeFrequency": 3,
+          "quantiles": [
+            0.18832777440547943,
+            0.2099340260028839,
+            0.21767640113830566,
+            0.2277548611164093,
+            0.32092776894569397
+          ]
+        },
+        "after": {
+          "assignedCells": 1024,
+          "validRows": 730,
+          "validFiniteValues": 730,
+          "maskedOutRows": 294,
+          "uniqueValues": 725,
+          "sum": 82.08598896488547,
+          "mean": 0.11244656022587052,
+          "median": 0.11793471872806549,
+          "mode": 0.06422777473926544,
+          "modeFrequency": 2,
+          "quantiles": [
+            0.040638890117406845,
+            0.07571041584014893,
+            0.11793471872806549,
+            0.1430256962776184,
+            0.2693444490432739
+          ]
+        },
+        "paired": {
+          "validCells": 730,
+          "validAreaM2": 2628000,
+          "validAreaKm2": 2.628,
+          "coverage": 0.712890625,
+          "meanDifference": -0.1100848402266633,
+          "thresholds": {
+            "0.02": {
+              "changedCells": 730,
+              "changedAreaM2": 2628000,
+              "changedAreaKm2": 2.628
+            },
+            "0.05": {
+              "changedCells": 716,
+              "changedAreaM2": 2577600,
+              "changedAreaKm2": 2.5776
+            },
+            "0.1": {
+              "changedCells": 414,
+              "changedAreaM2": 1490400,
+              "changedAreaKm2": 1.4904
+            },
+            "0.2": {
+              "changedCells": 1,
+              "changedAreaM2": 3600,
+              "changedAreaKm2": 0.0036
+            }
+          }
+        }
+      },
+      {
+        "id": 1,
+        "label": "north-east",
+        "rowRangeInclusive": [
+          0,
+          31
+        ],
+        "columnRangeInclusive": [
+          32,
+          63
+        ],
+        "totalAssignedCells": 1024,
+        "totalAreaM2": 3686400,
+        "totalAreaKm2": 3.6864,
+        "before": {
+          "assignedCells": 1024,
+          "validRows": 1024,
+          "validFiniteValues": 1024,
+          "maskedOutRows": 0,
+          "uniqueValues": 987,
+          "sum": 228.340408295393,
+          "mean": 0.22298867997596972,
+          "median": 0.221919447183609,
+          "mode": 0.21496111154556274,
+          "modeFrequency": 3,
+          "quantiles": [
+            0.1789444386959076,
+            0.21272917091846466,
+            0.221919447183609,
+            0.23203055560588837,
+            0.291519433259964
+          ]
+        },
+        "after": {
+          "assignedCells": 1024,
+          "validRows": 886,
+          "validFiniteValues": 886,
+          "maskedOutRows": 138,
+          "uniqueValues": 870,
+          "sum": 76.33058061078191,
+          "mean": 0.08615189685189832,
+          "median": 0.07518194615840912,
+          "mode": 0.05488888919353485,
+          "modeFrequency": 2,
+          "quantiles": [
+            0.048419445753097534,
+            0.06479792296886444,
+            0.07518194615840912,
+            0.10219167172908783,
+            0.18658055365085602
+          ]
+        },
+        "paired": {
+          "validCells": 886,
+          "validAreaM2": 3189600,
+          "validAreaKm2": 3.1896,
+          "coverage": 0.865234375,
+          "meanDifference": -0.1368989934114651,
+          "thresholds": {
+            "0.02": {
+              "changedCells": 886,
+              "changedAreaM2": 3189600,
+              "changedAreaKm2": 3.1896
+            },
+            "0.05": {
+              "changedCells": 886,
+              "changedAreaM2": 3189600,
+              "changedAreaKm2": 3.1896
+            },
+            "0.1": {
+              "changedCells": 771,
+              "changedAreaM2": 2775600,
+              "changedAreaKm2": 2.7756
+            },
+            "0.2": {
+              "changedCells": 3,
+              "changedAreaM2": 10800,
+              "changedAreaKm2": 0.0108
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "label": "south-west",
+        "rowRangeInclusive": [
+          32,
+          63
+        ],
+        "columnRangeInclusive": [
+          0,
+          31
+        ],
+        "totalAssignedCells": 1024,
+        "totalAreaM2": 3686400,
+        "totalAreaKm2": 3.6864,
+        "before": {
+          "assignedCells": 1024,
+          "validRows": 1024,
+          "validFiniteValues": 1024,
+          "maskedOutRows": 0,
+          "uniqueValues": 979,
+          "sum": 216.1863973736763,
+          "mean": 0.21111952868523076,
+          "median": 0.20935556292533875,
+          "mode": 0.19963888823986053,
+          "modeFrequency": 2,
+          "quantiles": [
+            0.18258056044578552,
+            0.20373402535915375,
+            0.20935556292533875,
+            0.21649999916553497,
+            0.26877498626708984
+          ]
+        },
+        "after": {
+          "assignedCells": 1024,
+          "validRows": 706,
+          "validFiniteValues": 706,
+          "maskedOutRows": 318,
+          "uniqueValues": 702,
+          "sum": 68.06362788006663,
+          "mean": 0.09640740492927286,
+          "median": 0.08651389181613922,
+          "mode": 0.059994444251060486,
+          "modeFrequency": 2,
+          "quantiles": [
+            0.04758055508136749,
+            0.06953402608633041,
+            0.08651389181613922,
+            0.12436944246292114,
+            0.18707221746444702
+          ]
+        },
+        "paired": {
+          "validCells": 706,
+          "validAreaM2": 2541600,
+          "validAreaKm2": 2.5416,
+          "coverage": 0.689453125,
+          "meanDifference": -0.11472527145621797,
+          "thresholds": {
+            "0.02": {
+              "changedCells": 706,
+              "changedAreaM2": 2541600,
+              "changedAreaKm2": 2.5416
+            },
+            "0.05": {
+              "changedCells": 698,
+              "changedAreaM2": 2512800,
+              "changedAreaKm2": 2.5128
+            },
+            "0.1": {
+              "changedCells": 473,
+              "changedAreaM2": 1702800,
+              "changedAreaKm2": 1.7028
+            },
+            "0.2": {
+              "changedCells": 3,
+              "changedAreaM2": 10800,
+              "changedAreaKm2": 0.0108
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "label": "south-east",
+        "rowRangeInclusive": [
+          32,
+          63
+        ],
+        "columnRangeInclusive": [
+          32,
+          63
+        ],
+        "totalAssignedCells": 1024,
+        "totalAreaM2": 3686400,
+        "totalAreaKm2": 3.6864,
+        "before": {
+          "assignedCells": 1024,
+          "validRows": 1024,
+          "validFiniteValues": 1024,
+          "maskedOutRows": 0,
+          "uniqueValues": 986,
+          "sum": 221.6361082494259,
+          "mean": 0.21644151196232997,
+          "median": 0.21562638878822327,
+          "mode": 0.2059638947248459,
+          "modeFrequency": 3,
+          "quantiles": [
+            0.1749555617570877,
+            0.20806527137756348,
+            0.21562638878822327,
+            0.22439999878406525,
+            0.2676444351673126
+          ]
+        },
+        "after": {
+          "assignedCells": 1024,
+          "validRows": 727,
+          "validFiniteValues": 727,
+          "maskedOutRows": 297,
+          "uniqueValues": 718,
+          "sum": 76.96400836482644,
+          "mean": 0.10586521095574476,
+          "median": 0.10094722360372543,
+          "mode": 0.07401388883590698,
+          "modeFrequency": 2,
+          "quantiles": [
+            0.04750833287835121,
+            0.07851666212081909,
+            0.10094722360372543,
+            0.13444721698760986,
+            0.18850833177566528
+          ]
+        },
+        "paired": {
+          "validCells": 727,
+          "validAreaM2": 2617200,
+          "validAreaKm2": 2.6172,
+          "coverage": 0.7099609375,
+          "meanDifference": -0.11199230846258436,
+          "thresholds": {
+            "0.02": {
+              "changedCells": 727,
+              "changedAreaM2": 2617200,
+              "changedAreaKm2": 2.6172
+            },
+            "0.05": {
+              "changedCells": 709,
+              "changedAreaM2": 2552400,
+              "changedAreaKm2": 2.5524
+            },
+            "0.1": {
+              "changedCells": 480,
+              "changedAreaM2": 1728000,
+              "changedAreaKm2": 1.728
+            },
+            "0.2": {
+              "changedCells": 0,
+              "changedAreaM2": 0,
+              "changedAreaKm2": 0
+            }
+          }
+        }
+      }
+    ]
+  }
+}

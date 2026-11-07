@@ -1,0 +1,112 @@
+{
+  "rail": {
+    "stationCount": 485,
+    "edgeCount": 1411,
+    "serviceDate": "20261009",
+    "countIncludesOrigin": true,
+    "scenarios": [
+      {
+        "origin": "Amsterdam Centraal",
+        "closedStation": "Utrecht Centraal",
+        "closedDirectedSlots": 30,
+        "baselineWithin90Minutes": 283,
+        "scenarioWithin90Minutes": 235,
+        "newlyUnreachable": 1,
+        "delayedStations": 172,
+        "medianPositiveAddedMinutes": 22.0,
+        "maximumAddedMinutes": 63.0
+      },
+      {
+        "origin": "Amsterdam Centraal",
+        "closedStation": "Zwolle",
+        "closedDirectedSlots": 26,
+        "baselineWithin90Minutes": 283,
+        "scenarioWithin90Minutes": 265,
+        "newlyUnreachable": 64,
+        "delayedStations": 49,
+        "medianPositiveAddedMinutes": 1.0,
+        "maximumAddedMinutes": 53.0
+      },
+      {
+        "origin": "Utrecht Centraal",
+        "closedStation": "Zwolle",
+        "closedDirectedSlots": 26,
+        "baselineWithin90Minutes": 324,
+        "scenarioWithin90Minutes": 306,
+        "newlyUnreachable": 64,
+        "delayedStations": 19,
+        "medianPositiveAddedMinutes": 21.0,
+        "maximumAddedMinutes": 46.0
+      }
+    ]
+  },
+  "ais": {
+    "selectedTrack": {
+      "path": 223,
+      "mmsi": 366952890,
+      "observations": 265,
+      "firstSecondUtc": 5,
+      "lastSecondUtc": 74259,
+      "durationSeconds": 74254,
+      "planarLengthMeters": 19955.899733392875,
+      "maximumDerivedKnots": 17.955125535941892,
+      "qualityScenarios": [
+        {
+          "maximumGapSeconds": 300,
+          "maximumSpeedKnots": 20,
+          "flaggedObservations": 185,
+          "gapEndpoints": 185,
+          "speedEndpoints": 0,
+          "filterResetsAtSameModelGap": 186
+        },
+        {
+          "maximumGapSeconds": 60,
+          "maximumSpeedKnots": 10,
+          "flaggedObservations": 263,
+          "gapEndpoints": 263,
+          "speedEndpoints": 32,
+          "filterResetsAtSameModelGap": 264
+        },
+        {
+          "maximumGapSeconds": 600,
+          "maximumSpeedKnots": 35,
+          "flaggedObservations": 0,
+          "gapEndpoints": 0,
+          "speedEndpoints": 0,
+          "filterResetsAtSameModelGap": 1
+        }
+      ]
+    },
+    "tracks": 897,
+    "observations": 124780,
+    "firstSecondUtc": 0,
+    "lastSecondUtc": 86399,
+    "medianIntervalSeconds": 71,
+    "maximumIntervalSeconds": 1289,
+    "intervalsAbove120Seconds": 50422,
+    "intervalsAbove300Seconds": 44301,
+    "intervalsAbove600Seconds": 952
+  },
+  "sha256": {
+    "gtfs-nl-rail-graph/edgeClass.bin": "4981c656f974a949bd7ddc61509badae27584e9c72f4e91e2d3f7527e0404903",
+    "gtfs-nl-rail-graph/edgeLength.bin": "cd7afd9a4cb51e08e7516b8022decba2911b62e1058ada05dd59f4d5f2de54d5",
+    "gtfs-nl-rail-graph/edgeSource.bin": "50bdd381a9a66f6c1287e0a1ec44c303c36688a20e57cde5d9eb7c98be4d7273",
+    "gtfs-nl-rail-graph/edgeTarget.bin": "615f3eda55ced8629e5fb1fed5b268208834a6f0b75a07d2516999da81c77fb0",
+    "gtfs-nl-rail-graph/edgeTravelTime.bin": "cc353d2f696ed79dbd4d816b5a2905507604b661cf315c6aa7bcf266ed032055",
+    "gtfs-nl-rail-graph/edgeTripsPerHour.bin": "fc3046917bacf2f6a767c5c8cfd49b2f716b161e3ae43b92b3073386b933fb79",
+    "gtfs-nl-rail-graph/manifest.json": "e890c08f9711418e25b79432ec72f815a13757a475e8dc5cf112359ebc4f202e",
+    "gtfs-nl-rail-graph/nodeEdgeOffsets.bin": "4749b85294bf84f441dc6c1195447a33c74106a4f96d25770450661cccd17306",
+    "gtfs-nl-rail-graph/nodes.bin": "a363516231f8d0c616d42deee390998d8f9259ed4268675058cbab24a50f713d",
+    "ais-vessels/aisVesselType.bin": "95b209fe2a7e468e08f1449ea546c874f779fc25bfad7f8c0e6a574e252486c8",
+    "ais-vessels/category.bin": "855f39b1f9ac140be60efd18f31e28f6fd6f79be6ead047972e26988ab87946b",
+    "ais-vessels/heading.bin": "94de6ad0ddf51aaa81d9c9b271c50cae3873fb25655e5c9a2d95a6644e9eb193",
+    "ais-vessels/length.bin": "784a4e075dbb4eeaf18042b2d1f176d7ed5042eb2a47836773ea3452940d05a0",
+    "ais-vessels/manifest.json": "dcb0cdb55ea2e61b634aa57b1fd03e990910b638cfd99daf88424b53b8d0e75b",
+    "ais-vessels/mmsi.bin": "2e2e66abe0203af968365fcc51fdbcef61dcf4f0cbebd90a3d0e558677d23463",
+    "ais-vessels/pathOffsets.bin": "ab4df55f0db8bce4263b386de910df3a60f6f8b1e03addaea9c23c71a823cc10",
+    "ais-vessels/speed.bin": "6c48177200adba803f52835b2ceb7a89e01a3b93234cbe895386419c49300146",
+    "ais-vessels/timestamp.bin": "d5ca65b1b406a0a04e2a33efcf2d41a66ed708a3ef961b54f10fb2c72a567f1e",
+    "ais-vessels/vertices.bin": "1d6f49b3c9b26dc2da7ad626c1f4a92d38d0b03f633dbecfbf24426a5250718f",
+    "ais-vessels/vesselIndex.bin": "253672bb3609231116328a9b7a917e78abd8520e362b639f98d8c32e078a396c"
+  }
+}

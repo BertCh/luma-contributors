@@ -1,0 +1,147 @@
+{
+  "dataset": "grand-canyon-dem",
+  "source": "AWS Terrain Tiles (Mapzen/Tilezen) built from USGS 3DEP/NED",
+  "sourceImage": {
+    "width": 2048,
+    "height": 2048,
+    "sha256": "bc5b7bb49925ec538e4fe6e21fd35d556cd5eb98521c1166a6fe1741863a7541",
+    "encoding": "terrarium",
+    "pixelSizeMercatorM": 19.109257071294063,
+    "verticalQuantizationM": 0.5
+  },
+  "grid": {
+    "width": 64,
+    "height": 64,
+    "stride": 32,
+    "cellOrdering": "row-major; north-first",
+    "elevationUnit": "m",
+    "minimumElevationM": 759.51904296875,
+    "maximumElevationM": 2609.5634765625,
+    "meanElevationM": 1772.5375212430954,
+    "sha256Float32LE": "cd486ffbcffda4fa0f0b5b0ef7f307de89558e15eab0d3b55d7896be82d9060b"
+  },
+  "prominence": {
+    "algorithm": "CPU stable descending-saddle Kruskal union-find over 8-neighbor upper-excursion graph; E/SE/S/SW edges per cell; equal-height elder is lowest row-major index",
+    "finitePeakCount": 89,
+    "infiniteComponentElderCount": 1,
+    "largestFinitePeak": {
+      "index": 4089,
+      "row": 64,
+      "column": 58,
+      "elevation": 2287.533203125,
+      "keySaddle": 1009.111328125,
+      "prominence": 1278.421875,
+      "parentCell": 45,
+      "parentRow": 1,
+      "parentColumn": 46
+    },
+    "nextLargestFinitePeaks": [
+      {
+        "index": 1856,
+        "row": 30,
+        "column": 1,
+        "elevation": 1950.6826171875,
+        "keySaddle": 1282.86279296875,
+        "prominence": 667.81982421875,
+        "parentCell": 4089,
+        "parentRow": 64,
+        "parentColumn": 58
+      },
+      {
+        "index": 11,
+        "row": 1,
+        "column": 12,
+        "elevation": 2400.87939453125,
+        "keySaddle": 1817.802734375,
+        "prominence": 583.07666015625,
+        "parentCell": 45,
+        "parentRow": 1,
+        "parentColumn": 46
+      },
+      {
+        "index": 18,
+        "row": 1,
+        "column": 19,
+        "elevation": 2421.37158203125,
+        "keySaddle": 1867.4873046875,
+        "prominence": 553.88427734375,
+        "parentCell": 45,
+        "parentRow": 1,
+        "parentColumn": 46
+      },
+      {
+        "index": 1109,
+        "row": 18,
+        "column": 22,
+        "elevation": 2313.75,
+        "keySaddle": 1869.71728515625,
+        "prominence": 444.03271484375,
+        "parentCell": 45,
+        "parentRow": 1,
+        "parentColumn": 46
+      },
+      {
+        "index": 1497,
+        "row": 24,
+        "column": 26,
+        "elevation": 1956.79150390625,
+        "keySaddle": 1549.26123046875,
+        "prominence": 407.5302734375,
+        "parentCell": 45,
+        "parentRow": 1,
+        "parentColumn": 46
+      },
+      {
+        "index": 22,
+        "row": 1,
+        "column": 23,
+        "elevation": 2337.24072265625,
+        "keySaddle": 1937.36181640625,
+        "prominence": 399.87890625,
+        "parentCell": 45,
+        "parentRow": 1,
+        "parentColumn": 46
+      },
+      {
+        "index": 2237,
+        "row": 35,
+        "column": 62,
+        "elevation": 2042.6552734375,
+        "keySaddle": 1725.0185546875,
+        "prominence": 317.63671875,
+        "parentCell": 45,
+        "parentRow": 1,
+        "parentColumn": 46
+      }
+    ]
+  },
+  "tiling": {
+    "ownedRectangles": [
+      {
+        "row": 0,
+        "column": 0,
+        "height": 32,
+        "width": 32
+      },
+      {
+        "row": 0,
+        "column": 32,
+        "height": 32,
+        "width": 32
+      },
+      {
+        "row": 32,
+        "column": 0,
+        "height": 32,
+        "width": 32
+      },
+      {
+        "row": 32,
+        "column": 32,
+        "height": 32,
+        "width": 32
+      }
+    ],
+    "note": "D8 and branching GPU accumulations are checked against matching whole-window references in the browser script. This CPU oracle does not emulate depression filling, flat resolution, flow routing or iterative branching accumulation."
+  }
+}

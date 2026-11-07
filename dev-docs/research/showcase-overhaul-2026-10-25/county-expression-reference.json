@@ -1,0 +1,26 @@
+{
+  "source": "Frozen county-aligned Democratic two-party vote share2024; source unit fraction [0,1]. Finite sidecar values only; NaN is unavailable, not zero votes.",
+  "sourceSha256": "6ff8432b26600821b2f04acbc72d12b04b90bc5908c450a43e0bcbaa946a5cfd",
+  "rows": 3109,
+  "valid": 2859,
+  "unknown": 250,
+  "democraticMajority": 402,
+  "notDemocraticMajority": 2457,
+  "missingOrNotDemocraticMajority": 2707,
+  "tiedTwoPartyShare": 0,
+  "notEqualHalf": 2859,
+  "republicanComplement": {
+    "count": 2859,
+    "minimum": 0.06685256958007812,
+    "maximum": 0.9647266268730164,
+    "mean": 0.6826960746330496
+  },
+  "normalizedDemocraticMargin": {
+    "count": 2859,
+    "minimum": -0.9294532537460327,
+    "maximum": 0.8662948608398438,
+    "mean": -0.3653921501208703
+  },
+  "arithmetic": "Complement = -share + 1. Normalized Democratic two-party margin = (share - .5)/.5. Float32 rounding at each operation, then double reference summary.",
+  "truth": "Three-valued NOT of a null predicate remains unknown and is excluded by filter. Explicit isNull OR NOT includes the missing rows. NOT(share>.5) includes exact ties; !=.5 excludes them. These are county counts, never vote totals."
+}

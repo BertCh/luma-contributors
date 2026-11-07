@@ -1,0 +1,2492 @@
+{
+  "sourceData": "bundled us-airline-flows BTS On-Time Reporting Carrier snapshot, 2023-07",
+  "regionalSelection": "top 24 airports inside [-125,25,-105,50] ranked by all-source in+out flight count, stable index tie-break; induced directed arcs",
+  "network": {
+    "nodes": 24,
+    "edges": 338,
+    "iata": [
+      "LAX",
+      "LAS",
+      "SEA",
+      "PHX",
+      "SFO",
+      "SLC",
+      "SAN",
+      "PDX",
+      "SJC",
+      "SMF",
+      "OAK",
+      "SNA",
+      "BUR",
+      "ONT",
+      "ABQ",
+      "RNO",
+      "BOI",
+      "ELP",
+      "GEG",
+      "LGB",
+      "TUS",
+      "FAT",
+      "BZN",
+      "EUG"
+    ]
+  },
+  "cases": {
+    "seaToSanMaximumAt100Percent": {
+      "source": "SEA",
+      "sink": "SAN",
+      "capacityShare": 100,
+      "requiredFlow": null,
+      "maximumFlow": 4203,
+      "complete": true,
+      "unserved": 0,
+      "augmentations": 26,
+      "cutCapacity": 4203,
+      "cutCertified": true,
+      "terminalMode": "singlePair",
+      "reachableAirports": [
+        "LAX",
+        "LAS",
+        "SEA",
+        "PHX",
+        "SFO",
+        "SLC",
+        "PDX",
+        "SJC",
+        "SMF",
+        "OAK",
+        "SNA",
+        "BUR",
+        "ONT",
+        "ABQ",
+        "RNO",
+        "BOI",
+        "ELP",
+        "GEG",
+        "LGB",
+        "TUS",
+        "FAT",
+        "BZN",
+        "EUG"
+      ],
+      "totalDelayScore": 0,
+      "allocatedEdges": [
+        {
+          "from": "SEA",
+          "to": "SFO",
+          "flow": 611,
+          "capacity": 611,
+          "meanDelayCostMinutes": 15
+        },
+        {
+          "from": "SEA",
+          "to": "PHX",
+          "flow": 573,
+          "capacity": 573,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SFO",
+          "to": "SAN",
+          "flow": 554,
+          "capacity": 554,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "LAS",
+          "to": "SAN",
+          "flow": 549,
+          "capacity": 549,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "LAS",
+          "flow": 538,
+          "capacity": 538,
+          "meanDelayCostMinutes": 15
+        },
+        {
+          "from": "SJC",
+          "to": "SAN",
+          "flow": 484,
+          "capacity": 484,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SMF",
+          "to": "SAN",
+          "flow": 459,
+          "capacity": 459,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "PHX",
+          "to": "SAN",
+          "flow": 432,
+          "capacity": 432,
+          "meanDelayCostMinutes": 20
+        },
+        {
+          "from": "SEA",
+          "to": "SJC",
+          "flow": 429,
+          "capacity": 429,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SEA",
+          "to": "SAN",
+          "flow": 421,
+          "capacity": 421,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "OAK",
+          "to": "SAN",
+          "flow": 355,
+          "capacity": 355,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SEA",
+          "to": "SMF",
+          "flow": 344,
+          "capacity": 344,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SEA",
+          "to": "OAK",
+          "flow": 295,
+          "capacity": 295,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "SLC",
+          "flow": 278,
+          "capacity": 353,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SLC",
+          "to": "SAN",
+          "flow": 206,
+          "capacity": 206,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "LAX",
+          "to": "SAN",
+          "flow": 186,
+          "capacity": 186,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "SEA",
+          "to": "LAX",
+          "flow": 186,
+          "capacity": 735,
+          "meanDelayCostMinutes": 13
+        },
+        {
+          "from": "SEA",
+          "to": "PDX",
+          "flow": 141,
+          "capacity": 529,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "PDX",
+          "to": "SAN",
+          "flow": 141,
+          "capacity": 141,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "FAT",
+          "flow": 88,
+          "capacity": 93,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "FAT",
+          "to": "SAN",
+          "flow": 88,
+          "capacity": 88,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "PHX",
+          "to": "SMF",
+          "flow": 86,
+          "capacity": 283,
+          "meanDelayCostMinutes": 23
+        },
+        {
+          "from": "SEA",
+          "to": "RNO",
+          "flow": 65,
+          "capacity": 93,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "RNO",
+          "to": "SAN",
+          "flow": 65,
+          "capacity": 65,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SLC",
+          "to": "OAK",
+          "flow": 60,
+          "capacity": 174,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "ABQ",
+          "to": "SAN",
+          "flow": 60,
+          "capacity": 60,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "PHX",
+          "to": "SJC",
+          "flow": 55,
+          "capacity": 232,
+          "meanDelayCostMinutes": 25
+        },
+        {
+          "from": "SEA",
+          "to": "TUS",
+          "flow": 52,
+          "capacity": 93,
+          "meanDelayCostMinutes": 5
+        },
+        {
+          "from": "TUS",
+          "to": "SAN",
+          "flow": 52,
+          "capacity": 52,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "EUG",
+          "flow": 45,
+          "capacity": 114,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "EUG",
+          "to": "SAN",
+          "flow": 45,
+          "capacity": 45,
+          "meanDelayCostMinutes": 14
+        },
+        {
+          "from": "SEA",
+          "to": "BOI",
+          "flow": 36,
+          "capacity": 389,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "BOI",
+          "to": "SAN",
+          "flow": 36,
+          "capacity": 36,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "SEA",
+          "to": "ABQ",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "ELP",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "ELP",
+          "to": "SAN",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SEA",
+          "to": "GEG",
+          "flow": 29,
+          "capacity": 378,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "SFO",
+          "to": "SMF",
+          "flow": 29,
+          "capacity": 87,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "GEG",
+          "to": "SAN",
+          "flow": 29,
+          "capacity": 29,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SFO",
+          "to": "ABQ",
+          "flow": 28,
+          "capacity": 31,
+          "meanDelayCostMinutes": 22
+        },
+        {
+          "from": "SLC",
+          "to": "LAS",
+          "flow": 11,
+          "capacity": 391,
+          "meanDelayCostMinutes": 13
+        },
+        {
+          "from": "SEA",
+          "to": "BZN",
+          "flow": 10,
+          "capacity": 87,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "BZN",
+          "to": "SAN",
+          "flow": 10,
+          "capacity": 10,
+          "meanDelayCostMinutes": 18
+        },
+        {
+          "from": "SLC",
+          "to": "ABQ",
+          "flow": 1,
+          "capacity": 92,
+          "meanDelayCostMinutes": 2
+        }
+      ]
+    },
+    "seaToSanMaximumAt50Percent": {
+      "source": "SEA",
+      "sink": "SAN",
+      "capacityShare": 50,
+      "requiredFlow": null,
+      "maximumFlow": 2097,
+      "complete": true,
+      "unserved": 0,
+      "augmentations": 26,
+      "cutCapacity": 2097,
+      "cutCertified": true,
+      "terminalMode": "singlePair",
+      "reachableAirports": [
+        "LAX",
+        "LAS",
+        "SEA",
+        "PHX",
+        "SFO",
+        "SLC",
+        "PDX",
+        "SJC",
+        "SMF",
+        "OAK",
+        "SNA",
+        "BUR",
+        "ONT",
+        "ABQ",
+        "RNO",
+        "BOI",
+        "ELP",
+        "GEG",
+        "LGB",
+        "TUS",
+        "FAT",
+        "BZN",
+        "EUG"
+      ],
+      "totalDelayScore": 0,
+      "allocatedEdges": [
+        {
+          "from": "SEA",
+          "to": "SFO",
+          "flow": 305,
+          "capacity": 305,
+          "meanDelayCostMinutes": 15
+        },
+        {
+          "from": "SEA",
+          "to": "PHX",
+          "flow": 286,
+          "capacity": 286,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SFO",
+          "to": "SAN",
+          "flow": 277,
+          "capacity": 277,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "LAS",
+          "to": "SAN",
+          "flow": 274,
+          "capacity": 274,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "LAS",
+          "flow": 269,
+          "capacity": 269,
+          "meanDelayCostMinutes": 15
+        },
+        {
+          "from": "SJC",
+          "to": "SAN",
+          "flow": 242,
+          "capacity": 242,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SMF",
+          "to": "SAN",
+          "flow": 229,
+          "capacity": 229,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "PHX",
+          "to": "SAN",
+          "flow": 216,
+          "capacity": 216,
+          "meanDelayCostMinutes": 20
+        },
+        {
+          "from": "SEA",
+          "to": "SJC",
+          "flow": 214,
+          "capacity": 214,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SEA",
+          "to": "SAN",
+          "flow": 210,
+          "capacity": 210,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "OAK",
+          "to": "SAN",
+          "flow": 177,
+          "capacity": 177,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SEA",
+          "to": "SMF",
+          "flow": 172,
+          "capacity": 172,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SEA",
+          "to": "OAK",
+          "flow": 147,
+          "capacity": 147,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "SLC",
+          "flow": 140,
+          "capacity": 176,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SLC",
+          "to": "SAN",
+          "flow": 103,
+          "capacity": 103,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "LAX",
+          "to": "SAN",
+          "flow": 93,
+          "capacity": 93,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "SEA",
+          "to": "LAX",
+          "flow": 93,
+          "capacity": 367,
+          "meanDelayCostMinutes": 13
+        },
+        {
+          "from": "SEA",
+          "to": "PDX",
+          "flow": 70,
+          "capacity": 264,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "PDX",
+          "to": "SAN",
+          "flow": 70,
+          "capacity": 70,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "FAT",
+          "flow": 44,
+          "capacity": 46,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "FAT",
+          "to": "SAN",
+          "flow": 44,
+          "capacity": 44,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "PHX",
+          "to": "SMF",
+          "flow": 42,
+          "capacity": 141,
+          "meanDelayCostMinutes": 23
+        },
+        {
+          "from": "SEA",
+          "to": "RNO",
+          "flow": 32,
+          "capacity": 46,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "RNO",
+          "to": "SAN",
+          "flow": 32,
+          "capacity": 32,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SLC",
+          "to": "OAK",
+          "flow": 30,
+          "capacity": 87,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "ABQ",
+          "to": "SAN",
+          "flow": 30,
+          "capacity": 30,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "PHX",
+          "to": "SJC",
+          "flow": 28,
+          "capacity": 116,
+          "meanDelayCostMinutes": 25
+        },
+        {
+          "from": "SEA",
+          "to": "TUS",
+          "flow": 26,
+          "capacity": 46,
+          "meanDelayCostMinutes": 5
+        },
+        {
+          "from": "TUS",
+          "to": "SAN",
+          "flow": 26,
+          "capacity": 26,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "EUG",
+          "flow": 22,
+          "capacity": 57,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "EUG",
+          "to": "SAN",
+          "flow": 22,
+          "capacity": 22,
+          "meanDelayCostMinutes": 14
+        },
+        {
+          "from": "SEA",
+          "to": "BOI",
+          "flow": 18,
+          "capacity": 194,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "BOI",
+          "to": "SAN",
+          "flow": 18,
+          "capacity": 18,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "SEA",
+          "to": "ABQ",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "ELP",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SFO",
+          "to": "SMF",
+          "flow": 15,
+          "capacity": 43,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "ELP",
+          "to": "SAN",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SEA",
+          "to": "GEG",
+          "flow": 14,
+          "capacity": 189,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "GEG",
+          "to": "SAN",
+          "flow": 14,
+          "capacity": 14,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SFO",
+          "to": "ABQ",
+          "flow": 13,
+          "capacity": 15,
+          "meanDelayCostMinutes": 22
+        },
+        {
+          "from": "SEA",
+          "to": "BZN",
+          "flow": 5,
+          "capacity": 43,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SLC",
+          "to": "LAS",
+          "flow": 5,
+          "capacity": 195,
+          "meanDelayCostMinutes": 13
+        },
+        {
+          "from": "BZN",
+          "to": "SAN",
+          "flow": 5,
+          "capacity": 5,
+          "meanDelayCostMinutes": 18
+        },
+        {
+          "from": "SLC",
+          "to": "ABQ",
+          "flow": 2,
+          "capacity": 46,
+          "meanDelayCostMinutes": 2
+        }
+      ]
+    },
+    "seaToSanMaximumAt25Percent": {
+      "source": "SEA",
+      "sink": "SAN",
+      "capacityShare": 25,
+      "requiredFlow": null,
+      "maximumFlow": 1045,
+      "complete": true,
+      "unserved": 0,
+      "augmentations": 26,
+      "cutCapacity": 1045,
+      "cutCertified": true,
+      "terminalMode": "singlePair",
+      "reachableAirports": [
+        "LAX",
+        "LAS",
+        "SEA",
+        "PHX",
+        "SFO",
+        "SLC",
+        "PDX",
+        "SJC",
+        "SMF",
+        "OAK",
+        "SNA",
+        "BUR",
+        "ONT",
+        "ABQ",
+        "RNO",
+        "BOI",
+        "ELP",
+        "GEG",
+        "LGB",
+        "TUS",
+        "FAT",
+        "BZN",
+        "EUG"
+      ],
+      "totalDelayScore": 0,
+      "allocatedEdges": [
+        {
+          "from": "SEA",
+          "to": "SFO",
+          "flow": 152,
+          "capacity": 152,
+          "meanDelayCostMinutes": 15
+        },
+        {
+          "from": "SEA",
+          "to": "PHX",
+          "flow": 143,
+          "capacity": 143,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SFO",
+          "to": "SAN",
+          "flow": 138,
+          "capacity": 138,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "LAS",
+          "to": "SAN",
+          "flow": 137,
+          "capacity": 137,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "LAS",
+          "flow": 134,
+          "capacity": 134,
+          "meanDelayCostMinutes": 15
+        },
+        {
+          "from": "SJC",
+          "to": "SAN",
+          "flow": 121,
+          "capacity": 121,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SMF",
+          "to": "SAN",
+          "flow": 114,
+          "capacity": 114,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "PHX",
+          "to": "SAN",
+          "flow": 108,
+          "capacity": 108,
+          "meanDelayCostMinutes": 20
+        },
+        {
+          "from": "SEA",
+          "to": "SJC",
+          "flow": 107,
+          "capacity": 107,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SEA",
+          "to": "SAN",
+          "flow": 105,
+          "capacity": 105,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "OAK",
+          "to": "SAN",
+          "flow": 88,
+          "capacity": 88,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SEA",
+          "to": "SMF",
+          "flow": 86,
+          "capacity": 86,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SEA",
+          "to": "OAK",
+          "flow": 73,
+          "capacity": 73,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "SLC",
+          "flow": 70,
+          "capacity": 88,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SLC",
+          "to": "SAN",
+          "flow": 51,
+          "capacity": 51,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "LAX",
+          "to": "SAN",
+          "flow": 46,
+          "capacity": 46,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "SEA",
+          "to": "LAX",
+          "flow": 46,
+          "capacity": 183,
+          "meanDelayCostMinutes": 13
+        },
+        {
+          "from": "SEA",
+          "to": "PDX",
+          "flow": 35,
+          "capacity": 132,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "PDX",
+          "to": "SAN",
+          "flow": 35,
+          "capacity": 35,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "FAT",
+          "flow": 22,
+          "capacity": 23,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "FAT",
+          "to": "SAN",
+          "flow": 22,
+          "capacity": 22,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "PHX",
+          "to": "SMF",
+          "flow": 21,
+          "capacity": 70,
+          "meanDelayCostMinutes": 23
+        },
+        {
+          "from": "SEA",
+          "to": "RNO",
+          "flow": 16,
+          "capacity": 23,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "RNO",
+          "to": "SAN",
+          "flow": 16,
+          "capacity": 16,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SLC",
+          "to": "OAK",
+          "flow": 15,
+          "capacity": 43,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "ABQ",
+          "to": "SAN",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "PHX",
+          "to": "SJC",
+          "flow": 14,
+          "capacity": 58,
+          "meanDelayCostMinutes": 25
+        },
+        {
+          "from": "SEA",
+          "to": "TUS",
+          "flow": 13,
+          "capacity": 23,
+          "meanDelayCostMinutes": 5
+        },
+        {
+          "from": "TUS",
+          "to": "SAN",
+          "flow": 13,
+          "capacity": 13,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "EUG",
+          "flow": 11,
+          "capacity": 28,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "EUG",
+          "to": "SAN",
+          "flow": 11,
+          "capacity": 11,
+          "meanDelayCostMinutes": 14
+        },
+        {
+          "from": "SEA",
+          "to": "BOI",
+          "flow": 9,
+          "capacity": 97,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "BOI",
+          "to": "SAN",
+          "flow": 9,
+          "capacity": 9,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "SEA",
+          "to": "ABQ",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "ELP",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "GEG",
+          "flow": 7,
+          "capacity": 94,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "SFO",
+          "to": "SMF",
+          "flow": 7,
+          "capacity": 21,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SFO",
+          "to": "ABQ",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 22
+        },
+        {
+          "from": "ELP",
+          "to": "SAN",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "GEG",
+          "to": "SAN",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SLC",
+          "to": "LAS",
+          "flow": 3,
+          "capacity": 97,
+          "meanDelayCostMinutes": 13
+        },
+        {
+          "from": "SEA",
+          "to": "BZN",
+          "flow": 2,
+          "capacity": 21,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "BZN",
+          "to": "SAN",
+          "flow": 2,
+          "capacity": 2,
+          "meanDelayCostMinutes": 18
+        },
+        {
+          "from": "SLC",
+          "to": "ABQ",
+          "flow": 1,
+          "capacity": 23,
+          "meanDelayCostMinutes": 2
+        }
+      ]
+    },
+    "seaToSanDelayWeightedBudget1000At100Percent": {
+      "source": "SEA",
+      "sink": "SAN",
+      "capacityShare": 100,
+      "requiredFlow": 1000,
+      "maximumFlow": 1000,
+      "complete": true,
+      "unserved": 0,
+      "augmentations": 18,
+      "cutCapacity": 0,
+      "cutCertified": false,
+      "terminalMode": "singlePair",
+      "reachableAirports": [
+        "LAX",
+        "LAS",
+        "SEA",
+        "PHX",
+        "SFO",
+        "SLC",
+        "SAN",
+        "PDX",
+        "SJC",
+        "SMF",
+        "OAK",
+        "SNA",
+        "BUR",
+        "ONT",
+        "ABQ",
+        "RNO",
+        "BOI",
+        "ELP",
+        "GEG",
+        "LGB",
+        "TUS",
+        "FAT",
+        "BZN",
+        "EUG"
+      ],
+      "totalDelayScore": 6790,
+      "allocatedEdges": [
+        {
+          "from": "SEA",
+          "to": "SAN",
+          "flow": 421,
+          "capacity": 421,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SEA",
+          "to": "BOI",
+          "flow": 353,
+          "capacity": 389,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "LAX",
+          "to": "SAN",
+          "flow": 186,
+          "capacity": 186,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "PDX",
+          "to": "SAN",
+          "flow": 141,
+          "capacity": 141,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "BOI",
+          "to": "LAX",
+          "flow": 111,
+          "capacity": 111,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "FAT",
+          "flow": 93,
+          "capacity": 93,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "FAT",
+          "to": "SAN",
+          "flow": 88,
+          "capacity": 88,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "BOI",
+          "to": "SJC",
+          "flow": 83,
+          "capacity": 83,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SJC",
+          "to": "SAN",
+          "flow": 81,
+          "capacity": 484,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SEA",
+          "to": "EUG",
+          "flow": 71,
+          "capacity": 114,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "BOI",
+          "to": "PDX",
+          "flow": 67,
+          "capacity": 67,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SLC",
+          "to": "FAT",
+          "flow": 62,
+          "capacity": 92,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "EUG",
+          "to": "SLC",
+          "flow": 62,
+          "capacity": 62,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "SAN",
+          "flow": 36,
+          "capacity": 36,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "FAT",
+          "to": "PDX",
+          "flow": 36,
+          "capacity": 58,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "SEA",
+          "to": "ABQ",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "ELP",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "ELP",
+          "to": "LAX",
+          "flow": 31,
+          "capacity": 143,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "FAT",
+          "to": "LAX",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "BUR",
+          "flow": 30,
+          "capacity": 31,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "GEG",
+          "to": "SAN",
+          "flow": 29,
+          "capacity": 29,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SJC",
+          "to": "RNO",
+          "flow": 26,
+          "capacity": 26,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "RNO",
+          "to": "PDX",
+          "flow": 26,
+          "capacity": 39,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "GEG",
+          "flow": 26,
+          "capacity": 26,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BUR",
+          "to": "SJC",
+          "flow": 24,
+          "capacity": 246,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "ABQ",
+          "to": "SAN",
+          "flow": 18,
+          "capacity": 60,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "ABQ",
+          "to": "LAX",
+          "flow": 13,
+          "capacity": 208,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "SNA",
+          "to": "PDX",
+          "flow": 9,
+          "capacity": 62,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "EUG",
+          "to": "SNA",
+          "flow": 9,
+          "capacity": 9,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BUR",
+          "to": "PDX",
+          "flow": 6,
+          "capacity": 116,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "PDX",
+          "to": "GEG",
+          "flow": 3,
+          "capacity": 10,
+          "meanDelayCostMinutes": 0
+        }
+      ]
+    },
+    "seaToSanDelayWeightedBudget1000At25Percent": {
+      "source": "SEA",
+      "sink": "SAN",
+      "capacityShare": 25,
+      "requiredFlow": 1000,
+      "maximumFlow": 1000,
+      "complete": true,
+      "unserved": 0,
+      "augmentations": 49,
+      "cutCapacity": 0,
+      "cutCertified": false,
+      "terminalMode": "singlePair",
+      "reachableAirports": [
+        "LAX",
+        "LAS",
+        "SEA",
+        "PHX",
+        "SFO",
+        "SLC",
+        "SAN",
+        "PDX",
+        "SJC",
+        "SMF",
+        "OAK",
+        "SNA",
+        "BUR",
+        "ONT",
+        "ABQ",
+        "RNO",
+        "BOI",
+        "ELP",
+        "GEG",
+        "LGB",
+        "TUS",
+        "FAT",
+        "BZN",
+        "EUG"
+      ],
+      "totalDelayScore": 19835,
+      "allocatedEdges": [
+        {
+          "from": "SFO",
+          "to": "SAN",
+          "flow": 138,
+          "capacity": 138,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "SJC",
+          "to": "SAN",
+          "flow": 121,
+          "capacity": 121,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SMF",
+          "to": "SAN",
+          "flow": 114,
+          "capacity": 114,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SEA",
+          "to": "PHX",
+          "flow": 108,
+          "capacity": 143,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "PHX",
+          "to": "SAN",
+          "flow": 108,
+          "capacity": 108,
+          "meanDelayCostMinutes": 20
+        },
+        {
+          "from": "SEA",
+          "to": "SJC",
+          "flow": 107,
+          "capacity": 107,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SEA",
+          "to": "SAN",
+          "flow": 105,
+          "capacity": 105,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SEA",
+          "to": "SNA",
+          "flow": 98,
+          "capacity": 98,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SNA",
+          "to": "SFO",
+          "flow": 98,
+          "capacity": 98,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "BOI",
+          "flow": 97,
+          "capacity": 97,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "LAS",
+          "to": "SAN",
+          "flow": 92,
+          "capacity": 137,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "LAS",
+          "flow": 92,
+          "capacity": 134,
+          "meanDelayCostMinutes": 15
+        },
+        {
+          "from": "OAK",
+          "to": "SAN",
+          "flow": 88,
+          "capacity": 88,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SEA",
+          "to": "SMF",
+          "flow": 86,
+          "capacity": 86,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SEA",
+          "to": "PDX",
+          "flow": 70,
+          "capacity": 132,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SEA",
+          "to": "OAK",
+          "flow": 61,
+          "capacity": 73,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SLC",
+          "to": "SAN",
+          "flow": 51,
+          "capacity": 51,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "SEA",
+          "to": "SLC",
+          "flow": 48,
+          "capacity": 88,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "LAX",
+          "to": "SAN",
+          "flow": 46,
+          "capacity": 46,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "PDX",
+          "to": "SAN",
+          "flow": 35,
+          "capacity": 35,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "EUG",
+          "flow": 28,
+          "capacity": 28,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "PDX",
+          "to": "SMF",
+          "flow": 28,
+          "capacity": 39,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "BOI",
+          "to": "LAX",
+          "flow": 27,
+          "capacity": 27,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "GEG",
+          "flow": 24,
+          "capacity": 94,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "SEA",
+          "to": "TUS",
+          "flow": 23,
+          "capacity": 23,
+          "meanDelayCostMinutes": 5
+        },
+        {
+          "from": "SEA",
+          "to": "FAT",
+          "flow": 23,
+          "capacity": 23,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "FAT",
+          "to": "SAN",
+          "flow": 22,
+          "capacity": 22,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "BOI",
+          "to": "SJC",
+          "flow": 20,
+          "capacity": 20,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "RNO",
+          "to": "SAN",
+          "flow": 16,
+          "capacity": 16,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "BOI",
+          "to": "PDX",
+          "flow": 16,
+          "capacity": 16,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SLC",
+          "to": "ABQ",
+          "flow": 15,
+          "capacity": 23,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "ABQ",
+          "to": "SAN",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "TUS",
+          "to": "SFO",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "EUG",
+          "to": "SLC",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "RNO",
+          "flow": 14,
+          "capacity": 23,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "PDX",
+          "to": "FAT",
+          "flow": 14,
+          "capacity": 14,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SLC",
+          "to": "TUS",
+          "flow": 13,
+          "capacity": 23,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "RNO",
+          "to": "OAK",
+          "flow": 13,
+          "capacity": 13,
+          "meanDelayCostMinutes": 6
+        },
+        {
+          "from": "GEG",
+          "to": "SFO",
+          "flow": 13,
+          "capacity": 16,
+          "meanDelayCostMinutes": 4
+        },
+        {
+          "from": "TUS",
+          "to": "SAN",
+          "flow": 13,
+          "capacity": 13,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "BOI",
+          "to": "SFO",
+          "flow": 12,
+          "capacity": 38,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "GEG",
+          "to": "LAX",
+          "flow": 12,
+          "capacity": 15,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "EUG",
+          "to": "SAN",
+          "flow": 11,
+          "capacity": 11,
+          "meanDelayCostMinutes": 14
+        },
+        {
+          "from": "PDX",
+          "to": "RNO",
+          "flow": 9,
+          "capacity": 9,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "SAN",
+          "flow": 9,
+          "capacity": 9,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "TUS",
+          "to": "SLC",
+          "flow": 8,
+          "capacity": 23,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "FAT",
+          "to": "SLC",
+          "flow": 8,
+          "capacity": 23,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "ABQ",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "ELP",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BUR",
+          "to": "OAK",
+          "flow": 7,
+          "capacity": 72,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "ABQ",
+          "to": "OAK",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "BUR",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "ELP",
+          "to": "SAN",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "GEG",
+          "to": "SAN",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "FAT",
+          "to": "LAX",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SJC",
+          "to": "RNO",
+          "flow": 6,
+          "capacity": 6,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "GEG",
+          "flow": 6,
+          "capacity": 6,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "BZN",
+          "flow": 2,
+          "capacity": 21,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "PDX",
+          "to": "GEG",
+          "flow": 2,
+          "capacity": 2,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SNA",
+          "to": "PDX",
+          "flow": 2,
+          "capacity": 15,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BZN",
+          "to": "SAN",
+          "flow": 2,
+          "capacity": 2,
+          "meanDelayCostMinutes": 18
+        },
+        {
+          "from": "EUG",
+          "to": "SNA",
+          "flow": 2,
+          "capacity": 2,
+          "meanDelayCostMinutes": 0
+        }
+      ]
+    },
+    "seaToSanDelayWeightedBudget4000At25Percent": {
+      "source": "SEA",
+      "sink": "SAN",
+      "capacityShare": 25,
+      "requiredFlow": 4000,
+      "maximumFlow": 1045,
+      "complete": true,
+      "unserved": 2955,
+      "augmentations": 50,
+      "cutCapacity": 1045,
+      "cutCertified": true,
+      "terminalMode": "singlePair",
+      "reachableAirports": [
+        "LAX",
+        "LAS",
+        "SEA",
+        "PHX",
+        "SFO",
+        "SLC",
+        "PDX",
+        "SJC",
+        "SMF",
+        "OAK",
+        "SNA",
+        "BUR",
+        "ONT",
+        "ABQ",
+        "RNO",
+        "BOI",
+        "ELP",
+        "GEG",
+        "LGB",
+        "TUS",
+        "FAT",
+        "BZN",
+        "EUG"
+      ],
+      "totalDelayScore": 21281,
+      "allocatedEdges": [
+        {
+          "from": "SFO",
+          "to": "SAN",
+          "flow": 138,
+          "capacity": 138,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "LAS",
+          "to": "SAN",
+          "flow": 137,
+          "capacity": 137,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SEA",
+          "to": "LAS",
+          "flow": 134,
+          "capacity": 134,
+          "meanDelayCostMinutes": 15
+        },
+        {
+          "from": "SJC",
+          "to": "SAN",
+          "flow": 121,
+          "capacity": 121,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SMF",
+          "to": "SAN",
+          "flow": 114,
+          "capacity": 114,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SEA",
+          "to": "PHX",
+          "flow": 108,
+          "capacity": 143,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "PHX",
+          "to": "SAN",
+          "flow": 108,
+          "capacity": 108,
+          "meanDelayCostMinutes": 20
+        },
+        {
+          "from": "SEA",
+          "to": "SJC",
+          "flow": 107,
+          "capacity": 107,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "SEA",
+          "to": "SAN",
+          "flow": 105,
+          "capacity": 105,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SEA",
+          "to": "SNA",
+          "flow": 98,
+          "capacity": 98,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SNA",
+          "to": "SFO",
+          "flow": 98,
+          "capacity": 98,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "BOI",
+          "flow": 97,
+          "capacity": 97,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "OAK",
+          "to": "SAN",
+          "flow": 88,
+          "capacity": 88,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SEA",
+          "to": "SMF",
+          "flow": 86,
+          "capacity": 86,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "SEA",
+          "to": "PDX",
+          "flow": 70,
+          "capacity": 132,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "SEA",
+          "to": "OAK",
+          "flow": 61,
+          "capacity": 73,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "SLC",
+          "to": "SAN",
+          "flow": 51,
+          "capacity": 51,
+          "meanDelayCostMinutes": 11
+        },
+        {
+          "from": "SEA",
+          "to": "SLC",
+          "flow": 48,
+          "capacity": 88,
+          "meanDelayCostMinutes": 9
+        },
+        {
+          "from": "LAX",
+          "to": "SAN",
+          "flow": 46,
+          "capacity": 46,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "PDX",
+          "to": "SAN",
+          "flow": 35,
+          "capacity": 35,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "EUG",
+          "flow": 28,
+          "capacity": 28,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "PDX",
+          "to": "SMF",
+          "flow": 28,
+          "capacity": 39,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "SEA",
+          "to": "GEG",
+          "flow": 27,
+          "capacity": 94,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "BOI",
+          "to": "LAX",
+          "flow": 27,
+          "capacity": 27,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "TUS",
+          "flow": 23,
+          "capacity": 23,
+          "meanDelayCostMinutes": 5
+        },
+        {
+          "from": "SEA",
+          "to": "FAT",
+          "flow": 23,
+          "capacity": 23,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "FAT",
+          "to": "SAN",
+          "flow": 22,
+          "capacity": 22,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "BOI",
+          "to": "SJC",
+          "flow": 20,
+          "capacity": 20,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "RNO",
+          "to": "SAN",
+          "flow": 16,
+          "capacity": 16,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "BOI",
+          "to": "PDX",
+          "flow": 16,
+          "capacity": 16,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "GEG",
+          "to": "SFO",
+          "flow": 16,
+          "capacity": 16,
+          "meanDelayCostMinutes": 4
+        },
+        {
+          "from": "SLC",
+          "to": "ABQ",
+          "flow": 15,
+          "capacity": 23,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "ABQ",
+          "to": "SAN",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "TUS",
+          "to": "SFO",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "EUG",
+          "to": "SLC",
+          "flow": 15,
+          "capacity": 15,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "RNO",
+          "flow": 14,
+          "capacity": 23,
+          "meanDelayCostMinutes": 10
+        },
+        {
+          "from": "PDX",
+          "to": "FAT",
+          "flow": 14,
+          "capacity": 14,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SLC",
+          "to": "TUS",
+          "flow": 13,
+          "capacity": 23,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "RNO",
+          "to": "OAK",
+          "flow": 13,
+          "capacity": 13,
+          "meanDelayCostMinutes": 6
+        },
+        {
+          "from": "TUS",
+          "to": "SAN",
+          "flow": 13,
+          "capacity": 13,
+          "meanDelayCostMinutes": 17
+        },
+        {
+          "from": "GEG",
+          "to": "LAX",
+          "flow": 12,
+          "capacity": 15,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "EUG",
+          "to": "SAN",
+          "flow": 11,
+          "capacity": 11,
+          "meanDelayCostMinutes": 14
+        },
+        {
+          "from": "PDX",
+          "to": "RNO",
+          "flow": 9,
+          "capacity": 9,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "SFO",
+          "flow": 9,
+          "capacity": 38,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "BOI",
+          "to": "SAN",
+          "flow": 9,
+          "capacity": 9,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "TUS",
+          "to": "SLC",
+          "flow": 8,
+          "capacity": 23,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "FAT",
+          "to": "SLC",
+          "flow": 8,
+          "capacity": 23,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SEA",
+          "to": "ABQ",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "ELP",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BUR",
+          "to": "OAK",
+          "flow": 7,
+          "capacity": 72,
+          "meanDelayCostMinutes": 8
+        },
+        {
+          "from": "ABQ",
+          "to": "OAK",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "BUR",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "ELP",
+          "to": "SAN",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "GEG",
+          "to": "SAN",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "FAT",
+          "to": "LAX",
+          "flow": 7,
+          "capacity": 7,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SJC",
+          "to": "RNO",
+          "flow": 6,
+          "capacity": 6,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "GEG",
+          "flow": 6,
+          "capacity": 6,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "LAS",
+          "flow": 3,
+          "capacity": 36,
+          "meanDelayCostMinutes": 12
+        },
+        {
+          "from": "SEA",
+          "to": "BZN",
+          "flow": 2,
+          "capacity": 21,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "PDX",
+          "to": "GEG",
+          "flow": 2,
+          "capacity": 2,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SNA",
+          "to": "PDX",
+          "flow": 2,
+          "capacity": 15,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BZN",
+          "to": "SAN",
+          "flow": 2,
+          "capacity": 2,
+          "meanDelayCostMinutes": 18
+        },
+        {
+          "from": "EUG",
+          "to": "SNA",
+          "flow": 2,
+          "capacity": 2,
+          "meanDelayCostMinutes": 0
+        }
+      ]
+    },
+    "balancedSeaPdxToLaxSanBudget1000At100Percent": {
+      "source": "SEA",
+      "sink": "LAX",
+      "capacityShare": 100,
+      "requiredFlow": 1000,
+      "maximumFlow": 1000,
+      "complete": true,
+      "unserved": 0,
+      "augmentations": 17,
+      "cutCapacity": 1000,
+      "cutCertified": false,
+      "terminalMode": "balanced4",
+      "reachableAirports": [],
+      "totalDelayScore": 4479,
+      "allocatedEdges": [
+        {
+          "from": "PDX",
+          "to": "LAX",
+          "flow": 255,
+          "capacity": 357,
+          "meanDelayCostMinutes": 5
+        },
+        {
+          "from": "SEA",
+          "to": "SAN",
+          "flow": 239,
+          "capacity": 421,
+          "meanDelayCostMinutes": 7
+        },
+        {
+          "from": "PDX",
+          "to": "SAN",
+          "flow": 141,
+          "capacity": 141,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "BOI",
+          "flow": 137,
+          "capacity": 389,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "BOI",
+          "to": "LAX",
+          "flow": 111,
+          "capacity": 111,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "SLC",
+          "to": "FAT",
+          "flow": 88,
+          "capacity": 92,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "FAT",
+          "to": "SAN",
+          "flow": 88,
+          "capacity": 88,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "EUG",
+          "flow": 62,
+          "capacity": 114,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "EUG",
+          "to": "SLC",
+          "flow": 62,
+          "capacity": 62,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "PDX",
+          "to": "FAT",
+          "flow": 58,
+          "capacity": 58,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "PDX",
+          "to": "BOI",
+          "flow": 36,
+          "capacity": 36,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "SAN",
+          "flow": 36,
+          "capacity": 36,
+          "meanDelayCostMinutes": 1
+        },
+        {
+          "from": "SAN",
+          "to": "LAX",
+          "flow": 33,
+          "capacity": 186,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "ABQ",
+          "to": "LAX",
+          "flow": 32,
+          "capacity": 208,
+          "meanDelayCostMinutes": 2
+        },
+        {
+          "from": "SEA",
+          "to": "ABQ",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SEA",
+          "to": "ELP",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "ELP",
+          "to": "LAX",
+          "flow": 31,
+          "capacity": 143,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "FAT",
+          "to": "LAX",
+          "flow": 31,
+          "capacity": 31,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "GEG",
+          "to": "SAN",
+          "flow": 29,
+          "capacity": 29,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "FAT",
+          "to": "SLC",
+          "flow": 27,
+          "capacity": 92,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "BOI",
+          "to": "GEG",
+          "flow": 26,
+          "capacity": 26,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "PDX",
+          "to": "GEG",
+          "flow": 10,
+          "capacity": 10,
+          "meanDelayCostMinutes": 0
+        },
+        {
+          "from": "GEG",
+          "to": "LAX",
+          "flow": 7,
+          "capacity": 61,
+          "meanDelayCostMinutes": 3
+        },
+        {
+          "from": "SLC",
+          "to": "ABQ",
+          "flow": 1,
+          "capacity": 92,
+          "meanDelayCostMinutes": 2
+        }
+      ]
+    }
+  },
+  "assumptions": {
+    "capacity": "integer monthly scheduled-count value per reported directed airport pair, including cancelled flights; illustrative link budget only, not realized operations or physical capacity; synthetic uniform percentage scaling is hypothetical",
+    "unit": "abstract integral scheduled-link flow unit, not passengers or a ticketed itinerary",
+    "delayCost": "round(max(0, mean departure delay minutes)); early-departure averages cost zero; flow-unit × rounded delay-minute score is a proxy objective, not expected traveler delay",
+    "balancedTerminals": "public prepareGPUNetworkFlowDemands semantics: 24 airports plus virtual source/sink, SEA/PDX supply 500 each, LAX/SAN demand 500 each; virtual gates excluded from mapped edge results",
+    "routing": "graph paths do not model carrier compatibility, flight times, transfer windows, passengers, or synchronized schedules"
+  }
+}

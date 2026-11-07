@@ -1,0 +1,509 @@
+{
+  "sourceRows": 400000,
+  "sorted": true,
+  "windowSeconds": 2592000,
+  "cases": [
+    {
+      "day": 0,
+      "groups": [
+        {
+          "kind": 0,
+          "label": "Land and water",
+          "count": 0
+        },
+        {
+          "kind": 1,
+          "label": "Other tagged nodes",
+          "count": 0
+        },
+        {
+          "kind": 2,
+          "label": "Transport",
+          "count": 0
+        },
+        {
+          "kind": 3,
+          "label": "Infrastructure",
+          "count": 0
+        },
+        {
+          "kind": 4,
+          "label": "Places and amenities",
+          "count": 0
+        },
+        {
+          "kind": 5,
+          "label": "Buildings",
+          "count": 0
+        }
+      ],
+      "occupiedCount": 0
+    },
+    {
+      "day": 28,
+      "groups": [
+        {
+          "kind": 0,
+          "label": "Land and water",
+          "count": 14,
+          "minimumRow": 0,
+          "maximumRow": 13,
+          "first": {
+            "row": 0,
+            "contributor": 1385,
+            "timestamp": "2007-06-27T20:05:31Z"
+          },
+          "last": {
+            "row": 13,
+            "contributor": 1385,
+            "timestamp": "2007-06-27T20:06:02Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 1,
+          "label": "Other tagged nodes",
+          "count": 0
+        },
+        {
+          "kind": 2,
+          "label": "Transport",
+          "count": 0
+        },
+        {
+          "kind": 3,
+          "label": "Infrastructure",
+          "count": 0
+        },
+        {
+          "kind": 4,
+          "label": "Places and amenities",
+          "count": 0
+        },
+        {
+          "kind": 5,
+          "label": "Buildings",
+          "count": 0
+        }
+      ],
+      "occupiedCount": 1
+    },
+    {
+      "day": 2310,
+      "groups": [
+        {
+          "kind": 0,
+          "label": "Land and water",
+          "count": 99,
+          "minimumRow": 70108,
+          "maximumRow": 83248,
+          "first": {
+            "row": 70108,
+            "contributor": 228,
+            "timestamp": "2013-09-26T20:54:51Z"
+          },
+          "last": {
+            "row": 83248,
+            "contributor": 4212,
+            "timestamp": "2013-10-17T08:30:58Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 1,
+          "label": "Other tagged nodes",
+          "count": 12818,
+          "minimumRow": 70251,
+          "maximumRow": 83281,
+          "first": {
+            "row": 70251,
+            "contributor": 705,
+            "timestamp": "2013-10-03T21:01:23Z"
+          },
+          "last": {
+            "row": 83281,
+            "contributor": 7635,
+            "timestamp": "2013-10-23T15:17:50Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 2,
+          "label": "Transport",
+          "count": 68,
+          "minimumRow": 70095,
+          "maximumRow": 83284,
+          "first": {
+            "row": 70095,
+            "contributor": 228,
+            "timestamp": "2013-09-24T20:05:06Z"
+          },
+          "last": {
+            "row": 83284,
+            "contributor": 4764,
+            "timestamp": "2013-10-23T18:58:55Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 3,
+          "label": "Infrastructure",
+          "count": 1,
+          "minimumRow": 70212,
+          "maximumRow": 70212,
+          "first": {
+            "row": 70212,
+            "contributor": 2762,
+            "timestamp": "2013-09-30T13:50:29Z"
+          },
+          "last": {
+            "row": 70212,
+            "contributor": 2762,
+            "timestamp": "2013-09-30T13:50:29Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 4,
+          "label": "Places and amenities",
+          "count": 205,
+          "minimumRow": 70094,
+          "maximumRow": 83280,
+          "first": {
+            "row": 70094,
+            "contributor": 7615,
+            "timestamp": "2013-09-24T14:33:10Z"
+          },
+          "last": {
+            "row": 83280,
+            "contributor": 309,
+            "timestamp": "2013-10-22T22:58:36Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 5,
+          "label": "Buildings",
+          "count": 0
+        }
+      ],
+      "occupiedCount": 5
+    },
+    {
+      "day": 2485,
+      "groups": [
+        {
+          "kind": 0,
+          "label": "Land and water",
+          "count": 39,
+          "minimumRow": 122278,
+          "maximumRow": 125083,
+          "first": {
+            "row": 122278,
+            "contributor": 970,
+            "timestamp": "2014-03-17T21:27:49Z"
+          },
+          "last": {
+            "row": 125073,
+            "contributor": 465,
+            "timestamp": "2014-04-14T18:00:14Z"
+          },
+          "latestTimestampTies": 11
+        },
+        {
+          "kind": 1,
+          "label": "Other tagged nodes",
+          "count": 2998,
+          "minimumRow": 121944,
+          "maximumRow": 125134,
+          "first": {
+            "row": 121944,
+            "contributor": 10,
+            "timestamp": "2014-03-17T20:07:55Z"
+          },
+          "last": {
+            "row": 125132,
+            "contributor": 1241,
+            "timestamp": "2014-04-15T21:29:07Z"
+          },
+          "latestTimestampTies": 3
+        },
+        {
+          "kind": 2,
+          "label": "Transport",
+          "count": 46,
+          "minimumRow": 122546,
+          "maximumRow": 125111,
+          "first": {
+            "row": 122546,
+            "contributor": 3750,
+            "timestamp": "2014-03-25T02:50:20Z"
+          },
+          "last": {
+            "row": 125108,
+            "contributor": 1440,
+            "timestamp": "2014-04-15T14:53:20Z"
+          },
+          "latestTimestampTies": 4
+        },
+        {
+          "kind": 3,
+          "label": "Infrastructure",
+          "count": 6,
+          "minimumRow": 122523,
+          "maximumRow": 125094,
+          "first": {
+            "row": 122523,
+            "contributor": 1545,
+            "timestamp": "2014-03-19T14:29:39Z"
+          },
+          "last": {
+            "row": 125094,
+            "contributor": 465,
+            "timestamp": "2014-04-14T21:51:58Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 4,
+          "label": "Places and amenities",
+          "count": 96,
+          "minimumRow": 122026,
+          "maximumRow": 125086,
+          "first": {
+            "row": 122026,
+            "contributor": 10,
+            "timestamp": "2014-03-17T20:24:23Z"
+          },
+          "last": {
+            "row": 125086,
+            "contributor": 465,
+            "timestamp": "2014-04-14T21:51:50Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 5,
+          "label": "Buildings",
+          "count": 6,
+          "minimumRow": 122277,
+          "maximumRow": 125042,
+          "first": {
+            "row": 122277,
+            "contributor": 10,
+            "timestamp": "2014-03-17T21:25:04Z"
+          },
+          "last": {
+            "row": 125041,
+            "contributor": 465,
+            "timestamp": "2014-04-12T21:05:39Z"
+          },
+          "latestTimestampTies": 2
+        }
+      ],
+      "occupiedCount": 6
+    },
+    {
+      "day": 5005,
+      "groups": [
+        {
+          "kind": 0,
+          "label": "Land and water",
+          "count": 158,
+          "minimumRow": 209112,
+          "maximumRow": 210013,
+          "first": {
+            "row": 209112,
+            "contributor": 121,
+            "timestamp": "2021-02-12T04:42:09Z"
+          },
+          "last": {
+            "row": 210010,
+            "contributor": 247,
+            "timestamp": "2021-02-24T07:36:13Z"
+          },
+          "latestTimestampTies": 4
+        },
+        {
+          "kind": 1,
+          "label": "Other tagged nodes",
+          "count": 73,
+          "minimumRow": 208562,
+          "maximumRow": 210758,
+          "first": {
+            "row": 208562,
+            "contributor": 779,
+            "timestamp": "2021-02-08T21:30:31Z"
+          },
+          "last": {
+            "row": 210758,
+            "contributor": 74,
+            "timestamp": "2021-03-10T16:27:15Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 2,
+          "label": "Transport",
+          "count": 1549,
+          "minimumRow": 208563,
+          "maximumRow": 210757,
+          "first": {
+            "row": 208563,
+            "contributor": 109,
+            "timestamp": "2021-02-08T21:34:39Z"
+          },
+          "last": {
+            "row": 210757,
+            "contributor": 74,
+            "timestamp": "2021-03-10T16:27:15Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 3,
+          "label": "Infrastructure",
+          "count": 209,
+          "minimumRow": 208643,
+          "maximumRow": 210752,
+          "first": {
+            "row": 208643,
+            "contributor": 56,
+            "timestamp": "2021-02-09T15:57:49Z"
+          },
+          "last": {
+            "row": 210741,
+            "contributor": 61,
+            "timestamp": "2021-03-10T14:02:13Z"
+          },
+          "latestTimestampTies": 7
+        },
+        {
+          "kind": 4,
+          "label": "Places and amenities",
+          "count": 210,
+          "minimumRow": 208560,
+          "maximumRow": 210743,
+          "first": {
+            "row": 208560,
+            "contributor": 779,
+            "timestamp": "2021-02-08T21:30:31Z"
+          },
+          "last": {
+            "row": 210743,
+            "contributor": 61,
+            "timestamp": "2021-03-10T14:02:13Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 5,
+          "label": "Buildings",
+          "count": 0
+        }
+      ],
+      "occupiedCount": 5
+    },
+    {
+      "day": 6895,
+      "groups": [
+        {
+          "kind": 0,
+          "label": "Land and water",
+          "count": 442,
+          "minimumRow": 397916,
+          "maximumRow": 399451,
+          "first": {
+            "row": 397916,
+            "contributor": 88,
+            "timestamp": "2026-04-15T23:16:24Z"
+          },
+          "last": {
+            "row": 399451,
+            "contributor": 88,
+            "timestamp": "2026-05-06T02:32:36Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 1,
+          "label": "Other tagged nodes",
+          "count": 51,
+          "minimumRow": 397905,
+          "maximumRow": 399750,
+          "first": {
+            "row": 397905,
+            "contributor": 209,
+            "timestamp": "2026-04-14T17:07:16Z"
+          },
+          "last": {
+            "row": 399750,
+            "contributor": 3555,
+            "timestamp": "2026-05-13T14:08:00Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 2,
+          "label": "Transport",
+          "count": 804,
+          "minimumRow": 397869,
+          "maximumRow": 399754,
+          "first": {
+            "row": 397869,
+            "contributor": 5242,
+            "timestamp": "2026-04-14T00:52:12Z"
+          },
+          "last": {
+            "row": 399754,
+            "contributor": 1236,
+            "timestamp": "2026-05-13T17:34:04Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 3,
+          "label": "Infrastructure",
+          "count": 174,
+          "minimumRow": 397878,
+          "maximumRow": 399723,
+          "first": {
+            "row": 397878,
+            "contributor": 323,
+            "timestamp": "2026-04-14T13:10:13Z"
+          },
+          "last": {
+            "row": 399723,
+            "contributor": 1335,
+            "timestamp": "2026-05-11T22:58:57Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 4,
+          "label": "Places and amenities",
+          "count": 416,
+          "minimumRow": 397868,
+          "maximumRow": 399753,
+          "first": {
+            "row": 397868,
+            "contributor": 4174,
+            "timestamp": "2026-04-13T21:31:06Z"
+          },
+          "last": {
+            "row": 399753,
+            "contributor": 3157,
+            "timestamp": "2026-05-13T16:33:41Z"
+          },
+          "latestTimestampTies": 1
+        },
+        {
+          "kind": 5,
+          "label": "Buildings",
+          "count": 0
+        }
+      ],
+      "occupiedCount": 5
+    }
+  ]
+}

@@ -1,0 +1,417 @@
+{
+  "source": {
+    "roads": "chicago-roads bundled binary snapshot",
+    "places": "chicago-places bundled binary snapshot"
+  },
+  "studyBounds": [
+    -87.67,
+    41.85,
+    -87.61,
+    41.91
+  ],
+  "origin": [
+    -87.68924,
+    41.833625
+  ],
+  "network": {
+    "nodes": 2509,
+    "uniqueUndirectedEdges": 4066,
+    "totalLengthMeters": 483642.2909157276
+  },
+  "sample": {
+    "seed": 1,
+    "eventCount": 96,
+    "snapLimitMeters": 80,
+    "kernel": "triangular shortest-path K(d)=1-d/h for d<h, 0 otherwise; event mass is sum over node trapezoidal edge-length quadrature"
+  },
+  "categories": {
+    "restaurant_cafe": {
+      "eligibleAt80m": 2929,
+      "eligibleAt50m": 2083,
+      "eligibleAt100m": 3089,
+      "selectedCount": 96,
+      "medianSnapMeters": 36.63873088064668,
+      "maximumSnapMeters": 78.31369479220103,
+      "bandwidths": {
+        "300": {
+          "positiveLeaveOneOutCount": 74,
+          "zeroLeaveOneOutCount": 22,
+          "minimumPositivePerMeter": 0.000021845802379522462,
+          "medianPositivePerMeter": 0.0008636210083243067,
+          "maximumPerMeter": 0.001989979249985465,
+          "kernelMassMinimum": 0.5522364837864857,
+          "kernelMassMaximum": 5.957480783460626,
+          "quadratureIntegral": 96.00000000000011,
+          "uncorrectedK": null
+        },
+        "600": {
+          "positiveLeaveOneOutCount": 86,
+          "zeroLeaveOneOutCount": 10,
+          "minimumPositivePerMeter": 0.000004357723093070257,
+          "medianPositivePerMeter": 0.0005143848707738073,
+          "maximumPerMeter": 0.0012342838433500338,
+          "kernelMassMinimum": 1.0512013598440875,
+          "kernelMassMaximum": 10.72813668092896,
+          "quadratureIntegral": 95.99999999999976,
+          "uncorrectedK": null
+        },
+        "1000": {
+          "positiveLeaveOneOutCount": 95,
+          "zeroLeaveOneOutCount": 1,
+          "minimumPositivePerMeter": 0.000031276832644547844,
+          "medianPositivePerMeter": 0.00044203851422301124,
+          "maximumPerMeter": 0.0008555174749050718,
+          "kernelMassMinimum": 2.2132850651945604,
+          "kernelMassMaximum": 15.819514654437194,
+          "quadratureIntegral": 96.00000000000034,
+          "uncorrectedK": null
+        },
+        "1500": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.000018839975995659617,
+          "medianPositivePerMeter": 0.0003765419953339139,
+          "maximumPerMeter": 0.0006849718742125954,
+          "kernelMassMinimum": 2.8946822362736913,
+          "kernelMassMaximum": 21.619064037908245,
+          "quadratureIntegral": 95.99999999999997,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 24140512903.783405,
+            "inverseIntensitySum": 492165.5298472431,
+            "network-length": 49913.98262148621,
+            "inverse-intensity": 49049.58076051378,
+            "inverse-intensity-squared": 48200.14846394014
+          }
+        },
+        "2000": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.00004780041134998501,
+          "medianPositivePerMeter": 0.00033834078195501616,
+          "maximumPerMeter": 0.0005894534048107745,
+          "kernelMassMinimum": 4.043553221838746,
+          "kernelMassMaximum": 28.485511917534655,
+          "quadratureIntegral": 96.00000000000041,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 24925536130.883675,
+            "inverseIntensitySum": 472682.73468611564,
+            "network-length": 51537.13105545361,
+            "inverse-intensity": 52732.063817468275,
+            "inverse-intensity-squared": 53954.70212452385
+          }
+        },
+        "3000": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.00005871694652164132,
+          "medianPositivePerMeter": 0.0003283191594712981,
+          "maximumPerMeter": 0.0004458693042366822,
+          "kernelMassMinimum": 7.300477350099456,
+          "kernelMassMaximum": 39.79086461318914,
+          "quadratureIntegral": 96.00000000000004,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 28916244760.957954,
+            "inverseIntensitySum": 483967.9885372094,
+            "network-length": 59788.49514215967,
+            "inverse-intensity": 59748.25907051651,
+            "inverse-intensity-squared": 59708.05007668252
+          }
+        }
+      }
+    },
+    "grocery": {
+      "eligibleAt80m": 179,
+      "eligibleAt50m": 125,
+      "eligibleAt100m": 189,
+      "selectedCount": 96,
+      "medianSnapMeters": 39.980864865307254,
+      "maximumSnapMeters": 77.23094652280975,
+      "bandwidths": {
+        "300": {
+          "positiveLeaveOneOutCount": 69,
+          "zeroLeaveOneOutCount": 27,
+          "minimumPositivePerMeter": 0.00003980797361882522,
+          "medianPositivePerMeter": 0.0006176684330215445,
+          "maximumPerMeter": 0.0021942510132859612,
+          "kernelMassMinimum": 1.5973947095630268,
+          "kernelMassMaximum": 6.127757368426872,
+          "quadratureIntegral": 96.00000000000001,
+          "uncorrectedK": null
+        },
+        "600": {
+          "positiveLeaveOneOutCount": 85,
+          "zeroLeaveOneOutCount": 11,
+          "minimumPositivePerMeter": 0.00003312366911423826,
+          "medianPositivePerMeter": 0.00044052370259521585,
+          "maximumPerMeter": 0.001023314265758713,
+          "kernelMassMinimum": 2.394671932020877,
+          "kernelMassMaximum": 10.675676657734341,
+          "quadratureIntegral": 95.99999999999997,
+          "uncorrectedK": null
+        },
+        "1000": {
+          "positiveLeaveOneOutCount": 95,
+          "zeroLeaveOneOutCount": 1,
+          "minimumPositivePerMeter": 0.0000075919377400048995,
+          "medianPositivePerMeter": 0.00033816541030615784,
+          "maximumPerMeter": 0.0007749959871393403,
+          "kernelMassMinimum": 3.5129956298435983,
+          "kernelMassMaximum": 15.556397898868983,
+          "quadratureIntegral": 96.00000000000023,
+          "uncorrectedK": null
+        },
+        "1500": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.000013124563364013834,
+          "medianPositivePerMeter": 0.0003344647308298777,
+          "maximumPerMeter": 0.0005547484120296964,
+          "kernelMassMinimum": 5.7014313922609885,
+          "kernelMassMaximum": 21.271969998772093,
+          "quadratureIntegral": 96.00000000000014,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 27017510342.144127,
+            "inverseIntensitySum": 513841.95535097667,
+            "network-length": 55862.58863133993,
+            "inverse-intensity": 52579.41680470599,
+            "inverse-intensity-squared": 49489.204479364395
+          }
+        },
+        "2000": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.00003539244953724677,
+          "medianPositivePerMeter": 0.0002972080319713046,
+          "maximumPerMeter": 0.00047442604587849085,
+          "kernelMassMinimum": 7.592953196518767,
+          "kernelMassMaximum": 28.193193127303754,
+          "quadratureIntegral": 96.00000000000003,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 25042274403.79478,
+            "inverseIntensitySum": 437639.4121754391,
+            "network-length": 51778.50422546749,
+            "inverse-intensity": 57221.25043380676,
+            "inverse-intensity-squared": 63236.11603283752
+          }
+        },
+        "3000": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.00004318861074389357,
+          "medianPositivePerMeter": 0.00026753207201135723,
+          "maximumPerMeter": 0.000374078796605621,
+          "kernelMassMinimum": 10.601184618760973,
+          "kernelMassMaximum": 39.79086461318914,
+          "quadratureIntegral": 95.99999999999994,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 30165590363.450886,
+            "inverseIntensitySum": 451356.5338670258,
+            "network-length": 62371.69687194931,
+            "inverse-intensity": 66833.17532817188,
+            "inverse-intensity-squared": 71613.7855543093
+          }
+        }
+      }
+    },
+    "retail": {
+      "eligibleAt80m": 2270,
+      "eligibleAt50m": 1559,
+      "eligibleAt100m": 2485,
+      "selectedCount": 96,
+      "medianSnapMeters": 45.0100062424495,
+      "maximumSnapMeters": 79.78908739245519,
+      "bandwidths": {
+        "300": {
+          "positiveLeaveOneOutCount": 68,
+          "zeroLeaveOneOutCount": 28,
+          "minimumPositivePerMeter": 0.00003804115722297524,
+          "medianPositivePerMeter": 0.0011221766313517978,
+          "maximumPerMeter": 0.009131541169249975,
+          "kernelMassMinimum": 0.5522364837864857,
+          "kernelMassMaximum": 6.562068846483509,
+          "quadratureIntegral": 95.99999999999999,
+          "uncorrectedK": null
+        },
+        "600": {
+          "positiveLeaveOneOutCount": 82,
+          "zeroLeaveOneOutCount": 14,
+          "minimumPositivePerMeter": 0.000017693167953872498,
+          "medianPositivePerMeter": 0.0007993350879243787,
+          "maximumPerMeter": 0.0032575024680886176,
+          "kernelMassMinimum": 1.0512013598440875,
+          "kernelMassMaximum": 9.267970909320402,
+          "quadratureIntegral": 96.00000000000007,
+          "uncorrectedK": null
+        },
+        "1000": {
+          "positiveLeaveOneOutCount": 90,
+          "zeroLeaveOneOutCount": 6,
+          "minimumPositivePerMeter": 0.0000035667261460195557,
+          "medianPositivePerMeter": 0.0005501567221563545,
+          "maximumPerMeter": 0.0014182940330890901,
+          "kernelMassMinimum": 2.743546933897992,
+          "kernelMassMaximum": 14.845014520103216,
+          "quadratureIntegral": 95.99999999999969,
+          "uncorrectedK": null
+        },
+        "1500": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.0000025899980590477773,
+          "medianPositivePerMeter": 0.0004519405556584873,
+          "maximumPerMeter": 0.000775232651871141,
+          "kernelMassMinimum": 3.396460360932993,
+          "kernelMassMaximum": 21.610329704617968,
+          "quadratureIntegral": 96.0000000000001,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 51454066913.73912,
+            "inverseIntensitySum": 971753.6516801867,
+            "network-length": 106388.68411675924,
+            "inverse-intensity": 52949.70265846054,
+            "inverse-intensity-squared": 26353.094174399375
+          }
+        },
+        "2000": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.000007003949481237643,
+          "medianPositivePerMeter": 0.000402057930968362,
+          "maximumPerMeter": 0.0006282872815868387,
+          "kernelMassMinimum": 4.554282404200767,
+          "kernelMassMaximum": 28.148689541396205,
+          "quadratureIntegral": 96.00000000000006,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 32002167521.00246,
+            "inverseIntensitySum": 671074.2593556907,
+            "network-length": 66169.08430486839,
+            "inverse-intensity": 47687.96757564247,
+            "inverse-intensity-squared": 34368.652300183145
+          }
+        },
+        "3000": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.00002662260874388468,
+          "medianPositivePerMeter": 0.0003616083063343993,
+          "maximumPerMeter": 0.0004730600434228051,
+          "kernelMassMinimum": 8.002176331360518,
+          "kernelMassMaximum": 38.27418674408987,
+          "quadratureIntegral": 96.00000000000016,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 27607034671.70121,
+            "inverseIntensitySum": 497798.55473119504,
+            "network-length": 57081.51497552063,
+            "inverse-intensity": 55458.24592963847,
+            "inverse-intensity-squared": 53881.138980127595
+          }
+        }
+      }
+    },
+    "combined": {
+      "eligibleAt80m": 5378,
+      "eligibleAt50m": 3767,
+      "eligibleAt100m": 5763,
+      "selectedCount": 96,
+      "medianSnapMeters": 39.97184740595983,
+      "maximumSnapMeters": 79.92834167048409,
+      "bandwidths": {
+        "300": {
+          "positiveLeaveOneOutCount": 66,
+          "zeroLeaveOneOutCount": 30,
+          "minimumPositivePerMeter": 0.00002275613378723826,
+          "medianPositivePerMeter": 0.0007538236433469222,
+          "maximumPerMeter": 0.003313569726867992,
+          "kernelMassMinimum": 0.5522364837864857,
+          "kernelMassMaximum": 6.2958449172522615,
+          "quadratureIntegral": 96.00000000000016,
+          "uncorrectedK": null
+        },
+        "600": {
+          "positiveLeaveOneOutCount": 86,
+          "zeroLeaveOneOutCount": 10,
+          "minimumPositivePerMeter": 0.000019065194560191283,
+          "medianPositivePerMeter": 0.0004885661870355634,
+          "maximumPerMeter": 0.0015765809274957971,
+          "kernelMassMinimum": 1.0512013598440875,
+          "kernelMassMaximum": 10.748453379843498,
+          "quadratureIntegral": 95.99999999999993,
+          "uncorrectedK": null
+        },
+        "1000": {
+          "positiveLeaveOneOutCount": 91,
+          "zeroLeaveOneOutCount": 5,
+          "minimumPositivePerMeter": 0.000004233349985955843,
+          "medianPositivePerMeter": 0.00036198974225163267,
+          "maximumPerMeter": 0.000909161971153621,
+          "kernelMassMinimum": 2.7464571907567543,
+          "kernelMassMaximum": 15.834752968433481,
+          "quadratureIntegral": 95.99999999999997,
+          "uncorrectedK": null
+        },
+        "1500": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.000010690663464781011,
+          "medianPositivePerMeter": 0.00034926041738811203,
+          "maximumPerMeter": 0.0006531459535307879,
+          "kernelMassMinimum": 5.499114648216776,
+          "kernelMassMaximum": 21.44784627371064,
+          "quadratureIntegral": 96.00000000000021,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 34100155653.158096,
+            "inverseIntensitySum": 656998.7096323767,
+            "network-length": 70506.97652720343,
+            "inverse-intensity": 51902.926372928225,
+            "inverse-intensity-squared": 38207.761823884575
+          }
+        },
+        "2000": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.000026845533846832813,
+          "medianPositivePerMeter": 0.0003318212049095102,
+          "maximumPerMeter": 0.0005325858725332355,
+          "kernelMassMinimum": 6.791522506117216,
+          "kernelMassMaximum": 27.814489500080516,
+          "quadratureIntegral": 95.99999999999997,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 26367392602.879166,
+            "inverseIntensitySum": 490512.8129753797,
+            "network-length": 54518.376697280095,
+            "inverse-intensity": 53754.74789932271,
+            "inverse-intensity-squared": 53001.815108407274
+          }
+        },
+        "3000": {
+          "positiveLeaveOneOutCount": 96,
+          "zeroLeaveOneOutCount": 0,
+          "minimumPositivePerMeter": 0.00004619917679582247,
+          "medianPositivePerMeter": 0.00030540776517411114,
+          "maximumPerMeter": 0.00041694081537215464,
+          "kernelMassMinimum": 11.214788994416637,
+          "kernelMassMaximum": 38.847831723117096,
+          "quadratureIntegral": 96.00000000000013,
+          "uncorrectedK": {
+            "radiusMeters": 1500,
+            "numerator": 30021322037.950325,
+            "inverseIntensitySum": 478031.7962624448,
+            "network-length": 62073.401358487485,
+            "inverse-intensity": 62801.93550444976,
+            "inverse-intensity-squared": 63539.02020492036
+          }
+        }
+      }
+    }
+  }
+}

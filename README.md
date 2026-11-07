@@ -20,6 +20,19 @@ of luma.gl code. See `dev-docs/upstream-first-plan.md`.
 
 Plans go in `dev-docs/roadmap.md`; see `dev-docs/README.md` for the dev-docs index.
 
+## Repository map
+
+| Path | Contents |
+| --- | --- |
+| `modules/analysis`, `modules/lenses`, `modules/kepler` | The three packages (see each package README) |
+| `docs/api` | API documentation by domain; `docs/table-of-contents.json` orders it |
+| `docs/lens-records` | Generated lens records used by the docs and lens tests |
+| `dev-docs` | Roadmap, coverage matrix, upstream workarounds, research and archived plans |
+| `examples/deck` | Spatial analysis showcase and explorer (kepler-compute is parked) |
+| `website` | Staging for the future docs site (lens rendering plugins, not yet built) |
+| `scripts` | Build, export verification, upstream-first guard and the original split scripts |
+| `CHANGELOG.md` | Release history |
+
 ## Development
 
 ```bash

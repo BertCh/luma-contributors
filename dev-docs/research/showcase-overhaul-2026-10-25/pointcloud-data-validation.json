@@ -1,0 +1,526 @@
+{
+  "referenceCount": 5192,
+  "comparisonCount": 5407,
+  "coreCount": 258,
+  "invalidNormalCount": 3,
+  "invalidNormalRows": [
+    117,
+    118,
+    184
+  ],
+  "finiteNormalLengthRange": [
+    0.9999999616904446,
+    1.0000000359807442
+  ],
+  "referenceMethod": "Independent NumPy float64 cylindrical comparison over bundled float32 native coordinates; normalized supplied normals; halfDepth 3 m; minimum support 3; registration error 0.03 m; linear uncertainty; confidence multiplier 1.96",
+  "cases": [
+    {
+      "radiusMeters": 0.8,
+      "validCores": 220,
+      "insufficientSupportCores": 35,
+      "invalidNormalCores": 3,
+      "detectableCores": 140,
+      "medianDifferenceMeters": 0.2737770175791182,
+      "minimumDifferenceMeters": -0.5452216424476766,
+      "maximumDifferenceMeters": 1.2712236069453895,
+      "medianDetectionLimitMeters": 0.19204891501583454
+    },
+    {
+      "radiusMeters": 1.5,
+      "validCores": 251,
+      "insufficientSupportCores": 4,
+      "invalidNormalCores": 3,
+      "detectableCores": 181,
+      "medianDifferenceMeters": 0.28196629245695437,
+      "minimumDifferenceMeters": -0.35144747919564473,
+      "maximumDifferenceMeters": 1.0259311170539147,
+      "medianDetectionLimitMeters": 0.1546286484024895
+    },
+    {
+      "radiusMeters": 2.0,
+      "validCores": 251,
+      "insufficientSupportCores": 4,
+      "invalidNormalCores": 3,
+      "detectableCores": 184,
+      "medianDifferenceMeters": 0.2650656418916538,
+      "minimumDifferenceMeters": -0.2606680643863616,
+      "maximumDifferenceMeters": 0.9262866923517712,
+      "medianDetectionLimitMeters": 0.13711375849825833
+    }
+  ],
+  "localIcpReference": {
+    "method": "Independent float64 SVD rigid fit on 1024 systematic rows per epoch; maximum distance 2 m; robust scale 0.5 m; 12 iterations; residuals before each update. GPU Horn solver may differ numerically.",
+    "cases": [
+      {
+        "robustMethod": "none",
+        "history": [
+          {
+            "iteration": 1,
+            "inliers": 1011,
+            "weightedRmseMeters": 0.7654730695309976,
+            "translationStepMeters": 0.2630908178194011
+          },
+          {
+            "iteration": 2,
+            "inliers": 1012,
+            "weightedRmseMeters": 0.7152973728471674,
+            "translationStepMeters": 0.048957924720126986
+          },
+          {
+            "iteration": 3,
+            "inliers": 1014,
+            "weightedRmseMeters": 0.7176360169893253,
+            "translationStepMeters": 0.030873736897917857
+          },
+          {
+            "iteration": 4,
+            "inliers": 1014,
+            "weightedRmseMeters": 0.716255842538147,
+            "translationStepMeters": 0.026297596552028808
+          },
+          {
+            "iteration": 5,
+            "inliers": 1014,
+            "weightedRmseMeters": 0.7150752144187579,
+            "translationStepMeters": 0.020628171287400947
+          },
+          {
+            "iteration": 6,
+            "inliers": 1013,
+            "weightedRmseMeters": 0.7118598855681805,
+            "translationStepMeters": 0.016302631432277816
+          },
+          {
+            "iteration": 7,
+            "inliers": 1014,
+            "weightedRmseMeters": 0.7138084819294526,
+            "translationStepMeters": 0.01498424508615417
+          },
+          {
+            "iteration": 8,
+            "inliers": 1014,
+            "weightedRmseMeters": 0.7132933490491329,
+            "translationStepMeters": 0.011015775255553905
+          },
+          {
+            "iteration": 9,
+            "inliers": 1015,
+            "weightedRmseMeters": 0.7152919810762268,
+            "translationStepMeters": 0.01369634445736445
+          },
+          {
+            "iteration": 10,
+            "inliers": 1015,
+            "weightedRmseMeters": 0.714812210614927,
+            "translationStepMeters": 0.020193338655257673
+          },
+          {
+            "iteration": 11,
+            "inliers": 1015,
+            "weightedRmseMeters": 0.7140724316602269,
+            "translationStepMeters": 0.01788054824249316
+          },
+          {
+            "iteration": 12,
+            "inliers": 1015,
+            "weightedRmseMeters": 0.7134543032184578,
+            "translationStepMeters": 0.013123474089929893
+          }
+        ]
+      },
+      {
+        "robustMethod": "huber",
+        "history": [
+          {
+            "iteration": 1,
+            "inliers": 1011,
+            "weightedRmseMeters": 0.6719706012660626,
+            "translationStepMeters": 0.22023733931056685
+          },
+          {
+            "iteration": 2,
+            "inliers": 1012,
+            "weightedRmseMeters": 0.6318670777069281,
+            "translationStepMeters": 0.06338825348509289
+          },
+          {
+            "iteration": 3,
+            "inliers": 1013,
+            "weightedRmseMeters": 0.6286606697760331,
+            "translationStepMeters": 0.03106056395523954
+          },
+          {
+            "iteration": 4,
+            "inliers": 1014,
+            "weightedRmseMeters": 0.6282696486971007,
+            "translationStepMeters": 0.025663532664211695
+          },
+          {
+            "iteration": 5,
+            "inliers": 1013,
+            "weightedRmseMeters": 0.6262620183724624,
+            "translationStepMeters": 0.021581979558496618
+          },
+          {
+            "iteration": 6,
+            "inliers": 1013,
+            "weightedRmseMeters": 0.6255219987611795,
+            "translationStepMeters": 0.015146069851205667
+          },
+          {
+            "iteration": 7,
+            "inliers": 1013,
+            "weightedRmseMeters": 0.625083943100118,
+            "translationStepMeters": 0.015425347517251973
+          },
+          {
+            "iteration": 8,
+            "inliers": 1013,
+            "weightedRmseMeters": 0.6246710701521558,
+            "translationStepMeters": 0.010437278128092932
+          },
+          {
+            "iteration": 9,
+            "inliers": 1014,
+            "weightedRmseMeters": 0.6253439803883223,
+            "translationStepMeters": 0.010252891948505156
+          },
+          {
+            "iteration": 10,
+            "inliers": 1015,
+            "weightedRmseMeters": 0.6260620353319518,
+            "translationStepMeters": 0.009836306881644984
+          },
+          {
+            "iteration": 11,
+            "inliers": 1015,
+            "weightedRmseMeters": 0.6258723964400971,
+            "translationStepMeters": 0.010208915097853322
+          },
+          {
+            "iteration": 12,
+            "inliers": 1015,
+            "weightedRmseMeters": 0.6257140749301177,
+            "translationStepMeters": 0.010438221036272462
+          }
+        ]
+      },
+      {
+        "robustMethod": "tukey",
+        "history": [
+          {
+            "iteration": 1,
+            "inliers": 287,
+            "weightedRmseMeters": 0.26786990177993464,
+            "translationStepMeters": 0.04761908246591524
+          },
+          {
+            "iteration": 2,
+            "inliers": 292,
+            "weightedRmseMeters": 0.2667344370567796,
+            "translationStepMeters": 0.03373564819424156
+          },
+          {
+            "iteration": 3,
+            "inliers": 300,
+            "weightedRmseMeters": 0.26588336345378644,
+            "translationStepMeters": 0.02621514301169674
+          },
+          {
+            "iteration": 4,
+            "inliers": 303,
+            "weightedRmseMeters": 0.2654042414955194,
+            "translationStepMeters": 0.016996502435794866
+          },
+          {
+            "iteration": 5,
+            "inliers": 306,
+            "weightedRmseMeters": 0.26520570863142817,
+            "translationStepMeters": 0.011681022112847885
+          },
+          {
+            "iteration": 6,
+            "inliers": 311,
+            "weightedRmseMeters": 0.2651589064914425,
+            "translationStepMeters": 0.00847373924499739
+          },
+          {
+            "iteration": 7,
+            "inliers": 310,
+            "weightedRmseMeters": 0.26524763170547205,
+            "translationStepMeters": 0.006006554946652109
+          },
+          {
+            "iteration": 8,
+            "inliers": 314,
+            "weightedRmseMeters": 0.26535798652237286,
+            "translationStepMeters": 0.004001708433408763
+          },
+          {
+            "iteration": 9,
+            "inliers": 316,
+            "weightedRmseMeters": 0.2654477905034413,
+            "translationStepMeters": 0.002728912407622712
+          },
+          {
+            "iteration": 10,
+            "inliers": 315,
+            "weightedRmseMeters": 0.2655144627595329,
+            "translationStepMeters": 0.0019202910801064074
+          },
+          {
+            "iteration": 11,
+            "inliers": 315,
+            "weightedRmseMeters": 0.265550755672062,
+            "translationStepMeters": 0.003993155141330412
+          },
+          {
+            "iteration": 12,
+            "inliers": 314,
+            "weightedRmseMeters": 0.2656635963758948,
+            "translationStepMeters": 0.002738774205500595
+          }
+        ]
+      }
+    ]
+  },
+  "planeIcpReference": {
+    "method": "Independent NumPy float64 eigenvector target normals from the nearest 64 rows within 3 m, then weighted six-parameter least-squares point-to-plane Gauss-Newton with exact Rodrigues updates; 1024 systematic rows; 2 m match bound; 0.5 m robust scale; 12 iterations. GPU Jacobi normals and normal-equation solver may differ numerically.",
+    "validTargetNormals": 1023,
+    "unsupportedTargetNormals": 1,
+    "truncatedTargetNormals": 0,
+    "cases": [
+      {
+        "robustMethod": "none",
+        "history": [
+          {
+            "iteration": 1,
+            "inliers": 1011,
+            "weightedPlaneRmseMeters": 0.4222127002580813,
+            "translationStepMeters": 1.3318177003963045
+          },
+          {
+            "iteration": 2,
+            "inliers": 1013,
+            "weightedPlaneRmseMeters": 0.2747857833967279,
+            "translationStepMeters": 0.3962724463567467
+          },
+          {
+            "iteration": 3,
+            "inliers": 1010,
+            "weightedPlaneRmseMeters": 0.26038714911420024,
+            "translationStepMeters": 0.25427270882146547
+          },
+          {
+            "iteration": 4,
+            "inliers": 998,
+            "weightedPlaneRmseMeters": 0.2522913215799724,
+            "translationStepMeters": 0.09614036400383011
+          },
+          {
+            "iteration": 5,
+            "inliers": 993,
+            "weightedPlaneRmseMeters": 0.24930535876284782,
+            "translationStepMeters": 0.02201000093568741
+          },
+          {
+            "iteration": 6,
+            "inliers": 993,
+            "weightedPlaneRmseMeters": 0.24748145256445594,
+            "translationStepMeters": 0.007744820860940589
+          },
+          {
+            "iteration": 7,
+            "inliers": 993,
+            "weightedPlaneRmseMeters": 0.24717458124391734,
+            "translationStepMeters": 0.007288483693105015
+          },
+          {
+            "iteration": 8,
+            "inliers": 993,
+            "weightedPlaneRmseMeters": 0.2480411236639092,
+            "translationStepMeters": 0.005537627319462653
+          },
+          {
+            "iteration": 9,
+            "inliers": 994,
+            "weightedPlaneRmseMeters": 0.24856843611618473,
+            "translationStepMeters": 0.016152682990452024
+          },
+          {
+            "iteration": 10,
+            "inliers": 994,
+            "weightedPlaneRmseMeters": 0.2490013160361778,
+            "translationStepMeters": 0.016664315987973362
+          },
+          {
+            "iteration": 11,
+            "inliers": 994,
+            "weightedPlaneRmseMeters": 0.2485693490755631,
+            "translationStepMeters": 0.016661630539864546
+          },
+          {
+            "iteration": 12,
+            "inliers": 994,
+            "weightedPlaneRmseMeters": 0.24900130976424578,
+            "translationStepMeters": 0.016661647233958295
+          }
+        ]
+      },
+      {
+        "robustMethod": "huber",
+        "history": [
+          {
+            "iteration": 1,
+            "inliers": 1011,
+            "weightedPlaneRmseMeters": 0.3730193838940615,
+            "translationStepMeters": 1.0813680530044112
+          },
+          {
+            "iteration": 2,
+            "inliers": 1012,
+            "weightedPlaneRmseMeters": 0.272034022809502,
+            "translationStepMeters": 0.5883467581217398
+          },
+          {
+            "iteration": 3,
+            "inliers": 1009,
+            "weightedPlaneRmseMeters": 0.2434071942003689,
+            "translationStepMeters": 0.36311503871663425
+          },
+          {
+            "iteration": 4,
+            "inliers": 996,
+            "weightedPlaneRmseMeters": 0.23702421108329985,
+            "translationStepMeters": 0.13634151582178053
+          },
+          {
+            "iteration": 5,
+            "inliers": 991,
+            "weightedPlaneRmseMeters": 0.232526240860772,
+            "translationStepMeters": 0.0915571091063191
+          },
+          {
+            "iteration": 6,
+            "inliers": 991,
+            "weightedPlaneRmseMeters": 0.23301007334297089,
+            "translationStepMeters": 0.012761069879011046
+          },
+          {
+            "iteration": 7,
+            "inliers": 991,
+            "weightedPlaneRmseMeters": 0.2318295860194849,
+            "translationStepMeters": 0.013897161022181678
+          },
+          {
+            "iteration": 8,
+            "inliers": 991,
+            "weightedPlaneRmseMeters": 0.23176602747749048,
+            "translationStepMeters": 0.010408544602210633
+          },
+          {
+            "iteration": 9,
+            "inliers": 989,
+            "weightedPlaneRmseMeters": 0.2307056742298826,
+            "translationStepMeters": 0.00730677512915476
+          },
+          {
+            "iteration": 10,
+            "inliers": 989,
+            "weightedPlaneRmseMeters": 0.2311489301207782,
+            "translationStepMeters": 0.004353765160492525
+          },
+          {
+            "iteration": 11,
+            "inliers": 989,
+            "weightedPlaneRmseMeters": 0.23081340521559232,
+            "translationStepMeters": 0.0014108398415212723
+          },
+          {
+            "iteration": 12,
+            "inliers": 989,
+            "weightedPlaneRmseMeters": 0.23102114953080224,
+            "translationStepMeters": 0.0007852219058505023
+          }
+        ]
+      },
+      {
+        "robustMethod": "tukey",
+        "history": [
+          {
+            "iteration": 1,
+            "inliers": 287,
+            "weightedPlaneRmseMeters": 0.14138896652465077,
+            "translationStepMeters": 0.32941236609084845
+          },
+          {
+            "iteration": 2,
+            "inliers": 296,
+            "weightedPlaneRmseMeters": 0.1465800747448319,
+            "translationStepMeters": 0.22128587064526722
+          },
+          {
+            "iteration": 3,
+            "inliers": 294,
+            "weightedPlaneRmseMeters": 0.15611615798092102,
+            "translationStepMeters": 0.2664395401526716
+          },
+          {
+            "iteration": 4,
+            "inliers": 314,
+            "weightedPlaneRmseMeters": 0.15042511586078228,
+            "translationStepMeters": 0.21825513532740606
+          },
+          {
+            "iteration": 5,
+            "inliers": 332,
+            "weightedPlaneRmseMeters": 0.15559470805039344,
+            "translationStepMeters": 0.3078796150800604
+          },
+          {
+            "iteration": 6,
+            "inliers": 324,
+            "weightedPlaneRmseMeters": 0.1488363723939156,
+            "translationStepMeters": 0.22808132564329373
+          },
+          {
+            "iteration": 7,
+            "inliers": 333,
+            "weightedPlaneRmseMeters": 0.14293676749583473,
+            "translationStepMeters": 0.08922465905490455
+          },
+          {
+            "iteration": 8,
+            "inliers": 344,
+            "weightedPlaneRmseMeters": 0.13700436790562115,
+            "translationStepMeters": 0.0734212093259679
+          },
+          {
+            "iteration": 9,
+            "inliers": 357,
+            "weightedPlaneRmseMeters": 0.13661238278068788,
+            "translationStepMeters": 0.05157010757254882
+          },
+          {
+            "iteration": 10,
+            "inliers": 358,
+            "weightedPlaneRmseMeters": 0.1367597825166074,
+            "translationStepMeters": 0.05478906409039682
+          },
+          {
+            "iteration": 11,
+            "inliers": 360,
+            "weightedPlaneRmseMeters": 0.1372234941753283,
+            "translationStepMeters": 0.06532496286489371
+          },
+          {
+            "iteration": 12,
+            "inliers": 363,
+            "weightedPlaneRmseMeters": 0.13732461288287004,
+            "translationStepMeters": 0.06328582837517908
+          }
+        ]
+      }
+    ]
+  }
+}
