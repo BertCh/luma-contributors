@@ -50,7 +50,9 @@ it.each([
     });
     outline.getCommandNodes(graph);
     expect(assembleRings).toHaveBeenCalledOnce();
-    expect(assembleRings.mock.contexts[0].spatialContext).toEqual(outline.outputSpatialContext);
+    expect((assembleRings.mock.contexts[0] as {spatialContext: unknown}).spatialContext).toEqual(
+      outline.outputSpatialContext
+    );
   } finally {
     assembleRings.mockRestore();
     device.destroy();

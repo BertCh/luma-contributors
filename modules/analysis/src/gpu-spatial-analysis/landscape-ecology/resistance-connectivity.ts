@@ -30,7 +30,7 @@ export function addResistanceConnectivityRecipe<Parameters>(
   const edgeCount = props.edges.length;
   const maximumIterations = props.maximumIterations ?? 256;
   const tolerance = props.tolerance ?? 1e-5;
-  // The local solver deliberately bounds private storage and work; larger systems are not supported (sparse path dropped, see dev-docs/upstream-first-pending.md).
+  // Bounded small solver; use addSparseResistanceConnectivityRecipe for larger systems.
   assert(Number.isSafeInteger(vertexCount) && vertexCount >= 2 && vertexCount <= 256);
   assert(Number.isSafeInteger(source) && source >= 0 && source < vertexCount);
   assert(Number.isSafeInteger(sink) && sink >= 0 && sink < vertexCount && source !== sink);

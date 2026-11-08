@@ -28,8 +28,9 @@ Record of every luma.gl extension that was quarantined in the former `modules/an
 
 ## Entry point note
 
-`graph-support` has no package export. Consumers outside `modules/analysis` import it through the package
-entry points that re-export it, or by relative path inside the package.
+`graph-support` has no package export of its own. `analysis-core/index.ts` re-exports it, so consumers outside
+`modules/analysis` (kepler) import it from `@luma-contributors/analysis/analysis-core`; inside the package use
+relative paths.
 
 ## Chunked standardization
 
@@ -37,14 +38,15 @@ entry points that re-export it, or by relative path inside the package.
 `values`, `mask` and `output` columns; the fork's `alignGraphVectorViews` multi-span path is dropped because
 published `GraphVectorView` chunks are not realigned. Callers with streamed multi-batch tables must pack to one chunk first.
 
-## Sparse resistance connectivity (accepted drop, EC03)
+## Sparse resistance connectivity (restored, EC03)
 
-`addSparseResistanceConnectivityRecipe`, `addRasterResistanceConnectivityRecipe`, `addSparseResistanceComponents`
-and `addSerialSparseResistanceComponents` are dropped, with their Circuitscape golden spec. They depended on
-`GPUJacobiPCG`, which published luma.gl does not export. Only the bounded `addResistanceConnectivityRecipe`
-(at most 256 vertices and 65,536 edges) remains. Restore on `createGPUConjugateGradientGraph` and `GPUSort` (no Jacobi
-preconditioner, so re-derive tolerances) if the feature is needed. The docs (`landscape-ecology.md`,
-`urban-ecology-lenses.md`) describe it as dropped; tracked as EC03 in `roadmap.md`.
+`addSparseResistanceConnectivityRecipe` is restored on public APIs: `GPUSort` and `GPUCOOToCSR` build the
+CSR matrix and a domain-specific Jacobi-PCG in `landscape-ecology/sparse-resistance-solver.ts` solves it.
+`GPUJacobiPCG` is still not exported, but `createGPUConjugateGradientGraph` is public. It was not used: it
+compiles to its own private command graph and binds `GPUVector`s, so no public API can run it inside a
+caller-owned `GPUCommandGraph`. `addSparseResistanceComponents`, `addSerialSparseResistanceComponents` and the raster
+adapter (`addRasterResistanceConnectivityRecipe`, EC03-R) are not restored. The helper is registered in
+`upstream-workarounds.md` with its deletion trigger.
 
 ## Other dropped capabilities
 

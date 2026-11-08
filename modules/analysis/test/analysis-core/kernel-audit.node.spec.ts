@@ -32,21 +32,7 @@ import {auditWGSLModule} from './kernel-audit/kernel-audit-wgsl';
  */
 const CHUNKED_WEIGHTS_AUDIT =
   'chunked weights take a caller-built chunk list per chunk count; weights7-chunked-weights-operations.node.spec.ts parses every kernel and checks the storage-binding limit across 1 to 16 chunks';
-const NOT_YET_AUDITED =
-  'moved from luma.gl graph into analysis during the upstream-first split and has no kernel-audit case yet; add one to kernel-audit/ and remove this skip';
 const SKIPPED_CONTRIBUTORS: Readonly<Record<string, string>> = {
-  GPUDatumGridTransform: NOT_YET_AUDITED,
-  GPUPointBuffer: NOT_YET_AUDITED,
-  GPUPointCloudChange: NOT_YET_AUDITED,
-  GPUPointCloudFeatures: NOT_YET_AUDITED,
-  GPUPointCloudGround: NOT_YET_AUDITED,
-  GPUPointCloudICP: NOT_YET_AUDITED,
-  GPUPointCloudNeighborhoods: NOT_YET_AUDITED,
-  GPUPointCloudSMRF: NOT_YET_AUDITED,
-  GPUPointCloudStatisticalFilter: NOT_YET_AUDITED,
-  GPUPointCloudSurfaces: NOT_YET_AUDITED,
-  GPUPointCloudHeight: NOT_YET_AUDITED,
-  GPUPointCloudVoxelMerge: NOT_YET_AUDITED,
   GPUChunkedSpatialWeightsAlgebra: CHUNKED_WEIGHTS_AUDIT,
   GPUChunkedSpatialWeightsTranspose: CHUNKED_WEIGHTS_AUDIT,
   GPUChunkedSpatialWeightsTransform: CHUNKED_WEIGHTS_AUDIT,

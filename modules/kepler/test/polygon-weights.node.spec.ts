@@ -100,7 +100,7 @@ test('polygon recipes preserve exact-source topology and explicit statistical ch
             estimatedBytes: 128,
             input: {rowCount, chunkCount: 1, formats: {events: 'float32', population: 'float32'}}
           },
-          {webgpu: true, availableBytes: 1024}
+          {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false}
         ).reason
       ).toBe(rowCount === 3 ? 'supported' : 'capacity');
   }
@@ -267,7 +267,7 @@ test('polygon Quantile LISA rejects changed inference and admits only meaningful
         input: {rowCount: 2, chunkCount: 1, formats: {events: 'float32'}},
         estimatedBytes: 128
       },
-      {webgpu: true, availableBytes: 1024}
+      {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false}
     ).reason
   ).toBe('capacity');
 });

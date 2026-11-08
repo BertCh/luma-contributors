@@ -111,7 +111,7 @@ export function createInterpolationScalingCases(): InterpolationBenchmarkCase[] 
           })
         );
         return (actual, updated) => {
-          expect(actual.status.every(value => value === 0)).toBe(true);
+          expect(actual['status'].every(value => value === 0)).toBe(true);
           for (let query = 0; query < queryCount; query++) {
             expect(actual['values-output'][query * 4]).toBeCloseTo(
               response(queries[query * 2], queries[query * 2 + 1]) + (updated ? 3 : 0),
@@ -184,8 +184,8 @@ export function createInterpolationScalingCases(): InterpolationBenchmarkCase[] 
           })
         );
         return (actual, updated) => {
-          expect(actual.overflow).toEqual([0]);
-          expect(actual.status.every(value => value === 0)).toBe(true);
+          expect(actual['overflow']).toEqual([0]);
+          expect(actual['status'].every(value => value === 0)).toBe(true);
           for (let query = 0; query < queryCount; query++) {
             expect(actual['values-output'][query * 4]).toBeCloseTo(
               response(queries[query * 2], queries[query * 2 + 1]) + (updated ? 3 : 0),
@@ -277,12 +277,12 @@ export function createInterpolationScalingCases(): InterpolationBenchmarkCase[] 
           })
         );
         return (actual, updated) => {
-          expect(actual.status.every(value => value === 0)).toBe(true);
-          expect(actual.values.every(Number.isFinite)).toBe(true);
+          expect(actual['status'].every(value => value === 0)).toBe(true);
+          expect(actual['values'].every(Number.isFinite)).toBe(true);
           for (let query = 0; query < count; query++) {
-            expect(actual.moments[query * 2]).toBeCloseTo(updated ? updatedMeans[query] : 2, 3);
-            expect(actual.moments[query * 2 + 1]).toBeGreaterThanOrEqual(0);
-            expect(actual.moments[query * 2 + 1]).toBeCloseTo(
+            expect(actual['moments'][query * 2]).toBeCloseTo(updated ? updatedMeans[query] : 2, 3);
+            expect(actual['moments'][query * 2 + 1]).toBeGreaterThanOrEqual(0);
+            expect(actual['moments'][query * 2 + 1]).toBeCloseTo(
               reference.covariance[query][query],
               4
             );

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
 /**
  * Provide a minimal browser-side `process` shim for test utilities that still
  * probe `process.browser` or `process.env` during module initialization.

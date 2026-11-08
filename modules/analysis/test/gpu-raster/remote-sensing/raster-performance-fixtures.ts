@@ -141,14 +141,14 @@ function seasonalReference(values: Float32Array, cells: number, slices: number):
         chosen = fit.coefficients;
       }
     }
-    result.coefficients.push(...chosen);
-    result.breakIndex.push(boundary);
-    result.improvement.push(gain);
-    result.status.push(0);
+    result['coefficients'].push(...chosen);
+    result['breakIndex'].push(boundary);
+    result['improvement'].push(gain);
+    result['status'].push(0);
     for (let slice = 0; slice < slices; slice++) {
       const trend = chosen[0] + (chosen[1] * slice) / slices + (slice >= boundary ? chosen[4] : 0);
       const season = chosen[2] * baseRows[slice][2] + chosen[3] * baseRows[slice][3];
-      result.components.push(trend, season, response[slice] - trend - season);
+      result['components'].push(trend, season, response[slice] - trend - season);
     }
   }
   return result;
@@ -450,8 +450,8 @@ export function createRasterBenchmarkCases(): BenchmarkCase[] {
         return {
           reference: changed => ({shift: changed ? [2, -3] : [-3, 2], status: [0]}),
           validate(actual) {
-            expect(actual.peak[0]).toBeGreaterThan(0.9);
-            expect(actual.peak[0]).toBeLessThanOrEqual(1.0001);
+            expect(actual['peak'][0]).toBeGreaterThan(0.9);
+            expect(actual['peak'][0]).toBeLessThanOrEqual(1.0001);
           }
         };
       }
@@ -556,7 +556,7 @@ export function createRasterBenchmarkCases(): BenchmarkCase[] {
             status: fill(unmixingCells, 0)
           }),
           validate(actual) {
-            for (const value of actual.iterationCounts) {
+            for (const value of actual['iterationCounts']) {
               expect(value).toBeGreaterThan(0);
               expect(value).toBeLessThanOrEqual(512);
             }

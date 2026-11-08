@@ -16,18 +16,18 @@ import {
 
 type ReadCall = {offset: number; length: number};
 
-type FakeVector = {
-  vector: GPUVector;
+type FakeVector<Format extends 'float32' | 'sint32' | 'uint32'> = {
+  vector: GPUVector<Format>;
   calls: ReadCall[];
 };
 
 /** Byte padding placed before each chunk to exercise nonzero `byteOffset`. */
 const CHUNK_BYTE_OFFSET = 16;
 
-function makeFakeVector(
+function makeFakeVector<Format extends 'float32' | 'sint32' | 'uint32'>(
   chunks: readonly (readonly number[])[],
-  encode: 'float32' | 'sint32' | 'uint32'
-): FakeVector {
+  encode: Format
+): FakeVector<Format> {
   const calls: ReadCall[] = [];
   const data = chunks.map(values => {
     const bytes = new Uint8Array(CHUNK_BYTE_OFFSET + values.length * 4 + 8);
@@ -49,7 +49,7 @@ function makeFakeVector(
       }
     };
   });
-  return {vector: {data} as unknown as GPUVector, calls};
+  return {vector: {data} as unknown as GPUVector<Format>, calls};
 }
 
 function makeFixture(pageRows = 4) {
@@ -374,8 +374,8 @@ describe('KeplerResidentRows domains', () => {
     };
     rows.setDomains(domains);
     expect(rows.domains).toEqual({value: [0.5, 14.5], count: null});
-    domains.delta = [1, 2];
-    expect(rows.domains.delta).toBeUndefined();
+    domains['delta'] = [1, 2];
+    expect(rows.domains['delta']).toBeUndefined();
   });
 });
 

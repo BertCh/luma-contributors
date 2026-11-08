@@ -10,7 +10,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {createMaskedWeakComponentNodes} from '../network-masked-weak-components';
+import {createMaskedWeakComponentNodes} from '../../analysis-core/kernels/masked-weak-components';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,

@@ -17,8 +17,9 @@ import {requireTestDevice} from '../utils/require-test-device';
 import fixture from '../oracles/fixtures/rs02-fractional-categories.json';
 
 async function createFixture(polygonCoverage = false, areaScale = 1) {
-  const device = await getWebGPUTestDevice('core');
-  requireTestDevice(device);
+  const testDevice = await getWebGPUTestDevice('core');
+  requireTestDevice(testDevice);
+  const device = testDevice;
   const graph = new GPUCommandGraph(device);
   const buffers: ReturnType<typeof createOutputBuffer>[] = [];
   function allocate<Format extends 'uint32' | 'float32' | 'float32x2'>(

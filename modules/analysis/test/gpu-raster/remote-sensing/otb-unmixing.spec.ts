@@ -35,15 +35,17 @@ it('matches all 256 original 224-band pixels against OTB 9.1.1 published UCLS ab
       }
     })
   );
-  expect(result.status).toEqual(Array(fixture.cellCount).fill(0));
-  expect(result.iterations).toEqual(Array(fixture.cellCount).fill(0));
+  expect(result['status']).toEqual(Array(fixture.cellCount).fill(0));
+  expect(result['iterations']).toEqual(Array(fixture.cellCount).fill(0));
   const maximumError = Math.max(
-    ...result.abundances.map((value, index) => Math.abs(value - fixture.expectedAbundances[index]))
+    ...result['abundances'].map((value, index) =>
+      Math.abs(value - fixture.expectedAbundances[index])
+    )
   );
   expect(maximumError).toBeLessThan(2e-5);
   // Upstream fixture includes noisy spectra and negative UCLS coefficients.
-  expect(Math.min(...result.abundances)).toBeLessThan(-0.01);
-  expect(result.residual.every(value => value > 0.003 && value < 0.006)).toBe(true);
+  expect(Math.min(...result['abundances'])).toBeLessThan(-0.01);
+  expect(result['residual'].every(value => value > 0.003 && value < 0.006)).toBe(true);
   console.log(JSON.stringify({reference: fixture.provenance.reference, maximumError}));
 });
 
@@ -92,11 +94,11 @@ it.each([
         }
       })
     );
-    expect(result.status).toEqual([0]);
+    expect(result['status']).toEqual([0]);
     for (let member = 0; member < endmemberCount; member++) {
-      expect(result.abundances[member]).toBeCloseTo(coefficients[member], 6);
+      expect(result['abundances'][member]).toBeCloseTo(coefficients[member], 6);
     }
-    expect(result.residual[0]).toBeLessThan(1e-8);
+    expect(result['residual'][0]).toBeLessThan(1e-8);
   }
 });
 
@@ -139,11 +141,11 @@ it.each(
       }
     })
   );
-  expect(result.status).toEqual([0]);
-  expect(result.iterations[0]).toBeGreaterThan(0);
-  expect(result.iterations[0]).toBeLessThan(512);
+  expect(result['status']).toEqual([0]);
+  expect(result['iterations'][0]).toBeGreaterThan(0);
+  expect(result['iterations'][0]).toBeLessThan(512);
   for (let member = 0; member < endmemberCount; member++) {
-    expect(result.abundances[member]).toBeCloseTo(expected[member], 6);
+    expect(result['abundances'][member]).toBeCloseTo(expected[member], 6);
   }
-  expect(result.residual[0]).toBeLessThan(1e-10);
+  expect(result['residual'][0]).toBeLessThan(1e-10);
 });

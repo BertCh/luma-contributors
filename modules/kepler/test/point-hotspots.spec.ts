@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import type {Buffer} from '@luma.gl/core';
+import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerPointWeights, type KeplerPointWeightsBinding} from '../src/analysis/point-weights';
@@ -25,6 +25,7 @@ import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 test('point Gi* reuses geographic kNN and matches independent moments, inference and island policies', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
+  const gpuDevice: Device = device;
   const graph = new GPUCommandGraph(device);
   const source = {datasetId: 'point-clusters', revision: 3};
   const settings: KeplerPointWeightsSettings = {
@@ -41,7 +42,7 @@ test('point Gi* reuses geographic kNN and matches independent moments, inference
   const selected = [1, 0, 1, 1, 1, 1];
   const buffers: Buffer[] = [];
   function input(name: string, values: number[]) {
-    const buffer = createInputBuffer(device, new Float32Array(values));
+    const buffer = createInputBuffer(gpuDevice, new Float32Array(values));
     buffers.push(buffer);
     return importGraphBuffer(graph, name, buffer, 'float32', values.length);
   }
@@ -50,7 +51,7 @@ test('point Gi* reuses geographic kNN and matches independent moments, inference
     format: Format,
     length: number
   ) {
-    const buffer = createOutputBuffer(device, length);
+    const buffer = createOutputBuffer(gpuDevice, length);
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, format, length)};
   }
@@ -60,7 +61,7 @@ test('point Gi* reuses geographic kNN and matches independent moments, inference
     longitudes.map(() => 0)
   );
   const values = input('values', sourceValues);
-  const maskBuffer = createInputBuffer(device, new Uint32Array(selected));
+  const maskBuffer = createInputBuffer(gpuDevice, new Uint32Array(selected));
   buffers.push(maskBuffer);
   const mask = importGraphBuffer(graph, 'selection', maskBuffer, 'uint32', selected.length);
   const pointStatus = {
@@ -186,7 +187,10 @@ test('point Gi* reuses geographic kNN and matches independent moments, inference
       if (!('pointWeights' in item.result) || !('inference' in item.result))
         throw new Error('Expected point hot spots');
       expect(item.result.pointWeights.parameterByteLength).toBe(0);
-      expect(item.result.pointWeights.weights.offsets).toBe(binding.weights.offsets);
+      const resultWeights = item.result.pointWeights.weights;
+      if (!('offsets' in resultWeights) || !('offsets' in binding.weights))
+        throw new Error('Expected unchunked point weights');
+      expect(resultWeights.offsets).toBe(binding.weights.offsets);
       expect(item.result.inference.multipleTesting).toBe(item.variant.correction);
     }
     expect((await readUint32(results[0].bins.buffer, 6))[4]).toBe(2);

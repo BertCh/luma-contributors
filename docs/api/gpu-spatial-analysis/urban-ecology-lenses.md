@@ -22,6 +22,12 @@ Two buildings share a wall of length two. Their axial orientations straddle the 
 
 ::lens{scenario=gpu-spatial-analysis.building-adjacency-recipe rung=graph caption="Follow the executable GPU stages and output capture copies."}
 
+## `addSparseResistanceConnectivityRecipe`
+
+A sparse grounded-Laplacian Jacobi-PCG resistance solve for up to 1,048,576 vertices and 2,097,152 edges, with an independent true current residual and edge and vertex current maps. Its lens scenario is pending (EC03 follow-up); the contract is documented in the landscape ecology API page.
+
+{/* lens:addSparseResistanceConnectivityRecipe */}
+
 ## `addIsovistsRecipe`
 
 Eight rays from the centre recover the square enclosure area and perimeter of sixteen. A second observer lies on the boundary and produces invalid measures, so the result also demonstrates the boundary mask.

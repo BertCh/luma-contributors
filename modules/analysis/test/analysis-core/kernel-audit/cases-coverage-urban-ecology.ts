@@ -13,7 +13,8 @@ import {
   addLandscapeMetricsRecipe,
   addPatchProximityRecipe,
   addResistanceConnectivityRecipe,
-  addSegregationDecompositionRecipe
+  addSegregationDecompositionRecipe,
+  addSparseResistanceConnectivityRecipe
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KernelAuditCase} from './kernel-audit-context';
 
@@ -263,6 +264,48 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
         sink: 255,
         maximumIterations: 4096,
         tolerance: 1e-5
+      });
+    }
+  },
+  {
+    exportName: 'addSparseResistanceConnectivityRecipe',
+    name: '1048576 vertices, 2097152 edges, 4096 iterations, 1024 connectivity iterations',
+    build({graph, view}) {
+      addSparseResistanceConnectivityRecipe(graph, {
+        edges: view('uint32x2', 2097152),
+        conductances: view('float32', 2097152),
+        vertexCount: 1048576,
+        source: 0,
+        sink: 1048575,
+        maximumIterations: 4096,
+        connectivityIterations: 1024,
+        tolerance: 1e-4
+      });
+    }
+  },
+  {
+    exportName: 'addSparseResistanceConnectivityRecipe',
+    name: 'vertices above the maximum',
+    build({graph, view}) {
+      addSparseResistanceConnectivityRecipe(graph, {
+        edges: view('uint32x2', 1),
+        conductances: view('float32', 1),
+        vertexCount: 1048577,
+        source: 0,
+        sink: 1
+      });
+    }
+  },
+  {
+    exportName: 'addSparseResistanceConnectivityRecipe',
+    name: 'edges above the maximum',
+    build({graph, view}) {
+      addSparseResistanceConnectivityRecipe(graph, {
+        edges: view('uint32x2', 2097153),
+        conductances: view('float32', 2097153),
+        vertexCount: 4,
+        source: 0,
+        sink: 1
       });
     }
   },

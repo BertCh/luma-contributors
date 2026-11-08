@@ -77,8 +77,8 @@ for (const entry of fixture.texture.cases) {
       entry.offset,
       entry.symmetric
     );
-    close(whole.features, entry.features);
-    expect(whole.counts).toEqual(entry.counts);
+    close(whole['features'], entry.features);
+    expect(whole['counts']).toEqual(entry.counts);
     // Split inside the masked image; only core outputs are compared, never duplicate halo cells.
     for (const [start, end] of [
       [0, 5],
@@ -104,10 +104,10 @@ for (const entry of fixture.texture.cases) {
           const local = row * (upper - lower) + column - lower,
             global = row * source.width + column;
           close(
-            tile.features.slice(local * 7, local * 7 + 7),
-            whole.features.slice(global * 7, global * 7 + 7)
+            tile['features'].slice(local * 7, local * 7 + 7),
+            whole['features'].slice(global * 7, global * 7 + 7)
           );
-          expect(tile.counts[local]).toBe(whole.counts[global]);
+          expect(tile['counts'][local]).toBe(whole['counts'][global]);
         }
     }
   }, 120000);
@@ -134,8 +134,8 @@ for (const [index, entry] of fixture.registration.cases.entries()) {
         }
       })
     );
-    expect(result.status).toEqual([0]);
-    close(result.shift, entry.shift, 0.025001);
+    expect(result['status']).toEqual([0]);
+    close(result['shift'], entry.shift, 0.025001);
   }, 120000);
 }
 
@@ -165,19 +165,19 @@ it('RS11 selected harmonic level-break model matches pinned NumPy least squares 
       }
     })
   );
-  expect(result.status).toEqual(source.cases.map(() => 0));
-  expect(result.breakIndex).toEqual(source.cases.map(entry => entry.breakIndex));
+  expect(result['status']).toEqual(source.cases.map(() => 0));
+  expect(result['breakIndex']).toEqual(source.cases.map(entry => entry.breakIndex));
   close(
-    result.coefficients,
+    result['coefficients'],
     source.cases.flatMap(entry => entry.coefficients)
   );
   close(
-    result.improvement,
+    result['improvement'],
     source.cases.map(entry => entry.improvement)
   );
   source.cases.forEach((entry, cell) =>
     entry.validity.forEach((valid, slice) => {
-      if (!valid) expect(result.components[(cell * source.slices + slice) * 3 + 2]).toBeNaN();
+      if (!valid) expect(result['components'][(cell * source.slices + slice) * 3 + 2]).toBeNaN();
     })
   );
 }, 120000);
@@ -240,9 +240,9 @@ it('RS08 explicit tiled local-label reconciliation preserves scikit-image hierar
             values: harness.input(source.values)
           })
     );
-    expect(result.adjacency).toEqual(source.adjacency);
-    expect(result.mapping).toEqual(source.mapping);
-    expect(result.status).toEqual([0]);
+    expect(result['adjacency']).toEqual(source.adjacency);
+    expect(result['mapping']).toEqual(source.mapping);
+    expect(result['status']).toEqual([0]);
   }
 }, 120000);
 
@@ -288,19 +288,20 @@ it('RS02 executes 32768 dense categories with exact area and deterministic ties'
       }
     })
   );
-  expect(result.validity).toEqual([1]);
-  expect(result.majority).toEqual([count - 1]);
-  expect(result.minority).toEqual([0]);
-  expect(result.coveredArea).toEqual([count / 2]);
-  expect(result.missingArea).toEqual([0]);
-  expect(result.classAreas.every(value => value === 0.5)).toBe(true);
-  expect(result.proportions.every(value => value === 1 / count)).toBe(true);
+  expect(result['validity']).toEqual([1]);
+  expect(result['majority']).toEqual([count - 1]);
+  expect(result['minority']).toEqual([0]);
+  expect(result['coveredArea']).toEqual([count / 2]);
+  expect(result['missingArea']).toEqual([0]);
+  expect(result['classAreas'].every(value => value === 0.5)).toBe(true);
+  expect(result['proportions'].every(value => value === 1 / count)).toBe(true);
 }, 120000);
 
 for (const size of [128, 256, 512]) {
   it(`RS03 persistent prepared weights across graphs and repeated dates: ${size} squared source`, async () => {
-    const device = await getWebGPUTestDevice();
-    requireTestDevice(device);
+    const testDevice = await getWebGPUTestDevice();
+    requireTestDevice(testDevice);
+    const device = testDevice;
     const count = size * size,
       destinationCount = count / 4,
       stride = 9;
@@ -427,7 +428,7 @@ it('RS04 maximum 32-level, radius-eight texture runs on 16384 cells with exact a
     })
   );
   const center = 64 * size + 64;
-  close(result.features.slice(center * 7, center * 7 + 7), [
+  close(result['features'].slice(center * 7, center * 7 + 7), [
     961,
     31,
     1 / 962,
@@ -436,8 +437,8 @@ it('RS04 maximum 32-level, radius-eight texture runs on 16384 cells with exact a
     -1,
     Math.log(2)
   ]);
-  expect(result.pairCount[center]).toBe(544);
-  expect(result.pairCount[0]).toBe(144);
+  expect(result['pairCount'][center]).toBe(544);
+  expect(result['pairCount'][0]).toBe(144);
 }, 120000);
 
 it('RS08 64-region adjacency and bounded propagation scale to 16384 source cells', async () => {
@@ -466,14 +467,14 @@ it('RS08 64-region adjacency and bounded propagation scale to 16384 source cells
       }
     })
   );
-  expect(result.mapping).toEqual(Array.from({length: 64}, (_, index) => index % 8));
-  expect(result.status).toEqual([0]);
+  expect(result['mapping']).toEqual(Array.from({length: 64}, (_, index) => index % 8));
+  expect(result['status']).toEqual([0]);
   for (let first = 0; first < 64; first++)
     for (let second = 0; second < 64; second++) {
       const adjacent =
         (Math.floor(first / 8) === Math.floor(second / 8) && Math.abs(first - second) === 1) ||
         Math.abs(first - second) === 8;
-      expect(result.adjacency[first * 64 + second]).toBe(adjacent ? 16 : 0);
+      expect(result['adjacency'][first * 64 + second]).toBe(adjacent ? 16 : 0);
     }
 }, 120000);
 
@@ -497,8 +498,8 @@ for (const operation of ['mean', 'minimum', 'maximum', 'median'] as const) {
         }
       })
     );
-    close(result.values, source.expected[operation]);
-    expect(result.counts).toEqual([3, 3, 4]);
-    expect(result.status).toEqual([0, 0, 0]);
+    close(result['values'], source.expected[operation]);
+    expect(result['counts']).toEqual([3, 3, 4]);
+    expect(result['status']).toEqual([0, 0, 0]);
   });
 }

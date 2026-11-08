@@ -112,7 +112,9 @@ it('adaptive neighbor selection walks grid rings instead of scanning every row',
     bandwidthMode: 'adaptive' as const,
     maximumNeighborCount: 16
   };
-  const find = (producerProps: typeof props) =>
+  const find = (
+    producerProps: ConstructorParameters<typeof GPUGeneralizedGeographicallyWeightedRegression>[0]
+  ) =>
     getGPUCommandNodeKernelSources(
       new GPUGeneralizedGeographicallyWeightedRegression(producerProps).getCommandNodes(graph)
     ).find(source => source.id.endsWith('-fit'))!;

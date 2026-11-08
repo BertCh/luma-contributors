@@ -22,8 +22,10 @@ async function setup(
   maximumFrontierSize = 1024,
   maximumExpansions = 100000
 ) {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
+  const testDevice = await getWebGPUTestDevice();
+  requireTestDevice(testDevice);
+  // Rebinding keeps the narrowed type inside hoisted function declarations.
+  const device = testDevice;
   const graph = new GPUCommandGraph(device);
   const fixture = reference.cases[caseIndex];
   const buffers: ReturnType<typeof createOutputBuffer>[] = [];

@@ -82,9 +82,7 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
       gridSize: [3, 3, 1],
       representatives: view('uint32', 9),
       counts: view('uint32', 9),
-      output: view('float32x3', 9),
-      centroids: view('float32x3', 9),
-      attribute: {values: view('float32', 9), means: view('float32', 9), counts: view('uint32', 9)}
+      output: view('float32x3', 9)
     }),
     new GPUPointCloudVoxelMerge({
       partitionPolicy: 'disjoint-owned-rows',

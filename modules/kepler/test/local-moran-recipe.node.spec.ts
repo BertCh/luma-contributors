@@ -86,7 +86,7 @@ test('local Moran rejects inference changes and significance levels lost at Floa
 });
 
 test('local Moran routing checks both coordinate precision and contributor row capacity', () => {
-  const capabilities = {webgpu: true, availableBytes: 1024};
+  const capabilities = {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false};
   const request = {
     kind: 'analysis' as const,
     recipe,
@@ -163,7 +163,7 @@ test('conditional permutation Local Moran serializes explicit controls and rejec
 });
 
 test('conditional permutation Local Moran has a bounded source while analytic routing stays compatible', () => {
-  const capabilities = {webgpu: true, availableBytes: 1024};
+  const capabilities = {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false};
   for (const inference of [
     'analytic-conditional-normal-two-sided',
     'permutation-conditional-two-sided'

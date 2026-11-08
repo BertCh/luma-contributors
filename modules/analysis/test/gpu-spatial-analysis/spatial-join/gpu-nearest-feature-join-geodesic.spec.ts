@@ -277,7 +277,7 @@ it('GPUNearestFeatureJoin great-circle nearest-feature mode returns the nearest 
 it('GPUNearestFeatureJoin measures and thresholds great-circle neighbors in kilometers', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const scene = GEODESIC_NEAREST_SCENES.equator;
+  const scene = GEODESIC_NEAREST_SCENES['equator'];
   const result = await runNeighbors(device, scene, {k: 3, maxDistance: 3.2, units: 'kilometers'});
   expect(result.overflow).toBe(0);
   expect(result.counts).toEqual([2, 1]);

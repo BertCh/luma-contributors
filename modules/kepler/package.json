@@ -36,10 +36,10 @@
     "apache-arrow": "^17.0.0"
   },
   "peerDependencies": {
-    "apache-arrow": ">=17.0.0",
     "@luma.gl/core": "~10.0.0-alpha.10",
     "@luma.gl/graph": "~10.0.0-alpha.10",
-    "@luma.gl/shaders": "~10.0.0-alpha.10"
+    "@luma.gl/shaders": "~10.0.0-alpha.10",
+    "apache-arrow": ">=17.0.0"
   },
   "repository": {
     "type": "git",

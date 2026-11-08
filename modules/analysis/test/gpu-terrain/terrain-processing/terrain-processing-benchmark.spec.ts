@@ -18,8 +18,9 @@ import {requireTestDevice} from '../../utils/require-test-device';
 // Opt in with VITE_TERRAIN_PROCESSING_BENCHMARK=true yarn test-browser-benchmarks
 // --maxWorkers=1 modules/analysis/test/gpu-terrain/terrain-processing/terrain-processing-benchmark.spec.ts
 const enabled =
-  (import.meta as unknown as {env?: Record<string, string>}).env
-    ?.VITE_TERRAIN_PROCESSING_BENCHMARK === 'true';
+  (import.meta as unknown as {env?: Record<string, string>}).env?.[
+    'VITE_TERRAIN_PROCESSING_BENCHMARK'
+  ] === 'true';
 const modes = ['breach', 'transport', 'hierarchy', 'catchment', 'dem', 'tiled'] as const;
 
 for (const mode of modes) {

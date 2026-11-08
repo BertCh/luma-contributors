@@ -266,9 +266,9 @@ it('chunked multivariate local Geary with self slots matches the single CSR', as
         plan.map(chunk => chunk.rowCount),
         run(strategy)
       );
-      expectNear(chunked.statistic, whole.statistic, `${strategy} statistic`, 1e-6);
-      expect(chunked.pValues, `${strategy} pValues`).toEqual(whole.pValues);
-      expect(chunked.classes, `${strategy} classes`).toEqual(whole.classes);
+      expectNear(chunked['statistic'], whole['statistic'], `${strategy} statistic`, 1e-6);
+      expect(chunked['pValues'], `${strategy} pValues`).toEqual(whole['pValues']);
+      expect(chunked['classes'], `${strategy} classes`).toEqual(whole['classes']);
     }
   }
 }, 300000);
@@ -315,9 +315,9 @@ it('chunked quantile LISA with self slots matches the single CSR', async () => {
     );
   };
   const whole = await runConsumer(device, scenario, undefined, run);
-  expect(whole.overflow[0]).toBe(0);
-  expect(whole.validCount[0], JSON.stringify(whole.boundaries)).toBeGreaterThan(0);
-  expect(new Set(whole.classes).size).toBeGreaterThan(1);
+  expect(whole['overflow'][0]).toBe(0);
+  expect(whole['validCount'][0], JSON.stringify(whole['boundaries'])).toBeGreaterThan(0);
+  expect(new Set(whole['classes']).size).toBeGreaterThan(1);
   for (const limit of CHUNK_SLOT_LIMITS) {
     const plan = planGPUSpatialWeightsChunks(scenario.counts, limit);
     expect(plan.length).toBeGreaterThan(1);

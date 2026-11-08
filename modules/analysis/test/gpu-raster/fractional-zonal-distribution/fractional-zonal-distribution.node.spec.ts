@@ -20,9 +20,10 @@ function createProps(capacity = 8, zoneCount = 2, probabilityCount = 3) {
   let identifier = 0;
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `distribution-${identifier++}`, format, length);
+  const inputValues = view('float32', 8);
   const props: GPURasterFractionalZonalDistributionProps = {
     grid: {width: 8, height: 1, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
-    input: {id: 'input', format: 'float32', storage: {kind: 'buffer', values: view('float32', 8)}},
+    input: {id: 'input', format: 'float32', storage: {kind: 'buffer', values: inputValues}},
     zoneCount,
     coverage: {
       zoneIds: view('uint32', capacity),
@@ -51,7 +52,7 @@ function createProps(capacity = 8, zoneCount = 2, probabilityCount = 3) {
       status: view('uint32', zoneCount)
     }
   };
-  return {graph, props, view};
+  return {graph, props, view, inputValues};
 }
 
 for (const [capacity, zoneCount, probabilityCount] of [
@@ -75,7 +76,7 @@ for (const [capacity, zoneCount, probabilityCount] of [
 }
 
 it('RS01 rejects mismatched result shapes, aliases, and unsupported bounds', () => {
-  const {props, view} = createProps();
+  const {props, view, inputValues} = createProps();
   expect(
     () =>
       new GPURasterFractionalZonalDistribution({
@@ -94,7 +95,7 @@ it('RS01 rejects mismatched result shapes, aliases, and unsupported bounds', () 
     () =>
       new GPURasterFractionalZonalDistribution({
         ...props,
-        output: {...props.output, weightSums: props.input.storage.values}
+        output: {...props.output, weightSums: inputValues}
       })
   ).toThrow();
   expect(

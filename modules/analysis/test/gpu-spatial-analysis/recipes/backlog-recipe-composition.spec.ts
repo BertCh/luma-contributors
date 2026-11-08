@@ -95,6 +95,7 @@ it('backlog recipe composition retains unresolved support and dense zone identit
     const counts = publish(fixture, 'counts', distribution.outputs.validCounts);
     const medians = publish(fixture, 'medians', distribution.outputs.medians);
     const quantiles = publish(fixture, 'quantiles', distribution.outputs.quantiles!);
+    // The raster wrapper's spread drops the recipe's index signature from the intermediates type.
     expect(distribution.intermediates.zones).toBe(zones);
     fixture.run();
     // Original donors reach only adjacent cells. Filtering cannot turn invalid centers valid.
@@ -264,9 +265,9 @@ it('backlog disruption gates retained-baseline failures and preserves parallel-e
       )
     });
     expect(result.outputs.baselineCosts).toBe(baseline);
-    expect(result.intermediates.topology).toBe(topology);
-    expect(result.intermediates.originNodes).toBe(origins);
-    expect(result.intermediates.targetNodes).toBe(targets);
+    expect(result.intermediates['topology']).toBe(topology);
+    expect(result.intermediates['originNodes']).toBe(origins);
+    expect(result.intermediates['targetNodes']).toBe(targets);
     const costs = publish(fixture, 'scenario-costs', result.outputs.scenarioCosts);
     const differences = publish(fixture, 'differences', result.outputs.costDifferences);
     const unreachable = publish(fixture, 'unreachable', result.outputs.newlyUnreachable);

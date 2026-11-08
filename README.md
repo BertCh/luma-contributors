@@ -39,6 +39,7 @@ Plans go in `dev-docs/roadmap.md`; see `dev-docs/README.md` for the dev-docs ind
 nvm use
 yarn install
 yarn typecheck             # needs NODE_OPTIONS=--max-old-space-size=8192
+yarn typecheck-tests       # tests, minus the kepler-compute example specs; same memory setting
 yarn build                 # ESM + CommonJS + declarations
 yarn verify-package-exports
 yarn lint

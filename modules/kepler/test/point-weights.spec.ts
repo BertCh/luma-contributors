@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
+import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph, GPUMask} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerPointWeights} from '../src/analysis/point-weights';
@@ -20,17 +21,21 @@ import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 test('great-circle point weights cross the antimeridian and are reusable without refilling masked neighbors', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
+  const gpuDevice: Device = device;
   const graph = new GPUCommandGraph(device);
   const source = {datasetId: 'points', revision: 3};
   const longitudeBuffer = createInputBuffer(
     device,
     new Float32Array([179.9, -179.9, 170, 0, NaN, 0, 181])
   );
-  const latitudeBuffer = createInputBuffer(device, new Float32Array(7));
-  const validityBuffer = createInputBuffer(device, new Uint32Array([1, 1, 1, 1, 1, 0, 1]));
-  const eventBuffer = createInputBuffer(device, new Float32Array([10, 30, 80, 100, 999, 999, 999]));
-  const populationBuffer = createInputBuffer(device, new Float32Array(7).fill(100));
-  const selectionBuffer = createInputBuffer(device, new Uint32Array([1, 0, 1, 1, 1, 1, 1]));
+  const latitudeBuffer = createInputBuffer(gpuDevice, new Float32Array(7));
+  const validityBuffer = createInputBuffer(gpuDevice, new Uint32Array([1, 1, 1, 1, 1, 0, 1]));
+  const eventBuffer = createInputBuffer(
+    gpuDevice,
+    new Float32Array([10, 30, 80, 100, 999, 999, 999])
+  );
+  const populationBuffer = createInputBuffer(gpuDevice, new Float32Array(7).fill(100));
+  const selectionBuffer = createInputBuffer(gpuDevice, new Uint32Array([1, 0, 1, 1, 1, 1, 1]));
   const buffers = [
     longitudeBuffer,
     latitudeBuffer,
@@ -40,7 +45,7 @@ test('great-circle point weights cross the antimeridian and are reusable without
     selectionBuffer
   ];
   function output(name: string, length: number) {
-    const buffer = createOutputBuffer(device, length);
+    const buffer = createOutputBuffer(gpuDevice, length);
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   }

@@ -29,7 +29,7 @@ function getRuntimeTransitionReference(zone: string): TimeZoneReference {
   const reference = TIME_ZONE_REFERENCE.zones[zone];
   // Node 22.23.4 bundles tzdb 2026e, which corrects Ireland's 1925 autumn transition.
   // https://lists.iana.org/hyperkitty/list/tz%40iana.org/thread/RT7OSDUOD77BXA4LBWK4I2RSBRAP2LPH/
-  if (zone !== 'Europe/Dublin' || (process.versions.tz ?? '') < '2026e') return reference;
+  if (zone !== 'Europe/Dublin' || (process.versions['tz'] ?? '') < '2026e') return reference;
   return {
     ...reference,
     transitions: reference.transitions.map(transition =>

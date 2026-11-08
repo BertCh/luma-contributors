@@ -21,7 +21,6 @@ import {GPUZonalStatistics} from '../../../src/gpu-spatial-analysis/zonal-statis
 import {GPURegionMask} from '../../../src/gpu-spatial-analysis/region-statistics/gpu-region-mask';
 import {GPURegionStatistics} from '../../../src/gpu-spatial-analysis/region-statistics/gpu-region-statistics';
 import {GPULineLengthPerPolygon} from '../../../src/gpu-spatial-analysis/line-density/gpu-line-length-per-polygon';
-import {GPUPointSpatialQuery} from '@luma.gl/graph/geospatial';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -53,8 +52,7 @@ export type PolygonConsumerName =
   | 'GPUZonalStatistics'
   | 'GPURegionMask'
   | 'GPURegionStatistics'
-  | 'GPULineLengthPerPolygon'
-  | 'GPUPointSpatialQuery';
+  | 'GPULineLengthPerPolygon';
 
 /** Declares the smallest valid consumer, with optional imported GPU fixtures. */
 export function createPolygonConsumer(
@@ -99,17 +97,6 @@ export function createPolygonConsumer(
       output: {
         lengths: options.lengths ?? createTransientView(graph, 'lengths', 'float32', 1),
         status: outputStatus
-      }
-    });
-  if (operation === 'GPUPointSpatialQuery')
-    return new GPUPointSpatialQuery({
-      ...common,
-      kind: 'polygon',
-      polygon: polygons,
-      parameters: options.parameters ?? createTransientView(graph, 'parameters', 'float32', 4),
-      output: {
-        ids: createTransientView(graph, 'ids', 'uint32', 2),
-        status: {...outputStatus, count: options.result ?? scalar('count')}
       }
     });
   const region = {
@@ -204,10 +191,7 @@ export function registerPolygonConsumerNodeTests(operation: PolygonConsumerName)
         }
       for (const name of ['antimeridianUncertainCount', 'poleUncertainCount']) {
         const graph = new GPUCommandGraph(device);
-        const separator =
-          operation === 'GPULineLengthPerPolygon' || operation === 'GPUPointSpatialQuery'
-            ? '.'
-            : ' ';
+        const separator = operation === 'GPULineLengthPerPolygon' ? '.' : ' ';
         expect(() =>
           createPolygonConsumer(graph, operation, context, {
             [name]: createTransientView(graph, name, 'uint32', 0)

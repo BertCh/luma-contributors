@@ -49,7 +49,10 @@ export type GPUZonalDistributionRecipeProps = {
   outputs?: Partial<GPUZonalDistributionOutput>;
 };
 
-export type GPUZonalDistributionRecipeResult = GPURecipeResult<GPUZonalDistributionOutput> & {
+export type GPUZonalDistributionRecipeResult = GPURecipeResult<
+  GPUZonalDistributionOutput,
+  {zones: GraphDataView<'uint32'>}
+> & {
   spatialContext?: GPUSpatialContext;
 };
 

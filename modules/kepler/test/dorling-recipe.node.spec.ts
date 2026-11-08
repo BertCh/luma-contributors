@@ -75,7 +75,12 @@ test('Dorling recipes retain projected units and bounded controls without extern
     chunkCount: 1,
     formats: {east: 'float32', north: 'float32', area: 'float32'}
   };
-  const capabilities = {webgpu: true, availableBytes: 1024 * 1024};
+  const capabilities = {
+    webgpu: true,
+    availableBytes: 1024 * 1024,
+    duckdb: false,
+    analysisBackend: false
+  };
   const request = {
     kind: 'analysis' as const,
     recipe,

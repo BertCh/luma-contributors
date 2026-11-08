@@ -8,6 +8,8 @@ export {addPatchProximityRecipe} from './patch-proximity';
 export type {GPUPatchProximityProps} from './patch-proximity';
 export {addResistanceConnectivityRecipe} from './resistance-connectivity';
 export type {GPUResistanceConnectivityProps} from './resistance-connectivity';
+export {addSparseResistanceConnectivityRecipe} from './sparse-resistance-connectivity';
+export type {GPUSparseResistanceConnectivityProps} from './sparse-resistance-connectivity';
 export {addSegregationDecompositionRecipe} from './segregation-decomposition';
 export type {GPUSegregationDecompositionProps} from './segregation-decomposition';
 export {

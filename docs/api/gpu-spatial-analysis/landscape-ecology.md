@@ -110,9 +110,72 @@ conductance produces no finite resistance certificate. Disconnected positive-con
 undefined currents because their potentials are ungrounded. Iteration exhaustion is not evidence of
 an impossible network. Float32 conditioning remains a limit even with tight tolerances; independent
 SciPy series/parallel network fixtures check potentials, currents and resistance. The solver is
-compact and serial and is limited to 256 vertices and 65,536 edges. Sparse and raster resistance
-connectivity recipes were dropped because they needed a non-public sparse solver
-(`GPUJacobiPCG`); see EC03 in `dev-docs/roadmap.md`.
+compact and serial and is limited to 256 vertices and 65,536 edges. For larger systems use
+`addSparseResistanceConnectivityRecipe` below. A raster conductance adapter is the EC03-R follow-up.
+
+## `addSparseResistanceConnectivityRecipe` — EC03
+
+Sparse grounded weighted-Laplacian resistance solve with unit current injection at `source` and
+the `sink` held at potential zero. It runs on public luma.gl APIs: `GPUSort` and `GPUCOOToCSR`
+build the CSR matrix, and a domain-specific Jacobi-preconditioned conjugate gradient (an unrolled,
+GPU-gated bounded sequence) solves it. Use it instead of `addResistanceConnectivityRecipe` when a
+network exceeds 256 vertices or 65,536 edges; the recipes are not interchangeable automatically.
+
+Props: `edges` (`uint32x2`, each undirected edge once; 1 to 2,097,152 rows), `conductances`
+(`float32`, one finite nonnegative value per edge), `vertexCount` (2 to 1,048,576), `source`, `sink`,
+`maximumIterations` (1 to 4,096, default 1,024, compile-time), `tolerance` (absolute maximum
+current-conservation residual, default 1e-4) and `connectivityIterations` (1 to 1,024, default 128,
+compile-time). Parallel conductances add, zero conductance is a barrier and self edges carry no
+current. An endpoint at or beyond `vertexCount`, or a non-finite or negative conductance, makes the
+edge invalid: invalid edges are counted in `status.w` and nothing is solved.
+
+- `potentials`: candidate voltages, also when the iteration budget is exhausted. NaN when the solve
+  did not run, or when the component labels converged and the vertex is outside the sink component.
+- `currents`: signed current from the first endpoint to the second; NaN unless converged.
+- `vertexCurrents`: Circuitscape-style node current, the larger of the summed inflow and outflow of
+  the incident edge currents (equal to `(sum |branch| + |injection|) / 2` under conservation, so the
+  source and sink read 1). NaN unless converged, or outside the sink component.
+- `diagnostics`: `[effectiveResistance, maximumTrueResidual, dissipatedEnergy, recursiveResidualNorm]`.
+  Effective resistance is `potentials[source]`, NaN unless converged. Residual and energy are NaN
+  unless the solve ran. The energy of a unit current equals the effective resistance.
+- `status`: `[converged, iterations, reachable, invalidEdges]`. `iterations` is the number of PCG
+  iterations actually run. `reachable` is 1 when the source and sink share a component label (labels
+  spread only along positive-conductance edges, so a match proves connectivity), 0 when the labels
+  converged and differ or any edge is invalid, and 2 when they differ but propagation did not
+  converge within `connectivityIterations`. Raise `connectivityIterations` when `reachable` is 2.
+  The solve still runs when `reachable` is 2; nothing is masked in that case. `converged` is 1 only
+  when no edge is invalid, `reachable` is not 0, the independently recomputed true maximum current
+  residual (over every vertex) is at most `tolerance`, and the resistance and energy are finite.
+  When `reachable` is 2 (labels undetermined), `converged` additionally requires the maximum
+  residual to be below `1 / vertexCount`, which proves the source reaches the sink.
+
+The provenance records the inputs, tolerance, both iteration budgets and
+`solver: 'grounded-jacobi-conjugate-gradient'`.
+
+Limits: 1,048,576 vertices and 2,097,152 edges (4,194,304 half-edges; this covers a 1024 x 1024
+four-neighbour raster with 2,095,104 edges). The graph holds about `5 * maximumIterations +
+2 * connectivityIterations + 30` nodes plus the sort nodes (at most about 22,600), below the
+repository compile-cost cap of 32,768. The default configuration has about 5,400 nodes.
+
+Precision: storage and arithmetic are float32. Dot products and the residual and energy reductions
+are deterministic pairwise trees without float atomics, so results are reproducible for fixed inputs,
+device and size. The dominant error is cancellation in `v_i - v_j` (about `eps * |v| * g`), which
+grows with conductance contrast times voltage magnitude (`v_source` equals the effective
+resistance). Normalise conductances so that the largest is about 1 before calling; the recipe does
+not rescale silently. If `converged` is 0 with a small residual, loosen `tolerance` or rescale.
+The default tolerance is 1e-4 (the small recipe uses 1e-5). Validation: the Circuitscape.jl 7-vertex
+golden for all six pairs (voltages, branch currents and node currents), agreement with the small
+recipe on a 200-vertex graph with a disconnected component, and a 64 x 64 lattice against a float64
+oracle.
+
+Iteration count and watchdog risk: Jacobi-PCG on an `N x N` grid needs O(N) iterations (roughly 200
+to 600 at N = 64, thousands at N = 1024); the cap is 4,096 and an unconverged run reports
+`converged = 0` with its residual. The whole graph is one submission with no continuation. A
+1024 x 1024 problem at 4,096 iterations moves hundreds of gigabytes in one command buffer and can
+trigger a GPU watchdog device loss (about 2 s on Windows and Chrome). Keep large problems to fewer
+iterations or smaller grids. About 20,000 dispatches are encoded per execution even after
+convergence (gated dispatches run zero workgroups), so expect several to tens of milliseconds of
+encoding. No multigrid or stronger preconditioner is provided.
 
 ## `addSegregationDecompositionRecipe` — EC04
 
@@ -180,8 +243,7 @@ suite passed six cases; a node integrity test verifies the retained bytes and ex
 The measured execution record
 separates preparation, compilation, first execution, repeated resident wall time, readback and
 scratch memory. Native Apple WebGPU passed exact proximity at 32², 128² and 256² cells; the largest resident median was
-about 18.4 ms. Sparse resistance measurements were removed with the dropped recipe (see EC03 in
-`dev-docs/roadmap.md`).
+about 18.4 ms. Sparse resistance benchmarks are pending re-measurement (EC03).
 
 The 2026-10-24 execution record
 reruns those proximity curves and adds complete class/landscape summaries at 32²,

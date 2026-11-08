@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {
   GPUGeneralizedGeographicallyWeightedRegression,
@@ -15,7 +16,7 @@ import {calculateSURBenchmarkReference} from './statistics-performance-reference
 import {calculateSURReferenceWithQR} from './sur-qr-reference';
 
 const environment = (import.meta as unknown as {env?: Record<string, string>}).env;
-const enabled = environment?.VITE_STATISTICS_BENCHMARK === 'true';
+const enabled = environment?.['VITE_STATISTICS_BENCHMARK'] === 'true';
 it.skipIf(!enabled)(
   'statistical fitting and nested bandwidth selection scaling',
   {timeout: 300000},
@@ -51,7 +52,7 @@ it.skipIf(!enabled)(
         if (!`${kind}-${rows}`.includes(settings.workloadFilter)) continue;
         measuredWorkloads++;
         const fixture = new RecipeTestFixture(device, `${kind}-${rows}`);
-        let compiled: ReturnType<typeof fixture.graph.compile> | undefined;
+        let compiled: CompiledGPUCommandGraph | undefined;
         try {
           const start = performance.now();
           let validateOutputs: (() => Promise<void>) | undefined;

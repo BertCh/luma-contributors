@@ -61,8 +61,8 @@ test('full selected export is paged, preserves source identity/nulls and owns an
   });
   expect(result.mode).toBe('all-selected');
   expect(Array.from(result.sourceRowIndices)).toEqual([0, 1, 3]);
-  expect(Array.from(result.columns.value)).toEqual([10, 0, 40]);
-  expect(Array.from(result.validity.value)).toEqual([1, 0, 1]);
+  expect(Array.from(result.columns['value'])).toEqual([10, 0, 40]);
+  expect(Array.from(result.validity['value'])).toEqual([1, 0, 1]);
   expect(result.readbackBytes).toBe(48);
   expect(result.retainedBytes).toBe(36);
   expect(context.inspector.readPage.mock.calls.map(call => call.slice(0, 2))).toEqual([

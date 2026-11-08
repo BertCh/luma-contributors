@@ -499,6 +499,7 @@ export function makeFlowGraph(model: LensViewModel, layout: GraphLayout): FlowGr
   const lastLayer = Math.max(1, ...layout.nodes.map(node => node.layer));
   const layerByNode = new Map(layout.nodes.map(node => [node.id, node.layer]));
   const kindByNode = new Map(model.nodes.map(node => [node.id, node.kind]));
+  const indexByNode = new Map(layout.nodes.map((node, index) => [node.id, index]));
   return {
     width: layout.width,
     height: layout.height,
@@ -525,7 +526,9 @@ export function makeFlowGraph(model: LensViewModel, layout: GraphLayout): FlowGr
       weight:
         edge.span > 1 ? 0 : Math.log10(1 + model.edges[index].bytes) / Math.log10(1 + maximumBytes),
       progressStart: (layerByNode.get(edge.from) ?? 0) / lastLayer,
-      progressEnd: (layerByNode.get(edge.to) ?? 0) / lastLayer
+      progressEnd: (layerByNode.get(edge.to) ?? 0) / lastLayer,
+      fromNode: indexByNode.get(edge.from),
+      toNode: indexByNode.get(edge.to)
     }))
   };
 }

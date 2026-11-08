@@ -32,11 +32,26 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
+      - name: Check upstream-first rules
+        run: yarn check-upstream-first
+
       - name: Lint
         run: yarn lint
 
       - name: Typecheck sources
         run: yarn typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Typecheck tests
+        run: yarn typecheck-tests
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Typecheck examples
+        run: |
+          npx tsc --noEmit -p examples/deck/spatial-analysis-showcase
+          npx tsc --noEmit -p examples/deck/spatial-analysis-explorer
         env:
           NODE_OPTIONS: --max-old-space-size=8192
 
@@ -58,5 +73,37 @@ jobs:
 
       - name: Headless GPU tests
         run: yarn test-headless
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+  website:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Enable Corepack / Yarn 4
+        run: |
+          corepack enable
+          corepack prepare yarn@4.13.0 --activate
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Typecheck website
+        run: npx tsc -p website/tsconfig.json --noEmit
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Check catalog
+        working-directory: website
+        run: node --experimental-strip-types scripts/check-catalog.ts --quiet
+
+      - name: Build website
+        run: yarn website-build
         env:
           NODE_OPTIONS: --max-old-space-size=8192

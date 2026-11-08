@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {
@@ -14,8 +15,9 @@ import {requireTestDevice} from '../../utils/require-test-device';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
 
 const enabled =
-  (import.meta as unknown as {env?: Record<string, string>}).env?.VITE_URBAN_ECOLOGY_BENCHMARK ===
-  'true';
+  (import.meta as unknown as {env?: Record<string, string>}).env?.[
+    'VITE_URBAN_ECOLOGY_BENCHMARK'
+  ] === 'true';
 it.skipIf(!enabled)(
   'sparse resistance, patch distance and landscape summary scaling',
   {timeout: 300000},
@@ -36,7 +38,7 @@ it.skipIf(!enabled)(
       ...[32, 128, 256].map(size => ({kind: 'landscape-metrics', size}))
     ]) {
       const fixture = new RecipeTestFixture(device, `${workload.kind}-${workload.size}`);
-      let compiled: ReturnType<typeof fixture.graph.compile> | undefined;
+      let compiled: CompiledGPUCommandGraph | undefined;
       try {
         const start = performance.now();
         let inputBytes = 0;

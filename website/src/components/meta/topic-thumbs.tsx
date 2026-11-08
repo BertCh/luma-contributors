@@ -15,6 +15,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           {Array.from({length: 5}, (_, index) => (
             <rect
               key={index}
+              className={index % 2 === 0 ? 'thumb-lane' : 'thumb-lane thumb-lane--step'}
               x={18 + index * 60}
               y={78}
               width={44}
@@ -25,7 +26,13 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
             />
           ))}
           {Array.from({length: 4}, (_, index) => (
-            <path key={index} d={`M${62 + index * 60} 100 h16`} {...STROKE} strokeDasharray="3 3" />
+            <path
+              key={index}
+              className="thumb-link"
+              d={`M${62 + index * 60} 100 h16`}
+              {...STROKE}
+              strokeDasharray="3 3"
+            />
           ))}
           <circle cx={170} cy={100} r={5} fill="var(--color-accent)" />
         </g>
@@ -41,6 +48,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           ].map(([x, y], index) => (
             <rect
               key={index}
+              className={index === 4 ? 'thumb-sink' : undefined}
               x={x - 22}
               y={y - 14}
               width={44}
@@ -63,6 +71,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
             [0, 1, 2, 3, 4].map(row => (
               <rect
                 key={`${column}-${row}`}
+                className={`thumb-column thumb-column--${column}`}
                 x={40 + column * 62}
                 y={26 + row * 28 + (row > 2 ? 10 : 0)}
                 width={48}
@@ -76,6 +85,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           {[0, 1, 2, 3].map(column => (
             <rect
               key={column}
+              className={`thumb-column thumb-column--${column}`}
               x={36 + column * 62}
               y={22}
               width={56}
@@ -89,6 +99,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           {[0, 1, 2, 3].map(column => (
             <rect
               key={column}
+              className={`thumb-column thumb-column--${column}`}
               x={36 + column * 62}
               y={118}
               width={56}
@@ -121,7 +132,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
               );
             })
           )}
-          <circle cx={172} cy={96} r={5} fill="var(--color-signal)" />
+          <circle className="thumb-pulse" cx={172} cy={96} r={5} fill="var(--color-signal)" />
         </g>
       ) : null}
       {slug === 'scheduling' ? (
@@ -136,6 +147,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           ].map(([x, y, width], index) => (
             <rect
               key={index}
+              className={index === 3 ? 'thumb-bar thumb-bar--active' : 'thumb-bar'}
               x={x}
               y={y}
               width={width}
@@ -147,6 +159,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
             />
           ))}
           <path
+            className="thumb-cursor"
             d="M162 8 V176"
             stroke="var(--color-signal)"
             strokeWidth={1.6}
@@ -174,7 +187,12 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
               );
             })
           )}
-          <path d="M28 18 H292" stroke="var(--color-signal)" strokeWidth={1.6} />
+          <path
+            className="thumb-scan"
+            d="M28 18 H292"
+            stroke="var(--color-signal)"
+            strokeWidth={1.6}
+          />
         </g>
       ) : null}
       {slug === 'this-page' ? (
@@ -197,6 +215,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           {[0, 1, 2, 3].map(index => (
             <rect
               key={index}
+              className={`thumb-step thumb-step--${index}`}
               x={24 + index * 70}
               y={142}
               width={62}
@@ -215,6 +234,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           {[0, 1, 2].map(index => (
             <rect
               key={index}
+              className={`thumb-layer thumb-layer--${index}`}
               x={50 + index * 14}
               y={26 + index * 24}
               width={150}
@@ -226,6 +246,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
           {[3, 4, 5].map(index => (
             <rect
               key={index}
+              className={`thumb-layer thumb-layer--${index}`}
               x={50 + index * 14}
               y={26 + index * 24}
               width={150}
@@ -242,7 +263,7 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
             strokeWidth={1.6}
             strokeDasharray="3 4"
           />
-          <path d="M214 150 l8 10 l8 -10" {...STROKE} />
+          <path className="thumb-arrow" d="M214 150 l8 10 l8 -10" {...STROKE} />
         </g>
       ) : null}
     </svg>

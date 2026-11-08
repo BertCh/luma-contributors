@@ -68,8 +68,8 @@ test('empty Arrow scalar sources retain their schema without requiring child sto
     table: new arrow.Table({value: arrow.makeVector(new Float32Array())})
   });
   expect(dataset.rowCount).toBe(0);
-  expect(dataset.value.columns.value.format).toBe('float32');
-  expect(dataset.value.columns.value.length).toBe(0);
+  expect(dataset.value.columns['value'].format).toBe('float32');
+  expect(dataset.value.columns['value'].length).toBe(0);
   await session.destroy(Promise.resolve());
   expect(session.registry.memoryUsage.totalBytes).toBe(0);
   device.destroy();
@@ -93,9 +93,9 @@ test('failed source replacement preserves the published dataset and its source a
   expect(createBuffer).not.toHaveBeenCalled();
   expect(session.registry.getDataset('observations')).toBe(original);
   expect(session.registry.memoryUsage.totalBytes).toBe(allocatedBytes);
-  expect(original.value.columns.value.data[0].buffer.destroyed).toBe(false);
+  expect(original.value.columns['value'].data[0].buffer.destroyed).toBe(false);
   await session.destroy(Promise.resolve());
-  expect(original.value.columns.value.data[0].buffer.destroyed).toBe(true);
+  expect(original.value.columns['value'].data[0].buffer.destroyed).toBe(true);
   createBuffer.mockRestore();
   device.destroy();
 });
@@ -138,7 +138,7 @@ test.each([
     id: 'observations',
     table: new arrow.Table({value: arrow.makeVector(new Float32Array([1]))})
   });
-  const buffer = dataset.value.columns.value.data[0].buffer;
+  const buffer = dataset.value.columns['value'].data[0].buffer;
   let resolveFence!: () => void;
   const fence = new Promise<void>(resolve => {
     resolveFence = resolve;
@@ -169,7 +169,7 @@ test('device loss invalidates immediately and restores the retained prepared sou
   const original = session.importArrowDataset({id: 'observations', table: source});
   const groupBy = {kind: 'group-by', source: {datasetId: 'parent', revision: 4}, population: 'all'};
   Object.assign(original.source!.metadata!, {groupBy});
-  const oldBuffer = original.value.columns.value.data[0].buffer;
+  const oldBuffer = original.value.columns['value'].data[0].buffer;
   resolveLoss();
   await Promise.resolve();
   expect(session.deviceLost).toBe(true);
@@ -189,7 +189,7 @@ test('device loss invalidates immediately and restores the retained prepared sou
   expect(restored.value.source).toBe(source);
   expect(restored.source?.metadata?.['groupBy']).toEqual(groupBy);
   expect(restored.value.retainedArrayBufferBytes).toBe(8);
-  expect(restored.value.columns.value.data[0].buffer.device).toBe(replacementDevice);
+  expect(restored.value.columns['value'].data[0].buffer.device).toBe(replacementDevice);
   expect(session.registry.getRecoverySources()).toHaveLength(0);
   expect(session.registry.memoryUsage.totalBytes).toBe(16);
   await session.destroy(Promise.resolve());
@@ -259,7 +259,7 @@ test('loss settles a pending explorer close and suppresses rejected stale readba
   });
   const handle = new KeplerSessionExplorer({
     explorer: {
-      selectionMask: dataset.value.columns.value,
+      selectionMask: dataset.value.columns['value'],
       readSummary: () => readback,
       destroyAsync: destroyExplorer
     } as unknown as GPUResidentExplorer,
@@ -276,7 +276,7 @@ test('loss settles a pending explorer close and suppresses rejected stale readba
   expect(await pendingRead).toBeNull();
   expect(destroyExplorer).toHaveBeenCalledOnce();
   expect(handle.isCurrent).toBe(false);
-  expect(dataset.value.columns.value.data[0].buffer.destroyed).toBe(true);
+  expect(dataset.value.columns['value'].data[0].buffer.destroyed).toBe(true);
   await session.destroy(Promise.resolve());
   device.destroy();
 });

@@ -1,0 +1,474 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {
+  GPUDatumGridTransform,
+  GPUPointBuffer,
+  GPU_POINT_BUFFER_PARAMETER_LENGTH
+} from '../../../src/geospatial-analysis/index';
+import {
+  GPUPointCloudChange,
+  GPUPointCloudFeatures,
+  GPUPointCloudGround,
+  GPUPointCloudHeight,
+  GPUPointCloudICP,
+  GPUPointCloudNeighborhoods,
+  GPUPointCloudSMRF,
+  GPUPointCloudStatisticalFilter,
+  GPUPointCloudSurfaces,
+  GPUPointCloudVoxelMerge,
+  GPU_POINT_CLOUD_MAXIMUM_BRUTE_FORCE_WORK
+} from '../../../src/pointcloud-analysis/index';
+import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
+
+/** Largest square raster whose float32 or uint32 cells fit one storage binding (5792 x 5792). */
+function getRasterGrid(context: KernelAuditContext) {
+  const side = Math.floor(Math.sqrt(context.maximumRows(4)));
+  return {
+    grid: {origin: [0, 0] as const, cellSize: 1, width: side, height: side},
+    cells: side * side
+  };
+}
+/** Neighbor, feature and statistical-filter capacity maximum. */
+const NEIGHBOR_CAPACITY = 64;
+/** Rotation about Z by 30 degrees plus a translation, column-major. */
+const ROTATION_TRANSFORM = [0.8660254, 0.5, 0, 0, -0.5, 0.8660254, 0, 0, 0, 0, 1, 0, 10, -20, 3, 1];
+const SYMMETRIC_COVARIANCE = [1, 0.1, 0, 1, 0, 1] as const;
+
+/** Kernel-audit cases for point clouds and datum grids. */
+export const POINTCLOUD_AND_DATUM_CASES: KernelAuditCase[] = [
+  {
+    exportName: 'GPUPointCloudChange',
+    name: 'transform alignment, full uncertainty at the brute-force work limit',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const cores = maximumRows(12);
+      const points = Math.floor(GPU_POINT_CLOUD_MAXIMUM_BRUTE_FORCE_WORK / cores / 2);
+      graph.add(
+        new GPUPointCloudChange({
+          reference: view('float32x3', points),
+          comparison: view('float32x3', points),
+          cores: view('float32x3', cores),
+          normals: view('float32x3', cores),
+          alignment: {transform: view('float32', 16)},
+          radius: 2,
+          halfDepth: 4,
+          minimumSupport: 5,
+          registrationError: 0.01,
+          registrationCovariance: SYMMETRIC_COVARIANCE,
+          uncertaintyCombination: 'quadrature',
+          confidenceMultiplier: 2.58,
+          changes: view('float32x3', cores),
+          roughness: view('float32x3', cores),
+          counts: view('uint32', cores * 2),
+          status: view('uint32', cores)
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUPointCloudChange',
+    name: 'sampling covariance at 32768 points per cloud',
+    build: context => {
+      const {graph, view} = context;
+      const cores = 65536;
+      graph.add(
+        new GPUPointCloudChange({
+          reference: view('float32x3', 32768),
+          comparison: view('float32x3', 32768),
+          cores: view('float32x3', cores),
+          normals: view('float32x3', cores),
+          alignment: 'already-aligned',
+          radius: 2,
+          halfDepth: 4,
+          samplingCovariance: {
+            referenceVariance: 0.01,
+            comparisonVariance: 0.02,
+            correlationLength: 1
+          },
+          changes: view('float32x3', cores),
+          roughness: view('float32x3', cores),
+          counts: view('uint32', cores * 2),
+          status: view('uint32', cores)
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUPointCloudFeatures',
+    name: 'capacity 64 with covariance and viewpoint at the binding limit',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const rows = maximumRows(NEIGHBOR_CAPACITY * 4);
+      graph.add(
+        new GPUPointCloudFeatures({
+          positions: view('float32x3', maximumRows(12)),
+          indices: view('uint32', rows * NEIGHBOR_CAPACITY),
+          counts: view('uint32', rows),
+          capacity: NEIGHBOR_CAPACITY,
+          viewpoint: [0, 0, 100],
+          normals: view('float32x3', rows),
+          eigenvalues: view('float32x3', rows),
+          covariance: view('float32', rows * 6),
+          shapes: view('float32x3', rows),
+          status: view('uint32', rows)
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUPointCloudGround',
+    name: 'thirty-two radii on a binding-limit square grid',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const points = maximumRows(12);
+      const {grid, cells} = getRasterGrid(context);
+      graph.add(
+        new GPUPointCloudGround({
+          positions: view('float32x3', points),
+          classifications: view('uint32', points),
+          grid,
+          minimumSurface: view('float32', cells),
+          coverage: view('uint32', cells),
+          radii: Array.from({length: 32}, (_, index) => index + 1),
+          initialThreshold: 0.25,
+          slope: 0.15,
+          maximumThreshold: 3,
+          groundMask: view('uint32', points),
+          outputClassifications: view('uint32', points),
+          status: view('uint32', points)
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUPointCloudICP',
+    name: 'unweighted point-to-plane, 100 iterations, origin and target grid',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const points = maximumRows(12);
+      graph.add(
+        new GPUPointCloudICP({
+          source: view('float32x3', points),
+          target: view('float32x3', points),
+          origin: [500000, 4000000, 100],
+          initialTransform: ROTATION_TRANSFORM,
+          maximumDistance: 5,
+          // 1024 x 1024 x 31 cells: the cell offsets plus one fill most of one binding.
+          targetGrid: {origin: [-100, -100, -100], dimensions: [1024, 1024, 31], cellSize: 0.5},
+          metric: 'point-to-plane',
+          targetNormals: view('float32x3', points),
+          iterations: 100,
+          translationTolerance: 1e-6,
+          rotationTolerance: 1e-6,
+          transform: view('float32', 16),
+          history: view('float32x3', 100),
+          inlierMask: view('uint32', points),
+          status: view('uint32', 1)
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUPointCloudICP',
+    name: 'point-to-point Huber at the brute-force work limit',
+    build: context => {
+      const {graph, view} = context;
+      const source = 65536;
+      graph.add(
+        new GPUPointCloudICP({
+          source: view('float32x3', source),
+          target: view('float32x3', GPU_POINT_CLOUD_MAXIMUM_BRUTE_FORCE_WORK / source),
+          maximumDistance: 5,
+          robust: {method: 'huber', scale: 1},
+          iterations: 100,
+          transform: view('float32', 16),
+          history: view('float32x3', 100),
+          inlierMask: view('uint32', source),
+          status: view('uint32', 1)
+        })
+      );
+    }
+  },
+  ...(['serial', 'cooperative'] as const).map(
+    (strategy): KernelAuditCase => ({
+      exportName: 'GPUPointCloudNeighborhoods',
+      name: `${strategy} capacity 64 with query rows, support bounds and grid`,
+      build: context => {
+        const {graph, view, maximumRows} = context;
+        const queries = maximumRows(NEIGHBOR_CAPACITY * 4);
+        graph.add(
+          new GPUPointCloudNeighborhoods({
+            positions: view('float32x3', maximumRows(12)),
+            queryRows: view('uint32', queries),
+            supportBounds: {minimum: [-100, -100, -100], maximum: [100, 100, 100]},
+            radius: 2,
+            capacity: NEIGHBOR_CAPACITY,
+            strategy,
+            indices: view('uint32', queries * NEIGHBOR_CAPACITY),
+            squaredDistances: view('float32', queries * NEIGHBOR_CAPACITY),
+            counts: view('uint32', queries),
+            grid: {origin: [-100, -100, -100], cellSize: 2, dimensions: [1024, 1024, 31]},
+            status: view('uint32', queries)
+          })
+        );
+      }
+    })
+  ),
+  ...(['serial', 'cooperative'] as const).map(
+    (strategy): KernelAuditCase => ({
+      exportName: 'GPUPointCloudNeighborhoods',
+      name: `${strategy} all-pairs capacity 64 without grid`,
+      build: context => {
+        const {graph, view} = context;
+        const queries = 4096;
+        graph.add(
+          new GPUPointCloudNeighborhoods({
+            positions: view('float32x3', queries),
+            radius: 1,
+            capacity: NEIGHBOR_CAPACITY,
+            strategy,
+            indices: view('uint32', queries * NEIGHBOR_CAPACITY),
+            squaredDistances: view('float32', queries * NEIGHBOR_CAPACITY),
+            counts: view('uint32', queries)
+          })
+        );
+      }
+    })
+  ),
+  {
+    exportName: 'GPUPointCloudSMRF',
+    name: '64-cell window, 32-cell cut, selection and all outputs on binding-limit square',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const points = maximumRows(12);
+      const {grid, cells} = getRasterGrid(context);
+      graph.add(
+        new GPUPointCloudSMRF({
+          positions: view('float32x3', points),
+          classifications: view('uint32', points),
+          selection: view('uint32', points),
+          grid,
+          slope: 0.2,
+          scalar: 1.5,
+          threshold: 0.6,
+          window: 64,
+          cut: 32,
+          groundClass: 2,
+          otherClass: 1,
+          onlyGround: true,
+          groundSurface: view('float32', cells),
+          groundMask: view('uint32', points),
+          outputClassifications: view('uint32', points),
+          status: view('uint32', points)
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUPointCloudStatisticalFilter',
+    name: 'capacity 64 at the binding limit',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const rows = maximumRows(NEIGHBOR_CAPACITY * 4);
+      graph.add(
+        new GPUPointCloudStatisticalFilter({
+          squaredDistances: view('float32', rows * NEIGHBOR_CAPACITY),
+          counts: view('uint32', rows),
+          capacity: NEIGHBOR_CAPACITY,
+          standardDeviations: 3,
+          meanDistances: view('float32', rows),
+          mask: view('uint32', rows)
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUPointCloudSurfaces',
+    name: 'ground class on a binding-limit square grid',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const points = maximumRows(12);
+      const {grid, cells} = getRasterGrid(context);
+      graph.add(
+        new GPUPointCloudSurfaces({
+          positions: view('float32x3', points),
+          classifications: view('uint32', points),
+          groundClass: 2,
+          grid,
+          terrain: view('float32', cells),
+          surface: view('float32', cells),
+          canopy: view('float32', cells),
+          coverage: view('uint32', cells)
+        })
+      );
+    }
+  },
+  ...(
+    [{method: 'idw', radius: 64, power: 8, minimumSupport: 4}, {method: 'bilinear'}] as const
+  ).map(
+    (interpolation): KernelAuditCase => ({
+      exportName: 'GPUPointCloudHeight',
+      name: `${interpolation.method} interpolation with Surfaces coverage bit`,
+      build: context => {
+        const {graph, view, maximumRows} = context;
+        const points = maximumRows(12);
+        const {grid, cells} = getRasterGrid(context);
+        graph.add(
+          new GPUPointCloudHeight({
+            positions: view('float32x3', points),
+            grid,
+            terrain: view('float32', cells),
+            coverage: view('uint32', cells),
+            coverageBit: 2,
+            interpolation,
+            heights: view('float32', points),
+            status: view('uint32', points)
+          })
+        );
+      }
+    })
+  ),
+  {
+    exportName: 'GPUPointCloudVoxelMerge',
+    name: 'four parts with float32x4 attribute at the binding limit',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const voxels = maximumRows(16);
+      const part = (sourceRowOffset: number) => ({
+        counts: view('uint32', voxels),
+        centroids: view('float32x3', voxels),
+        representatives: view('uint32', voxels),
+        sourceRowOffset,
+        attribute: {means: view('float32x4', voxels), counts: view('uint32', voxels)}
+      });
+      graph.add(
+        new GPUPointCloudVoxelMerge({
+          partitionPolicy: 'disjoint-owned-rows',
+          parts: [part(0), part(1_000_000), part(2_000_000_000), part(0xfffffffe)],
+          counts: view('uint32', voxels),
+          centroids: view('float32x3', voxels),
+          representatives: view('uint32', voxels),
+          attribute: {means: view('float32x4', voxels), counts: view('uint32', voxels)},
+          status: view('uint32', voxels)
+        })
+      );
+    }
+  },
+  {
+    exportName: 'GPUPointCloudVoxelMerge',
+    name: 'two parts without attribute',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const voxels = maximumRows(12);
+      const part = (sourceRowOffset: number) => ({
+        counts: view('uint32', voxels),
+        centroids: view('float32x3', voxels),
+        representatives: view('uint32', voxels),
+        sourceRowOffset
+      });
+      graph.add(
+        new GPUPointCloudVoxelMerge({
+          partitionPolicy: 'disjoint-owned-rows',
+          parts: [part(0), part(1000)],
+          counts: view('uint32', voxels),
+          centroids: view('float32x3', voxels),
+          representatives: view('uint32', voxels),
+          status: view('uint32', voxels)
+        })
+      );
+    }
+  },
+  ...(['combined', 'horizontal', 'vertical'] as const).map(
+    (operation): KernelAuditCase => ({
+      exportName: 'GPUDatumGridTransform',
+      name: `${operation} inverse with low words, eight grids and 1024 iterations`,
+      build: context => {
+        const {graph, view, maximumRows} = context;
+        const points = maximumRows(12);
+        const samples = maximumRows(12);
+        // The source documents no maximum grid count; eight is representative.
+        const gridCells = Math.floor(samples / 8);
+        graph.add(
+          new GPUDatumGridTransform({
+            positions: view('float32x3', points),
+            positionsLow: view('float32x3', points),
+            samples: view('float32x3', samples),
+            validity: view('uint32', samples),
+            grids: Array.from({length: 8}, (_, index) => ({
+              width: 2,
+              height: Math.floor(gridCells / 2),
+              sampleOffset: index * gridCells,
+              origin: [index * 10, -45] as const,
+              spacing: [0.01, 0.01] as const
+            })),
+            operation,
+            direction: 'inverse',
+            sourceVerticalReference: 'source-reference',
+            targetVerticalReference: 'target-reference',
+            heightUnitMeters: 0.3048,
+            maximumIterations: 1024,
+            tolerance: 1e-7,
+            output: {
+              positions: view('float32x3', points),
+              positionsLow: view('float32x3', points),
+              status: view('uint32', points)
+            }
+          })
+        );
+      }
+    })
+  ),
+  {
+    exportName: 'GPUDatumGridTransform',
+    name: 'combined forward without low words',
+    build: context => {
+      const {graph, view, maximumRows} = context;
+      const points = maximumRows(12);
+      const samples = maximumRows(12);
+      graph.add(
+        new GPUDatumGridTransform({
+          positions: view('float32x3', points),
+          samples: view('float32x3', samples),
+          validity: view('uint32', samples),
+          grids: [
+            {
+              width: 2,
+              height: Math.floor(samples / 2),
+              sampleOffset: 0,
+              origin: [0, -45],
+              spacing: [0.01, 0.01]
+            }
+          ],
+          operation: 'combined',
+          direction: 'forward',
+          sourceVerticalReference: 'source-reference',
+          targetVerticalReference: 'target-reference',
+          output: {positions: view('float32x3', points), status: view('uint32', points)}
+        })
+      );
+    }
+  },
+  ...(['geographic', 'planar'] as const).map(
+    (coordinateSystem): KernelAuditCase => ({
+      exportName: 'GPUPointBuffer',
+      name: `${coordinateSystem} 256-vertex rings at the binding limit`,
+      build: context => {
+        const {graph, view, maximumRows} = context;
+        // The source documents no maximum ring size; 256 vertices is representative.
+        const verticesPerRing = 256;
+        const points = Math.floor(maximumRows(8) / verticesPerRing);
+        graph.add(
+          new GPUPointBuffer({
+            points: view('float32x2', points),
+            parameters: view('float32', GPU_POINT_BUFFER_PARAMETER_LENGTH),
+            offsets: view('float32x2', points * verticesPerRing),
+            verticesPerRing,
+            coordinateSystem
+          })
+        );
+      }
+    })
+  )
+];

@@ -198,7 +198,7 @@ type LayoutSnapshot = {
 };
 
 /**
- * The OpenFlights airline network as a graph, using `@luma-contributors/analysis/gpu-graph-algorithms` directly:
+ * The OpenFlights airline network as a graph, using `@luma.gl/graph/gpu-graph-algorithms` directly:
  * degree, PageRank, core numbers, label propagation, modularity and its optimization, and a
  * progressive force layout whose positions buffer is morphed against the geographic positions.
  * Routes are drawn as `GPUGreatCircleArcs` or `GPUEdgeBundling` paths colored by community.

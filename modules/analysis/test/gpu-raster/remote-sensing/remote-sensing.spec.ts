@@ -47,9 +47,9 @@ it('RS03 conserves source totals and distinguishes uncovered from dynamic missin
         }
       })
     );
-    expect(result.area).toEqual([0.5, 1, 0.5]);
-    expect(result.status).toEqual([0, 0, 0]);
-    expect(result.values).toEqual(normalization === 'covered-area' ? [2, 4, 6] : [1, 4, 3]);
+    expect(result['area']).toEqual([0.5, 1, 0.5]);
+    expect(result['status']).toEqual([0, 0, 0]);
+    expect(result['values']).toEqual(normalization === 'covered-area' ? [2, 4, 6] : [1, 4, 3]);
   }
   const harness = createRemoteSensingHarness(device);
   const missing = await harness.run(
@@ -66,8 +66,8 @@ it('RS03 conserves source totals and distinguishes uncovered from dynamic missin
       }
     })
   );
-  expect(missing.values[0]).toBeNaN();
-  expect(missing.status).toEqual([1]);
+  expect(missing['values'][0]).toBeNaN();
+  expect(missing['status']).toEqual([1]);
 });
 
 it('RS04 exact checkerboard pair counts and normalized Haralick properties', async () => {
@@ -87,9 +87,9 @@ it('RS04 exact checkerboard pair counts and normalized Haralick properties', asy
       pairCount: harness.output('count', 'uint32', 9)
     })
   );
-  expect(result.count[4]).toBe(12);
+  expect(result['count'][4]).toBe(12);
   const expected = [1, 1, 0.5, 0.5, Math.SQRT1_2, -1, Math.log(2)];
-  expected.forEach((value, index) => expect(result.features[28 + index]).toBeCloseTo(value, 5));
+  expected.forEach((value, index) => expect(result['features'][28 + index]).toBeCloseTo(value, 5));
 });
 
 it('RS06 SG preserves quadratic polynomials at interpolation edges and through QA gaps', async () => {
@@ -114,9 +114,9 @@ it('RS06 SG preserves quadratic polynomials at interpolation edges and through Q
       }
     })
   );
-  expect(result.status).toEqual(Array(9).fill(0));
-  values.forEach((value, index) => expect(result.values[index]).toBeCloseTo(value, 3));
-  expect(result.date).toEqual(Array(9).fill(0xffffffff));
+  expect(result['status']).toEqual(Array(9).fill(0));
+  values.forEach((value, index) => expect(result['values'][index]).toBeCloseTo(value, 3));
+  expect(result['date']).toEqual(Array(9).fill(0xffffffff));
 });
 
 it('RS06 composites retain original date provenance and omit QA/nonfinite values', async () => {
@@ -139,11 +139,11 @@ it('RS06 composites retain original date provenance and omit QA/nonfinite values
         }
       })
     );
-    expect(result.values[0]).toBe(operation === 'mean' ? 5 : operation === 'maximum' ? 9 : 3);
-    expect(result.values[1]).toBeNaN();
-    expect(result.count).toEqual([3, 0]);
-    expect(result.status).toEqual([0, 1]);
-    expect(result.date[0]).toBe(
+    expect(result['values'][0]).toBe(operation === 'mean' ? 5 : operation === 'maximum' ? 9 : 3);
+    expect(result['values'][1]).toBeNaN();
+    expect(result['count']).toEqual([3, 0]);
+    expect(result['status']).toEqual([0, 1]);
+    expect(result['date'][0]).toBe(
       operation === 'mean'
         ? 0xffffffff
         : operation === 'maximum'
@@ -194,9 +194,9 @@ it('RS07 phase-correlation sign and subpixel refinement recover known periodic t
       }
     })
   );
-  expect(result.status).toEqual([0]);
-  expect(Math.abs(result.shift[0] + shift[0])).toBeLessThanOrEqual(0.02501);
-  expect(Math.abs(result.shift[1] + shift[1])).toBeLessThanOrEqual(0.02501);
+  expect(result['status']).toEqual([0]);
+  expect(Math.abs(result['shift'][0] + shift[0])).toBeLessThanOrEqual(0.02501);
+  expect(Math.abs(result['shift'][1] + shift[1])).toBeLessThanOrEqual(0.02501);
 });
 
 it('RS08 aggregates symmetric boundaries and reports unfinished fixed-weight merge rounds', async () => {
@@ -220,9 +220,9 @@ it('RS08 aggregates symmetric boundaries and reports unfinished fixed-weight mer
         }
       })
     );
-    expect(result.adjacency).toEqual([0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0]);
-    expect(result.mapping).toEqual(maximumIterations === 1 ? [0, 0, 1, 2] : [0, 0, 0, 0]);
-    expect(result.status).toEqual([maximumIterations === 1 ? 1 : 0]);
+    expect(result['adjacency']).toEqual([0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0]);
+    expect(result['mapping']).toEqual(maximumIterations === 1 ? [0, 0, 1, 2] : [0, 0, 0, 0]);
+    expect(result['status']).toEqual([maximumIterations === 1 ? 1 : 0]);
   }
 });
 
@@ -249,12 +249,14 @@ it('RS10 QR, NNLS and simplex recover abundances and report forced exhaustion', 
         }
       })
     );
-    expect(result.status).toEqual([0, 0]);
-    expect(result.abundances[0]).toBeCloseTo(0.25, 4);
-    expect(result.abundances[1]).toBeCloseTo(0.75, 4);
+    expect(result['status']).toEqual([0, 0]);
+    expect(result['abundances'][0]).toBeCloseTo(0.25, 4);
+    expect(result['abundances'][1]).toBeCloseTo(0.75, 4);
     const expected =
       constraint === 'unconstrained' ? [-1, 2] : constraint === 'nonnegative' ? [0, 1.5] : [0, 1];
-    expected.forEach((value, index) => expect(result.abundances[index + 2]).toBeCloseTo(value, 4));
+    expected.forEach((value, index) =>
+      expect(result['abundances'][index + 2]).toBeCloseTo(value, 4)
+    );
   }
   const harness = createRemoteSensingHarness(device);
   const result = await harness.run(
@@ -274,8 +276,8 @@ it('RS10 QR, NNLS and simplex recover abundances and report forced exhaustion', 
       }
     })
   );
-  expect(result.status).toEqual([4]);
-  expect(result.iterations).toEqual([1]);
+  expect(result['status']).toEqual([4]);
+  expect(result['iterations']).toEqual([1]);
 });
 
 it('RS11 harmonic level-break model recovers acquisition date and magnitude despite gaps', async () => {
@@ -309,10 +311,10 @@ it('RS11 harmonic level-break model recovers acquisition date and magnitude desp
       }
     })
   );
-  expect(result.status).toEqual([0, 0]);
-  expect(result.breakIndex).toEqual([0xffffffff, 18]);
-  expect(result.coefficients[9]).toBeCloseTo(4, 3);
-  expect(result.components[2]).toBeNaN();
+  expect(result['status']).toEqual([0, 0]);
+  expect(result['breakIndex']).toEqual([0xffffffff, 18]);
+  expect(result['coefficients'][9]).toBeCloseTo(4, 3);
+  expect(result['components'][2]).toBeNaN();
 });
 
 it('RS06/RS10 agree with pinned SciPy SG, NNLS and constrained optimizer fixtures', async () => {
@@ -336,7 +338,9 @@ it('RS06/RS10 agree with pinned SciPy SG, NNLS and constrained optimizer fixture
       }
     })
   );
-  temporal.expected.forEach((value, index) => expect(smoothed.values[index]).toBeCloseTo(value, 4));
+  temporal.expected.forEach((value, index) =>
+    expect(smoothed['values'][index]).toBeCloseTo(value, 4)
+  );
   for (const constraint of ['unconstrained', 'nonnegative', 'simplex'] as const) {
     const harness = createRemoteSensingHarness(device);
     const fixture = reference.unmixing;
@@ -358,12 +362,12 @@ it('RS06/RS10 agree with pinned SciPy SG, NNLS and constrained optimizer fixture
         }
       })
     );
-    expect(result.status).toEqual([0, 0, 0]);
+    expect(result['status']).toEqual([0, 0, 0]);
     fixture.solutions[constraint].abundances.forEach((value, index) =>
-      expect(result.abundances[index]).toBeCloseTo(value, 4)
+      expect(result['abundances'][index]).toBeCloseTo(value, 4)
     );
     fixture.solutions[constraint].residual.forEach((value, index) =>
-      expect(result.residual[index]).toBeCloseTo(value, 4)
+      expect(result['residual'][index]).toBeCloseTo(value, 4)
     );
   }
 });
@@ -386,8 +390,8 @@ it('RS07 rejects flat and repeated ambiguous alignment inputs', async () => {
         }
       })
     );
-    expect(result.status).toEqual([constant ? 1 : 2]);
-    expect(result.shift.every(Number.isNaN)).toBe(true);
+    expect(result['status']).toEqual([constant ? 1 : 2]);
+    expect(result['shift'].every(Number.isNaN)).toBe(true);
   }
 });
 
@@ -420,9 +424,9 @@ it('RS07 rejects non-flat images without a usable common phase spectrum', async 
         }
       })
     );
-    expect(result.status).toEqual([1]);
-    expect(result.shift.every(Number.isNaN)).toBe(true);
-    expect(result.peak[0]).toBeNaN();
+    expect(result['status']).toEqual([1]);
+    expect(result['shift'].every(Number.isNaN)).toBe(true);
+    expect(result['peak'][0]).toBeNaN();
   }
 });
 
@@ -503,8 +507,8 @@ it('RS06/RS10/RS11 keep insufficient and singular models invalid', async () => {
       }
     })
   );
-  expect(smoothResult.status).toEqual(Array(7).fill(1));
-  expect(smoothResult.values.every(Number.isNaN)).toBe(true);
+  expect(smoothResult['status']).toEqual(Array(7).fill(1));
+  expect(smoothResult['values'].every(Number.isNaN)).toBe(true);
   const unmixing = createRemoteSensingHarness(device);
   const unmixResult = await unmixing.run(
     new GPURasterSpectralUnmixing({
@@ -521,8 +525,8 @@ it('RS06/RS10/RS11 keep insufficient and singular models invalid', async () => {
       }
     })
   );
-  expect(unmixResult.status).toEqual([2]);
-  expect(unmixResult.abundances.every(Number.isNaN)).toBe(true);
+  expect(unmixResult['status']).toEqual([2]);
+  expect(unmixResult['abundances'].every(Number.isNaN)).toBe(true);
   const seasonal = createRemoteSensingHarness(device);
   const seasonalResult = await seasonal.run(
     new GPURasterSeasonalBreak({
@@ -540,9 +544,9 @@ it('RS06/RS10/RS11 keep insufficient and singular models invalid', async () => {
       }
     })
   );
-  expect(seasonalResult.status).toEqual([1]);
-  expect(seasonalResult.breakIndex).toEqual([0xffffffff]);
-  expect(seasonalResult.components.every(Number.isNaN)).toBe(true);
+  expect(seasonalResult['status']).toEqual([1]);
+  expect(seasonalResult['breakIndex']).toEqual([0xffffffff]);
+  expect(seasonalResult['components'].every(Number.isNaN)).toBe(true);
 });
 
 it('RS08 preserves finite zero region means for opposite-sign extreme observations', async () => {
@@ -567,9 +571,9 @@ it('RS08 preserves finite zero region means for opposite-sign extreme observatio
         }
       })
     );
-    expect(result.mapping).toEqual([0, 0]);
-    expect(result.status).toEqual([0]);
-    if (mergeMode === 'fixed') expect(result.weights[1]).toBe(0);
+    expect(result['mapping']).toEqual([0, 0]);
+    expect(result['status']).toEqual([0]);
+    if (mergeMode === 'fixed') expect(result['weights'][1]).toBe(0);
   }
 });
 
@@ -595,10 +599,10 @@ it('RS11 rejects overflowing training energy in both default and explicit harmon
         }
       })
     );
-    expect(result.status).toEqual([2]);
-    expect(result.breakIndex).toEqual([0xffffffff]);
-    expect(result.coefficients.every(Number.isNaN)).toBe(true);
-    expect(result.components.every(Number.isNaN)).toBe(true);
-    expect(result.improvement.every(Number.isNaN)).toBe(true);
+    expect(result['status']).toEqual([2]);
+    expect(result['breakIndex']).toEqual([0xffffffff]);
+    expect(result['coefficients'].every(Number.isNaN)).toBe(true);
+    expect(result['components'].every(Number.isNaN)).toBe(true);
+    expect(result['improvement'].every(Number.isNaN)).toBe(true);
   }
 });

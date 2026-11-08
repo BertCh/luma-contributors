@@ -20,7 +20,7 @@
     "test-headless": "vitest run --project headless",
     "test-browser": "vitest --project browser",
     "verify-package-exports": "node scripts/verify-package-exports.mjs",
-    "typecheck-tests": "tsc -p tsconfig.json --noEmit",
+    "typecheck-tests": "node scripts/typecheck-tests.mjs",
     "test-benchmarks": "LUMA_CONTRIBUTORS_BENCHMARKS=true vitest run --project headless",
     "check-upstream-first": "node scripts/check-upstream-first.mjs",
     "typecheck-watch": "mkdir -p .typecheck && tsc -p tsconfig.check-src.json --noEmit --watch --preserveWatchOutput --pretty false > .typecheck/watch.log 2>&1",

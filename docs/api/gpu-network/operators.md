@@ -94,6 +94,16 @@ zeroed once, so results are deterministic for a given `laneCount`. Both phases u
 rounds each, one pipeline for every round and batch. Scratch memory is the frontier state, three
 `laneCount * nodeCount` word arrays, and a packed copy of both CSRs made once per encoding.
 
+Compile cost: every round of every batch is an unrolled command node, so the graph holds about
+`batchCount * phases * min(maximumIterations, nodeCount)` nodes, where `phases` is 1 for the reachability search
+alone and 3 with betweenness (search, sigma and delta), plus a few nodes per batch. The exact count is the
+read-only property `estimatedCommandNodeCount`, and the constructor throws above 32,768 nodes (for example 64
+batches x 3 phases x 1,000 rounds would be about 192,000). Exact all-pivot betweenness on graphs above roughly
+15,000 to 20,000 nodes with the default `laneCount` now exceeds the cap, so large graphs need sampled pivots, a
+lower `maximumIterations` or a higher `laneCount`. A graph continuation (re-entering the graph until
+convergence, which would remove the need to unroll rounds) would remove the limit, but the published luma.gl
+compiler does not provide one yet. Per-dispatch gating exists but does not reduce the node count.
+
 Conventions (oracle `test/oracles/network-centrality.py`, networkx 3.7):
 
 - Betweenness equals `networkx.betweenness_centrality(G, weight='weight', normalized=False)` on a `DiGraph` when

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -60,7 +60,7 @@ async function runDelaunay(
         converged: output('group-converged', groupCount)
       }
     : undefined;
-  let groups: {ids: ReturnType<typeof importGraphBuffer<'uint32'>>; count: number} | undefined;
+  let groups: {ids: GraphDataView<'uint32'>; count: number} | undefined;
   if (groupIds) {
     const idsBuffer = createInputBuffer(device, groupIds);
     buffers.push(idsBuffer);

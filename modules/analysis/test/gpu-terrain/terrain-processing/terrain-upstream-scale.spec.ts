@@ -438,7 +438,17 @@ it('composes global depression filling and flat resolution into D8 and MFD tile 
     Array.from(getGPUTerrainFlowParameterValues({streamThreshold: 1}, metadata)),
     'float32'
   );
-  const results = [];
+  type FloatOutput = ReturnType<typeof output<'float32'>>;
+  type UintOutput = ReturnType<typeof output<'uint32'>>;
+  const results: {
+    side: number;
+    values: FloatOutput;
+    status: UintOutput;
+    accumulation: FloatOutput;
+    fillConverged: UintOutput;
+    flatsConverged: UintOutput;
+    filled: FloatOutput;
+  }[] = [];
   for (const routing of ['d8', 'mfd-freeman'] as const) {
     const filled = output(count, 'float32'),
       directions = output(count, 'uint32'),

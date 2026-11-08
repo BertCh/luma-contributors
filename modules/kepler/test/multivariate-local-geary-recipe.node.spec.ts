@@ -69,7 +69,7 @@ test('router routes multivariate Local Geary above 256 rows to the tiled contrib
         },
         estimatedBytes: 128
       },
-      {webgpu: true, availableBytes: 1024}
+      {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false}
     );
   expect(route(256)).toEqual({backend: 'luma', reason: 'supported'});
   expect(route(257)).toEqual({backend: 'luma', reason: 'supported'});

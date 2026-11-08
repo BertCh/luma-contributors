@@ -13,10 +13,14 @@ it('the optional real DuckDB-WASM complement registers Arrow and returns typed g
   const database = await duckdb.createDuckDB(
     {
       mvp: {
-        mainModule: require.resolve('@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm')
+        mainModule: require.resolve('@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm'),
+        // The blocking Node bindings never start a worker; the bundle type still names one.
+        mainWorker: require.resolve('@duckdb/duckdb-wasm/dist/duckdb-node-mvp.worker.cjs')
       },
       eh: {
-        mainModule: require.resolve('@duckdb/duckdb-wasm/dist/duckdb-eh.wasm')
+        mainModule: require.resolve('@duckdb/duckdb-wasm/dist/duckdb-eh.wasm'),
+        // The blocking Node bindings never start a worker; the bundle type still names one.
+        mainWorker: require.resolve('@duckdb/duckdb-wasm/dist/duckdb-node-eh.worker.cjs')
       }
     },
     new duckdb.VoidLogger(),

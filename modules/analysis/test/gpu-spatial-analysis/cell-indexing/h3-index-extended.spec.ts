@@ -101,9 +101,9 @@ it('GPUPointToCell H3 precision extended matches h3-js on the same f32 inputs', 
     }
     const plainUniform = countMismatches(sets.uniform, await plain.run(sets.uniform), resolution);
     table.push(
-      `${String(resolution).padStart(3)} | ${results.uniform.mismatches}/${results.uniform.rows} ` +
-        `${results.edge.mismatches}/${results.edge.rows} ${results.pentagon.mismatches}/${results.pentagon.rows} ` +
-        `${results.special.mismatches}/${results.special.rows} | ${plainUniform.mismatches}`
+      `${String(resolution).padStart(3)} | ${results['uniform'].mismatches}/${results['uniform'].rows} ` +
+        `${results['edge'].mismatches}/${results['edge'].rows} ${results['pentagon'].mismatches}/${results['pentagon'].rows} ` +
+        `${results['special'].mismatches}/${results['special'].rows} | ${plainUniform.mismatches}`
     );
     for (const [name, result] of Object.entries(results)) {
       // Verified exact through resolution 15 (headless WebGPU, Apple Metal): no mismatches.

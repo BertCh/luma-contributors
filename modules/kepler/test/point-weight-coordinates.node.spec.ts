@@ -13,6 +13,7 @@ import {
   areKeplerPointWeightCoordinatesEqual
 } from '../src/analysis/point-weight-coordinates';
 import {addKeplerPointWeights} from '../src/analysis/point-weights';
+import {requireCompletePointWeightsStatus} from './utils/point-weights-binding';
 import {addKeplerAnalysisRecipe} from '../src/analysis/recipe-bindings';
 import {
   parseKeplerPointWeightsSettings,
@@ -86,7 +87,7 @@ test('projected declarations preserve explicit roles, detached bounds and replay
       population: 'float32'
     }
   };
-  const capabilities = {webgpu: true, availableBytes: 1024};
+  const capabilities = {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false};
   expect(
     selectKeplerExecutionRoute({kind: 'analysis', recipe, input, estimatedBytes: 128}, capabilities)
       .backend
@@ -150,12 +151,14 @@ test('projected builder and borrowed recipes retain CRS metadata and reject stal
     maxComputeWorkgroupsPerDimension: 65_535
   });
   const graph = new GPUCommandGraph(device);
-  const pointWeights = addKeplerPointWeights(graph, {
-    source: recipe.source,
-    settings,
-    x: createTransientView(graph, 'east', 'float32', 3),
-    y: createTransientView(graph, 'north', 'float32', 3)
-  });
+  const pointWeights = requireCompletePointWeightsStatus(
+    addKeplerPointWeights(graph, {
+      source: recipe.source,
+      settings,
+      x: createTransientView(graph, 'east', 'float32', 3),
+      y: createTransientView(graph, 'north', 'float32', 3)
+    })
+  );
   const columns = {
     events: createTransientView(graph, 'events', 'float32', 3),
     population: createTransientView(graph, 'population', 'float32', 3)

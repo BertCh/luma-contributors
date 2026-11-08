@@ -7,6 +7,7 @@ import type {Device} from '@luma.gl/core';
 import {
   GPUCommandGraph,
   createTransientView,
+  type GraphDataView,
   type GPUCommandGraphComputeNode
 } from '@luma.gl/graph/gpu-core';
 import {
@@ -43,9 +44,9 @@ class StructureGraph extends GPUCommandGraph {
 }
 
 type Views = {
-  uint: (id: string, length: number) => ReturnType<typeof createTransientView<'uint32'>>;
-  float: (id: string, length: number) => ReturnType<typeof createTransientView<'float32'>>;
-  point: (id: string, length: number) => ReturnType<typeof createTransientView<'float32x2'>>;
+  uint: (id: string, length: number) => GraphDataView<'uint32'>;
+  float: (id: string, length: number) => GraphDataView<'float32'>;
+  point: (id: string, length: number) => GraphDataView<'float32x2'>;
 };
 
 type Case = {

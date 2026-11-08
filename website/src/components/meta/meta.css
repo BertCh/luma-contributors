@@ -243,3 +243,62 @@
   .hazard-flow { animation: none; }
   .lens-node, .lifetime-bar, .kernel-line { transition: none; }
 }
+
+/* Index card thumbnails: hover response (static SVG fallback) */
+.topic-card__thumb-svg svg { overflow: visible; transition: filter 240ms ease; }
+.topic-card__thumb-svg [stroke] { transition: stroke-width 240ms ease, stroke-opacity 240ms ease; }
+.topic-card__thumb-svg .thumb-sink,
+.topic-card__thumb-svg .thumb-bar,
+.topic-card__thumb-svg .thumb-step,
+.topic-card__thumb-svg .thumb-layer { transition: fill-opacity 240ms ease, stroke-opacity 240ms ease, stroke-width 240ms ease; }
+.card:hover .topic-card__thumb-svg svg,
+.card:focus-within .topic-card__thumb-svg svg { filter: drop-shadow(0 0 2px color-mix(in srgb, var(--color-accent) 45%, transparent)); }
+.card:hover .topic-card__thumb-svg [stroke]:not([stroke='none']),
+.card:focus-within .topic-card__thumb-svg [stroke]:not([stroke='none']) { stroke-opacity: 1; stroke-width: 1.9; }
+.card:hover .topic-card__thumb-svg .thumb-sink,
+.card:focus-within .topic-card__thumb-svg .thumb-sink { fill: var(--color-signal); fill-opacity: 0.16; }
+.card:hover .topic-card__thumb-svg .thumb-bar--active,
+.card:focus-within .topic-card__thumb-svg .thumb-bar--active { fill-opacity: 1; }
+.card:hover .topic-card__thumb-svg .thumb-step,
+.card:focus-within .topic-card__thumb-svg .thumb-step { fill: var(--color-signal); fill-opacity: 0.1; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .topic-card__thumb-svg .thumb-lane,
+  .topic-card__thumb-svg .thumb-link,
+  .topic-card__thumb-svg .thumb-column,
+  .topic-card__thumb-svg .thumb-cursor,
+  .topic-card__thumb-svg .thumb-scan,
+  .topic-card__thumb-svg .thumb-step,
+  .topic-card__thumb-svg .thumb-layer,
+  .topic-card__thumb-svg .thumb-arrow { transition: translate 260ms ease, stroke-width 240ms ease, stroke-opacity 240ms ease, fill-opacity 240ms ease, stroke-dashoffset 260ms ease; }
+  .topic-card__thumb-svg .thumb-pulse { transform-box: fill-box; transform-origin: center; }
+  /* anatomy: odd lanes step down, the links advance one dash */
+  .card:hover .thumb-lane--step, .card:focus-within .thumb-lane--step { translate: 0 4px; }
+  .card:hover .thumb-link, .card:focus-within .thumb-link { stroke-dashoffset: -6; }
+  /* data-on-the-gpu: columns separate, one chunk lifts */
+  .card:hover .thumb-column--0, .card:focus-within .thumb-column--0 { translate: -4px 0; }
+  .card:hover .thumb-column--1, .card:focus-within .thumb-column--1 { translate: -1.5px 0; }
+  .card:hover .thumb-column--2, .card:focus-within .thumb-column--2 { translate: 1.5px -5px; }
+  .card:hover .thumb-column--3, .card:focus-within .thumb-column--3 { translate: 4px 0; }
+  /* lenses: the signal dot pulses once */
+  .card:hover .thumb-pulse, .card:focus-within .thumb-pulse { animation: thumb-pulse 480ms ease-out 1; }
+  /* scheduling: the cursor advances */
+  .card:hover .thumb-cursor, .card:focus-within .thumb-cursor { translate: 14px 0; }
+  /* kernels: the scan line sweeps into the grid */
+  .card:hover .thumb-scan, .card:focus-within .thumb-scan { translate: 0 80px; }
+  /* this-page: the step outlines rise in turn */
+  .card:hover .thumb-step, .card:focus-within .thumb-step { translate: 0 -4px; }
+  .card:hover .thumb-step--1, .card:focus-within .thumb-step--1 { transition-delay: 40ms; }
+  .card:hover .thumb-step--2, .card:focus-within .thumb-step--2 { transition-delay: 80ms; }
+  .card:hover .thumb-step--3, .card:focus-within .thumb-step--3 { transition-delay: 120ms; }
+  /* upstream-first: the package layers spread apart */
+  .card:hover .thumb-layer--0, .card:focus-within .thumb-layer--0 { translate: 0 -7px; }
+  .card:hover .thumb-layer--1, .card:focus-within .thumb-layer--1 { translate: 0 -4px; }
+  .card:hover .thumb-layer--2, .card:focus-within .thumb-layer--2 { translate: 0 -1px; }
+  .card:hover .thumb-layer--3, .card:focus-within .thumb-layer--3 { translate: 0 2px; }
+  .card:hover .thumb-layer--4, .card:focus-within .thumb-layer--4 { translate: 0 5px; }
+  .card:hover .thumb-layer--5, .card:focus-within .thumb-layer--5 { translate: 0 8px; }
+  .card:hover .thumb-arrow, .card:focus-within .thumb-arrow { translate: 0 6px; }
+}
+@keyframes thumb-pulse { 40% { transform: scale(2.2); } }
+/* end Index card thumbnails */

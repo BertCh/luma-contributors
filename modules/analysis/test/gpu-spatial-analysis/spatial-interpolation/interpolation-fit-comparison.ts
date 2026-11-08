@@ -86,10 +86,10 @@ export async function measureResidentFitComparison(
       const uploadMilliseconds = performance.now() - uploadStart;
       const cpuRoundTripMilliseconds = performance.now() - readStart;
       const result = await scope.read();
-      expect(result.status.every(value => value === 0 || value === 3)).toBe(true);
-      expect(result.parameters[4]).toBeCloseTo(fits[1].nugget, 3);
-      expect(result.parameters[5]).toBeCloseTo(fits[1].sill, 3);
-      expect(result.parameters[6]).toBeCloseTo(fits[1].range, 3);
+      expect(result['status'].every(value => value === 0 || value === 3)).toBe(true);
+      expect(result['parameters'][4]).toBeCloseTo(fits[1].nugget, 3);
+      expect(result['parameters'][5]).toBeCloseTo(fits[1].sill, 3);
+      expect(result['parameters'][6]).toBeCloseTo(fits[1].range, 3);
       if (sample >= settings.warmupCount) {
         samples.push({
           residentMilliseconds,

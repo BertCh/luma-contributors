@@ -8,7 +8,7 @@ Status date: 2026-11-07. Ported from the luma.gl branch matrix ([archive/geospat
 - **Partial**: relevant behavior exists but a named mode, guarantee or integration step is missing.
 - **Excluded**: intentionally out of scope; the reason is stated.
 - An unlisted function is unassessed, not implemented and not excluded.
-- Counts are inventory counts, not a percentage of upstream functionality. Inventory: **142 rows**: 134 implemented subsets, 2 partial, 6 excluded, 0 planned. Two rows are Partial in this repository: KG06 (SQL engine is in published luma.gl) and EC03 (sparse resistance lost in the split).
+- Counts are inventory counts, not a percentage of upstream functionality. Inventory: **142 rows**: 135 implemented subsets, 1 partial, 6 excluded, 0 planned. One row is Partial in this repository: KG06 (SQL engine is in published luma.gl).
 - Status was carried over from the branch. "Implemented" here means the symbol is defined and exported in this repository (or published luma.gl) and has a source contract. It has not been re-verified by running every test.
 
 ## Where to import from
@@ -17,7 +17,7 @@ The **LIB entry point** column names the directory under `modules/analysis/src` 
 
 | Directory | Import path |
 | --- | --- |
-| `analysis-core` | `@luma-contributors/analysis` (root; `graph-support` has no export yet) |
+| `analysis-core` | `@luma-contributors/analysis/analysis-core` (re-exports `graph-support`; the root entry exports only `computation-record`) |
 | `computation-record` | `@luma-contributors/analysis/computation-record` |
 | `gpu-spatial-analysis` | `@luma-contributors/analysis/gpu-spatial-analysis` |
 | `gpu-network` | `@luma-contributors/analysis/gpu-network` |
@@ -218,7 +218,7 @@ Reference library links are in the archived matrix.
 | B-EC03 | Implemented | Gini/Theil/Atkinson/Hoover/Palma/Lorenz and Theil T decomposition | Existing weighted per-zone outputs and between/within-zone Theil T; finite nonnegative values with explicit zero rules. | `dataframe-analysis`: `GPUInequality` |
 | EC01 | Implemented | landscapemetrics class/landscape indices | Patch/class area, physical perimeter, adjacency, class and landscape mesh/cohesion/aggregation and two contagion conventions; independent boundary/background controls and GPU reconciliation of globally unique tile patch IDs. Direct landscapemetrics 2.2.1 square-cell/background and singleton-class fixtures pass; pooled landscape cohesion is calculated separately from class scores. | `gpu-spatial-analysis`: `addLandscapeMetricsRecipe` |
 | EC02 | Implemented | landscapemetrics core/proximity/nearest-patch indices | Exact separable boundary or cell-center distance fields, physical core or integer four-neighbor erosion, explicit open/edge domain policy and optional GPU seam reconciliation. Direct landscapemetrics core/ENN fixtures pass; two-patch proximity is composed from its direct area/ENN. Native 32²/128²/256² physical-mode measurements retain exact distances. | `gpu-spatial-analysis`: `addPatchProximityRecipe` |
-| EC03 | Partial | Circuitscape effective resistance/current maps | Small CG resistance solve with independent residual check (at most 256 vertices, 65,536 edges). Sparse Jacobi-PCG, raster conductance adapter and current density were lost in the split (see [roadmap.md](./roadmap.md) EC03). | `gpu-spatial-analysis`: `addResistanceConnectivityRecipe` only |
+| EC03 | Implemented | Circuitscape effective resistance/current maps | Small CG and sparse grounded-Laplacian Jacobi-PCG (at most 1,048,576 vertices, 2,097,152 edges), independent true residual, node current map; Circuitscape golden voltages and currents. Raster adapter: EC03-R follow-up. | `gpu-spatial-analysis`: `addResistanceConnectivityRecipe`, `addSparseResistanceConnectivityRecipe` |
 | EC04 | Implemented | segregation DecomposeSegregation/counterfactual inference | Explicit common-support Shapley decomposition plus composition/dual-composition/share quantile counterfactuals, stable-ID support alignment and replayable Philox paired-label randomization. Direct segregation 2.5.3 methods and all 16 exchange assignments pass. | `gpu-spatial-analysis`: `addSegregationDecompositionRecipe` |
 
 ## Kepler analysis coverage (2026-10-25)
@@ -247,7 +247,6 @@ Reference library links are in the archived matrix.
 
 | ID | Note |
 | --- | --- |
-| EC03 | Sparse resistance is not in this repository. The 256-vertex recipe has a stale comment at `gpu-spatial-analysis/landscape-ecology/resistance-connectivity.ts:33`. |
 | PC02 | Voxel downsample and radius filter come from published `@luma.gl/graph/gpu-pointcloud`; the statistical-outlier mask and voxel merge are local. |
 | KG06 | The SQL engine is published `@luma.gl/graph/gpu-sql`. SQL gaps are upstream work. |
 | KG03 | Exact natural breaks now recompute to 8,192 rows (`dataframe-analysis/column-classification/gpu-class-breaks.ts:127-129`); the KG03 row says 1,024 (the materialized limit). |

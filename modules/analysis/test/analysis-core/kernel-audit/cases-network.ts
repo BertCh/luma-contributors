@@ -1537,24 +1537,7 @@ const NETWORK_ANALYTICS_COLUMNS_CASES: KernelAuditCase[] = [
                 }
               : {}),
             degree: analyticsColumn(context, 'uint32', ANALYTICS_NODES),
-            pageRank: {
-              ...analyticsColumn(context, 'float32', ANALYTICS_NODES),
-              damping: 0.9,
-              iterationCount: directed ? 40 : 1024,
-              residual: view('float32', 1)
-            },
-            coreNumber: {
-              ...analyticsColumn(context, 'uint32', ANALYTICS_NODES),
-              maximumIterations: directed ? 32 : 1024,
-              degeneracy: view('uint32', 1),
-              status: {converged: view('uint32', 1)}
-            },
             components: {
-              output: view('uint32', ANALYTICS_NODES),
-              maximumIterations: directed ? 32 : 1024,
-              status: {converged: view('uint32', 1)}
-            },
-            communities: {
               output: view('uint32', ANALYTICS_NODES),
               maximumIterations: directed ? 32 : 1024,
               status: {converged: view('uint32', 1)}
@@ -1576,13 +1559,7 @@ const NETWORK_ANALYTICS_COLUMNS_CASES: KernelAuditCase[] = [
             positions: false
           }) as never,
           degree: {output: view('uint32', ANALYTICS_NODES)},
-          pageRank: {
-            output: view('float32', ANALYTICS_NODES),
-            normalized: view('float32', ANALYTICS_NODES)
-          },
-          coreNumber: {output: view('uint32', ANALYTICS_NODES)},
-          components: {output: view('uint32', ANALYTICS_NODES)},
-          communities: {output: view('uint32', ANALYTICS_NODES)}
+          components: {output: view('uint32', ANALYTICS_NODES)}
         })
       );
     }
@@ -1605,17 +1582,7 @@ const NETWORK_ANALYTICS_COLUMNS_CASES: KernelAuditCase[] = [
           },
           degree: analyticsColumn(context, 'uint32', nodes),
           inDegree: analyticsColumn(context, 'uint32', nodes),
-          pageRank: {
-            ...analyticsColumn(context, 'float32', nodes),
-            residual: view('float32', 1)
-          },
-          coreNumber: {
-            ...analyticsColumn(context, 'uint32', nodes),
-            degeneracy: view('uint32', 1),
-            status: {converged: view('uint32', 1)}
-          },
-          components: {output: view('uint32', nodes), status: {converged: view('uint32', 1)}},
-          communities: {output: view('uint32', nodes), status: {converged: view('uint32', 1)}}
+          components: {output: view('uint32', nodes), status: {converged: view('uint32', 1)}}
         })
       );
     }
@@ -2985,6 +2952,37 @@ const NETWORK_CENTRALITY_CASES: KernelAuditCase[] = [
     (localIterations): KernelAuditCase => ({
       exportName: 'GPUNetworkCentrality',
       name: `local iterations ${localIterations}, maximum rounds, every output, cost limit`,
+      build: context => {
+        const {graph, view} = context;
+        graph.add(
+          new GPUNetworkCentrality({
+            topology: topology(context, REACHABILITY_NODES, EDGES, {positions: false}) as never,
+            reverseTopology: topology(context, REACHABILITY_NODES, EDGES, {
+              positions: false
+            }) as never,
+            pivotNodes: view('uint32', 256),
+            costLimit: view('float32', 1),
+            laneCount: 32,
+            maximumIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
+            localIterations,
+            betweennessScale: 4,
+            output: {
+              betweenness: view('float32', REACHABILITY_NODES),
+              edgeBetweenness: view('float32', EDGES),
+              closeness: view('float32', 256),
+              harmonicCloseness: view('float32', 256),
+              reachedCounts: view('uint32', 256),
+              status: {converged: view('uint32', 1)}
+            }
+          })
+        );
+      }
+    })
+  ),
+  ...[1].map(
+    (localIterations): KernelAuditCase => ({
+      exportName: 'GPUNetworkCentrality',
+      name: `local iterations ${localIterations}, maximum rounds, four lanes, over the command node cap`,
       build: context => {
         const {graph, view} = context;
         graph.add(

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUConvexStraightSkeleton,
@@ -167,11 +167,12 @@ it('packed wavefront ranges isolate mixed closed rings and clear old snapshots a
 
 it('scratch fits the source range rather than maximum-vertex padding and retains no unused fields', () => {
   const {nodes} = createFixture([0, 0, 4, 0, 4, 2, 0, 2], [0, 4], [0, 1], 128, 128);
-  const resourceNodes = nodes as {resources?: {buffer?: GraphDataView}[]}[];
-  const workspace = resourceNodes
+  const workspace = nodes
     .flatMap(node => node.resources ?? [])
-    .map(resource => resource.buffer)
-    .find(view => view?.buffer.id === 'vector-straight-skeleton-wavefront');
+    .flatMap(resource =>
+      'buffer' in resource && 'rowByteLength' in resource.buffer ? [resource.buffer] : []
+    )
+    .find(view => view.buffer.id === 'vector-straight-skeleton-wavefront');
   expect(workspace).toBeDefined();
   expect(workspace!.length * workspace!.rowByteLength).toBe(4 + (4 + 256) * 76);
 });

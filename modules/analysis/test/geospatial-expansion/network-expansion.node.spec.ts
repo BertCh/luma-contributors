@@ -142,11 +142,10 @@ it('bounded exact network algorithms reject graphs above their documented node c
     () =>
       new GPUNetworkStructure({
         topology: createTopology(1025),
-        strongComponentsMethod: 'reachability',
         output: {strongComponents: view('uint32', 1025)}
       }),
     'GPUNetworkStructure reachability strong components are bounded to 1024 nodes'
-  ).toThrow();
+  ).toThrow(/nodeCount/);
   expect(
     () =>
       new GPUNetworkStructure({

@@ -520,14 +520,14 @@ export function getCatalogBinding(operationId: string): CatalogOperationBinding 
 }
 
 export function getCatalogDefaultParameters(
-  binding: CatalogOperationBinding
+  binding: Pick<CatalogOperationBinding, 'parameters'>
 ): Record<string, CatalogParameterValue> {
   return Object.fromEntries(binding.parameters.map(spec => [spec.name, spec.defaultValue]));
 }
 
 /** Coerces and range-checks raw (UI or serialized) values; unknown names are rejected. */
 export function normalizeCatalogParameters(
-  binding: CatalogOperationBinding,
+  binding: Pick<CatalogOperationBinding, 'parameters'>,
   raw: Readonly<Record<string, unknown>>
 ): Record<string, CatalogParameterValue> {
   // Parameter name unknown to this operation.

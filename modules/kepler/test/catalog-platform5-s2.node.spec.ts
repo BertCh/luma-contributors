@@ -39,7 +39,10 @@ function polygon(ring: number[][]): CatalogFeatureCollection {
   };
 }
 
-function column(result: CatalogRunResult, name: string): (string | number | boolean | null)[] {
+function column(
+  result: CatalogRunResult,
+  name: string
+): readonly (string | number | boolean | null)[] {
   return result.tables[0].columns[name];
 }
 

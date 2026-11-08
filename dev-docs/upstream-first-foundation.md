@@ -66,7 +66,7 @@ public `@luma.gl/graph` entry.
 | `getRasterLocalOrigin`, `validateRasterExtent` | not public | Local origin: compute `[extent[0], extent[1]]` (or the metadata origin) inline in `raster-analysis`; extent check: `assert(extent.length === 4 && extent[2] > extent[0] && extent[3] > extent[1])` with a comment message. A domain helper in `raster-analysis/raster-band-utils.ts` is acceptable. |
 | `assertRasterStorageBindingFits` | declared in `gpu-raster/raster-utils.d.ts` but **not public** | Use `validateGPUStorageBindingByteLength` (`analysis-core/kernels/gpu-contributor-utils.ts`) or `getStorageBindingElementLimit`; both take the device limit. |
 | `validateRasterBand`, `validateRasterMetadata`, `validateRasterScalarView`, `getRasterDispatchSize` | not public (exist in `gpu-raster/raster-utils.d.ts`) | Validate with `validatePackedView` / `validateExtent` / `validateCapacity` from `gpu-contributor-utils.ts`, or inline asserts with comment messages. For 2D dispatch use `getBoundedDispatchLayout` or the public `planRasterDispatchStripes` (`@luma.gl/graph/gpu-raster`). |
-| `GPURasterBand`, `GPURasterMetadata`, `GPURasterBufferBand` and friends | public types in `@luma.gl/graph/gpu-raster` | Import as types. `makeGPURasterBand` and `makeGPURasterMetadata` are **not public**: construct plain objects of those types. Keep vertical-datum metadata beside the band in terrain code. |
+| `GPURasterBand`, `GPURasterMetadata`, `GPURasterBufferBand` and friends | public types in `@luma.gl/graph/gpu-raster` | Import as types. `makeGPURasterBand` and `makeGPURasterMetadata` are **not public**: use the local ones in `raster-analysis/raster-grid` (they attach `verticalDatum` at runtime; see the workarounds register). |
 | `prepareArrowTableForGPUAnalytics`, `getGPUPartitionDescriptorFromArrowTable`, `makeGPUTimeVectorFromPreparedArrowColumn` | not public | Only the pieces already moved to `analysis-core/graph-support` (arrow normalisation, time upload, wide numeric) remain. Build vectors with public `@luma.gl/graph/arrow` (`makeGPUVectorFromArrow`, `TEMPORAL_ORIGIN_METADATA_KEY`, `ArrowTemporalOriginPolicy`) and `@luma.gl/graph/gpu-data` (`GPUVector`, `GPUData`, `getGPUVectorFormatInfo`). Partition descriptors: build `GPUSceneTablePartition`-like records locally or drop. |
 | `waitForSubmittedWork` | not public | `const fence = device.createFence(); await fence.signaled;` (public `@luma.gl/core`). |
 | `GPUCommandGraph.withRecordScope`, `.recording`, `.describe` | not in published graph | Drop; see computation-record owner. |
@@ -91,8 +91,10 @@ Useful public names to remember (all `@luma.gl/graph/gpu-core` unless noted): `G
 - Area agents: when you add, move or remove a contributor, update the matching `cases-*.ts`.
   Case files still import some classes from `@luma.gl/graph/gpu-raster` or `.../geospatial`; where an
   analysis class replaced them, change the import to `../../../src/<area>/index`.
-- `kernel-audit.node.spec.ts` lists 12 point-cloud / datum-grid contributors in
-  `SKIPPED_CONTRIBUTORS` as `NOT_YET_AUDITED`: add cases and remove the skips when convenient.
+- The 12 point-cloud and datum-grid contributors have audit cases in
+  `kernel-audit/cases-pointcloud-and-datum.ts` (2026-11-07). `SKIPPED_CONTRIBUTORS` keeps only the four
+  `GPUChunkedSpatialWeights*` contributors, with their documented reason. Rejection cases for the
+  point-cloud maxima wait on roadmap AUD-02.
 - The WGSL audit now ignores any published `x == x && abs(x) <= F32_MAX` finite test (generalised
   from the former `value` only idiom). Analysis source text is still checked for NaN self-compares.
 - `analysis-layering`, `analysis-runtime-boundaries` and `analysis-vocabulary` specs now use the new

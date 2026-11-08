@@ -46,8 +46,8 @@ it('probit fit kernel passes the row count as a pipeline override, not baked int
   for (const [index, kernel] of small.entries()) {
     expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
     if (kernel.id.endsWith('-fit') || kernel.id.endsWith('-effects')) {
-      expect(kernel.constants.ROW_COUNT).toBe(40);
-      expect(large[index].constants.ROW_COUNT).toBe(60000);
+      expect(kernel.constants['ROW_COUNT']).toBe(40);
+      expect(large[index].constants['ROW_COUNT']).toBe(60000);
       // Only the override value differs: recompiling per row count is avoided.
       expect(large[index].source).toBe(kernel.source);
     }

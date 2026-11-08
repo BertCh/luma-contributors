@@ -87,10 +87,15 @@ function checkPointHorizonVerticalDatums(
     ).not.toThrow();
   }
   // A datum on the raster band (makeGPURasterBand) is honored when the prop is absent.
+  // The band-level datum is metadata beside the typed band (upstream-workarounds.md, vertical-datum row).
+  const datumElevation: typeof elevation & {verticalDatum: string} = {
+    ...elevation,
+    verticalDatum: 'EPSG:5773'
+  };
   expect(() =>
     create({
       id,
-      elevation: {...elevation, verticalDatum: 'EPSG:5773'} as typeof elevation,
+      elevation: datumElevation,
       heightReference: 'absolute',
       observerVerticalDatum: 'ellipsoidal'
     })

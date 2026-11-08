@@ -209,16 +209,20 @@ export function createOutputBuffer(device: Device, length: number, usage: number
   });
 }
 
-/** Reads the first `length` uint32 values of a submitted buffer. */
-export async function readUint32(buffer: Buffer, length: number): Promise<number[]> {
+/** Reads the first `length` (default all) uint32 values of a submitted buffer. */
+export async function readUint32(buffer: Buffer, length?: number): Promise<number[]> {
   const bytes = await buffer.readAsync();
-  return Array.from(new Uint32Array(bytes.buffer, bytes.byteOffset, length));
+  return Array.from(
+    new Uint32Array(bytes.buffer, bytes.byteOffset, length ?? bytes.byteLength / 4)
+  );
 }
 
-/** Reads the first `length` float32 values of a submitted buffer. */
-export async function readFloat32(buffer: Buffer, length: number): Promise<number[]> {
+/** Reads the first `length` (default all) float32 values of a submitted buffer. */
+export async function readFloat32(buffer: Buffer, length?: number): Promise<number[]> {
   const bytes = await buffer.readAsync();
-  return Array.from(new Float32Array(bytes.buffer, bytes.byteOffset, length));
+  return Array.from(
+    new Float32Array(bytes.buffer, bytes.byteOffset, length ?? bytes.byteLength / 4)
+  );
 }
 
 /** Reads a compact result prefix: `count` first, then that many IDs. */
@@ -269,10 +273,10 @@ export function isSoftwareDevice(device: Device): boolean {
 export function submitGraph<Parameters>(
   device: Device,
   compiled: CompiledGPUCommandGraph<Parameters>,
-  parameters: Parameters
+  ...[parameters]: undefined extends Parameters ? [Parameters?] : [Parameters]
 ): GPUCommandGraphEncoding {
   const commandEncoder = device.createCommandEncoder({id: `${compiled.id}-encoder`});
-  const encoding = compiled.encode(commandEncoder, {parameters});
+  const encoding = compiled.encode(commandEncoder, {parameters: parameters as Parameters});
   device.submit(commandEncoder.finish());
   return encoding;
 }

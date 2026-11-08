@@ -103,6 +103,7 @@ test('native selected logarithmic domains retain global zero/negative population
   );
   const mask = new GPUVector({
     type: 'data',
+    name: 'log-selection-mask',
     format: 'uint32',
     ownsData: true,
     data: maskBuffers.map(

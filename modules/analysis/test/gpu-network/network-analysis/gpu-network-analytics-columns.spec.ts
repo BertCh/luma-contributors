@@ -95,13 +95,13 @@ async function runColumns(device: Device, options: RunOptions) {
     return {
       csr,
       reverse,
-      degree: Array.from(await readUint32(outputs.degree, nodeCount)),
+      degree: Array.from(await readUint32(outputs['degree'], nodeCount)),
       degreeNormalized: Array.from(await readFloat32(outputs['degree-normalized'], nodeCount)),
       degreeExtent: Array.from(await readUint32(outputs['degree-extent'], 2)),
-      inDegree: outputs.inDegree
-        ? Array.from(await readUint32(outputs.inDegree, nodeCount))
+      inDegree: outputs['inDegree']
+        ? Array.from(await readUint32(outputs['inDegree'], nodeCount))
         : undefined,
-      components: Array.from(await readUint32(outputs.components, nodeCount)),
+      components: Array.from(await readUint32(outputs['components'], nodeCount)),
       converged: (await readUint32(outputs['components-converged'], 1))[0]
     };
   } finally {

@@ -36,6 +36,13 @@ export const NETWORK_REJECTIONS: readonly KernelAuditRejection[] = [
       /^Error: network-snapping topology edges with candidateCapacity must be at most 8388608$/
   },
   {
+    exportName: 'GPUNetworkCentrality',
+    name: 'local iterations 1, maximum rounds, four lanes, over the command node cap',
+    kind: 'dispatch',
+    limit: 32768,
+    rejects: /^Error: network-centrality estimated command node count must be at most 32768$/
+  },
+  {
     exportName: 'GPUNetworkReachability',
     name: 'nodes above the maximum',
     kind: 'binding',

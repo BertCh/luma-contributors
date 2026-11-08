@@ -12,6 +12,7 @@ import {POINTS_AND_REGIONS_REJECTIONS} from './rejections-points-and-regions';
 import {RASTER_REJECTIONS} from './rejections-raster';
 import {STATISTICS_REJECTIONS} from './rejections-statistics';
 import {TERRAIN_REJECTIONS} from './rejections-terrain';
+import {URBAN_ECOLOGY_REJECTIONS} from './rejections-urban-ecology';
 
 export type {KernelAuditRejection} from './kernel-audit-rejection-type';
 
@@ -30,7 +31,8 @@ export const KERNEL_AUDIT_REJECTIONS: readonly KernelAuditRejection[] = [
   ...GEOMETRY_REJECTIONS,
   ...GEOMETRY_LINES_REJECTIONS,
   ...CELLS_AND_JOINS_REJECTIONS,
-  ...POINTS_AND_REGIONS_REJECTIONS
+  ...POINTS_AND_REGIONS_REJECTIONS,
+  ...URBAN_ECOLOGY_REJECTIONS
 ];
 
 /**

@@ -27,6 +27,7 @@ function setup() {
   let serial = 0;
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length = 20) =>
     createTransientView(graph, `view-${serial++}`, format, length);
+  const predictorValues = view('float32');
   const props: GPURasterFocalPairsProps = {
     grid,
     radius: 8,
@@ -38,7 +39,7 @@ function setup() {
     predictor: {
       id: 'predictor',
       format: 'float32',
-      storage: {kind: 'buffer', values: view('float32')},
+      storage: {kind: 'buffer', values: predictorValues},
       validity: view('uint32'),
       scale: 2,
       offset: 3,
@@ -61,7 +62,7 @@ function setup() {
       residualSumSquares: view('float32')
     }
   };
-  return {device, graph, props, view};
+  return {device, graph, props, view, predictorValues};
 }
 
 it('RS05 maximal output shaders parse within default binding limits and declare the full halo', () => {
@@ -85,7 +86,7 @@ it('RS05 maximal output shaders parse within default binding limits and declare 
 });
 
 it('RS05 rejects unsupported radii, counts, output capacities, aliases and graph ownership', () => {
-  const {device, graph, props, view} = setup();
+  const {device, graph, props, view, predictorValues} = setup();
   try {
     for (const radius of [-1, 0.5, 9, Infinity])
       expect(() => new GPURasterFocalPairs({...props, radius})).toThrow();
@@ -126,15 +127,13 @@ it('RS05 rejects unsupported radii, counts, output capacities, aliases and graph
       output: {...props.output, covariance: createTransientView(foreign, 'foreign', 'float32', 20)}
     });
     expect(() => contributor.getCommandNodes(graph)).toThrow();
-    const predictorStorage = props.predictor.storage;
-    if (predictorStorage.kind === 'buffer')
-      expect(
-        () =>
-          new GPURasterFocalPairs({
-            ...props,
-            output: {...props.output, covariance: predictorStorage.values}
-          })
-      ).toThrow();
+    expect(
+      () =>
+        new GPURasterFocalPairs({
+          ...props,
+          output: {...props.output, covariance: predictorValues}
+        })
+    ).toThrow();
   } finally {
     device.destroy();
   }

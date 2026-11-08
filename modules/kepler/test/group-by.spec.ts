@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import type {Buffer} from '@luma.gl/core';
+import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerGroupBy, type KeplerGroupBySettings} from '../src/aggregation/kepler-group-by';
@@ -20,6 +20,7 @@ import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 test('native Group By preserves null groups, first occurrence, all-row counts and finite diagnostics across chunks', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
+  const gpuDevice: Device = device;
   for (const variant of ['finite', 'nonfinite-input', 'overflow-output', 'distinct'] as const) {
     const graph = new GPUCommandGraph(device);
     const buffers: Buffer[] = [];
@@ -31,7 +32,7 @@ test('native Group By preserves null groups, first occurrence, all-row counts an
     ) {
       let offset = 0;
       const views = lengths.map((length, index) => {
-        const buffer = createInputBuffer(device, data.slice(offset, offset + length));
+        const buffer = createInputBuffer(gpuDevice, data.slice(offset, offset + length));
         buffers.push(buffer);
         offset += length;
         return importGraphBuffer(graph, `${name}-${index}`, buffer, format, length);
@@ -49,7 +50,7 @@ test('native Group By preserves null groups, first occurrence, all-row counts an
       });
     }
     function output<Format extends 'float32' | 'uint32'>(name: string, format: Format) {
-      const buffer = createOutputBuffer(device, 5);
+      const buffer = createOutputBuffer(gpuDevice, 5);
       buffers.push(buffer);
       return {buffer, view: importGraphBuffer(graph, `${name}-output`, buffer, format, 5)};
     }
@@ -73,7 +74,7 @@ test('native Group By preserves null groups, first occurrence, all-row counts an
     const keys = output('keys', 'uint32');
     const keyValid = output('key-valid', 'uint32');
     const firstRows = output('first', 'uint32');
-    const statusBuffer = createOutputBuffer(device, 4);
+    const statusBuffer = createOutputBuffer(gpuDevice, 4);
     buffers.push(statusBuffer);
     const status = importGraphBuffer(graph, 'status-output', statusBuffer, 'uint32', 4);
     const count = output('count', 'uint32');
@@ -132,17 +133,17 @@ test('native Group By preserves null groups, first occurrence, all-row counts an
     expect(compiled.stats.physicalTransientResourceBytes).toBeGreaterThan(0);
     try {
       submitGraph(device, compiled);
-      const diagnostics = Array.from(await readUint32(statusBuffer));
+      const diagnostics = Array.from(await readUint32(statusBuffer, 4));
       expect(diagnostics[0]).toBe(4);
       expect(diagnostics[1]).toBe(0);
       expect(diagnostics[2]).toBe(variant === 'nonfinite-input' ? 1 : 0);
       expect(diagnostics[3]).toBe(variant === 'overflow-output' ? 2 : 0);
-      expect(Array.from(await readUint32(keys.buffer)).slice(0, 4)).toEqual([2, 0, 4, 1]);
-      expect(Array.from(await readUint32(keyValid.buffer))).toEqual([1, 1, 0, 1, 0]);
-      expect(Array.from(await readUint32(firstRows.buffer))).toEqual([0, 1, 2, 4, 0xffffffff]);
+      expect(Array.from(await readUint32(keys.buffer, 5)).slice(0, 4)).toEqual([2, 0, 4, 1]);
+      expect(Array.from(await readUint32(keyValid.buffer, 5))).toEqual([1, 1, 0, 1, 0]);
+      expect(Array.from(await readUint32(firstRows.buffer, 5))).toEqual([0, 1, 2, 4, 0xffffffff]);
       if (variant === 'finite') {
-        expect(Array.from(await readUint32(count.buffer))).toEqual([2, 2, 2, 1, 0]);
-        expect(Array.from(await readUint32(countValidity.buffer))).toEqual([1, 1, 1, 1, 0]);
+        expect(Array.from(await readUint32(count.buffer, 5))).toEqual([2, 2, 2, 1, 0]);
+        expect(Array.from(await readUint32(countValidity.buffer, 5))).toEqual([1, 1, 1, 1, 0]);
         const expected = {
           sum: [10, 2, 20, NaN, NaN],
           mean: [5, 2, 10, NaN, NaN],
@@ -150,10 +151,10 @@ test('native Group By preserves null groups, first occurrence, all-row counts an
           max: [6, 2, 12, NaN, NaN]
         };
         for (const item of numerical) {
-          expect(Array.from(await readFloat32(item.values.buffer))).toEqual(
+          expect(Array.from(await readFloat32(item.values.buffer, 5))).toEqual(
             expected[item.operation]
           );
-          expect(Array.from(await readUint32(item.validity.buffer))).toEqual([1, 1, 1, 0, 0]);
+          expect(Array.from(await readUint32(item.validity.buffer, 5))).toEqual([1, 1, 1, 0, 0]);
         }
       }
       expect(key.data.map(chunk => chunk.length)).toEqual([2, 0, 5]);

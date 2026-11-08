@@ -1,6 +1,6 @@
 # Roadmap
 
-Status date: 2026-11-07. Baseline: `@luma-contributors/analysis`, `/lenses` and `/kepler` on published `@luma.gl/*@10.0.0-alpha.10`, HEAD `9a66f08` plus an uncommitted working tree.
+Status date: 2026-11-07. Baseline: `@luma-contributors/analysis`, `/lenses` and `/kepler` on published `@luma.gl/*@10.0.0-alpha.10`, HEAD `10386cc4` (pushed to `origin` on `master` and `upstream-first`) plus an uncommitted working tree.
 
 This is the single current roadmap. It replaces about 19 planning documents from the luma.gl `map-contributors` branch. The superseded documents are kept verbatim in [archive/](./archive/README.md) as the evidence trail.
 
@@ -12,7 +12,7 @@ Companion documents:
 
 ## How to use and maintain this file
 
-- Every open item has an ID. Reuse the ID in commits, issues and test names. IDs from the old documents (ST01, RS02, TE06, CR01, KG06 and so on) are kept. New IDs use the prefixes `UF` (upstream-first completion), `AUD`, `NW`, `LN`, `KE`, `SH`.
+- Every open item has an ID. Reuse the ID in commits, issues and test names. IDs from the old documents (ST01, RS02, TE06, CR01, KG06 and so on) are kept. New IDs use the prefixes `UF` (upstream-first completion), `AUD`, `NW`, `LN`, `KE`, `SH`, `WEB`.
 - Priority: **H** = clear scope and real analysis or correctness value, do next. **M** = useful, needs a consumer or a design step. **L** = research, belongs in luma.gl, or an explicit non-goal.
 - "Current limit" cites `file:line` in this repository as of the status date. Source files are still moving, so re-grep before you rely on a line number.
 - "Source" points at the archived document (path relative to this directory) or, for documents that were not archived, the luma.gl branch path.
@@ -24,28 +24,22 @@ Companion documents:
 
 | ID | Item | Why |
 | --- | --- | --- |
-| EC03 | Sparse resistance connectivity was lost in the split | Silent capability loss; the 256-vertex recipe comment still tells users to use a solver that no longer exists |
-| NW-CENT | `GPUNetworkCentrality` unrolls up to 1,024 rounds at compile time | Compile-cost cliff on large graphs |
-| LN-REC | Kernel `record:` annotations are accepted and ignored | Lens records lose source text, bindings, formulas and provenance |
-| AUD-01 | 12 point-cloud and datum-grid contributors have no kernel-audit case | Finishes the migration; cheap |
+| EC03-R | Raster resistance adapter and lens scenario for `addSparseResistanceConnectivityRecipe` | Sparse recipe is implemented; the raster conductance adapter (`addRasterResistanceConnectivityRecipe`) and the lens pack operator and scenario are pending |
+| NW-CENT | `GPUNetworkCentrality` still unrolls its rounds at compile time | The cliff is now a constructor error above 32,768 command nodes; large graphs need sampled pivots until a GPU-gated continuation exists upstream |
+| LN-REC | No analysis contributor accepts a `GPUComputationRecorder` | Lens records lose source text, bindings, formulas and provenance |
 | KE-TESTS | 271 of 367 kepler spec files are excluded from every run | Most kepler code is untested |
 
 ## 1. Now: finish upstream-first
 
-Plan: [upstream-first-plan.md](./upstream-first-plan.md). Phases 1 to 6 are mostly done in the working tree. This block is the baseline to reach before any new feature work.
+Plan: [upstream-first-plan.md](./upstream-first-plan.md). Phases 1 to 6 are done. This block is what is left of the baseline before new feature work. Done and deleted on 2026-11-07: UF-02 (CI gates), UF-04 (test and example typechecks), UF-05 (stale subpath imports), UF-07 (`graph-support` is reached through the `./analysis-core` export), UF-08 (dead test globs).
 
 | ID | Item | Current state | Pri |
 | --- | --- | --- | --- |
-| UF-01 | Commit the working tree in coherent chunks and add a git remote | About 550 uncommitted entries on top of `9a66f08`; no remote configured; `package.json` `repository` points at a repository that is not set up | H |
-| UF-02 | CI gates | `.github/workflows/test.yml` runs typecheck at line 39 but not `node scripts/check-upstream-first.mjs`, test or example typechecks, or a website build | H |
+| UF-01 | Commit the working tree in coherent chunks | Remote `origin` is `https://github.com/BertCh/luma-contributors` (private); HEAD `10386cc4` is pushed on `master` and `upstream-first`. Uncommitted: the website runs work (`website/src/gpu/runs/**`, `website/public/runs/**`, verification scripts) and the 2026-11-07 gate, audit, centrality, EC03 and docs changes. Commit order is the maintainer's decision. The `repository` URL in `modules/*/package.json` is `https://github.com/visgl/luma-contributors`, not the remote | H |
 | UF-03 | Re-measure performance after the split | The branch measurements used forked primitives. Run `yarn test-benchmarks` and record numbers next to the accepted regressions in [upstream-workarounds.md](./upstream-workarounds.md) section 3 | M |
-| UF-04 | Typecheck tests and examples | `tsconfig.check-src.json` covers `src` only. Tests and examples are not covered | H |
-| UF-05 | Remove stale subpath imports | `@luma-contributors/analysis/gpu-core`, `/gpu-dataframe`, `/gpu-raster`, `/gpu-graph-algorithms` still appear in `examples/deck/spatial-analysis-showcase/src/scenes/flows/airline-network*.ts` (3 files), `examples/deck/kepler-compute/src/time-contract-interval.ts`, and a comment at `modules/analysis/src/gpu-spatial-analysis/spatial-weights/gpu-spatial-lag.ts:85` | M |
-| UF-06 | Docs baseline | `docs/` mentions `@luma.gl/graph/experimental` or `gpu-core` internals in 8 files and the removed-feature docs (fluid, fire, ocean, fft, sort) are still tracked. `modules/lenses/README.md` still uses `@luma-contributors/graph/*` aliases. `AGENTS.md:27` still describes `src/_pending/`, which no longer exists. Re-confirm the doc-snippet and doc-parameter specs (`modules/analysis/test/analysis-core/doc-*.node.spec.ts`) run and pass: they are no longer `it.skip` | M |
-| UF-07 | Package exports | `@luma-contributors/analysis` has no `./analysis-core/graph-support` export, which kepler and examples need. Run `node scripts/verify-package-exports.mjs` after a build | M |
-| UF-08 | Prune dead test globs | `vitest.config.ts` `nodeOnlyTestPatterns` and `nodeWrapperSourcePatterns` (lines 24 to 38) list tests of deleted directories (`gpu-tables`, `arrow`) | L |
-| UF-09 | SPDX headers | About 14 test, script and example files lack `SPDX-License-Identifier` and `SPDX-FileCopyrightText` | L |
-| UF-10 | Release housekeeping | No `CHANGELOG.md`, `CONTRIBUTING.md` or publish guide. `modules/analysis` is public at `0.1.0-alpha.0`; lenses and kepler are private | L |
+| UF-06 | Docs baseline | Done: the `gpu-core` mentions left in `docs/` are public `@luma.gl/graph/gpu-core` imports or luma.gl documentation links; no removed-feature docs remain; `AGENTS.md` no longer mentions `_pending`; the doc-snippet and doc-parameter specs run and pass. Open: `docs/api/computation-views.md:32` gives `gpu-core.scan` as an example scenario ID, but the `gpu-core` lens scenarios were dropped | L |
+| UF-09 | SPDX headers | Three tracked example files have no header: `examples/deck/spatial-analysis-showcase/vite.config.ts`, `examples/deck/spatial-analysis-showcase/vite-env.d.ts`, `examples/deck/spatial-analysis-explorer/vite-env.d.ts`. `website/src/routeTree.gen.ts` is generated by TanStack Router and is left as is | L |
+| UF-10 | Release housekeeping | `CHANGELOG.md` exists. No `CONTRIBUTING.md` or publish guide. `modules/analysis` is public at `0.1.0-alpha.0`; lenses and kepler are private | L |
 
 ## 2. Backlog by domain
 
@@ -94,7 +88,7 @@ Plan: [upstream-first-plan.md](./upstream-first-plan.md). Phases 1 to 6 are most
 
 | ID | Item | Current limit | Pri | Source |
 | --- | --- | --- | --- | --- |
-| NW-CENT | Centrality without compile-time unrolled rounds | Reachability, sigma and delta rounds are unrolled per batch: default 64, at most 1,024 (`gpu-network/network-centrality/gpu-network-centrality.ts:149`). About 197,000 command nodes at the maximum. Needs a GPU-gated continuation that the published compiler lacks. Interim: reject or warn on large round counts, and document the cliff | H | `archive/gpu-analysis-algorithms-roadmap.md` (line 161); `archive/geospatial-toolkit-expansion-follow-up.md` (line 142) |
+| NW-CENT | Centrality without compile-time unrolled rounds | Reachability, sigma and delta rounds are still unrolled per batch (`maximumIterations` 1 to 1,024, default 64). Interim guard done: `GPUNetworkCentrality.estimatedCommandNodeCount` is exact and the constructor rejects more than 32,768 command nodes (`gpu-network/network-centrality/gpu-network-centrality.ts:70`, `:418-423`), documented in the class and in `docs/api/gpu-network/operators.md`; the kernel audit has an over-cap rejection (`kernel-audit/rejections-network.ts:39-43`). Exact all-pivot betweenness above roughly 15,000 to 20,000 nodes now needs sampled pivots, fewer rounds or a larger `laneCount`. Structural fix: a GPU-gated continuation, which the published compiler lacks | H | `archive/gpu-analysis-algorithms-roadmap.md` (line 161); `archive/geospatial-toolkit-expansion-follow-up.md` (line 142) |
 | NW-SCC | Large-graph strongly connected components | Dropped. Only exact reachability SCC, 1,024 vertices and 65,536 CSR slots (`gpu-network-structure.ts:45-67`) | M | [upstream-first-pending.md](./upstream-first-pending.md) |
 | NW-KSP | Scalable k-shortest and simple route enumeration | `GPUAlternativeRoutes` is bounded to 256 nodes (`gpu-alternative-routes.ts:68`) | M | `archive/geospatial-toolkit-expansion-follow-up.md` (item 4) |
 | NW04 | Sparse scalable Louvain | At most 32 vertices, dense (`gpu-network-louvain.ts:54`). Published `@luma.gl/graph` has modularity optimization; evaluate it first | M | parallel record (NW04) |
@@ -151,7 +145,7 @@ Raster base classes, exact percentile, wide counters, 4K+ partitioning and FFT c
 
 | ID | Item | Current limit | Pri | Source |
 | --- | --- | --- | --- | --- |
-| AUD-01 | Kernel-audit cases for 12 contributors: `GPUDatumGridTransform`, `GPUPointBuffer`, `GPUPointCloudChange`, `Features`, `Ground`, `ICP`, `Neighborhoods`, `SMRF`, `StatisticalFilter`, `Surfaces`, `Height`, `VoxelMerge` | Skipped as `NOT_YET_AUDITED` (`modules/analysis/test/analysis-core/kernel-audit.node.spec.ts:35-49`). Four chunked-weights contributors are also skipped (`:50-53`) with a documented reason | H | [upstream-first-foundation.md](./upstream-first-foundation.md) section 5 |
+| AUD-02 | Rejection cases for point-cloud capacity limits | Point-cloud contributors check maxima with bare `assert` (for example `gpu-pointcloud-features.ts:33`, `gpu-pointcloud-neighborhoods.ts:52`, `gpu-pointcloud-icp.ts:65`, `gpu-pointcloud-change.ts:124`), so the kernel audit cannot pin a rejection message. Convert them to `validateCapacity` / `validateMaximumCount` (`analysis-core/kernels/gpu-contributor-utils.ts:225,247`) and add rejection cases. The 12 contributors already have 23 build cases (`kernel-audit/cases-pointcloud-and-datum.ts`) | L | AUD-01 review, 2026-11-07 |
 | PC06 | Automatic normal-scale selection, fitted correlation model; M3C2 binary has never been run | Not implemented | M | parallel record (PC06) |
 | PC01 | Globally propagated normal orientation; unlimited support | Viewpoint or up orientation per query | L | parallel record (PC01) |
 | PC02 | Distributed global threshold reconciliation | Not implemented. Voxel downsample and radius filter are published | L | parallel record (PC02) |
@@ -173,7 +167,7 @@ Raster base classes, exact percentile, wide counters, 4K+ partitioning and FFT c
 
 | ID | Item | Current limit | Pri | Source |
 | --- | --- | --- | --- | --- |
-| EC03 | Sparse resistance connectivity | **Lost in the split.** `addResistanceConnectivityRecipe` solves at most 256 vertices and 65,536 edges (`landscape-ecology/resistance-connectivity.ts:34,37`; iterations at most 4,096). The branch had `addSparseResistanceConnectivityRecipe`, `addSparseResistanceComponents`, `addSerialSparseResistanceComponents` and `GPURasterResistanceProps` on the non-public `GPUJacobiPCG`; none of them exist here. The comment at `:33` still says "use the general sparse solver for larger systems". User docs (`docs/api/gpu-spatial-analysis/landscape-ecology.md`, `urban-ecology-lenses.md`) still describe the sparse path. Steps: (1) fix the comment and docs now; (2) restore on public APIs (own CG or Jacobi-PCG in `landscape-ecology/`) or ask luma.gl to export `GPUJacobiPCG`; (3) re-run the Circuitscape golden comparisons | H | `archive/geospatial-coverage-parallel-implementation.md` (EC03) |
+| EC03-R | Raster resistance adapter | `addSparseResistanceConnectivityRecipe` is implemented (at most 1,048,576 vertices, 2,097,152 edges). Pending: `addRasterResistanceConnectivityRecipe` (resistance raster to edges with conductance `2 / (R(a) + R(b)) / edgeLength`) and the lens pack operator, formula and scenario (pending entry in `lens-coverage.node.spec.ts`) | M | `archive/geospatial-coverage-parallel-implementation.md` (EC03) |
 | GE01 / GE08 / UR01-UR05 | Capacity limits: nesting above 64; straight skeleton above 1,024 vertices; urban recipe capacities | Bounded by contract | L | parallel record |
 | EC02 | High patch-count behaviour is unmeasured | Not measured | L | parallel record (EC02) |
 | EC04 | Other segregation statistics and nulls | Not implemented | L | parallel record (EC04) |
@@ -184,7 +178,7 @@ Raster base classes, exact percentile, wide counters, 4K+ partitioning and FFT c
 
 | ID | Item | Current limit | Pri | Source |
 | --- | --- | --- | --- | --- |
-| KE-TESTS | Run the kepler tests | `test/kepler-compute-example-specs.json` lists 271 of the 367 spec files in `modules/kepler/test`; `vitest.config.ts:14-21` excludes them all because they need the parked kepler-compute example. Decide: move the needed example code under `modules/kepler/test`, or keep the example and make it a workspace | H | `archive/kepler-compute-integration-plan.md` |
+| KE-TESTS | Run the kepler tests | `test/kepler-compute-example-specs.json` lists 271 of the 367 spec files in `modules/kepler/test`; `vitest.config.ts:10-19` excludes them all from test runs and `scripts/typecheck-tests.mjs:22` excludes them from `yarn typecheck-tests`, because they need the parked kepler-compute example. Decide: move the needed example code under `modules/kepler/test`, or keep the example and make it a workspace | H | `archive/kepler-compute-integration-plan.md` |
 | KE-EX | Fate of `examples/deck/kepler-compute` (about 750 files) | Parked: not in `workspaces`; imports `@deck.gl-community/gpu-layers` and `@deck.gl/core`, which are not dependencies | M | `archive/kepler-compute-integration-implementation.md` |
 | KE-UI | Remaining host work: native Group By panel binding, non-point altitude layers, richer labels, micro and nanosecond time admission, multipart timed trips, acceptance on other hardware tiers | Open (mostly example code). Acceptance was measured on one Apple M-class machine | M | `archive/kepler-compute-integration-implementation.md` (Remaining implementation) |
 | KE-GUARD | About 14 "Unsupported ..." validation guards | By design, not stubs. Examples: `kepler-group-by.ts:111`, `style-plan.ts:104,147`, `analysis-recipe.ts:357,1367`, `prepare-spatial-selection.ts:51,77` | L | code |
@@ -194,28 +188,31 @@ Raster base classes, exact percentile, wide counters, 4K+ partitioning and FFT c
 
 | ID | Item | Current limit | Pri | Source |
 | --- | --- | --- | --- | --- |
-| LN-REC | Wire kernel annotations to the recorder | `record:` is accepted and ignored. There are 32 `record: {` sites in 23 files under `modules/analysis/src`, plus the option plumbing in `analysis-core/kernels/wgsl-kernel-nodes.ts` (lines 73, 111, 296, 618, 709). `GPUComputationRecorder` (`computation-record/computation-recorder.ts`) is used by three lens test specs only; no analysis contributor accepts a `recorder` prop. Lens records therefore carry structure and timings but no source text, bindings, formulas, loop provenance or `derivedFrom`. Decide per contributor family: add an optional `recorder?` prop (pattern in [upstream-first-recording.md](./upstream-first-recording.md)), or delete the dead `record:` metadata | H | `archive/computation-visualization-roadmap.md` (V0, V3) |
+| LN-REC | Wire contributors to the recorder | The dead `record:` metadata is gone: `createWGSLKernelNode` has no `record` option and `WGSLKernelRecordMetadata` no longer exists (no `record: {` sites in `modules/analysis/src`). `GPUComputationRecorder` (`computation-record/computation-recorder.ts`) is used by the `computation-record` specs and three lens specs (`modules/lenses/test/computation-lenses/gpu-network/{structure,construction,search}-scenarios.node.spec.ts`); no analysis contributor accepts a `recorder` prop. Lens records therefore carry structure and timings but no source text, bindings, formulas, loop provenance or `derivedFrom`. Open design decision: add an optional `recorder?` prop per contributor family (pattern in [upstream-first-recording.md](./upstream-first-recording.md)) or accept structure-only records | H | `archive/computation-visualization-roadmap.md` (V0, V3) |
 | LN-SEL | GPU selection backend | `GPUCrossfilterSelectionBackend` exists (`lenses/src/computation-views/coordinator/gpu-crossfilter-selection-backend.ts`). Verify it against published `GPUCrossfilter`, which lacks external masks (workarounds, section 2) | M | same |
 | LN-DQ | Rebuild dataframe-query and formula scenarios on public query metadata | 8 scenarios dropped | M | [upstream-first-foundation.md](./upstream-first-foundation.md) section 2 |
 | LN-STAB | StabilityMap and Purpose rung | Not built (also not on the branch) | L | `archive/computation-visualization-roadmap.md` |
 | LN-V5 | `GPURecipePlan`, `ComputationDrawer`, V6 to V8 phases, space-time cube | Never built | L | same |
 | LN-ENC | `CommandEncoder` pass and slot labels; rendering and trace packs | Belongs in luma.gl core | L | same |
-| LN-PKG | Lenses package hygiene | `modules/lenses/README.md` uses stale names and refers to a missing script; `package.json` exports pattern `./*/computation-pack/index` does not match the source directories; dependency ranges differ from the analysis peer range | M | health audit |
 
 ### 2.13 Showcase and examples
 
 | ID | Item | Current limit | Pri | Source |
 | --- | --- | --- | --- | --- |
-| SH-IMPORT | Showcase scenes import removed subpaths | See UF-05 | M | health audit |
 | SH-DATA | Large binary data tracked in git | `examples/deck/spatial-analysis-showcase/public/data` has 3 to 5 MB PNG and bin files. Consider git LFS or a download script; provenance is in `THIRD-PARTY-DATA.md` | L | `archive/showcase-sprint-datasets-2026-10-24.md` |
 | SH-NAMES | Example package names and versions | Examples still carry `luma.gl-examples-*` names and `10.0.0-alpha.10` versions | L | health audit |
 | SH-SPRINT | 2026-10-24 sprint scenes | Finished; outcomes in [research/showcase-overhaul-2026-10-25](./research/showcase-overhaul-2026-10-25) | - | `archive/showcase-sprint-2026-10-24.md` |
+
+### 2.14 Website (Gridlight)
+
+| ID | Item | Current limit | Pri | Source |
+| --- | --- | --- | --- | --- |
+| WEB-RUNS | Catalog entries without a live run | 11 catalog entries use a hand-built canvas in `website/src/gpu/demos/` instead of a run (for example `local-morans-i`, `kernel-density`, `terrain-flow`); the 7 computation-record entries (`computation-record`, `computation-recorder`, `computation-captures`, `computation-metrics`, `snapshot-tap`, `snapshot-arena`, `region-statistics-readback`) are getting runs in a concurrent session (2026-11-07). `website/scripts/verify-runs.mjs` passed every run in both themes on 2026-11-07; the 27 runs that had inert sliders were fixed the same day (`spatial-panel-error-ml` keeps one slider). Decide whether the 11 demo entries also need runs | L | website runs work, 2026-11-07 |
 
 ## 3. Dropped by upstream-first
 
 Not backlog items. They were removed on purpose; see [upstream-first-pending.md](./upstream-first-pending.md) for the replacement of each symbol and [upstream-workarounds.md](./upstream-workarounds.md) for the full register. In short:
 
-- Sparse resistance connectivity (not intentional; see EC03).
 - Large-graph SCC, the iteration gate, direct local clustering node, command-graph-transient CSR views.
 - Histogram and skip-cube crossfilter (use published `GPUCrossfilter`).
 - Residency arena, resident row selection, tile LOD.
@@ -235,9 +232,9 @@ The archived documents say the following. These statements are out of date or wr
 | Quality roadmap "still open": D-06 crossing points to snap rounding | Done: `gpu-spatial-analysis/geometry-topology/gpu-snap-rounded-noding.ts` |
 | Algorithms roadmap line 29: variogram fitting is a CPU helper | `GPUVariogramModelFit` exists (`dataframe-analysis/pair-statistics/gpu-variogram-model-fit.ts`); IN01 is implemented |
 | Spatial roadmap phase 9: no likelihood, panel, SUR, probit or MGWR admitted | ST03 to ST06 are implemented (panel ML, SUR, probit, MGWR) |
-| Final review: no planned or partial rows | KG06 is Partial, and EC03 is now Partial in this repository |
+| Final review: no planned or partial rows | KG06 is Partial in this repository. EC03 is Implemented again (sparse recipe restored 2026-11-07); its raster adapter is EC03-R |
 | Kepler plan: residency arena and tile LOD | Dropped; kepler uses its own `resident-*` code |
-| SCC and centrality notes in the follow-up document | SCC is capped at 1,024 vertices here; centrality still unrolls rounds (NW-CENT) |
+| SCC and centrality notes in the follow-up document | SCC is capped at 1,024 vertices here; centrality still unrolls rounds and rejects more than 32,768 command nodes (NW-CENT) |
 | KG03 exact natural breaks limited to 1,024 rows | Recompute mode reaches 8,192 rows (`gpu-class-breaks.ts:127-129`); materialized storage is 1,024 |
 | Computation-visualization roadmap: GPU selection backend is an interface only | `GPUCrossfilterSelectionBackend` exists in lenses |
 | Roadmap and matrix paths `modules/graph/src/...`, `docs/api/*` | Dead. Code is in `modules/analysis/src/<directory>`; entry points are `@luma-contributors/analysis/<directory>` |
@@ -255,8 +252,8 @@ Do not implement these here. If a consumer needs one, open a luma.gl pull reques
 
 ## 6. Order of work
 
-1. UF-01, UF-02, UF-04: commit, CI gates, test and example typechecks.
-2. EC03 (fix comment and docs first), AUD-01, KE-TESTS.
-3. NW-CENT interim guard, then LN-REC decision.
-4. UF-05 to UF-07, then M items by consumer demand: ST06, ST06b, ST07, PP04, NW04, NW-KSP, TE06, R6.3, R7.2.
+1. UF-01: commit the working tree (maintainer's decision on chunks).
+2. KE-TESTS, EC03-R, then the LN-REC decision. Done 2026-11-07: CI gates (UF-02), test and example typechecks (UF-04), AUD-01, the NW-CENT interim guard, the EC03 sparse recipe.
+3. UF-06, then M items by consumer demand: ST06, ST06b, ST07, PP04, NW04, NW-KSP, TE06, R6.3, R7.2.
+4. NW-CENT structural fix when luma.gl ships a GPU-gated continuation.
 5. At each `@luma.gl` bump, run the upgrade procedure in [upstream-workarounds.md](./upstream-workarounds.md).

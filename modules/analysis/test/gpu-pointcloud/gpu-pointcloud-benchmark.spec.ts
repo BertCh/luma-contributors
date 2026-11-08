@@ -13,8 +13,8 @@ import {requireTestDevice} from '../utils/require-test-device';
 
 // Opt in: VITE_POINTCLOUD_BENCHMARK=true yarn test-headless --no-coverage --maxWorkers=1 <this file>
 const environment = (import.meta as unknown as {env?: Record<string, string>}).env;
-const enabled = environment?.VITE_POINTCLOUD_BENCHMARK === 'true';
-const maximumRows = Number(environment?.VITE_POINTCLOUD_MAX_ROWS ?? 100000);
+const enabled = environment?.['VITE_POINTCLOUD_BENCHMARK'] === 'true';
+const maximumRows = Number(environment?.['VITE_POINTCLOUD_MAX_ROWS'] ?? 100000);
 
 it.skipIf(!enabled)(
   '3D grid neighborhood + covariance scaled resident benchmark',

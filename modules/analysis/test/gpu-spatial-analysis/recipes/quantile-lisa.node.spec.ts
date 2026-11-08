@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights/spatial-weights';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {
   GPUQuantileLISA,
@@ -30,7 +31,9 @@ it('quantile LISA matches pinned type-five and half-open class fixtures', () => 
   }
 });
 
-export function createQuantileLISAProps(graph: GPUCommandGraph): GPUQuantileLISAProps {
+export function createQuantileLISAProps(
+  graph: GPUCommandGraph
+): GPUQuantileLISAProps & {weights: GPUSpatialWeights} {
   let serial = 0;
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `quantile-lisa-${serial++}`, format, length);

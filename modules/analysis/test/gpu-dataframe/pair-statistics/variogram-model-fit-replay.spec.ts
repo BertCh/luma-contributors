@@ -53,11 +53,11 @@ for (const weighting of ['pairs', 'none', 'cressie'] as const) {
         submitGraph(device, compiled, undefined);
         const result = await scope.read();
         if (scenario === 'missing' || scenario === 'overflow') {
-          expect(result.status).toEqual(Array(3).fill(scenario === 'missing' ? 1 : 2));
-          expect(result.parameters.every(Number.isNaN)).toBe(true);
-          expect(result.diagnostics.every(Number.isNaN)).toBe(true);
+          expect(result['status']).toEqual(Array(3).fill(scenario === 'missing' ? 1 : 2));
+          expect(result['parameters'].every(Number.isNaN)).toBe(true);
+          expect(result['diagnostics'].every(Number.isNaN)).toBe(true);
         } else {
-          expect(result.status.every(value => value === 0 || value === 3)).toBe(true);
+          expect(result['status'].every(value => value === 0 || value === 3)).toBe(true);
           for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
             const expected = fitVariogramModel(
               {
@@ -67,12 +67,12 @@ for (const weighting of ['pairs', 'none', 'cressie'] as const) {
               },
               {model: models[modelIndex], weighting}
             );
-            expect(result.diagnostics[modelIndex * 4]).toBe(20);
+            expect(result['diagnostics'][modelIndex * 4]).toBe(20);
             expect(
-              result.parameters.slice(modelIndex * 4, modelIndex * 4 + 4).every(Number.isFinite)
+              result['parameters'].slice(modelIndex * 4, modelIndex * 4 + 4).every(Number.isFinite)
             ).toBe(true);
             expect(
-              Math.abs(result.parameters[modelIndex * 4 + 3] - expected.residual)
+              Math.abs(result['parameters'][modelIndex * 4 + 3] - expected.residual)
             ).toBeLessThan(0.002 * Math.max(1, Math.abs(expected.residual)));
           }
         }

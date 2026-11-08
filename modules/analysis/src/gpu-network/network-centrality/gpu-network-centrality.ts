@@ -59,6 +59,16 @@ import {alignElementCount, getSubView} from '../network-view-utils';
 const DEFAULT_MAXIMUM_ITERATIONS = 64;
 const DEFAULT_LOCAL_ITERATIONS = 16;
 /**
+ * Largest command node count `GPUNetworkCentrality` accepts. Every round of every batch is an
+ * unrolled node, because the published compiler has no GPU-gated continuation, so the count grows
+ * as `batchCount * rounds`. The default configuration (64 rounds, a handful of batches) emits a few
+ * hundred nodes; the largest benchmark (256 sampled pivots on a 224 x 224 grid: 8 batches of about
+ * 965 rounds) emits about 23,000, so the cap is only 1.4 times above it. 32,768 rejects
+ * configurations such as 64 batches at 1,000 rounds (about 192,000 nodes), whose compile cost
+ * grows past what a frame can absorb.
+ */
+const MAXIMUM_COMMAND_NODE_COUNT = 32768;
+/**
  * Hops per workgroup in the sigma and delta phases. A node becomes ready when the last of its
  * tight predecessors decrements its counter, but the other predecessors' sums may have been
  * written by other workgroups of the same dispatch, and WGSL gives no cross-workgroup ordering
@@ -154,6 +164,12 @@ export type GPUNetworkCentralityProps = {
    * Scheduling caps this budget at the node count: nonnegative shortest paths need at most
    * `nodeCount - 1` edges, and their strictly increasing tight-edge graph has at most `nodeCount`
    * levels. The final round drains the frontier without changing the configured budget.
+   *
+   * Compile cost: every round of every batch is an unrolled command node, so the node count grows
+   * with `batchCount * min(maximumIterations, nodeCount)`, and with betweenness each batch emits
+   * about three such rounds (search, sigma, delta). The constructor rejects configurations whose
+   * `estimatedCommandNodeCount` exceeds 32,768. Lower `maximumIterations` to the longest path you
+   * need, raise `laneCount` to cut the batch count, or reduce the pivot count.
    */
   maximumIterations?: number;
   /**
@@ -221,6 +237,13 @@ export type GPUNetworkCentralityProps = {
  *
  * Scratch memory is the frontier state plus `3 * laneCount * nodeCount` words and a packed copy of
  * both CSRs, copied once per encoding.
+ *
+ * Compile cost: the rounds of every batch are unrolled, so the command node count is about
+ * `batchCount * phases * min(maximumIterations, nodeCount)` (see
+ * {@link GPUNetworkCentrality.estimatedCommandNodeCount}), where `phases` is 1 for the reachability
+ * search alone and 3 with betweenness (search, sigma and delta), plus a few nodes per batch. The
+ * constructor throws above 32,768 nodes. Lower `maximumIterations`, raise `laneCount` or reduce the
+ * pivot count to stay below it.
  */
 export class GPUNetworkCentrality implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -241,10 +264,22 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
   readonly localIterations: number;
   /** Resolved compile-time betweenness factor. */
   readonly betweennessScale: number;
+  /**
+   * Exact number of command nodes `getCommandNodes` returns. With `R = min(maximumIterations,
+   * nodeCount)` and `B = batchCount`, it is the fixed nodes (seed expansion, plus one each for batch
+   * info with a closeness output, adjacency packing with betweenness, one zeroing per betweenness
+   * output, and the final converged reduction) plus `B` times the per-batch nodes: `R + 2` for the
+   * reachability search (plus a finalize node with `status.converged`), one closeness reduction
+   * with a closeness output, and with betweenness `2R + 3` (reset, two initializers, `R` sigma and
+   * `R` delta rounds) plus one accumulate node per betweenness output and one status node with
+   * `status.converged`. Rejected by the constructor above 32,768.
+   */
+  readonly estimatedCommandNodeCount: number;
 
   /**
    * @throws If a view has the wrong format or length, no output is requested, an option is out of
-   * range, or an output shares a buffer with another output or an input.
+   * range, `estimatedCommandNodeCount` exceeds the 32,768 command node cap, or an output shares a
+   * buffer with another output or an input.
    */
   constructor(props: GPUNetworkCentralityProps) {
     this.id = props.id ?? 'network-centrality';
@@ -358,6 +393,35 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       maximumExpandedNodeCount
     );
     this.batchCount = Math.ceil(this.pivotCount / this.laneCount);
+    const hasBetweenness = Boolean(output.betweenness || output.edgeBetweenness);
+    const hasCloseness = Boolean(
+      output.closeness || output.harmonicCloseness || output.reachedCounts
+    );
+    const roundCount = Math.min(this.maximumIterations, this.nodeCount);
+    const betweennessOutputCount =
+      Number(Boolean(output.betweenness)) + Number(Boolean(output.edgeBetweenness));
+    const nodeCountPerBatch =
+      roundCount +
+      2 +
+      Number(Boolean(converged)) +
+      Number(hasCloseness) +
+      (hasBetweenness
+        ? 2 * roundCount + 3 + betweennessOutputCount + Number(Boolean(converged))
+        : 0);
+    this.estimatedCommandNodeCount =
+      1 +
+      Number(hasCloseness) +
+      (hasBetweenness ? 1 + betweennessOutputCount : 0) +
+      Number(Boolean(converged)) +
+      this.batchCount * nodeCountPerBatch;
+    // The rounds of every batch are unrolled into command nodes, so this count is the compile cost.
+    // Past the cap, lower maximumIterations or the pivot count, or raise laneCount.
+    validateMaximumCount(
+      id,
+      'estimated command node count',
+      this.estimatedCommandNodeCount,
+      MAXIMUM_COMMAND_NODE_COUNT
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [

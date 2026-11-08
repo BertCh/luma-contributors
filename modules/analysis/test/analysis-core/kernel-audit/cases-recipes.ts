@@ -32,10 +32,10 @@ const ALL_CLASS_METHODS = [
   'custom'
 ] as never;
 
-function parameters(
+function parameters<Format extends 'float32' | 'uint32'>(
   {graph}: KernelAuditContext,
   id: string,
-  format: 'float32' | 'uint32',
+  format: Format,
   length: number
 ) {
   return new GPUParameterBuffer(graph.device, {id, format, length});

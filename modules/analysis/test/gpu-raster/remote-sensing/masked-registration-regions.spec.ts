@@ -47,15 +47,15 @@ for (const fixture of reference.registration) {
         }
       })
     );
-    expect(result.status).toEqual([0]);
+    expect(result['status']).toEqual([0]);
     fixture.expectedShift.forEach((value, index) => {
-      expect(result.shift[index]).toBeCloseTo(value, 4);
+      expect(result['shift'][index]).toBeCloseTo(value, 4);
     });
-    expect(result.peak[0]).toBeCloseTo(fixture.expectedPeak, 4);
-    expect(result.overlap).toEqual([fixture.expectedOverlap]);
+    expect(result['peak'][0]).toBeCloseTo(fixture.expectedPeak, 4);
+    expect(result['overlap']).toEqual([fixture.expectedOverlap]);
     // The independently maximized bilinear objective is also near the known physical shift.
     fixture.translation.forEach((value, index) => {
-      expect(Math.abs(result.shift[index] + value)).toBeLessThanOrEqual(0.10001);
+      expect(Math.abs(result['shift'][index] + value)).toBeLessThanOrEqual(0.10001);
     });
   });
 }
@@ -85,9 +85,9 @@ it('RS07 masked mode rejects insufficient overlap and constant local support', a
         }
       })
     );
-    expect(result.status).toEqual([3]);
-    expect(result.overlap).toEqual([0]);
-    expect(result.shift.every(Number.isNaN)).toBe(true);
+    expect(result['status']).toEqual([3]);
+    expect(result['overlap']).toEqual([0]);
+    expect(result['shift'].every(Number.isNaN)).toBe(true);
   }
 });
 
@@ -116,10 +116,10 @@ it('RS07 masked overlap is linear, applies QA before interpolation, and preserve
       }
     })
   );
-  expect(result.status).toEqual([0]);
-  expect(result.shift).toEqual([-2, 1]);
-  expect(result.peak[0]).toBeCloseTo(1, 5);
-  expect(result.overlap).toEqual([fixture.expectedOverlap]);
+  expect(result['status']).toEqual([0]);
+  expect(result['shift']).toEqual([-2, 1]);
+  expect(result['peak'][0]).toBeCloseTo(1, 5);
+  expect(result['overlap']).toEqual([fixture.expectedOverlap]);
 });
 
 for (const [index, fixture] of reference.regions.entries()) {
@@ -145,11 +145,11 @@ for (const [index, fixture] of reference.regions.entries()) {
         }
       })
     );
-    expect(result.mapping).toEqual(fixture.expectedMapping);
-    expect(result.status).toEqual([fixture.expectedStatus]);
+    expect(result['mapping']).toEqual(fixture.expectedMapping);
+    expect(result['status']).toEqual([fixture.expectedStatus]);
     if (index === 1) {
-      expect(result.weights[5]).toBeCloseTo(3.5, 6);
-      expect(result.weights[1]).toBeNaN();
+      expect(result['weights'][5]).toBeCloseTo(3.5, 6);
+      expect(result['weights'][1]).toBeNaN();
     }
   });
 }

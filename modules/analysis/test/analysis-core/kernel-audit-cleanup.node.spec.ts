@@ -32,7 +32,7 @@ describe('kernel audit resource cleanup', () => {
       events.push(`audit ${module.nodeId}`);
       expect(module.id).toBe(module.nodeId);
       expect(module.stage).toBe('compute');
-      expect(module.constants.COUNT).toBe(shaders.length);
+      expect(module.constants['COUNT']).toBe(shaders.length);
     });
     expect(events).toEqual(['compile first', 'audit first', 'compile second', 'audit second']);
     expect(nodes).toEqual([]);

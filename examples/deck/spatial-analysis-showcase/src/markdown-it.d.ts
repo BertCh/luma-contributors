@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
 // Minimal typings for markdown-it 14 (the package ships none and `@types/markdown-it` is not installed).
 declare module 'markdown-it' {
   type Token = {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
 import {test as vitestTest, expect} from 'vitest';
 
 type TestCallback = (test: Test) => void | Promise<void>;
@@ -19,7 +22,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function normalizeValue(value: unknown, seenValues: WeakSet<object> = new WeakSet()): unknown {
   if (isArrayBufferView(value)) {
-    return Array.from(value as ArrayLike<number>);
+    // Typed arrays are array-like; a DataView is not and normalizes to an empty array.
+    return Array.from(value as unknown as ArrayLike<number>);
   }
 
   if (Array.isArray(value)) {

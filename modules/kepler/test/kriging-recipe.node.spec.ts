@@ -93,7 +93,12 @@ test('kriging routing admits bounded geographic grids and requires explicit pack
       formats: {longitude: 'float32', latitude: 'float32', temperature: 'float32'}
     }
   };
-  const capabilities = {webgpu: true, availableBytes: 100000};
+  const capabilities = {
+    webgpu: true,
+    availableBytes: 100000,
+    duckdb: false,
+    analysisBackend: false
+  };
   expect(selectKeplerExecutionRoute(request, capabilities)).toEqual({
     backend: 'luma',
     reason: 'supported'

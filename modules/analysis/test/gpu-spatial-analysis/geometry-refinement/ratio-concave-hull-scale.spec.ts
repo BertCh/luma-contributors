@@ -16,8 +16,10 @@ import {
 import {requireTestDevice} from '../../utils/require-test-device';
 
 async function setup() {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
+  const testDevice = await getWebGPUTestDevice();
+  requireTestDevice(testDevice);
+  // Rebinding keeps the narrowed type inside hoisted function declarations.
+  const device = testDevice;
   const graph = new GPUCommandGraph(device);
   const buffers: ReturnType<typeof createOutputBuffer>[] = [];
   let identifier = 0;

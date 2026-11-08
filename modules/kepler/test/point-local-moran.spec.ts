@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
-import type {Buffer} from '@luma.gl/core';
+import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {addKeplerPointWeights, type KeplerPointWeightsBinding} from '../src/analysis/point-weights';
@@ -27,6 +27,7 @@ import {computeLocalMoranOracle} from '../../analysis/test/gpu-spatial-analysis/
 test('point local Moran reuses fixed geographic weights, preserves primary outputs and matches CPU inference', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
+  const gpuDevice: Device = device;
   const graph = new GPUCommandGraph(device);
   const source = {datasetId: 'point-local-moran', revision: 2};
   const settings: KeplerPointWeightsSettings = {
@@ -42,7 +43,7 @@ test('point local Moran reuses fixed geographic weights, preserves primary outpu
   const selection = new Uint32Array([1, 0, 1, 1, 1, 1, 1]);
   const buffers: Buffer[] = [];
   function input(name: string, data: Float32Array) {
-    const buffer = createInputBuffer(device, data);
+    const buffer = createInputBuffer(gpuDevice, data);
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'float32', data.length)};
   }
@@ -51,14 +52,14 @@ test('point local Moran reuses fixed geographic weights, preserves primary outpu
     format: Format,
     length: number
   ) {
-    const buffer = createOutputBuffer(device, length);
+    const buffer = createOutputBuffer(gpuDevice, length);
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, `${name}-output`, buffer, format, length)};
   }
   const values = input('values', originalValues);
   const longitude = input('longitude', new Float32Array([0, 0.1, 10, 10.1, 20, 20.1, 181]));
   const latitude = input('latitude', new Float32Array(7));
-  const selectionBuffer = createInputBuffer(device, selection);
+  const selectionBuffer = createInputBuffer(gpuDevice, selection);
   buffers.push(selectionBuffer);
   const mask = importGraphBuffer(graph, 'selection', selectionBuffer, 'uint32', 7);
   const pointStatus = {
@@ -258,10 +259,14 @@ test('point local Moran reuses fixed geographic weights, preserves primary outpu
           (value, row) => effectiveMask[row] && !Number.isFinite(value)
         ).length
       );
-      if (!('localI' in item.result)) throw new Error('Expected local Moran result');
+      if (!('localI' in item.result) || !('pointWeights' in item.result))
+        throw new Error('Expected local Moran result');
       expect(item.result.localI).toBe(item.localI.view);
       expect(item.result.pointWeights.parameterByteLength).toBe(0);
-      expect(item.result.pointWeights.weights.offsets).toBe(binding.weights.offsets);
+      const resultWeights = item.result.pointWeights.weights;
+      if (!('offsets' in resultWeights) || !('offsets' in binding.weights))
+        throw new Error('Expected unchunked point weights');
+      expect(resultWeights.offsets).toBe(binding.weights.offsets);
       expect((await readUint32(item.inferenceOverflow.buffer, 1))[0]).toBe(0);
       expect(item.result.parameterByteLength).toBe(item.variant.permutation ? 48 : 32);
       expect(item.result.inference.significanceLevel).toBe(item.variant.significanceLevel);

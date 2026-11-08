@@ -29,8 +29,9 @@ const sourceGrid = {
 for (const scenario of ['seam', 'missing', 'overlap'] as const) {
   for (const noDataPolicy of ['strict', 'renormalize'] as const) {
     it(`GPU source tile routing matches independent ${scenario}/${noDataPolicy} reference`, async () => {
-      const device = await getWebGPUTestDevice('core');
-      requireTestDevice(device);
+      const testDevice = await getWebGPUTestDevice('core');
+      requireTestDevice(testDevice);
+      const device = testDevice;
       const graph = new GPUCommandGraph(device);
       const buffers: ReturnType<typeof createOutputBuffer>[] = [];
       function tile(

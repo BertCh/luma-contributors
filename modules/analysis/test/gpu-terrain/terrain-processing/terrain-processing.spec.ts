@@ -70,6 +70,9 @@ async function setup() {
   };
 }
 
+/** The readable half of a graph output, which is all the assertions use. */
+type TerrainOutput = {read(): Promise<number[]>};
+
 it('branching diamond conserves transport and distinguishes expected, minimum and maximum distance', async () => {
   const {graph, input, output, run} = await setup();
   // 0 -> 1 (1/4), 0 -> 2 (3/4), both -> 3. Node 3 is the sole outlet.
@@ -285,7 +288,12 @@ it('vertical coregistration rejects outliers and propagates common bias and corr
 
 it('tiled D8 seams and halo exclusion equal complete-domain accumulation and reach IDs', async () => {
   const {graph, input, output, run} = await setup();
-  const results = [];
+  const results: {
+    description: {column: number; width: number; owned: readonly number[]};
+    accumulation: TerrainOutput;
+    status: TerrainOutput;
+    reachIds: TerrainOutput;
+  }[] = [];
   for (const tiled of [false, true]) {
     const tiles = (
       tiled
@@ -481,7 +489,8 @@ it('correlated DEM errors increase integrated uncertainty according to the decla
 it('a river can leave and reenter a tile without making tile-level dependency cycles into outlets', async () => {
   const {graph, input, output, run} = await setup();
   const directions = [1, 1, 1, 4, 0, 16, 16, 16];
-  const results = [];
+  const results: {accumulation: TerrainOutput; status: TerrainOutput; reachIds: TerrainOutput}[] =
+    [];
   const tiles = [0, 2].map(column => {
     const globalCells = [column, column + 1, column + 4, column + 5];
     const accumulation = output(4, 'float32'),
@@ -668,7 +677,8 @@ it('branching split/rejoin seams equal the existing complete-domain consumer and
       output: {values: complete.view, status: completeStatus.view, unresolvedCount: unresolved.view}
     })
   );
-  const results = [];
+  const results: {accumulation: TerrainOutput; status: TerrainOutput; reachIds: TerrainOutput}[] =
+    [];
   const tiles = [0, 1].map(column => {
     const cells = [column, column + 2];
     const accumulation = output(2, 'float32'),
@@ -720,7 +730,7 @@ it('branching outlet sums conserve mass while contradictory halo routing and run
   const globalFractions = Array(24).fill(0);
   globalFractions[8] = 0.7;
   globalFractions[12] = 0.3;
-  const results = [];
+  const results: {accumulation: TerrainOutput; status: TerrainOutput}[] = [];
   const tiles = [0, 1, 2].map(ownedCell => {
     const accumulation = output(3, 'float32'),
       status = output(3, 'uint32'),
@@ -763,9 +773,9 @@ it('branching outlet sums conserve mass while contradictory halo routing and run
 
 it('positive fractional cycles spanning tiles remain unresolved and zero-weight edges do not create cycles', async () => {
   const {graph, input, output, run} = await setup();
-  const results = [];
+  const results: {accumulation: TerrainOutput; status: TerrainOutput}[][] = [];
   for (const cyclic of [false, true]) {
-    const tileResults = [];
+    const tileResults: {accumulation: TerrainOutput; status: TerrainOutput}[] = [];
     const tiles = [0, 1].map(column => {
       const accumulation = output(1, 'float32'),
         status = output(1, 'uint32'),
@@ -809,7 +819,7 @@ it('positive fractional cycles spanning tiles remain unresolved and zero-weight 
 
 it('branching corner transfers use the diagonal owner rather than an adjacent tile edge outlet', async () => {
   const {graph, input, output, run} = await setup();
-  const results = [];
+  const results: TerrainOutput[] = [];
   const tiles = [0, 1, 2, 3].map(cell => {
     const accumulation = output(1, 'float32'),
       status = output(1, 'uint32'),

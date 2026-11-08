@@ -91,6 +91,6 @@ test('field mapping builds numeric columns and rejects missing fields', () => {
     name => table[name as 'x' | 'y']
   );
   expect(Object.keys(mapped.columns)).toEqual(['a', 'c']);
-  expect([...mapped.columns.a]).toEqual([1, null, 3]);
+  expect(Array.from(mapped.columns['a'])).toEqual([1, null, 3]);
   expect(() => mapCatalogLensUserData({a: 'z'}, 3, () => undefined)).toThrow(/not numeric/);
 });

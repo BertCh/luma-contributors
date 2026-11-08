@@ -9,6 +9,11 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 
+/** Reads the descriptive datum that `makeGPURasterBand` attaches beside the published band type. */
+function readVerticalDatum(band: object): string | undefined {
+  return 'verticalDatum' in band ? (band.verticalDatum as string) : undefined;
+}
+
 it('makeGPURasterBand preserves only explicitly declared vertical datums', () => {
   const grid = makeGPURasterMetadata({width: 3, height: 2});
   const buffer = new GraphBufferHandle(
@@ -23,7 +28,7 @@ it('makeGPURasterBand preserves only explicitly declared vertical datums', () =>
     byteStride: 4,
     rowByteLength: 4
   });
-  expect(makeGPURasterBand(values, grid, {verticalDatum: 'EPSG:5773'}).verticalDatum).toBe(
+  expect(readVerticalDatum(makeGPURasterBand(values, grid, {verticalDatum: 'EPSG:5773'}))).toBe(
     'EPSG:5773'
   );
   expect(makeGPURasterBand(values, grid)).not.toHaveProperty('verticalDatum');

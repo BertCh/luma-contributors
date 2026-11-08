@@ -53,7 +53,10 @@ function isDroppedScenario(scenario: string | undefined): boolean {
 // Element → what is missing, as `<stream>: <parts>`. Generated from the failing checks and cross-checked with the
 // stream handoffs (2026-10-14); 'docs card' means scenario and pack exist but the doc section lacks lenses.
 const GPU_DATAFRAME_PENDING: Readonly<Record<string, string>> = {};
-const GPU_SPATIAL_ANALYSIS_PENDING: Readonly<Record<string, string>> = {};
+const GPU_SPATIAL_ANALYSIS_PENDING: Readonly<Record<string, string>> = {
+  addSparseResistanceConnectivityRecipe:
+    'lenses: pack operator, formula, scenario, directives and records (EC03 follow-up)'
+};
 const GPU_NETWORK_PENDING: Readonly<Record<string, string>> = {};
 const GPU_RASTER_PENDING: Readonly<Record<string, string>> = {};
 const GPU_TERRAIN_PENDING: Readonly<Record<string, string>> = {};
@@ -251,7 +254,7 @@ function collectSlotFailures(
       }
     } else if (
       !exported.has(marker.name) &&
-      !/^add(?:Sparse|Raster)ResistanceConnectivityRecipe$/.test(marker.name)
+      !/^addRasterResistanceConnectivityRecipe$/.test(marker.name)
     ) {
       failures.push(`${marker.file}:${marker.line}: marker ${marker.name} is not exported`);
     }

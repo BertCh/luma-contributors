@@ -68,7 +68,7 @@ async function runReplay(
     nullDistribution: createOutputBuffer(device, PERMUTATIONS),
     replayInfo: createOutputBuffer(device, 3)
   };
-  const graph = new GPUCommandGraph(device, {id: 'replay-spec', recording: {}});
+  const graph = new GPUCommandGraph(device, {id: 'replay-spec'});
   const importView = <Format extends 'uint32' | 'float32'>(
     name: string,
     buffer: Buffer,

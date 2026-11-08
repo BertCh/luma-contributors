@@ -121,7 +121,7 @@ it('spectral recipes reject foreign resources, malformed layouts, and unstable p
       createSpectralIndex('evi', props, {
         ...bands,
         blue: {
-          ...bands.blue,
+          ...bands['blue'],
           storage: {
             kind: 'buffer',
             values: createTransientView(foreign, 'foreign-blue', 'float32', 12)
@@ -143,7 +143,7 @@ it('spectral recipes reject foreign resources, malformed layouts, and unstable p
         new GPURasterNDWI({
           ...props,
           method: 'ambiguous',
-          nearInfrared: bands.nearInfrared
+          nearInfrared: bands['nearInfrared']
         } as never)
     ).toThrow(/explicit/);
     expect(() => createSpectralIndex('savi', {...props, clamp: [1, -1]}, bands)).toThrow(/clamp/);

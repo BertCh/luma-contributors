@@ -4,6 +4,7 @@
 - Select Node version: `nvm use`
 - Install deps: `yarn install`
 - Typecheck sources: `yarn typecheck`
+- Typecheck tests: `yarn typecheck-tests` (needs the same NODE_OPTIONS)
 - Build packages (ESM + CommonJS + types): `yarn build`
 - Verify every package entry point loads: `yarn verify-package-exports` (after `yarn build`)
 - Lint and formatting: `yarn lint`, fix with `yarn lint-fix`

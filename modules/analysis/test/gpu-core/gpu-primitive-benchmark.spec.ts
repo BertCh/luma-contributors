@@ -45,47 +45,30 @@ it.skipIf(environment?.['VITE_GPU_PRIMITIVE_BENCHMARK'] !== 'true')(
             new GPUScan({input: view(graph, buffers.a), output: view(graph, buffers.b)})
         ],
         [
-          'scan decoupled-lookback',
+          'compaction',
           (graph, buffers) =>
-            new GPUScan({
+            new GPUCompaction({
               input: view(graph, buffers.a),
+              flags: view(graph, buffers.flags),
               output: view(graph, buffers.b),
-              algorithm: 'decoupled-lookback'
+              count: view(graph, buffers.count, 1)
             })
         ],
-        ...(['scan', 'block'] as const).map(
-          strategy =>
-            [
-              `compaction ${strategy}`,
-              (graph: GPUCommandGraph, buffers: Buffers) =>
-                new GPUCompaction({
-                  input: view(graph, buffers.a),
-                  flags: view(graph, buffers.flags),
-                  output: view(graph, buffers.b),
-                  count: view(graph, buffers.count, 1),
-                  strategy
-                })
-            ] as const
-        ),
-        ...(
-          [
-            ['radix 4-bit', {algorithm: 'radix', digitBits: 4}],
-            ['radix 8-bit', {algorithm: 'radix', digitBits: 8}],
-            ['onesweep 8-bit', {algorithm: 'onesweep'}]
-          ] as const
-        ).map(
-          ([name, props]) =>
-            [
-              `sort ${name}`,
-              (graph: GPUCommandGraph, buffers: Buffers) =>
-                new GPUSort({
-                  ...props,
-                  keys: view(graph, buffers.a),
-                  values: view(graph, buffers.flags),
-                  outputKeys: view(graph, buffers.b),
-                  outputValues: view(graph, buffers.c)
-                })
-            ] as const
+        // Bitonic sort needs many dispatches; keep it below the largest row count.
+        ...(rowCount <= 1 << 20 ? (['radix', 'bitonic'] as const) : (['radix'] as const)).map(
+          (
+            algorithm
+          ): [string, (graph: GPUCommandGraph, buffers: Buffers) => GPUCommandNodeProducer] => [
+            `sort ${algorithm}`,
+            (graph, buffers) =>
+              new GPUSort({
+                algorithm,
+                keys: view(graph, buffers.a),
+                values: view(graph, buffers.flags),
+                outputKeys: view(graph, buffers.b),
+                outputValues: view(graph, buffers.c)
+              })
+          ]
         )
       ];
       for (const [name, makeProducer] of cases) {

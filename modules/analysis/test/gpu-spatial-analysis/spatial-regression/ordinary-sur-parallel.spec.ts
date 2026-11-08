@@ -106,12 +106,12 @@ for (const [rows, equations, columns, supplied, residualScale] of [
               : scenario === 'singular-error'
                 ? 3
                 : 0;
-        expect(actual.status).toEqual([failure]);
+        expect(actual['status']).toEqual([failure]);
         if (failure) {
           for (const key of ['coefficients', 'covariance', 'residuals'])
             expect(actual[key].every(Number.isNaN)).toBe(true);
           expect(
-            actual.residualCovariance.every(failure === 3 ? value => value === 0 : Number.isNaN)
+            actual['residualCovariance'].every(failure === 3 ? value => value === 0 : Number.isNaN)
           ).toBe(true);
           continue;
         }
@@ -152,7 +152,7 @@ for (const [rows, equations, columns, supplied, residualScale] of [
           );
         }
         const includedPositions = new Map(included.map((row, index) => [row, index]));
-        actual.residuals.forEach((value, index) => {
+        actual['residuals'].forEach((value, index) => {
           const position = includedPositions.get(index % rows);
           if (position === undefined) expect(Number.isNaN(value)).toBe(true);
           else

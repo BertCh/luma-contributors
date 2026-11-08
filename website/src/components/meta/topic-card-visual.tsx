@@ -11,8 +11,9 @@ import {layoutLensGraph} from '../../lens/layout-graph';
 import type {LensViewModel} from '../../lens/types';
 import {COLUMNS_LAYOUT} from './columns-demo';
 import {makeFlowGraph} from './lens-graph-panel';
+import {makePackageFlowGraph} from './package-layers';
 import {createColumnsSceneLoader} from './scenes/columns-scene';
-import {createFlowSceneLoader} from './scenes/flow-scene';
+import {createFlowSceneLoader, type FlowSceneOptions} from './scenes/flow-scene';
 import {createMapSceneLoader} from './scenes/map-scene';
 import {createTilingSceneLoader, createTilingStore} from './scenes/tiling-scene';
 import {createWorkgroupSceneLoader, DEFAULT_WORKGROUP_GRID} from './scenes/workgroup-scene';
@@ -30,9 +31,15 @@ const CARD_GRAPH_LAYOUT = {
   targetWidth: 1040
 };
 
-function makeGraphLoader(model: LensViewModel | undefined): GpuSceneLoader | undefined {
+function makeGraphLoader(
+  model: LensViewModel | undefined,
+  options: FlowSceneOptions
+): GpuSceneLoader | undefined {
   return model
-    ? createFlowSceneLoader(makeFlowGraph(model, layoutLensGraph(model, CARD_GRAPH_LAYOUT)))
+    ? createFlowSceneLoader(
+        makeFlowGraph(model, layoutLensGraph(model, CARD_GRAPH_LAYOUT)),
+        options
+      )
     : undefined;
 }
 
@@ -45,17 +52,20 @@ export function TopicCardVisual({slug, models}: {slug: TopicSlug; models: TopicC
   const loader = useMemo<GpuSceneLoader | undefined>(() => {
     switch (slug) {
       case 'anatomy':
-        return createWorkgroupSceneLoader({
-          ...DEFAULT_WORKGROUP_GRID,
-          columns: 8,
-          rows: 5,
-          laneSide: 5,
-          invocationCount: 8 * 5 * 25 - 33
-        });
+        return createWorkgroupSceneLoader(
+          {
+            ...DEFAULT_WORKGROUP_GRID,
+            columns: 8,
+            rows: 5,
+            laneSide: 5,
+            invocationCount: 8 * 5 * 25 - 33
+          },
+          {interaction: 'dispatch'}
+        );
       case 'command-graph':
-        return makeGraphLoader(models.moran);
+        return makeGraphLoader(models.moran, {interaction: 'dependencies'});
       case 'scheduling':
-        return makeGraphLoader(models.density);
+        return makeGraphLoader(models.density, {interaction: 'scrub'});
       case 'kernels':
         return createTilingSceneLoader(createTilingStore(32));
       case 'data-on-the-gpu':
@@ -63,12 +73,20 @@ export function TopicCardVisual({slug, models}: {slug: TopicSlug; models: TopicC
       case 'lenses':
         return models.density?.map ? createMapSceneLoader(models.density.map) : undefined;
       case 'this-page':
-        return createWorkgroupSceneLoader({
-          ...DEFAULT_WORKGROUP_GRID,
-          columns: 12,
-          rows: 6,
-          laneSide: 4,
-          invocationCount: 12 * 6 * 16 - 21
+        return createWorkgroupSceneLoader(
+          {
+            ...DEFAULT_WORKGROUP_GRID,
+            columns: 12,
+            rows: 6,
+            laneSide: 4,
+            invocationCount: 12 * 6 * 16 - 21
+          },
+          {interaction: 'trail'}
+        );
+      case 'upstream-first':
+        return createFlowSceneLoader(makePackageFlowGraph(), {
+          interaction: 'dependencies',
+          dependencyDepth: 'transitive'
         });
       default:
         return undefined;

@@ -7,7 +7,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createFillNode, createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
+import {createFillNode, createWGSLKernelNode} from './wgsl-kernel-nodes';
 
 export type MaskedWeakComponentProps = {
   id: string;

@@ -106,12 +106,12 @@ for (const alternative of ['greater', 'lesser', 'two-sided'] as const) {
     );
     const cleanup = setup.run();
     try {
-      expect(Array.from(await readUint32(overflow.buffer))).toEqual([0]);
-      expect(Array.from(await readUint32(status.buffer))).toEqual(Array(rows).fill(0));
-      const actualStatistic = await readFloat32(statistic.buffer);
-      const actualResiduals = await readFloat32(normalizedResiduals.buffer);
-      const actualPValues = await readFloat32(pseudoPValues.buffer);
-      const actualAdjusted = await readFloat32(adjustedPValues.buffer);
+      expect(Array.from(await readUint32(overflow.buffer, 1))).toEqual([0]);
+      expect(Array.from(await readUint32(status.buffer, rows))).toEqual(Array(rows).fill(0));
+      const actualStatistic = await readFloat32(statistic.buffer, rows);
+      const actualResiduals = await readFloat32(normalizedResiduals.buffer, rows);
+      const actualPValues = await readFloat32(pseudoPValues.buffer, rows);
+      const actualAdjusted = await readFloat32(adjustedPValues.buffer, rows);
       for (let row = 0; row < rows; row++) {
         expect(actualStatistic[row]).toBeCloseTo(reference.statistic[row], 5);
         expect(actualResiduals[row]).toBeCloseTo(reference.normalizedResiduals[row], 5);
@@ -171,9 +171,9 @@ for (const failure of ['constant', 'nonfinite', 'upstream', 'count', 'capacity']
     );
     const cleanup = setup.run();
     try {
-      for (const value of await readFloat32(pseudoPValues.buffer)) expect(value).toBeNaN();
-      for (const value of await readUint32(exceedances.buffer)) expect(value).toBe(0xffffffff);
-      expect((await readUint32(overflow.buffer))[0]).toBe(
+      for (const value of await readFloat32(pseudoPValues.buffer, 5)) expect(value).toBeNaN();
+      for (const value of await readUint32(exceedances.buffer, 5)) expect(value).toBe(0xffffffff);
+      expect((await readUint32(overflow.buffer, 1))[0]).toBe(
         ['upstream', 'count', 'capacity'].includes(failure) ? 1 : 0
       );
     } finally {

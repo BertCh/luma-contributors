@@ -146,7 +146,7 @@ it('Dorling neighborGrid handles 16384 circles over 8 passes and reports its tim
   ]).flat();
   const values = Array(rows).fill(Math.PI * 0.36);
   const timings: Record<string, number> = {};
-  const results: Record<string, Float32Array> = {};
+  const results: Record<string, number[]> = {};
   for (const neighborGrid of [false, true]) {
     const startTime = performance.now();
     const result = await runLayout(device, positions, values, 8, neighborGrid, 4096);
@@ -154,8 +154,8 @@ it('Dorling neighborGrid handles 16384 circles over 8 passes and reports its tim
     results[neighborGrid ? 'grid' : 'all-pairs'] = result.positions;
   }
   console.log(
-    `dorling-neighbor-grid rows=${rows} passes=8 all-pairs=${timings['all-pairs'].toFixed(0)}ms grid=${timings.grid.toFixed(0)}ms`
+    `dorling-neighbor-grid rows=${rows} passes=8 all-pairs=${timings['all-pairs'].toFixed(0)}ms grid=${timings['grid'].toFixed(0)}ms`
   );
-  expect(Array.from(results.grid).every(Number.isFinite)).toBe(true);
-  expect(results.grid[0]).toBeCloseTo(results['all-pairs'][0], 2);
+  expect(Array.from(results['grid']).every(Number.isFinite)).toBe(true);
+  expect(results['grid'][0]).toBeCloseTo(results['all-pairs'][0], 2);
 });

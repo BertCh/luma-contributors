@@ -42,9 +42,9 @@ it('backlog retained routing evidence keeps caller identities and exact converge
   try {
     const result = addNetworkDisruptionRecipe(graph, props);
     expect(result.outputs.baselineCosts).toBe(props.baseline.costs);
-    expect(result.intermediates.topology).toBe(props.search.topology);
-    expect(result.intermediates.originNodes).toBe(props.search.startNodes);
-    expect(result.intermediates.targetNodes).toBe(props.search.targetNodes);
+    expect(result.intermediates['topology']).toBe(props.search.topology);
+    expect(result.intermediates['originNodes']).toBe(props.search.startNodes);
+    expect(result.intermediates['targetNodes']).toBe(props.search.targetNodes);
     expect(
       result.status.stages?.find(stage => stage.stage === 'baseline-routing')?.status.converged
     ).toBe(props.baseline.status.converged);
@@ -119,6 +119,7 @@ it('backlog prepared bands keep validity and separate fill versus final failure 
       zones,
       zoneCount: 4
     });
+    // The raster wrapper's spread drops the recipe's index signature from the intermediates type.
     expect(distribution.intermediates.zones).toBe(zones);
     expect(distribution.outputs.zoneIds.length).toBe(4);
     expect(distribution.outputs.validCounts.length).toBe(4);

@@ -15,10 +15,11 @@ import {
   createUniformBuffer,
   getSceneColors,
   RAMP_WGSL,
+  ScenePointer,
   STILL_FRAME_MILLISECONDS
 } from './scene-kit';
 
-const LOOK_FLOATS = 28;
+const LOOK_FLOATS = 32;
 
 const COMMON_WGSL = /* wgsl */ `
 struct Look {
@@ -28,7 +29,8 @@ struct Look {
   background: vec4f,
   accent: vec4f,
   signal: vec4f,
-  ink: vec4f
+  ink: vec4f,
+  pointer: vec4f
 };
 @group(0) @binding(0) var<uniform> look: Look;
 ${RAMP_WGSL}
@@ -72,12 +74,19 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     mix(cellValue(base.x, base.y + 1), cellValue(base.x + 1, base.y + 1), fraction.x),
     fraction.y
   );
-  let level = fract(look.clock.x * 0.09);
-  let band = exp(-pow((value - level) / 0.025, 2.0)) * look.clock.y;
+  let presence = look.pointer.z;
+  // Hover locks the band to the value under the probe and widens it slightly.
+  let level = mix(fract(look.clock.x * 0.09), look.pointer.w, presence);
+  let width = mix(0.025, 0.032, presence);
+  let band = exp(-pow((value - level) / width, 2.0)) * max(look.clock.y, presence);
   let body = sampleRamp(value);
   let visible = smoothstep(0.02, 0.28, value);
   var color = mix(look.background.rgb, body, visible);
-  color = mix(color, look.ink.rgb, band * 0.6);
+  color = mix(color, look.ink.rgb, band * mix(0.6, 0.75, presence));
+  // Probe ring: thin antialiased circle at the eased pointer position (framebuffer pixels).
+  let ringDistance = abs(length(input.position.xy - look.pointer.xy) - look.grid.z);
+  let ring = (1.0 - smoothstep(0.5, 1.5, ringDistance)) * presence;
+  color = mix(color, look.signal.rgb, ring);
   return vec4f(color, 1.0);
 }
 `;
@@ -102,7 +111,10 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) 
   let point = points[instanceIndex];
   let corner = corners[vertexIndex];
   let sweep = exp(-pow((point.x - fract(look.clock.x * 0.12)) / 0.07, 2.0));
-  let radius = look.clock.z * (1.0 + 0.7 * sweep * select(0.0, 1.0, point.w > 0.5));
+  // Points near the pointer swell with a gaussian falloff (sigma is six ring radii).
+  let pointerOffset = (vec2f(point.x, point.y) - look.pointer.xy / look.size.xy) * look.size.xy;
+  let swell = exp(-dot(pointerOffset, pointerOffset) / pow(look.grid.z * 6.0, 2.0)) * look.pointer.z;
+  let radius = look.clock.z * (1.0 + 0.7 * sweep * select(0.0, 1.0, point.w > 0.5)) * (1.0 + 0.8 * swell);
   let center = vec2f(point.x * 2.0 - 1.0, 1.0 - point.y * 2.0);
   var output: VertexOutput;
   output.position = vec4f(center + corner * radius * 2.0 / look.size.xy, 0.0, 1.0);
@@ -149,6 +161,9 @@ class MapSceneInstance {
   private readonly rasterSize: [number, number];
   private readonly pointRadius: number;
   private readonly reducedMotion: boolean;
+  private readonly pointer: ScenePointer;
+  private readonly rasterValues: Float32Array | undefined;
+  private readonly rasterColumns: number;
   private width: number;
   private height: number;
 
@@ -166,13 +181,16 @@ class MapSceneInstance {
     this.width = width;
     this.height = height;
     this.reducedMotion = reducedMotion;
+    this.pointer = new ScenePointer(reducedMotion);
     this.lookBuffer = createUniformBuffer(device, LOOK_FLOATS);
 
     this.rasterSize = map.raster ? [map.raster.width, map.raster.height] : [1, 1];
+    this.rasterColumns = this.rasterSize[0];
     if (map.raster) {
       const bytes = Uint8Array.from(atob(map.raster.grid), character => character.charCodeAt(0));
       const values = Float32Array.from(bytes, byte => byte / 255);
       const buffer = createStorageBuffer(device, values);
+      this.rasterValues = values;
       this.buffers.push(buffer);
       this.rasterModel = createQuadModel(device, {
         id: 'map-raster',
@@ -214,10 +232,38 @@ class MapSceneInstance {
     }
   }
 
+  setPointer(position: [number, number] | null): void {
+    this.pointer.set(position);
+  }
+
+  /** Bilinear raster sample at a canvas pixel, matching RASTER_WGSL. */
+  private sampleRaster(pixelX: number, pixelY: number): number {
+    const values = this.rasterValues;
+    if (!values) return 0;
+    const [columns, rows] = this.rasterSize;
+    const shiftedX = (pixelX / this.width) * columns - 0.5;
+    const shiftedY = (pixelY / this.height) * rows - 0.5;
+    const baseX = Math.floor(shiftedX);
+    const baseY = Math.floor(shiftedY);
+    const fractionX = shiftedX - baseX;
+    const fractionY = shiftedY - baseY;
+    const cellValue = (column: number, row: number): number =>
+      values[
+        Math.min(Math.max(row, 0), rows - 1) * this.rasterColumns +
+          Math.min(Math.max(column, 0), columns - 1)
+      ];
+    const top = cellValue(baseX, baseY) * (1 - fractionX) + cellValue(baseX + 1, baseY) * fractionX;
+    const bottom =
+      cellValue(baseX, baseY + 1) * (1 - fractionX) + cellValue(baseX + 1, baseY + 1) * fractionX;
+    return top * (1 - fractionY) + bottom * fractionY;
+  }
+
   render(timeMilliseconds: number): void {
+    this.pointer.update(timeMilliseconds / 1000);
+    const pixelRatio = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1;
     const seconds = (this.reducedMotion ? STILL_FRAME_MILLISECONDS : timeMilliseconds) / 1000;
     const look = this.look;
-    look.set([this.rasterSize[0], this.rasterSize[1], 0, 0], 0);
+    look.set([this.rasterSize[0], this.rasterSize[1], 10 * pixelRatio, 0], 0);
     look.set(
       [
         seconds,
@@ -232,6 +278,15 @@ class MapSceneInstance {
     look.set(this.colors.accent, 16);
     look.set(this.colors.signal, 20);
     look.set(this.colors.ink, 24);
+    look.set(
+      [
+        this.pointer.x,
+        this.pointer.y,
+        this.pointer.presence,
+        Math.max(0.06, this.sampleRaster(this.pointer.x, this.pointer.y))
+      ],
+      28
+    );
     this.lookBuffer.write(look);
     const renderPass = this.device.beginRenderPass({clearColor: this.colors.background});
     this.rasterModel?.draw(renderPass);

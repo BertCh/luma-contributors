@@ -12,8 +12,8 @@ import {
 import {makeSpatialFixture} from '../spatial-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
 const environment = (import.meta as unknown as {env?: Record<string, string>}).env;
-const enabled = environment?.VITE_POINTCLOUD_BENCHMARK === 'true';
-const maximumRows = Number(environment?.VITE_POINTCLOUD_MAX_ROWS ?? 100000);
+const enabled = environment?.['VITE_POINTCLOUD_BENCHMARK'] === 'true';
+const maximumRows = Number(environment?.['VITE_POINTCLOUD_MAX_ROWS'] ?? 100000);
 for (const mode of ['smrf', 'icp', 'skew'] as const)
   it.skipIf(!enabled)(`${mode} exact indexed scaled benchmark`, {timeout: 300000}, async () => {
     const device = await getWebGPUTestDevice();

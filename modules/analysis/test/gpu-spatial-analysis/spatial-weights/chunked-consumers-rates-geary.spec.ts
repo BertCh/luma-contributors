@@ -292,7 +292,7 @@ it('chunked spatial rate recipe matches the single CSR (islands and scale)', asy
   requireTestDevice(device);
   for (const scenario of PLANS) {
     const {events, populations, mask} = createRateInputs(scenario);
-    for (const islandPolicy of ['nan', 'own-rate'] as const) {
+    for (const islandPolicy of ['undefined', 'own-rate'] as const) {
       await expectParity(
         device,
         scenario,

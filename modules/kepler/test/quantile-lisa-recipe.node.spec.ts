@@ -84,7 +84,7 @@ test('Quantile LISA rejects unsupported inference, invalid classes and unreprese
 });
 
 test('Quantile LISA routing checks source quantile capacity and geographic precision', () => {
-  const capabilities = {webgpu: true, availableBytes: 1024};
+  const capabilities = {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false};
   const request = {
     kind: 'analysis' as const,
     recipe,

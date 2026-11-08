@@ -28,12 +28,17 @@ describe('projection spatial frames', () => {
   it('keeps the computed origin when no frame origin applies', () => {
     const baseline = requireReady(prepareCRSProjection(options));
     const noOrigin = requireReady(
-      prepareCRSProjection({...options, targetFrame: makeFrame('EPSG:3857')})
+      prepareCRSProjection({
+        ...options,
+        destinationOrigin: getGPUProjectionFrameOrigin(makeFrame('EPSG:3857'))
+      })
     );
     const projectionCenter = requireReady(
       prepareCRSProjection({
         ...options,
-        targetFrame: makeFrame('EPSG:3857', {origin: [5, 6], anchor: 'projection-center'})
+        destinationOrigin: getGPUProjectionFrameOrigin(
+          makeFrame('EPSG:3857', {origin: [5, 6], anchor: 'projection-center'})
+        )
       })
     );
     expect(noOrigin.program.destinationOrigin).toEqual(baseline.program.destinationOrigin);

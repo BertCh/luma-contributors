@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/// <reference types="vite/client" />
+
 import {expect, test} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {fromRecordedLensFile, listLensScenarios} from '../../src/computation-lenses/index';
@@ -10,13 +12,8 @@ import '../../src/computation-lenses/scenarios/index';
 
 // Same comparison as record-structure.node.spec.ts, for scenarios whose structure can only be
 // described on a real device (their contributors create compute pipelines while building).
-// `import.meta.glob` is a Vite transform (it must stay a literal call); the package tsconfig does
-// not load vite/client types.
-declare global {
-  interface ImportMeta {
-    glob(pattern: string, options: {query: string; import: string}): Record<string, unknown>;
-  }
-}
+// `import.meta.glob` is a Vite transform (it must stay a literal call); its types come from
+// vite/client.
 const recordFiles = import.meta.glob('../../../../docs/lens-records/*.json', {
   query: '?raw',
   import: 'default'

@@ -180,7 +180,7 @@ test('recipe-straight-line-catchments matches the CPU allocation and statistics'
     expectColumn(gpu.tables[0].columns[column], cpu.tables[0].columns[column], 1e-4, column);
   const cellCounts = cpu.tables[0].columns['cell_count'] as number[];
   expect(cellCounts.reduce((sum, count) => sum + count, 0)).toBe(
-    cpu.summary['columns'] * (cpu.summary['rows'] as number)
+    (cpu.summary['columns'] as number) * (cpu.summary['rows'] as number)
   );
 });
 

@@ -200,7 +200,8 @@ it('hotspot binding retains GPU inference outputs and matches the analytic corne
     }),
     {source, columns: {value: values}, outputs: {hotSpots: {zScores: zScores.view}}}
   );
-  if (result.operation !== 'hot-spots') throw new Error('Expected hotspot result');
+  if (!('operation' in result) || result.operation !== 'hot-spots')
+    throw new Error('Expected hotspot result');
   expect(result.source).toEqual(source);
   expect(result.status.stages.length).toBeGreaterThan(0);
   const compiled = graph.compile();

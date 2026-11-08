@@ -36,7 +36,7 @@ export type SpectralCase = {
 };
 
 export const SPECTRAL_REFERENCE = fixture;
-export const SPECTRAL_CASES = fixture.cases as SpectralCase[];
+export const SPECTRAL_CASES = fixture.cases as unknown as SpectralCase[]; // JSON import widens the band format literals;
 
 export type SpectralOutputProps = {
   id?: string;
@@ -59,34 +59,34 @@ export function createSpectralIndex(
       return new GPURasterNDWI({
         ...props,
         method: 'mcfeeters',
-        green: bands.green,
-        nearInfrared: bands.nearInfrared
+        green: bands['green'],
+        nearInfrared: bands['nearInfrared']
       });
     case 'ndwi-gao':
       return new GPURasterNDWI({
         ...props,
         method: 'gao',
-        nearInfrared: bands.nearInfrared,
-        shortwaveInfrared: bands.shortwaveInfrared
+        nearInfrared: bands['nearInfrared'],
+        shortwaveInfrared: bands['shortwaveInfrared']
       });
     case 'nbr':
       return new GPURasterNBR({
         ...props,
-        nearInfrared: bands.nearInfrared,
-        shortwaveInfrared2: bands.shortwaveInfrared2
+        nearInfrared: bands['nearInfrared'],
+        shortwaveInfrared2: bands['shortwaveInfrared2']
       });
     case 'evi':
       return new GPURasterEVI({
         ...props,
-        nearInfrared: bands.nearInfrared,
-        red: bands.red,
-        blue: bands.blue
+        nearInfrared: bands['nearInfrared'],
+        red: bands['red'],
+        blue: bands['blue']
       });
     case 'savi':
       return new GPURasterSAVI({
         ...props,
-        nearInfrared: bands.nearInfrared,
-        red: bands.red,
+        nearInfrared: bands['nearInfrared'],
+        red: bands['red'],
         soilAdjustment
       });
     default:

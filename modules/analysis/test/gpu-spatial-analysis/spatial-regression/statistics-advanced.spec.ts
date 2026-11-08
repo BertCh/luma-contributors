@@ -17,6 +17,7 @@ import {
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import reference from '../../oracles/fixtures/statistics-advanced.json';
+
 async function setup() {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

@@ -20,6 +20,7 @@ import {
   getKeplerPointWeightsMaximumNeighbors,
   type KeplerPointWeightsBinding
 } from '../src/analysis/point-weights';
+import {requireCompletePointWeightsStatus} from './utils/point-weights-binding';
 import {addKeplerAnalysisRecipe} from '../src/analysis/recipe-bindings';
 
 const weights: KeplerPointWeightsSettings = {
@@ -79,7 +80,7 @@ test('point recipes detach explicit geographic choices and restore without exter
 });
 
 test('point routing checks coordinate precision and zero-row capacity before GPU execution', () => {
-  const capabilities = {webgpu: true, availableBytes: 1024};
+  const capabilities = {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false};
   const request = {
     kind: 'analysis' as const,
     recipe,
@@ -187,7 +188,7 @@ test('point hotspots persist inference and island choices and validate geographi
         },
         estimatedBytes: 128
       },
-      {webgpu: true, availableBytes: 1024}
+      {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false}
     )
   ).toEqual({backend: 'unavailable', reason: 'precision'});
 });
@@ -289,7 +290,10 @@ test('borrowed point weights validate source, settings, topology and graph befor
     if (!('pointWeights' in result)) throw new Error('Expected point weights result');
     expect(result.pointWeights.parameterByteLength).toBe(0);
     expect(result.pointWeights.coordinateMask).toBe(pointWeights.coordinateMask);
-    expect(result.pointWeights.weights.offsets).toBe(pointWeights.weights.offsets);
+    const resultWeights = result.pointWeights.weights;
+    if (!('offsets' in resultWeights) || !('offsets' in pointWeights.weights))
+      throw new Error('Expected unchunked point weights');
+    expect(resultWeights.offsets).toBe(pointWeights.weights.offsets);
     result.destroyParameters();
   } finally {
     addCompute.mockRestore();
@@ -348,12 +352,14 @@ test('distance-band GPU graph uses explicit capacity and rejects stale reusable 
     maxComputeWorkgroupsPerDimension: 65535
   });
   const graph = new GPUCommandGraph(device);
-  const producer = addKeplerPointWeights(graph, {
-    source: recipe.source,
-    settings: distanceBand,
-    longitude: createTransientView(graph, 'band-longitude', 'float32', 3),
-    latitude: createTransientView(graph, 'band-latitude', 'float32', 3)
-  });
+  const producer = requireCompletePointWeightsStatus(
+    addKeplerPointWeights(graph, {
+      source: recipe.source,
+      settings: distanceBand,
+      longitude: createTransientView(graph, 'band-longitude', 'float32', 3),
+      latitude: createTransientView(graph, 'band-latitude', 'float32', 3)
+    })
+  );
   const bandRecipe = parseKeplerAnalysisRecipe({
     ...recipe,
     operation: {...recipe.operation, weights: distanceBand}
@@ -407,7 +413,10 @@ test('distance-band GPU graph uses explicit capacity and rejects stale reusable 
       pointWeights: producer
     });
     if (!('pointWeights' in result)) throw new Error('Expected point topology');
-    expect(result.pointWeights.weights.neighbors).toBe(producer.weights.neighbors);
+    const resultWeights = result.pointWeights.weights;
+    if (!('neighbors' in resultWeights) || !('neighbors' in producer.weights))
+      throw new Error('Expected unchunked point weights');
+    expect(resultWeights.neighbors).toBe(producer.weights.neighbors);
     expect(result.pointWeights.parameterByteLength).toBe(0);
     result.destroyParameters();
   } finally {
@@ -445,7 +454,7 @@ test('distance-band source admission protects uint32 required-slot totals withou
           },
           estimatedBytes: 128
         },
-        {webgpu: true, availableBytes: 1024}
+        {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false}
       ).reason
     ).toBe(rowCount === 65536 ? 'supported' : 'capacity');
   }

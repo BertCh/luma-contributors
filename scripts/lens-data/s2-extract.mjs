@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
 // Run from the repository root: node scripts/lens-data/s2-extract.mjs
 // Source datasets are read-only. No network access or dependencies are required.
 import assert from 'node:assert/strict';

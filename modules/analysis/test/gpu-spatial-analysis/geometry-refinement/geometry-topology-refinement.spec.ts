@@ -99,7 +99,7 @@ it('GPU ratio hull endpoints and convex subdivision conserve independent fixture
     );
     const compiled = graph.compile();
     try {
-      submitGraph(device, compiled, undefined);
+      submitGraph(device, compiled);
       expect(await harness.integers(output.status.converged)).toEqual([1]);
       const triangles = await harness.integers(output.triangles);
       const validity = await harness.integers(output.triangleValidity);
@@ -143,7 +143,7 @@ it('GPU ratio hull endpoints and convex subdivision conserve independent fixture
   );
   const compiled = graph.compile();
   try {
-    submitGraph(device, compiled, undefined);
+    submitGraph(device, compiled);
     const status = await harness.integers(output.status);
     expect(status.slice(2)).toEqual([0, 0]);
     const pieces = await harness.integers(output.pieces);
@@ -191,7 +191,7 @@ it('GPU precision policies preserve collapsed lines explicitly and reconstruct s
     );
     const compiled = graph.compile();
     try {
-      submitGraph(device, compiled, undefined);
+      submitGraph(device, compiled);
       expect(await harness.integers(output.lineOffsets)).toEqual([
         0,
         mode === 'keep-collapsed' ? 2 : 0
@@ -223,7 +223,7 @@ it('GPU precision policies preserve collapsed lines explicitly and reconstruct s
   );
   const compiled = graph.compile();
   try {
-    submitGraph(device, compiled, undefined);
+    submitGraph(device, compiled);
     expect(await harness.integers(output.status.overflow)).toEqual([0]);
     expect(await harness.integers(output.status.count)).toEqual([1]);
     expect((await harness.floats(lattice))[2]).toBe(1);
@@ -265,7 +265,7 @@ it('GPU convex wavefront handles simultaneous rectangle events and exact inward 
   );
   const compiled = graph.compile();
   try {
-    submitGraph(device, compiled, undefined);
+    submitGraph(device, compiled);
     expect(await harness.integers(output.status)).toEqual([5, 5, 4, 0]);
     expect(await harness.floats(output.offsetPositions)).toEqual([
       0.5, 0.5, 3.5, 0.5, 3.5, 1.5, 0.5, 1.5
@@ -313,7 +313,7 @@ it('GPU convex wavefront accepts rotated float32 quadrilaterals in either windin
     );
     const compiled = graph.compile();
     try {
-      submitGraph(device, compiled, undefined);
+      submitGraph(device, compiled);
       const [writtenArcs, requiredArcs, offsetVertexCount, flags] = await harness.integers(
         output.status
       );
@@ -357,7 +357,7 @@ it('GPU loop erasure nodes crossings and preserves the remaining source path', a
   );
   const compiled = graph.compile();
   try {
-    submitGraph(device, compiled, undefined);
+    submitGraph(device, compiled);
     expect(await harness.integers(output.status)).toEqual([3, 3, 0, 0]);
     expect((await harness.floats(output.positions)).slice(0, 6)).toEqual([0, 0, 2, 2, 4, 0]);
     expect((await harness.integers(output.sourceEdges)).slice(0, 2)).toEqual([0, 2]);
@@ -392,7 +392,7 @@ it('GPU bounded geometry reports output capacity and iteration exhaustion separa
     );
     const compiled = graph.compile();
     try {
-      submitGraph(device, compiled, undefined);
+      submitGraph(device, compiled);
       expect(await harness.integers(output.status)).toEqual(
         maximumIterations === 0 ? [0, 0, 4, 4] : [2, 5, 4, 2]
       );
@@ -420,7 +420,7 @@ it('GPU bounded geometry reports output capacity and iteration exhaustion separa
   );
   const compiled = graph.compile();
   try {
-    submitGraph(device, compiled, undefined);
+    submitGraph(device, compiled);
     expect(await harness.integers(output.status)).toEqual([1, 2, 1, 0]);
   } finally {
     compiled.destroy();
@@ -446,7 +446,7 @@ it('GPU canonical equality observes structural and coordinate differences', asyn
   graph.add(new GPUCanonicalPolygonEquality({id: 'different', left, right, output: unequal}));
   const compiled = graph.compile();
   try {
-    submitGraph(device, compiled, undefined);
+    submitGraph(device, compiled);
     expect(await harness.integers(equal)).toEqual([1]);
     expect(await harness.integers(unequal)).toEqual([0]);
   } finally {

@@ -17,7 +17,7 @@ function createReplay(
   overrides: {nullDistributionLength?: number; rowLength?: number} = {},
   configuration: Parameters<typeof createReplayTest>[1] = {}
 ) {
-  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {recording: {}});
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const test = createReplayTest(graph, configuration);
   const testNodes = test.getCommandNodes(graph);
   const replay = new GPULocalPermutationReplay({

@@ -31,6 +31,7 @@ import {RECIPES_CASES} from './cases-recipes';
 import {GEOMETRY_CASES} from './cases-geometry';
 import {CELLS_AND_JOINS_CASES} from './cases-cells-and-joins';
 import {POINTS_AND_REGIONS_CASES} from './cases-points-and-regions';
+import {POINTCLOUD_AND_DATUM_CASES} from './cases-pointcloud-and-datum';
 
 /** Every kernel-audit case, by area file. */
 export const KERNEL_AUDIT_CASES: Readonly<Record<string, readonly KernelAuditCase[]>> = {
@@ -61,5 +62,6 @@ export const KERNEL_AUDIT_CASES: Readonly<Record<string, readonly KernelAuditCas
   recipes: [...RECIPES_CASES, ...RATE_MAPPING_KERNEL_AUDIT_CASES, ...QUANTILE_LISA_AUDIT_CASES],
   geometry: [...GEOMETRY_CASES, ...DORLING_CARTOGRAM_AUDIT_CASES],
   'cells-and-joins': CELLS_AND_JOINS_CASES,
-  'points-and-regions': POINTS_AND_REGIONS_CASES
+  'points-and-regions': POINTS_AND_REGIONS_CASES,
+  'pointcloud-and-datum': POINTCLOUD_AND_DATUM_CASES
 };

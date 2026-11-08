@@ -32,7 +32,7 @@ const OPTIMIZATION_NODES_PER_STEP = OPTIMIZATION_ROUNDS_PER_STEP * OPTIMIZATION_
 type ScalarFormat = 'uint32' | 'float32';
 
 /**
- * Creates the caller-owned `GPUVector`s that `@luma-contributors/analysis/gpu-graph-algorithms` reads and writes, and
+ * Creates the caller-owned `GPUVector`s that `@luma.gl/graph/gpu-graph-algorithms` reads and writes, and
  * destroys them (vectors first, then their buffers). The contributors never allocate: every
  * output of every graph algorithm lives in a vector made here.
  */

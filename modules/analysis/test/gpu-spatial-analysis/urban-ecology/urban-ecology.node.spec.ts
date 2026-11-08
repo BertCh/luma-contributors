@@ -13,6 +13,7 @@ import {
   addLandscapeMetricsRecipe,
   addPatchProximityRecipe,
   addResistanceConnectivityRecipe,
+  addSparseResistanceConnectivityRecipe,
   addSegregationDecompositionRecipe
 } from '../../../src/gpu-spatial-analysis/landscape-ecology/index';
 import {
@@ -67,6 +68,15 @@ it('urban and ecology recipes emit parseable graph kernels within portable bindi
       vertexCount: 3,
       source: 0,
       sink: 2
+    });
+    addSparseResistanceConnectivityRecipe(graph, {
+      edges: view('uint32x2', 2),
+      conductances: view('float32', 2),
+      vertexCount: 3,
+      source: 0,
+      sink: 2,
+      maximumIterations: 2,
+      connectivityIterations: 2
     });
     const populations = view('float32x2', 3);
     addSegregationDecompositionRecipe(graph, {
@@ -159,6 +169,43 @@ it('bounded urban/ecology solvers reject unsupported sizes and mismatched shape 
         randomization: {seed: 5, replicates: 2}
       })
     ).toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('sparse resistance connectivity rejects sizes one step above each limit', () => {
+  const {device, graph, view} = createContext();
+  try {
+    const edges = view('uint32x2', 2);
+    const conductances = view('float32', 2);
+    const base = {edges, conductances, vertexCount: 3, source: 0, sink: 2};
+    expect(() =>
+      addSparseResistanceConnectivityRecipe(graph, {...base, vertexCount: 1048577})
+    ).toThrow(/^sparse-resistance-connectivity vertexCount must be an integer in \[2, 1048576\]$/);
+    expect(() =>
+      addSparseResistanceConnectivityRecipe(graph, {
+        ...base,
+        edges: view('uint32x2', 2097153),
+        conductances: view('float32', 2097153)
+      })
+    ).toThrow(/edges must have between 1 and 2097152 rows/);
+    expect(() =>
+      addSparseResistanceConnectivityRecipe(graph, {...base, maximumIterations: 4097})
+    ).toThrow();
+    expect(() =>
+      addSparseResistanceConnectivityRecipe(graph, {...base, connectivityIterations: 1025})
+    ).toThrow();
+    expect(() =>
+      addSparseResistanceConnectivityRecipe(graph, {
+        ...base,
+        id: 'sparse-resistance-at-limit',
+        vertexCount: 1048576,
+        sink: 1048575,
+        maximumIterations: 1,
+        connectivityIterations: 1
+      })
+    ).not.toThrow();
   } finally {
     device.destroy();
   }

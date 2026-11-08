@@ -282,7 +282,7 @@ it('chunked validation reports the same flags and invalid count at every chunkin
           : new GPUSpatialWeightsValidation({weights: weights as GPUSpatialWeights, output})
       );
     },
-    result => ({flags: result.flags, invalid: result.invalid})
+    result => ({flags: result['flags'], invalid: result['invalid']})
   );
 });
 
@@ -311,7 +311,7 @@ it('chunked transpose equals the whole transpose and detects asymmetry', async (
         neighbors: result['transpose-neighbors'].slice(0, used),
         weights: result['transpose-weights'].slice(0, used),
         distances: result['transpose-distances'].slice(0, used),
-        asymmetric: result.asymmetric
+        asymmetric: result['asymmetric']
       };
     }
   );
