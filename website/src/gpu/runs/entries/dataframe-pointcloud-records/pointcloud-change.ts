@@ -73,14 +73,22 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['radius', 'halfDepth'],
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
+    // Every core point as a muted-but-visible dot; the changed ones stand out in saturated colors.
+    {
+      layer: 'dots',
+      context: true,
+      positions: outputs.cores,
+      radius: 5.5,
+      color: [...theme.muted, 0.7]
+    },
     {
       layer: 'dots',
       positions: outputs.cores,
       values: outputs.change,
       ramp: 'diverging',
-      range: [-0.08, 0.08],
-      radius: 4.5
+      range: [-0.05, 0.05],
+      radius: 8
     }
   ]
 });

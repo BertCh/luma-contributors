@@ -104,13 +104,29 @@ export default defineOperationRun({
         )
     };
   },
-  draw: ({outputs, values}) => [
+  // The shown feature's 2nd to 98th percentile fits the ramp, so a few extreme cells cannot flatten
+  // the rest. Sequential features start below the minimum: the smooth side stays visible.
+  async afterRun({outputs, values}) {
+    const feature = Math.round(values.feature);
+    const bytes = await outputs.gathered[feature].buffer.readAsync();
+    const sorted = Float32Array.from(
+      new Float32Array(bytes.buffer, bytes.byteOffset, COLUMNS * ROWS)
+    )
+      .filter(Number.isFinite)
+      .sort();
+    const low = sorted[Math.floor(sorted.length * 0.02)] ?? 0;
+    const high = sorted[Math.floor(sorted.length * 0.98)] ?? 1;
+    const span = Math.max(high - low, 1e-6);
+    return {range: [low - span * 0.4, high] as const};
+  },
+  draw: ({outputs, values, extra}) => [
     {
       layer: 'raster',
       values: outputs.gathered[Math.round(values.feature)],
       columns: COLUMNS,
       rows: ROWS,
       ramp: Math.round(values.feature) === 5 ? 'diverging' : 'sequential',
+      range: Math.round(values.feature) === 5 ? 'auto' : (extra?.range ?? 'auto'),
       smoothing: false
     }
   ]

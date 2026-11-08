@@ -72,7 +72,8 @@ export default defineOperationRun({
       values: outputs.semivariances,
       columns: TEMPORAL_LAG_COUNT,
       rows: LAG_COUNT,
-      range: [0, 8]
+      bands: 10,
+      smoothing: true
     }
   ]
 });

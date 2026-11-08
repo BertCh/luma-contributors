@@ -68,8 +68,17 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({outputs}) => [
-    {layer: 'lines', context: true, segments: outputs.outline, count: outputs.outlineCount},
-    {layer: 'dots', positions: outputs.sites, radius: 3.5, color: [1, 0.85, 0.3, 1]}
+  draw: ({outputs, theme}) => [
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.outline,
+      count: outputs.outlineCount,
+      radius: 1.6,
+      color: [...theme.muted, 0.9]
+    },
+    // Ink ring under an accent fill: legible on the dark and the light background alike.
+    {layer: 'dots', positions: outputs.sites, radius: 6.5, color: [...theme.ink, 1]},
+    {layer: 'dots', positions: outputs.sites, radius: 4.5, color: [...theme.categories[1], 1]}
   ]
 });

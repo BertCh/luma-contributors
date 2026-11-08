@@ -49,13 +49,20 @@ export default defineOperationRun({
     );
     return {outputs: {dotPositions, categories, ...uploadTractMesh(builder, tracts)}};
   },
-  draw: ({inputs, outputs}) => [
-    {layer: 'lines', context: true, segments: outputs.outline, count: inputs.outlineCount},
+  draw: ({inputs, outputs, theme}) => [
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.outline,
+      count: inputs.outlineCount,
+      radius: 1.6,
+      color: [...theme.muted, 0.9]
+    },
     {
       layer: 'dots',
       positions: outputs.dotPositions,
       values: outputs.categories,
-      radius: 1.6
+      radius: 3.2
     }
   ]
 });

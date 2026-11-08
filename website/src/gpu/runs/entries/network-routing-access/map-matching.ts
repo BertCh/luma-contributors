@@ -110,15 +110,24 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     getRoadContext(outputs),
-    {layer: 'lines', context: true, segments: outputs.polylines, radius: 1.2},
+    // Raw GPS: a muted track, drawn thicker so the zigzag off the roads is visible.
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.polylines,
+      radius: 1.6,
+      color: [...theme.categories[1], 0.75]
+    },
+    // Matched positions: an ink ring under a ramp-colored dot, on top of the roads.
+    {layer: 'dots', positions: outputs.snappedPositions, radius: 8, color: [...theme.ink, 1]},
     {
       layer: 'dots',
       positions: outputs.snappedPositions,
       values: outputs.snapDistances,
-      range: [0, 0.03],
-      radius: 5
+      range: [-0.012, 0.03],
+      radius: 6
     }
   ]
 });

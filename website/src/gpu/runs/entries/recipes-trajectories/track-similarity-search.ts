@@ -49,13 +49,15 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['metric'],
-  draw: ({outputs}) => [
+  // Small distance = similar = bright: a negative lower bound lifts the near-zero matches off the
+  // background, and the diagonal and matched family blocks read at thumbnail size.
+  draw: ({outputs, values}) => [
     {
       layer: 'raster',
       values: outputs.distance,
       columns: TRACK_COUNT,
       rows: TRACK_COUNT,
-      range: [0, 1.5]
+      range: [-0.15, Math.max(0.3, values.threshold)]
     }
   ]
 });

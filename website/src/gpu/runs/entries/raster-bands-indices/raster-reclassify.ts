@@ -54,6 +54,7 @@ export default defineOperationRun({
   },
   draw: ({inputs, outputs}) => [
     drawRaster(inputs, outputs.source, {context: true}),
-    drawRaster(inputs, outputs.classes, {ramp: 'sequential', range: [0, MAXIMUM_BREAK_COUNT]})
+    // uint32 classes take the categorical palette: one distinct color per class.
+    drawRaster(inputs, outputs.classes, {ramp: 'categorical'})
   ]
 });

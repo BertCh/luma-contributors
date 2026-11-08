@@ -12,7 +12,7 @@ import {createBandGraph, createPointField, mixNoise} from './shared/point-field'
 import {parameters} from './gamma-statistic.parameters';
 
 // One scale for every operation: the statistic is normalized, and absolute differences are larger.
-const GAUGE_LIMIT = 0.08;
+const GAUGE_LIMIT = 0.03;
 const BAND_RADIUS = 0.08;
 const OPERATIONS = ['cross-product', 'squared-difference', 'absolute-difference'] as const;
 
@@ -42,20 +42,28 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['operation'],
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
+    // An ink ring under every dot keeps the low end of the ramp readable on both backgrounds.
+    {
+      layer: 'dots',
+      positions: outputs.positions,
+      radius: 7.5,
+      color: [...theme.ink, 0.9]
+    },
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.valueBuffer,
-      radius: 4,
-      range: [0.1, 0.9]
+      radius: 5.5,
+      range: [-0.35, 0.9]
     },
     {
       layer: 'chart',
       kind: 'bars',
       values: outputs.statistic,
       range: [0, GAUGE_LIMIT],
-      rectangle: [0.4, 0.04, 0.6, 0.32]
+      rectangle: [0.25, 0.04, 0.75, 0.32],
+      color: [...theme.categories[1], 1]
     }
   ]
 });

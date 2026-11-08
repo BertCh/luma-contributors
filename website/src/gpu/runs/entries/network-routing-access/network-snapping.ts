@@ -57,15 +57,23 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({outputs}) => [
+  draw: ({outputs, theme}) => [
     getRoadContext(outputs),
-    {layer: 'dots', context: true, positions: outputs.points, radius: 3},
+    // Raw points: hollow-looking orange context, then snapped positions in an ink ring on the roads.
+    {
+      layer: 'dots',
+      context: true,
+      positions: outputs.points,
+      radius: 3.5,
+      color: [...theme.categories[1], 0.8]
+    },
+    {layer: 'dots', positions: outputs.snappedPositions, radius: 7, color: [...theme.ink, 1]},
     {
       layer: 'dots',
       positions: outputs.snappedPositions,
       values: outputs.snapDistances,
-      range: [0, 0.04],
-      radius: 4.5
+      range: [-0.015, 0.04],
+      radius: 5
     }
   ]
 });

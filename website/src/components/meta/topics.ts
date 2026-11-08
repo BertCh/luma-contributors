@@ -56,7 +56,7 @@ export const TOPICS: readonly Topic[] = [
   {
     slug: 'lenses',
     title: 'Lenses',
-    lead: '409 of 438 function pages show a run recorded on a real GPU: graph, formula and the data it produced.',
+    lead: '409 of 439 function pages show a run recorded on a real GPU: graph, formula and the data it produced.',
     scenarios: [
       FEATURED_LENS_SCENARIOS.kernelDensity,
       FEATURED_LENS_SCENARIOS.localMoran,

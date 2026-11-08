@@ -70,6 +70,12 @@ export default defineOperationRun({
     };
   },
   draw: ({outputs}) => [
-    {layer: 'dots', positions: outputs.probes, values: outputs.sampled, radius: 3.2, range: [0, 1]}
+    {
+      layer: 'dots',
+      positions: outputs.probes,
+      values: outputs.sampled,
+      radius: 4.6,
+      range: [-0.35, 1]
+    }
   ]
 });
