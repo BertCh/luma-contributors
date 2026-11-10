@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 """Independent pinned GSTools/PyKrige/SciPy/CGAL and NumPy reference generation.
 PYTHONPATH=/tmp/luma-coverage-oracles/lib/python3.12/site-packages \
- /tmp/luma-interpolation-oracles312/bin/python modules/graph/test/oracles/interpolation-advanced.py
+ /tmp/luma-interpolation-oracles312/bin/python modules/analysis/test/oracles/interpolation-advanced.py
 Compile interpolation-cgal.cpp against external CGAL6.0.1/Boost1.87 first.
 """
 import json, subprocess

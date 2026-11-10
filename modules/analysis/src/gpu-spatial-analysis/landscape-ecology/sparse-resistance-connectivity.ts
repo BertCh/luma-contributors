@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createRecipeKernelNode,
@@ -10,6 +9,12 @@ import {
   validateRecipeBoundary
 } from '../recipes/expansion-recipe-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   SEGMENT_PARTIAL_SUMS_WGSL,
   getSegmentTreeSumWGSL
@@ -21,11 +26,56 @@ import {
 } from './sparse-resistance-system';
 import {addSparseResistanceSolveNodes} from './sparse-resistance-solver';
 
+/** Largest vertex count: 2^20 keeps the vertex-wide reduction trees and label arrays within one binding. */
 const MAXIMUM_VERTEX_COUNT = 1048576;
+/** Largest edge count: 2^21 edges give 2^22 half-edge entries, within one 128 MiB binding of uint32 pairs. */
 const MAXIMUM_EDGE_COUNT = 2097152;
+/** Largest PCG iteration count: the iterations are unrolled, five command nodes each (20,480 at the limit). */
 const MAXIMUM_ITERATIONS = 4096;
+/** Largest label-propagation round count: rounds are unrolled, two command nodes each. */
 const MAXIMUM_CONNECTIVITY_ITERATIONS = 1024;
 const OPERATION = 'addSparseResistanceConnectivityRecipe';
+
+/** Command nodes of one unrolled PCG iteration: curvature, alpha, update, beta, search. */
+const COMMAND_NODES_PER_ITERATION = 5;
+/** Command nodes of one unrolled label-propagation round: clear and step. */
+const COMMAND_NODES_PER_CONNECTIVITY_ITERATION = 2;
+/**
+ * Allowance for the command nodes that do not grow with the iteration counts: reset, expand, the
+ * published radix sort, gather, COO to CSR assembly, preconditioner, component initialisation,
+ * solver setup and the four output nodes. The published `GPUSort` and `GPUScan` add nodes as the
+ * edge and vertex counts grow (more histogram blocks and scan levels): the part measured at
+ * 10.0.0-alpha.10 is 16 nodes at 4 edges, 33 at 255, 43 at 4,096 and 55 at the largest accepted
+ * configuration (2,097,152 edges, 1,048,576 vertices). The allowance is above that largest
+ * measurement, so the estimate is an upper bound and never below the real count. A test counts the
+ * nodes a graph really receives at both extremes.
+ */
+export const SPARSE_RESISTANCE_FIXED_COMMAND_NODE_COUNT = 64;
+
+/** Upper bound of the command nodes `addSparseResistanceConnectivityRecipe` adds to a graph. */
+export function estimateSparseResistanceCommandNodeCount(
+  maximumIterations: number,
+  connectivityIterations: number
+): number {
+  return (
+    SPARSE_RESISTANCE_FIXED_COMMAND_NODE_COUNT +
+    COMMAND_NODES_PER_ITERATION * maximumIterations +
+    COMMAND_NODES_PER_CONNECTIVITY_ITERATION * connectivityIterations
+  );
+}
+
+export type GPUSparseResistanceConnectivityOutput = {
+  /** `float32`, `vertexCount` rows: potential of every vertex that shares the sink's component. */
+  potentials: GraphDataView<'float32'>;
+  /** `float32`, one row per edge: signed current from the first to the second endpoint. */
+  currents: GraphDataView<'float32'>;
+  /** `float32`, `vertexCount` rows: Circuitscape-style node current. */
+  vertexCurrents: GraphDataView<'float32'>;
+  /** `float32x4`, one row: effective resistance, true residual, dissipated energy, recursive residual. */
+  diagnostics: GraphDataView<'float32x4'>;
+  /** `uint32x4`, one row: `[converged, iterations, reachable, invalidEdges]`. */
+  status: GraphDataView<'uint32x4'>;
+};
 
 export type GPUSparseResistanceConnectivityProps = {
   /** Node and transient ID prefix. Default 'sparse-resistance-connectivity'. */
@@ -51,6 +101,11 @@ export type GPUSparseResistanceConnectivityProps = {
   tolerance?: number;
   /** Unrolled connectivity label-propagation rounds, 1 to 1,024. Default 128. Compile-time. */
   connectivityIterations?: number;
+  /**
+   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
+   * Formats and lengths are those of {@link GPUSparseResistanceConnectivityOutput}.
+   */
+  output?: Partial<GPUSparseResistanceConnectivityOutput>;
 };
 
 /**
@@ -80,27 +135,55 @@ export function addSparseResistanceConnectivityRecipe<Parameters>(
   if (edgeCount < 1 || edgeCount > MAXIMUM_EDGE_COUNT) {
     throw new Error(`${id} edges must have between 1 and ${MAXIMUM_EDGE_COUNT} rows`);
   }
-  // Endpoints in range and distinct; one conductance per edge; compile-time budgets within the node-count cap.
-  assert(Number.isSafeInteger(source) && source >= 0 && source < vertexCount);
-  assert(Number.isSafeInteger(sink) && sink >= 0 && sink < vertexCount && source !== sink);
-  assert(conductances.length === edgeCount);
-  assert(
-    Number.isSafeInteger(maximumIterations) &&
-      maximumIterations >= 1 &&
-      maximumIterations <= MAXIMUM_ITERATIONS
+  validateCapacity(id, 'source', source, 0, vertexCount - 1);
+  validateCapacity(id, 'sink', sink, 0, vertexCount - 1);
+  validateRequirement(id, source !== sink, 'source and sink must be different vertices');
+  validateViewLength(id, 'conductances', conductances, edgeCount);
+  validateCapacity(id, 'maximumIterations', maximumIterations, 1, MAXIMUM_ITERATIONS);
+  validateCapacity(
+    id,
+    'connectivityIterations',
+    connectivityIterations,
+    1,
+    MAXIMUM_CONNECTIVITY_ITERATIONS
   );
-  assert(
-    Number.isSafeInteger(connectivityIterations) &&
-      connectivityIterations >= 1 &&
-      connectivityIterations <= MAXIMUM_CONNECTIVITY_ITERATIONS
+  validateRequirement(
+    id,
+    Number.isFinite(tolerance) && tolerance > 0,
+    'tolerance must be a positive finite number'
   );
-  assert(Number.isFinite(tolerance) && tolerance > 0);
+  // The unrolled rounds set the command node count; the default budget of 32,768 nodes holds the
+  // largest accepted configuration (4,096 iterations and 1,024 rounds: about 22,600 nodes).
+  const estimatedCommandNodeCount = estimateSparseResistanceCommandNodeCount(
+    maximumIterations,
+    connectivityIterations
+  );
+  validateCommandNodeBudget(id, estimatedCommandNodeCount);
+  const output = props.output;
 
-  const potentials = getRecipeView(graph, `${id}-potentials`, 'float32', vertexCount);
-  const currents = getRecipeView(graph, `${id}-currents`, 'float32', edgeCount);
-  const vertexCurrents = getRecipeView(graph, `${id}-vertex-currents`, 'float32', vertexCount);
-  const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1);
-  const diagnostics = getRecipeView(graph, `${id}-diagnostics`, 'float32x4', 1);
+  const potentials = getRecipeView(
+    graph,
+    `${id}-potentials`,
+    'float32',
+    vertexCount,
+    output?.potentials
+  );
+  const currents = getRecipeView(graph, `${id}-currents`, 'float32', edgeCount, output?.currents);
+  const vertexCurrents = getRecipeView(
+    graph,
+    `${id}-vertex-currents`,
+    'float32',
+    vertexCount,
+    output?.vertexCurrents
+  );
+  const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1, output?.status);
+  const diagnostics = getRecipeView(
+    graph,
+    `${id}-diagnostics`,
+    'float32x4',
+    1,
+    output?.diagnostics
+  );
   validateRecipeBoundary(
     graph,
     id,
@@ -324,6 +407,8 @@ fn readStatus(row: u32) -> vec4<u32> {
   return {
     outputs: {potentials, currents, vertexCurrents, diagnostics},
     status,
+    /** Number of command nodes this recipe added to the graph. */
+    estimatedCommandNodeCount,
     provenance: {
       edges,
       conductances,

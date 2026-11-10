@@ -18,6 +18,10 @@ import {
   validatePackedView,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {
   createSpatialValidationDesignNodes,
@@ -26,8 +30,15 @@ import {
 } from './spatial-validation-design';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
+/** Most rows: each buffer-mask invocation scans all rows, so work grows as folds times rows squared. */
+const MAXIMUM_ROW_COUNT = 65536;
+/** Most folds: masks are fold-major, rows times folds entries each. */
+const MAXIMUM_FOLD_COUNT = 64;
+
 export type GPUSpatialCrossValidationProps = {
   id?: string;
+  /** Planar only; longitude-latitude is rejected. Default planar. */
+  spatialContext?: GPUSpatialContext;
   /** Planar positions in the same units as bufferDistance. */
   positions: GraphDataView<'float32x2'>;
   /** Explicit block IDs. All members of a block receive the same fold. */
@@ -57,17 +68,29 @@ export type GPUSpatialCrossValidationProps = {
  * Seeded spatial block holdouts with exact all-pairs planar buffer exclusion. Every valid row
  * appears in exactly one test fold. Invalid rows appear in neither set. This bounded baseline
  * costs O(folds * rows²); it makes no claim to blockCV's balancing or polygon generation.
+ *
+ * Reference tier and limits. Block folds are a per-row hash, fully parallel. Fold designs
+ * (`design`) are one serial invocation each, so they accept at most 256 rows (64 for NNDM, 256
+ * prediction locations); buffered masks run one invocation per (fold, row) but scan every row,
+ * so rows go up to 65,536 and folds to 64 with O(folds * rows²) work. Planar positions only.
+ * Parallel designs (not implemented): block folds from a stable GPUSort by block key plus a scan
+ * over block boundaries to deal whole blocks to folds; environmental and kNNDM clustering on
+ * GPUKMeans (which has k-means++); buffer masks from a GPUNeighborSearch or grid-index radius
+ * query of each test row, marking only the rows within bufferDistance, for O(rows * neighbors).
  * Fit preprocessing, feature selection and bandwidth/variogram selection separately using each
  * training mask. This producer never fits a model or silently reuses a whole-sample fit.
  */
 export class GPUSpatialCrossValidation implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   constructor(readonly props: GPUSpatialCrossValidationProps) {
     this.id = props.id ?? 'spatial-cross-validation';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const rows = props.positions.length;
     validateSpatialValidationDesign(this.id, props);
-    validateCapacity(this.id, 'rows', rows, 1, 65536);
-    validateCapacity(this.id, 'foldCount', props.foldCount, 2, 64);
+    validateCapacity(this.id, 'rows', rows, 1, MAXIMUM_ROW_COUNT);
+    validateCapacity(this.id, 'foldCount', props.foldCount, 2, MAXIMUM_FOLD_COUNT);
     if (
       !Number.isInteger(props.seed ?? 0) ||
       (props.seed ?? 0) < 0 ||

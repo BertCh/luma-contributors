@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
-import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
+import type {
+  GPUApproximationStatusPort,
+  GPUCardinalityPort,
+  GPUOverflowStatusPort
+} from '../../analysis-core/contracts/index';
 
 /**
  * Kernel-level coordinate interpretation derived from a `spatialContext` (not a user prop):
@@ -42,14 +46,18 @@ export type GPULineGeometryOutput = {
    */
   lineOffsets: GraphDataView<'uint32'>;
   /**
-   * One-row status scalars: `count` receives the clamped vertex count, `overflow` receives `1` when
+   * One-row status scalars: `count` counts output vertices (not lines) and receives the clamped vertex count, `overflow` receives `1` when
    * the vertex or line capacity overflowed (otherwise `0`), the optional `requiredCount` receives
    * the unclamped vertex count, and the optional `lineCount` receives the clamped number of output
    * lines (required by contributors whose line count is data dependent, such as chunking;
-   * otherwise equal to the input line count).
+   * otherwise equal to the input line count). The optional `approximation` receives `1` when an
+   * input edge needed more pieces than the compile-time piece cap, so some output segments are
+   * longer than the requested maximum; only `GPULineSegmentize` and `GPUGreatCircleArcs` write it
+   * and the other contributors that emit this layout reject a view for it.
    */
   status: GPUCardinalityPort &
-    GPUOverflowStatusPort & {
+    GPUOverflowStatusPort &
+    GPUApproximationStatusPort & {
       lineCount?: GraphDataView<'uint32'>;
     };
   /**

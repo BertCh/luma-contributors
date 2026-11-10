@@ -13,9 +13,15 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {Device} from '@luma.gl/core';
 import {
+  createFillNode,
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createListRankingNodes,
+  createListRankingRoundNode,
+  getListRankingRoundCount
+} from '../line-merge/list-ranking';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
@@ -38,8 +44,8 @@ const OPERATION = 'GPUSharedPaths';
 /** Number of `u32` words per span-table row (one row per intersecting segment pair). */
 const SPAN_STRIDE = 12;
 
-/** Number of `u32` words per run-table row. */
-const RUN_STRIDE = 4;
+/** Number of `u32` words per run-table row: vertex start, left line, right line, forward, head span. */
+const RUN_STRIDE = 5;
 
 /**
  * Largest `intersectionCapacity` of {@link GPUSharedPaths} on `device`: the span table holds 12
@@ -83,7 +89,7 @@ export type GPUSharedPathsOutput = {
   runs: GPUSharedPathsRuns;
   /** Status scalars, one uint32 row each. */
   status: {
-    /** One-row scalar receiving the number of complete runs written. */
+    /** One-row scalar receiving the number of complete runs written (runs, not vertices). */
     count: GraphDataView<'uint32'>;
     /** Optional one-row scalar receiving the number of vertices written. */
     vertexCount?: GraphDataView<'uint32'>;
@@ -154,6 +160,12 @@ export type GPUSharedPathsProps = {
  * decided with exact predicates; a point shared by two lines is not a path and yields no run.
  * Runs beyond the capacities are dropped as a suffix and `output.status.overflow` is set. Nothing is read
  * back.
+ *
+ * Chains are sized and written by list ranking (Wyllie pointer jumping, the helper of
+ * `GPULineMerge`) in `ceil(log2(intersectionCapacity))` fixed rounds per pass instead of one
+ * invocation walking each run: a road shared over 10,000 spans costs the same number of
+ * dispatches as one shared over 10 spans, and every output vertex is written by its own
+ * invocation. The work is `O(intersectionCapacity * log(intersectionCapacity))`.
  */
 export class GPUSharedPaths implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -459,7 +471,10 @@ fn lowerBound(value: u32) -> u32 {
       })
     );
 
-    // 4. Runs: every span without a previous span starts one; walk its chain to size it.
+    // 4. Runs: every span without a previous span starts one. Spans form chains through their
+    // `next` pointers (several chains may share a tail). Chains are sized by Wyllie pointer
+    // jumping over `next` (`ceil(log2(pairCapacity))` rounds, each span learning how many chain
+    // vertices lie from itself to the end), so no thread walks a chain.
     const runFlags = T('run-flags', 'uint32', pairCapacity);
     const runRanks = T('run-ranks', 'uint32', pairCapacity);
     const vertexCounts = T('vertex-counts', 'uint32', pairCapacity);
@@ -474,30 +489,70 @@ fn emitsEnd(span: u32) -> bool {
   let next = spanWord(span, 1u);
   return next == SPAN_NONE || spanSegment(next) != spanSegment(span);
 }`;
+    const pointerPair = (name: string) =>
+      [T(`${name}-a`, 'uint32', pairCapacity), T(`${name}-b`, 'uint32', pairCapacity)] as const;
+    const sizePointers = pointerPair('size-pointer');
+    const sizeTotals = pointerPair('size-total');
+    const emitPointers = pointerPair('emit-pointer');
+    const rounds = getListRankingRoundCount(pairCapacity);
+    const sizing = createListRankingNodes<Parameters>(graph, {
+      id: `${id}-size-round`,
+      operation: OPERATION,
+      variant: 'size-round',
+      length: pairCapacity,
+      rounds,
+      pointers: sizePointers,
+      values: [{name: 'total', views: sizeTotals, rule: 'add'}]
+    });
+    const sizeTotalFinal = sizeTotals[sizing.finalIndex];
+    // Pointer to the first span at or after a span whose end is a run vertex: the "emitting" spans
+    // of a chain, which are the ones that give the run its vertices.
+    const emitting = createListRankingNodes<Parameters>(graph, {
+      id: `${id}-emit-round`,
+      operation: OPERATION,
+      variant: 'emit-round',
+      length: pairCapacity,
+      rounds,
+      pointers: emitPointers,
+      values: []
+    });
+    const emitFinal = emitPointers[emitting.finalIndex];
     nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-size-init`,
+        operation: OPERATION,
+        variant: 'size-init',
+        bindings: [
+          {name: 'spanTable', view: spanTable, type: 'u32', access: 'read'},
+          {name: 'sizePointer', view: sizePointers[0], type: 'u32', access: 'read_write'},
+          {name: 'sizeTotal', view: sizeTotals[0], type: 'u32', access: 'read_write'},
+          {name: 'emitPointer', view: emitPointers[0], type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: pairCapacity,
+        declarations: chainWGSL,
+        body: `let valid = isSpan(index);
+  sizePointer[sizePointerOffset + index] = select(SPAN_NONE, spanWord(index, 1u), valid);
+  sizeTotal[sizeTotalOffset + index] = select(0u, select(0u, 1u, emitsEnd(index)), valid);
+  emitPointer[emitPointerOffset + index] = select(SPAN_NONE, select(spanWord(index, 1u), index, emitsEnd(index)), valid);`
+      }),
+      ...sizing.nodes,
+      ...emitting.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-run-sizes`,
         operation: OPERATION,
         variant: 'run-sizes',
         bindings: [
           {name: 'spanTable', view: spanTable, type: 'u32', access: 'read'},
+          {name: 'sizeTotal', view: sizeTotalFinal, type: 'u32', access: 'read'},
           {name: 'runFlags', view: runFlags, type: 'u32', access: 'read_write'},
           {name: 'vertexCounts', view: vertexCounts, type: 'u32', access: 'read_write'}
         ],
         invocationCount: pairCapacity,
         declarations: chainWGSL,
-        body: `var count = 0u;
-  if (startsRun(index)) {
-    count = 1u;
-    var span = index;
-    loop {
-      if (emitsEnd(span)) { count = count + 1u; }
-      span = spanWord(span, 1u);
-      if (span == SPAN_NONE) { break; }
-    }
-  }
-  runFlags[runFlagsOffset + index] = select(0u, 1u, startsRun(index));
-  vertexCounts[vertexCountsOffset + index] = count;`
+        body: `let starts = startsRun(index);
+  runFlags[runFlagsOffset + index] = select(0u, 1u, starts);
+  // The start point plus one vertex per emitting span of the chain.
+  vertexCounts[vertexCountsOffset + index] = select(0u, 1u + sizeTotal[sizeTotalOffset + index], starts);`
       }),
       ...new GPUScan({
         id: `${id}-run-scan`,
@@ -543,7 +598,8 @@ fn emitsEnd(span: u32) -> bool {
   runTable[row] = vertexStarts[vertexStartsOffset + index];
   runTable[row + 1u] = spanTable[source + 7u];
   runTable[row + 2u] = spanTable[source + 8u];
-  runTable[row + 3u] = (spanTable[source] >> 1u) & 1u;`
+  runTable[row + 3u] = (spanTable[source] >> 1u) & 1u;
+  runTable[row + 4u] = index;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finalize`,
@@ -607,7 +663,129 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
     }
     offsets[offsetsOffset + index] = state[stateOffset + 1u];
   }`
+      })
+    );
+
+    // 6. Vertices. One thread per output vertex row: the row finds its run by binary search over
+    // the run table. Row 1 of a run is the first emitting span of the head's chain; row u + 1 is
+    // reached from row u by `emitSuccessor`, and rows double their reach each round (row u + 2^j
+    // is the 2^j-th successor of row u), so a chain of n vertices costs `O(log n)` rounds and
+    // no thread walks it.
+    const rowHeads = T('row-heads', 'uint32', vertexCapacity);
+    const rowSteps = T('row-steps', 'uint32', vertexCapacity);
+    const rowNodes = T('row-nodes', 'uint32', vertexCapacity);
+    const roundDistance = T('round-distance', 'uint32', 1);
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-row-heads`,
+        operation: OPERATION,
+        variant: 'row-heads',
+        bindings: [
+          {name: 'state', view: state, type: 'u32', access: 'read'},
+          {name: 'runTable', view: runTable, type: 'u32', access: 'read'},
+          {name: 'vertexTotal', view: vertexTotal, type: 'u32', access: 'read'},
+          {name: 'emitFinal', view: emitFinal, type: 'u32', access: 'read'},
+          {name: 'rowHeads', view: rowHeads, type: 'u32', access: 'read_write'},
+          {name: 'rowSteps', view: rowSteps, type: 'u32', access: 'read_write'},
+          {name: 'rowNodes', view: rowNodes, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: vertexCapacity,
+        declarations: `const SPAN_NONE: u32 = 0xffffffffu;`,
+        // Bound the search by the runs actually written (state[0]): the run starts of unwritten
+        // rows are not monotone when the uint32 vertex scan wraps.
+        body: `var head = SPAN_NONE;
+  var step = 0u;
+  let totalRuns = state[stateOffset];
+  if (index < vertexTotal[vertexTotalOffset] && totalRuns > 0u) {
+    // Last run whose first vertex row is at most index.
+    var low = 0u;
+    var high = totalRuns;
+    while (high - low > 1u) {
+      let middle = (low + high) / 2u;
+      if (runTable[runTableOffset + middle * ${RUN_STRIDE}u] <= index) { low = middle; } else { high = middle; }
+    }
+    head = runTable[runTableOffset + low * ${RUN_STRIDE}u + 4u];
+    step = index - runTable[runTableOffset + low * ${RUN_STRIDE}u];
+  }
+  rowHeads[rowHeadsOffset + index] = head;
+  rowSteps[rowStepsOffset + index] = step;
+  rowNodes[rowNodesOffset + index] = select(SPAN_NONE, emitFinal[emitFinalOffset + head], head != SPAN_NONE && step == 1u);`
       }),
+      // Successor of an emitting span: the first emitting span after it. It reuses the sizing
+      // pointer pair, which is free once the run sizes are known.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-emit-successor`,
+        operation: OPERATION,
+        variant: 'emit-successor',
+        bindings: [
+          {name: 'spanTable', view: spanTable, type: 'u32', access: 'read'},
+          {name: 'emitFinal', view: emitFinal, type: 'u32', access: 'read'},
+          {name: 'successor', view: sizePointers[0], type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: pairCapacity,
+        declarations: chainWGSL,
+        body: `let next = spanWord(index, 1u);
+  var result = SPAN_NONE;
+  if (isSpan(index) && next != SPAN_NONE) { result = emitFinal[emitFinalOffset + next]; }
+  successor[successorOffset + index] = result;`
+      }),
+      createFillNode<Parameters>(graph, {
+        id: `${id}-round-distance`,
+        operation: OPERATION,
+        view: roundDistance,
+        type: 'u32',
+        value: '1u'
+      })
+    );
+    for (let round = 0; round < rounds; round++) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-row-round-${round}`,
+          operation: OPERATION,
+          variant: 'row-round',
+          bindings: [
+            {name: 'sizeTotal', view: sizeTotalFinal, type: 'u32', access: 'read'},
+            {name: 'rowHeads', view: rowHeads, type: 'u32', access: 'read'},
+            {name: 'rowSteps', view: rowSteps, type: 'u32', access: 'read'},
+            {name: 'roundDistance', view: roundDistance, type: 'u32', access: 'read'},
+            {name: 'successor', view: sizePointers[round % 2], type: 'u32', access: 'read'},
+            {name: 'rowNodes', view: rowNodes, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: vertexCapacity,
+          declarations: 'const SPAN_NONE: u32 = 0xffffffffu;',
+          body: `let head = rowHeads[rowHeadsOffset + index];
+  if (head == SPAN_NONE) { return; }
+  let step = rowSteps[rowStepsOffset + index];
+  let distance = roundDistance[roundDistanceOffset];
+  // Row u = step - 1 of a chain with sizeTotal rows is filled in the round where distance <= u < 2 * distance.
+  if (step <= distance || step - 1u >= 2u * distance || step > sizeTotal[sizeTotalOffset + head]) { return; }
+  rowNodes[rowNodesOffset + index] = successor[successorOffset + rowNodes[rowNodesOffset + index - distance]];`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-row-distance-${round}`,
+          operation: OPERATION,
+          variant: 'row-distance',
+          bindings: [
+            {name: 'roundDistance', view: roundDistance, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: 'roundDistance[roundDistanceOffset] = roundDistance[roundDistanceOffset] * 2u;'
+        }),
+        createListRankingRoundNode<Parameters>(
+          graph,
+          {
+            id: `${id}-row-pointer`,
+            operation: OPERATION,
+            variant: 'row-pointer',
+            length: pairCapacity,
+            pointers: sizePointers,
+            values: []
+          },
+          round
+        )
+      );
+    }
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-vertices`,
         operation: OPERATION,
@@ -615,28 +793,22 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
         bindings: [
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {name: 'spanTable', view: spanTable, type: 'u32', access: 'read'},
-          {name: 'runFlags', view: runFlags, type: 'u32', access: 'read'},
           {name: 'runRanks', view: runRanks, type: 'u32', access: 'read'},
-          {name: 'vertexStarts', view: vertexStarts, type: 'u32', access: 'read'},
+          {name: 'rowHeads', view: rowHeads, type: 'u32', access: 'read'},
+          {name: 'rowSteps', view: rowSteps, type: 'u32', access: 'read'},
+          {name: 'rowNodes', view: rowNodes, type: 'u32', access: 'read'},
           {name: 'outPositions', view: runs.positions, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: pairCapacity,
+        invocationCount: vertexCapacity,
         declarations: chainWGSL,
-        body: `if (runFlags[runFlagsOffset + index] == 0u || runRanks[runRanksOffset + index] >= state[stateOffset]) { return; }
-  var slot = vertexStarts[vertexStartsOffset + index];
-  outPositions[outPositionsOffset + slot * 2u] = bitcast<f32>(spanWord(index, 3u));
-  outPositions[outPositionsOffset + slot * 2u + 1u] = bitcast<f32>(spanWord(index, 4u));
-  slot = slot + 1u;
-  var span = index;
-  loop {
-    if (emitsEnd(span)) {
-      outPositions[outPositionsOffset + slot * 2u] = bitcast<f32>(spanWord(span, 5u));
-      outPositions[outPositionsOffset + slot * 2u + 1u] = bitcast<f32>(spanWord(span, 6u));
-      slot = slot + 1u;
-    }
-    span = spanWord(span, 1u);
-    if (span == SPAN_NONE) { break; }
-  }`
+        body: `let head = rowHeads[rowHeadsOffset + index];
+  if (head == SPAN_NONE || runRanks[runRanksOffset + head] >= state[stateOffset]) { return; }
+  let step = rowSteps[rowStepsOffset + index];
+  // Row 0 is the start of the head span; later rows are the ends of the emitting spans in order.
+  let span = select(rowNodes[rowNodesOffset + index], head, step == 0u);
+  let word = select(5u, 3u, step == 0u);
+  outPositions[outPositionsOffset + index * 2u] = bitcast<f32>(spanWord(span, word));
+  outPositions[outPositionsOffset + index * 2u + 1u] = bitcast<f32>(spanWord(span, word + 1u));`
       })
     );
 

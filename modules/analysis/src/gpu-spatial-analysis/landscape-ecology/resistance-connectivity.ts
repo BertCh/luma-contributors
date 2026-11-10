@@ -2,10 +2,34 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  validateCapacity,
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Most vertices: the single solver thread keeps five private arrays of one float or word per vertex. */
+export const RESISTANCE_CONNECTIVITY_MAXIMUM_VERTEX_COUNT = 256;
+
+/** Most edges: the single solver thread sweeps all of them in every conjugate gradient iteration. */
+export const RESISTANCE_CONNECTIVITY_MAXIMUM_EDGE_COUNT = 65536;
+
+/** Most conjugate gradient iterations: they run inside the single solver thread. */
+export const RESISTANCE_CONNECTIVITY_MAXIMUM_ITERATIONS = 4096;
+
+export type GPUResistanceConnectivityOutput = {
+  /** `float32`, `vertexCount` rows: potential of every vertex that shares the sink's component. */
+  potentials: GraphDataView<'float32'>;
+  /** `float32`, one row per edge: signed current from the first to the second endpoint. */
+  currents: GraphDataView<'float32'>;
+  /** `float32x4`, one row: effective resistance, true residual, dissipated energy, recursive residual. */
+  diagnostics: GraphDataView<'float32x4'>;
+  /** `uint32x4`, one row: `[converged, iterations, reachable, invalidEdges]`. */
+  status: GraphDataView<'uint32x4'>;
+};
 
 export type GPUResistanceConnectivityProps = {
   id?: string;
@@ -18,9 +42,22 @@ export type GPUResistanceConnectivityProps = {
   maximumIterations?: number;
   /** Absolute maximum current-conservation residual for unit injection. */
   tolerance?: number;
+  /**
+   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
+   * Formats and lengths are those of {@link GPUResistanceConnectivityOutput}.
+   */
+  output?: Partial<GPUResistanceConnectivityOutput>;
 };
 
-/** Bounded small-network grounded-Laplacian CG solve, with independently recomputed current residual. */
+/**
+ * Bounded small-network grounded-Laplacian CG solve, with independently recomputed current residual.
+ *
+ * @deprecated Use {@link addSparseResistanceConnectivityRecipe}. This recipe solves the whole
+ * system in one GPU thread, so it is limited to 256 vertices and 65,536 edges. The sparse recipe takes the same edges, conductances,
+ * source and sink and also reports per-vertex currents; it is parallel, and its limits are 1,048,576
+ * vertices and 2,097,152 edges. Its default tolerance is 1e-4 (this recipe's is 1e-5) and its
+ * iterations are capped by `maximumIterations` (default 1,024; this recipe's is 256).
+ */
 export function addResistanceConnectivityRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUResistanceConnectivityProps
@@ -30,19 +67,46 @@ export function addResistanceConnectivityRecipe<Parameters>(
   const edgeCount = props.edges.length;
   const maximumIterations = props.maximumIterations ?? 256;
   const tolerance = props.tolerance ?? 1e-5;
-  // Bounded small solver; use addSparseResistanceConnectivityRecipe for larger systems.
-  assert(Number.isSafeInteger(vertexCount) && vertexCount >= 2 && vertexCount <= 256);
-  assert(Number.isSafeInteger(source) && source >= 0 && source < vertexCount);
-  assert(Number.isSafeInteger(sink) && sink >= 0 && sink < vertexCount && source !== sink);
-  assert(edgeCount > 0 && props.conductances.length === edgeCount && edgeCount <= 65536);
-  assert(
-    Number.isSafeInteger(maximumIterations) && maximumIterations > 0 && maximumIterations <= 4096
+  // A reference-size solver: one thread solves the whole system. Use the sparse recipe above these sizes.
+  validateCapacity(id, 'vertexCount', vertexCount, 2, RESISTANCE_CONNECTIVITY_MAXIMUM_VERTEX_COUNT);
+  validateCapacity(id, 'source', source, 0, vertexCount - 1);
+  validateCapacity(id, 'sink', sink, 0, vertexCount - 1);
+  validateRequirement(id, source !== sink, 'source and sink must be different vertices');
+  validateRequirement(
+    id,
+    edgeCount > 0 && edgeCount <= RESISTANCE_CONNECTIVITY_MAXIMUM_EDGE_COUNT,
+    `edges must have between 1 and ${RESISTANCE_CONNECTIVITY_MAXIMUM_EDGE_COUNT} rows`
   );
-  assert(Number.isFinite(tolerance) && tolerance > 0);
-  const potentials = getRecipeView(graph, `${id}-potentials`, 'float32', vertexCount);
-  const currents = getRecipeView(graph, `${id}-currents`, 'float32', edgeCount);
-  const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1);
-  const diagnostics = getRecipeView(graph, `${id}-diagnostics`, 'float32x4', 1);
+  validateViewLength(id, 'conductances', props.conductances, edgeCount);
+  validateCapacity(
+    id,
+    'maximumIterations',
+    maximumIterations,
+    1,
+    RESISTANCE_CONNECTIVITY_MAXIMUM_ITERATIONS
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(tolerance) && tolerance > 0,
+    'tolerance must be a positive finite number'
+  );
+  const output = props.output;
+  const potentials = getRecipeView(
+    graph,
+    `${id}-potentials`,
+    'float32',
+    vertexCount,
+    output?.potentials
+  );
+  const currents = getRecipeView(graph, `${id}-currents`, 'float32', edgeCount, output?.currents);
+  const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1, output?.status);
+  const diagnostics = getRecipeView(
+    graph,
+    `${id}-diagnostics`,
+    'float32x4',
+    1,
+    output?.diagnostics
+  );
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${id}-solve`,

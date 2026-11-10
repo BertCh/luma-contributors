@@ -68,8 +68,13 @@ export type {
   GPUSpatialWeightsCombineRule,
   GPUSpatialWeightsHigherOrderProps,
   GPUSpatialWeightsSelfWeightProps,
+  GPUSpatialWeightsSpaceTimeProps,
   GPUSpatialWeightsSubgraphProps
 } from './gpu-spatial-weights-algebra';
+export type {
+  GPUSpaceTimeWeightsLayout,
+  GPUSpatialWeightsSpaceTimeLag
+} from './spatial-weights-space-time-stages';
 export {
   GPUSpatialWeightsSummary,
   GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT

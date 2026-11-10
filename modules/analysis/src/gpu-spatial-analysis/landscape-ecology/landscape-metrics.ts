@@ -3,9 +3,44 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {reconcileLandscapePatchLabels} from './reconcile-patches';
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  GPUReduction,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/**
+ * Most classes: the class adjacency table holds classes squared counts and the landscape summary
+ * walks all of them with one thread, so the table stays at most 65,536 entries.
+ */
+export const LANDSCAPE_METRICS_MAXIMUM_CLASS_COUNT = 256;
+
+export type GPULandscapeMetricsOutput = {
+  /** `float32x4`, one row per patch: area, perimeter, cell count, like-adjacent sides. */
+  patchMetrics: GraphDataView<'float32x4'>;
+  /** `float32x4`, one row per class: area, perimeter, mesh, cohesion. */
+  classMetrics: GraphDataView<'float32x4'>;
+  /** `uint32`, `classCount` squared rows: orthogonal side counts from class row to class column. */
+  classAdjacency: GraphDataView<'uint32'>;
+  /** `float32`, one row per class: aggregation index. */
+  aggregation: GraphDataView<'float32'>;
+  /** `float32x4`, one row: contagion, mesh, area, class richness. */
+  landscape: GraphDataView<'float32x4'>;
+  /** `float32`, one row: landscape aggregation index. */
+  landscapeAggregation: GraphDataView<'float32'>;
+  /** `float32`, one row: landscape cohesion. */
+  landscapeCohesion: GraphDataView<'float32'>;
+  /** `uint32`, one row per cell, only with `reconcilePatches`: merged patch label. */
+  reconciledPatches: GraphDataView<'uint32'>;
+  /** `uint32`, one row per patch, only with `reconcilePatches`: lowest patch row of its merged patch. */
+  patchParents: GraphDataView<'uint32'>;
+};
 
 export type GPULandscapeMetricsProps = {
   id?: string;
@@ -29,6 +64,11 @@ export type GPULandscapeMetricsProps = {
   backgroundClass?: number;
   /** Area-weighted conditional adjacency (default), or landscapemetrics 2.2.1 joint adjacency. */
   contagionWeighting?: 'area' | 'adjacency';
+  /**
+   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
+   * Formats and lengths are those of {@link GPULandscapeMetricsOutput}.
+   */
+  output?: Partial<GPULandscapeMetricsOutput>;
 };
 
 /** Named class/landscape metrics from a complete, already labelled categorical raster. */
@@ -40,23 +80,81 @@ export function addLandscapeMetricsRecipe<Parameters>(
   const {width, height, classCount, cellSize} = props;
   const cellCount = width * height;
   const patchCount = props.patchClasses.length;
-  assert(Number.isSafeInteger(width) && width > 0 && Number.isSafeInteger(height) && height > 0);
-  assert(props.patches.length === cellCount && patchCount > 0);
-  assert(Number.isSafeInteger(classCount) && classCount > 0 && classCount <= 256);
-  assert(cellSize.every(value => Number.isFinite(Math.fround(value)) && value > 0));
-  assert(props.connectivity === 4 || props.connectivity === 8);
+  validateRequirement(
+    id,
+    Number.isSafeInteger(width) && width > 0 && Number.isSafeInteger(height) && height > 0,
+    'width and height must be positive integers'
+  );
+  validateRequirement(
+    id,
+    props.patches.length === cellCount,
+    'patches must have width times height rows'
+  );
+  validateRequirement(id, patchCount > 0, 'patchClasses must have at least 1 row');
+  validateCapacity(id, 'classCount', classCount, 1, LANDSCAPE_METRICS_MAXIMUM_CLASS_COUNT);
+  validateRequirement(
+    id,
+    cellSize.every(value => Number.isFinite(Math.fround(value)) && value > 0),
+    'cellSize entries must be positive finite float32 numbers'
+  );
+  validateRequirement(
+    id,
+    props.connectivity === 4 || props.connectivity === 8,
+    'connectivity must be 4 or 8'
+  );
+  const output = props.output;
   // Validation precedes reconcileLandscapePatchLabels, which adds nodes to the graph.
   const reconciled = props.reconcilePatches
-    ? reconcileLandscapePatchLabels(graph, {...props, id})
+    ? reconcileLandscapePatchLabels(graph, {
+        ...props,
+        id,
+        output: {patches: output?.reconciledPatches, parents: output?.patchParents}
+      })
     : undefined;
   const patches = reconciled?.patches ?? props.patches;
-  const patchMetrics = getRecipeView(graph, `${id}-patches`, 'float32x4', patchCount);
-  const classMetrics = getRecipeView(graph, `${id}-classes`, 'float32x4', classCount);
-  const classAdjacency = getRecipeView(graph, `${id}-adjacency`, 'uint32', classCount * classCount);
-  const aggregation = getRecipeView(graph, `${id}-aggregation`, 'float32', classCount);
-  const landscape = getRecipeView(graph, `${id}-landscape`, 'float32x4', 1);
-  const landscapeAggregation = getRecipeView(graph, `${id}-landscape-aggregation`, 'float32', 1);
-  const landscapeCohesion = getRecipeView(graph, `${id}-landscape-cohesion`, 'float32', 1);
+  const patchMetrics = getRecipeView(
+    graph,
+    `${id}-patches`,
+    'float32x4',
+    patchCount,
+    output?.patchMetrics
+  );
+  const classMetrics = getRecipeView(
+    graph,
+    `${id}-classes`,
+    'float32x4',
+    classCount,
+    output?.classMetrics
+  );
+  const classAdjacency = getRecipeView(
+    graph,
+    `${id}-adjacency`,
+    'uint32',
+    classCount * classCount,
+    output?.classAdjacency
+  );
+  const aggregation = getRecipeView(
+    graph,
+    `${id}-aggregation`,
+    'float32',
+    classCount,
+    output?.aggregation
+  );
+  const landscape = getRecipeView(graph, `${id}-landscape`, 'float32x4', 1, output?.landscape);
+  const landscapeAggregation = getRecipeView(
+    graph,
+    `${id}-landscape-aggregation`,
+    'float32',
+    1,
+    output?.landscapeAggregation
+  );
+  const landscapeCohesion = getRecipeView(
+    graph,
+    `${id}-landscape-cohesion`,
+    'float32',
+    1,
+    output?.landscapeCohesion
+  );
   const declarations = `
 fn getPatch(column: i32, row: i32) -> u32 {
   if(column<0 || row<0 || column>=${width} || row>=${height}){return 0xffffffffu;}
@@ -177,14 +275,58 @@ var contagion=bitcast<f32>(0x7fc00000u | (index & 0u));if(present>1.0&&adjacency
 writeOutput(0u,vec4<f32>(contagion,mesh,area,present));`
     })
   );
+  // Landscape cell, perimeter and perimeter-weighted sums over the patches are reductions; the
+  // final node only walks the classes (at most LANDSCAPE_METRICS_MAXIMUM_CLASS_COUNT).
+  const cellTerms = createTransientView(graph, `${id}-cell-terms`, 'float32', patchCount);
+  const perimeterTerms = createTransientView(graph, `${id}-perimeter-terms`, 'float32', patchCount);
+  const weightedTerms = createTransientView(graph, `${id}-weighted-terms`, 'float32', patchCount);
+  const cellTotal = createTransientView(graph, `${id}-cell-total`, 'float32', 1);
+  const perimeterTotal = createTransientView(graph, `${id}-perimeter-total`, 'float32', 1);
+  const weightedTotal = createTransientView(graph, `${id}-weighted-total`, 'float32', 1);
+  graph.add(
+    createRecipeKernelNode(graph, {
+      id: `${id}-landscape-patch-terms`,
+      operation: id,
+      invocationCount: patchCount,
+      bindings: [
+        {name: 'patches', view: patchMetrics, type: 'f32', access: 'read'},
+        {name: 'patchClasses', view: props.patchClasses, type: 'u32', access: 'read'},
+        {name: 'cellTerms', view: cellTerms, type: 'f32', access: 'read_write'},
+        {name: 'perimeterTerms', view: perimeterTerms, type: 'f32', access: 'read_write'},
+        {name: 'weightedTerms', view: weightedTerms, type: 'f32', access: 'read_write'}
+      ],
+      body: `let category=patchClasses[patchClassesOffset+index];
+let counted=category<${classCount}u&&category!=${props.backgroundClass ?? 0xffffffff}u;
+let patchCells=patches[patchesOffset+4u*index+2u];
+let patchPerimeter=patches[patchesOffset+4u*index+1u];
+cellTerms[cellTermsOffset+index]=select(0.0,patchCells,counted);
+perimeterTerms[perimeterTermsOffset+index]=select(0.0,patchPerimeter,counted);
+weightedTerms[weightedTermsOffset+index]=select(0.0,patchPerimeter*sqrt(patchCells),counted);`
+    })
+  );
+  for (const [name, input, total] of [
+    ['cells', cellTerms, cellTotal],
+    ['perimeter', perimeterTerms, perimeterTotal],
+    ['weighted-perimeter', weightedTerms, weightedTotal]
+  ] as const) {
+    graph.add(
+      new GPUReduction({
+        id: `${id}-landscape-${name}-sum`,
+        input,
+        output: total,
+        operation: 'sum'
+      }).getCommandNodes(graph)
+    );
+  }
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${id}-landscape-aggregation-cohesion`,
       operation: id,
       invocationCount: 1,
       bindings: [
-        {name: 'patches', view: patchMetrics, type: 'f32', access: 'read'},
-        {name: 'patchClasses', view: props.patchClasses, type: 'u32', access: 'read'},
+        {name: 'cellTotal', view: cellTotal, type: 'f32', access: 'read'},
+        {name: 'perimeterTotal', view: perimeterTotal, type: 'f32', access: 'read'},
+        {name: 'weightedTotal', view: weightedTotal, type: 'f32', access: 'read'},
         {name: 'classes', view: classMetrics, type: 'f32', access: 'read'},
         {name: 'aggregation', view: aggregation, type: 'f32', access: 'read'},
         {
@@ -195,21 +337,25 @@ writeOutput(0u,vec4<f32>(contagion,mesh,area,present));`
         },
         {name: 'landscapeCohesion', view: landscapeCohesion, type: 'f32', access: 'read_write'}
       ],
-      body: `var cells=0.0;var perimeter=0.0;var weightedPerimeter=0.0;
-for(var patchIndex=0u;patchIndex<${patchCount}u;patchIndex++){
- let category=patchClasses[patchClassesOffset+patchIndex];if(category>=${classCount}u||category==${props.backgroundClass ?? 0xffffffff}u){continue;}
- let patchCells=patches[patchesOffset+4u*patchIndex+2u];let patchPerimeter=patches[patchesOffset+4u*patchIndex+1u];cells+=patchCells;perimeter+=patchPerimeter;weightedPerimeter+=patchPerimeter*sqrt(patchCells);
-}
-var weightedAggregation=0.0;var area=0.0;
+      body: `let cells=cellTotal[cellTotalOffset];
+let perimeter=perimeterTotal[perimeterTotalOffset];
+let weightedPerimeter=weightedTotal[weightedTotalOffset];
+var weightedAggregation=0.0;
+var area=0.0;
 for(var category=0u;category<${classCount}u;category++){
- let classArea=classes[classesOffset+4u*category];let aggregate=aggregation[aggregationOffset+category];area+=classArea;
- // The pinned landscapemetrics landscape convention omits undefined single-cell class indices.
- if(classArea>0.0&&aggregate>=0.0){weightedAggregation+=classArea*aggregate;}
+  let classArea=classes[classesOffset+4u*category];
+  let aggregate=aggregation[aggregationOffset+category];
+  area+=classArea;
+  // The pinned landscapemetrics landscape convention omits undefined single-cell class indices.
+  if(classArea>0.0&&aggregate>=0.0){weightedAggregation+=classArea*aggregate;}
 }
-let missing=bitcast<f32>(0x7fc00000u | (index & 0u));var aggregate=missing;var cohesion=missing;
+let missing=bitcast<f32>(0x7fc00000u | (index & 0u));
+var aggregate=missing;
+var cohesion=missing;
 if(area>0.0){aggregate=weightedAggregation/area;}
 if(cells>1.0&&weightedPerimeter>0.0){cohesion=100.0*(1.0-perimeter/weightedPerimeter)/(1.0-inverseSqrt(cells));}
-landscapeAggregation[landscapeAggregationOffset]=aggregate;landscapeCohesion[landscapeCohesionOffset]=cohesion;`
+landscapeAggregation[landscapeAggregationOffset]=aggregate;
+landscapeCohesion[landscapeCohesionOffset]=cohesion;`
     })
   );
   return {

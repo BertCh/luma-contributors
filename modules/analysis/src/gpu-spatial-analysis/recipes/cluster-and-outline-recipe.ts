@@ -21,6 +21,7 @@ import {GPUGeometryMeasures} from '../geometry-measures/index';
 import {GPUGroupConvexHull, GPUGroupGeometry} from '../group-geometry/index';
 import {GPUSpatialClustering} from '../spatial-clustering/index';
 import {
+  addRecipeCountNodes,
   assertRecipe,
   createIdentityOffsetsNode,
   getOrCreateView,
@@ -316,7 +317,12 @@ export function addClusterAndOutlineRecipe<Parameters>(
   // Each hull is one feature with one polygon of one ring: identity feature and polygon offsets.
   let concaveHull: GPUConcaveHullProps['output'] | undefined;
   if (props.outline?.kind !== 'alpha') {
-    const identityOffsets = createIdentityOffsetsNode(graph, `${id}-hull-identity`, groupCount);
+    const identityOffsets = createIdentityOffsetsNode(
+      graph,
+      `${id}-hull-identity`,
+      groupCount,
+      builder
+    );
     builder.add(
       new GPUGeometryMeasures({
         spatialContext,
@@ -382,7 +388,8 @@ export function addClusterAndOutlineRecipe<Parameters>(
         output: concaveHull
       })
     );
-    graph.add(
+    builder.addGlue(
+      'alpha-measures',
       createWGSLKernelNode(graph, {
         id: `${id}-alpha-measures`,
         operation: ID,
@@ -414,21 +421,26 @@ areas[areasOffset+index] = select(invalid,area,completeValue); perimeters[perime
 centroids[centroidsOffset+index*2u] = select(invalid,centroid.x/max(area,1.0e-30),completeValue && area>0.0); centroids[centroidsOffset+index*2u+1u] = select(invalid,centroid.y/max(area,1.0e-30),completeValue && area>0.0);`
       })
     );
-    graph.add(
-      createWGSLKernelNode(graph, {
-        id: `${id}-alpha-status`,
-        operation: ID,
-        invocationCount: 1,
-        bindings: [
-          {name: 'complete', view: concaveHull.status.converged, type: 'u32', access: 'read'},
-          {name: 'invalidCount', view: invalidCount, type: 'u32', access: 'read_write'},
-          {name: 'hullOverflow', view: hullOverflow, type: 'u32', access: 'read_write'},
-          {name: 'offsets', view: hullOffsets, type: 'u32', access: 'read_write'},
-          {name: 'counts', view: hullCounts, type: 'u32', access: 'read_write'}
-        ],
-        body: `var invalid = 0u; for (var group = 0u; group < ${groupCount}u; group++) {invalid += u32(complete[completeOffset+group] == 0u); offsets[offsetsOffset+group] = 0u; counts[countsOffset+group] = 0u;} offsets[offsetsOffset+${groupCount}u] = 0u; invalidCount[invalidCountOffset] = invalid; hullOverflow[hullOverflowOffset] = 0u;`
-      })
-    );
+    addRecipeCountNodes(builder, {
+      id: `${id}-alpha-status`,
+      operation: ID,
+      rowCount: groupCount,
+      bindings: [
+        {name: 'complete', view: concaveHull.status.converged, type: 'u32', access: 'read'},
+        {name: 'hullOverflow', view: hullOverflow, type: 'u32', access: 'read_write'},
+        {name: 'offsets', view: hullOffsets, type: 'u32', access: 'read_write'},
+        {name: 'counts', view: hullCounts, type: 'u32', access: 'read_write'}
+      ],
+      prelude: `offsets[offsetsOffset+index] = 0u; counts[countsOffset+index] = 0u;
+if (index == 0u) { offsets[offsetsOffset+${groupCount}u] = 0u; hullOverflow[hullOverflowOffset] = 0u; }`,
+      counts: [
+        {
+          name: 'invalid',
+          output: invalidCount,
+          value: 'u32(complete[completeOffset+index] == 0u)'
+        }
+      ]
+    });
   }
 
   return {

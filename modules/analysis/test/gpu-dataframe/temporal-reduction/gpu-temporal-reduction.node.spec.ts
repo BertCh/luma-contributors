@@ -60,7 +60,18 @@ it('GPUTemporalReduction parameter helpers pack layouts', () => {
     0xffffffff, 0xffffffff, 3600000, 0
   ]);
   expect(() => getGPUTemporalReductionWordParameterValues(0, 0)).toThrow(/width/);
-  expect(() => getGPUTemporalReductionWordParameterValues(0, 2 ** 32)).toThrow(/width/);
+  // Widths of 2^32 and more fill the second width word (nanosecond hours, 2^64 - 1).
+  // 3.6e12 = 838 * 2^32 + 817405952
+  expect(Array.from(getGPUTemporalReductionWordParameterValues(0, 3_600_000_000_000))).toEqual([
+    0, 0, 817_405_952, 838
+  ]);
+  expect(Array.from(getGPUTemporalReductionWordParameterValues(0, 2 ** 32))).toEqual([0, 0, 0, 1]);
+  expect(Array.from(getGPUTemporalReductionWordParameterValues(0, 0xffffffffffffffffn))).toEqual([
+    0, 0, 0xffffffff, 0xffffffff
+  ]);
+  expect(() => getGPUTemporalReductionWordParameterValues(0, 2n ** 64n)).toThrow(/width/);
+  expect(() => getGPUTemporalReductionWordParameterValues(0, 0n)).toThrow(/width/);
+  expect(() => getGPUTemporalReductionWordParameterValues(0, 1.5)).toThrow(/width/);
   expect(() => getGPUTemporalReductionWordParameterValues(0.5, 1)).toThrow(/origin/);
   expect(() => getGPUTemporalReductionParameterValues(0, 1, new Float32Array(1))).toThrow(/hold/);
 });

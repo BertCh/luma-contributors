@@ -34,11 +34,11 @@ import {
   getSeparationWGSL,
   type InterpolationSeparation
 } from '../spatial-interpolation/separation-wgsl';
-import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
+import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
 import {
   getPermutationShuffleWGSL,
   PERMUTATION_SHUFFLE_FULL_RANGE_ROUNDS
-} from '../permutation-inference/permutation-shuffle';
+} from '../../analysis-core/kernels/permutation-shuffle';
 import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
 import {
   getGPUSpatialScanStatisticLayout,
@@ -54,6 +54,8 @@ import {
   type GPUSpatialScanStatisticSettings
 } from './scan-statistic-parameters';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
+import {POISSON_OBSERVED_TERM_WGSL} from '../../analysis-core/kernels/wgsl-poisson-observed-term';
+import {createScanNearestZonesKernelNode} from './scan-statistic-nearest-zones';
 
 const OPERATION = 'GPUSpatialScanStatistic';
 /** Scan windows measure planar or great-circle distances. */
@@ -71,8 +73,6 @@ const PARALLEL_DRAW_BLOCKS = 64;
 const PARALLEL_DRAW_WORKGROUP_SIZE = 256;
 /** Philox counter tag of the multinomial case draws, apart from the permutation streams. */
 const SCAN_STREAM = PHILOX_PURPOSES.spatialScanStatistic.id;
-/** Bins of one 8-bit digit of the neighbor radix select and sort (a 1 KiB private histogram). */
-const NEIGHBOR_RADIX_BINS = 256;
 /**
  * Words of one per-center record: LLR bits, zones, first bucket, last bucket, cases, expected,
  * truncated, squared radius bits in the spatial context's squared length unit.
@@ -196,7 +196,7 @@ export type GPUSpatialScanStatisticProps = {
    * `'space-time-permutation'` models (SA2-03). By default each replicate is drawn by one
    * invocation walking about `C` draws serially, which leaves the GPU almost idle for large `C`
    * and can run for seconds in one dispatch. With `parallelDraws` one invocation handles each
-   * draw: a keyed swap-or-not shuffle (the bijection of `permutation-inference/permutation-shuffle`,
+   * draw: a keyed swap-or-not shuffle (the bijection of `analysis-core/kernels/permutation-shuffle`,
    * keyed by the seed and the global replicate index) maps the draw index to the individual it
    * selects, so a replicate is a uniform sample without replacement (the same multivariate
    * hypergeometric law) computed by `64 * 256` threads per replicate with integer `atomicAdd`
@@ -215,6 +215,13 @@ export type GPUSpatialScanStatisticProps = {
    * @internal
    */
   batchReplicates?: number;
+  /**
+   * Compile-time. `'retrospective'` (default) scans every run of consecutive buckets. `'prospective'`
+   * scans only windows that end at the last bucket, as a surveillance analysis does; the Monte Carlo
+   * replicates search the same windows. No adjustment for earlier analyses is applied: convert a
+   * p-value with `getGPUScanRecurrenceInterval`.
+   */
+  temporalMode?: 'retrospective' | 'prospective';
 };
 
 /**
@@ -309,6 +316,8 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
   readonly batchCount: number;
   /** Whether the without-replacement draws run one invocation per draw (see `props.parallelDraws`). */
   readonly parallelDraws: boolean;
+  /** Resolved temporal search mode (see `props.temporalMode`). */
+  readonly temporalMode: 'retrospective' | 'prospective';
 
   constructor(props: GPUSpatialScanStatisticProps) {
     const id = props.id ?? 'scan-statistic';
@@ -397,6 +406,10 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     );
     this.batchCount = Math.ceil(maximumPermutations / this.batchReplicates);
     this.parallelDraws = (props.parallelDraws ?? false) && this.model !== 'poisson';
+    this.temporalMode = props.temporalMode ?? 'retrospective';
+    if (this.temporalMode !== 'retrospective' && this.temporalMode !== 'prospective') {
+      throw new Error(`${id} temporalMode must be 'retrospective' or 'prospective'`);
+    }
     if (this.batchCount > MAXIMUM_BATCHES) {
       throw new Error(
         `${id} maximumPermutations needs ${this.batchCount} batches of ${this.batchReplicates} replicates, more than ${MAXIMUM_BATCHES}`
@@ -475,7 +488,9 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       seed: settings.seed,
       multipleTesting: 'none',
       testedRowsDefinition:
-        'every window: a center zone, its nearest zones within maximumPopulationFraction of the population, and a run of consecutive time buckets within maximumTimeBuckets; p-values are Monte Carlo maxima over all windows'
+        this.temporalMode === 'prospective'
+          ? 'every prospective window: a center zone, its nearest zones within maximumPopulationFraction of the population, and a run of consecutive time buckets ending at the last bucket, within maximumTimeBuckets; p-values are Monte Carlo maxima over all those windows; no adjustment for earlier analyses'
+          : 'every window: a center zone, its nearest zones within maximumPopulationFraction of the population, and a run of consecutive time buckets within maximumTimeBuckets; p-values are Monte Carlo maxima over all windows'
     };
   }
 
@@ -499,6 +514,7 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, zones, timeBuckets, listLength, usableZones, maximumClusters, model} = this;
+    const prospective = this.temporalMode === 'prospective';
     const separation: InterpolationSeparation = {
       context: this.spatialContext,
       geographic: this.spatialContext.coordinateSpace === 'longitude-latitude',
@@ -693,41 +709,7 @@ fn readRateDirection() -> u32 {
   return parameters[parametersOffset + 7u];
 }`;
     const withParameters = `${common}${readers}`;
-    const direction = /* wgsl */ `
-// (1 + d) ln(1 + d) - d for d >= -1. Below |d| = 1/4 the Taylor series
-// d^2 * sum_k>=2 (-d)^(k - 2) / (k (k - 1)), terms to k = 14 (truncation below 1e-9 relative),
-// avoids the cancellation of the direct form.
-fn getEntropyExcess(delta: f32) -> f32 {
-  if (abs(delta) < 0.25) {
-    var series = 1.0 / 182.0;
-    series = -1.0 / 156.0 + delta * series;
-    series = 1.0 / 132.0 + delta * series;
-    series = -1.0 / 110.0 + delta * series;
-    series = 1.0 / 90.0 + delta * series;
-    series = -1.0 / 72.0 + delta * series;
-    series = 1.0 / 56.0 + delta * series;
-    series = -1.0 / 42.0 + delta * series;
-    series = 1.0 / 30.0 + delta * series;
-    series = -1.0 / 20.0 + delta * series;
-    series = 1.0 / 12.0 + delta * series;
-    series = -1.0 / 6.0 + delta * series;
-    series = 1.0 / 2.0 + delta * series;
-    return delta * delta * series;
-  }
-  return (1.0 + delta) * log(1.0 + delta) - delta;
-}
-// Kulldorff term o ln(o/e) minus its linear part o - e, which sums to 0 over the cells of a full
-// partition of the cases, as e * ((1 + d) ln(1 + d) - d) with d = (o - e) / e: near o = e the
-// LLR no longer comes from the difference of two large logarithm terms.
-fn getObservedTerm(observed: f32, expected: f32) -> f32 {
-  if (!(expected > 0.0)) {
-    return 0.0;
-  }
-  if (!(observed > 0.0)) {
-    return expected;
-  }
-  return expected * getEntropyExcess((observed - expected) / expected);
-}
+    const direction = /* wgsl */ `${POISSON_OBSERVED_TERM_WGSL}
 fn isDirected(observed: f32, expected: f32, direction: u32) -> bool {
   if (direction == 0u) {
     return observed > expected;
@@ -783,136 +765,17 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
       : {name: 'baseline', view: weights, type: 'f32' as const, access: 'read' as const};
 
     const nodes: GPUCommandNode<Parameters>[] = [
-      createWGSLKernelNode<Parameters>(graph, {
+      createScanNearestZonesKernelNode<Parameters>(graph, {
         id: `${id}-nearest`,
         operation: OPERATION,
-        variant: 'nearest',
-        bindings: [
-          {name: 'positions', view: positions, type: 'f32', access: 'read'},
-          {name: 'neighbors', view: neighbors, type: 'u32', access: 'read_write'},
-          {name: 'distances', view: distances, type: 'u32', access: 'read_write'},
-          {name: 'sortKeys', view: sortKeys, type: 'u32', access: 'read_write'},
-          {name: 'sortZones', view: sortZones, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: zones,
-        declarations: `${separationWGSL}
-const ZONES: u32 = ${zones}u;
-const LIST: u32 = ${listLength}u;
-const RADIX_BINS: u32 = ${NEIGHBOR_RADIX_BINS}u;
-// Separation keys are non-negative f32, so their bits order as u32 keys.
-fn getZoneSeparationKey(zone: u32, centerX: f32, centerY: f32) -> u32 {
-  let zoneX = positions[positionsOffset + zone * 2u];
-  let zoneY = positions[positionsOffset + zone * 2u + 1u];
-  return bitcast<u32>(getSeparationKey(vec2f(zoneX, zoneY), vec2f(centerX, centerY)));
-}`,
-        // The row of a center lists its LIST nearest zones in (separation key, zone index) order.
-        // When LIST < ZONES a radix select over the key bits (8-bit digits, most significant
-        // first, one pass over the zones per digit) finds the key of the LIST-th nearest zone and
-        // how many zones at that key still fit. One more pass gathers the selected zones in zone
-        // order, and an LSD radix sort (four stable 8-bit passes, ping-ponging with the sort
-        // scratch rows) orders them by key, so equal keys keep ascending zone order. Work per
-        // center is O(ZONES + LIST), not the O(ZONES * LIST) of a selection by repeated scans.
-        body: `var histogram: array<u32, RADIX_BINS>;
-  let centerX = positions[positionsOffset + index * 2u];
-  let centerY = positions[positionsOffset + index * 2u + 1u];
-  let row = index * LIST;
-  var threshold = 0xffffffffu;
-  var equalCount = LIST;
-  if (LIST < ZONES) {
-    var prefix = 0u;
-    var prefixMask = 0u;
-    var rank = LIST - 1u;
-    for (var level = 0u; level < 4u; level++) {
-      let shift = 24u - 8u * level;
-      for (var bin = 0u; bin < RADIX_BINS; bin++) {
-        histogram[bin] = 0u;
-      }
-      for (var zone = 0u; zone < ZONES; zone++) {
-        let key = getZoneSeparationKey(zone, centerX, centerY);
-        if ((key & prefixMask) == prefix) {
-          let bin = (key >> shift) & 255u;
-          histogram[bin] = histogram[bin] + 1u;
-        }
-      }
-      var digit = 0u;
-      loop {
-        if (digit == RADIX_BINS - 1u || rank < histogram[digit]) {
-          break;
-        }
-        rank -= histogram[digit];
-        digit++;
-      }
-      prefix = prefix | (digit << shift);
-      prefixMask = prefixMask | (255u << shift);
-    }
-    threshold = prefix;
-    equalCount = rank + 1u;
-  }
-  var filled = 0u;
-  var equalTaken = 0u;
-  for (var zone = 0u; zone < ZONES; zone++) {
-    if (filled >= LIST) {
-      break;
-    }
-    let key = getZoneSeparationKey(zone, centerX, centerY);
-    var take = key < threshold;
-    if (!take && key == threshold && equalTaken < equalCount) {
-      take = true;
-      equalTaken++;
-    }
-    if (take) {
-      distances[distancesOffset + row + filled] = key;
-      neighbors[neighborsOffset + row + filled] = zone;
-      filled++;
-    }
-  }
-  for (var shift = 0u; shift < 32u; shift += 16u) {
-    // Digit shift: the table rows to the sort scratch.
-    for (var bin = 0u; bin < RADIX_BINS; bin++) {
-      histogram[bin] = 0u;
-    }
-    for (var slot = 0u; slot < LIST; slot++) {
-      let bin = (distances[distancesOffset + row + slot] >> shift) & 255u;
-      histogram[bin] = histogram[bin] + 1u;
-    }
-    var running = 0u;
-    for (var bin = 0u; bin < RADIX_BINS; bin++) {
-      let count = histogram[bin];
-      histogram[bin] = running;
-      running += count;
-    }
-    for (var slot = 0u; slot < LIST; slot++) {
-      let key = distances[distancesOffset + row + slot];
-      let bin = (key >> shift) & 255u;
-      let destination = histogram[bin];
-      histogram[bin] = destination + 1u;
-      sortKeys[sortKeysOffset + row + destination] = key;
-      sortZones[sortZonesOffset + row + destination] = neighbors[neighborsOffset + row + slot];
-    }
-    // Digit shift + 8: the sort scratch back to the table rows.
-    let nextShift = shift + 8u;
-    for (var bin = 0u; bin < RADIX_BINS; bin++) {
-      histogram[bin] = 0u;
-    }
-    for (var slot = 0u; slot < LIST; slot++) {
-      let bin = (sortKeys[sortKeysOffset + row + slot] >> nextShift) & 255u;
-      histogram[bin] = histogram[bin] + 1u;
-    }
-    running = 0u;
-    for (var bin = 0u; bin < RADIX_BINS; bin++) {
-      let count = histogram[bin];
-      histogram[bin] = running;
-      running += count;
-    }
-    for (var slot = 0u; slot < LIST; slot++) {
-      let key = sortKeys[sortKeysOffset + row + slot];
-      let bin = (key >> nextShift) & 255u;
-      let destination = histogram[bin];
-      histogram[bin] = destination + 1u;
-      distances[distancesOffset + row + destination] = key;
-      neighbors[neighborsOffset + row + destination] = sortZones[sortZonesOffset + row + slot];
-    }
-  }`
+        positions,
+        neighbors,
+        distances,
+        sortKeys,
+        sortZones,
+        zones,
+        listLength,
+        separationWGSL
       })
     ];
 
@@ -1570,12 +1433,13 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
     if (!separated) {
       continue;
     }
-    for (var first = 0u; first < BUCKETS; first++) {
+    for (var first = ${prospective ? 'BUCKETS - min(maximumBuckets, BUCKETS)' : '0u'}; first < BUCKETS; first++) {
       var windowCases = 0u;
       var windowBaseline = 0.0;
       for (var last = first; last < min(first + maximumBuckets, BUCKETS); last++) {
         windowCases += caseSums[last];
         windowBaseline += baselineSums[last];
+        ${prospective ? 'if (last != BUCKETS - 1u) { continue; }' : ''}
         let ratio = getLogLikelihoodRatio(f32(windowCases), windowBaseline, totalCases, totalBaseline, direction);
         if (ratio > best) {
           best = ratio;

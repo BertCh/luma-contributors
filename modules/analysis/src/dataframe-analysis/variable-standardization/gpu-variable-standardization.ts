@@ -12,16 +12,20 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  validateCapacity,
+  getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validatePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
+/** Largest column: the valid-row count is reduced in float32, which is exact only up to 2^24. */
+const MAXIMUM_ROW_COUNT = 2 ** 24;
 
 /** GeoDa variable transformations; MAD is mean absolute deviation about the mean. */
 export type GPUVariableStandardizationMethod =
@@ -30,12 +34,6 @@ export type GPUVariableStandardizationMethod =
   | 'mad'
   | 'range-adjust'
   | 'range-standardize';
-
-function getGraphVectorData<Format extends 'float32' | 'uint32'>(
-  column: GraphDataView<Format> | GraphVectorView<Format>
-): readonly GraphDataView<Format>[] {
-  return column instanceof GraphVectorView ? column.data : [column];
-}
 
 /** Borrows a row range of a packed transient view. */
 function sliceView<Format extends 'float32' | 'uint32', Parameters>(
@@ -83,7 +81,11 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
   constructor(props: GPUVariableStandardizationProps) {
     this.id = props.id ?? 'variable-standardization';
     this.props = props;
-    validateCapacity(this.id, 'row count', props.values.length, 0, 2 ** 24);
+    validateRequirement(
+      this.id,
+      Number.isInteger(props.values.length) && props.values.length <= MAXIMUM_ROW_COUNT,
+      `values length must be an integer in [0, ${MAXIMUM_ROW_COUNT}] (2^24): row counts are reduced in float32 and are exact only up to 2^24`
+    );
     if (
       !['deviation-from-mean', 'z-score', 'mad', 'range-adjust', 'range-standardize'].includes(
         props.method
@@ -103,11 +105,11 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
       if (column.length !== props.values.length)
         throw new Error(`${this.id} ${name} length mismatch`);
       // Published GraphVectorView chunks are not realigned; each column must be a single chunk.
-      if (getGraphVectorData(column).length > 1) throw new Error(`${this.id} ${name} single chunk`);
-      for (const chunk of getGraphVectorData(column))
+      if (getGraphViewChunks(column).length > 1) throw new Error(`${this.id} ${name} single chunk`);
+      for (const chunk of getGraphViewChunks(column))
         validatePackedView(chunk, [format], `${this.id} ${name}`);
     }
-    const outputChunks = getGraphVectorData(props.output);
+    const outputChunks = getGraphViewChunks(props.output);
     for (let index = 0; index < outputChunks.length; index++) {
       const current = outputChunks[index];
       for (const previous of outputChunks.slice(0, index)) {
@@ -122,9 +124,9 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
         }
       }
     }
-    validateGraphOutputsDisjointFromInputs(this.id, getGraphVectorData(props.output), [
-      ...getGraphVectorData(props.values),
-      ...(props.mask ? getGraphVectorData(props.mask) : [])
+    validateGraphOutputsDisjointFromInputs(this.id, getGraphViewChunks(props.output), [
+      ...getGraphViewChunks(props.values),
+      ...(props.mask ? getGraphViewChunks(props.mask) : [])
     ]);
   }
 
@@ -133,17 +135,17 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [
-      ...getGraphVectorData(props.values),
-      ...getGraphVectorData(props.output),
-      ...(props.mask ? getGraphVectorData(props.mask) : [])
+      ...getGraphViewChunks(props.values),
+      ...getGraphViewChunks(props.output),
+      ...(props.mask ? getGraphViewChunks(props.mask) : [])
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
     // Each column is a single chunk (validated in the constructor), so there is one span.
     const spans = [
       [
-        getGraphVectorData(props.values)[0],
-        getGraphVectorData(props.output)[0],
-        props.mask ? getGraphVectorData(props.mask)[0] : undefined
+        getGraphViewChunks(props.values)[0],
+        getGraphViewChunks(props.output)[0],
+        props.mask ? getGraphViewChunks(props.mask)[0] : undefined
       ]
     ] as const;
     const totalLength = props.values.length;

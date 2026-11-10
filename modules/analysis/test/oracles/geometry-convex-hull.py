@@ -24,7 +24,7 @@ from scipy.spatial import ConvexHull, QhullError
 from shapely.geometry import MultiPoint
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GENERATOR = 'modules/graph/test/oracles/geometry-convex-hull.py'
+GENERATOR = 'modules/analysis/test/oracles/geometry-convex-hull.py'
 
 
 def snap(points):

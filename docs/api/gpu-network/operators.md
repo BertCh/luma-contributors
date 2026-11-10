@@ -513,6 +513,9 @@ Accessibility over the same directed CSR road network as `GPUNetworkReachability
   searches into one `laneCount * nodeCount` scratch block and a gather kernel writes its rows, so
   memory is that block plus `rowCount * targetCount` instead of `rowCount * nodeCount`; lower
   `laneCount` to shrink the scratch block. `columnCount` reports the column count.
+  Compile cost: every round of every batch is an unrolled command node. The exact count is the
+  read-only property `estimatedCommandNodeCount`, and the constructor throws above 32,768 (for
+  example 600 one-lane batches at the default 64 rounds); raise `laneCount` or lower `maximumIterations`.
   Rows set the number of searches, so put the smaller side on
   rows. To score every node, put opportunities or facilities on rows and search the reverse CSR
   (an undirected network can reuse its CSR).
@@ -955,6 +958,10 @@ The table is exact up to its limit: a target missing from a row is farther than 
   That targets static networks up to roughly 1e5 nodes, built once and reused across many encodings; the
   table holds only the entries within `costLimit`. Rebuild only when weights change. The scratch block is
   `laneCount x nodeCount` floats and must fit one storage binding, so lower `laneCount` for large networks.
+- Compile cost: every round of every batch is an unrolled command node, `2 + batchCount * (6 + maximumIterations)`
+  nodes, plus one per batch with `status.converged`. The exact count is the read-only property
+  `estimatedCommandNodeCount`, and the constructor throws above 32,768 nodes, so a 100,000-node network
+  at the default lane count needs a larger `laneCount` or fewer `maximumIterations` first.
 
 ```ts
 // Build once for a static network. The weights must equal the edge lengths GPUMapMatching measures
@@ -999,7 +1006,7 @@ Match noisy GPS tracks to directed road edges with candidate edges, bounded rout
 
 Pass optional `spatialContext` in the settings of `getGPUMapMatchingParameterValues` to warn when finite positive `sigma` or `searchRadius` is below `10·Q` (16.97 m with the default sphere); see [Precision of longitude/latitude positions](../gpu-spatial-analysis/concepts.md#precision-of-longitudelatitude-positions).
 
-Maximums: `topology` has at most `getGPUMapMatchingMaximumEdgeCount(device)` (11184810 on a default device) edges and `entryCapacity` is at most `getGPUMapMatchingMaximumEntryCapacity(device)` (33554432); the default `entryCapacity` is capped there and `status.overflow` reports lost entries.
+Maximums: `topology` has at most `getGPUMapMatchingMaximumEdgeCount(device)` (11184810 on a default device) edges and `entryCapacity` is at most `getGPUMapMatchingMaximumEntryCapacity(device)` (33554432); the default `entryCapacity` is capped there and `status.overflow` reports lost entries. The per-point scratch (candidates 12 bytes per candidate, the route table `candidateCount * (candidateCount + 1) * 4` bytes) must fit one storage binding: `positions` has at most `getGPUMapMatchingMaximumPointCount(device, candidateCount, hasTraversedEdges)` rows (466033 at 8 candidates on a default device, with `output.traversedEdges` the 20-byte hop table per point binds only at one candidate), and `getCommandNodes` throws a `positions rows must be at most ...` error past it. Lower `candidateCount` or split the tracks into several `GPUMapMatching` instances.
 
 Hidden Markov model map matching of GPS tracks to a directed network (Newson and Krumm 2009). Per point,
 up to `candidateCount` (at most 8, default 8: a directed edge row is one candidate, so the default keeps the
@@ -1013,8 +1020,24 @@ infeasible. Viterbi runs one thread per track.
 
 - Props: `positions`, `trackOffsets`, the network `topology` (`offsets`, `neighbors`, `nodePositions`;
   weights unused), `parameters` (`getGPUMapMatchingParameterValues`: `sigma`, `beta`, `searchRadius`, `routeFactor`, `routeSlack`, per
-  frame), `candidateCount`, `cellSize`, `bounds`, `entryCapacity`, `routeNodeBudget` and
-  `spatialContext`.
+  frame), `candidateCount`, `cellSize`, `bounds`, `entryCapacity`, `routeNodeBudget`,
+  `minimumFixSpacingSigmas`, `traversedEdgeCapacity` and `spatialContext`.
+- Fix spacing (`minimumFixSpacingSigmas`, compile-time, off by default): Newson and Krumm drop a fix
+  within 2 `sigma` of the previous retained fix, so stationary or backward jitter does not look like a
+  move. Pass 2 to do the same, measured with the frame's `sigma` and the context's distance. Without it
+  a fix that jitters backward along a one-way edge has no feasible transition (the route would have to
+  leave the edge and return within `routeFactor * straight + routeSlack`) and breaks the track. The
+  first fix of a track is always kept and each later fix is measured from the last retained one. A
+  dropped fix is never a candidate source or target and is unmatched in every output
+  (`matchedEdges` is `GPU_MAP_MATCHING_NONE`, `breaks` is 0, it is not in `matchedCount`). Dropped fixes
+  are not matched to the edge of their neighbors, so resample or interpolate them yourself if you need a
+  value per fix.
+- Score renormalization: the forward pass subtracts the best score of each step from every score of that
+  step. This moves all candidates of a step equally, so the chosen path is unchanged, and it keeps the
+  `float32` scores small over a track of any length (unnormalized, a 100000-fix track reaches 1e5 to 1e6,
+  where one `float32` step is 0.008 to 0.06 and close candidates tie). `trackLogLikelihoods` adds the
+  subtracted amounts back, as a whole part and a fraction, so it stays accurate to one `float32` rounding of
+  its own magnitude; there is no option to set.
 - Geodesic: with `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` positions
   and nodes are degrees and every distance (emission, straight line, edge and route lengths, and the
   distance parameters) is in the context's length unit (meters or kilometers); the A* heuristic stays consistent. `cellSize` and `bounds` stay in
@@ -1023,11 +1046,25 @@ infeasible. Viterbi runs one thread per track.
   180.1) for a network that crosses it.
 - Outputs (`output`): `matchedEdges` (a CSR row per point; `GPU_MAP_MATCHING_NONE` when unmatched),
   `matchedFractions`, `matchedOffsets`, `snapDistances`, `snappedPositions`, `breaks`,
-  `trackLogLikelihoods`, `matchedCount`, `breakCount`, `status.overflow` and `status.routeOverflow`. A break restarts
+  `trackLogLikelihoods`, `matchedCount`, `breakCount`, `traversedEdges`, `status.overflow` and `status.routeOverflow`. A break restarts
   the model where no transition is feasible or a point has no candidate (`breaks` value 1). A break
   where a route search into the point dropped nodes is a budget break (value 2): the route may exist
   but did not fit the table. `status.overflow` is 1 when the edge grid or any route table dropped entries, and
   `status.routeOverflow` counts the dropped route nodes (saturating at `0xffffffff`).
+- Traversed route (`output.traversedEdges`, needs `traversedEdgeCapacity`): `matchedEdges` is the edge each
+  fix snaps to; the route is the edges passed between fixes, including edges that no fix lands on. The
+  caller owns `{edges, counts, status?: {overflow?}}`: `edges` has `trackCount * traversedEdgeCapacity` rows and track
+  `t` writes its list, in travel order, from row `t * traversedEdgeCapacity`; `counts[t]` is the number of
+  entries the track needs, so a value above `traversedEdgeCapacity` tells how much capacity to allocate and
+  rows past the capacity are not stored; `status.overflow` is a one-row flag, 1 when any track was truncated or a hop's intermediate
+  edges could not be recovered because its bounded search dropped nodes (the hop then lists only its end
+  edge). The list holds the first matched edge, then for each hop the shortest-route edges followed by the
+  next fix's edge, and nothing for a fix that stays on its edge ahead of the previous fix. One
+  `GPU_MAP_MATCHING_NONE` entry separates sub-tracks after a break or an unmatched fix, so counting
+  traversals skips it and invents no adjacency across the break. Each hop repeats the bounded search of the
+  route kernel for the chosen candidates only, one thread per track in sequence, so it costs about one more
+  route pass over the matched hops; it needs 20 bytes per point of scratch. Edge volumes over these lists
+  are not built yet. Without `traversedEdges` nothing changes.
 - `routeTable` (optional): a `GPUNetworkCostTable` of the same network, built with `weights` equal to the
   edge lengths this contributor measures from the node positions (in the context's length unit), passed as `{offsets, targets, costs, costLimit, status?: {overflow}}`. A route search whose
   allowance (`routeFactor * straight + routeSlack` minus the tail of the source edge) is within the table's
@@ -1049,7 +1086,7 @@ infeasible. Viterbi runs one thread per track.
 - Limits: distances are planar unless a great-circle `spatialContext` is given, and edges are straight
   segments in the coordinates, so on longitude/latitude they should be road-length. The bounded search is
   an approximation that can overestimate or miss routes when samples are far apart for the budget
-  (always reported, see above), and the route table is `pointCount * k * (k + 1)` floats. A two-way road needs both directions, and each takes a candidate slot.
+  (always reported, see above), and the route table is `pointCount * k * (k + 1)` floats (checked against the storage binding limit, see Maximums). A two-way road needs both directions, and each takes a candidate slot.
   Exact routes and time-aware transitions are not provided.
 
 {/* parameters: GPUMapMatching generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
@@ -1089,7 +1126,7 @@ Count crash pairs by network distance band and return the network K value at eac
 
 For `maximumSnapDistance` and `maximumDistance`, no warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](../gpu-spatial-analysis/concepts.md#precision-of-longitudelatitude-positions).
 
-Maximum: `rowsPerBlock * events` is at most 4294967295 (one 1-D dispatch), checked under the contributor's own ID.
+Maximum: `rowsPerBlock * events` is at most 4294967295 (one 1-D dispatch), checked under the contributor's own ID. Each row block unrolls `maximumIterations + 6` command nodes; the read-only `estimatedCommandNodeCount` (an upper bound within 192 of the true count, which covers the snapping, reduction and scan primitives) must be at most 32,768, so raise `rowsPerBlock` or lower `simulationCount` or `maximumIterations` for large pattern counts.
 
 Network-constrained Ripley K function (Okabe and Yamada; spaghetti `GlobalAutoK`). Events are snapped with
 `GPUNetworkSnapping`, then multi-source reachability searches limited to `maximumDistance` run in blocks of

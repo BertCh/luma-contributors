@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createRecipeKernelNode, getRecipeView as getOrCreateView} from './expansion-recipe-utils';
+import {getRecipeView as getOrCreateView} from './expansion-recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUTerrainFlow,
@@ -13,7 +13,7 @@ import {GPUTerrainWatersheds} from '../../gpu-terrain/hydrology/gpu-terrain-wate
 import {GPUTerrainFlowDistance} from '../../gpu-terrain/hydrology/gpu-terrain-flow-distance';
 import {GPUTerrainStreamNetwork} from '../../gpu-terrain/hydrology/gpu-terrain-stream-network';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
-import {RecipeBuilder} from './recipe-utils';
+import {addRecipeCountNodes, RecipeBuilder} from './recipe-utils';
 
 export type GPUDrainageNetworkRecipeProps = {
   id?: string;
@@ -92,18 +92,19 @@ export function addDrainageNetworkRecipe<Parameters>(
     })
   );
   const unresolvedDistanceCount = getOrCreateView(graph, `${id}-distance-unresolved`, 'uint32', 1);
-  graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-distance-status`,
-      operation: id,
-      invocationCount: 1,
-      bindings: [
-        {name: 'terminals', view: distance.terminalCells, type: 'u32', access: 'read'},
-        {name: 'unresolved', view: unresolvedDistanceCount, type: 'u32', access: 'read_write'}
-      ],
-      body: `var total = 0u; for (var cell = 0u; cell < ${count}u; cell++) { total += select(0u, 1u, terminals[terminalsOffset + cell] == 0xfffffffeu); } unresolved[unresolvedOffset] = total;`
-    })
-  );
+  addRecipeCountNodes(builder, {
+    id: `${id}-distance-status`,
+    operation: id,
+    rowCount: count,
+    bindings: [{name: 'terminals', view: distance.terminalCells, type: 'u32', access: 'read'}],
+    counts: [
+      {
+        name: 'unresolved',
+        output: unresolvedDistanceCount,
+        value: 'u32(terminals[terminalsOffset + index] == 0xfffffffeu)'
+      }
+    ]
+  });
   const reachCapacity = props.reachCapacity ?? count;
   const vertexCapacity = props.vertexCapacity ?? 2 * count;
   const network = {

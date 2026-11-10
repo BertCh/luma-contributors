@@ -379,7 +379,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
     variables: {pairCounts: {level: 'ratio', extent: 'extensive'}, status: {level: 'nominal'}},
     sourceFiles: ['modules/analysis/src/dataframe-analysis/pair-statistics/gpu-cross-variogram.ts']
   },
-  /** Signed cross-semivariance over spatial-major space-time bins, complete-case masking. */
+  /** Space-time semivariance on the indexed pair histogram: spatial-major bins, class 0 of each axis is the exact zero lag, complete-case masking. */
   GPUSpaceTimeVariogram: {
     family: 'pair-statistics',
     descriptor: {scope: 'pairwise', reduction: 'sum'},
@@ -387,8 +387,9 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       id: 'gpu-dataframe:GPUSpaceTimeVariogram',
       derivation: 'curated',
       tex: String.raw`\term{estimate}{\gamma_{h,t}}=\frac{1}{2N_{h,t}}\sum_{i<j\in(h,t)}(x_i-x_j)(y_i-y_j)`,
-      ascii: 'Signed cross-semivariance over spatial-major space-time bins, complete-case masking.',
-      symbols: [{id: 'estimate', role: 'output', binding: 'wgsl:result'}]
+      ascii:
+        'Space-time semivariance on the indexed pair histogram: spatial-major bins, class 0 of each axis is the exact zero lag, complete-case masking.',
+      symbols: [{id: 'estimate', role: 'output', binding: 'wgsl:semivariances'}]
     },
     stages: ['filter', 'aggregate', 'summarise'],
     datumKinds: [
@@ -396,9 +397,11 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       {kind: 'lag', label: 'Lag bin', indexSpace: '1d'}
     ],
     guards: ['coordinate-model'],
-    choices: ['lagCount', 'maximumDistance', 'edgeCorrection'],
+    choices: ['lagCount', 'temporalLagCount', 'maximumDistance', 'maximumTimeLag'],
     variables: {pairCounts: {level: 'ratio', extent: 'extensive'}, status: {level: 'nominal'}},
-    sourceFiles: ['modules/analysis/src/dataframe-analysis/pair-statistics/gpu-cross-variogram.ts']
+    sourceFiles: [
+      'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-space-time-variogram.ts'
+    ]
   },
   /** Rectangular translation-corrected cross-type K; supplied intensity uses inverse-intensity normalization. Pair correlation is annular, mark correlation uses product marks. */
   GPUMarkedPointStatistics: {

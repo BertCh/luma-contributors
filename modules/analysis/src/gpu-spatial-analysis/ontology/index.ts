@@ -24,7 +24,18 @@ export {
   GPU_SPATIAL_ANALYSIS_DOMAINS,
   GPU_SPATIAL_ANALYSIS_STAGES
 } from './spatial-analysis-ontology';
+export {
+  getGPUAnalysisCapabilityCatalog,
+  getGPUAnalysisOperator,
+  getGPUAnalysisOperatorCatalog,
+  queryGPUAnalysisOperators
+} from './all-entry-points/analysis-operator-catalog';
 export type {
+  GPUAnalysisLimit,
+  GPUAnalysisOperator,
+  GPUAnalysisOperatorQuery,
+  GPUAnalysisPackage,
+  GPUAnalysisTier,
   GPUSpatialAnalysisCapability,
   GPUSpatialAnalysisCapabilityConnections,
   GPUSpatialAnalysisCapabilityEvidence,

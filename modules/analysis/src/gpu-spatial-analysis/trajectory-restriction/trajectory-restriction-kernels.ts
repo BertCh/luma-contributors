@@ -2,15 +2,102 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import type {GPUTrajectoryRestrictionProps} from './gpu-trajectory-restriction';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  createWGSLKernelNode,
+  type WGSLKernelBinding
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {TIME_WORDS_WGSL} from '../../dataframe-analysis/time-window-filter/time-words';
+import {getEffectiveMaximumGapWGSL} from '../trajectory-analysis/trajectory-common';
+import type {GPUTrajectoryRestrictionResolvedProps} from './gpu-trajectory-restriction';
+
+/** Word-mode time table: `[relative time, elapsed to the next row]` f32 pairs per row. @internal */
+export type RestrictionTimeTable = {
+  /** Two f32 per row, written by the node of {@link createRestrictionWordTimeNodes}. */
+  view: GraphDataView<'float32'>;
+};
+
+/**
+ * Time helpers of every restriction kernel. `rowTime(row)` is the time relative to the time origin
+ * and `rowElapsed(second, first)` the per-step difference. In word mode both read the precomputed
+ * table, so the restriction kernels stay inside the core binding limit; steps were subtracted
+ * exactly before the f32 conversion. @internal
+ */
+export function getRestrictionTimeSource(
+  props: GPUTrajectoryRestrictionResolvedProps,
+  timeTable?: RestrictionTimeTable
+): {
+  bindings: WGSLKernelBinding[];
+  source: string;
+  suffix: string;
+} {
+  if (!timeTable) {
+    return {
+      bindings: [{name: 'times', view: props.times, type: 'f32', access: 'read'}],
+      source: `fn rowTime(row: u32) -> f32 { return times[timesOffset + row]; }
+fn rowElapsed(second: u32, first: u32) -> f32 { return times[timesOffset + second] - times[timesOffset + first]; }`,
+      suffix: ''
+    };
+  }
+  return {
+    bindings: [{name: 'timeTable', view: timeTable.view, type: 'f32', access: 'read'}],
+    // `rowElapsed` is only used for a row and its successor within a track (0 at the track's last row).
+    source: `fn rowTime(row: u32) -> f32 { return timeTable[timeTableOffset + 2u * row]; }
+fn rowElapsed(second: u32, first: u32) -> f32 { _ = second; return timeTable[timeTableOffset + 2u * first + 1u]; }`,
+    suffix: '-words'
+  };
+}
+
+/**
+ * Builds the word-time table of restriction word mode: per row the f32 time relative to
+ * `timeOrigin` (exact words subtracted, then rounded) and the exact step to the next row of its
+ * track (0 at the last row). @internal
+ */
+export function createRestrictionWordTimeNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  props: GPUTrajectoryRestrictionResolvedProps
+): {timeTable: RestrictionTimeTable; nodes: GPUCommandNode<Parameters>[]} {
+  const rowCount = props.positions.length;
+  const view = createTransientView(graph, `${id}-word-times`, 'float32', Math.max(2 * rowCount, 1));
+  const nodes = [
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-word-times`,
+      operation: 'GPUTrajectoryRestriction',
+      variant: 'word-times',
+      invocationCount: props.offsets.length - 1,
+      workgroupSize: 32,
+      bindings: [
+        {name: 'times', view: props.times, type: 'u32', access: 'read'},
+        {name: 'timeOrigin', view: props.timeOrigin as GraphDataView, type: 'u32', access: 'read'},
+        {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+        {name: 'timeTable', view, type: 'f32', access: 'read_write'}
+      ],
+      declarations: `const OBSERVATION_COUNT: u32 = ${rowCount}u;
+${TIME_WORDS_WGSL}
+fn getTimeWords(row: u32) -> vec2<u32> { return vec2<u32>(times[timesOffset + 2u * row], times[timesOffset + 2u * row + 1u]); }`,
+      body: `let start = min(offsets[offsetsOffset + index], OBSERVATION_COUNT); let end = min(offsets[offsetsOffset + index + 1u], OBSERVATION_COUNT);
+let origin = vec2<u32>(timeOrigin[timeOriginOffset], timeOrigin[timeOriginOffset + 1u]);
+for (var row = start; row < end; row++) {
+  timeTable[timeTableOffset + 2u * row] = timeWordsDifferenceToF32(getTimeWords(row), origin);
+  timeTable[timeTableOffset + 2u * row + 1u] = select(0.0, timeWordsDifferenceToF32(getTimeWords(row + 1u), getTimeWords(row)), row + 1u < end);
+}`
+    })
+  ];
+  return {timeTable: {view}, nodes};
+}
 
 /** General planar interval restriction. Static ring topology is distinct from runtime coordinates. */
 export function createTrajectoryRestrictionNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  props: GPUTrajectoryRestrictionProps
+  props: GPUTrajectoryRestrictionResolvedProps,
+  timeTable?: RestrictionTimeTable
 ): GPUCommandNode<Parameters>[] {
   const rings = props.polygonRingVertexCounts ?? [];
   const vertexCount = rings.reduce((total, count) => total + count, 0);
@@ -24,16 +111,17 @@ export function createTrajectoryRestrictionNodes<Parameters>(
     ringStart += count;
     return Array.from({length: count}, (_, vertex) => start + ((vertex + 1) % count));
   });
+  const time = getRestrictionTimeSource(props, timeTable);
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-intervals`,
       operation: 'GPUTrajectoryRestriction',
-      variant: vertexCount ? 'polygon-intervals' : 'rectangle-intervals',
+      variant: `${vertexCount ? 'polygon-intervals' : 'rectangle-intervals'}${time.suffix}`,
       invocationCount: props.offsets.length - 1,
       workgroupSize: 32,
       bindings: [
         {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-        {name: 'times', view: props.times, type: 'f32', access: 'read'},
+        ...time.bindings,
         {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
         {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
         {name: 'intervals', view: props.output.intervals, type: 'f32', access: 'read_write'},
@@ -43,6 +131,7 @@ export function createTrajectoryRestrictionNodes<Parameters>(
       ],
       declarations: `const OBSERVATION_COUNT = ${props.positions.length}u;
 const SLOT_COUNT = ${slots}u;
+${time.source}
 fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
 fn cross(first: vec2<f32>, second: vec2<f32>) -> f32 { return first.x * second.y - first.y * second.x; }
 fn position(row: u32) -> vec2<f32> { return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]); }
@@ -75,7 +164,7 @@ fn writeInterval(row: u32, slot: u32, firstTime: f32, duration: f32, first: vec2
   status[statusOffset + outputRow] |= select(1u, 2u, duration == 0.0 || lower == upper) | select(64u, 0u, includeStart) | select(128u, 0u, includeEnd);
 }`,
       body: `let start = min(offsets[offsetsOffset + index], OBSERVATION_COUNT); let end = min(offsets[offsetsOffset + index + 1u], OBSERVATION_COUNT);
-let minimumTime = parameters[parametersOffset]; let maximumTime = parameters[parametersOffset + 1u]; let maximumGap = parameters[parametersOffset + 6u];
+let minimumTime = parameters[parametersOffset]; let maximumTime = parameters[parametersOffset + 1u]; let maximumGap = ${getEffectiveMaximumGapWGSL('parameters[parametersOffset + 6u]')};
 var validParameters = finite(minimumTime) && finite(maximumTime) && minimumTime <= maximumTime && maximumGap > 0.0;
 for (var parameter = 2u; parameter < ${7 + vertexCount * 2}u; parameter++) { if (parameter != 6u) { validParameters = validParameters && finite(parameters[parametersOffset + parameter]); } }
 ${vertexCount ? '' : 'validParameters = validParameters && parameters[parametersOffset + 2u] <= parameters[parametersOffset + 4u] && parameters[parametersOffset + 3u] <= parameters[parametersOffset + 5u];'}
@@ -88,7 +177,7 @@ for (var row = start; row < end; row++) {
     for (var component = 0u; component < 4u; component++) { clipped[clippedOffset + 4u * outputRow + component] = missing; }
   }
   let next = min(row + 1u, end - 1u); let first = position(row); let second = position(next); let direction = second - first;
-  let firstTime = times[timesOffset + row]; let secondTime = times[timesOffset + next]; let duration = secondTime - firstTime;
+  let firstTime = rowTime(row); let secondTime = rowTime(next); let duration = rowElapsed(next, row);
   if (!validParameters || !finite(firstTime) || !finite(secondTime) || duration < 0.0 || !finite(first.x) || !finite(first.y) || !finite(second.x) || !finite(second.y) || (duration == 0.0 && any(direction != vec2<f32>(0.0)))) { status[statusOffset + row * SLOT_COUNT] = 4u; unknownCount++; continue; }
   if (secondTime < minimumTime || firstTime > maximumTime) { continue; }
   if (duration > maximumGap) {

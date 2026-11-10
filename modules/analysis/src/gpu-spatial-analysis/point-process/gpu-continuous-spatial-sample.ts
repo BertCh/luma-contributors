@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -14,11 +13,30 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  validateCapacity,
   validatePackedView,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateRequirement,
+  validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
+
+/** Most frame rows: each lattice candidate scans the frame serially inside one wave invocation. */
+const MAXIMUM_FRAME_ROW_COUNT = 4096;
+/** Most waves: each wave is one serial invocation and one status row. */
+const MAXIMUM_WAVE_COUNT = 4096;
+/** Most output slots per wave, bounding resident outputs of waves times capacity rows. */
+const MAXIMUM_WAVE_CAPACITY = 65536;
+/** Default and largest lattice candidates examined per wave, bounding the serial loop. */
+const DEFAULT_MAXIMUM_CANDIDATES = 65536;
+const MAXIMUM_CANDIDATE_COUNT = 1048576;
+/** Most fixed legacy sites: each candidate is tested against all of them. */
+const MAXIMUM_LEGACY_SITE_COUNT = 256;
 
 export type GPUContinuousSpatialFrame =
   | {
@@ -39,6 +57,8 @@ export type GPUContinuousSpatialFrame =
 
 export type GPUContinuousSpatialSampleProps = {
   id?: string;
+  /** Planar only; longitude-latitude is rejected. Default planar. */
+  spatialContext?: GPUSpatialContext;
   frame: GPUContinuousSpatialFrame;
   /** Positive spacing; Euclidean for area, arc length for line. Legacy exclusion uses the same metric. */
   spacing: number;
@@ -74,6 +94,8 @@ export type GPUContinuousSpatialSampleProps = {
  */
 export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   readonly samplingIntensity: number;
   readonly provenance: Readonly<{
     design: 'random-shift-lattice';
@@ -84,51 +106,75 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
     generator: 'Philox4x32-10';
   }>;
   constructor(readonly props: GPUContinuousSpatialSampleProps) {
-    this.id = props.id ?? 'continuous-spatial-sample';
+    const id = props.id ?? 'continuous-spatial-sample';
+    this.id = id;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const {frame} = props;
-    validatePackedView(frame.positions, ['float32x2'], this.id);
-    assert(
-      frame.positions.length >= (frame.type === 'area' ? 3 : 2) && frame.positions.length <= 4096
+    validatePackedView(frame.positions, ['float32x2'], id);
+    validateCapacity(
+      id,
+      'frame.positions rows',
+      frame.positions.length,
+      frame.type === 'area' ? 3 : 2,
+      MAXIMUM_FRAME_ROW_COUNT
     );
-    assert(frame.type !== 'area' || frame.positions.length % 3 === 0);
-    assert(
+    validateRequirement(
+      id,
+      frame.type !== 'area' || frame.positions.length % 3 === 0,
+      'area frame.positions must hold whole triangles (a multiple of 3 rows)'
+    );
+    validateRequirement(
+      id,
       Number.isFinite(Math.fround(props.spacing)) &&
         Math.fround(props.spacing) > 0 &&
         Number.isFinite(Math.fround(props.spacing ** 2)) &&
-        Math.fround(props.spacing ** 2) > 0
+        Math.fround(props.spacing ** 2) > 0,
+      'spacing must be positive with a positive finite float32 square'
     );
     const waves = props.waves ?? 1;
-    assert(Number.isInteger(waves) && waves >= 1 && waves <= 4096);
-    assert(Number.isInteger(props.capacity) && props.capacity >= 1 && props.capacity <= 65536);
-    assert(
-      Number.isInteger(props.maximumCandidates ?? 65536) &&
-        (props.maximumCandidates ?? 65536) >= 1 &&
-        (props.maximumCandidates ?? 65536) <= 1048576
+    validateCapacity(id, 'waves', waves, 1, MAXIMUM_WAVE_COUNT);
+    validateCapacity(id, 'capacity', props.capacity, 1, MAXIMUM_WAVE_CAPACITY);
+    validateCapacity(
+      id,
+      'maximumCandidates',
+      props.maximumCandidates ?? DEFAULT_MAXIMUM_CANDIDATES,
+      1,
+      MAXIMUM_CANDIDATE_COUNT
     );
-    assert(Number.isInteger(props.seed) && props.seed >= 0 && props.seed <= 0xffffffff);
-    assert(
-      Number.isInteger(props.replicate ?? 0) &&
-        (props.replicate ?? 0) >= 0 &&
-        (props.replicate ?? 0) <= 0xffffffff - waves + 1
-    );
+    validateCapacity(id, 'seed', props.seed, 0, 0xffffffff);
+    validateCapacity(id, 'replicate', props.replicate ?? 0, 0, 0xffffffff - waves + 1);
     if (frame.legacySites) {
-      validatePackedView(
-        frame.legacySites,
-        [frame.type === 'line' ? 'float32' : 'float32x2'],
-        this.id
+      validatePackedView(frame.legacySites, [frame.type === 'line' ? 'float32' : 'float32x2'], id);
+      validateCapacity(
+        id,
+        'frame.legacySites rows',
+        frame.legacySites.length,
+        0,
+        MAXIMUM_LEGACY_SITE_COUNT
       );
-      assert(frame.legacySites.length <= 256);
     }
     if (frame.type === 'area') {
-      assert(frame.bounds.every(value => Number.isFinite(Math.fround(value))));
-      assert(frame.bounds[2] > frame.bounds[0] && frame.bounds[3] > frame.bounds[1]);
+      validateRequirement(
+        id,
+        frame.bounds.every(value => Number.isFinite(Math.fround(value))),
+        'frame.bounds must be finite in float32'
+      );
+      validateRequirement(
+        id,
+        frame.bounds[2] > frame.bounds[0] && frame.bounds[3] > frame.bounds[1],
+        'frame.bounds must have a positive extent on both axes'
+      );
       const columns = Math.ceil((frame.bounds[2] - frame.bounds[0]) / props.spacing) + 1;
       const rows = Math.ceil((frame.bounds[3] - frame.bounds[1]) / props.spacing) + 1;
-      assert(Number.isSafeInteger(columns * rows) && columns * rows < 0xffffffff);
+      validateRequirement(
+        id,
+        Number.isSafeInteger(columns * rows) && columns * rows < 0xffffffff,
+        'frame.bounds divided by spacing must give fewer than 2^32 lattice cells'
+      );
     }
     if (props.parameters) {
-      validatePackedView(props.parameters, ['uint32'], this.id);
-      assert(props.parameters.length === 2);
+      validatePackedView(props.parameters, ['uint32'], id);
+      validateViewLength(id, 'parameters', props.parameters, 2);
     }
     for (const [view, format] of [
       [props.output.positions, 'float32x2'],
@@ -136,20 +182,26 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
       [props.output.provenance, 'uint32x4'],
       [props.output.status, 'uint32x4']
     ] as const)
-      validatePackedView(view, [format], this.id);
-    assert(
+      validatePackedView(view, [format], id);
+    validateRequirement(
+      id,
       props.output.positions.length === waves * props.capacity &&
         props.output.designWeights.length === waves * props.capacity &&
         props.output.provenance.length === waves * props.capacity &&
-        props.output.status.length === waves
+        props.output.status.length === waves,
+      'output views must hold waves times capacity rows (status: waves rows)'
     );
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+    validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
       frame.positions,
       frame.legacySites,
       props.parameters
     ]);
     // Output fields are independent records and may not overwrite one another.
-    assert(new Set(Object.values(props.output).map(view => view.buffer)).size === 4);
+    validateRequirement(
+      id,
+      new Set(Object.values(props.output).map(view => view.buffer)).size === 4,
+      'output views must use four distinct buffers'
+    );
     this.samplingIntensity = 1 / (frame.type === 'line' ? props.spacing : props.spacing ** 2);
     this.provenance = Object.freeze({
       design: 'random-shift-lattice',

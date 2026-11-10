@@ -16,7 +16,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_BITS_WGSL, GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
-import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
+import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,

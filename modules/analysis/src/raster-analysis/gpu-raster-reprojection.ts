@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -19,7 +18,10 @@ import {
   validateRasterGrid
 } from './raster-band-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
-import {captureGraphCommandNodes} from '../analysis-core/kernels/gpu-contributor-utils';
+import {
+  captureGraphCommandNodes,
+  validateRequirement
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
   requireRasterLength,
@@ -62,19 +64,27 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
       Object.values(props.output)
     );
     validateRasterGrid(this.id, props.sourceGrid);
-    requireRasterLength(props.output.values, count);
-    requireRasterLength(props.output.validity, count);
+    requireRasterLength(props.output.values, count, this.id, 'output.values');
+    requireRasterLength(props.output.validity, count, this.id, 'output.validity');
     const affine = props.sourceGrid.affine;
-    assert(affine[0] * affine[4] - affine[1] * affine[3] !== 0);
-    assert(
+    validateRequirement(
+      this.id,
+      affine[0] * affine[4] - affine[1] * affine[3] !== 0,
+      'sourceGrid.affine must be invertible (nonzero determinant)'
+    );
+    validateRequirement(
+      this.id,
       !props.inverseProjection ||
         (props.inverseProjection.inputFormat === 'float32x2' &&
-          props.inverseProjection.precision !== 'double-single')
+          props.inverseProjection.precision !== 'double-single'),
+      "inverseProjection must take 'float32x2' input and not use 'double-single' precision"
     );
     if (!props.inverseProjection) {
-      assert(
+      validateRequirement(
+        this.id,
         JSON.stringify(props.sourceGrid.coordinateReferenceSystem ?? null) ===
-          JSON.stringify(props.destinationGrid.coordinateReferenceSystem ?? null)
+          JSON.stringify(props.destinationGrid.coordinateReferenceSystem ?? null),
+        'sourceGrid and destinationGrid must share a coordinate reference system unless inverseProjection is given'
       );
     }
   }
@@ -85,7 +95,11 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     // Projection parameters belong to one graph; rebuilding requires a new contributor.
-    assert(!this.projection);
+    validateRequirement(
+      this.id,
+      !this.projection,
+      'getCommandNodes can run once; construct a new contributor for another graph'
+    );
     const {id, props} = this;
     const source = props.sourceGrid,
       destination = props.destinationGrid;

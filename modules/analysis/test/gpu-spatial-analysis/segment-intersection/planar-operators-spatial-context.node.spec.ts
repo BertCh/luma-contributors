@@ -50,14 +50,39 @@ const PLANAR_OPERATORS: Record<string, unknown> = {
   GPUVertexSnap
 };
 
+// GPULineMerge and GPURectangleClip also accept longitude-latitude contexts (linear edges).
+const LONGITUDE_LATITUDE_OPERATORS = new Set(['GPULineMerge', 'GPURectangleClip']);
+
 for (const [name, operator] of Object.entries(PLANAR_OPERATORS)) {
-  it(`${name} rejects longitude-latitude spatial contexts and accepts planar ones`, () => {
+  const acceptsLongitudeLatitude = LONGITUDE_LATITUDE_OPERATORS.has(name);
+  it(`${name} ${acceptsLongitudeLatitude ? 'accepts planar and longitude-latitude' : 'rejects longitude-latitude'} spatial contexts${name === 'GPURectangleClip' ? ' and rejects the great-circle edge model' : ''}`, () => {
     const Operator = operator as PlanarConstructor;
     for (const metric of ['none', 'great-circle'] as const) {
+      const create = () =>
+        new Operator({spatialContext: {coordinateSpace: 'longitude-latitude', metric}} as never);
+      if (acceptsLongitudeLatitude) {
+        try {
+          expect(create().spatialContext).toBeTruthy();
+        } catch (error) {
+          expect(String((error as Error).message)).not.toMatch(/does not support|spatial context/);
+        }
+      } else {
+        expect(create).toThrow(
+          /does not support longitude-latitude coordinates; project positions/
+        );
+      }
+    }
+    if (name === 'GPURectangleClip') {
       expect(
         () =>
-          new Operator({spatialContext: {coordinateSpace: 'longitude-latitude', metric}} as never)
-      ).toThrow(/does not support longitude-latitude coordinates; project positions/);
+          new Operator({
+            spatialContext: {
+              coordinateSpace: 'longitude-latitude',
+              metric: 'great-circle',
+              edgeModel: 'great-circle'
+            }
+          } as never)
+      ).toThrow(/edge/);
     }
     // The planar context passes the context check; other property validation may still throw.
     for (const spatialContext of [undefined, GPU_PLANAR_SPATIAL_CONTEXT]) {

@@ -1,12 +1,31 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-export {GPUS2CellHierarchy} from './gpu-s2-cell-hierarchy';
+export {
+  GPUS2CellHierarchy,
+  GPU_S2_CELL_HIERARCHY_STATUS_VALID,
+  GPU_S2_CELL_HIERARCHY_STATUS_INVALID,
+  GPU_S2_CELL_HIERARCHY_STATUS_UNAVAILABLE_LEVEL
+} from './gpu-s2-cell-hierarchy';
 export type {GPUS2CellHierarchyProps} from './gpu-s2-cell-hierarchy';
-export {GPUS2CellMeasures} from './gpu-s2-cell-measures';
+export {
+  GPUS2CellMeasures,
+  GPU_S2_CELL_MEASURES_STATUS_VALID,
+  GPU_S2_CELL_MEASURES_STATUS_INVALID
+} from './gpu-s2-cell-measures';
 export type {GPUS2CellMeasuresProps} from './gpu-s2-cell-measures';
-export {GPUS2CapCovering} from './gpu-s2-cap-covering';
-export type {GPUS2CapCoveringProps} from './gpu-s2-cap-covering';
+export {
+  GPUS2CapCovering,
+  GPU_S2_CAP_COVERING_MAXIMUM_UNIFORM_LEVEL,
+  GPU_S2_CAP_COVERING_MAXIMUM_REFINED_LEVEL,
+  GPU_S2_CAP_COVERING_MINIMUM_TOLERANCE,
+  GPU_S2_CAP_COVERING_MAXIMUM_TOLERANCE,
+  GPU_S2_CAP_COVERING_STATUS_COMPLETE,
+  GPU_S2_CAP_COVERING_STATUS_INVALID,
+  GPU_S2_CAP_COVERING_STATUS_CAPACITY,
+  GPU_S2_CAP_COVERING_STATUS_FRONTIER
+} from './gpu-s2-cap-covering';
+export type {GPUS2CapCoveringProps, GPUS2CapCoveringRefinement} from './gpu-s2-cap-covering';
 
 export {
   GPUCellTopology,
@@ -35,5 +54,17 @@ export type {GPUCellGridPathOutput, GPUCellGridPathProps} from './gpu-cell-grid-
 
 export {GPUH3CellIdentities} from './gpu-h3-cell-identities';
 export type {GPUH3CellIdentitiesProps} from './gpu-h3-cell-identities';
-export {GPUS2PolygonCovering} from './gpu-s2-polygon-covering';
-export type {GPUS2PolygonCoveringProps} from './gpu-s2-polygon-covering';
+export {
+  GPUS2PolygonCovering,
+  GPU_S2_POLYGON_COVERING_MAXIMUM_LEVEL,
+  GPU_S2_POLYGON_COVERING_MINIMUM_VISITED_CELLS,
+  GPU_S2_POLYGON_COVERING_MAXIMUM_VISITED_CELLS,
+  GPU_S2_POLYGON_COVERING_DEFAULT_VISITED_CELLS,
+  GPU_S2_POLYGON_COVERING_STATUS_INVALID,
+  GPU_S2_POLYGON_COVERING_STATUS_CAPACITY,
+  GPU_S2_POLYGON_COVERING_STATUS_BUDGET
+} from './gpu-s2-polygon-covering';
+export type {
+  GPUS2PolygonCoveringProps,
+  GPUS2PolygonCoveringRefinement
+} from './gpu-s2-polygon-covering';

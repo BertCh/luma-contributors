@@ -36,6 +36,15 @@ export type GPUTrackQualityRecipeProps = {
   trajectory: Omit<GPUTrajectoryMetricsProps, 'id' | 'output'>;
   /** Two live rows: maximum speed and maximum time gap, in trajectory units. */
   thresholds: GraphDataView<'float32'>;
+  /**
+   * How `excessiveSpeed` (bit 4) is decided. `'step'` (default, the documented contract) tests the
+   * step ending at each row, so the valid fix after an outlier is flagged too and the first row is
+   * never tested. `'point-centred'` flags a fix only when the speed test fails on both of its
+   * adjacent steps; a track-end fix has one step, and is flagged when that step fails unless its
+   * inner neighbour's outgoing step also fails (the neighbour is then the outlier). Two adjacent
+   * steps that displace two consecutive fixes together are not caught by a single pass.
+   */
+  speedOutlierMode?: 'step' | 'point-centred';
   /** Reference-route comparison preserves raw observations; densification is explicitly selectable. */
   similarity?: Omit<GPUTrackSimilarityProps, 'id' | 'linesA' | 'spatialContext' | 'output'>;
   mapMatching?: Omit<
@@ -43,6 +52,14 @@ export type GPUTrackQualityRecipeProps = {
     'id' | 'positions' | 'trackOffsets' | 'spatialContext' | 'output'
   >;
 };
+/** Speed test of the step ending at `row` (a non-first row of its track). */
+const POINT_CENTRED_STEP_WGSL = /* wgsl */ `
+fn isExcessiveStep(row: u32) -> bool {
+  let elapsed = timeDifferenceRows(row, row - 1u);
+  let speed = speeds[speedsOffset + row];
+  return isFiniteValue(elapsed) && elapsed > 0.0 && (!isFiniteValue(speed) || speed > thresholds[thresholdsOffset]);
+}`;
+
 /** Raw quality flags, optional route distances and optional map-matching completeness. */
 export function addTrackQualityRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -62,6 +79,7 @@ export function addTrackQualityRecipe<Parameters>(
     maximumSpeeds: getOrCreateView(graph, `${id}-maximum-speeds`, 'float32', trackCount)
   };
   builder.add(new GPUTrajectoryMetrics({...trajectory, id: `${id}-metrics`, output: metrics}));
+  const isPointCentred = props.speedOutlierMode === 'point-centred';
   const flags = getOrCreateView(graph, `${id}-flags`, 'uint32', count);
   const flaggedCounts = getOrCreateView(graph, `${id}-flagged-counts`, 'uint32', trackCount);
   graph.add(
@@ -78,8 +96,9 @@ export function addTrackQualityRecipe<Parameters>(
     createWGSLKernelNode(graph, {
       id: `${id}-quality`,
       operation: id,
+      ...(isPointCentred ? {variant: 'point-centred'} : {}),
       invocationCount: trackCount,
-      declarations: `${IS_FINITE_VALUE_WGSL}\n${getTrajectoryTimeSource(timeMode)}`,
+      declarations: `${IS_FINITE_VALUE_WGSL}\n${getTrajectoryTimeSource(timeMode)}${isPointCentred ? `\n${POINT_CENTRED_STEP_WGSL}` : ''}`,
       bindings: [
         {name: 'positions', view: trajectory.positions, type: 'f32', access: 'read'},
         {name: 'offsets', view: trajectory.trackOffsets, type: 'u32', access: 'read'},
@@ -98,8 +117,23 @@ for (var row = begin; row < end; row++) {
     let elapsed = timeDifferenceRows(row, row - 1u);
     if (!isFiniteValue(elapsed) || elapsed <= 0.0) { state |= 2u; }
     if (elapsed > thresholds[thresholdsOffset + 1u]) { state |= 8u; }
-    let speed = speeds[speedsOffset + row];
-    if (isFiniteValue(elapsed) && elapsed > 0.0 && (!isFiniteValue(speed) || speed > thresholds[thresholdsOffset])) { state |= 4u; }
+    ${
+      isPointCentred
+        ? ''
+        : `let speed = speeds[speedsOffset + row];
+    if (isFiniteValue(elapsed) && elapsed > 0.0 && (!isFiniteValue(speed) || speed > thresholds[thresholdsOffset])) { state |= 4u; }`
+    }
+  }
+  ${
+    isPointCentred
+      ? `let hasIncoming = row > begin; let hasOutgoing = row + 1u < end;
+  let incoming = hasIncoming && isExcessiveStep(row); let outgoing = hasOutgoing && isExcessiveStep(row + 1u);
+  var isOutlier = false;
+  if (hasIncoming && hasOutgoing) { isOutlier = incoming && outgoing; }
+  else if (hasOutgoing) { isOutlier = outgoing && !(row + 2u < end && isExcessiveStep(row + 2u)); }
+  else if (hasIncoming) { isOutlier = incoming && !(row >= begin + 2u && isExcessiveStep(row - 1u)); }
+  if (isOutlier) { state |= 4u; }`
+      : ''
   }
   flags[flagsOffset + row] = state;
 }`

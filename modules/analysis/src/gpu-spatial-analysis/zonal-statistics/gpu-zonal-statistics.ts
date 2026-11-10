@@ -15,10 +15,8 @@ import {
   createFillNode,
   createTransientUint32Rows
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import type {
-  GPUFloat32Positions,
-  GPUUint32Rows
-} from '../../analysis-core/kernels/gpu-contributor-types';
+import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
+import type {GPUUint32Rows} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,

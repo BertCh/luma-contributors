@@ -7,10 +7,7 @@ import {
   getGPUPermutationParameterValues,
   GPU_PERMUTATION_PARAMETER_LENGTH
 } from '../../../src/gpu-spatial-analysis/permutation-inference/index';
-import {
-  getPhilox4x32,
-  PhiloxStream
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {getPhilox4x32, PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 
 const hex = (words: number[]) => words.map(word => word.toString(16).padStart(8, '0')).join(' ');
 

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -10,6 +9,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {rasterBinding, validateRasterGraph, validateRasterViews} from './raster-kernel-utils';
 import {GPURasterRegionGraph, type GPURasterRegionGraphProps} from './gpu-raster-region-graph';
 
@@ -43,32 +43,44 @@ export function addRasterRegionGraphTiles<Parameters>(
   for (let index = 0; index < props.tiles.length; index++) {
     const tile = props.tiles[index];
     const [column, row] = tile.origin;
-    assert(Number.isInteger(column) && Number.isInteger(row) && column >= 0 && row >= 0);
-    assert(
+    validateRequirement(
+      id,
+      Number.isInteger(column) && Number.isInteger(row) && column >= 0 && row >= 0,
+      `tiles[${index}].origin must be nonnegative integers`
+    );
+    validateRequirement(
+      id,
       Number.isInteger(tile.grid.width) &&
         Number.isInteger(tile.grid.height) &&
         tile.grid.width > 0 &&
-        tile.grid.height > 0
+        tile.grid.height > 0,
+      `tiles[${index}].grid width and height must be positive integers`
     );
-    assert(
-      column + tile.grid.width <= props.grid.width && row + tile.grid.height <= props.grid.height
+    validateRequirement(
+      id,
+      column + tile.grid.width <= props.grid.width && row + tile.grid.height <= props.grid.height,
+      `tiles[${index}] must lie inside grid`
     );
-    assert(
+    validateRequirement(
+      id,
       tile.labels.length === tile.grid.width * tile.grid.height &&
-        tile.values.length === tile.labels.length
+        tile.values.length === tile.labels.length,
+      `tiles[${index}] labels and values must hold exactly grid.width times grid.height entries`
     );
     for (const previous of props.tiles.slice(0, index)) {
-      assert(
+      validateRequirement(
+        id,
         column >= previous.origin[0] + previous.grid.width ||
           previous.origin[0] >= column + tile.grid.width ||
           row >= previous.origin[1] + previous.grid.height ||
-          previous.origin[1] >= row + tile.grid.height
+          previous.origin[1] >= row + tile.grid.height,
+        `tiles[${index}] must not overlap an earlier tile`
       );
     }
     area += tile.grid.width * tile.grid.height;
   }
   // Inside, nonoverlapping rectangles with equal total area form a complete core partition.
-  assert(area === count);
+  validateRequirement(id, area === count, 'tiles must cover grid completely');
   const labels = createTransientView(graph, `${id}-labels`, 'uint32', count);
   const values = createTransientView(graph, `${id}-values`, 'float32', count);
   for (const [index, tile] of props.tiles.entries()) {

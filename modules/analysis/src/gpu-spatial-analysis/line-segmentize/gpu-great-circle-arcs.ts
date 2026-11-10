@@ -23,6 +23,7 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
+  createApproximationClearNode,
   createArcCountNode,
   createArcEmitNode,
   createIdentitySourceLineIndicesNode,
@@ -74,7 +75,12 @@ export type GPUGreatCircleArcsProps = {
    * written with `getGPUGreatCircleArcsParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
-  /** Arc lines, one output line per pair (`lineOffsets` has `pairCount + 1` rows). */
+  /**
+   * Arc lines, one output line per pair (`lineOffsets` has `pairCount + 1` rows).
+   * `output.status.count` counts output vertices. The optional `output.status.approximation`
+   * receives `1` when a pair needed more than `maximumSegmentCount` segments to respect the
+   * maximum length; otherwise `0`.
+   */
   output: GPULineGeometryOutput;
 };
 
@@ -142,7 +148,7 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
         `${id} parameters must hold ${GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} float32 values`
       );
     }
-    validateLineGeometryOutput(id, props.output, pairCount);
+    validateLineGeometryOutput(id, props.output, pairCount, true);
     validateGraphOutputsDisjointFromInputs(id, getLineGeometryOutputViews(props.output), [
       props.sources,
       props.targets,
@@ -166,6 +172,15 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', pairCount);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', pairCount);
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...(output.status.approximation
+        ? [
+            createApproximationClearNode<Parameters>(graph, {
+              id: `${id}-clear-approximation`,
+              operation: OPERATION,
+              approximation: output.status.approximation
+            })
+          ]
+        : []),
       createArcCountNode<Parameters>(graph, {
         id: `${id}-count`,
         operation: OPERATION,
@@ -174,6 +189,7 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
         parameters: props.parameters,
         radius,
         maximumSegmentCount: this.maximumSegmentCount,
+        approximation: output.status.approximation,
         counts
       }),
       ...new GPUScan({

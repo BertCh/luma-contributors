@@ -59,6 +59,28 @@ const PARTIAL_STRIDE = 3;
 /** Largest block count of the observed-moment pass, which has no per-permutation parallelism. */
 const MAXIMUM_PAIR_STAT_BLOCKS = 4096;
 
+/**
+ * The pointpats `mantel` transform `(x + constant) ** power` applied to every pair distance or
+ * absolute time difference before correlating. `scon`/`spow` (distance) and `tcon`/`tpow` (time)
+ * of pointpats 2.6.0 map to `constant`/`power`. `x + constant` must stay positive when `power` is
+ * not a non-negative integer (as in pointpats, the result is otherwise not finite).
+ */
+export type GPUMantelTransform = {
+  /** Constant added to the value, finite. */
+  constant: number;
+  /** Power the shifted value is raised to, finite. */
+  power: number;
+};
+
+/**
+ * The defaults of pointpats `mantel` (`scon = tcon = 1`, `spow = tpow = -1`): the reciprocal
+ * `1 / (x + 1)`. Pass it as both `distanceTransform` and `timeTransform` to reproduce pointpats.
+ */
+export const GPU_MANTEL_POINTPATS_TRANSFORM: Readonly<GPUMantelTransform> = {
+  constant: 1,
+  power: -1
+};
+
 /** Caller-owned outputs of {@link GPUMantelTest}. */
 export type GPUMantelTestOutput = {
   /**
@@ -121,9 +143,31 @@ export type GPUMantelTestProps = {
    * receives `L`.
    */
   stopAfterExceedances?: number;
+  /**
+   * Compile-time transform of the pair distances before correlating, `(distance + constant) **
+   * power` like pointpats `scon` and `spow`. Omitted (the default) correlates the raw distances.
+   */
+  distanceTransform?: GPUMantelTransform;
+  /**
+   * Compile-time transform of the absolute time differences before correlating,
+   * `(|t_i - t_j| + constant) ** power` like pointpats `tcon` and `tpow`. Omitted (the default)
+   * correlates the raw differences.
+   */
+  timeTransform?: GPUMantelTransform;
   /** Caller-owned outputs. */
   output: GPUMantelTestOutput;
 };
+
+/** WGSL `fn name(value: f32) -> f32` applying a {@link GPUMantelTransform} (identity when omitted). */
+function getTransformWGSL(name: string, transform: GPUMantelTransform | undefined): string {
+  if (!transform) {
+    return `fn ${name}(value: f32) -> f32 { return value; }`;
+  }
+  // toPrecision always yields a WGSL float literal (a decimal point or an exponent).
+  const constant = `(${transform.constant.toPrecision(9)})`;
+  const power = `(${transform.power.toPrecision(9)})`;
+  return `fn ${name}(value: f32) -> f32 { return pow(value + ${constant}, ${power}); }`;
+}
 
 /**
  * Mantel test of space-time interaction (pointpats `Mantel`): the Pearson correlation `r` between
@@ -139,9 +183,11 @@ export type GPUMantelTestProps = {
  * matrices when a band is used: the statistic is the correlation over the listed pairs only (pairs
  * farther apart than the band are truncated away, so `r` is a distance-band Mantel statistic and
  * differs from the full Mantel `r`; report the band with the result), and a full-matrix Mantel test
- * needs a list of every pair (O(n^2) slots). Spatial and time
- * transformations (log, reciprocal) are not applied: transform `distances` and `times` first if
- * wanted, since `|t_i - t_j|` is taken on the supplied times.
+ * needs a list of every pair (O(n^2) slots). By default the raw distances and time differences are
+ * correlated (the scikit-bio `mantel` definition). pointpats `mantel` instead correlates
+ * `(x + constant) ** power` of both, with the defaults `1` and `-1` (reciprocals): pass
+ * `distanceTransform` and `timeTransform` (for example `GPU_MANTEL_POINTPATS_TRANSFORM`) to match
+ * it. The time transform applies to `|t_i - t_j|`, which cannot be done by transforming `times`.
  *
  * Numerics: partial sums per (permutation, row block) are f32, centred on the observed mean
  * spatial distance and time difference (computed first in fixed order) to avoid cancellation, and
@@ -279,7 +325,9 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
       ? [{name: 'state', view: state, type: 'u32' as const, access: 'read' as const}]
       : [];
     const batchDeclarations = stopping ? `\nconst BATCH_SIZE: u32 = ${batchSize}u;` : '';
-    const common = getSpaceTimeCommonWGSL(rows, maximumPermutations, blocks, rowsPerBlock);
+    const common = `${getSpaceTimeCommonWGSL(rows, maximumPermutations, blocks, rowsPerBlock)}
+${getTransformWGSL('transformDistance', props.distanceTransform)}
+${getTransformWGSL('transformTime', props.timeTransform)}`;
     // pair-stats is one pass over the pairs with no permutation axis, so it takes more blocks
     // than the (permutation, block) kernels to fill the device.
     const pairStatBlocks = Math.min(MAXIMUM_PAIR_STAT_BLOCKS, rows);
@@ -355,8 +403,8 @@ const MOMENTS_BASE: u32 = partialsOffset + ${tableSlots * blocks * PARTIAL_STRID
       for (var entry = offsets[offsetsOffset + row]; entry < offsets[offsetsOffset + row + 1u]; entry++) {
         let other = neighbors[neighborsOffset + entry];
         if (pairMask[pairMaskOffset + entry] != 0u) {
-          let x = distances[distancesOffset + entry] - shiftDistance;
-          let y = abs(time - times[timesOffset + getPermutedRow(other, slot)]) - shiftTime;
+          let x = transformDistance(distances[distancesOffset + entry]) - shiftDistance;
+          let y = transformTime(abs(time - times[timesOffset + getPermutedRow(other, slot)])) - shiftTime;
           if (slot == 0u) {
             sumX += x;
             sumXX += x * x;
@@ -472,7 +520,9 @@ const MOMENTS_BASE: u32 = partialsOffset + ${tableSlots * blocks * PARTIAL_STRID
         ],
         invocationCount: pairStatBlocks,
         declarations: `const ROWS: u32 = ${rows}u;
-const PAIR_STAT_BLOCKS: u32 = ${pairStatBlocks}u;`,
+const PAIR_STAT_BLOCKS: u32 = ${pairStatBlocks}u;
+${getTransformWGSL('transformDistance', props.distanceTransform)}
+${getTransformWGSL('transformTime', props.timeTransform)}`,
         // Rows interleave across blocks, so neighboring invocations read neighboring CSR rows.
         body: `var count = 0u;
   var sumDistance = 0.0;
@@ -482,8 +532,8 @@ const PAIR_STAT_BLOCKS: u32 = ${pairStatBlocks}u;`,
       let other = neighbors[neighborsOffset + entry];
       if (pairMask[pairMaskOffset + entry] != 0u) {
         count++;
-        sumDistance += distances[distancesOffset + entry];
-        sumTime += abs(times[timesOffset + row] - times[timesOffset + other]);
+        sumDistance += transformDistance(distances[distancesOffset + entry]);
+        sumTime += transformTime(abs(times[timesOffset + row] - times[timesOffset + other]));
       }
     }
   }

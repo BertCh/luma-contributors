@@ -2,29 +2,53 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGraphOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
-import {assert} from '@luma.gl/core';
+import {
+  getGraphOutputViews,
+  validateCapacity,
+  validateCommandNodeBudget
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
+  GPUCompaction,
+  GPUReduction,
+  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateRasterGridAxisAligned} from '../../raster-analysis/raster-band-utils';
 import {getTerrainFlowTracingWGSL} from './terrain-flow-tracing';
 import {
+  createRasterJacobiLoopNodes,
+  getRasterJacobiLoopNodeCount,
   requireRasterLength,
   validateRasterExpansionGraph,
   validateRasterExpansionViews
 } from '../../raster-analysis/raster-expansion-utils';
+import {
+  getTerrainGroundMeasureWGSL,
+  getTerrainJumpRoundCount
+} from '../terrain-processing/terrain-processing-utils';
 
 export type GPUTerrainStreamNetworkProps = {
   id?: string;
   grid: GPURasterMetadata;
   flowDirections: GraphDataView<'uint32'>;
   streams: GraphDataView<'uint32'>;
+  /** Ground model for `output.lengths`. Default `'uniform'` (affine units). `'web-mercator'` and `'geographic'` need an axis-aligned grid. Compile-time. */
+  cellSizeMode?: GPURasterCellSizeMode;
+  /**
+   * Bounds each stream path, counted in cells. Default cell count; longer paths and cycles are
+   * unresolved. Compile-time: the pointer-jumping round count is
+   * `ceil(log2(min(maximumSteps, cell count)))`.
+   */
   maximumSteps?: number;
   output: {
     /** Compact reach endpoints; IDs retain original raster cell identity. */
@@ -32,7 +56,9 @@ export type GPUTerrainStreamNetworkProps = {
     targetCells: GraphDataView<'uint32'>;
     /** Reach polyline offsets, capacity sourceCells.length + 1. */
     vertexOffsets: GraphDataView<'uint32'>;
+    /** Cell centers in the grid's world coordinates (the affine's own units). */
     positions: GraphDataView<'float32x2'>;
+    /** Reach lengths in affine units by default (geographic degrees are not ground meters), or ground meters under `cellSizeMode`. */
     lengths: GraphDataView<'float32'>;
     reachCount: GraphDataView<'uint32'>;
     vertexCount: GraphDataView<'uint32'>;
@@ -46,11 +72,19 @@ export type GPUTerrainStreamNetworkProps = {
  * Extracts compact directed reaches between headwaters, confluences and terminals. Each reach
  * retains all cell centers as its polyline; junctions occur in each incident reach. A stream path
  * ends when it leaves the supplied mask. Cycles and unresolved directions never produce reaches.
- * Lengths use the planar affine units. One complete D8 grid is required.
+ * Lengths use the affine units, or ground meters under `cellSizeMode`. One complete D8 grid is
+ * required.
+ *
+ * Reach ends and path completeness are found by pointer jumping (`ceil(log2(path bound))` gated
+ * rounds), and reaches are compacted with `GPUCompaction` and `GPUScan`. When the outputs are too
+ * small the reaches that fit in order are kept (a prefix) and `status.overflow` is set; the old
+ * serial compaction could also keep a later short reach after a skipped long one.
  */
 export class GPUTerrainStreamNetwork implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUTerrainStreamNetworkProps;
+  /** Number of command nodes `getCommandNodes` returns; bounded by the command node budget. */
+  readonly estimatedCommandNodeCount: number;
   constructor(props: GPUTerrainStreamNetworkProps) {
     this.id = props.id ?? 'terrain-stream-network';
     this.props = props;
@@ -72,7 +106,17 @@ export class GPUTerrainStreamNetwork implements GPUCommandNodeProducer {
       props.output.unresolvedCount
     ])
       requireRasterLength(view, 1);
-    assert(Number.isInteger(props.maximumSteps ?? count) && (props.maximumSteps ?? count) > 0);
+    validateRasterCellSizeMode(this.id, props.cellSizeMode);
+    validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
+    validateCapacity(this.id, 'maximumSteps', props.maximumSteps ?? count);
+    // Seed, flag, gather, publish and geometry nodes, the compaction and scan nodes (at most 12), two
+    // reductions' nodes (at most 8) and the gated pointer-jumping loop. The sum is an upper bound.
+    this.estimatedCommandNodeCount =
+      40 +
+      getRasterJacobiLoopNodeCount(
+        getTerrainJumpRoundCount(Math.min(props.maximumSteps ?? count, count))
+      );
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -85,7 +129,23 @@ export class GPUTerrainStreamNetwork implements GPUCommandNodeProducer {
       props.streams,
       ...getGraphOutputViews(output)
     ]);
-    const metadata = createTransientView(graph, `${id}-metadata`, 'uint32x4', count);
+    const operation = 'GPUTerrainStreamNetwork';
+    const maximumSteps = props.maximumSteps ?? count;
+    const rounds = getTerrainJumpRoundCount(Math.min(maximumSteps, count));
+    // Per cell: next stream cell on the path (NO_CELL when done), cells on the path so far, path
+    // outcome (0 open, 1 leaves the mask, 2 unresolved), next cell inside the reach and its hops.
+    const states = [0, 1].map(side =>
+      createTransientView(graph, `${id}-state-${side}`, 'uint32', count * 5)
+    );
+    const converged = createTransientView(graph, `${id}-converged`, 'uint32', 1);
+    const vertexCounts = createTransientView(graph, `${id}-vertex-counts`, 'uint32', count);
+    const unresolvedFlags = createTransientView(graph, `${id}-unresolved-flags`, 'uint32', count);
+    const reachFlags = createTransientView(graph, `${id}-reach-flags`, 'uint32', count);
+    const cellIds = createTransientView(graph, `${id}-cell-ids`, 'uint32', count);
+    const compactCells = createTransientView(graph, `${id}-compact-cells`, 'uint32', count);
+    const reachTotal = createTransientView(graph, `${id}-reach-total`, 'uint32', 1);
+    const rowVertices = createTransientView(graph, `${id}-row-vertices`, 'uint32', count);
+    const rowEnds = createTransientView(graph, `${id}-row-ends`, 'uint32', count);
     const declarations = `${getTerrainFlowTracingWGSL(grid.width, grid.height)}
 fn isStream(cell:u32)->bool {return streams[streamsOffset+cell]!=0u;}
 fn incomingCount(cell:u32)->u32 {
@@ -97,68 +157,182 @@ fn incomingCount(cell:u32)->u32 {
  if(isStream(other)&&getFlowReceiver(other,directions[directionsOffset+other])==cell){incoming++;}
  }}return incoming;
 }`;
+    const streamBindings = [
+      {
+        name: 'directions',
+        view: props.flowDirections,
+        type: 'u32' as const,
+        access: 'read' as const
+      },
+      {name: 'streams', view: props.streams, type: 'u32' as const, access: 'read' as const}
+    ];
     return [
       createWGSLKernelNode(graph, {
-        id: `${id}-trace`,
-        operation: 'GPUTerrainStreamNetwork',
+        id: `${id}-seed`,
+        operation,
         invocationCount: count,
         bindings: [
-          {name: 'directions', view: props.flowDirections, type: 'u32', access: 'read'},
-          {name: 'streams', view: props.streams, type: 'u32', access: 'read'},
-          {name: 'metadata', view: metadata, type: 'u32', access: 'read_write'}
+          ...streamBindings,
+          {name: 'state', view: states[0], type: 'u32', access: 'read_write'}
         ],
         declarations,
-        body: `var vertices=0u;var targetCell=index;var unresolved=0u;
-if(isStream(index)) {
- var current=index; var complete=false;
- for(var step=0u;step<${props.maximumSteps ?? count}u;step++){
-  let code=directions[directionsOffset+current];
-  if(streams[streamsOffset+current]==NO_CELL||streams[streamsOffset+current]==UNRESOLVED_DIRECTION){break;}
-  let receiver=getFlowReceiver(current,code);
-  if(code!=0u&&receiver==NO_CELL){break;}
-  if(receiver==NO_CELL||!isStream(receiver)){complete=true;break;}
-  current=receiver;
- }
+        body: `var nextCell=NO_CELL;var steps=1u;var outcome=0u;var reachNext=NO_CELL;var reachHops=0u;
+if(isStream(index)){
+ let stream=streams[streamsOffset+index];
+ let code=directions[directionsOffset+index];
+ let receiver=getFlowReceiver(index,code);
+ let leaves=receiver==NO_CELL||!isStream(receiver);
+ if(stream==NO_CELL||stream==UNRESOLVED_DIRECTION||(code!=0u&&receiver==NO_CELL)){outcome=2u;}
+ else if(leaves){outcome=1u;}
+ else{nextCell=receiver;}
+ // The reach continues through the receiver only while it is a stream cell with exactly one donor.
+ if(!leaves){reachHops=1u;if(incomingCount(receiver)==1u){reachNext=receiver;}}
+}
+let offset=stateOffset+index*5u;
+state[offset]=nextCell;state[offset+1u]=steps;state[offset+2u]=outcome;state[offset+3u]=reachNext;state[offset+4u]=reachHops;`
+      }),
+      ...createRasterJacobiLoopNodes(graph, {
+        id: `${id}-jump`,
+        operation,
+        invocationCount: count,
+        roundCount: rounds,
+        status: {converged},
+        createRound: (
+          {nodeId, iteration, slotBinding, markChangedWGSL, condition, extraResources},
+          status
+        ) =>
+          createWGSLKernelNode(graph, {
+            id: nodeId,
+            operation,
+            variant: 'jump',
+            invocationCount: count,
+            bindings: [
+              {name: 'previous', view: states[iteration % 2], type: 'u32', access: 'read'},
+              {name: 'next', view: states[(iteration + 1) % 2], type: 'u32', access: 'read_write'},
+              {name: 'status', view: status, type: 'atomic<u32>', access: 'read_write'},
+              slotBinding
+            ],
+            declarations: 'const NO_CELL: u32 = 0xffffffffu;',
+            condition,
+            extraResources,
+            body: `let offset=previousOffset+index*5u;let destination=nextOffset+index*5u;
+for(var component=0u;component<5u;component++){next[destination+component]=previous[offset+component];}
+let pathNext=previous[offset];
+if(pathNext!=NO_CELL){
+ let ancestor=previousOffset+pathNext*5u;
+ next[destination]=previous[ancestor];
+ next[destination+1u]=min(${count + 1}u,previous[offset+1u]+previous[ancestor+1u]);
+ next[destination+2u]=previous[ancestor+2u];
+ ${markChangedWGSL}
+}
+let reachNext=previous[offset+3u];
+if(reachNext!=NO_CELL){
+ let ancestor=previousOffset+reachNext*5u;
+ next[destination+3u]=previous[ancestor+3u];
+ next[destination+4u]=min(${count + 1}u,previous[offset+4u]+previous[ancestor+4u]);
+ ${markChangedWGSL}
+}`
+          })
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-reaches`,
+        operation,
+        invocationCount: count,
+        bindings: [
+          ...streamBindings,
+          {name: 'state', view: states[rounds % 2], type: 'u32', access: 'read'},
+          {name: 'vertexCounts', view: vertexCounts, type: 'u32', access: 'read_write'},
+          {name: 'unresolvedFlags', view: unresolvedFlags, type: 'u32', access: 'read_write'},
+          {name: 'reachFlags', view: reachFlags, type: 'u32', access: 'read_write'},
+          {name: 'cellIds', view: cellIds, type: 'u32', access: 'read_write'}
+        ],
+        declarations,
+        body: `var vertices=0u;var unresolved=0u;
+if(isStream(index)){
+ let offset=stateOffset+index*5u;
+ let complete=state[offset]==NO_CELL&&state[offset+2u]==1u&&state[offset+1u]<=${maximumSteps}u;
  unresolved=u32(!complete);
  if(complete&&incomingCount(index)!=1u){
-  current=index; vertices=1u;
-  for(var step=0u;step<${props.maximumSteps ?? count}u;step++){
-   let receiver=getFlowReceiver(current,directions[directionsOffset+current]);
-   if(receiver==NO_CELL||!isStream(receiver)){break;}
-   current=receiver;vertices++;
-   if(incomingCount(current)!=1u){break;}
-  }
-  targetCell=current;
+  vertices=1u+state[offset+4u];
   if(vertices<2u){vertices=0u;}
  }
 }
-metadata[metadataOffset+index*4u]=vertices;metadata[metadataOffset+index*4u+1u]=targetCell;metadata[metadataOffset+index*4u+2u]=unresolved;metadata[metadataOffset+index*4u+3u]=0u;`
+vertexCounts[vertexCountsOffset+index]=vertices;unresolvedFlags[unresolvedFlagsOffset+index]=unresolved;
+reachFlags[reachFlagsOffset+index]=u32(vertices>0u);cellIds[cellIdsOffset+index]=index;`
       }),
+      ...new GPUReduction({
+        id: `${id}-unresolved-sum`,
+        input: unresolvedFlags,
+        output: output.unresolvedCount,
+        operation: 'sum'
+      }).getCommandNodes(graph),
+      ...new GPUCompaction({
+        id: `${id}-compaction`,
+        input: cellIds,
+        flags: reachFlags,
+        output: compactCells,
+        count: reachTotal
+      }).getCommandNodes(graph),
       createWGSLKernelNode(graph, {
-        id: `${id}-compact`,
-        operation: 'GPUTerrainStreamNetwork',
+        id: `${id}-gather`,
+        operation,
+        invocationCount: count,
+        bindings: [
+          {name: 'compactCells', view: compactCells, type: 'u32', access: 'read'},
+          {name: 'reachTotal', view: reachTotal, type: 'u32', access: 'read'},
+          {name: 'vertexCounts', view: vertexCounts, type: 'u32', access: 'read'},
+          {name: 'rowVertices', view: rowVertices, type: 'u32', access: 'read_write'}
+        ],
+        body: `rowVertices[rowVerticesOffset+index]=select(0u,vertexCounts[vertexCountsOffset+compactCells[compactCellsOffset+index]],index<reachTotal[reachTotalOffset]);`
+      }),
+      ...new GPUScan({
+        id: `${id}-vertex-scan`,
+        input: rowVertices,
+        output: rowEnds,
+        mode: 'inclusive'
+      }).getCommandNodes(graph),
+      createWGSLKernelNode(graph, {
+        id: `${id}-publish-clear`,
+        operation,
         invocationCount: 1,
         bindings: [
-          {name: 'metadata', view: metadata, type: 'u32', access: 'read'},
+          {name: 'reachTotal', view: reachTotal, type: 'u32', access: 'read'},
+          {name: 'offsets', view: output.vertexOffsets, type: 'u32', access: 'read_write'},
+          {name: 'reachCount', view: output.reachCount, type: 'u32', access: 'read_write'},
+          {name: 'vertexCount', view: output.vertexCount, type: 'u32', access: 'read_write'},
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
+        ],
+        // Without a kept reach, any reach found overflowed; the last kept reach rewrites these words.
+        body: `offsets[offsetsOffset]=0u;reachCount[reachCountOffset]=0u;vertexCount[vertexCountOffset]=0u;overflow[overflowOffset]=u32(reachTotal[reachTotalOffset]>0u);`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-publish`,
+        operation,
+        invocationCount: count,
+        bindings: [
+          {name: 'compactCells', view: compactCells, type: 'u32', access: 'read'},
+          {name: 'reachTotal', view: reachTotal, type: 'u32', access: 'read'},
+          {name: 'rowEnds', view: rowEnds, type: 'u32', access: 'read'},
           {name: 'sources', view: output.sourceCells, type: 'u32', access: 'read_write'},
           {name: 'offsets', view: output.vertexOffsets, type: 'u32', access: 'read_write'},
           {name: 'reachCount', view: output.reachCount, type: 'u32', access: 'read_write'},
           {name: 'vertexCount', view: output.vertexCount, type: 'u32', access: 'read_write'},
-          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
-          {name: 'unresolved', view: output.unresolvedCount, type: 'u32', access: 'read_write'}
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
         ],
-        body: `var reaches=0u;var vertices=0u;var truncated=0u;var unresolvedCells=0u;offsets[offsetsOffset]=0u;
-for(var cell=0u;cell<${count}u;cell++){
- let entry=vec4<u32>(metadata[metadataOffset+cell*4u],metadata[metadataOffset+cell*4u+1u],metadata[metadataOffset+cell*4u+2u],0u);unresolvedCells+=entry.z;
- if(entry.x==0u){continue;}
- if(reaches>=${output.sourceCells.length}u||vertices+entry.x>${output.positions.length}u){truncated=1u;continue;}
- sources[sourcesOffset+reaches]=cell;vertices+=entry.x;reaches++;offsets[offsetsOffset+reaches]=vertices;
-}
-reachCount[reachCountOffset]=reaches;vertexCount[vertexCountOffset]=vertices;overflow[overflowOffset]=truncated;unresolved[unresolvedOffset]=unresolvedCells;`
+        // Reaches are kept in order while they fit both capacities, so the kept rows are a prefix
+        // and exactly one row, the last kept, publishes the counts.
+        body: `let total=reachTotal[reachTotalOffset];
+if(index>=total){return;}
+let end=rowEnds[rowEndsOffset+index];
+if(index>=${output.sourceCells.length}u||end>${output.positions.length}u){return;}
+sources[sourcesOffset+index]=compactCells[compactCellsOffset+index];offsets[offsetsOffset+index+1u]=end;
+var nextKept=false;
+if(index+1u<total){nextKept=index+1u<${output.sourceCells.length}u&&rowEnds[rowEndsOffset+index+1u]<=${output.positions.length}u;}
+if(!nextKept){reachCount[reachCountOffset]=index+1u;vertexCount[vertexCountOffset]=end;overflow[overflowOffset]=u32(index+1u<total);}`
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-geometry`,
-        operation: 'GPUTerrainStreamNetwork',
+        operation,
         invocationCount: output.sourceCells.length,
         bindings: [
           {name: 'directions', view: props.flowDirections, type: 'u32', access: 'read'},
@@ -170,12 +344,13 @@ reachCount[reachCountOffset]=reaches;vertexCount[vertexCountOffset]=vertices;ove
           {name: 'lengths', view: output.lengths, type: 'f32', access: 'read_write'}
         ],
         declarations: `${getTerrainFlowTracingWGSL(grid.width, grid.height)}
+${getTerrainGroundMeasureWGSL(grid, props.cellSizeMode)}
 fn position(cell:u32)->vec2<f32>{let column=f32(cell%GRID_WIDTH)+${grid.pixelInterpretation === 'area' ? '0.5' : '0.0'};let row=f32(cell/GRID_WIDTH)+${grid.pixelInterpretation === 'area' ? '0.5' : '0.0'};return vec2<f32>(${grid.affine[0]}*column+${grid.affine[1]}*row+${grid.affine[2]},${grid.affine[3]}*column+${grid.affine[4]}*row+${grid.affine[5]});}`,
         body: `if(index>=reachCount[reachCountOffset]){return;}var current=sources[sourcesOffset+index];var total=0.0;var previousCell=current;
 for(var vertex=offsets[offsetsOffset+index];vertex<offsets[offsetsOffset+index+1u];vertex++){
- let point=position(current);positions[positionsOffset+vertex*2u]=point.x;positions[positionsOffset+vertex*2u+1u]=point.y;// Measure the affine displacement before adding the origin, which can round away small edges.
- let delta=vec2<f32>(f32(current%GRID_WIDTH)-f32(previousCell%GRID_WIDTH), f32(current/GRID_WIDTH)-f32(previousCell/GRID_WIDTH));
- total+=length(vec2<f32>(${grid.affine[0]}*delta.x+${grid.affine[1]}*delta.y,${grid.affine[3]}*delta.x+${grid.affine[4]}*delta.y));previousCell=current;
+ let point=position(current);positions[positionsOffset+vertex*2u]=point.x;positions[positionsOffset+vertex*2u+1u]=point.y;
+ // Measure the displacement between cells before adding the origin, which can round away small edges.
+ total+=getGroundEdgeLength(previousCell,current);previousCell=current;
  if(vertex+1u<offsets[offsetsOffset+index+1u]){current=getFlowReceiver(current,directions[directionsOffset+current]);}
 }targets[targetsOffset+index]=current;lengths[lengthsOffset+index]=total;`
       })

@@ -19,13 +19,16 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  getStorageBindingElementLimit,
   validateCapacity,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validatePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {TIME_WORDS_WGSL} from '../time-window-filter/time-words';
+import {TEMPORAL_REDUCTION_WORD_DIVISION_WGSL} from './temporal-reduction-word-division';
 import {createTemporalReductionRangeNode} from './temporal-reduction-sorted-range';
 import {
   GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
@@ -130,7 +133,8 @@ export type GPUTemporalReductionProps = {
  * below `+0`). First and last use two atomic passes: the earliest or latest time key per slot,
  * then the lowest row index among rows with that key, followed by a gather. In float32 mode the
  * time key is the f32 order key (`+0` and `-0` are the same time); in word mode it is the exact
- * Int64 offset inside the bucket, so equality of times is exact. No float atomics are used.
+ * 64-bit offset inside the bucket (two u32 keys, high word first, so the bucket width may be any
+ * unsigned 64-bit integer), so equality of times is exact. No float atomics are used.
  * Float32 bucket assignment is adapter independent: with `d = fround(t - origin)`, the bucket is
  * the unique integer `b` with `fround(b * width) <= d < fround((b + 1) * width)`. The kernel
  * estimates `floor(d / width)` (WGSL division may be off by 2.5 ULP) and applies one correction
@@ -258,6 +262,34 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
     ]);
     const rows = props.values.length;
     const isWordMode = props.timestamps.format === 'uint32x2';
+    // Per-row bindings: the timestamps and, in word mode, the two-word row time keys of the same
+    // size (8 bytes a row, about 16.7 million rows on a default device).
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'timestamps',
+      rows * props.timestamps.rowByteLength,
+      'reduce values.length or process the rows in several calls'
+    );
+    if (!isWordMode) {
+      // Word mode checks its eight-byte slot columns below; the four-byte columns need this one.
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'slot columns',
+        slotCount * 4,
+        'reduce cellCount * bucketCount'
+      );
+    }
+    if (isWordMode) {
+      // The in-bucket time keys are two words per slot, so the key columns bind `8 * slotCount` bytes.
+      const maximumWordSlotCount = getStorageBindingElementLimit(graph.device, 8);
+      if (slotCount > maximumWordSlotCount) {
+        throw new Error(
+          `${id} cellCount * bucketCount must be at most ${maximumWordSlotCount} with uint32x2 times`
+        );
+      }
+    }
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
     const sorted = props.sorted === true;
@@ -266,12 +298,15 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
     // entries then start at word 2 and hold range-relative rows.
     const rowSlotsBase = sorted ? '2u + ' : '';
     const rowSlots = u32('row-slots', rows + (sorted ? 2 : 0));
-    const rowTimeKeys = u32('row-time-keys', rows);
+    // Word mode keeps a 64-bit offset inside the bucket as two keys: the high word at [0, count)
+    // and the low word at [count, 2 * count), in the same buffer so no kernel gains a binding.
+    const keyWords = isWordMode ? 2 : 1;
+    const rowTimeKeys = u32('row-time-keys', keyWords * rows);
     const rowValueKeys = sorted ? u32('row-value-keys', rows) : undefined;
     const minKeys = u32('min-keys', slotCount);
     const maxKeys = u32('max-keys', slotCount);
-    const firstTimeKeys = u32('first-time-keys', slotCount);
-    const lastTimeKeys = u32('last-time-keys', slotCount);
+    const firstTimeKeys = u32('first-time-keys', keyWords * slotCount);
+    const lastTimeKeys = u32('last-time-keys', keyWords * slotCount);
     const firstRows = u32('first-rows', slotCount);
     const lastRows = u32('last-rows', slotCount);
     const occupied = u32('occupied', slotCount);
@@ -334,7 +369,13 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
   minKeys[minKeysOffset + index] = 0xffffffffu;
   maxKeys[maxKeysOffset + index] = 0u;
   firstTimeKeys[firstTimeKeysOffset + index] = 0xffffffffu;
-  lastTimeKeys[lastTimeKeysOffset + index] = 0u;
+  lastTimeKeys[lastTimeKeysOffset + index] = 0u;${
+    isWordMode
+      ? `
+  firstTimeKeys[firstTimeKeysOffset + ${slotCount}u + index] = 0xffffffffu;
+  lastTimeKeys[lastTimeKeysOffset + ${slotCount}u + index] = 0u;`
+      : ''
+  }
   firstRows[firstRowsOffset + index] = 0xffffffffu;
   lastRows[lastRowsOffset + index] = 0xffffffffu;`
       })
@@ -362,7 +403,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
         declarations: `const CELL_COUNT: u32 = ${cellCount}u;
 const BUCKET_COUNT: u32 = ${bucketCount}u;
 ${ORDERED_KEY_WGSL}
-${isWordMode ? TIME_WORDS_WGSL : ''}`,
+${isWordMode ? `${TIME_WORDS_WGSL}\n${TEMPORAL_REDUCTION_WORD_DIVISION_WGSL}` : ''}`,
         body: `${
           sorted
             ? `let rangeFirstRow = rowSlots[rowSlotsOffset];
@@ -383,11 +424,12 @@ ${isWordMode ? TIME_WORDS_WGSL : ''}`,
   ${props.mask ? 'if (rowMask[rowMaskOffset + row] == 0u) {\n    return;\n  }' : ''}
   var bucket: u32;
   var timeKey: u32;
+  var timeKeyLow = 0u;
   ${isWordMode ? WORD_BUCKET_BODY : FLOAT_BUCKET_BODY}
   rowSlots[rowSlotsOffset + ${rowSlotsBase}index] = cell * BUCKET_COUNT + bucket;
   rowTimeKeys[rowTimeKeysOffset + index] = timeKey;${
-    rowValueKeys ? '\n  rowValueKeys[rowValueKeysOffset + index] = getOrderedKey(value);' : ''
-  }`
+    isWordMode ? `\n  rowTimeKeys[rowTimeKeysOffset + ${rows}u + index] = timeKeyLow;` : ''
+  }${rowValueKeys ? '\n  rowValueKeys[rowValueKeysOffset + index] = getOrderedKey(value);' : ''}`
       })
     );
 
@@ -474,6 +516,41 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
       })
     );
 
+    if (isWordMode) {
+      // The extremes kernel ordered the high words of the in-bucket offsets. Among the rows whose
+      // high word is the slot's first (last), the lowest (highest) low word completes the exact
+      // 64-bit first (last) offset.
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-time-low-words`,
+          operation: OPERATION,
+          variant: 'time-low-words',
+          bindings: [
+            read('rowSlots', rowSlots, 'u32'),
+            read('rowTimeKeys', rowTimeKeys, 'u32'),
+            write('firstTimeKeys', firstTimeKeys, 'atomic<u32>'),
+            write('lastTimeKeys', lastTimeKeys, 'atomic<u32>')
+          ],
+          invocationCount: rows,
+          ...(sorted
+            ? {workgroupSize: SORTED_WORKGROUP_SIZE, condition: rowDispatch!.condition}
+            : {}),
+          body: `let slot = rowSlots[rowSlotsOffset + ${rowSlotsBase}index];
+  if (slot == ${NO_SLOT}) {
+    return;
+  }
+  let timeKeyHigh = rowTimeKeys[rowTimeKeysOffset + index];
+  let timeKeyLow = rowTimeKeys[rowTimeKeysOffset + ${rows}u + index];
+  if (timeKeyHigh == atomicLoad(&firstTimeKeys[firstTimeKeysOffset + slot])) {
+    atomicMin(&firstTimeKeys[firstTimeKeysOffset + ${slotCount}u + slot], timeKeyLow);
+  }
+  if (timeKeyHigh == atomicLoad(&lastTimeKeys[lastTimeKeysOffset + slot])) {
+    atomicMax(&lastTimeKeys[lastTimeKeysOffset + ${slotCount}u + slot], timeKeyLow);
+  }`
+        })
+      );
+    }
+
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-tie-rows`,
@@ -497,11 +574,23 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
   }
   let timeKey = rowTimeKeys[rowTimeKeysOffset + index];
   ${sorted ? 'let row = rowSlots[rowSlotsOffset] + index;' : 'let row = index;'}
-  if (timeKey == firstTimeKeys[firstTimeKeysOffset + slot]) {
+  ${
+    isWordMode
+      ? `let timeKeyLow = rowTimeKeys[rowTimeKeysOffset + ${rows}u + index];
+  if (timeKey == firstTimeKeys[firstTimeKeysOffset + slot] &&
+      timeKeyLow == firstTimeKeys[firstTimeKeysOffset + ${slotCount}u + slot]) {
+    atomicMin(&firstRows[firstRowsOffset + slot], row);
+  }
+  if (timeKey == lastTimeKeys[lastTimeKeysOffset + slot] &&
+      timeKeyLow == lastTimeKeys[lastTimeKeysOffset + ${slotCount}u + slot]) {
+    atomicMin(&lastRows[lastRowsOffset + slot], row);
+  }`
+      : `if (timeKey == firstTimeKeys[firstTimeKeysOffset + slot]) {
     atomicMin(&firstRows[firstRowsOffset + slot], row);
   }
   if (timeKey == lastTimeKeys[lastTimeKeysOffset + slot]) {
     atomicMin(&lastRows[lastRowsOffset + slot], row);
+  }`
   }`
       })
     );
@@ -617,8 +706,8 @@ const FLOAT_BUCKET_BODY = /* wgsl */ `let time = timestamps[timestampsOffset + r
   timeKey = getOrderedKey(select(time, 0.0, time == 0.0));`;
 
 const WORD_BUCKET_BODY = /* wgsl */ `let origin = vec2<u32>(params[paramsOffset], params[paramsOffset + 1u]);
-  let width = params[paramsOffset + 2u];
-  if (width == 0u) {
+  let width = vec2<u32>(params[paramsOffset + 2u], params[paramsOffset + 3u]);
+  if (width.x == 0u && width.y == 0u) {
     return;
   }
   let time = vec2<u32>(timestamps[timestampsOffset + 2u * row], timestamps[timestampsOffset + 2u * row + 1u]);
@@ -628,20 +717,11 @@ const WORD_BUCKET_BODY = /* wgsl */ `let origin = vec2<u32>(params[paramsOffset]
     return;
   }
   let difference = timeWordsSubtract(time, origin);
-  // Exact 64-bit by 32-bit division: high word first, then the low word bit by bit.
-  let quotientHigh = difference.y / width;
-  var remainder = difference.y % width;
-  var quotientLow = 0u;
-  for (var bit = 31i; bit >= 0i; bit = bit - 1i) {
-    let carry = remainder >> 31u;
-    remainder = (remainder << 1u) | ((difference.x >> u32(bit)) & 1u);
-    if (carry != 0u || remainder >= width) {
-      remainder = remainder - width;
-      quotientLow = quotientLow | (1u << u32(bit));
-    }
-  }
-  if (quotientHigh != 0u || quotientLow >= BUCKET_COUNT) {
+  // Exact 64-bit by 64-bit division; the remainder is the 64-bit offset inside the bucket.
+  let division = divideTimeDifference(difference, width);
+  if (division.overflow || division.quotient >= BUCKET_COUNT) {
     return;
   }
-  bucket = quotientLow;
-  timeKey = remainder;`;
+  bucket = division.quotient;
+  timeKey = division.remainder.y;
+  timeKeyLow = division.remainder.x;`;

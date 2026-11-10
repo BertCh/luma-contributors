@@ -8,7 +8,10 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLActiveCountDispatch,
+  createWGSLKernelNode
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 import {
   atomicBinding,
@@ -336,8 +339,28 @@ ${ORDERED_KEY_WGSL}`,
     return {nodes, finiteCounts};
   }
 
-  // 5. Shifted power sums in fixed order, one workgroup per group.
+  // 5. Shifted power sums in fixed order, one workgroup per group. The dispatch is sized from the
+  // group total the sort stage wrote on the GPU, so unoccupied capacity launches no workgroups.
+  // Groups past the total keep unwritten `momentSums`; every reader skips groups whose finite
+  // count is zero, and those groups have a zero count.
+  //
+  // Scaling limit: one 256-lane workgroup reduces a whole group, strided over its sorted range, so
+  // a group of g rows costs about g / 256 sequential loop trips per lane while the rest of the
+  // device idles. Past roughly 2^20 rows in one group (a few thousand trips per lane, about 100
+  // times the work of an average group when thousands of groups are occupied) that group is the
+  // bottleneck. The fix is to split such groups into fixed-size row chunks with
+  // `load-balanced-for-each` and merge the chunk partials in fixed order (or reduce the sorted
+  // values with `sorted-segment-sums`' segment tree), which keeps the result deterministic.
   const momentSums = f32('moment-sums', 4 * capacity);
+  const momentDispatch = createWGSLActiveCountDispatch<Parameters>(graph, {
+    id: `${id}-moments-dispatch`,
+    operation,
+    count: structure.groupTotal,
+    maximumItemCount: capacity,
+    workgroupSize: MOMENT_WORKGROUP_SIZE,
+    invocationsPerItem: MOMENT_WORKGROUP_SIZE
+  });
+  nodes.push(momentDispatch.updateNode);
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-moments`,
@@ -354,6 +377,7 @@ ${ORDERED_KEY_WGSL}`,
       workgroupSize: MOMENT_WORKGROUP_SIZE,
       invocationCount: capacity * MOMENT_WORKGROUP_SIZE,
       guardIndex: false,
+      condition: momentDispatch.condition,
       declarations: `var<workgroup> partials: array<f32, ${4 * MOMENT_WORKGROUP_SIZE}>;
 fn isFiniteBits(bits: u32) -> bool {
   return (bits & 0x7f800000u) != 0x7f800000u;

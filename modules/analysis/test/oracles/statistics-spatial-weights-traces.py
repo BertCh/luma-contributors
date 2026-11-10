@@ -8,7 +8,7 @@ Writes fixtures/statistics-spatial-weights-traces.json next to this script, cons
 test/gpu-spatial-analysis/spatial-regression/spatial-weights-traces-reference.ts) by
 spatial-weights-traces.spec.ts, spatial-weights-traces.node.spec.ts and spatial-lag-impacts.spec.ts.
 Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-spatial-weights-traces.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-spatial-weights-traces.py
 in a venv with numpy, scipy, libpysal and spreg (versions are recorded in the fixture).
 
 Scenes: read from fixtures/statistics-spatial-weights-traces-scenes.json, which

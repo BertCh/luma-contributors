@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 """Independent analytical, SciPy 1.15.3, Shapely 2.1.2, NetworkX 3.5 fixtures.
-Run: /tmp/luma-coverage-oracles/bin/python modules/graph/test/oracles/urban-ecology.py
+Run: /tmp/luma-coverage-oracles/bin/python modules/analysis/test/oracles/urban-ecology.py
 """
 import json
 import math

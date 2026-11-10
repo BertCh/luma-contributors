@@ -20,7 +20,7 @@ export type GPUTemporalReductionCPUInput = {
   bucketCount: number;
   /** Start of bucket 0. Integer in word mode. */
   origin: number | bigint;
-  /** Bucket width. Integer in `[1, 2^32 - 1]` in word mode. */
+  /** Bucket width. Integer in `[1, 2^64 - 1]` in word mode. */
   width: number | bigint;
 };
 

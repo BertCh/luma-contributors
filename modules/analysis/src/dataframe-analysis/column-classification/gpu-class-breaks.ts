@@ -19,7 +19,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validatePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   CLASS_BREAKS_EXTREMES,
@@ -261,7 +262,11 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     if (props.naturalBreaksMode === 'monotone') {
       validateCapacity(id, 'monotone natural breaks values length', rowCount, 1, 262144);
     }
-    validateCapacity(id, 'values length', rowCount, 1, MAXIMUM_ROW_COUNT);
+    validateRequirement(
+      id,
+      rowCount >= 1 && rowCount <= MAXIMUM_ROW_COUNT,
+      `values length must be in [1, ${MAXIMUM_ROW_COUNT}] (2^24): moment counts and quantile ranks are held in float32 and are exact only up to 2^24`
+    );
     if (props.mask) {
       validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rowCount) {

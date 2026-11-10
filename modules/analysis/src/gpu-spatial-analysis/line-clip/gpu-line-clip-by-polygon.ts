@@ -56,7 +56,13 @@ const FLAG_VALID = 4;
 
 /** Caller-owned outputs of {@link GPULineClipByPolygon}. */
 export type GPULineClipByPolygonOutput = {
-  /** Output pieces, in the layout of {@link GPULineSplitPieces}. */
+  /**
+   * Output pieces, in the layout of {@link GPULineSplitPieces}. `pieces.status.count` counts
+   * pieces (linestrings); `pieces.status.vertexCount` counts their vertices.
+   * `pieces.status.overflow` is set for any exceeded capacity; the optional
+   * `pieces.status.candidateOverflow` is set only when the `intersectionCapacity` pair list was
+   * exceeded.
+   */
   pieces: GPULineSplitPieces;
   /** Optional status scalars. */
   status?: {
@@ -110,8 +116,9 @@ export type GPULineClipByPolygonProps = {
   /**
    * Capacity of the internal `GPUSegmentIntersection` pair list, which holds one row per
    * (line segment, polygon segment) intersection. When it overflows, pieces are produced from the
-   * sorted prefix of pairs and `pieces.status.overflow` is set. `lines.positions` rows plus twice
-   * this capacity is at most {@link getGPULineClipByPolygonMaximumSubPieceBound} (4194304 on a
+   * sorted prefix of pairs and `pieces.status.overflow` is set (and `pieces.status.candidateOverflow`
+   * when given, which isolates this cause from piece, vertex and containment overflow).
+   * `lines.positions` rows plus twice this capacity is at most {@link getGPULineClipByPolygonMaximumSubPieceBound} (4194304 on a
    * default device); each geometry has at most {@link getGPUSegmentIntersectionMaximumVertexCount}
    * vertex rows.
    */
@@ -252,6 +259,7 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
       ['count', pieces.status.count],
       ['vertexCount', pieces.status.vertexCount],
       ['overflow', pieces.status.overflow],
+      ['candidateOverflow', pieces.status.candidateOverflow],
       ['requiredCount', pieces.status.requiredCount],
       ['requiredVertexCount', pieces.status.requiredVertexCount],
       ['uncertainCount', props.output.status?.uncertainCount]
@@ -285,6 +293,7 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
       pieces.status.count,
       pieces.status.vertexCount,
       pieces.status.overflow,
+      pieces.status.candidateOverflow,
       pieces.status.requiredCount,
       pieces.status.requiredVertexCount,
       props.output.status?.uncertainCount
@@ -825,7 +834,7 @@ fn emitsEnd(piece: u32) -> bool {
 
     // 9. Run table, capacity clamp and outputs.
     const runTable = T('run-table', 'uint32', subPieceBound * 2);
-    const flagState = T('flag-state', 'uint32', 2);
+    const flagState = T('flag-state', 'uint32', 3);
     const state = T('state', 'uint32', 8);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -858,7 +867,8 @@ fn emitsEnd(piece: u32) -> bool {
         ],
         invocationCount: 1,
         body: `flagState[flagStateOffset] = select(0u, 1u, pairOverflow[pairOverflowOffset] != 0u || containmentOverflow[containmentOverflowOffset] != 0u);
-  flagState[flagStateOffset + 1u] = segmentUncertain[segmentUncertainOffset] + containmentUncertain[containmentUncertainOffset];`
+  flagState[flagStateOffset + 1u] = segmentUncertain[segmentUncertainOffset] + containmentUncertain[containmentUncertainOffset];
+  flagState[flagStateOffset + 2u] = select(0u, 1u, pairOverflow[pairOverflowOffset] != 0u);`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finalize`,
@@ -895,7 +905,8 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
   state[stateOffset + 2u] = totalRuns;
   state[stateOffset + 3u] = totalVertices;
   state[stateOffset + 4u] = select(0u, 1u, low < totalRuns || flagState[flagStateOffset] != 0u);
-  state[stateOffset + 5u] = flagState[flagStateOffset + 1u];`
+  state[stateOffset + 5u] = flagState[flagStateOffset + 1u];
+  state[stateOffset + 6u] = flagState[flagStateOffset + 2u];`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-pieces`,
@@ -960,7 +971,8 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
       ['requiredCount', pieces.status.requiredCount, 2],
       ['requiredVertexCount', pieces.status.requiredVertexCount, 3],
       ['overflow', pieces.status.overflow, 4],
-      ['uncertainCount', props.output.status?.uncertainCount, 5]
+      ['uncertainCount', props.output.status?.uncertainCount, 5],
+      ['candidateOverflow', pieces.status.candidateOverflow, 6]
     ];
     for (const [name, view] of scalars) {
       if (view) {

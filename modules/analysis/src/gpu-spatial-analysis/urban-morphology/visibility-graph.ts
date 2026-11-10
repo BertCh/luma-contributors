@@ -2,12 +2,45 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  GPUCompaction,
+  GPUReduction,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {classifyUrbanViewpoints, type UrbanFreeSpaceRegion} from './classify-viewpoints';
-import {getUrbanRayDeclarations} from './urban-ray-utils';
+import {URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT, getUrbanRayDeclarations} from './urban-ray-utils';
+
+/**
+ * Most viewpoints: the adjacency and Brandes choice tables hold viewpoints squared entries, and
+ * each source thread keeps four per-viewpoint arrays in private memory.
+ */
+export const VISIBILITY_GRAPH_MAXIMUM_POINT_COUNT = 256;
+
+export type GPUVisibilityGraphOutput = {
+  /** `uint32`, `positions.length` squared rows: 1 visible, 0 blocked, 0xffffffff invalid. */
+  adjacency: GraphDataView<'uint32'>;
+  /** `uint32x2`, `edgeCapacity` rows: visible pairs (first < second), padded with 0xffffffff. */
+  edges: GraphDataView<'uint32x2'>;
+  /** `float32x4`, one row per viewpoint: degree, reachable count, total depth, mean depth inverse. */
+  metrics: GraphDataView<'float32x4'>;
+  /** `float32`, one row per viewpoint: unnormalised undirected betweenness. */
+  choice: GraphDataView<'float32'>;
+  /** `float32x4`, one row per viewpoint: mean depth, asymmetry, real relative asymmetry, Hillier. */
+  integration: GraphDataView<'float32x4'>;
+  /** `float32`, one row per viewpoint: normalised choice. */
+  normalizedChoice: GraphDataView<'float32'>;
+  /** `uint32`, one row per viewpoint: 0 free, 1 blocked, 2 boundary, 3 non-finite. */
+  viewpointClassifications: GraphDataView<'uint32'>;
+  /** `float32x4`, one row per viewpoint: pyramid, Teklenburg, Penn, maximum depth. */
+  extendedIntegration: GraphDataView<'float32x4'>;
+  /** `uint32x4`, one row: `[count, requiredCount, overflow, invalid]`. */
+  status: GraphDataView<'uint32x4'>;
+};
 
 export type GPUVisibilityGraphProps = {
   id?: string;
@@ -18,6 +51,11 @@ export type GPUVisibilityGraphProps = {
   tolerance?: number;
   /** Optional explicit filled-ring free-space classification. Default checks boundaries only. */
   region?: UrbanFreeSpaceRegion;
+  /**
+   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
+   * Formats and lengths are those of {@link GPUVisibilityGraphOutput}.
+   */
+  output?: Partial<GPUVisibilityGraphOutput>;
 };
 
 /** Closed obstacles block sightlines. Full dense visibility drives hop integration and Brandes choice. */
@@ -28,43 +66,79 @@ export function addVisibilityGraphRecipe<Parameters>(
   const id = props.id ?? 'visibility-graph';
   const count = props.positions.length;
   const tolerance = props.tolerance ?? 1e-6;
-  assert(
-    count > 0 && count <= 256 && props.segments.length > 0 && props.segments.length <= 16777216
+  validateRequirement(
+    id,
+    count > 0 && count <= VISIBILITY_GRAPH_MAXIMUM_POINT_COUNT,
+    `positions must have between 1 and ${VISIBILITY_GRAPH_MAXIMUM_POINT_COUNT} rows`
   );
-  assert(
-    Number.isFinite(props.maximumDistance) &&
-      props.maximumDistance > 0 &&
-      Number.isFinite(tolerance) &&
-      tolerance > 0
+  validateRequirement(
+    id,
+    props.segments.length > 0 && props.segments.length <= URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT,
+    `segments must have between 1 and ${URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT} rows`
   );
-  assert(Number.isSafeInteger(props.edgeCapacity) && props.edgeCapacity > 0);
+  validateRequirement(
+    id,
+    Number.isFinite(props.maximumDistance) && props.maximumDistance > 0,
+    'maximumDistance must be a positive finite number'
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(tolerance) && tolerance > 0,
+    'tolerance must be a positive finite number'
+  );
+  validateRequirement(
+    id,
+    Number.isSafeInteger(props.edgeCapacity) && props.edgeCapacity > 0,
+    'edgeCapacity must be a positive integer'
+  );
+  const output = props.output;
   const viewpointClassifications = classifyUrbanViewpoints(graph, {
     id,
     positions: props.positions,
     segments: props.segments,
     tolerance,
-    region: props.region
+    region: props.region,
+    output: output?.viewpointClassifications
   });
-  const adjacency = getRecipeView(graph, `${id}-adjacency`, 'uint32', count * count);
-  const edges = getRecipeView(graph, `${id}-edges`, 'uint32x2', props.edgeCapacity);
-  const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1);
-  const metrics = getRecipeView(graph, `${id}-metrics`, 'float32x4', count);
+  const adjacency = getRecipeView(
+    graph,
+    `${id}-adjacency`,
+    'uint32',
+    count * count,
+    output?.adjacency
+  );
+  const edges = getRecipeView(graph, `${id}-edges`, 'uint32x2', props.edgeCapacity, output?.edges);
+  const status = getRecipeView(graph, `${id}-status`, 'uint32x4', 1, output?.status);
+  const metrics = getRecipeView(graph, `${id}-metrics`, 'float32x4', count, output?.metrics);
   const contributions = getRecipeView(
     graph,
     `${id}-choice-contributions`,
     'float32',
     count * count
   );
-  const choice = getRecipeView(graph, `${id}-choice`, 'float32', count);
-  const integration = getRecipeView(graph, `${id}-integration`, 'float32x4', count);
+  const choice = getRecipeView(graph, `${id}-choice`, 'float32', count, output?.choice);
+  const integration = getRecipeView(
+    graph,
+    `${id}-integration`,
+    'float32x4',
+    count,
+    output?.integration
+  );
   const maximumDepth = getRecipeView(graph, `${id}-maximum-depth`, 'float32', count);
   const extendedIntegration = getRecipeView(
     graph,
     `${id}-extended-integration`,
     'float32x4',
-    count
+    count,
+    output?.extendedIntegration
   );
-  const normalizedChoice = getRecipeView(graph, `${id}-normalized-choice`, 'float32', count);
+  const normalizedChoice = getRecipeView(
+    graph,
+    `${id}-normalized-choice`,
+    'float32',
+    count,
+    output?.normalizedChoice
+  );
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${id}-visibility`,
@@ -78,11 +152,89 @@ export function addVisibilityGraphRecipe<Parameters>(
         {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
         {name: 'output', view: adjacency, type: 'u32', access: 'read_write'}
       ],
-      body: `let first=index/${count}u;let second=index%${count}u;let origin=vec2<f32>(positions[positionsOffset+2u*first],positions[positionsOffset+2u*first+1u]);let destination=vec2<f32>(positions[positionsOffset+2u*second],positions[positionsOffset+2u*second+1u]);let displacement=destination-origin;let distance=length(displacement);
-var valid=classifications[classificationsOffset+first]==0u&&classifications[classificationsOffset+second]==0u&&isFiniteValue(origin.x)&&isFiniteValue(origin.y)&&isFiniteValue(destination.x)&&isFiniteValue(destination.y);
-for(var segment=0u;segment<${props.segments.length}u;segment++){let values=readSegment(segment);valid=valid&&isFiniteValue(values.x)&&isFiniteValue(values.y)&&isFiniteValue(values.z)&&isFiniteValue(values.w)&&distanceToSegment(origin,values)>${tolerance}&&distanceToSegment(destination,values)>${tolerance};}
-var visible=false;if(valid&&first!=second&&distance>${tolerance}&&distance<=${props.maximumDistance}){let hit=castRay(origin,displacement/distance,distance);visible=hit.y<0.0;}
+      // Segment finiteness and clearance of both viewpoints are part of their classification
+      // (3 for a non-finite segment, 2 within tolerance of a segment), so the pair test needs no
+      // pass over the segments besides the ray itself.
+      body: `let first=index/${count}u;
+let second=index%${count}u;
+let origin=vec2<f32>(positions[positionsOffset+2u*first],positions[positionsOffset+2u*first+1u]);
+let destination=vec2<f32>(positions[positionsOffset+2u*second],positions[positionsOffset+2u*second+1u]);
+let displacement=destination-origin;
+let distance=length(displacement);
+let valid=classifications[classificationsOffset+first]==0u&&classifications[classificationsOffset+second]==0u&&isFiniteValue(origin.x)&&isFiniteValue(origin.y)&&isFiniteValue(destination.x)&&isFiniteValue(destination.y);
+var visible=false;
+if(valid&&first!=second&&distance>${tolerance}&&distance<=${props.maximumDistance}){
+  let hit=castRay(origin,displacement/distance,distance);
+  visible=hit.y<0.0;
+}
 output[outputOffset+index]=select(u32(visible),0xffffffffu,!valid);`
+    })
+  );
+  // Visible pairs (first < second) in row-major order: flag, stable compaction of the pair ids,
+  // decode to vertex pairs. The invalid count is a reduction over the diagonal.
+  const pairIds = createTransientView(graph, `${id}-pair-ids`, 'uint32', count * count);
+  const pairFlags = createTransientView(graph, `${id}-pair-flags`, 'uint32', count * count);
+  const compactPairs = createTransientView(graph, `${id}-compact-pairs`, 'uint32', count * count);
+  const requiredCount = createTransientView(graph, `${id}-required-count`, 'uint32', 1);
+  const invalidFlags = createTransientView(graph, `${id}-invalid-flags`, 'uint32', count);
+  const invalidCount = createTransientView(graph, `${id}-invalid-count`, 'uint32', 1);
+  graph.add(
+    createRecipeKernelNode(graph, {
+      id: `${id}-pair-flags`,
+      operation: id,
+      invocationCount: count * count,
+      bindings: [
+        {name: 'adjacency', view: adjacency, type: 'u32', access: 'read'},
+        {name: 'pairIds', view: pairIds, type: 'u32', access: 'read_write'},
+        {name: 'pairFlags', view: pairFlags, type: 'u32', access: 'read_write'}
+      ],
+      body: `pairIds[pairIdsOffset+index]=index;
+pairFlags[pairFlagsOffset+index]=u32(index/${count}u<index%${count}u&&adjacency[adjacencyOffset+index]==1u);`
+    })
+  );
+  graph.add(
+    new GPUCompaction({
+      id: `${id}-compact-pairs`,
+      input: pairIds,
+      flags: pairFlags,
+      output: compactPairs,
+      count: requiredCount
+    }).getCommandNodes(graph)
+  );
+  graph.add(
+    createRecipeKernelNode(graph, {
+      id: `${id}-invalid-flags`,
+      operation: id,
+      invocationCount: count,
+      bindings: [
+        {name: 'adjacency', view: adjacency, type: 'u32', access: 'read'},
+        {name: 'invalidFlags', view: invalidFlags, type: 'u32', access: 'read_write'}
+      ],
+      body: `invalidFlags[invalidFlagsOffset+index]=u32(adjacency[adjacencyOffset+index*${count}u+index]==0xffffffffu);`
+    })
+  );
+  graph.add(
+    new GPUReduction({
+      id: `${id}-invalid-count`,
+      input: invalidFlags,
+      output: invalidCount,
+      operation: 'sum'
+    }).getCommandNodes(graph)
+  );
+  graph.add(
+    createRecipeKernelNode(graph, {
+      id: `${id}-edges`,
+      operation: id,
+      invocationCount: props.edgeCapacity,
+      bindings: [
+        {name: 'compactPairs', view: compactPairs, type: 'u32', access: 'read'},
+        {name: 'requiredCount', view: requiredCount, type: 'u32', access: 'read'},
+        {name: 'edges', view: edges, type: 'u32', access: 'read_write'}
+      ],
+      body: `let stored=index<requiredCount[requiredCountOffset];
+let pair=compactPairs[compactPairsOffset+min(index,${count * count - 1}u)];
+edges[edgesOffset+index*2u]=select(0xffffffffu,pair/${count}u,stored);
+edges[edgesOffset+index*2u+1u]=select(0xffffffffu,pair%${count}u,stored);`
     })
   );
   graph.add(
@@ -91,13 +243,15 @@ output[outputOffset+index]=select(u32(visible),0xffffffffu,!valid);`
       operation: id,
       invocationCount: 1,
       bindings: [
-        {name: 'adjacency', view: adjacency, type: 'u32', access: 'read'},
-        {name: 'edges', view: edges, type: 'u32', access: 'read_write'},
+        {name: 'requiredCount', view: requiredCount, type: 'u32', access: 'read'},
+        {name: 'invalidCount', view: invalidCount, type: 'u32', access: 'read'},
         {name: 'status', view: status, type: 'u32', access: 'read_write'}
       ],
-      body: `for(var edge=0u;edge<${props.edgeCapacity * 2}u;edge++){edges[edgesOffset+edge]=0xffffffffu;}
-var required=0u;var invalid=0u;for(var first=0u;first<${count}u;first++){invalid+=u32(adjacency[adjacencyOffset+first*${count}u+first]==0xffffffffu);for(var second=first+1u;second<${count}u;second++){if(adjacency[adjacencyOffset+first*${count}u+second]==1u){if(required<${props.edgeCapacity}u){edges[edgesOffset+required*2u]=first;edges[edgesOffset+required*2u+1u]=second;}required++;}}}
-status[statusOffset]=min(required,${props.edgeCapacity}u);status[statusOffset+1u]=required;status[statusOffset+2u]=u32(required>${props.edgeCapacity}u);status[statusOffset+3u]=invalid;`
+      body: `let required=requiredCount[requiredCountOffset];
+status[statusOffset]=min(required,${props.edgeCapacity}u);
+status[statusOffset+1u]=required;
+status[statusOffset+2u]=u32(required>${props.edgeCapacity}u);
+status[statusOffset+3u]=invalidCount[invalidCountOffset];`
     })
   );
   graph.add(

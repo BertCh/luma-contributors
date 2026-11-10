@@ -5,7 +5,7 @@
 import {PHILOX_PURPOSES} from '../../../src/analysis-core/kernels/philox-random';
 import {describe, expect, it} from 'vitest';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
-import {fillShufflePermutation} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
+import {fillShufflePermutation} from '../../../src/analysis-core/kernels/permutation-shuffle';
 import {
   getSpaceTimeGroupsPerSlot,
   getSpaceTimeShuffleWGSL,

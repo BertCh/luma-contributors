@@ -240,7 +240,7 @@ Find the k nearest tract centroids by great-circle distance and write them as CS
 
 Maximum: `gridSize[0] * gridSize[1]` is at most `getGPUGridIndexMaximumCellCount(device)` (2^25 - 1 on a default device), checked when the contributor is added to a graph.
 
-`GPUNeighborSearch` finds exact k nearest neighbors (`mode: 'knn'`, `k` up to 32) or every point
+`GPUNeighborSearch` finds exact k nearest neighbors (`mode: 'knn'`, `k` up to `GPU_NEIGHBOR_SEARCH_MAXIMUM_K`, 256) or every point
 within a distance band (`mode: 'radius'`) between planar points, or between longitude/latitude points
 with great-circle distances (see below). A self join never lists a row as its
 own neighbor; pass `queryPositions` for a cross join. It writes a `GPUSpatialWeights` CSR:
@@ -366,8 +366,27 @@ Settings of `getGPUNeighborSearchParameterValues`:
 | `distanceFloor` (optional) | `number` | Inverse distance uses `max(d, distanceFloor)`. Defaults to 0, in which case coincident points (`d = 0`) get weight 0 because their weight is not finite. |
 | `kernel` (optional) | `GPUNeighborSearchKernel` | Kernel profile for `weightKind: 'kernel'`. Defaults to `'triangular'`. |
 | `rowStandardize` (optional) | `boolean` | Divides each row's weights by their sum (zero-sum rows stay zero). Defaults to false. |
+| `timeRadius` (optional) | `number` | Time window of a space-time search, in the `temporalContext` unit: a neighbor satisfies `\|t_target - t_query\| <= timeRadius`. Non-positive or non-finite makes every row empty. Required with `times`, and selects the `GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH`-word layout. |
+| `timeBounds` (optional) | `readonly [number, number]` | `[minimumTime, maximumTime]` covered by the index. Rows outside it are invalid, like rows outside `bounds`. Required with `timeRadius`. |
 
 {/* /parameters */}
+
+#### Space-time search
+
+Pass `times` (one relative `float32` per target, with a `float32-relative` `temporalContext`) to
+search a space-time cylinder: a target is a neighbor only when it also satisfies
+`|t_target - t_query| <= timeRadius`, and kNN means the `k` nearest targets inside the window. A
+cross join also needs `queryTimes`. The parameter view grows to
+`GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH` (15) words holding `timeRadius` and `timeBounds`,
+packed by the same `getGPUNeighborSearchParameterValues`. A row whose time is non-finite or
+outside `timeBounds` is invalid like a row outside `bounds`, and `invalidCount` counts it.
+
+`timeBucketCount` (compile-time, default 1, at most `GPU_NEIGHBOR_SEARCH_MAXIMUM_TIME_BUCKETS`) also
+indexes the targets by time, so a window much shorter than `timeBounds` skips most of them. It
+never changes a result. On 100,000 clustered points with a window of 5% of the time span, 8 buckets
+took 29.7 ms against 40.4 ms for one (radius) and 13.1 ms against 25.2 ms (kNN, `k = 16`); 64
+buckets gave no further gain. A kNN query whose window holds fewer than `k` targets finishes every
+ring, so set a `radius` when windows may be sparse. `searchStructure: 'bvh'` does not take times.
 
 #### How it computes
 

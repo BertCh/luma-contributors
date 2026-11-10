@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert, type VertexFormat} from '@luma.gl/core';
+import type {VertexFormat} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -11,7 +11,9 @@ import {
 import {
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
-  validatePackedView
+  validatePackedView,
+  validateRequirement,
+  validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getOrCreateView} from './recipe-utils';
 
@@ -26,7 +28,7 @@ export function getRecipeView<Format extends VertexFormat, Parameters>(
   if (provided) {
     validatePackedView(provided, [format], id);
     // The provided view must have the exact row count promised by the recipe output.
-    assert(provided.length === length);
+    validateViewLength(id, 'provided output', provided, length);
     validateGraphViewsBelongToGraph(id, graph, [provided]);
   }
   return getOrCreateView(graph, id, format, length, provided);
@@ -62,5 +64,9 @@ export function validateRecipeBoundary<Parameters>(
   validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
   const buffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
   // Independent named outputs must not share a buffer, even through disjoint views.
-  assert(new Set(buffers).size === buffers.length);
+  validateRequirement(
+    id,
+    new Set(buffers).size === buffers.length,
+    'outputs must not share a buffer'
+  );
 }

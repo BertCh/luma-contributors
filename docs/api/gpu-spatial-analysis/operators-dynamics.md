@@ -11,6 +11,10 @@ description: "Distribution dynamics & space-time tests contributors in @luma-con
 Distribution dynamics contributors use period-major columns: period `t` of row `i` is at
 `t * rowCount + i`, with `periodCount` periods.
 
+See [Space-time statistics](./space-time-statistics.md) for space-time weights, the lagged and differential
+local Moran, and cross-correlation by lag. The near-repeat, local Knox and Jacquez tests are listed with
+the contributors below; their times follow the [temporal context](./temporal-context.md).
+
 ### `GPUClassAssignment`
 
 Assigns each county's 2023 unemployment rate to one of five quantile classes using shared class breaks.
@@ -267,7 +271,13 @@ Mantel needs no context check because its correlation is unit-free and it takes 
   upper tail, but it assumes Poisson variance, ignores ties and ignores the Mantel-Kulldorff variance
   inflation, so it is anti-conservative; prefer the Monte Carlo p-value.
 - `GPUMantelTest({pairs, ...})` (the weights need `distances`) is the Pearson correlation between pair
-  distances and `|t_i - t_j|`, with permuted times. Sums are f32 shifted partials, within about 1e-4 of a
+  distances and `|t_i - t_j|`, with permuted times. By default the raw values are correlated (the
+  scikit-bio `mantel` definition). pointpats `mantel` instead correlates `(x + constant) ** power` of both
+  and its defaults are the reciprocals `1 / (x + 1)` (`scon = tcon = 1`, `spow = tpow = -1`, pointpats 2.6.0),
+  so a default pointpats result differs from the raw one. Pass the compile-time `distanceTransform` and
+  `timeTransform` (`{constant, power}`, or `GPU_MANTEL_POINTPATS_TRANSFORM` for the pointpats defaults) to
+  match it. The time transform acts on `|t_i - t_j|`, so it cannot be done by transforming `times` first.
+  The base of `x + constant` must stay positive for a non-integer power. Sums are f32 shifted partials, within about 1e-4 of a
   double-precision oracle. Above about 43,000 permutations the rows are split into fewer than 256 blocks so
   the `(permutation, block)` partials table stays within one storage binding (`maxStorageBufferBindingSize`). The statistic runs over the listed pairs only, so with a distance band it is a
   band-truncated Mantel `r` (pairs beyond the band are absent) that differs from the full Mantel `r`;
@@ -367,6 +377,126 @@ Settings of `getGPUSpaceTimeParameterValues`:
 ::lens{scenario=gpu-spatial-analysis.mantel-test rung=kernel caption="Inspect the recorded shader and its input and output bindings."}
 
 ::lens{scenario=gpu-spatial-analysis.mantel-test rung=graph caption="Follow the recorded dependencies from uploaded inputs to captured outputs."}
+
+### `GPUNearRepeatKnox`, `GPULocalKnox` and `GPUJacquezTest`
+
+Three more space-time interaction tests on the machinery of `GPUKnoxTest`: the same swap-or-not time
+permutations (a seed gives the same permutation `k` in all four), the same exact integer counts, and, for
+the Jacquez test, the same Besag-Clifford stopping. None has a lens scenario yet.
+
+- `GPUNearRepeatKnox({pairs, times, parameters, distanceEdges, timeEdges, maximumPermutations, output:
+  {counts, summary}})` is the near-repeat table of crime science: the number of event pairs in every cell
+  of distance band by time-difference band, and a Monte Carlo p-value per cell. `pairs` is a
+  `GPUSpatialWeights` **with `distances`** that lists every pair up to the last distance edge (a radius-mode
+  `GPUNeighborSearch`), counted once per unordered pair as in `GPUKnoxTest`. Edges are compile-time,
+  strictly ascending, at most 16 bands per axis (256 cells). Band `k` is `(edges[k], edges[k + 1]]` and the
+  first band also holds `edges[0]`: the `<=` of `GPUKnoxTest` and of pointpats, so a pair on an edge falls
+  in the lower band. The NearRepeat R package cuts with R's `cut()`; if its `right` and `include.lowest`
+  settings differ, only pairs exactly on an edge move cell (UNVERIFIED against that package, which is GPL
+  and used here as a definition only). `distanceEdges` are in the length unit of `pairs.distances`,
+  `timeEdges` in the unit of `times`. `output.counts` is `uint32`, `(maximumPermutations + 1) * cells`,
+  `counts[slot * cells + distanceBand * timeBands + timeBand]`, slot 0 the observed table. `output.summary`
+  holds `GPU_NEAR_REPEAT_CELL_SUMMARY_LENGTH` (8) words per cell, indexed by `GPU_NEAR_REPEAT_CELL_SUMMARY`:
+  observed, permutation mean and variance, greater and lesser counts, `pseudoPGreater` and `pseudoPLesser`,
+  and the Knox ratio `observed / mean` (NaN when the mean is 0). The NearRepeat ratio against the median is
+  not computed. A permutation is one workgroup adding into a workgroup histogram with integer atomics, so
+  counts are exact and deterministic, and a table with one cell equals `GPUKnoxTest`. There is no
+  Besag-Clifford stopping: cells stop at different permutations. The cells are separate one-sided tests with
+  no multiple-testing correction, which `getInferenceMetadata(settings)` states; correct on the CPU.
+- `GPULocalKnox({pairs, times, parameters, maximumPermutations, output: {summary}})` is pointpats
+  `KnoxLocal`: for every event, the number of its spatial neighbors with `|t_i - t_j| <= timeThreshold`, with
+  **conditional** permutation inference as in pointpats: the focal event keeps its own time and the other
+  times are permuted (the neighbor mapped onto the focal event takes the time of the event the focal event
+  is mapped to). `pairs` must list both directions (a radius-mode search); the count of event `i` runs over
+  its own row, ignoring self entries, out-of-range IDs and repeats. `output.summary` has
+  `GPU_LOCAL_KNOX_SUMMARY_LENGTH` (6) words per event, indexed by `GPU_LOCAL_KNOX_SUMMARY`: observed,
+  permutation mean, greater and lesser counts, `pseudoPGreater` and `pseudoPLesser`. The p-values are one
+  test per event with no correction. There is no stopping (events stop at different permutations). The sum
+  of the permuted counts per event is a `uint32`: keep `maximumPermutations` times the longest row below
+  2^32. The pointpats analytic hypergeometric p-values and the lead/lag orientation are not computed.
+- `GPUJacquezTest({neighbors, times, parameters, k, maximumPermutations, stopAfterExceedances?, output:
+  {statistics, summary, permutationCount?}})` is the Jacquez (1996) k-nearest-neighbor test, pointpats
+  `jacquez`: the number of (event, spatial neighbor) entries where the neighbor is also among the `k` nearest
+  events of the event in time, summed over the directed lists (a mutual pair counts twice). `neighbors` is a
+  k-nearest-neighbor `GPUSpatialWeights` (`GPUNeighborSearch` in k-nearest mode); use the same `k`.
+  Temporal neighbors come from a stable GPU sort of the times: the `k` nearest in time of an event are the
+  interval of `k + 1` ranks around its own rank, so membership under a permutation is one rank comparison.
+  Ties in the time distance take the lower rank, which can differ from another library's arbitrary choice
+  for tied times; without ties the set is exactly the `k` nearest. The reference distribution permutes the
+  times with the spatial lists fixed; the null mean is `sum_i |N_i| k / (n - 1)`. `output.statistics`,
+  `output.summary` (`GPU_SPACE_TIME_SUMMARY`, where `pairCount` is the number of listed neighbor entries,
+  `timeClosePairs` is `rows * k` and `expected` is `pairCount * k / (rows - 1)`) and Besag-Clifford
+  `stopAfterExceedances` work as for `GPUKnoxTest`. The test is known to react to a shift of the population
+  over time (Malizia and Mack 2012).
+
+All three accept `temporalContext` where the times are taken: a `float32-relative` `GPUTemporalContext`
+with a declared (bigint) epoch, validated at construction and exposed as `.temporalContext`. Nothing is
+converted, and `int64-words` or `double-single` is refused. Build the relative times with
+`getGPUSpaceTimeGuardedRelativeTimes(times, narrowestTimeWidth, {origin?, temporalContext?})`, which is
+`getGPUSpaceTimeRelativeTimes` with its resolution guard set to a quarter of the narrowest time band (or the
+time threshold), so it throws rather than blur a band, and which returns the context of the float32 times
+(unit kept, epoch moved to the origin; the default origin is the minimum rounded down to a whole tick).
+
+References: pointpats 2.6.0 (BSD-3) `Knox`, `KnoxLocal` and `jacquez` define the statistics and made the
+checked-in fixture `modules/analysis/test/oracles/fixtures/space-time-near-repeat.json` (generator
+`space-time-near-repeat.py`; the table cells are inclusion-exclusion of `Knox` runs, since pointpats has no
+band table). The specs match the fixture's observed counts exactly and compare pointpats' own permutation
+draws statistically, because the permutations differ. They also match a double-precision CPU oracle for
+every permutation exactly.
+
+{/* parameters: GPUJacquezTest generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUJacquezTest` parameters
+
+- Packer: `getGPUSpaceTimeParameterValues(settings)`, writes `GPU_SPACE_TIME_PARAMETER_LENGTH` (4) `uint32` values.
+
+Settings of `getGPUSpaceTimeParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` | `number` | Random seed, an integer in `[0, 2^53)`. The result is a pure function of the seed and inputs. |
+| `permutationCount` | `number` | Number of time permutations `P`, clamped to the contributor's `maximumPermutations`. |
+| `timeThreshold` (optional) | `number` | Knox only: two rows are close in time when `\|t_i - t_j\| <= timeThreshold` (f32), in the same units as the relative `times` (see `getGPUSpaceTimeRelativeTimes`). Ignored by `GPUMantelTest`. |
+
+{/* /parameters */}
+
+{/* parameters: GPULocalKnox generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPULocalKnox` parameters
+
+- Packer: `getGPUSpaceTimeParameterValues(settings)`, writes `GPU_SPACE_TIME_PARAMETER_LENGTH` (4) `uint32` values.
+
+Settings of `getGPUSpaceTimeParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` | `number` | Random seed, an integer in `[0, 2^53)`. The result is a pure function of the seed and inputs. |
+| `permutationCount` | `number` | Number of time permutations `P`, clamped to the contributor's `maximumPermutations`. |
+| `timeThreshold` (optional) | `number` | Knox only: two rows are close in time when `\|t_i - t_j\| <= timeThreshold` (f32), in the same units as the relative `times` (see `getGPUSpaceTimeRelativeTimes`). Ignored by `GPUMantelTest`. |
+
+{/* /parameters */}
+
+{/* parameters: GPUNearRepeatKnox generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUNearRepeatKnox` parameters
+
+- Packer: `getGPUSpaceTimeParameterValues(settings)`, writes `GPU_SPACE_TIME_PARAMETER_LENGTH` (4) `uint32` values.
+
+Settings of `getGPUSpaceTimeParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` | `number` | Random seed, an integer in `[0, 2^53)`. The result is a pure function of the seed and inputs. |
+| `permutationCount` | `number` | Number of time permutations `P`, clamped to the contributor's `maximumPermutations`. |
+| `timeThreshold` (optional) | `number` | Knox only: two rows are close in time when `\|t_i - t_j\| <= timeThreshold` (f32), in the same units as the relative `times` (see `getGPUSpaceTimeRelativeTimes`). Ignored by `GPUMantelTest`. |
+
+{/* /parameters */}
+
+{/* lens:GPUNearRepeatKnox */}
+
+{/* lens:GPULocalKnox */}
+
+{/* lens:GPUJacquezTest */}
 
 ### `GPUSpatialScanStatistic`
 

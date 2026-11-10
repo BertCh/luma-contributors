@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {assertUnitVector} from './assert-unit-vector';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import type {
@@ -14,9 +13,31 @@ import type {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validatePackedView,
+  validateMaximumCount,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES,
+  GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES,
+  GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+  GPU_SPHERICAL_MAXIMUM_ARRANGEMENT_TOLERANCE,
+  GPU_SPHERICAL_MINIMUM_TOLERANCE,
+  GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT,
+  validateAngularTolerance
+} from './spherical-limits';
+
+/** Status bit: invalid topology, input or reference point. */
+export const GPU_SPHERICAL_ARC_OVERLAY_STATUS_INVALID = 1;
+/** Status bit: the result needs more vertices or rings than the output holds; see `counts[2]`. */
+export const GPU_SPHERICAL_ARC_OVERLAY_STATUS_CAPACITY = 2;
+/** Status bit: an unresolved numerical separation or junction. */
+export const GPU_SPHERICAL_ARC_OVERLAY_STATUS_UNRESOLVED = 4;
 
 export type GPUSphericalArcOperand = {
   positions: GraphDataView<'float32x3'>;
@@ -27,18 +48,30 @@ export type GPUSphericalArcOperand = {
 };
 export type GPUSphericalArcOverlayProps = {
   id?: string;
+  /**
+   * Coordinate space of the unit vectors: longitude-latitude (their embedding on the sphere) with
+   * great-circle edges. Planar contexts are rejected. Defaults to longitude-latitude, no metric.
+   */
+  spatialContext?: GPUSpatialContext;
   left: GPUSphericalArcOperand;
   right: GPUSphericalArcOperand;
   referencePoint: readonly [number, number, number];
   operation: 'intersection' | 'union' | 'difference' | 'symmetric-difference';
   tolerance?: number;
   output: {
-    /** Open assembled unit-xyz rings, with result interior on the left. Capacity 3–1024. */
+    /** Open assembled unit-xyz rings, with result interior on the left. Capacity 3 to {@link GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES} (1024). */
     positions: GraphDataView<'float32x3'>;
     ringOffsets: GraphDataView<'uint32'>;
-    /** Four words: written vertices, written rings, required segments, reference membership. */
+    /**
+     * Four words: written vertices (`counts[0]`), written rings (`counts[1]`), required segments
+     * (`counts[2]`), reference membership (`counts[3]`, 1 when the reference point is inside).
+     */
     counts: GraphDataView<'uint32'>;
-    /** 1 invalid topology/input/reference, 2 capacity, 4 unresolved numerical separation/junction. */
+    /**
+     * One word, a bit set: {@link GPU_SPHERICAL_ARC_OVERLAY_STATUS_INVALID} (1),
+     * {@link GPU_SPHERICAL_ARC_OVERLAY_STATUS_CAPACITY} (2),
+     * {@link GPU_SPHERICAL_ARC_OVERLAY_STATUS_UNRESOLVED} (4); 0 is complete.
+     */
     status: GraphDataView<'uint32'>;
   };
 };
@@ -46,30 +79,56 @@ export type GPUSphericalArcOverlayProps = {
 /** Intrinsic spherical arc arrangement and ring assembly, including non-hemisphere regions. */
 export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Validated coordinate space of the unit vectors. */
+  readonly spatialContext: GPUSpatialContext;
   readonly referenceInside: boolean;
   constructor(readonly props: GPUSphericalArcOverlayProps) {
     this.id = props.id ?? 'spherical-arc-overlay';
-    assertUnitVector(props.referencePoint);
-    assert(
-      Number.isFinite(props.tolerance ?? 1e-6) &&
-        (props.tolerance ?? 1e-6) >= 1e-7 &&
-        (props.tolerance ?? 1e-6) <= 1e-3
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+      GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
+    );
+    assertUnitVector(props.referencePoint, this.id, 'referencePoint');
+    validateAngularTolerance(
+      this.id,
+      props.tolerance ?? 1e-6,
+      GPU_SPHERICAL_MINIMUM_TOLERANCE,
+      GPU_SPHERICAL_MAXIMUM_ARRANGEMENT_TOLERANCE
     );
     for (const operand of [props.left, props.right]) {
       validatePackedView(operand.positions, ['float32x3'], this.id);
       validatePackedView(operand.ringOffsets, ['uint32'], this.id);
-      assert(operand.ringOffsets.length >= 1);
+      validateRequirement(
+        this.id,
+        operand.ringOffsets.length >= 1,
+        'left and right ringOffsets must hold at least one entry'
+      );
     }
-    assert(props.left.positions.length + props.right.positions.length <= 128);
+    validateMaximumCount(
+      this.id,
+      'left plus right positions',
+      props.left.positions.length + props.right.positions.length,
+      GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES
+    );
     validatePackedView(props.output.positions, ['float32x3'], this.id);
     for (const view of [props.output.ringOffsets, props.output.counts, props.output.status])
       validatePackedView(view, ['uint32'], this.id);
-    assert(
+    validateRequirement(
+      this.id,
       props.output.positions.length >= 3 &&
-        props.output.positions.length <= 1024 &&
-        props.output.ringOffsets.length >= 2 &&
-        props.output.counts.length === 4 &&
-        props.output.status.length === 1
+        props.output.positions.length <= GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES,
+      `output.positions must hold 3 to ${GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES} entries`
+    );
+    validateRequirement(
+      this.id,
+      props.output.ringOffsets.length >= 2,
+      'output.ringOffsets must hold at least 2 entries'
+    );
+    validateRequirement(
+      this.id,
+      props.output.counts.length === 4 && props.output.status.length === 1,
+      'output.counts must hold 4 entries and output.status 1 entry'
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.left.positions,

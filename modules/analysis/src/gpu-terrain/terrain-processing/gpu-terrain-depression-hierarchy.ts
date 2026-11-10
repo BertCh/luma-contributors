@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   GPUSort,
@@ -12,7 +11,18 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
+import {
+  validateRasterGrid,
+  validateRasterGridAxisAligned
+} from '../../raster-analysis/raster-band-utils';
+import {
+  validateCapacity,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
@@ -21,14 +31,26 @@ import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
   checkTerrainGraph,
+  createTerrainValidityMask,
+  getTerrainGroundMeasureWGSL,
   terrainBinding,
+  validateTerrainValidityView,
   TERRAIN_FINITE_WGSL
 } from './terrain-processing-utils';
 
 export type GPUTerrainDepressionHierarchyProps = {
   id?: string;
+  /**
+   * Grid. Stage areas and volumes are in squared affine units and elevation units times squared
+   * affine units by default (geographic degrees are not ground meters), or in square meters under
+   * `cellSizeMode`.
+   */
   grid: GPURasterMetadata;
+  /** Ground model for cell areas. Default `'uniform'` (affine units). `'web-mercator'` and `'geographic'` need an axis-aligned grid. Compile-time. */
+  cellSizeMode?: GPURasterCellSizeMode;
   elevation: GraphDataView<'float32'>;
+  /** Optional per-cell validity of `elevation` (uint32, nonzero valid); a zero word counts as NaN, so the cell is a barrier. */
+  validity?: GraphDataView<'uint32'>;
   /** Explicit ocean/drain cells. Masked/nodata cells are barriers, never implicit outlets. */
   outlets: GraphDataView<'uint32'>;
   /** Shared query stages in elevation units. */
@@ -58,23 +80,25 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
   constructor(readonly props: GPUTerrainDepressionHierarchyProps) {
     this.id = props.id ?? 'terrain-depression-hierarchy';
     const count = validateRasterGrid(this.id, props.grid);
-    assert(
-      props.elevation.length === count &&
-        props.outlets.length === count &&
-        props.output.cellNodes.length === count
+    validateRasterCellSizeMode(this.id, props.cellSizeMode);
+    validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
+    validateViewLength(this.id, 'elevation', props.elevation, count);
+    validateViewLength(this.id, 'outlets', props.outlets, count);
+    validateViewLength(this.id, 'output.cellNodes', props.output.cellNodes, count);
+    validateTerrainValidityView(this.id, props.validity, count);
+    validateCapacity(this.id, 'nodeCapacity', props.nodeCapacity);
+    validateViewLength(this.id, 'output.nodes', props.output.nodes, props.nodeCapacity * 4);
+    validateViewLength(this.id, 'output.levels', props.output.levels, props.nodeCapacity * 2);
+    validateViewLength(
+      this.id,
+      'output.curves',
+      props.output.curves,
+      props.nodeCapacity * props.stages.length * 2
     );
-    assert(Number.isInteger(props.nodeCapacity) && props.nodeCapacity > 0);
-    assert(
-      props.output.nodes.length === props.nodeCapacity * 4 &&
-        props.output.levels.length === props.nodeCapacity * 2
-    );
-    assert(
-      props.output.curves.length === props.nodeCapacity * props.stages.length * 2 &&
-        props.output.status.length === 3
-    );
+    validateViewLength(this.id, 'output.status', props.output.status, 3);
     checkTerrainViews(
       this.id,
-      [props.elevation, props.outlets, props.stages],
+      [props.elevation, props.outlets, props.stages, ...(props.validity ? [props.validity] : [])],
       Object.values(props.output)
     );
   }
@@ -85,10 +109,19 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
     const count = props.elevation.length;
     checkTerrainGraph(id, graph, [
       props.elevation,
+      ...(props.validity ? [props.validity] : []),
       props.outlets,
       props.stages,
       ...Object.values(props.output)
     ]);
+    const masked = createTerrainValidityMask(graph, {
+      id,
+      operation: 'GPUTerrainDepressionHierarchy',
+      values: props.elevation,
+      validity: props.validity
+    });
+    const elevation = masked.values;
+    const isUniform = (props.cellSizeMode ?? 'uniform') === 'uniform';
     // Full internal capacity keeps required counts exact even when caller output is too small.
     const labels = createTransientView(graph, `${id}-labels`, 'uint32', count * 2);
     const tree = createTransientView(graph, `${id}-tree`, 'uint32', count * 4);
@@ -105,12 +138,13 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
     );
     const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...masked.nodes,
       createWGSLKernelNode(graph, {
         id: `${id}-order-keys`,
         operation: 'GPUTerrainDepressionHierarchy',
         invocationCount: count,
         bindings: [
-          terrainBinding('elevation', props.elevation),
+          terrainBinding('elevation', elevation),
           terrainBinding('keys', keys, 'read_write'),
           terrainBinding('cells', cells, 'read_write')
         ],
@@ -133,7 +167,7 @@ cells[cellsOffset + index] = index;`
         invocationCount: 1,
         declarations,
         bindings: [
-          terrainBinding('elevation', props.elevation),
+          terrainBinding('elevation', elevation),
           terrainBinding('outlets', props.outlets),
           terrainBinding('labels', labels, 'read_write'),
           terrainBinding('tree', tree, 'read_write'),
@@ -212,6 +246,7 @@ if (valid) {
           operation: 'GPUTerrainDepressionHierarchy',
           invocationCount: props.stages.length,
           declarations: `${TERRAIN_FINITE_WGSL}
+${isUniform ? '' : `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}`}
 // Recover positive-addition rounding error through integer significands. Unlike a floating
 // two-sum transform, shader fast-math cannot algebraically eliminate this correction.
 fn positiveAdditionError(first: f32, second: f32, sum: f32) -> f32 {
@@ -240,7 +275,7 @@ fn addCurve(offset: u32, area: f32, volume: f32) {
  }
 }`,
           bindings: [
-            terrainBinding('elevation', props.elevation),
+            terrainBinding('elevation', elevation),
             terrainBinding('ownership', props.output.cellNodes),
             terrainBinding('nodes', props.output.nodes),
             terrainBinding('stages', props.stages),
@@ -259,8 +294,9 @@ for (var node = 0u; node < ${props.nodeCapacity}u; node++) {
  compensation[compensationOffset + (node * ${props.stages.length}u + index) * 2u + 1u] = 0.0;
 }
 if (!valid) { return; }
-let cellArea = ${getWGSLFloatLiteral(Math.abs(props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]))};
+${isUniform ? `let uniformCellArea = ${getWGSLFloatLiteral(Math.abs(props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]))};` : ''}
 for (var cell = 0u; cell < ${count}u; cell++) {
+ ${isUniform ? 'let cellArea = uniformCellArea;' : 'let cellArea = getGroundCellArea(cell);'}
  let owner = ownership[ownershipOffset + cell];
  let depth = stage - elevation[elevationOffset + cell];
  if (owner < nodeCount && depth >= 0.0) {

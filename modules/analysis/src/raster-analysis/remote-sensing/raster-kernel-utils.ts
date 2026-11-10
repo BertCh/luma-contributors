@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {GET_QUIET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import type {GraphDataView, GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  type GraphDataView,
+  type GPUCommandGraph,
+  type GPUCommandNode
+} from '@luma.gl/graph/gpu-core';
 import {
   validatePackedView,
   validateGraphViewsBelongToGraph,
@@ -19,8 +23,14 @@ export type RasterScalarView =
   | GraphDataView<'float32'>
   | GraphDataView<'uint32'>
   | GraphDataView<'sint32'>;
+/**
+ * Throws unless `count` is a positive safe integer of at most `maximum`. The message carries no
+ * contributor ID; contributors that own a prop use `validateCapacity(id, name, ...)` instead.
+ */
 export function validateRasterCount(count: number, maximum = 0xffffffff): void {
-  assert(Number.isSafeInteger(count) && count > 0 && count <= maximum);
+  if (!Number.isSafeInteger(count) || count <= 0 || count > maximum) {
+    throw new Error(`raster count must be an integer in [1, ${maximum}]`);
+  }
 }
 export function validateRasterViews(
   id: string,
@@ -168,4 +178,126 @@ export function createRasterCountNodes<Parameters>(
     );
   }
   return nodes;
+}
+
+/** Workgroup size of the argmax kernels; a power of two for the tree reduction. */
+const RASTER_ARGMAX_WORKGROUP_SIZE = 256;
+
+/**
+ * Parallel argmax over `count` candidates, replacing a single-invocation scan loop. Pass one
+ * reduces each workgroup of 256 candidates to a (value, index) pair in workgroup memory; pass two
+ * is one workgroup that folds the per-group pairs, striding over them, and writes the result.
+ *
+ * The caller supplies `candidate`, WGSL statements over the thread's `index` that assign the
+ * pre-declared `candidateValue: f32` and `candidateEligible: bool`. A candidate wins only if it is
+ * eligible and `candidateValue > initialValue` (so NaN never wins). Larger values win and equal
+ * values go to the lowest index, which is the result of a serial scan with a strict `>` test.
+ * With no winner the value output is `initialValue` and the index output is 0.
+ * The outputs are one `float32` row and one `uint32` row. Because the combine order is fixed by
+ * index, the result is deterministic and independent of workgroup scheduling.
+ */
+export function createRasterArgmaxNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    count: number;
+    /** Read-only bindings the `candidate` statements use. */
+    bindings: WGSLKernelBinding[];
+    declarations?: string;
+    candidate: string;
+    /** Smallest acceptable value, as a WGSL float literal, e.g. `-3.402823466e38`. */
+    initialValue: string;
+    outputValue: GraphDataView<'float32'>;
+    outputIndex: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const groupCount = Math.ceil(props.count / RASTER_ARGMAX_WORKGROUP_SIZE);
+  const groupValues = createTransientView(graph, `${props.id}-group-values`, 'float32', groupCount);
+  const groupIndices = createTransientView(
+    graph,
+    `${props.id}-group-indices`,
+    'uint32',
+    groupCount
+  );
+  const sharedDeclarations = `var<workgroup> argmaxSharedValues: array<f32, ${RASTER_ARGMAX_WORKGROUP_SIZE}>;
+var<workgroup> argmaxSharedIndices: array<u32, ${RASTER_ARGMAX_WORKGROUP_SIZE}>;`;
+  const reduceTree = `workgroupBarrier();
+  for (var argmaxStride = ${RASTER_ARGMAX_WORKGROUP_SIZE / 2}u; argmaxStride > 0u; argmaxStride = argmaxStride >> 1u) {
+    if (localInvocationIndex < argmaxStride) {
+      let argmaxOtherValue = argmaxSharedValues[localInvocationIndex + argmaxStride];
+      let argmaxOtherIndex = argmaxSharedIndices[localInvocationIndex + argmaxStride];
+      let argmaxValue = argmaxSharedValues[localInvocationIndex];
+      if (argmaxOtherValue > argmaxValue || (argmaxOtherValue == argmaxValue && argmaxOtherIndex < argmaxSharedIndices[localInvocationIndex])) {
+        argmaxSharedValues[localInvocationIndex] = argmaxOtherValue;
+        argmaxSharedIndices[localInvocationIndex] = argmaxOtherIndex;
+      }
+    }
+    workgroupBarrier();
+  }`;
+  return [
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-argmax-groups`,
+      operation: props.operation,
+      invocationCount: props.count,
+      workgroupSize: RASTER_ARGMAX_WORKGROUP_SIZE,
+      guardIndex: false,
+      bindings: [
+        ...props.bindings,
+        rasterBinding('groupValues', groupValues, true),
+        rasterBinding('groupIndices', groupIndices, true)
+      ],
+      declarations: `${props.declarations ?? ''}\n${sharedDeclarations}`,
+      // No early return: every invocation of a workgroup must reach the barriers.
+      body: `var argmaxBestValue = ${props.initialValue};
+  var argmaxBestIndex = 0xffffffffu;
+  if (index < INVOCATION_COUNT) {
+    var candidateValue = ${props.initialValue};
+    var candidateEligible = false;
+    ${props.candidate}
+    if (candidateEligible && candidateValue > ${props.initialValue}) {
+      argmaxBestValue = candidateValue;
+      argmaxBestIndex = index;
+    }
+  }
+  argmaxSharedValues[localInvocationIndex] = argmaxBestValue;
+  argmaxSharedIndices[localInvocationIndex] = argmaxBestIndex;
+  ${reduceTree}
+  if (localInvocationIndex == 0u && workgroupIndex < ${groupCount}u) {
+    groupValues[groupValuesOffset + workgroupIndex] = argmaxSharedValues[0];
+    groupIndices[groupIndicesOffset + workgroupIndex] = argmaxSharedIndices[0];
+  }`
+    }),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-argmax-final`,
+      operation: props.operation,
+      invocationCount: RASTER_ARGMAX_WORKGROUP_SIZE,
+      workgroupSize: RASTER_ARGMAX_WORKGROUP_SIZE,
+      guardIndex: false,
+      bindings: [
+        rasterBinding('groupValues', groupValues),
+        rasterBinding('groupIndices', groupIndices),
+        rasterBinding('outputValue', props.outputValue, true),
+        rasterBinding('outputIndex', props.outputIndex, true)
+      ],
+      declarations: sharedDeclarations,
+      body: `var argmaxBestValue = ${props.initialValue};
+  var argmaxBestIndex = 0xffffffffu;
+  for (var argmaxGroup = localInvocationIndex; argmaxGroup < ${groupCount}u; argmaxGroup += ${RASTER_ARGMAX_WORKGROUP_SIZE}u) {
+    let argmaxValue = groupValues[groupValuesOffset + argmaxGroup];
+    let argmaxGroupIndex = groupIndices[groupIndicesOffset + argmaxGroup];
+    if (argmaxValue > argmaxBestValue || (argmaxValue == argmaxBestValue && argmaxGroupIndex < argmaxBestIndex)) {
+      argmaxBestValue = argmaxValue;
+      argmaxBestIndex = argmaxGroupIndex;
+    }
+  }
+  argmaxSharedValues[localInvocationIndex] = argmaxBestValue;
+  argmaxSharedIndices[localInvocationIndex] = argmaxBestIndex;
+  ${reduceTree}
+  if (localInvocationIndex == 0u) {
+    outputValue[outputValueOffset] = argmaxSharedValues[0];
+    outputIndex[outputIndexOffset] = select(argmaxSharedIndices[0], 0u, argmaxSharedIndices[0] == 0xffffffffu);
+  }`
+    })
+  ];
 }

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GraphDataView,
@@ -12,12 +11,18 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
   RASTER_FINITE_WGSL,
   rasterBinding,
-  validateRasterCount,
   validateRasterViews,
   validateRasterGraph
 } from './raster-kernel-utils';
+
+/** Source cells each destination cell may overlap: one invocation loops over them and the prepared-weight stride stores them, so the loop and the storage stay small. */
+export const MAXIMUM_CONSERVATIVE_CANDIDATE_CELLS = 256;
 
 /** Axis-aligned Cartesian cells; origin is the lower-left corner and spacing is positive. */
 export type GPURasterRectilinearGrid = {
@@ -59,56 +64,97 @@ export class GPURasterConservativeRemapping implements GPUCommandNodeProducer {
   readonly candidateHeight: number;
   constructor(readonly props: GPURasterConservativeRemappingProps) {
     this.id = props.id ?? 'raster-conservative-remapping';
-    for (const grid of [props.source, props.destination]) {
-      validateRasterCount(grid.width);
-      validateRasterCount(grid.height);
-      validateRasterCount(grid.width * grid.height);
-      assert(
+    for (const [gridName, grid] of [
+      ['source', props.source],
+      ['destination', props.destination]
+    ] as const) {
+      validateCapacity(this.id, `${gridName}.width`, grid.width);
+      validateCapacity(this.id, `${gridName}.height`, grid.height);
+      validateCapacity(this.id, `${gridName} cell count`, grid.width * grid.height);
+      validateRequirement(
+        this.id,
         grid.origin.every(Number.isFinite) &&
-          grid.spacing.every(value => Number.isFinite(Math.fround(value)) && Math.fround(value) > 0)
+          grid.spacing.every(
+            value => Number.isFinite(Math.fround(value)) && Math.fround(value) > 0
+          ),
+        `${gridName}.origin must be finite and ${gridName}.spacing must be positive and finite in float32`
       );
     }
-    assert(['destination-area', 'covered-area', 'extensive'].includes(props.normalization));
-    assert(
+    validateRequirement(
+      this.id,
+      ['destination-area', 'covered-area', 'extensive'].includes(props.normalization),
+      "normalization must be 'destination-area', 'covered-area' or 'extensive'"
+    );
+    validateRequirement(
+      this.id,
       [props.source, props.destination].every(
         grid =>
           Number.isFinite(Math.fround(grid.spacing[0] * grid.spacing[1])) &&
           Math.fround(grid.spacing[0] * grid.spacing[1]) > 0
-      )
+      ),
+      'cell areas (spacing[0] times spacing[1]) must be positive and finite in float32'
     );
-    assert(
+    validateRequirement(
+      this.id,
       props.destination.origin.every((value, dimension) =>
         Number.isFinite(Math.fround(value - props.source.origin[dimension]))
-      )
+      ),
+      'destination.origin minus source.origin must be finite in float32'
     );
     this.candidateWidth = Math.ceil(props.destination.spacing[0] / props.source.spacing[0]) + 1;
     this.candidateHeight = Math.ceil(props.destination.spacing[1] / props.source.spacing[1]) + 1;
-    assert(this.candidateWidth * this.candidateHeight <= 256);
-    assert(props.weightMode === undefined || ['prepare', 'reuse'].includes(props.weightMode));
-    assert(props.weightMode !== 'reuse' || props.preparedWeights !== undefined);
+    validateRequirement(
+      this.id,
+      this.candidateWidth * this.candidateHeight <= MAXIMUM_CONSERVATIVE_CANDIDATE_CELLS,
+      `a destination cell may overlap at most ${MAXIMUM_CONSERVATIVE_CANDIDATE_CELLS} source cells (candidate window ${this.candidateWidth} by ${this.candidateHeight}); use a finer destination or coarser source spacing ratio`
+    );
+    validateRequirement(
+      this.id,
+      props.weightMode === undefined || ['prepare', 'reuse'].includes(props.weightMode),
+      "weightMode must be 'prepare' or 'reuse'"
+    );
+    validateRequirement(
+      this.id,
+      props.weightMode !== 'reuse' || props.preparedWeights !== undefined,
+      "weightMode 'reuse' requires preparedWeights"
+    );
     if (props.preparedWeights) {
       const capacity =
         props.destination.width *
         props.destination.height *
         this.candidateWidth *
         this.candidateHeight;
-      assert(
+      validateRequirement(
+        this.id,
         props.preparedWeights.indices.format === 'uint32' &&
-          props.preparedWeights.areas.format === 'float32'
+          props.preparedWeights.areas.format === 'float32',
+        'preparedWeights.indices must be uint32 and preparedWeights.areas float32'
       );
-      assert(
+      validateRequirement(
+        this.id,
         props.preparedWeights.indices.length === capacity &&
-          props.preparedWeights.areas.length === capacity
+          props.preparedWeights.areas.length === capacity,
+        `preparedWeights must hold ${capacity} entries (destination cells times candidate stride)`
       );
     }
     const sourceCount = props.source.width * props.source.height;
     const destinationCount = props.destination.width * props.destination.height;
-    assert(
+    validateRequirement(
+      this.id,
       props.values.length >= sourceCount &&
-        (!props.validity || props.validity.length >= sourceCount)
+        (!props.validity || props.validity.length >= sourceCount),
+      'values and validity must hold at least one entry per source cell'
     );
-    assert(Object.values(props.output).every(view => view.length >= destinationCount));
-    validateRasterCount(destinationCount * this.candidateWidth * this.candidateHeight);
+    validateRequirement(
+      this.id,
+      Object.values(props.output).every(view => view.length >= destinationCount),
+      'output views must hold at least one entry per destination cell'
+    );
+    validateCapacity(
+      this.id,
+      'destination cells times candidate stride',
+      destinationCount * this.candidateWidth * this.candidateHeight
+    );
     validateRasterViews(
       this.id,
       [props.values, ...(props.validity ? [props.validity] : [])],

@@ -8,6 +8,7 @@
 - Build packages (ESM + CommonJS + types): `yarn build`
 - Verify every package entry point loads: `yarn verify-package-exports` (after `yarn build`)
 - Lint and formatting: `yarn lint`, fix with `yarn lint-fix`
+- Contributor contract departures: `yarn check-contributor-contract` (fails on findings not in `scripts/contributor-contract-baseline.json`; `--all` lists everything, `--update-baseline` rewrites it)
 - Tests: `yarn test-node`, `yarn test-headless`, or `yarn test` for both
 - Examples: `cd examples/deck/spatial-analysis-showcase && yarn start`
 
@@ -48,7 +49,10 @@ Large typechecks need `NODE_OPTIONS=--max-old-space-size=8192` or more.
   ownership for generated, vendored or third-party files.
 - Never abbreviate variables. camelCase for variables and functions, PascalCase for types,
   CAPITAL_CASE for constants. Prefer verbNoun function names.
-- Keep shipped runtime validation minimal. Put explanatory assertion messages in comments.
+- Contributors follow `dev-docs/contributor-contract.md`. Validate props once, at construction, with the
+  named-limit helpers (`validateCapacity`, `validateMaximumCount`, `validateRequirement`, ...); messages
+  start with the contributor ID and name the prop and the limit. Do not use bare `assert`. Do not
+  validate per frame or per row on the CPU.
 - Import individual symbols from `'apache-arrow'` in `modules/*/src`; prefer
   `import * as arrow from 'apache-arrow'` in tests, examples and docs.
 

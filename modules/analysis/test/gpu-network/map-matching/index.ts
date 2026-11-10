@@ -4,3 +4,4 @@
 
 import './gpu-map-matching.spec';
 import './gpu-map-matching-route-budget.spec';
+import './gpu-map-matching-robustness.spec';

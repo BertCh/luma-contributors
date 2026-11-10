@@ -295,6 +295,28 @@ ${props.polygonEdges ? LON_LAT_RING_WGSL : ''}`,
   });
 }
 
+/**
+ * Zeroes a one-row `approximation` scalar before the count node sets it, because the count node
+ * only ever stores `1`.
+ *
+ * @internal
+ */
+export function createApproximationClearNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {id: string; operation: string; approximation: GPUStatusScalar}
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'clear-approximation',
+    bindings: [
+      {name: 'approximation', view: props.approximation, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: 1,
+    body: 'approximation[approximationOffset] = 0u;'
+  });
+}
+
 /** Properties for {@link createSegmentizeCountNode}. @internal */
 export type SegmentizeCountNodeProps = {
   /** Preserve degree-plane pole edges and use spherical angular extents for polygon preparation. */
@@ -668,6 +690,11 @@ export type ArcCountNodeProps = {
   parameters: GraphDataView<'float32'>;
   radius: number;
   maximumSegmentCount: number;
+  /**
+   * Atomically set to 1 when a pair needs more segments than `maximumSegmentCount` to respect the
+   * maximum length. The caller must clear this before each encoding.
+   */
+  approximation?: GPUStatusScalar;
   /** Per-pair output vertex count (`segments + 1`). */
   counts: GraphDataView<'uint32'>;
 };
@@ -705,7 +732,17 @@ export function createArcCountNode<Parameters>(
         type: 'f32',
         access: 'read'
       },
-      {name: 'counts', view: props.counts, type: 'u32', access: 'read_write'}
+      {name: 'counts', view: props.counts, type: 'u32', access: 'read_write'},
+      ...(props.approximation
+        ? [
+            {
+              name: 'approximation',
+              view: props.approximation,
+              type: 'atomic<u32>' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : [])
     ],
     invocationCount: props.sources.length,
     declarations: `${GEODESIC_WGSL}
@@ -717,6 +754,13 @@ ${ARC_GEOMETRY_WGSL}`,
   let minimumSegments = parameters[parametersOffset + 1u];
   var segments = 1.0;
   if (maximumLength > 0.0 && distance > 0.0) {
+    ${
+      props.approximation
+        ? `if (ceil(distance / maximumLength) > f32(MAXIMUM_SEGMENTS)) {
+      atomicStore(&approximation[approximationOffset], 1u);
+    }`
+        : ''
+    }
     segments = ceil(min(distance / maximumLength, f32(MAXIMUM_SEGMENTS)));
   }
   if (minimumSegments > segments) {

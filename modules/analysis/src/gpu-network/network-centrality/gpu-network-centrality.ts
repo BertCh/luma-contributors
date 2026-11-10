@@ -13,6 +13,7 @@ import {
 import {
   getCoreBindingElementLimit,
   validateCapacity,
+  validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -58,16 +59,6 @@ import {alignElementCount, getSubView} from '../network-view-utils';
 
 const DEFAULT_MAXIMUM_ITERATIONS = 64;
 const DEFAULT_LOCAL_ITERATIONS = 16;
-/**
- * Largest command node count `GPUNetworkCentrality` accepts. Every round of every batch is an
- * unrolled node, because the published compiler has no GPU-gated continuation, so the count grows
- * as `batchCount * rounds`. The default configuration (64 rounds, a handful of batches) emits a few
- * hundred nodes; the largest benchmark (256 sampled pivots on a 224 x 224 grid: 8 batches of about
- * 965 rounds) emits about 23,000, so the cap is only 1.4 times above it. 32,768 rejects
- * configurations such as 64 batches at 1,000 rounds (about 192,000 nodes), whose compile cost
- * grows past what a frame can absorb.
- */
-const MAXIMUM_COMMAND_NODE_COUNT = 32768;
 /**
  * Hops per workgroup in the sigma and delta phases. A node becomes ready when the last of its
  * tight predecessors decrements its counter, but the other predecessors' sums may have been
@@ -416,12 +407,7 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
       this.batchCount * nodeCountPerBatch;
     // The rounds of every batch are unrolled into command nodes, so this count is the compile cost.
     // Past the cap, lower maximumIterations or the pivot count, or raise laneCount.
-    validateMaximumCount(
-      id,
-      'estimated command node count',
-      this.estimatedCommandNodeCount,
-      MAXIMUM_COMMAND_NODE_COUNT
-    );
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(
       id,
       [

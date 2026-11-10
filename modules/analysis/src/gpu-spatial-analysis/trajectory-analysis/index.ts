@@ -14,3 +14,5 @@ export {
   GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA
 } from './trajectory-metrics-parameters';
 export type {GPUTrajectoryMetricsSettings} from './trajectory-metrics-parameters';
+export {addTrajectorySortCheck} from './trajectory-sort-check';
+export type {AddTrajectorySortCheckProps} from './trajectory-sort-check';

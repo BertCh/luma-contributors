@@ -2,8 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {
+  GPUCommandGraph,
+  GPUCommandNode,
+  GPUCommandNodeProducer,
+  GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateViewLength
+} from '../analysis-core/kernels/gpu-contributor-utils';
+import {GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY} from './pointcloud-limits';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
 export type GPUPointCloudFeaturesProps = {
@@ -21,23 +31,50 @@ export type GPUPointCloudFeaturesProps = {
   covariance?: GraphDataView<'float32'>;
   /** Linearity, planarity, scattering. */
   shapes: GraphDataView<'float32x3'>;
-  /** Bit 1 insufficient/degenerate, bit 2 truncated, bit 4 eigensolve did not converge. */
+  /**
+   * Per-row bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE`): fewer
+   * than three neighbors, or collinear or coincident neighbors (middle eigenvalue at most 1e-6 of the
+   * largest, or largest at most 1e-30); normals and shapes are zero. Bit 2 (`..._TRUNCATED`): `counts` exceeded `capacity`, so only the nearest
+   * `capacity` neighbors were used. Bit 4 (`..._NOT_CONVERGED`): the 24-sweep Jacobi eigensolve did
+   * not reach its tolerance; the outputs are the last iterate. Bits above 4 are zero.
+   */
   status: GraphDataView<'uint32'>;
 };
 
+/** `GPUPointCloudFeatures` status bit 1: fewer than three neighbors or a degenerate covariance. */
+export const GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE = 1;
+/** `GPUPointCloudFeatures` status bit 2: the neighborhood was truncated to `capacity`. */
+export const GPU_POINT_CLOUD_FEATURES_STATUS_TRUNCATED = 2;
+/** `GPUPointCloudFeatures` status bit 4: the eigensolve did not converge. */
+export const GPU_POINT_CLOUD_FEATURES_STATUS_NOT_CONVERGED = 4;
+
 /** Centered 3D covariance and bounded symmetric Jacobi eigensolve on GPU neighborhoods. */
-export class GPUPointCloudFeatures {
+export class GPUPointCloudFeatures implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointCloudFeaturesProps) {
     this.id = props.id ?? 'gpu-pointcloud-features';
-    assert(Number.isInteger(props.capacity) && props.capacity > 0 && props.capacity <= 64);
-    assert(props.indices.length === props.counts.length * props.capacity);
-    for (const view of [props.counts, props.normals, props.eigenvalues, props.shapes, props.status])
-      assert(view.length === props.counts.length);
-    assert(!props.covariance || props.covariance.length === props.counts.length * 6);
-    assert(!props.viewpoint || props.viewpoint.every(value => Number.isFinite(Math.fround(value))));
+    validateCapacity(
+      this.id,
+      'capacity',
+      props.capacity,
+      1,
+      GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY
+    );
+    validateViewLength(this.id, 'indices', props.indices, props.counts.length * props.capacity);
+    validateViewLength(this.id, 'normals', props.normals, props.counts.length);
+    validateViewLength(this.id, 'eigenvalues', props.eigenvalues, props.counts.length);
+    validateViewLength(this.id, 'shapes', props.shapes, props.counts.length);
+    validateViewLength(this.id, 'status', props.status, props.counts.length);
+    if (props.covariance) {
+      validateViewLength(this.id, 'covariance', props.covariance, props.counts.length * 6);
+    }
+    props.viewpoint?.forEach((value, axis) =>
+      validateFiniteNumber(this.id, `viewpoint[${axis}]`, value)
+    );
   }
-  getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {
       positions,
       indices,
@@ -63,10 +100,10 @@ export class GPUPointCloudFeatures {
       },
       body: `
 let count = min(readCounts(index), ${capacity}u);
-var flags = select(0u, 2u, readCounts(index) > ${capacity}u);
+var flags = select(0u, ${GPU_POINT_CLOUD_FEATURES_STATUS_TRUNCATED}u, readCounts(index) > ${capacity}u);
 ${covariance ? 'for (var component = 0u; component < 6u; component++) { writeCovariances(index * 6u + component, 0.0); }' : ''}
 writeNormals(index, vec3f(0.0)); writeEigenvalues(index, vec3f(0.0)); writeShapes(index, vec3f(0.0));
-if (count < 3u) { writeStatus(index, flags | 1u); return; }
+if (count < 3u) { writeStatus(index, flags | ${GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE}u); return; }
 let origin = readPositions(readIndices(index * ${capacity}u));
 var mean = vec3f(0.0);
 for (var slot = 0u; slot < count; slot++) { mean += readPositions(readIndices(index * ${capacity}u + slot)) - origin; }
@@ -93,7 +130,7 @@ for (var iteration = 0u; iteration < 24u; iteration++) {
   covariance = transpose(rotation) * covariance * rotation;
   vectors = vectors * rotation;
 }
-if (!converged) { flags |= 4u; }
+if (!converged) { flags |= ${GPU_POINT_CLOUD_FEATURES_STATUS_NOT_CONVERGED}u; }
 var values = vec3f(max(covariance[0][0],0.0), max(covariance[1][1],0.0), max(covariance[2][2],0.0));
 var smallest = 0u;
 for (var axis = 1u; axis < 3u; axis++) { if (values[axis] < values[smallest]) { smallest = axis; } }
@@ -103,7 +140,7 @@ let largest = max(max(values.x,values.y),values.z);
 let least = min(min(values.x,values.y),values.z);
 let middle = values.x + values.y + values.z - largest - least;
 writeEigenvalues(index, vec3f(largest, middle, least));
-if (!(middle > largest * 1e-6) || !(largest > 1e-30)) { flags |= 1u; }
+if (!(middle > largest * 1e-6) || !(largest > 1e-30)) { flags |= ${GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE}u; }
 else { writeNormals(index, normal); writeShapes(index, vec3f((largest-middle)/largest, (middle-least)/largest, least/largest)); }
 writeStatus(index, flags);`
     });

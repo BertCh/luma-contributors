@@ -206,3 +206,18 @@ export function getGPUSpatialScanStatisticParameterValues(
   values[7] = GPU_SPATIAL_SCAN_STATISTIC_RATE_DIRECTION[settings.rateDirection ?? 'high'];
   return values;
 }
+
+/**
+ * Recurrence interval of a prospective scan alarm: `analysisInterval / pValue`, in the unit of
+ * `analysisInterval` (Kulldorff 2001), the mean time between alarms this extreme under the null
+ * when the analysis repeats every `analysisInterval`. Repeated analyses are not adjusted for.
+ */
+export function getGPUScanRecurrenceInterval(pValue: number, analysisInterval = 1): number {
+  if (!(pValue > 0 && pValue <= 1)) {
+    throw new Error('scan recurrence interval needs a p-value in (0, 1]');
+  }
+  if (!(analysisInterval > 0)) {
+    throw new Error('scan recurrence interval needs a positive analysisInterval');
+  }
+  return analysisInterval / pValue;
+}

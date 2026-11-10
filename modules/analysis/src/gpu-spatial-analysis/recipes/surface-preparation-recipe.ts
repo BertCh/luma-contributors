@@ -15,7 +15,7 @@ import {
 import {getRasterBandViews} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
 import {createRecipeKernelNode as createWGSLKernelNode} from './expansion-recipe-utils';
-import {RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {addRecipeCountNodes, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
 
 export type GPUSurfacePreparationOutput = {
   values: GraphDataView<'float32'>;
@@ -78,7 +78,8 @@ export function addSurfacePreparationRecipe<Parameters>(
       }
     })
   );
-  graph.add(
+  builder.addGlue(
+    'provenance',
     createWGSLKernelNode(graph, {
       id: `${id}-provenance`,
       operation: id,
@@ -117,18 +118,19 @@ ${!props.filter ? 'filtered[filteredOffset + index] = 0u;' : ''}`
         output: {values: outputs.values, validity: outputs.validity, changed: outputs.filtered}
       })
     );
-  graph.add(
-    createWGSLKernelNode(graph, {
-      id: `${id}-unresolved`,
-      operation: id,
-      invocationCount: 1,
-      bindings: [
-        {name: 'validity', view: outputs.validity, type: 'u32', access: 'read'},
-        {name: 'count', view: outputs.unresolvedCount, type: 'u32', access: 'read_write'}
-      ],
-      body: `var missing = 0u; for (var row = 0u; row < ${count}u; row++) { missing += select(0u, 1u, validity[validityOffset + row] == 0u); } count[countOffset] = missing;`
-    })
-  );
+  addRecipeCountNodes(builder, {
+    id: `${id}-unresolved`,
+    operation: id,
+    rowCount: count,
+    bindings: [{name: 'validity', view: outputs.validity, type: 'u32', access: 'read'}],
+    counts: [
+      {
+        name: 'missing',
+        output: outputs.unresolvedCount,
+        value: 'u32(validity[validityOffset + index] == 0u)'
+      }
+    ]
+  });
   return {
     contributors: builder.contributors,
     outputs,

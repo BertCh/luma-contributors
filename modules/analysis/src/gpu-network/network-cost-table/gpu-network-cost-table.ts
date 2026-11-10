@@ -17,6 +17,7 @@ import {
 } from '../../analysis-core/network-topology';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -32,6 +33,8 @@ import {recommendLaneCount} from '../network-accessibility/network-accessibility
 
 const OPERATION = 'GPUNetworkCostTable';
 const DEFAULT_LOCAL_ITERATIONS = 16;
+/** Matches the `GPUNetworkReachability` default, which the estimate of command nodes must mirror. */
+const DEFAULT_MAXIMUM_ITERATIONS = 64;
 /** Workgroup size of the per-lane count, scan and fill kernels. Fixed, so slot order is fixed. */
 const WORKGROUP_SIZE = 256;
 /** Start node of an unused lane: no expanded node. */
@@ -139,6 +142,12 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
   readonly batchCount: number;
   /** Entry capacity, `output.targets.length`. */
   readonly capacity: number;
+  /**
+   * Exact number of command nodes `getCommandNodes` returns: init and finalize, plus per batch the
+   * seeds, count, scan and fill nodes and one `GPUNetworkReachability` of `maximumIterations`
+   * rounds. Checked against the shared command node budget at construction.
+   */
+  readonly estimatedCommandNodeCount: number;
 
   /**
    * Validates the topology, `costLimit` and output layout.
@@ -193,6 +202,13 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
       throw new Error(`${id} laneCount * nodeCount must fit in uint32`);
     }
     this.batchCount = Math.ceil(nodeCount / this.laneCount);
+    // Per batch: seeds, count, scan, fill; reachability: initialize, seed, one node per round and
+    // a finalize node when `converged` is requested.
+    const reachabilityNodeCount =
+      2 + (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) + Number(Boolean(converged));
+    this.estimatedCommandNodeCount = 2 + this.batchCount * (4 + reachabilityNodeCount);
+    // The rounds of every batch are unrolled; lower maximumIterations or raise laneCount.
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const outputs = getOutputs(props);
     validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
     const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);

@@ -60,7 +60,10 @@ export type GPUMinimumBoundsOutput = {
   bounds?: GraphDataView<'float32x4'>;
   /** True convex hull vertex count per group, before the `maximumHullVertices` cap. */
   hullSizes?: GraphDataView<'uint32'>;
-  /** Completeness scalars. */
+  /**
+   * Completeness scalars. There is no `count`: every column has one row per group (feature),
+   * never a variable number of rows.
+   */
   status: {
     /**
      * One row, a bit set; bit 1 (`GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW`) means some hull exceeded

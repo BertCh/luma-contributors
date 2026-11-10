@@ -5,12 +5,22 @@
 import type {VertexFormat} from '@luma.gl/core';
 import {
   createTransientView,
+  GPUReduction,
   GPUScan,
   type GPUCommandGraph,
+  type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  type WGSLKernelBinding
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  validateGraphOutputsDisjointFromInputs,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
 import {GPUCellTopology, getCellTopologyStride} from '../cell-topology/index';
 import type {GPURecipeStatusPort} from '../../analysis-core/contracts/index';
@@ -59,6 +69,8 @@ export type GPURecipeResult<
  */
 export class RecipeBuilder<Parameters> {
   readonly contributors: GPUCommandNodeProducer<Parameters>[] = [];
+  /** Names of the glue stages added with {@link RecipeBuilder.addGlue}, in declaration order. */
+  readonly glueStages: {stage: string; nodes: readonly GPUCommandNode<Parameters>[]}[] = [];
 
   constructor(readonly graph: GPUCommandGraph<Parameters>) {}
 
@@ -70,6 +82,112 @@ export class RecipeBuilder<Parameters> {
     this.contributors.push(contributor);
     return contributor;
   }
+
+  /**
+   * Adds raw glue nodes (adapter kernels that are not a contributor) under a stage name. The
+   * nodes join the graph now, in call order, and appear in {@link RecipeBuilder.contributors} as
+   * one producer, so a recipe result lists every stage it added, and in
+   * {@link RecipeBuilder.glueStages} under `stage`.
+   */
+  addGlue(
+    stage: string,
+    nodes: GPUCommandNode<Parameters> | readonly GPUCommandNode<Parameters>[]
+  ): void {
+    const stageNodes = 'type' in nodes ? [nodes] : nodes;
+    this.graph.add(stageNodes);
+    this.glueStages.push({stage, nodes: stageNodes});
+    this.contributors.push({getCommandNodes: () => stageNodes});
+  }
+}
+
+/** One count produced by {@link addRecipeCountNodes}. @internal */
+export type RecipeCount = {
+  /** Name of the count; the per-row value is bound as `${name}Values` in the row body. */
+  name: string;
+  /** Caller-owned or graph-owned one-row uint32 view receiving the total. */
+  output: GraphDataView<'uint32'>;
+  /** WGSL `u32` expression for the row's contribution, evaluated once per invocation. */
+  value: string;
+};
+
+/** Properties of {@link addRecipeCountNodes}. @internal */
+export type RecipeCountNodesProps = {
+  /** Stage name, also the node ID prefix. */
+  id: string;
+  /** Operation name reported in the workload estimate. */
+  operation: string;
+  /** Number of rows (cells, groups, samples) the counts cover; one invocation per row. */
+  rowCount: number;
+  bindings: readonly WGSLKernelBinding[];
+  declarations?: string;
+  /** WGSL statements that run before the counts' `value` expressions, for shared locals. */
+  prelude?: string;
+  counts: readonly RecipeCount[];
+};
+
+/**
+ * Adds a row-parallel kernel that writes one uint32 contribution per row for each count, then a
+ * published `GPUReduction` sum per count. Replaces a single invocation looping over every row.
+ * Integer sums are exact, so the totals equal the serial loop's. The kernel may also write other
+ * per-row outputs from `prelude`.
+ * @internal
+ */
+export function addRecipeCountNodes<Parameters>(
+  builder: RecipeBuilder<Parameters>,
+  props: RecipeCountNodesProps
+): void {
+  const {graph} = builder;
+  // Same boundary checks as the recipe kernels: graph-owned, packed, outputs disjoint from inputs.
+  validateGraphViewsBelongToGraph(
+    props.id,
+    graph,
+    props.bindings.map(binding => binding.view)
+  );
+  for (const binding of props.bindings)
+    validatePackedView(binding.view, [binding.view.format], props.id);
+  validateGraphOutputsDisjointFromInputs(
+    props.id,
+    props.bindings.filter(binding => binding.access !== 'read').map(binding => binding.view),
+    props.bindings.filter(binding => binding.access === 'read').map(binding => binding.view)
+  );
+  const values = props.counts.map(count =>
+    createTransientView(graph, `${props.id}-${count.name}-values`, 'uint32', props.rowCount)
+  );
+  builder.addGlue(props.id, [
+    createWGSLKernelNode<Parameters>(graph, {
+      id: props.id,
+      operation: props.operation,
+      variant: 'count-rows',
+      bindings: [
+        ...props.bindings,
+        ...props.counts.map(
+          (count, index) =>
+            ({
+              name: `${count.name}Values`,
+              view: values[index],
+              type: 'u32',
+              access: 'read_write'
+            }) as const
+        )
+      ],
+      invocationCount: props.rowCount,
+      declarations: props.declarations,
+      body: `${props.prelude ?? ''}
+${props.counts
+  .map(count => `${count.name}Values[${count.name}ValuesOffset + index] = ${count.value};`)
+  .join('\n')}`
+    })
+  ]);
+  props.counts.forEach((count, index) => {
+    builder.add(
+      new GPUReduction({
+        id: `${props.id}-${count.name}-sum`,
+        input: values[index],
+        output: count.output,
+        operation: 'sum'
+      })
+    );
+  });
 }
 
 /**
@@ -132,24 +250,26 @@ export function createTransientSpatialWeights<Parameters>(
 
 /**
  * Adds one node writing `offsets[i] = i` for `i` in `[0, count]` and returns the `count + 1`
- * view: the feature or polygon offsets of a layout with one part per row.
+ * view: the feature or polygon offsets of a layout with one part per row. With `builder`, the node
+ * is registered as a named glue stage of the recipe.
  * @internal
  */
 export function createIdentityOffsetsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  count: number
+  count: number,
+  builder?: RecipeBuilder<Parameters>
 ): GraphDataView<'uint32'> {
   const offsets = createTransientView(graph, `${id}-offsets`, 'uint32', count + 1);
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-offsets`,
-      operation: 'GPURecipeIdentityOffsets',
-      bindings: [{name: 'offsets', view: offsets, type: 'u32', access: 'read_write'}],
-      invocationCount: count + 1,
-      body: 'offsets[offsetsOffset + index] = index;'
-    })
-  );
+  const node = createWGSLKernelNode<Parameters>(graph, {
+    id: `${id}-offsets`,
+    operation: 'GPURecipeIdentityOffsets',
+    bindings: [{name: 'offsets', view: offsets, type: 'u32', access: 'read_write'}],
+    invocationCount: count + 1,
+    body: 'offsets[offsetsOffset + index] = index;'
+  });
+  if (builder) builder.addGlue(`${id}-identity-offsets`, node);
+  else graph.add(node);
   return offsets;
 }
 
@@ -306,7 +426,8 @@ ${getCellKeySearchWGSL('findStudyCell', 'cells', 'countScalar[countScalarOffset]
     if (found == NOT_FOUND || found == index) {
       continue;
     }`;
-  graph.add(
+  builder.addGlue(
+    'slot-counts',
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-slot-counts`,
       operation: 'GPUCellDiskWeights',
@@ -327,10 +448,11 @@ ${getCellKeySearchWGSL('findStudyCell', 'cells', 'countScalar[countScalarOffset]
   slotCounts[slotCountsOffset + index] = count;`
     })
   );
-  graph.add(
+  builder.add(
     new GPUScan({id: `${id}-slot-scan`, input: counts, output: inclusive, mode: 'inclusive'})
   );
-  graph.add(
+  builder.addGlue(
+    'offsets',
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-offsets`,
       operation: 'GPUCellDiskWeights',
@@ -363,7 +485,8 @@ ${getCellKeySearchWGSL('findStudyCell', 'cells', 'countScalar[countScalarOffset]
   }`
     })
   );
-  graph.add(
+  builder.addGlue(
+    'write',
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-write`,
       operation: 'GPUCellDiskWeights',

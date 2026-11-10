@@ -86,7 +86,10 @@ export function getGPULineLocateParameterValues(
 /** Kernel model of {@link GPULineLocate}, derived from its `spatialContext` (not a prop). */
 export type GPULineLocateCoordinateSystem = 'planar' | 'spherical';
 
-/** Per-event outputs of {@link GPULineLocate}; `eventLineIndices.length` rows each. */
+/**
+ * Per-event outputs of {@link GPULineLocate}; `eventLineIndices.length` rows each. There is no
+ * `status.count`: every row is one event, and `statuses` reports each event individually.
+ */
 export type GPULineLocateOutput = {
   /** Located (and laterally offset) positions; NaN for invalid events. */
   positions: GraphDataView<'float32x2'>;

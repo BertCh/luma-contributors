@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -11,10 +10,19 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Largest edge count: each query keeps one private distance array with an entry per edge. */
+const MAXIMUM_EDGE_COUNT = 128;
+/** Largest turn count: bounds the work of each relaxation round of a query. */
+const MAXIMUM_TURN_COUNT = 4096;
+/** Largest `maximumRelaxations`: bounds the relaxation loop of a query. */
+const MAXIMUM_RELAXATIONS = 65536;
 
 export type GPUNetworkPointRoutingProps = {
   id?: string;
@@ -47,9 +55,16 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkPointRoutingProps) {
     this.id = props.id ?? 'network-point-routing';
     this.props = props;
-    assert(props.costs.length > 0 && props.costs.length <= 128 && props.turns.length <= 4096);
-    const rounds = props.maximumRelaxations ?? props.costs.length;
-    assert(Number.isInteger(rounds) && rounds >= 0 && rounds <= 65536);
+    const {id} = this;
+    validateCapacity(id, 'costs rows', props.costs.length, 1, MAXIMUM_EDGE_COUNT);
+    validateCapacity(id, 'turns rows', props.turns.length, 0, MAXIMUM_TURN_COUNT);
+    validateCapacity(
+      id,
+      'maximumRelaxations',
+      props.maximumRelaxations ?? props.costs.length,
+      0,
+      MAXIMUM_RELAXATIONS
+    );
     validatePackedView(props.turns, ['uint32x2'], this.id);
     validatePackedView(props.queries, ['uint32x2'], this.id);
     validatePackedView(props.fractions, ['float32x2'], this.id);
@@ -57,11 +72,25 @@ export class GPUNetworkPointRouting implements GPUCommandNodeProducer {
       validatePackedView(view, ['float32'], this.id);
     for (const view of [props.output.status, props.output.predecessorEdges])
       validatePackedView(view, ['uint32'], this.id);
-    assert(
-      props.fractions.length === props.queries.length &&
-        props.output.costs.length === props.queries.length &&
-        props.output.status.length === props.queries.length &&
-        props.output.predecessorEdges.length === props.queries.length * props.costs.length
+    validateRequirement(
+      id,
+      props.fractions.length === props.queries.length,
+      'fractions must hold one row per query'
+    );
+    validateRequirement(
+      id,
+      props.output.costs.length === props.queries.length,
+      'output.costs must hold one row per query'
+    );
+    validateRequirement(
+      id,
+      props.output.status.length === props.queries.length,
+      'output.status must hold one row per query'
+    );
+    validateRequirement(
+      id,
+      props.output.predecessorEdges.length === props.queries.length * props.costs.length,
+      'output.predecessorEdges must hold costs rows per query'
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.turns,

@@ -197,3 +197,40 @@ it('validates view topology and intentional separate-output-buffer restriction',
     device.destroy();
   }
 });
+
+it('accepts mask as the row filter, keeps validity as a deprecated alias, and names failed limits', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = {
+    values: createTransientView(graph, 'values', 'float32', 4),
+    domain: createTransientView(graph, 'domain', 'float32', 8),
+    range: createTransientView(graph, 'range', 'float32', 2),
+    parameters: createTransientView(graph, 'parameters', 'float32', 4),
+    maximumDomainCount: 8,
+    output: {values: createTransientView(graph, 'output', 'float32', 4)}
+  };
+  try {
+    const mask = createTransientView(graph, 'mask', 'uint32', 4);
+    const fromMask = new GPUScalarScale({...props, mask});
+    const fromValidity = new GPUScalarScale({...props, validity: mask});
+    expect(fromMask.mask).toBe(mask);
+    expect(fromValidity.mask).toBe(mask);
+    const maskSource = getParsedKernelSources(fromMask.getCommandNodes(graph));
+    expect([...maskSource.values()].join('')).toContain('sourceMask');
+    expect(
+      () => new GPUScalarScale({...props, mask: createTransientView(graph, 'short', 'uint32', 3)})
+    ).toThrow(/^scalar-scale mask must hold exactly one entry per source row$/);
+    expect(
+      () =>
+        new GPUScalarScale({
+          ...props,
+          output: {values: createTransientView(graph, 'short-output', 'float32', 3)}
+        })
+    ).toThrow(/^scalar-scale output.values must hold at least one value per source row$/);
+    expect(() => getGPUScalarScaleParameterValues({scale: 'linear', domainCount: 3})).toThrow(
+      /^GPUScalarScale domainCount must be an integer from 0 to 256/
+    );
+  } finally {
+    device.destroy();
+  }
+});

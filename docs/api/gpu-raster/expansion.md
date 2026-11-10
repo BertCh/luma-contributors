@@ -12,14 +12,14 @@ raster contributors from `@luma-contributors/analysis/raster-analysis`, terrain 
 
 | Proposal | Public API | Contract and current boundary |
 | --- | --- | --- |
-| C04 | `GPURasterFractionalCoverage`, `GPURasterFractionalZonalStatistics` | Triangulates polygons including holes, clips every triangle to affine raster cells, and emits compact `(zoneId, cellId, fraction)` tuples. Overlapping features retain separate tuples. Coverage candidates are explicitly capped at 4,194,304 zone/cell pairs. Weighted aggregation distinguishes extensive cell totals from density/intensive area integrals. |
+| C04 | `GPURasterFractionalCoverage`, `GPURasterFractionalZonalStatistics` | Triangulates polygons including holes, clips every triangle to affine raster cells, and emits compact `(zoneId, cellId, fraction)` tuples. Overlapping features retain separate tuples. Coverage candidates are explicitly capped at 4,194,304 zone/cell pairs; positive pairs are compacted in parallel (flag, scan, scatter) in zone-major, cell-ascending order. Weighted aggregation distinguishes extensive cell totals from density/intensive area integrals. |
 | C05 | `GPURasterFillNoData` | Disk search of original valid donors, with nearest or all-donor inverse-distance interpolation. Radius 1–256 pixels. Preserves observed calibrated values; returns filled mask, validity and unresolved count. The IDW method is **not** GDAL's four-quadrant method. |
 | C06 | `GPURasterRankFilter` | Square footprints with radius 0–8. Quantile selects `min(floor(q*n),n-1)` (upper middle for an even median). Clamp or nodata borders; strict or ignored missing neighbors. Invalid centers stay invalid. |
 | C07 | `GPUTerrainFlowDistance` | D8 paths stop at streams or terminal cells. Defaults to planar affine distance; explicit nonnegative transition costs support other units. Cycles, unresolved directions/stream masks, numerical overflow and budget exhaustion remain unresolved. |
 | C08 | `GPUTerrainStreamNetwork` | Compact polylines between headwaters, junctions and outlets, with source/target raster cell IDs, vertex offsets, affine cell-center positions and lengths. Valid D8 stream paths only. Reach order is source-cell order. Stream order can be gathered from the source-cell IDs. |
 | C10 | `GPUConcaveHull`, `GPUGroupConcaveHull` | Alpha-complex area hulls retain Delaunay triangles by maximum circumradius. Directed boundary edges preserve holes and disconnected components. This is radius-based alpha geometry, not GEOS ratio-based concave hull. Collinear/isolated points emit no area. |
-| C21 | `GPURasterWalkingCost` | Directed eight-neighbor movement from elevation and friction. Tobler time or explicitly supplied GRASS-style energy coefficients; nonnegative finite edges only. Whole-grid Jacobi rounds publish finite answers only after a fixed-point check. |
-| C22 | `GPURasterReconstruction`, `GPURasterFillHoles` | Grayscale geodesic dilation/erosion under a mask; hole filling reconstructs background from the boundary. Four/eight connectivity is explicit. Nonconvergence never publishes a plausible completed mask. |
+| C21 | `GPURasterWalkingCost` | Directed eight-neighbor movement from elevation and friction. Tobler time or explicitly supplied GRASS-style energy coefficients; nonnegative finite edges only. Whole-grid Jacobi rounds are gated on the GPU and stop once a round changes nothing; the current costs are always published and `status.converged` tells whether they are final. |
+| C22 | `GPURasterReconstruction`, `GPURasterFillHoles` | Grayscale geodesic dilation/erosion under a mask; hole filling reconstructs background from the boundary. Four/eight connectivity is explicit. The current values are always published; `status.converged=0` marks an unfinished run, whose hole mask reports background the boundary flood has not reached as holes. |
 | C23 | `GPURasterReprojection` | Generates destination centers, applies an explicit inverse `CompiledProjection`, inverts a nonsingular source affine and samples nearest/bilinear values. Supports rotated grids. One caller-selected source tile; no tile fetching. Float32 projection path only. |
 | C24 | `GPUConstrainedDelaunayTriangulation` | Existing shell/hole triangulation followed by bounded constrained Lawson flips. Boundary edges remain fixed. Per-polygon triangulation validity and Delaunay convergence are separate; exhaustion retains a valid initial/refined mesh with `output.status.converged=0`. |
 | C25 | `GPURasterWatershedSegmentation` | Default `method: 'fifo'` preserves marker priority flooding by path maximum elevation and discovery age, within 16,384 cells. Explicit `'minimum-spanning-forest'` uses parallel rooted Boruvka contraction with linear scratch and device-sized domains. Both support four/eight connectivity and fixed markers; their plateau tie policies differ. |
@@ -133,9 +133,18 @@ invalid projection domains remain nodata; strict bilinear sampling requires ever
 sample, while renormalization uses surviving support. A projection-bearing contributor registers
 once and owns its projection parameter buffer: destroy it after destroying its compiled graph.
 
-Reconstruction, thinning and walking perform an additional check round to establish the final
-fixed point. When it still changes, they report `output.status.converged=0`; raster floats are NaN and binary
-masks are `0xfffffffe`. Consumers must retain that evidence. Watershed segmentation leaves original
+Reconstruction, fill holes, thinning and walking perform an additional check round to establish the
+final fixed point. The rounds run as GPU-gated iterations: once a round changes nothing, later rounds
+dispatch no work, so a generous `maximumIterations` costs only command nodes (see the contributor's
+`estimatedCommandNodeCount`, checked against the 32,768-node budget). The node budget fixes the largest accepted `maximumIterations`: 26,196 for walking cost, 26,209 for reconstruction, 26,207 for fill holes and 10,920 for skeletonization; one more is rejected at construction. The current values are
+**always published**, whether or not the run converged. `output.status.converged` is 1 only when a
+round changed nothing before the limit. Optional `output.status.iterationLimitReached` (1 when the
+limit stopped an unconverged run) and `output.status.iterationCount` (rounds that ran, including the
+verifying round; thinning counts full two-phase iterations) are written when supplied. An unconverged
+walking cost holds `+Infinity` for cells the front has not reached and upper bounds elsewhere, an
+unconverged reconstruction holds the partially spread marker, and an unconverged thinning holds a
+partially thinned mask. Earlier releases published all-NaN or `0xfffffffe` output instead; callers
+that relied on that must now test `converged`. Watershed segmentation leaves original
 markers identifiable but publishes unresolved non-marker pixels when its step budget is exhausted.
 
 ## Reference evidence

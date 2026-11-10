@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {clamp} from '@math.gl/core';
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -18,19 +17,33 @@ import {
   createRasterGatedLoopNodes,
   validateRasterIterations
 } from '../../raster-analysis/cost-distance/raster-relaxation';
-import {createRasterCountNodes} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
-import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+  validateCapacity,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
+import {createRasterCountNodes} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
+import {
+  validateRasterGrid,
+  validateRasterGridAxisAligned
+} from '../../raster-analysis/raster-band-utils';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
   checkTerrainGraph,
+  createTerrainValidityMask,
+  getTerrainGroundMeasureWGSL,
   terrainBinding,
+  validateTerrainValidityView,
   TERRAIN_FINITE_WGSL
 } from './terrain-processing-utils';
+
+/** Largest successor walk per invocation and sweep: bounds one thread's serial work so a sweep stays inside the GPU watchdog. */
+export const TERRAIN_BRANCHING_MAXIMUM_WALK_LENGTH = 1024;
 
 export type GPUTerrainBranchingFlowProps = {
   id?: string;
@@ -45,8 +58,21 @@ export type GPUTerrainBranchingFlowProps = {
     | 'minimum-distance'
     | 'maximum-distance'
     | 'fractional-catchment';
-  /** Optional eight edge lengths per cell. Defaults to affine planar distances. */
+  /**
+   * Optional eight edge lengths per cell, in the units you want the distance modes to report.
+   * Otherwise the distance modes measure each edge from the grid: affine units by default, or
+   * ground meters under `cellSizeMode`. `transport` and `fractional-catchment` are
+   * dimensionless in length and ignore both.
+   */
   edgeLengths?: GraphDataView<'float32'>;
+  /**
+   * Ground model for the default edge lengths. Default `'uniform'` (affine units; geographic
+   * degrees are not ground meters). `'web-mercator'` and `'geographic'` give ground meters and
+   * need an axis-aligned grid. Compile-time.
+   */
+  cellSizeMode?: GPURasterCellSizeMode;
+  /** Optional per-cell validity (uint32, nonzero valid). A zero word marks `values` NaN: the cell is invalid (status 0). */
+  validity?: GraphDataView<'uint32'>;
   /** GPU sweeps; default clamps width + height to [128, 1024]. Maximum 1024. A sweep can finalize many dependency levels. */
   maximumIterations?: number;
   /** Bounded successor walk after each publication. Default 32. */
@@ -65,26 +91,35 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
   constructor(readonly props: GPUTerrainBranchingFlowProps) {
     this.id = props.id ?? 'terrain-branching-flow';
     const count = validateRasterGrid(this.id, props.grid);
-    assert(props.fractions.length === count * 8 && props.values.length === count);
-    assert(!props.edgeLengths || props.edgeLengths.length === count * 8);
-    assert(
-      props.output.values.length === count &&
-        props.output.status.length === count &&
-        props.output.unresolvedCount.length === 1
-    );
+    validateRasterCellSizeMode(this.id, props.cellSizeMode);
+    validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
+    validateViewLength(this.id, 'fractions', props.fractions, count * 8);
+    validateViewLength(this.id, 'values', props.values, count);
+    if (props.edgeLengths) validateViewLength(this.id, 'edgeLengths', props.edgeLengths, count * 8);
+    validateTerrainValidityView(this.id, props.validity, count);
+    validateViewLength(this.id, 'output.values', props.output.values, count);
+    validateViewLength(this.id, 'output.status', props.output.status, count);
+    validateViewLength(this.id, 'output.unresolvedCount', props.output.unresolvedCount, 1);
     validateRasterIterations(
       this.id,
       'maximumIterations',
       props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024)
     );
-    assert(
-      Number.isInteger(props.maximumWalkLength ?? 32) &&
-        (props.maximumWalkLength ?? 32) > 0 &&
-        (props.maximumWalkLength ?? 32) <= 1024
+    validateCapacity(
+      this.id,
+      'maximumWalkLength',
+      props.maximumWalkLength ?? 32,
+      1,
+      TERRAIN_BRANCHING_MAXIMUM_WALK_LENGTH
     );
     checkTerrainViews(
       this.id,
-      [props.fractions, props.values, ...(props.edgeLengths ? [props.edgeLengths] : [])],
+      [
+        props.fractions,
+        props.values,
+        ...(props.edgeLengths ? [props.edgeLengths] : []),
+        ...(props.validity ? [props.validity] : [])
+      ],
       Object.values(props.output)
     );
   }
@@ -97,19 +132,27 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
       props.fractions,
       props.values,
       ...(props.edgeLengths ? [props.edgeLengths] : []),
+      ...(props.validity ? [props.validity] : []),
       ...Object.values(props.output)
     ]);
+    const masked = createTerrainValidityMask(graph, {
+      id,
+      operation: 'GPUTerrainBranchingFlow',
+      values: props.values,
+      validity: props.validity
+    });
     const state = createTransientView(graph, `${id}-state`, 'uint32', count);
     const iterationState = createRasterIterationState(graph, id, 'GPUTerrainBranchingFlow', count);
     const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...masked.nodes,
       createWGSLKernelNode(graph, {
         id: `${id}-initialize`,
         operation: 'GPUTerrainBranchingFlow',
         invocationCount: count,
         bindings: [
           terrainBinding('fractions', props.fractions),
-          terrainBinding('source', props.values),
+          terrainBinding('source', masked.values),
           terrainBinding('state', state, 'read_write')
         ],
         declarations,
@@ -127,9 +170,9 @@ state[stateOffset + index] = select(0xfffffffeu, 0xffffffffu, valid);`
       })
     ];
     const transport = props.mode === 'transport';
-    const affine = props.grid.affine.map(getWGSLFloatLiteral);
     const lengths = props.edgeLengths ? [terrainBinding('lengths', props.edgeLengths)] : [];
     const solveDeclarations = `${declarations}
+${props.edgeLengths ? '' : getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}
 const WAITING: u32 = 0xffffffffu;
 const INVALID: u32 = 0xfffffffeu;
 fn tryFinalize(cell: u32) -> bool {
@@ -151,8 +194,7 @@ for (var direction = 0u; direction < 8u; direction++) {
  ${
    props.edgeLengths
      ? 'let edgeLength = lengths[lengthsOffset + cell * 8u + direction];'
-     : `let delta = vec2<f32>(f32(neighbor % GRID_WIDTH) - f32(cell % GRID_WIDTH), f32(neighbor / GRID_WIDTH) - f32(cell / GRID_WIDTH));
- let edgeLength = length(vec2<f32>(${affine[0]} * delta.x + ${affine[1]} * delta.y, ${affine[3]} * delta.x + ${affine[4]} * delta.y));`
+     : 'let edgeLength = getGroundEdgeLength(cell, neighbor);'
  }
  ${
    transport || props.mode === 'fractional-catchment'
@@ -194,7 +236,7 @@ if (!ready) { return false; }
             invocationCount: count,
             bindings: [
               terrainBinding('fractions', props.fractions),
-              terrainBinding('source', props.values),
+              terrainBinding('source', masked.values),
               {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'},
               ...lengths,
               {

@@ -119,3 +119,47 @@ it('GPUNetworkKFunction validates views and parameters', () => {
     Array.from(getGPUNetworkKFunctionParameterValues({seed: 2 ** 32 + 5, activeSimulations: 7}))
   ).toEqual([5, 1, 7, 0]);
 });
+
+it('GPUNetworkKFunction bounds its command node count by the primitive allowance', () => {
+  // Nodes this class creates are counted exactly; snapping, reductions and the length scan are
+  // counted as a flat allowance of 192.
+  for (const configuration of [
+    {overrides: {maximumIterations: 2}, hasConverged: true},
+    {overrides: {simulationCount: 0, rowsPerBlock: 10, maximumIterations: 5}, hasConverged: false},
+    {overrides: {simulationCount: 20, rowsPerBlock: 7, laneCount: 3, maximumIterations: 4}},
+    {overrides: {simulationCount: 4, rowsPerBlock: 40}, hasConverged: true}
+  ] as {overrides: Record<string, unknown>; hasConverged?: boolean}[]) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    // createProps uses 8 bands and 3 simulations unless overridden.
+    const patternCount = 1 + ((configuration.overrides['simulationCount'] as number) ?? 3);
+    const contributor = new GPUNetworkKFunction(
+      createProps(graph, configuration.overrides, {
+        pairCounts: createTransientView(graph, 'budget-pair-counts', 'uint32', 8 * patternCount),
+        envelope: createTransientView(graph, 'budget-envelope', 'float32', 24),
+        status: configuration.hasConverged
+          ? {converged: createTransientView(graph, 'budget-converged', 'uint32', 1)}
+          : undefined,
+        kValues: createTransientView(graph, 'budget-k-values', 'float32', 8 * patternCount)
+      }) as never
+    );
+    const nodeCount = contributor.getCommandNodes(graph).length;
+    const label = JSON.stringify(configuration);
+    expect(contributor.estimatedCommandNodeCount, label).toBeGreaterThanOrEqual(nodeCount);
+    expect(contributor.estimatedCommandNodeCount - nodeCount, label).toBeLessThanOrEqual(192);
+  }
+});
+
+it('GPUNetworkKFunction rejects configurations above the command node budget', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  // 10 events and 99 simulations in blocks of one row: 1,000 blocks of 64 rounds and more.
+  expect(
+    () =>
+      new GPUNetworkKFunction(
+        createProps(
+          graph,
+          {simulationCount: 600, rowsPerBlock: 1, bandCount: 2},
+          {kValues: createTransientView(graph, 'budget-reject-k', 'float32', 2 * 601)}
+        ) as never
+      )
+  ).toThrow(/^k estimated command node count must be at most 32768$/);
+});

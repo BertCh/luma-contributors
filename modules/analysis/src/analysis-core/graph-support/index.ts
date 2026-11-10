@@ -12,8 +12,10 @@ export {
   type PreparedArrowAnalyticsTimeColumn
 } from './arrow-analytics-normalization';
 export {
+  getGPUTemporalContextFromPreparedArrowColumn,
   makeGPUTimeVectorFromPreparedArrowColumn,
-  type GPUTimeVectorFromPreparedArrowColumn
+  type GPUTimeVectorFromPreparedArrowColumn,
+  type GPUTimeVectorWithTemporalContext
 } from './arrow-analytics-time-upload';
 export {
   convertWideNumericValue,

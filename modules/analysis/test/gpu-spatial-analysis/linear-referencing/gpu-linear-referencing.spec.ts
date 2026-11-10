@@ -64,6 +64,8 @@ type ReferencingReadback = {
   signedOffsets: number[];
   vertexMeasures: number[];
   overflow: number;
+  candidateCount: number;
+  requiredCount: number;
 };
 
 function createReferencingFixture(
@@ -95,7 +97,9 @@ function createReferencingFixture(
     sides: track(createOutputBuffer(device, pointCount)),
     signedOffsets: track(createOutputBuffer(device, pointCount)),
     vertexMeasures: track(createOutputBuffer(device, rowCount)),
-    overflow: track(createOutputBuffer(device, 1))
+    overflow: track(createOutputBuffer(device, 1)),
+    candidateCount: track(createOutputBuffer(device, 1)),
+    requiredCount: track(createOutputBuffer(device, 1))
   };
   graph.add(
     new GPULinearReferencing({
@@ -151,7 +155,23 @@ function createReferencingFixture(
           'float32',
           rowCount
         ),
-        status: {overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1)}
+        status: {
+          overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
+          candidateCount: importGraphBuffer(
+            graph,
+            'o-candidate-count',
+            outputs.candidateCount,
+            'uint32',
+            1
+          ),
+          requiredCount: importGraphBuffer(
+            graph,
+            'o-required-count',
+            outputs.requiredCount,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
@@ -173,7 +193,9 @@ function createReferencingFixture(
         sides: Array.from(new Int32Array(sideBytes.buffer, sideBytes.byteOffset, pointCount)),
         signedOffsets: await readFloat32(outputs.signedOffsets, pointCount),
         vertexMeasures: await readFloat32(outputs.vertexMeasures, rowCount),
-        overflow: (await readUint32(outputs.overflow, 1))[0]
+        overflow: (await readUint32(outputs.overflow, 1))[0],
+        candidateCount: (await readUint32(outputs.candidateCount, 1))[0],
+        requiredCount: (await readUint32(outputs.requiredCount, 1))[0]
       };
     },
     getCompileCount: () => compileSpy.mock.calls.length,
@@ -354,6 +376,9 @@ it('GPULinearReferencing reports candidate overflow', async () => {
   const fixture = createReferencingFixture(device, lines, points, 8);
   const actual = await fixture.run(10);
   expect(actual.overflow).toBe(1);
+  // `requiredCount` carries the same unclamped count as the deprecated `candidateCount`.
+  expect(actual.requiredCount).toBeGreaterThan(8);
+  expect(actual.requiredCount).toBe(actual.candidateCount);
   fixture.destroy();
 });
 

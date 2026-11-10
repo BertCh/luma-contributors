@@ -93,7 +93,12 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
     const {id, props} = this;
     const inputs = props.test.replayInputs;
     assert(inputs); // replay requires the test to have been lowered first
-    const reads = [...inputs.bindings.map(binding => binding.view), inputs.observedRaw, props.row];
+    const reads = [
+      ...inputs.bindings.map(binding => binding.view),
+      inputs.observedRaw,
+      props.row,
+      ...(inputs.negativeCount ? [inputs.negativeCount] : [])
+    ];
     validateGraphViewsBelongToGraph(id, graph, [...reads, ...Object.values(props.output)]);
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), reads);
     const {declarations, body} = getLocalPermutationKernelWGSL(inputs.kernel, 'replay');
@@ -112,14 +117,25 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
         bindings: [
           {name: 'row', view: props.row, type: 'u32', access: 'read'},
           {name: 'observedRaw', view: inputs.observedRaw, type: 'f32', access: 'read'},
-          replayInfo
+          replayInfo,
+          ...(inputs.negativeCount
+            ? [
+                {
+                  name: 'negativeCount',
+                  view: inputs.negativeCount,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: 1,
+        // Negative data is rejected by the live test (no row is tested), so its replay is unavailable too.
         body: `let pinnedRow = row[rowOffset];
   replayInfo[replayInfoOffset] = 0x7fc00000u;
   replayInfo[replayInfoOffset + 1u] = 0u;
   replayInfo[replayInfoOffset + 2u] = pinnedRow;
-  if (pinnedRow < ${props.test.props.values.length}u) {
+  if (pinnedRow < ${props.test.props.values.length}u${inputs.negativeCount ? ' && negativeCount[negativeCountOffset] == 0.0' : ''}) {
     replayInfo[replayInfoOffset] = bitcast<u32>(observedRaw[observedRawOffset + pinnedRow]);
   }`
       }),

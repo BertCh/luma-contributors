@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   GPUFFT2D,
   createTransientView,
@@ -12,41 +11,71 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validatePackedView,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {RASTER_FINITE_WGSL, rasterBinding, validateRasterCount} from './raster-kernel-utils';
+import {RASTER_FINITE_WGSL, createRasterArgmaxNodes, rasterBinding} from './raster-kernel-utils';
 import type {GPURasterRegistrationProps} from './gpu-raster-registration';
+
+/** Masked mode side length: six padded (about twice the side, rounded to a power of two) correlation fields plus FFT scratch must fit device storage (512 gives 1024 squared padded cells). */
+export const MAXIMUM_MASKED_REGISTRATION_DIMENSION = 512;
+/** Same refinement-window limit as periodic mode: (2 * ceil(factor / 2) + 1) squared candidates. */
+const MAXIMUM_MASKED_UPSAMPLE_FACTOR = 32;
+/** Fewer paired cells make a Pearson correlation undefined or meaningless (three points fit any line). */
+const MINIMUM_MASKED_OVERLAP_COUNT = 3;
 
 export function validateMaskedRegistrationProps(
   props: GPURasterRegistrationProps,
   id: string
 ): void {
-  // Six padded correlation fields plus FFT scratch bound this initial masked implementation.
-  validateRasterCount(props.grid.width, 512);
-  validateRasterCount(props.grid.height, 512);
-  assert(props.grid.width >= 2 && props.grid.height >= 2);
-  validateRasterCount(props.upsampleFactor ?? 20, 32);
+  validateCapacity(id, 'grid.width', props.grid.width, 2, MAXIMUM_MASKED_REGISTRATION_DIMENSION);
+  validateCapacity(id, 'grid.height', props.grid.height, 2, MAXIMUM_MASKED_REGISTRATION_DIMENSION);
+  validateCapacity(
+    id,
+    'upsampleFactor',
+    props.upsampleFactor ?? 20,
+    1,
+    MAXIMUM_MASKED_UPSAMPLE_FACTOR
+  );
   const maximumShift = props.maximumShift ?? [props.grid.width - 1, props.grid.height - 1];
-  assert(
+  validateRequirement(
+    id,
     maximumShift.every(
       (value, dimension) =>
         Number.isInteger(value) &&
         value >= 0 &&
         value < (dimension === 0 ? props.grid.width : props.grid.height)
-    )
+    ),
+    'maximumShift must be nonnegative integers below grid.width and grid.height'
   );
   const fraction = props.minimumOverlapFraction ?? 0.3;
-  assert(Number.isFinite(fraction) && fraction >= 0 && fraction <= 1);
-  validateRasterCount(props.minimumOverlapCount ?? 3, props.grid.width * props.grid.height);
-  assert((props.minimumOverlapCount ?? 3) >= 3);
+  validateRequirement(
+    id,
+    Number.isFinite(fraction) && fraction >= 0 && fraction <= 1,
+    'minimumOverlapFraction must be a finite number in [0, 1]'
+  );
+  validateCapacity(
+    id,
+    'minimumOverlapCount',
+    props.minimumOverlapCount ?? MINIMUM_MASKED_OVERLAP_COUNT,
+    MINIMUM_MASKED_OVERLAP_COUNT,
+    props.grid.width * props.grid.height
+  );
   const minimumCorrelation = props.minimumCorrelation ?? 0;
-  assert(
-    Number.isFinite(minimumCorrelation) && minimumCorrelation >= -1 && minimumCorrelation <= 1
+  validateRequirement(
+    id,
+    Number.isFinite(minimumCorrelation) && minimumCorrelation >= -1 && minimumCorrelation <= 1,
+    'minimumCorrelation must be a finite number in [-1, 1]'
   );
   const ambiguity = props.ambiguityTolerance ?? 1e-4;
-  assert(Number.isFinite(ambiguity) && ambiguity >= 0 && ambiguity < 1);
+  validateRequirement(
+    id,
+    Number.isFinite(ambiguity) && ambiguity >= 0 && ambiguity < 1,
+    'ambiguityTolerance must be a finite number in [0, 1)'
+  );
   const inputs = [
     props.reference,
     props.moving,
@@ -56,11 +85,15 @@ export function validateMaskedRegistrationProps(
   const outputs = Object.values(props.output).filter(view => view !== undefined);
   for (const view of inputs) {
     validatePackedView(view, [view.format], id);
-    assert(view.length >= props.grid.width * props.grid.height);
+    validateRequirement(
+      id,
+      view.length >= props.grid.width * props.grid.height,
+      'reference, moving and validity views must hold at least grid.width times grid.height values'
+    );
   }
   for (const view of outputs) {
     validatePackedView(view, [view.format], id);
-    assert(view.length >= 1);
+    validateRequirement(id, view.length >= 1, 'output views must not be empty');
   }
   validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
   outputs.forEach((view, index) =>
@@ -161,6 +194,9 @@ export function getMaskedRegistrationNodes<Parameters>(
     createWGSLKernelNode(graph, {
       id: `${id}-masked-statistics`,
       operation: 'GPURasterRegistration',
+      // Serial running means over every cell of a grid of at most 512 x 512 = 262,144 cells. A
+      // parallel sum would change the float32 rounding of the means; this becomes the slowest
+      // node of the pipeline well above that size, which MAXIMUM_MASKED_REGISTRATION_DIMENSION prevents.
       invocationCount: 1,
       bindings: [
         rasterBinding('referenceValues', props.reference),
@@ -272,21 +308,51 @@ if (support >= required) { let referenceVariance = moments[3] - moments[1] * mom
 scores[scoresOffset + index] = score;`
     })
   );
+  const bestScore = createTransientView(graph, `${id}-masked-best-score`, 'float32', 1);
+  const bestIndex = createTransientView(graph, `${id}-masked-best-index`, 'uint32', 1);
+  const secondaryScore = createTransientView(graph, `${id}-masked-secondary-score`, 'float32', 1);
+  const secondaryIndex = createTransientView(graph, `${id}-masked-secondary-index`, 'uint32', 1);
+  // Best finite score (lowest search cell wins ties), then the best finite score at least two
+  // search cells away from it in either axis; both are parallel argmax reductions.
   nodes.push(
+    ...createRasterArgmaxNodes(graph, {
+      id: `${id}-masked-best`,
+      operation: 'GPURasterRegistration',
+      count: searchCount,
+      bindings: [rasterBinding('scores', scores)],
+      declarations: RASTER_FINITE_WGSL,
+      candidate:
+        'candidateValue = scores[scoresOffset + index]; candidateEligible = finite(candidateValue);',
+      initialValue: '-2.0',
+      outputValue: bestScore,
+      outputIndex: bestIndex
+    }),
+    ...createRasterArgmaxNodes(graph, {
+      id: `${id}-masked-secondary`,
+      operation: 'GPURasterRegistration',
+      count: searchCount,
+      bindings: [rasterBinding('scores', scores), rasterBinding('bestIndex', bestIndex)],
+      declarations: RASTER_FINITE_WGSL,
+      candidate: `let selected = bestIndex[bestIndexOffset]; let coordinate = vec2<i32>(i32(selected % ${searchWidth}u), i32(selected / ${searchWidth}u));
+    let position = vec2<i32>(i32(index % ${searchWidth}u), i32(index / ${searchWidth}u));
+    candidateValue = scores[scoresOffset + index]; candidateEligible = finite(candidateValue) && any(abs(position - coordinate) > vec2<i32>(1));`,
+      initialValue: '-2.0',
+      outputValue: secondaryScore,
+      outputIndex: secondaryIndex
+    }),
     createWGSLKernelNode(graph, {
       id: `${id}-masked-coarse`,
       operation: 'GPURasterRegistration',
       invocationCount: 1,
       bindings: [
-        rasterBinding('scores', scores),
+        rasterBinding('bestScore', bestScore),
+        rasterBinding('bestIndex', bestIndex),
+        rasterBinding('secondaryScore', secondaryScore),
         rasterBinding('coarse', coarse, true),
         rasterBinding('status', props.output.status, true)
       ],
-      declarations: RASTER_FINITE_WGSL,
-      body: `var best = -2.0; var selected = 0u;
-for (var candidate = 0u; candidate < ${searchCount}u; candidate++) { let score = scores[scoresOffset + candidate]; if (finite(score) && score > best) { best = score; selected = candidate; } }
-let coordinate = vec2<i32>(i32(selected % ${searchWidth}u), i32(selected / ${searchWidth}u)); var secondary = -2.0;
-for (var candidate = 0u; candidate < ${searchCount}u; candidate++) { let position = vec2<i32>(i32(candidate % ${searchWidth}u), i32(candidate / ${searchWidth}u)); if (any(abs(position - coordinate) > vec2<i32>(1))) { let score = scores[scoresOffset + candidate]; if (finite(score)) { secondary = max(secondary, score); } } }
+      body: `let best = bestScore[bestScoreOffset]; let secondary = secondaryScore[secondaryScoreOffset]; let selected = bestIndex[bestIndexOffset];
+let coordinate = vec2<i32>(i32(selected % ${searchWidth}u), i32(selected / ${searchWidth}u));
 var code = 0u; if (best < ${props.minimumCorrelation ?? 0}) { code = 3u; } else if (best - secondary <= max(abs(best), 1e-12) * ${props.ambiguityTolerance ?? 1e-4}) { code = 2u; }
 coarse[coarseOffset] = f32(coordinate.x - ${maximumShift[0]}); coarse[coarseOffset + 1u] = f32(coordinate.y - ${maximumShift[1]}); status[statusOffset] = code;`
     })
@@ -334,6 +400,9 @@ function getMaskedRefinementNodes<Parameters>(
     createWGSLKernelNode(graph, {
       id: `${id}-masked-refine`,
       operation: 'GPURasterRegistration',
+      // One invocation per refinement candidate (at most 33 x 33), each looping over every
+      // reference cell (at most 262,144): parallel over candidates only. Splitting the cell loop
+      // needs per-group Welford moments and a deterministic combine; not done here.
       invocationCount: candidateCount,
       workgroupSize: 32,
       bindings: [
@@ -381,6 +450,8 @@ if (f32(support) >= required && referenceVariance > 1e-12 && movingVariance > 1e
     createWGSLKernelNode(graph, {
       id: `${id}-masked-finish`,
       operation: 'GPURasterRegistration',
+      // Serial over the refinement candidates (at most 33 x 33 = 1089), the tie rule prefers the
+      // candidate nearest the coarse peak; the loop is bounded by the upsample factor, not by raster size.
       invocationCount: 1,
       bindings: [
         rasterBinding('refined', refined),

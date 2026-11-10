@@ -333,3 +333,75 @@ it('GPUTemporalReduction assigns adversarial bucket edges like the oracle', asyn
     fixture.destroy();
   }
 });
+
+const TWO_POW_32 = 2n ** 32n;
+
+it('GPUTemporalReduction makes hourly buckets of nanosecond data (width above 2^32)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const origin = 1_700_000_000_000_000_000n;
+  const width = 3_600_000_000_000n; // one hour in nanoseconds, 838 * 2^32 + 817405952
+  // Offsets inside bucket 1 that share the high word (838) and differ only in the low word.
+  const highPart = 838n * TWO_POW_32;
+  const offsets = [
+    -1n, // before the origin: dropped
+    5n, // bucket 0
+    width - 1n, // bucket 0
+    width + highPart + 100n, // bucket 1
+    width + highPart + 50n, // bucket 1, same high word, smaller low word
+    width + 3n, // bucket 1, high word 0: the first of the bucket
+    width + highPart + 100n, // bucket 1, equal to row 3: the lowest row wins the tie
+    2n * width + 1n, // bucket 2
+    3n * width // past the last bucket: dropped
+  ];
+  const values = [99, 10, 20, 30, 40, 50, 60, 70, 80];
+  const scene: Scene = {
+    cellIds: new Uint32Array(offsets.length),
+    timestamps: BigInt64Array.from(offsets, offset => origin + offset),
+    values: Float32Array.from(values),
+    cellCount: 1,
+    bucketCount: 3
+  };
+  const fixture = createFixture(device, scene);
+  const actual = await fixture.run(origin, width);
+  // Expected values written down from the rows above, not computed by the kernel or the oracle.
+  expect(Array.from(actual.count)).toEqual([2, 4, 1]);
+  expect(Array.from(actual.minimums)).toEqual([10, 30, 70]);
+  expect(Array.from(actual.maximums)).toEqual([20, 60, 70]);
+  expect(Array.from(actual.first)).toEqual([10, 50, 70]);
+  expect(Array.from(actual.last)).toEqual([20, 30, 70]);
+  expect(actual.occupiedIds).toEqual([0, 1, 2]);
+  expectParity(actual, scene, origin, width);
+  fixture.destroy();
+});
+
+it('GPUTemporalReduction divides by widths up to 2^63 with a full 64-bit remainder', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const minimum = -(2n ** 63n);
+  const width = 2n ** 62n;
+  const times = [
+    minimum, // bucket 0, offset 0
+    minimum + width - 1n, // bucket 0, the largest offset
+    minimum + width, // bucket 1
+    0n, // bucket 2
+    2n ** 63n - 1n // bucket 3, difference 2^64 - 1
+  ];
+  const scene: Scene = {
+    cellIds: new Uint32Array(times.length),
+    timestamps: BigInt64Array.from(times),
+    values: Float32Array.from([1, 2, 3, 4, 5]),
+    cellCount: 1,
+    bucketCount: 4
+  };
+  const fixture = createFixture(device, scene);
+  const actual = await fixture.run(minimum, width);
+  expect(Array.from(actual.count)).toEqual([2, 1, 1, 1]);
+  expect(Array.from(actual.first)).toEqual([1, 3, 4, 5]);
+  expect(Array.from(actual.last)).toEqual([2, 3, 4, 5]);
+  expectParity(actual, scene, minimum, width);
+  // An unsigned 64-bit width above 2^63: one bucket holds everything from the origin on.
+  const huge = 0xffffffffffffffffn;
+  expectParity(await fixture.run(minimum, huge), scene, minimum, huge);
+  fixture.destroy();
+});

@@ -49,7 +49,8 @@ export async function buildExpansion(
     const values = upload('values', new Float32Array([1, 4, 2, 5]), 'float32');
     const temporal = kind === 'space-time-variogram';
     const marked = kind === 'marked-point-statistics';
-    const binCount = temporal ? 4 : 2;
+    // Space-time: (2 + 1) spatial x (2 + 1) temporal classes, each axis with a zero-lag class.
+    const binCount = temporal ? 9 : 2;
     const pairCounts = view('pairCounts', 'uint32', binCount);
     const status = view('status', 'uint32', binCount);
     const result = view(
@@ -71,13 +72,21 @@ export async function buildExpansion(
         positions,
         values,
         secondValues: upload('secondValues', new Float32Array([5, 1, 4, 2]), 'float32'),
-        parameters: upload('parameters', new Float32Array([5, 3]), 'float32'),
+        // Cross: [maximumDistance, unused]. Space-time: [minX, minY, maxX, maxY, maximumDistance,
+        // maximumTimeLag, 0, 0].
+        parameters: upload(
+          'parameters',
+          new Float32Array(temporal ? [0, 0, 5, 5, 5, 3, 0, 0] : [5, 3]),
+          'float32'
+        ),
         lagCount: 2,
         output: {semivariances: result, pairCounts, status}
       };
       if (temporal)
         await runSpaceTime(device, graph, {
           ...props,
+          gridSize: [2, 2],
+          // Relative times: small integers, so no origin subtraction is needed.
           times: upload('times', new Float32Array([0, 1, 2, 3]), 'float32'),
           temporalLagCount: 2
         });

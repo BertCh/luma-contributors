@@ -48,6 +48,33 @@ const OPERATION = 'GPUSegmentRingAssembly';
 /** Lanes per workgroup; a workgroup owns this many rings and sums its larger rings cooperatively. */
 const RING_LANES = 64;
 
+/**
+ * Exact turn classification for the planar successor choice (`match` kernel).
+ *
+ * `ringExactTurnClass(origin, vertex, end)` places the turn from `vertex - origin` to
+ * `end - vertex` in the order of its angle in (-pi, pi]: 0 for a right turn, 1 for straight on
+ * (also a zero-length incoming or outgoing segment), 2 for a left turn or a u-turn, and -1 when the
+ * exact orientation cannot be certified. It agrees with the sign classes of `ringTurnKey`, so the
+ * exact order (class, then `orientSign` between two candidates of one open half-plane) is the f32
+ * key order without its rounding. The collinear case compares coordinates only.
+ */
+const RING_EXACT_TURN_WGSL = /* wgsl */ `${EXACT_ORIENTATION_WGSL}
+fn ringExactTurnClass(origin: vec2f, vertex: vec2f, end: vec2f) -> i32 {
+  let side = orientSign(origin, vertex, end);
+  if (side == 2) { return -1; }
+  if (side < 0) { return 0; }
+  if (side > 0) { return 2; }
+  // Collinear: behind the vertex (dot product negative) is the u-turn.
+  var behind = false;
+  if (vertex.x != origin.x) {
+    behind = (vertex.x > origin.x && end.x < vertex.x) || (vertex.x < origin.x && end.x > vertex.x);
+  } else if (vertex.y != origin.y) {
+    behind = (vertex.y > origin.y && end.y < vertex.y) || (vertex.y < origin.y && end.y > vertex.y);
+  }
+  return select(1, 2, behind);
+}
+`;
+
 /** Sentinel for "no ring", "no segment" and "no shell" in uint32 outputs (`0xffffffff`). */
 export const GPU_SEGMENT_RING_ASSEMBLY_NONE = 0xffffffff;
 /** `segmentFlags` bit: more than one segment starts at this segment's end vertex. */
@@ -238,7 +265,12 @@ export type GPUSegmentRingAssemblyProps = {
  * distance against `vertexTolerance`. Only non-finite coordinates set `output.status.overflow`. At a vertex shared by several rings (cells touching at a corner) the continuation is
  * the outgoing segment that turns tightest toward the interior side (the face-traversal rule, a
  * bijection on planar boundaries), which keeps regions that touch only at a point as separate
- * rings. Where a choice is still taken twice the lowest segment index wins, the loser is marked
+ * rings. For planar input whose candidates all start exactly at the segment's end vertex (lattice
+ * input such as `GPUPolygonOverlay`'s), turns are ordered exactly: by half-plane against the incoming
+ * direction, then by the exact orientation of the two candidates, so edges whose directions differ
+ * by less than f32 resolution are still told apart. Otherwise (tolerance matches, longitude/latitude
+ * input) an f32 pseudo-angle orders them. Where a choice is still taken twice the lowest segment
+ * index wins, the loser is marked
  * {@link GPU_SEGMENT_RING_ASSEMBLY_FLAG_CONFLICT} and left open. That rule makes holes that touch at a
  * corner (or a hole pinched to its shell) one self-touching ring, so a second tracing pass
  * (`splitTouchingRings`, default) swaps the continuations of two segments that end at the same
@@ -768,6 +800,15 @@ fn findReverse(index: u32) -> u32 {
   var matches = 0u;
   var first = ${none};
   var second = ${none};
+  ${
+    geographic
+      ? ''
+      : `// Exact choice, used when every candidate starts exactly at this segment's end vertex.
+  var exactUsable = true;
+  var exactBest = ${none};
+  var exactBestClass = 0;
+  var exactBestEnd = vec2f(0.0);`
+  }
   for (var dy = -1; dy <= 1; dy++) {
     for (var dx = -1; dx <= 1; dx++) {
       let hash = ringHash(qx + bitcast<u32>(dx), qy + bitcast<u32>(dy), group);
@@ -806,9 +847,39 @@ fn findReverse(index: u32) -> u32 {
           best = candidate;
           bestTurn = turn;
         }
+        ${
+          geographic
+            ? ''
+            : `if (exactUsable) {
+          let candidateEnd = ringEnd(candidate);
+          let turnClass = ringExactTurnClass(origin, vertex, candidateEnd);
+          if (any(candidateStart != vertex) || turnClass < 0) {
+            exactUsable = false;
+          } else if (exactBest == ${none}) {
+            exactBest = candidate;
+            exactBestClass = turnClass;
+            exactBestEnd = candidateEnd;
+          } else {
+            var order = turnClass - exactBestClass;
+            if (order == 0 && turnClass != 1) {
+              // Same open half-plane: the counter-clockwise direction turns further left.
+              let side = orientSign(vertex, candidateEnd, exactBestEnd);
+              if (side == 2) { exactUsable = false; }
+              order = -side;
+            }
+            order = order * SIDE_ORDER;
+            if (order > 0 || (order == 0 && candidate < exactBest)) {
+              exactBest = candidate;
+              exactBestClass = turnClass;
+              exactBestEnd = candidateEnd;
+            }
+          }
+        }`
+        }
       }
     }
   }
+  ${geographic ? '' : `if (exactUsable && exactBest != ${none}) { best = exactBest; }`}
   next[nextOffset + index] = best;
   if (matches == 2u) { alt[altOffset + index] = select(first, second, best == first); }
   var flagBits = 0u;
@@ -818,6 +889,7 @@ fn findReverse(index: u32) -> u32 {
         `${hashFunctions}
 ${toleranceWGSL}
 const SIDE: f32 = ${sideSign};
+const SIDE_ORDER: i32 = ${interiorSide === 'left' ? 1 : -1};
 // Monotone in the turn angle from the incoming to the outgoing direction (counter-clockwise
 // positive, u-turn at +2). atan2 is avoided: it misbehaves on signed zeros under fast math.
 fn ringTurnKey(cross: f32, dot: f32) -> f32 {
@@ -835,7 +907,8 @@ fn ringEnd(row: u32) -> vec2f {
 }
 fn ringScaled(delta: vec2f, latitude: f32) -> vec2f {
   ${geographic ? 'return vec2f(delta.x * max(cos(radians(latitude)), 0.01), delta.y);' : 'return delta;'}
-}`
+}
+${geographic ? '' : RING_EXACT_TURN_WGSL}`
       )
     );
 

@@ -379,7 +379,8 @@ export function addFleetDwellRecipe<Parameters>(
 
   // Adapter: the stop list is compacted at the front; slots past the GPU-written count are stale.
   const mask = getOrCreateView(graph, `${id}-stop-mask`, 'uint32', capacity, scratch.stopMask);
-  graph.add(
+  builder.addGlue(
+    'stop-mask',
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-stop-mask-kernel`,
       operation: 'GPURecipeFleetDwell',
@@ -659,7 +660,8 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
     scratch.cellZones
   );
   const cellMask = getOrCreateView(graph, `${id}-cell-mask`, 'uint32', cellCount, scratch.cellMask);
-  graph.add(
+  builder.addGlue(
+    'cell-keys',
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-cell-keys-kernel`,
       operation: 'GPURecipeFleetDwell',

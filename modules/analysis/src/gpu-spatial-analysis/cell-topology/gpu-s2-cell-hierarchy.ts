@@ -1,7 +1,6 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -13,9 +12,21 @@ import {S2_POSITION_TO_IJ, S2_POSITION_TO_ORIENTATION} from '../cell-indexing/ce
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validatePackedView,
+  validateCapacity,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Status of one cell: the output is valid. */
+export const GPU_S2_CELL_HIERARCHY_STATUS_VALID = 0;
+/** Status of one cell: the input is not a valid S2 cell ID. */
+export const GPU_S2_CELL_HIERARCHY_STATUS_INVALID = 1;
+/** Status of one cell: the level is unavailable (children of a leaf, or a parent below the cell). */
+export const GPU_S2_CELL_HIERARCHY_STATUS_UNAVAILABLE_LEVEL = 2;
+
+/** Deepest S2 level: leaf cells, whose IDs end in the lowest set bit. */
+const S2_MAXIMUM_LEVEL = 30;
 
 export type GPUS2CellHierarchyProps = {
   id?: string;
@@ -27,7 +38,11 @@ export type GPUS2CellHierarchyProps = {
   output: {
     /** One parent, four Hilbert-ordered immediate children, four edge neighbors (left/right/down/up in face coordinates), or two inclusive leaf bounds per input. */
     cells: GraphDataView<'uint32x2'>;
-    /** 0 success, 1 invalid key, 2 unavailable level (leaf children or descendant parent). */
+    /**
+     * Per cell: {@link GPU_S2_CELL_HIERARCHY_STATUS_VALID} (0),
+     * {@link GPU_S2_CELL_HIERARCHY_STATUS_INVALID} (1, invalid key) or
+     * {@link GPU_S2_CELL_HIERARCHY_STATUS_UNAVAILABLE_LEVEL} (2, leaf children or descendant parent).
+     */
     status: GraphDataView<'uint32'>;
   };
 };
@@ -48,13 +63,14 @@ export class GPUS2CellHierarchy implements GPUCommandNodeProducer {
     validatePackedView(props.output.cells, ['uint32x2'], this.id);
     validatePackedView(props.output.status, ['uint32'], this.id);
     // Parent levels and aligned output strides are structural constraints.
-    assert(
-      props.operation !== 'parent' ||
-        (Number.isInteger(props.level) && props.level! >= 0 && props.level! <= 30)
-    );
-    assert(
+    if (props.operation === 'parent') {
+      validateCapacity(this.id, 'level', props.level as number, 0, S2_MAXIMUM_LEVEL);
+    }
+    validateRequirement(
+      this.id,
       props.output.cells.length === props.cells.length * this.stride &&
-        props.output.status.length === props.cells.length
+        props.output.status.length === props.cells.length,
+      `output.cells must hold ${this.stride} entries per cell and output.status one entry per cell`
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [props.cells]);
   }

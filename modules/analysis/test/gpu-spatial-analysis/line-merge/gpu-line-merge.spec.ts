@@ -6,6 +6,7 @@ import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   GPULineMerge,
@@ -33,7 +34,8 @@ type MergeResult = {
 async function runLineMerge(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
   lines: Vertex[][],
-  directed = false
+  directed = false,
+  spatialContext?: GPUSpatialContext
 ): Promise<MergeResult> {
   const flat = lines.flat();
   const offsets = [0];
@@ -77,6 +79,7 @@ async function runLineMerge(
     new GPULineMerge({
       id: 'merge',
       directed,
+      spatialContext,
       positions: input('positions', Float32Array.from(flat.flat()), 'float32x2'),
       lineOffsets: input('line-offsets', Uint32Array.from(offsets), 'uint32'),
       output: {
@@ -517,4 +520,42 @@ it('GPULineMerge directed matches shapely line_merge(directed=True)', async () =
     expect(sortDirectedChains(result.chains), name).toEqual(sortDirectedChains(chains));
     expect(result.lineReversed, name).toEqual(lines.map(() => 0));
   }
+});
+
+it('GPULineMerge merges longitude-latitude lines by exact endpoint coordinates', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const spatialContext: GPUSpatialContext = {coordinateSpace: 'longitude-latitude', metric: 'none'};
+  // Three degree lines chain through (10.5, 45.25) and (11, 46); the line ending at longitude 180
+  // does not join the one starting at -180 because the coordinates differ.
+  const lines: Vertex[][] = [
+    [
+      [9, 44],
+      [10.5, 45.25]
+    ],
+    [
+      [10.5, 45.25],
+      [11, 46]
+    ],
+    [
+      [11, 46],
+      [12, 47]
+    ],
+    [
+      [0, 0],
+      [180, 10]
+    ],
+    [
+      [-180, 10],
+      [-170, 20]
+    ]
+  ];
+  const result = await runLineMerge(device, lines, false, spatialContext);
+  expect(result.chains).toHaveLength(3);
+  const planar = await runLineMerge(device, lines, false);
+  expect(result).toEqual(planar);
+  const joined = result.chains.find(chain => chain.length === 4);
+  expect(joined).toBeDefined();
+  expect(result.lineChains[0]).toBe(result.lineChains[2]);
+  expect(result.lineChains[3]).not.toBe(result.lineChains[4]);
 });

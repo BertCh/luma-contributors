@@ -55,7 +55,7 @@ changes the neighborhood and its observation count.
 
 ## Diagnostic bits and degeneracy
 
-`GPU_RASTER_FOCAL_PAIRS_STATUS` defines combinable per-cell bits:
+`GPU_RASTER_FOCAL_PAIRS_STATUS` defines combinable per-cell bits (documented on `GPURasterFocalPairsOutput.status`; the radius limit is `MAXIMUM_FOCAL_PAIRS_RADIUS`, 8, and `minimumCount` is at most `MAXIMUM_FOCAL_PAIRS_WINDOW_CELLS`, 289):
 
 | Bit | Name | Consequence |
 | --- | --- | --- |

@@ -8,6 +8,14 @@ import {getComplementaryErrorFunction} from '../shared/complementary-error-funct
 export type GPUKernelDensityKernel = 'gaussian' | 'quartic' | 'epanechnikov';
 
 /**
+ * Names {@link GPUKernelDensityProps.kernel} accepts: {@link GPUKernelDensityKernel} plus
+ * `'bisquare'`, the name `GPUNeighborSearch` and `GPUSpatialWeightsTransform` give the quartic
+ * (biweight) shape. `'bisquare'` runs the `'quartic'` kernel and `GPUKernelDensity.kernel` reads
+ * back as `'quartic'`.
+ */
+export type GPUKernelDensityKernelName = GPUKernelDensityKernel | 'bisquare';
+
+/**
  * Normal-reference bandwidth rule computed on the GPU by {@link GPUKernelDensity}. Both rules of
  * `scipy.stats.gaussian_kde` reduce to the same factor `n_eff^(-1/6)` in two dimensions.
  */

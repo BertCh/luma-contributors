@@ -19,8 +19,17 @@ import {
   validatePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
-  validateCapacity
+  validateCapacity,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/**
+ * Largest vertex count: strongly connected components keep a `nodeCount x nodeCount` reachability
+ * matrix and a per-thread queue of `nodeCount` words.
+ */
+export const GPU_NETWORK_STRUCTURE_MAXIMUM_NODE_COUNT = 1024;
+/** Largest CSR slot count: the resilience traversal runs in one invocation over every slot. */
+export const GPU_NETWORK_STRUCTURE_MAXIMUM_EDGE_COUNT = 65536;
 
 export type GPUNetworkStructureProps = {
   id?: string;
@@ -41,14 +50,27 @@ export type GPUNetworkStructureProps = {
   };
 };
 
-/** Exact bounded graph structure on GPU-resident CSR. Connectivity ignores weights.
- * SCC uses the exact mutual-reachability path (O(V(V+E)) work, O(V²) scratch); there is no
- * large-graph SCC because published luma.gl has no iterative strongly connected components.
- * Undirected resilience uses an iterative Tarjan traversal in one GPU invocation; this bounded
- * fallback is intended for subgraphs, not throughput-oriented giant graphs.
- * All outputs allow at most 1024 vertices and 65536 CSR
- * slots. CSR offsets must be monotonic and within capacity;
- * reverseEdgeSlots must be an involution connecting reversed endpoints.
+/**
+ * Exact bounded graph structure on GPU-resident CSR. Connectivity ignores weights.
+ *
+ * Reference tier (contributor contract rule 2): both algorithms are exact references for small
+ * subgraphs, not throughput kernels, and the maximum size is enforced at construction.
+ *
+ * - Strongly connected components use the mutual-reachability path. One invocation per vertex runs
+ *   a breadth-first search with a private `array<u32, nodeCount>` queue and writes a row of the
+ *   `nodeCount x nodeCount` reachability matrix, so work is O(V(V+E)) and scratch is O(V²) words
+ *   (4 MiB at 1,024 vertices). There is no large-graph strongly connected components because
+ *   published luma.gl has none; a forward-backward search with trimming on the reachability
+ *   frontier is the scalable replacement.
+ * - Bridges, articulation points and biconnected components run an iterative Tarjan traversal in
+ *   one GPU invocation (`invocationCount: 1`), so the whole traversal is sequential, O(V + E) on
+ *   one thread. It is correct at every accepted size and becomes a watchdog risk on a loaded GPU
+ *   near the limit; a Tarjan-Vishkin parallel formulation would replace it.
+ *
+ * Maximum size: {@link GPU_NETWORK_STRUCTURE_MAXIMUM_NODE_COUNT} (1,024) vertices and
+ * {@link GPU_NETWORK_STRUCTURE_MAXIMUM_EDGE_COUNT} (65,536) CSR slots for every output. CSR
+ * offsets must be monotonic and within capacity; reverseEdgeSlots must be an involution
+ * connecting reversed endpoints.
  */
 export class GPUNetworkStructure implements GPUCommandNodeProducer {
   readonly id: string;
@@ -63,10 +85,21 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
     const hasResilienceOutput = Boolean(
       output.bridges || output.articulationPoints || output.biconnectedComponents
     );
-    validateCapacity(this.id, 'nodeCount', this.nodeCount, 1, 1024);
-    validateCapacity(this.id, 'edgeCount', this.edgeCount, 0, 65536);
-    if (!Object.values(output).some(Boolean))
-      throw new Error('Network structure requires an output');
+    validateCapacity(
+      this.id,
+      'nodeCount',
+      this.nodeCount,
+      1,
+      GPU_NETWORK_STRUCTURE_MAXIMUM_NODE_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'edgeCount',
+      this.edgeCount,
+      0,
+      GPU_NETWORK_STRUCTURE_MAXIMUM_EDGE_COUNT
+    );
+    validateRequirement(this.id, Object.values(output).some(Boolean), 'requires an output');
     for (const [name, view] of Object.entries(output)) {
       if (!view) continue;
       validatePackedView(view, ['uint32'], `${this.id} ${name}`);
@@ -74,20 +107,35 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
         name === 'strongComponents' || name === 'articulationPoints'
           ? this.nodeCount
           : this.edgeCount;
-      if (view.length !== length) throw new Error('Network structure output length mismatch');
+      validateRequirement(
+        this.id,
+        view.length === length,
+        `output.${name} must hold ${length} rows (one per ${
+          length === this.nodeCount ? 'vertex' : 'CSR slot'
+        })`
+      );
     }
     if (hasResilienceOutput) {
-      if (!props.reverseEdgeSlots)
-        throw new Error('Undirected structure requires reverseEdgeSlots');
+      validateRequirement(
+        this.id,
+        props.reverseEdgeSlots !== undefined,
+        'reverseEdgeSlots is required for bridges, articulationPoints and biconnectedComponents'
+      );
       validatePackedView(props.reverseEdgeSlots, ['uint32'], `${this.id} reverseEdgeSlots`);
-      if (props.reverseEdgeSlots.length !== this.edgeCount)
-        throw new Error('Reverse edge length mismatch');
+      validateRequirement(
+        this.id,
+        props.reverseEdgeSlots.length === this.edgeCount,
+        'reverseEdgeSlots must hold one row per CSR slot'
+      );
     }
     const outputBuffers = Object.values(props.output)
       .filter(view => view !== undefined)
       .map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length)
-      throw new Error('Outputs must use distinct buffers');
+    validateRequirement(
+      this.id,
+      new Set(outputBuffers).size === outputBuffers.length,
+      'outputs must use distinct buffers'
+    );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(output), [
       ...getGPUNetworkTopologyViews(props.topology),
       props.reverseEdgeSlots

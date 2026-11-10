@@ -31,7 +31,7 @@ import shapely
 from shapely.geometry import Polygon
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GENERATOR = 'modules/graph/test/oracles/geometry-triangulation-large.py'
+GENERATOR = 'modules/analysis/test/oracles/geometry-triangulation-large.py'
 MASK = 0xFFFFFFFF
 
 

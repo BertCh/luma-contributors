@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -13,8 +12,14 @@ import {
 import type {GPUPolygonStudyWindow} from '../../analysis-core/contracts/study-window';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
@@ -27,9 +32,18 @@ import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createTranslationPointPatternNodes} from './translation-point-pattern';
 import {validatePointProcessPositive, validatePointProcessView} from './point-process-utils';
 
+/** Largest event count: the intensity and pair kernels are all-pairs O(n²) on one device. */
+const MAXIMUM_EVENT_COUNT = 4096;
+/** Largest radius count: radii are evaluated in a single resident curve. */
+const MAXIMUM_RADIUS_COUNT = 256;
+/** Largest per-pair triangle-intersection budget, bounding the overlap loop in one invocation. */
+const MAXIMUM_OVERLAP_EDGE_PAIRS = 1048576;
+
 /** Intensity-reweighted reduced-sample K in a prepared polygon window. */
 export type GPUInhomogeneousPointPatternProps = {
   id?: string;
+  /** Planar only; longitude-latitude is rejected. Default planar. */
+  spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   /** Add the preparation to this graph before this consumer; holes/components are preserved. */
   studyWindow: GPUPolygonStudyWindow;
@@ -81,61 +95,88 @@ export type GPUInhomogeneousPointPatternProps = {
 export class GPUInhomogeneousPointPattern implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUInhomogeneousPointPatternProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   constructor(props: GPUInhomogeneousPointPatternProps) {
-    this.id = props.id ?? 'inhomogeneous-point-pattern';
+    const id = props.id ?? 'inhomogeneous-point-pattern';
+    this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const rows = props.positions.length;
-    assert(rows > 0 && rows <= 4096 && props.radii.length > 0 && props.radii.length <= 256);
-    assert(
+    const radiusCount = props.radii.length;
+    validateCapacity(id, 'positions rows', rows, 1, MAXIMUM_EVENT_COUNT);
+    validateCapacity(id, 'radii rows', radiusCount, 1, MAXIMUM_RADIUS_COUNT);
+    validateRequirement(
+      id,
       props.studyWindow.kind === 'polygon' &&
-        props.studyWindow.spatialContext.coordinateSpace === 'planar'
+        props.studyWindow.spatialContext.coordinateSpace === 'planar',
+      'studyWindow must be a prepared planar polygon window'
     );
-    assert(
+    validateRequirement(
+      id,
       props.selfContribution === undefined ||
-        ['include', 'exclude'].includes(props.selfContribution)
+        ['include', 'exclude'].includes(props.selfContribution),
+      "selfContribution must be 'include' or 'exclude'"
     );
-    assert(
-      props.edgeCorrection === undefined || ['border', 'translation'].includes(props.edgeCorrection)
+    validateRequirement(
+      id,
+      props.edgeCorrection === undefined ||
+        ['border', 'translation'].includes(props.edgeCorrection),
+      "edgeCorrection must be 'border' or 'translation'"
     );
     if (props.pairCorrelation) {
-      assert(
-        props.edgeCorrection === 'translation' && props.pairCorrelation.kernel === 'epanechnikov'
+      validateRequirement(
+        id,
+        props.edgeCorrection === 'translation' && props.pairCorrelation.kernel === 'epanechnikov',
+        "pairCorrelation needs edgeCorrection 'translation' and the 'epanechnikov' kernel"
       );
-      validatePointProcessPositive(props.pairCorrelation.bandwidth);
-      assert(
+      validatePointProcessPositive(
+        props.pairCorrelation.bandwidth,
+        id,
+        'pairCorrelation.bandwidth'
+      );
+      validateRequirement(
+        id,
         props.pairCorrelation.divisor === undefined ||
-          ['radius', 'distance'].includes(props.pairCorrelation.divisor)
+          ['radius', 'distance'].includes(props.pairCorrelation.divisor),
+        "pairCorrelation.divisor must be 'radius' or 'distance'"
       );
-      assert(
+      validateRequirement(
+        id,
         props.pairCorrelation.zeroCorrection === undefined ||
-          ['none', 'reflection'].includes(props.pairCorrelation.zeroCorrection)
+          ['none', 'reflection'].includes(props.pairCorrelation.zeroCorrection),
+        "pairCorrelation.zeroCorrection must be 'none' or 'reflection'"
       );
     }
     if (props.maximumPairCount !== undefined) {
-      assert(
+      validateRequirement(
+        id,
         Number.isSafeInteger(props.maximumPairCount) &&
-          props.maximumPairCount >= (rows * (rows - 1)) / 2
+          props.maximumPairCount >= (rows * (rows - 1)) / 2,
+        'maximumPairCount must be an integer of at least rows * (rows - 1) / 2'
       );
     }
     if (props.maximumOverlapEdgePairs !== undefined) {
-      assert(
-        Number.isSafeInteger(props.maximumOverlapEdgePairs) &&
-          props.maximumOverlapEdgePairs > 0 &&
-          props.maximumOverlapEdgePairs <= 1048576
+      validateCapacity(
+        id,
+        'maximumOverlapEdgePairs',
+        props.maximumOverlapEdgePairs,
+        1,
+        MAXIMUM_OVERLAP_EDGE_PAIRS
       );
     }
     if (!props.suppliedIntensity) {
-      validatePointProcessPositive(props.bandwidth ?? NaN);
+      validatePointProcessPositive(props.bandwidth ?? NaN, id, 'bandwidth');
     }
-    validatePointProcessView(props.positions, 'float32x2', rows);
-    validatePointProcessView(props.radii, 'float32', props.radii.length);
+    validatePointProcessView(props.positions, 'float32x2', rows, id);
+    validatePointProcessView(props.radii, 'float32', radiusCount, id);
     if (props.suppliedIntensity) {
-      validatePointProcessView(props.suppliedIntensity, 'float32', rows);
+      validatePointProcessView(props.suppliedIntensity, 'float32', rows, id);
     }
-    validatePointProcessView(props.output.intensity, 'float32', rows);
-    validatePointProcessView(props.output.k, 'float32', props.radii.length);
-    validatePointProcessView(props.output.pairCorrelation, 'float32', props.radii.length);
-    validatePointProcessView(props.output.status, 'uint32', props.radii.length);
+    validatePointProcessView(props.output.intensity, 'float32', rows, id);
+    validatePointProcessView(props.output.k, 'float32', radiusCount, id);
+    validatePointProcessView(props.output.pairCorrelation, 'float32', radiusCount, id);
+    validatePointProcessView(props.output.status, 'uint32', radiusCount, id);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.radii,
@@ -215,22 +256,61 @@ export class GPUInhomogeneousPointPattern implements GPUCommandNodeProducer {
         ...createTranslationPointPatternNodes(graph, props, id, boundary, windowViews)
       ];
     }
+    const radiusCount = props.radii.length;
+    const terms = createTransientView(
+      graph,
+      `${id}-border-k-values`,
+      'float32',
+      radiusCount * rows
+    );
     return [
       intensityNode,
       createWGSLKernelNode(graph, {
-        id: `${id}-border-k`,
+        id: `${id}-border-k-terms`,
         operation: 'GPUInhomogeneousPointPattern',
-        variant: 'border-k',
-        invocationCount: props.radii.length,
+        variant: 'border-k-terms',
+        // One invocation per (radius, focus event); each loops over the events once.
+        invocationCount: radiusCount * rows,
         bindings: [
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
           {name: 'intensity', view: props.output.intensity, type: 'f32', access: 'read'},
           {name: 'boundary', view: boundary, type: 'f32', access: 'read'},
           {name: 'radii', view: props.radii, type: 'f32', access: 'read'},
+          {name: 'terms', view: terms, type: 'f32', access: 'read_write'}
+        ],
+        declarations: `${IS_FINITE_FLOAT_WGSL}\n${pointDeclaration}`,
+        body: `let radiusIndex = index / ${rows}u;
+  let focus = index % ${rows}u;
+  let radius = radii[radiiOffset + radiusIndex];
+  let focusIntensity = intensity[intensityOffset + focus];
+  var term = 0.0;
+  if (boundary[boundaryOffset + focus] >= 0.0 && isFiniteFloat(focusIntensity) && focusIntensity > 0.0 && boundary[boundaryOffset + focus] > radius) {
+    var neighbors = 0.0;
+    for (var row = 0u; row < ${rows}u; row++) {
+      if (row == focus || boundary[boundaryOffset + row] < 0.0) { continue; }
+      let sourceIntensity = intensity[intensityOffset + row];
+      if (sourceIntensity > 0.0 && distance(point(focus), point(row)) <= radius) { neighbors += 1.0 / sourceIntensity; }
+    }
+    term = neighbors / focusIntensity;
+  }
+  terms[termsOffset + index] = term;`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-border-k`,
+        operation: 'GPUInhomogeneousPointPattern',
+        variant: 'border-k',
+        invocationCount: radiusCount,
+        // Fixed focus order per radius keeps the float sums independent of scheduling. The loop is
+        // O(rows) per radius (at most 4096 reads); the O(rows²) neighbor sums are in the terms node.
+        bindings: [
+          {name: 'intensity', view: props.output.intensity, type: 'f32', access: 'read'},
+          {name: 'boundary', view: boundary, type: 'f32', access: 'read'},
+          {name: 'radii', view: props.radii, type: 'f32', access: 'read'},
+          {name: 'terms', view: terms, type: 'f32', access: 'read'},
           {name: 'result', view: props.output.k, type: 'f32', access: 'read_write'},
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${IS_FINITE_FLOAT_WGSL}\n${pointDeclaration}`,
+        declarations: IS_FINITE_FLOAT_WGSL,
         body: `let radius = radii[radiiOffset + index];
   var valid = isFiniteFloat(radius) && radius > 0.0;
   if (index > 0u) { valid = valid && radius > radii[radiiOffset + index - 1u]; }
@@ -244,13 +324,7 @@ export class GPUInhomogeneousPointPattern implements GPUCommandNodeProducer {
     if (!isFiniteFloat(focusIntensity) || focusIntensity <= 0.0) { valid = false; continue; }
     if (boundary[boundaryOffset + focus] <= radius) { continue; }
     denominator += 1.0 / focusIntensity;
-    var neighbors = 0.0;
-    for (var row = 0u; row < ${rows}u; row++) {
-      if (row == focus || boundary[boundaryOffset + row] < 0.0) { continue; }
-      let sourceIntensity = intensity[intensityOffset + row];
-      if (sourceIntensity > 0.0 && distance(point(focus), point(row)) <= radius) { neighbors += 1.0 / sourceIntensity; }
-    }
-    numerator += neighbors / focusIntensity;
+    numerator += terms[termsOffset + index * ${rows}u + focus];
   }
   valid = valid && included > 0u && isFiniteFloat(numerator) && isFiniteFloat(denominator);
   var code = select(2u, select(1u, 0u, denominator > 0.0), valid);

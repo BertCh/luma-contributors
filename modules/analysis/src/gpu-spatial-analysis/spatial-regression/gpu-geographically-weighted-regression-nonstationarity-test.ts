@@ -21,8 +21,8 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPU_PERMUTATION_PARAMETER_LENGTH} from '../permutation-inference/permutation-parameters';
 import {getPermutationParameterWGSL} from '../permutation-inference/permutation-inference-kernels';
-import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
-import {getPermutationShuffleWGSL} from '../permutation-inference/permutation-shuffle';
+import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
+import {getPermutationShuffleWGSL} from '../../analysis-core/kernels/permutation-shuffle';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {
   createGridIndexNodes,

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   GPUSort,
@@ -12,7 +11,19 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
+import {
+  validateRasterGrid,
+  validateRasterGridAxisAligned
+} from '../../raster-analysis/raster-band-utils';
+import {
+  validateCapacity,
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
@@ -21,15 +32,31 @@ import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
   checkTerrainGraph,
+  createTerrainValidityMask,
+  getTerrainGroundMeasureWGSL,
   terrainBinding,
+  validateTerrainValidityView,
   TERRAIN_FINITE_WGSL
 } from './terrain-processing-utils';
 
 export type GPUTerrainCatchmentSummaryProps = {
   id?: string;
-  /** Planar grid. Area and length use the affine coordinate units; geographic degrees are not ground meters. */
+  /**
+   * Grid. Areas and lengths are in squared and plain affine coordinate units by default
+   * (geographic degrees are not ground meters), or in square and plain ground meters under
+   * `cellSizeMode`. Elevation, gradient and hypsometry elevations keep the elevation's units;
+   * the gradient is elevation units per length unit.
+   */
   grid: GPURasterMetadata;
+  /**
+   * Ground model for areas, stream lengths, profile distances and gradients. Default
+   * `'uniform'` (affine units). `'web-mercator'` and `'geographic'` give ground meters and need
+   * an axis-aligned grid. Compile-time.
+   */
+  cellSizeMode?: GPURasterCellSizeMode;
   elevation: GraphDataView<'float32'>;
+  /** Optional per-cell validity of `elevation` (uint32, nonzero valid); a zero word counts as NaN, so the cell is excluded. */
+  validity?: GraphDataView<'uint32'>;
   /** Dense zero-based basin IDs; 0xffffffff excludes a cell. */
   basinIds: GraphDataView<'uint32'>;
   basinCount: number;
@@ -56,26 +83,41 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
   constructor(readonly props: GPUTerrainCatchmentSummaryProps) {
     this.id = props.id ?? 'terrain-catchment-summary';
     const count = validateRasterGrid(this.id, props.grid);
-    assert(Number.isInteger(props.basinCount) && props.basinCount > 0);
-    assert(Number.isInteger(props.histogramBins) && props.histogramBins > 0);
-    assert(Number.isInteger(props.maximumSteps ?? count) && (props.maximumSteps ?? count) > 0);
-    assert(
+    validateRasterCellSizeMode(this.id, props.cellSizeMode);
+    validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
+    validateCapacity(this.id, 'basinCount', props.basinCount);
+    validateCapacity(this.id, 'histogramBins', props.histogramBins);
+    validateCapacity(this.id, 'maximumSteps', props.maximumSteps ?? count);
+    validateRequirement(
+      this.id,
       Math.abs(
         props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]
-      ) > 0
+      ) > 0,
+      'grid affine must have a nonzero determinant'
     );
-    for (const view of [props.elevation, props.basinIds, props.streams, props.flowDirections])
-      assert(view.length === count);
-    assert(
-      props.output.statistics.length === props.basinCount * 6 &&
-        props.output.hypsometry.length === props.basinCount * props.histogramBins
+    validateViewLength(this.id, 'elevation', props.elevation, count);
+    validateViewLength(this.id, 'basinIds', props.basinIds, count);
+    validateViewLength(this.id, 'streams', props.streams, count);
+    validateViewLength(this.id, 'flowDirections', props.flowDirections, count);
+    validateTerrainValidityView(this.id, props.validity, count);
+    validateViewLength(this.id, 'output.statistics', props.output.statistics, props.basinCount * 6);
+    validateViewLength(
+      this.id,
+      'output.hypsometry',
+      props.output.hypsometry,
+      props.basinCount * props.histogramBins
     );
-    assert(
-      props.output.profiles.length === count * 3 && props.output.profileStatus.length === count
-    );
+    validateViewLength(this.id, 'output.profiles', props.output.profiles, count * 3);
+    validateViewLength(this.id, 'output.profileStatus', props.output.profileStatus, count);
     checkTerrainViews(
       this.id,
-      [props.elevation, props.basinIds, props.streams, props.flowDirections],
+      [
+        props.elevation,
+        props.basinIds,
+        props.streams,
+        props.flowDirections,
+        ...(props.validity ? [props.validity] : [])
+      ],
       Object.values(props.output)
     );
   }
@@ -86,24 +128,30 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
     const count = props.elevation.length;
     checkTerrainGraph(id, graph, [
       props.elevation,
+      ...(props.validity ? [props.validity] : []),
       props.basinIds,
       props.streams,
       props.flowDirections,
       ...Object.values(props.output)
     ]);
-    const affine = props.grid.affine.map(getWGSLFloatLiteral);
+    const masked = createTerrainValidityMask(graph, {
+      id,
+      operation: 'GPUTerrainCatchmentSummary',
+      values: props.elevation,
+      validity: props.validity
+    });
+    const elevation = masked.values;
+    const isUniform = (props.cellSizeMode ?? 'uniform') === 'uniform';
     const area = getWGSLFloatLiteral(
       Math.abs(
         props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]
       )
     );
     const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}
-fn edgeLength(cell: u32, receiver: u32) -> f32 {
- let delta = vec2<f32>(f32(receiver % GRID_WIDTH) - f32(cell % GRID_WIDTH), f32(receiver / GRID_WIDTH) - f32(cell / GRID_WIDTH));
- return length(vec2<f32>(${affine[0]} * delta.x + ${affine[1]} * delta.y, ${affine[3]} * delta.x + ${affine[4]} * delta.y));
-}`;
+${getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}
+fn edgeLength(cell: u32, receiver: u32) -> f32 { return getGroundEdgeLength(cell, receiver); }`;
     const inputs = [
-      terrainBinding('elevation', props.elevation),
+      terrainBinding('elevation', elevation),
       terrainBinding('basins', props.basinIds),
       terrainBinding('streams', props.streams),
       terrainBinding('directions', props.flowDirections)
@@ -117,13 +165,14 @@ fn edgeLength(cell: u32, receiver: u32) -> f32 {
       createTransientView(graph, `${id}-profiles-${side}`, 'uint32', count * 4)
     );
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...masked.nodes,
       createWGSLKernelNode(graph, {
         id: `${id}-basin-keys`,
         operation: 'GPUTerrainCatchmentSummary',
         invocationCount: count,
         declarations: TERRAIN_FINITE_WGSL,
         bindings: [
-          terrainBinding('elevation', props.elevation),
+          terrainBinding('elevation', elevation),
           terrainBinding('basins', props.basinIds),
           terrainBinding('keys', keys, 'read_write'),
           terrainBinding('cells', cells, 'read_write')
@@ -168,29 +217,29 @@ if (index + 1u == ${count}u || keys[keysOffset + index + 1u] != basin) { ranges[
           terrainBinding('statistics', props.output.statistics, 'read_write'),
           terrainBinding('hypsometry', props.output.hypsometry, 'read_write')
         ],
-        body: `var sampleCount = 0u; var sum = 0.0; var lower = infinity(); var upper = -lower; var streamLength = 0.0;
+        body: `var sampleCount = 0u; var sum = 0.0; var lower = infinity(); var upper = -lower; var streamLength = 0.0; var areaSum = 0.0;
 for (var entry = ranges[rangesOffset + index * 2u]; entry < ranges[rangesOffset + index * 2u + 1u]; entry++) {
  let cell = order[orderOffset + entry];
  let value = elevation[elevationOffset + cell];
  if (basins[basinsOffset + cell] != index || !finite(value)) { continue; }
- sampleCount++; sum += value; lower = min(lower, value); upper = max(upper, value);
+ sampleCount++; areaSum += getGroundCellArea(cell); sum += value; lower = min(lower, value); upper = max(upper, value);
  let receiver = getFlowReceiver(cell, directions[directionsOffset + cell]);
  if (streams[streamsOffset + cell] == 1u && receiver != NO_CELL && streams[streamsOffset + receiver] == 1u && finite(elevation[elevationOffset + receiver])) { streamLength += edgeLength(cell, receiver); }
 }
-let area = f32(sampleCount) * ${area};
+let area = ${isUniform ? `f32(sampleCount) * ${area}` : 'areaSum'};
 let offset = statisticsOffset + index * 6u;
 statistics[offset] = area; statistics[offset + 1u] = select(missing(), sum / f32(max(sampleCount, 1u)), sampleCount > 0u);
 statistics[offset + 2u] = select(missing(), lower, sampleCount > 0u); statistics[offset + 3u] = select(missing(), upper, sampleCount > 0u);
 statistics[offset + 4u] = streamLength; statistics[offset + 5u] = select(missing(), streamLength / max(area, 1e-30), area > 0.0);
 for (var bin = 0u; bin < ${props.histogramBins}u; bin++) {
  let threshold = lower + (upper - lower) * f32(bin + 1u) / ${getWGSLFloatLiteral(props.histogramBins)};
- var belowCount = 0u;
+ var belowCount = 0u; var belowArea = 0.0;
  for (var entry = ranges[rangesOffset + index * 2u]; entry < ranges[rangesOffset + index * 2u + 1u]; entry++) {
   let cell = order[orderOffset + entry];
   let value = elevation[elevationOffset + cell];
-  if (basins[basinsOffset + cell] == index && finite(value) && (value <= threshold || bin + 1u == ${props.histogramBins}u)) { belowCount++; }
+  if (basins[basinsOffset + cell] == index && finite(value) && (value <= threshold || bin + 1u == ${props.histogramBins}u)) { belowCount++; belowArea += getGroundCellArea(cell); }
  }
- hypsometry[hypsometryOffset + index * ${props.histogramBins}u + bin] = f32(belowCount) * ${area};
+ hypsometry[hypsometryOffset + index * ${props.histogramBins}u + bin] = ${isUniform ? `f32(belowCount) * ${area}` : 'belowArea'};
 }`
       }),
       createWGSLKernelNode(graph, {

@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validateRequirement
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -84,14 +87,21 @@ ${isOutput ? `fn write${title}(row: u32, value: ${valueType}) { let offset = ${a
     .join('\n');
   const workgroupSize = props.cooperative?.workgroupSize;
   if (workgroupSize !== undefined) {
-    assert(
+    validateRequirement(
+      props.id,
       Number.isInteger(workgroupSize) &&
         workgroupSize >= 2 &&
         (workgroupSize & (workgroupSize - 1)) === 0 &&
-        workgroupSize <= graph.device.limits.maxComputeInvocationsPerWorkgroup
+        workgroupSize <= graph.device.limits.maxComputeInvocationsPerWorkgroup,
+      `cooperative workgroupSize must be a power of two in [2, ${graph.device.limits.maxComputeInvocationsPerWorkgroup}]`
     );
     // Cooperative rows dispatch one workgroup each; the invocation count must stay a uint32.
-    assert(props.length * workgroupSize <= 0xffffffff);
+    validateMaximumCount(
+      props.id,
+      'cooperative rows x workgroupSize',
+      props.length * workgroupSize,
+      0xffffffff
+    );
   }
   const declarations = `${accessors}
 fn safeNormal(value: vec3f) -> vec3f {

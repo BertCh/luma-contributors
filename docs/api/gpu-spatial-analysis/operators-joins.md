@@ -100,9 +100,22 @@ graph.add(new GPUSpatialPredicateJoin({
 ```
 
 **Anti joins.** `how: 'anti'` with `output.unmatched: GPUCompactOutput` emits the left rows that have no match, in
-ascending order (`pairs`, `weights` and `relate` are not allowed with it). When any capacity overflows the
-anti output is incomplete in the unsafe direction, because rows whose candidates were dropped look
-unmatched, so check `output.unmatched.overflow`.
+ascending order (`pairs`, `weights` and `relate` are not allowed with it). When the candidate capacity overflows,
+the left rows whose candidates were dropped cannot be classified (they may have a match among the dropped
+candidates), so they are kept out of `output.unmatched` and counted in `output.status.candidateTruncatedCount`;
+the anti output then never lists a row that may have a match, and may omit true unmatched rows among the
+truncated ones. (Before this change those rows were emitted as unmatched.) A BVH overflow still drops leaves
+without marking rows, so check `output.unmatched.overflow` too.
+
+**Candidate overflow.** Candidates are written in left-row order, so the slots past `candidateCapacity` are the
+tail of that layout: the row whose candidates cross the capacity keeps its first ones, and every later row that
+had a candidate keeps none; earlier rows are complete. `output.status.candidateOverflow` is 1 when the candidate
+total exceeded the capacity (BVH overflow is not part of it, and `output.status.overflow` keeps its combined
+meaning), and the optional `output.candidateTruncated` (one `uint32` per left feature) is 1 for exactly the rows
+described above. `output.status.candidateTruncatedCount` counts them. `GPUPointInPolygonJoin` and the
+nearest-feature mode of `GPUNearestFeatureJoin` (planar or native metric) take the same `output.candidateTruncated`
+and `output.status.candidateOverflow`, one flag per point; a flagged point may show no feature, or in nearest-feature
+mode a farther one. `GPUSpatialJoinPrepared` holds only the right-hand BVH and has no candidate stage.
 
 **Exactness.** Every orientation sign is exact, in the short-circuiting kernels (`engine: 'fast'`) and in
 the relate engine alike: an f32 filter decides the clear cases and the rest fall back to exact integer

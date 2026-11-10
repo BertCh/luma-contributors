@@ -22,7 +22,7 @@ import {GPUSeeminglyUnrelatedRegression} from '../../../src/gpu-spatial-analysis
 import {GPUSpatialPanelErrorMaximumLikelihood} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-error-maximum-likelihood';
 import {GPUMultivariateLocalGearyPermutationTest} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/gpu-multivariate-local-geary-permutation-test';
 import {GPUSpatialInteraction} from '../../../src/gpu-spatial-analysis/spatial-interaction/gpu-spatial-interaction';
-import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 import {GPUFuzzyContiguity} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-fuzzy-contiguity';
 import {GPUSpatialCrossValidatedOLS} from '../../../src/gpu-spatial-analysis/spatial-validation/gpu-spatial-cross-validated-ols';
 import {PHILOX_PURPOSES} from '../../../src/analysis-core/kernels/philox-random';

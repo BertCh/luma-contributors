@@ -6,7 +6,7 @@
 Writes fixtures/spatial-clustering-hdbscan.json next to this script, consumed by
 test/gpu-spatial-analysis/spatial-clustering/hierarchical-density-clustering-oracle.ts (and through
 it by the node and GPU specs). Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/spatial-clustering-hdbscan.py
+    <venv>/bin/python -I modules/analysis/test/oracles/spatial-clustering-hdbscan.py
 in a venv with numpy and scikit-learn (versions recorded in the fixture).
 
 - Labels: `sklearn.cluster.HDBSCAN(min_cluster_size, min_samples)` with its defaults

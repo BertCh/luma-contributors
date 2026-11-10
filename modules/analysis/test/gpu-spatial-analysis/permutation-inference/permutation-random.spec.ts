@@ -12,12 +12,12 @@ import {
   getPhilox4x32,
   PERMUTATION_RANDOM_WGSL,
   PhiloxStream
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+} from '../../../src/analysis-core/kernels/permutation-random';
 import {
   getSwapOrNotPermutationIndex,
   getSwapOrNotRounds,
   getPermutationShuffleWGSL
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
+} from '../../../src/analysis-core/kernels/permutation-shuffle';
 import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 

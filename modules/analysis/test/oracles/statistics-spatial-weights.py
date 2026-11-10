@@ -8,7 +8,7 @@ Writes fixtures/statistics-spatial-weights.json next to this script, consumed (t
 test/gpu-spatial-analysis/spatial-weights/spatial-weights-u4-oracle.ts) by
 gpu-spatial-weights-first-class.spec.ts, gpu-spatial-weights-first-class.node.spec.ts,
 gpu-spatial-weights.spec.ts and spatial-weights-libpysal.node.spec.ts. Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-spatial-weights.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-spatial-weights.py
 in a venv with numpy, shapely and libpysal (versions are recorded in the fixture).
 
 `reference` (U4):

@@ -1,0 +1,144 @@
+{
+  "bare-assert": {
+    "modules/analysis/src/analysis-core/kernels/load-balanced-for-each.ts": 1,
+    "modules/analysis/src/analysis-core/kernels/scan-total.ts": 1,
+    "modules/analysis/src/analysis-core/kernels/sorted-segment-sums.ts": 2,
+    "modules/analysis/src/analysis-core/kernels/wgsl-kernel-nodes.ts": 1,
+    "modules/analysis/src/dataframe-analysis/pair-statistics/pair-histogram.ts": 3,
+    "modules/analysis/src/geospatial-analysis/gpu-datum-grid-transform.ts": 11,
+    "modules/analysis/src/geospatial-analysis/gpu-point-buffer.ts": 4,
+    "modules/analysis/src/gpu-network/network-reachability/network-frontier.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/concave-hull/gpu-concave-hull.ts": 6,
+    "modules/analysis/src/gpu-spatial-analysis/geographic-distribution/grouped-sum-reduction.ts": 2,
+    "modules/analysis/src/gpu-spatial-analysis/geometry-edit/gpu-geometry-cleanup.ts": 2,
+    "modules/analysis/src/gpu-spatial-analysis/geometry-measures/gpu-geometry-measures.ts": 3,
+    "modules/analysis/src/gpu-spatial-analysis/line-segmentize/line-segmentize-kernels.ts": 4,
+    "modules/analysis/src/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-replay.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-test.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/polygon-triangulation/gpu-constrained-delaunay-triangulation.ts": 3,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-clustering/gpu-optics.ts": 9,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-conditional-gaussian-simulation.ts": 10,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-join/gpu-spatial-join-prepared.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-join/gpu-spatial-predicate-join.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/spatial-maximum-likelihood-nodes.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/spatial-maximum-likelihood-wgsl.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/study-window/gpu-study-window-preparation.ts": 2,
+    "modules/analysis/src/gpu-spatial-analysis/track-similarity/gpu-track-similarity-search.ts": 14,
+    "modules/analysis/src/gpu-spatial-analysis/trajectory-estimation/gpu-trajectory-kalman.ts": 6,
+    "modules/analysis/src/gpu-spatial-analysis/trajectory-estimation/prepare-trajectory-observations.ts": 7,
+    "modules/analysis/src/gpu-spatial-analysis/trajectory-restriction/gpu-trajectory-restriction.ts": 14,
+    "modules/analysis/src/gpu-spatial-analysis/trajectory-zones/zone-events-kernels.ts": 1,
+    "modules/analysis/src/gpu-terrain/terrain-features/gpu-terrain-peak-prominence.ts": 2,
+    "modules/analysis/src/gpu-terrain/terrain-features/gpu-terrain-summits.ts": 1,
+    "modules/analysis/src/gpu-terrain/topographic-position/terrain-summed-area-table.ts": 1,
+    "modules/analysis/src/raster-analysis/cost-distance/raster-relaxation.ts": 1
+  },
+  "internal-export": {
+    "modules/analysis/src/analysis-core/index.ts": [
+      "GPUStudyWindowSlabViews"
+    ],
+    "modules/analysis/src/geospatial-analysis/index.ts": [
+      "getGPUProjectionFrameOrigin",
+      "getGPUProjectionSpatialContext"
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/index.ts": [
+      "GPUStudyWindowSlabViews",
+      "SpatialSortCurve"
+    ],
+    "modules/analysis/src/pointcloud-analysis/index.ts": [
+      "createPointCloudGridIndex",
+      "getPlaneMomentsSource",
+      "getPlaneSolveSource",
+      "getPointCloudCellSource",
+      "validatePointCloudGrid",
+      "validatePointCloudSearchGrid"
+    ],
+    "modules/analysis/src/raster-analysis/index.ts": [
+      "getRasterMedialAxisNodes",
+      "getRasterWatershedForestNodes"
+    ]
+  },
+  "missing-producer-declaration": {
+    "modules/analysis/src/analysis-core/kernels/gpu-contributor-utils.ts": [
+      "GPUParameterBuffer"
+    ]
+  },
+  "multiple-classes": {
+    "modules/analysis/src/gpu-spatial-analysis/concave-hull/gpu-concave-hull.ts": 2,
+    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-precision-reduction.ts": 2,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-additional-spatial-statistics.ts": 3,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-local-variability.ts": 2,
+    "modules/analysis/src/pointcloud-analysis/gpu-pointcloud-surfaces.ts": 2,
+    "modules/analysis/src/raster-analysis/gpu-raster-fractional-coverage.ts": 2,
+    "modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts": 2,
+    "modules/analysis/src/raster-analysis/gpu-raster-skeleton.ts": 2,
+    "modules/analysis/src/raster-analysis/gpu-raster-spectral-indices.ts": 4
+  },
+  "root-file": {
+    "modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts": 1,
+    "modules/analysis/src/gpu-network/gpu-network-kernel-density.ts": 1,
+    "modules/analysis/src/gpu-network/network-spatial-context.ts": 1,
+    "modules/analysis/src/gpu-network/network-view-utils.ts": 1,
+    "modules/analysis/src/gpu-network/network-workgroup-counters.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-fill-nodata.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-fractional-categorical-statistics.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-fractional-coverage.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-fractional-zonal-distribution.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-rank-filter.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-reprojection.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-skeleton.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-spectral-indices.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-tile-reprojection.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-walking-cost.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-watershed-segmentation.ts": 1,
+    "modules/analysis/src/raster-analysis/raster-band-utils.ts": 1,
+    "modules/analysis/src/raster-analysis/raster-expansion-utils.ts": 1,
+    "modules/analysis/src/raster-analysis/raster-medial-axis.ts": 1,
+    "modules/analysis/src/raster-analysis/raster-watershed-forest.ts": 1
+  },
+  "single-invocation-data-loop": {
+    "modules/analysis/src/dataframe-analysis/column-classification/exact-natural-breaks-nodes.ts": 1,
+    "modules/analysis/src/dataframe-analysis/column-classification/monotone-natural-breaks-nodes.ts": 1,
+    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-marked-point-statistics.ts": 1,
+    "modules/analysis/src/dataframe-analysis/pair-statistics/variogram-model-fit-nodes.ts": 1,
+    "modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts": 1,
+    "modules/analysis/src/gpu-network/network-optimization/gpu-network-facility-optimization.ts": 2,
+    "modules/analysis/src/gpu-network/network-structure/gpu-network-structure.ts": 1,
+    "modules/analysis/src/gpu-network/recipes/network-scenarios-recipe.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering.ts": 2,
+    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-offset-curve-components.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/global-coordinates/gpu-spherical-arc-overlay.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/location-allocation/gpu-bounded-facility-allocation.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/location-allocation/gpu-location-allocation.ts": 2,
+    "modules/analysis/src/gpu-spatial-analysis/lon-lat-polygons/lon-lat-polygon-preparation-kernels.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-point-pattern-envelope.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-point-pattern-rank-envelope.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-spatial-balanced-sample.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/recipes/interpolation-diagnostics-recipe.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-local-variability.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-clustering/gpu-optics-xi.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/conditional-simulation-blocked.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/ward-mutual-selection.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/generalized-gwr-selection.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-multiscale-geographically-weighted-regression.ts": 3,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-lag-maximum-likelihood.ts": 3,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-regression.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/panel-diagnostics.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts": 3,
+    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/spatial-validation-design.ts": 1,
+    "modules/analysis/src/gpu-spatial-analysis/study-window/gpu-study-window-preparation.ts": 2,
+    "modules/analysis/src/gpu-terrain/terrain-processing/gpu-terrain-depression-hierarchy.ts": 1,
+    "modules/analysis/src/raster-analysis/gpu-raster-watershed-segmentation.ts": 1,
+    "modules/analysis/src/raster-analysis/remote-sensing/gpu-raster-region-graph.ts": 2,
+    "modules/analysis/src/raster-analysis/remote-sensing/raster-masked-registration.ts": 2
+  },
+  "unregistered-contributor": {
+    "modules/analysis/src/gpu-spatial-analysis/geometry-topology/gpu-snap-rounded-noding.ts": [
+      "GPUSnapRoundedNoding"
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts": [
+      "GPUNestedInterpolationValidation"
+    ]
+  }
+}

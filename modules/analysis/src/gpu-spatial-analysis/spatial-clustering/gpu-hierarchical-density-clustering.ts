@@ -31,7 +31,8 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import type {GPUCardinalityPort} from '../../analysis-core/contracts/index';
-import {GPUNearestFeatureJoin} from '../spatial-join/gpu-nearest-feature-join';
+import {GPUNeighborSearch} from '../neighbor-search/gpu-neighbor-search';
+import {createNeighborSearchDerivedParameterNodes} from '../neighbor-search/neighbor-search-derived-parameters';
 import {getSortedFeatureBVHNodes} from '../spatial-join/spatial-join-passes';
 import {
   createHierarchicalDensityAddNode,
@@ -70,7 +71,7 @@ const HIERARCHICAL_DENSITY_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 
 const OPERATION = 'GPUHierarchicalDensityClustering';
 
-/** Largest `minimumSamples` of {@link GPUHierarchicalDensityClustering} (the k-nearest search keeps at most 32 neighbors). */
+/** Largest `minimumSamples` of {@link GPUHierarchicalDensityClustering}, held at its documented bound. */
 export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES = 32;
 
 /**
@@ -128,8 +129,9 @@ export type GPUHierarchicalDensityClusteringProps = {
  * `cluster_selection_epsilon=0`, Euclidean metric) up to a relabeling of the clusters.
  *
  * Composition:
- * 1. Core distances from a k-nearest search (`GPUNearestFeatureJoin` neighbors mode, the point
- *    itself as its first neighbor).
+ * 1. Core distances from a `GPUNeighborSearch` k-nearest self join of the `minimumSamples - 1`
+ *    other points over the extent of the finite points, the point itself counted as the first
+ *    sample.
  * 2. The exact minimum spanning tree over the mutual reachability distance
  *    `max(core a, core b, |a - b|)` by Boruvka: at most `ceil(log2 rows) + 1` unrolled rounds of
  *    the same kernels (rule 12), gated on the GPU component count (rule 13). Each point walks a
@@ -251,25 +253,40 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       createTransientView(graph, `${id}-${name}`, 'float32', Math.max(length, 1));
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    // 1. Core distances.
-    const neighborIds = u32('neighbor-ids', rows * minimumSamples);
-    const neighborCounts = u32('neighbor-counts', rows);
-    const neighborDistances = f32('neighbor-distances', rows * minimumSamples);
-    const neighborOverflow = u32('neighbor-overflow', 1);
-    nodes.push(
-      ...new GPUNearestFeatureJoin({
-        id: `${id}-neighbors`,
-        queries: {kind: 'points', positions: props.positions},
-        features: {kind: 'points', positions: props.positions},
-        k: minimumSamples,
-        output: {
-          neighborIds,
-          neighborCounts,
-          neighborDistances,
-          status: {overflow: neighborOverflow}
-        }
-      }).getCommandNodes(graph)
-    );
+    // 1. Core distances: the self join lists the other points, so `minimumSamples - 1` of them
+    // reach the self-inclusive `minimumSamples`-th distance. One sample needs no search.
+    const otherSamples = minimumSamples - 1;
+    let neighborOffsets: GraphDataView<'uint32'> | undefined;
+    let neighborDistances: GraphDataView<'float32'> | undefined;
+    if (otherSamples > 0) {
+      const search = createNeighborSearchDerivedParameterNodes<Parameters>(graph, {
+        id: `${id}-neighbors-setup`,
+        operation: OPERATION,
+        positions: props.positions,
+        radius: Infinity
+      });
+      const slotCount = rows * otherSamples;
+      neighborOffsets = u32('neighbor-offsets', rows + 1);
+      neighborDistances = f32('neighbor-distances', slotCount);
+      nodes.push(
+        ...search.nodes,
+        ...new GPUNeighborSearch({
+          id: `${id}-neighbors`,
+          mode: 'knn',
+          k: otherSamples,
+          positions: props.positions,
+          parameters: search.parameters,
+          gridSize: search.gridSize,
+          output: {
+            offsets: neighborOffsets,
+            neighbors: u32('neighbor-ids', slotCount),
+            weights: f32('neighbor-weights', slotCount),
+            distances: neighborDistances,
+            status: {overflow: u32('neighbor-overflow', 1)}
+          }
+        }).getCommandNodes(graph)
+      );
+    }
     const state = u32('state', HIERARCHICAL_DENSITY_STATE_WORDS);
     const boxMinima = createTransientView(graph, `${id}-box-minima`, 'float32x2', rows);
     const boxMaxima = createTransientView(graph, `${id}-box-maxima`, 'float32x2', rows);
@@ -281,8 +298,8 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         id: `${id}-init`,
         shape: this.getShape(0, 0, 1),
         positions: props.positions,
+        neighborOffsets,
         neighborDistances,
-        neighborCounts,
         boxMinima,
         boxMaxima,
         parents,

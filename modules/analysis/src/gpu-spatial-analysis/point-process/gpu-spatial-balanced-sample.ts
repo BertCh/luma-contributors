@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   doGraphDataViewsOverlap,
+  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -13,12 +13,26 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validatePointProcessView} from './point-process-utils';
+
+/** Most rows: row validity and selection scan every row in one invocation per stratum. */
+const MAXIMUM_ROW_COUNT = 4096;
+/** Most strata: each stratum adds one serial selection node to the graph. */
+const MAXIMUM_STRATUM_COUNT = 256;
+/** Stratum IDs are packed beside the 4-bit quadtree level in 32-bit Philox counters. */
+const MAXIMUM_STRATUM_ID_EXCLUSIVE = 16777216;
 
 /** One stratum of the finite-point equal-probability design. */
 export type GPUSpatialSampleAllocation = {stratumId: number; sampleCount: number};
@@ -26,6 +40,8 @@ export type GPUSpatialSampleAllocation = {stratumId: number; sampleCount: number
 /** Randomized hierarchical order followed by circular systematic selection. */
 export type GPUSpatialBalancedSampleProps = {
   id?: string;
+  /** Planar only; longitude-latitude is rejected. Default planar. */
+  spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   /** Stable user frame IDs; caller guarantees uniqueness. Returned verbatim. */
   frameIds: GraphDataView<'uint32'>;
@@ -61,12 +77,16 @@ export type GPUSpatialBalancedSampleProps = {
  * This is a specified hierarchical circular-systematic design, not an assertion of GRTS parity.
  * Optional integer inclusion masses give exact unequal probabilities within each stratum. It excludes
  * continuous frames, replacement sites, minimum separation or Horvitz-Thompson variance estimates.
- * Invalid/out-of-bounds rows invalidate every stratum; they are never silently omitted. O(N²)
- * rank construction bounds this implementation to 4096 rows. Inputs stay caller-owned.
+ * Invalid/out-of-bounds rows invalidate every stratum; they are never silently omitted. Ranks
+ * come from a stable GPU sort by (stratum, code) plus a segmented prefix sum of tickets, so ties
+ * break by row index; the per-stratum selection pass is serial, which bounds this implementation
+ * to 4096 rows and 256 strata (reference tier, not a scaling tier). Inputs stay caller-owned.
  */
 export class GPUSpatialBalancedSample implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUSpatialBalancedSampleProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Replayable random stream and design provenance. */
   readonly provenance: Readonly<{
     generator: 'Philox4x32-10';
@@ -78,58 +98,64 @@ export class GPUSpatialBalancedSample implements GPUCommandNodeProducer {
     parameterSource: 'constructor' | 'resident-view';
   }>;
   constructor(props: GPUSpatialBalancedSampleProps) {
-    this.id = props.id ?? 'spatial-balanced-sample';
+    const id = props.id ?? 'spatial-balanced-sample';
+    this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const rows = props.positions.length;
-    assert(rows > 0 && rows <= 4096);
-    assert(props.allocations.length > 0 && props.allocations.length <= 256);
+    validateCapacity(id, 'positions rows', rows, 1, MAXIMUM_ROW_COUNT);
+    validateCapacity(id, 'allocations', props.allocations.length, 1, MAXIMUM_STRATUM_COUNT);
     const ids = new Set<number>();
     let sampleCount = 0;
     for (const allocation of props.allocations) {
-      assert(
+      validateRequirement(
+        id,
         Number.isInteger(allocation.stratumId) &&
           allocation.stratumId >= 0 &&
-          allocation.stratumId < 16777216 &&
-          !ids.has(allocation.stratumId)
+          allocation.stratumId < MAXIMUM_STRATUM_ID_EXCLUSIVE &&
+          !ids.has(allocation.stratumId),
+        `allocation stratumId must be a unique integer in [0, ${MAXIMUM_STRATUM_ID_EXCLUSIVE - 1}]`
       );
-      assert(
-        Number.isInteger(allocation.sampleCount) &&
-          allocation.sampleCount > 0 &&
-          allocation.sampleCount <= rows
-      );
+      validateCapacity(id, 'allocation sampleCount', allocation.sampleCount, 1, rows);
       ids.add(allocation.stratumId);
       sampleCount += allocation.sampleCount;
     }
-    assert(sampleCount <= rows);
+    validateRequirement(id, sampleCount <= rows, 'allocations must not sample more than rows');
     if (!props.strata) {
-      assert(props.allocations.length === 1 && props.allocations[0].stratumId === 0);
+      validateRequirement(
+        id,
+        props.allocations.length === 1 && props.allocations[0].stratumId === 0,
+        'without strata, allocations must be the single stratum 0'
+      );
     }
-    assert(props.bounds.every(value => Number.isFinite(Math.fround(value))));
-    assert(
+    validateRequirement(
+      id,
+      props.bounds.every(value => Number.isFinite(Math.fround(value))),
+      'bounds must be finite in float32'
+    );
+    validateRequirement(
+      id,
       Math.fround(props.bounds[2]) > Math.fround(props.bounds[0]) &&
-        Math.fround(props.bounds[3]) > Math.fround(props.bounds[1])
+        Math.fround(props.bounds[3]) > Math.fround(props.bounds[1]),
+      'bounds must have a positive extent on both axes'
     );
-    assert(Number.isInteger(props.seed) && props.seed >= 0 && props.seed <= 0xffffffff);
-    assert(
-      Number.isInteger(props.replicate ?? 0) &&
-        (props.replicate ?? 0) >= 0 &&
-        (props.replicate ?? 0) <= 0xffffffff
-    );
+    validateCapacity(id, 'seed', props.seed, 0, 0xffffffff);
+    validateCapacity(id, 'replicate', props.replicate ?? 0, 0, 0xffffffff);
     if (props.parameters) {
-      validatePointProcessView(props.parameters, 'uint32', 2);
+      validatePointProcessView(props.parameters, 'uint32', 2, id);
     }
-    validatePointProcessView(props.positions, 'float32x2', rows);
-    validatePointProcessView(props.frameIds, 'uint32', rows);
+    validatePointProcessView(props.positions, 'float32x2', rows, id);
+    validatePointProcessView(props.frameIds, 'uint32', rows, id);
     if (props.strata) {
-      validatePointProcessView(props.strata, 'uint32', rows);
+      validatePointProcessView(props.strata, 'uint32', rows, id);
     }
     if (props.inclusionTickets) {
-      validatePointProcessView(props.inclusionTickets, 'uint32', rows);
+      validatePointProcessView(props.inclusionTickets, 'uint32', rows, id);
     }
-    validatePointProcessView(props.output.frameIds, 'uint32', sampleCount);
-    validatePointProcessView(props.output.inclusionProbabilities, 'float32', sampleCount);
-    validatePointProcessView(props.output.designWeights, 'float32', sampleCount);
-    validatePointProcessView(props.output.status, 'uint32', props.allocations.length * 2);
+    validatePointProcessView(props.output.frameIds, 'uint32', sampleCount, id);
+    validatePointProcessView(props.output.inclusionProbabilities, 'float32', sampleCount, id);
+    validatePointProcessView(props.output.designWeights, 'float32', sampleCount, id);
+    validatePointProcessView(props.output.status, 'uint32', props.allocations.length * 2, id);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.frameIds,
@@ -140,7 +166,11 @@ export class GPUSpatialBalancedSample implements GPUCommandNodeProducer {
     // Status is written before publication, so graph hazards cannot reject cross-pass aliases.
     const outputs = Object.values(props.output);
     for (const [index, output] of outputs.entries()) {
-      assert(!outputs.slice(0, index).some(previous => doGraphDataViewsOverlap(previous, output)));
+      validateRequirement(
+        id,
+        !outputs.slice(0, index).some(previous => doGraphDataViewsOverlap(previous, output)),
+        'output views must not overlap'
+      );
     }
     this.provenance = Object.freeze({
       generator: 'Philox4x32-10',
@@ -260,28 +290,71 @@ fn random(counter: vec4<u32>) -> u32 { return philox4x32(counter, vec2<u32>(${pr
     }
   }
   codes[codesOffset + index] = code;`
+      })
+    ];
+    const rowIndices = createTransientView(graph, `${id}-identity-rows`, 'uint32', rows);
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-row-indices`,
+        operation: 'GPUSpatialBalancedSample',
+        variant: 'row-indices',
+        invocationCount: rows,
+        bindings: [{name: 'rowIndices', view: rowIndices, type: 'u32', access: 'read_write'}],
+        body: 'rowIndices[rowIndicesOffset + index] = index;'
+      })
+    );
+    // Stable sort by (stratum, code) with identity order as the tie break: ties break by row index.
+    const sorted = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-order`,
+      operation: 'GPUSpatialBalancedSample',
+      indices: rowIndices,
+      keys: [...(props.strata ? [{view: props.strata}] : []), {view: codes}]
+    });
+    const sortedTickets = createTransientView(graph, `${id}-ticket-values`, 'uint32', rows);
+    const segmentFlags = createTransientView(graph, `${id}-segment-flags`, 'uint32', rows);
+    const sortedRanks = createTransientView(graph, `${id}-sorted-ranks`, 'uint32', rows);
+    nodes.push(
+      ...sorted.nodes,
+      createWGSLKernelNode(graph, {
+        id: `${id}-sorted-tickets`,
+        operation: 'GPUSpatialBalancedSample',
+        variant: 'sorted-tickets',
+        invocationCount: rows,
+        bindings: [
+          {name: 'sortedIndices', view: sorted.sortedIndices, type: 'u32', access: 'read'},
+          ...stratumBindings,
+          ...ticketBindings,
+          {name: 'sortedTickets', view: sortedTickets, type: 'u32', access: 'read_write'},
+          {name: 'segmentFlags', view: segmentFlags, type: 'u32', access: 'read_write'}
+        ],
+        declarations: `${stratumDeclaration}\n${ticketDeclaration}`,
+        body: `let row = sortedIndices[sortedIndicesOffset + index];
+  sortedTickets[sortedTicketsOffset + index] = ticket(row);
+  var flag = 1u;
+  if (index > 0u) { flag = select(0u, 1u, stratum(row) != stratum(sortedIndices[sortedIndicesOffset + index - 1u])); }
+  segmentFlags[segmentFlagsOffset + index] = flag;`
       }),
+      // Ranks are exclusive ticket prefix sums within a stratum. Sums wrap modulo 2^32, which is
+      // exact for a valid stratum (total at most 2^24); invalid strata never read their ranks.
+      ...new GPUScan({
+        id: `${id}-rank-scan`,
+        input: sortedTickets,
+        output: sortedRanks,
+        segmentFlags
+      }).getCommandNodes(graph),
       createWGSLKernelNode(graph, {
         id: `${id}-rank`,
         operation: 'GPUSpatialBalancedSample',
         variant: 'spatial-ranks',
         invocationCount: rows,
         bindings: [
-          {name: 'codes', view: codes, type: 'u32', access: 'read'},
-          ...stratumBindings,
-          ...ticketBindings,
+          {name: 'sortedIndices', view: sorted.sortedIndices, type: 'u32', access: 'read'},
+          {name: 'sortedRanks', view: sortedRanks, type: 'u32', access: 'read'},
           {name: 'ranks', view: ranks, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${stratumDeclaration}\n${ticketDeclaration}`,
-        body: `var rank = 0u;
-  let code = codes[codesOffset + index];
-  for (var other = 0u; other < ${rows}u; other++) {
-    let otherCode = codes[codesOffset + other];
-    if (stratum(other) == stratum(index) && (otherCode < code || (otherCode == code && other < index))) { rank = min(16777217u, rank + min(ticket(other), 16777217u)); }
-  }
-  ranks[ranksOffset + index] = rank;`
+        body: 'ranks[ranksOffset + sortedIndices[sortedIndicesOffset + index]] = sortedRanks[sortedRanksOffset + index];'
       })
-    ];
+    );
     let firstOutput = 0;
     for (const [allocationIndex, allocation] of props.allocations.entries()) {
       nodes.push(

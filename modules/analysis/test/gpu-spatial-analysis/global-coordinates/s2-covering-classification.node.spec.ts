@@ -19,13 +19,20 @@ it('S2 classification fits core shader budgets at maximum traversal options', ()
       format: Format,
       length: number
     ) => createTransientView(graph, `s2-classification-${sequence++}`, format, length);
-    for (const mode of ['exterior', 'interior'] as const) {
+    for (const [mode, refinement] of [
+      ['exterior', 'serial'],
+      ['interior', 'serial'],
+      ['exterior', 'level-synchronous'],
+      ['interior', 'level-synchronous']
+    ] as const) {
       const contributor = new GPUS2PolygonCovering({
+        id: `s2-covering-${mode}-${refinement}`,
         positions: view('float32x3', 12),
         ringOffsets: view('uint32', 4),
         maximumLevel: 15,
         maximumVisitedCells: 1048576,
         mode,
+        refinement,
         complement: true,
         capacity: 4096,
         output: {

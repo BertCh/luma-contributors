@@ -28,3 +28,22 @@ export type {
   GPUSpatialScanStatisticSettings,
   GPUSpatialScanWindowShape
 } from './scan-statistic-parameters';
+export {
+  getGPUExpectationBasedScanParameterValues,
+  GPUExpectationBasedSpaceTimeScan,
+  GPU_EXPECTATION_BASED_SCAN_CLUSTER,
+  GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS,
+  GPU_EXPECTATION_BASED_SCAN_MAXIMUM_REPLICATES,
+  GPU_EXPECTATION_BASED_SCAN_MAXIMUM_WINDOW_LENGTH,
+  GPU_EXPECTATION_BASED_SCAN_NO_ZONE,
+  GPU_EXPECTATION_BASED_SCAN_PARAMETER_LENGTH,
+  GPU_EXPECTATION_BASED_SCAN_STATISTIC_WORDS,
+  GPU_EXPECTATION_BASED_SCAN_SUMMARY,
+  GPU_EXPECTATION_BASED_SCAN_SUMMARY_LENGTH
+} from './gpu-expectation-based-space-time-scan';
+export type {
+  GPUExpectationBasedScanSettings,
+  GPUExpectationBasedSpaceTimeScanOutput,
+  GPUExpectationBasedSpaceTimeScanProps
+} from './gpu-expectation-based-space-time-scan';
+export {getGPUScanRecurrenceInterval} from './scan-statistic-parameters';

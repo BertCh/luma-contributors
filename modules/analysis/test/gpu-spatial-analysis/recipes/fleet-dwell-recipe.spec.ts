@@ -115,7 +115,7 @@ it('addFleetDwellRecipe joins stop centroids to zones and summarises dwell per z
       },
       scratch: {stopZones: outputs.zones.view}
     });
-    expect(recipe.contributors.length).toBe(3);
+    expect(recipe.contributors.length).toBe(4);
     expect(recipe.outputs?.['stops']).toBe(recipe.stops);
     expect(recipe.intermediates?.['stopZones']).toBe(recipe.stopZones);
     expect(recipe.status?.stages.map(({stage}) => stage)).toEqual([
@@ -266,7 +266,7 @@ it('addFleetDwellZoneEventsRecipe rolls dwell per (track, zone) up per zone', as
         }
       }
     });
-    expect(recipe.contributors.length).toBe(2);
+    expect(recipe.contributors.length).toBe(3);
     fixture.run();
 
     expect((await fixture.readUint32(outputs.eventOverflow, 1))[0]).toBe(0);

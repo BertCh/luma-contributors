@@ -60,6 +60,12 @@ contributors by task; the [operators index](./operators.md) lists them all.
 | [Spatial weights](./operators-weights.md) | `GPUNeighborSearch`, `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsTransform`, `GPUSpatialWeightsAlgebra`, `GPUSpatialWeightsSummary`, `GPUSpatialWeightsTranspose`, `GPUSpatialWeightsValidation`, `GPUSpatialLag`, `GPUMapColoring` |
 | [Spatial statistics](./operators-statistics.md) | `GPUGlobalSpatialStatistics`, `GPUMultipleTestingAdjustment`, `GPUAssuncaoReisStandardization`, `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalGeary`, `GPUSpatialPearson`, `GPUGammaStatistic`, `GPURoseStatistic`, `GPULocalPermutationTest`, `GPUGlobalPermutationTest`, `GPUNeighborhoodSummary`, `GPUEmpiricalBayesRates`, `GPUSpatialEmpiricalBayesRates`, `GPUSpatialClustering`, `GPUHierarchicalDensityClustering`, `GPUKMeans`, `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, `GPUAZPRegions`, `GPUMaxPRegions`, `GPUWardRegions`, `GPULocationAllocation`, `GPURegionPartitionEvaluation`, `GPUGroupGeometry`, `GPUGroupConvexHull`, `GPUEmergingHotSpots`, `GPUGeographicDistribution`, `GPURegionStatistics`, `GPUZonalStatistics`, `GPUFocalStatistics`, `GPUSimilarLocations` |
 | [Distribution dynamics and space-time tests](./operators-dynamics.md) | `GPUClassAssignment`, `GPUClassificationFit`, `GPUTransitionMatrix`, `GPUSpatialMarkov`, `GPULISAMarkov`, `GPUTransitionDiagnostics`, `GPUKnoxTest`, `GPUMantelTest`, `GPUSpatialScanStatistic` |
+| [Space-time statistics](./space-time-statistics.md) | `GPUSpatialWeightsAlgebra` operation `'spaceTime'`, `GPUSpaceTimeLocalMoran`, `GPUSpaceTimeCrossCorrelation` |
+| [Space-time clustering](./space-time-clustering.md) | ST-DBSCAN and ST-OPTICS through `times` on `GPUSpatialClustering` and `GPUOPTICS` |
+| [Movement semantics](./movement-semantics.md) | `GPUTrajectoryStaypoints`, `GPUTrajectoryLocations`, `GPUTrajectorySegments`, `GPUMobilityIndicators`, `GPUModalSplit`, `GPUTrajectoryOutlierFlags`, `GPUTrajectoryHampel`, `GPUTrajectorySplit`, `GPUTrajectoryThinning`, `GPUTrajectoryTrackRelativeTimes` |
+| [Track similarity measures](./track-similarity-measures.md) | EDR, ERP, SSPD and bounded search on `GPUTrackSimilarity` and `GPUTrackSimilaritySearch` |
+| [Proper scoring rules](./scoring-rules.md) | `GPUEnsembleScores`, `GPUGaussianPredictiveScores` |
+| [Temporal context](./temporal-context.md) | `GPUTemporalContext` and the contributors that accept one |
 | [Accessibility and change of support](./operators-accessibility.md) | `GPUCatchmentAccessibility`, `GPUHuffTradeAreas`, `GPUArealInterpolation`, `GPUPycnophylactic`, `GPUSegregation` |
 | [Spatial joins](./operators-joins.md) | `GPUSpatialPredicateJoin`, `GPUSpatialJoinPrepared`, `GPUSpatialJoinCandidates`, `GPUPointInPolygonJoin`, `GPUNearestFeatureJoin`, `GPUNearestFeatureWeights`, `GPUBufferSelection` |
 | [Geometry validity and topology](./operators-validity.md) | `GPUSegmentIntersection`, `GPUGeometryValidity`, `GPULineNoding`, `GPUPolygonize`, `GPUMakeValid`, `GPUPolygonOverlay`, `GPUBufferSurface` |
@@ -240,7 +246,7 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `esda.Moran_Rate`, `Moran_Local_Rate`, `assuncao_rate` | `GPUAssuncaoReisStandardization` followed by `GPUGlobalSpatialStatistics` or `GPULocalMoran` |
 | `esda.fdr`, `statsmodels.multipletests` | `GPUMultipleTestingAdjustment`; `multipleTesting` option of `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalPermutationTest` |
 | `pointpats.PointPattern`, `ripley.k_test`, `f_test`, `g_test`, `j_test` | `GPUPointPatternIndices`, `GPURipley`, `GPURipleyDistanceFunctions` (dataframe) |
-| `pointpats.Knox`, `Mantel` | `GPUKnoxTest`, `GPUMantelTest` |
+| `pointpats.Knox`, `Mantel` | `GPUKnoxTest`, `GPUMantelTest` (`distanceTransform` and `timeTransform` options for the `mantel` transforms) |
 | `esda.Moran` correlogram (`spatial_correlogram`) | `GPUSpatialCorrelogram` (dataframe) |
 | `esda.Spatial_Pearson`, `Spatial_Pearson_Local` (Lee's L) | `GPUGlobalPermutationTest` (`'leesL'`), `GPULocalPermutationTest` (`'localLeeL'`) |
 | `esda.Local_Geary`, `Gamma` | `GPULocalGeary`, `GPUGammaStatistic`; shared permutation adapters use `GPUGlobalPermutationTest` or `GPULocalPermutationTest` |
@@ -308,6 +314,18 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | ArcGIS Generate Network Spatial Weights, Generate Spatial Weights Matrix | `GPUContiguityWeights`, `GPUNeighborSearch`, `GPUNetworkCostMatrix` |
 | ArcGIS Geographically Weighted Regression, Ordinary Least Squares | `GPUGeographicallyWeightedRegression`, `GPUOrdinaryLeastSquares` |
 | ArcGIS Calculate Composite Index | `GPUCompositeScore` (dataframe) |
+
+## Defaults that break a quick parity check
+
+These defaults differ from the reference library or a common expectation. Each is documented where the operator is described.
+
+| Area | Default here | Reference behaviour | For parity |
+| --- | --- | --- | --- |
+| Islands (rows with no neighbor) | `islands: 'exclude'` removes them from `n` and the moments (`GPU_DEFAULT_ISLAND_POLICY`) | esda keeps islands in `n` and the moments | `islands: 'keep'` |
+| Two-sided permutation p-value | `alternative: 'two-sided'` reports `min(2 (min(g, l) + 1), P + 1) / (P + 1)` | esda's undirected test is percentile based and differs under ties; its legacy default `'directed'` is anti-conservative | `'folded'` matches esda's undirected test; `'greater'` and `'lesser'` match esda's one-sided tests |
+| k-means coordinates | `GPUKMeans` sums raw float32 coordinates (`centerCoordinates` defaults to `false`) | Raw float32 sums lose precision for coordinates far from the origin | `centerCoordinates: true` for coordinates far from the origin |
+| KDE edge correction | `'uniform'` divides each cell by the kernel mass inside the window | Uncorrected estimate, or spatstat `diggle = TRUE` | `'none'` or `'diggle'` |
+| Line density | `GPULineDensity` writes line length per grid cell (`lengths`); `densities` (length per area) is optional | A density raster, or per-polygon length (`GPULineLengthPerPolygon`) | Read `lengths`, or divide by cell area |
 
 ## See also
 

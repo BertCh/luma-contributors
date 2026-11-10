@@ -77,6 +77,10 @@ export const PHILOX_PURPOSES = {
   localPermutationTest: {id: 0x10ca1, word: 'counter'},
   /** `GPUSpatialScanStatistic` Monte Carlo replicates. */
   spatialScanStatistic: {id: 0x5ca75747, word: 'counter'},
+  /** Poisson replicates of `GPUExpectationBasedSpaceTimeScan` (`'EBCS'`). */
+  expectationBasedScan: {id: 0x45424353, word: 'counter'},
+  /** `GPUSpaceTimeDiggleTest` swap-or-not time permutations (`'DIGG'`). */
+  spaceTimeDiggleShuffle: {id: 0x44494747, word: 'counter'},
   /** `GPUNetworkKFunction` simulated events (`'KFUN'`). */
   networkKFunction: {id: 0x4b46554e, word: 'counter'}
 } as const satisfies Record<string, {id: number; word: 'key' | 'counter'}>;

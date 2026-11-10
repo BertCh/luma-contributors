@@ -13,6 +13,7 @@ import {
 import {
   getGPUCalendarBucketsParameterValues,
   GPUCalendarBuckets,
+  GPU_CALENDAR_BUCKETS_INVALID_YEAR,
   GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
   type GPUCalendarBucketsOutput,
   type GPUCalendarBucketsProps
@@ -51,6 +52,7 @@ const COLUMNS = [
 
 type Scene = {
   timestamps: BigInt64Array;
+  unit?: GPUCalendarBucketsProps['unit'];
   mask?: Uint32Array;
   utcOffsets?: Int32Array;
   /** Transition words (`uint32x2` rows) and offsets in seconds, one more than transitions. */
@@ -105,6 +107,7 @@ function createFixture(device: Device, scene: Scene, columns: readonly string[] 
   }
   const props: GPUCalendarBucketsProps = {
     id: 'calendar',
+    unit: scene.unit,
     timestamps: importGraphBuffer(
       graph,
       'times',
@@ -512,4 +515,122 @@ it('GPUCalendarBuckets A/B per-row offsets column vs time zone table at 1e7 rows
   );
   column.destroy();
   zone.destroy();
+});
+
+/** Units per millisecond for a unit, and divisor to milliseconds (1 for the finer units). */
+const UNIT_FACTORS = {
+  second: {multiplier: 1n, divisor: 1000n},
+  millisecond: {multiplier: 1n, divisor: 1n},
+  microsecond: {multiplier: 1000n, divisor: 1n},
+  nanosecond: {multiplier: 1_000_000n, divisor: 1n}
+} as const;
+
+// Fixed instants with civil fields written down from the calendar, not from the code under test.
+// [milliseconds since the epoch, year, month, day, hour, minute]
+const KNOWN_INSTANTS = [
+  [1_704_067_200_000n, 2024, 1, 1, 0, 0], // 2024-01-01T00:00:00Z
+  [951_827_640_000n, 2000, 2, 29, 12, 34], // 2000-02-29T12:34:00Z
+  [-1_000n, 1969, 12, 31, 23, 59], // 1969-12-31T23:59:59Z
+  [-2_203_872_840_000n, 1900, 3, 1, 5, 6], // 1900-03-01T05:06:00Z
+  [9_223_372_036_000n, 2262, 4, 11, 23, 47] // 2262-04-11T23:47:16Z, the last whole second Int64 nanoseconds hold
+] as const;
+
+for (const unit of ['second', 'millisecond', 'microsecond', 'nanosecond'] as const) {
+  it(`GPUCalendarBuckets decodes known dates from ${unit} timestamps`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const {multiplier, divisor} = UNIT_FACTORS[unit];
+    const scene: Scene = {
+      unit,
+      timestamps: BigInt64Array.from(
+        KNOWN_INSTANTS.map(([milliseconds]) => (milliseconds * multiplier) / divisor)
+      )
+    };
+    const fixture = createFixture(device, scene, ['year', 'month', 'dayOfMonth', 'hour', 'minute']);
+    const actual = await fixture.run(0, 0);
+    expect(actual['year']).toEqual(KNOWN_INSTANTS.map(row => row[1]));
+    expect(actual['month']).toEqual(KNOWN_INSTANTS.map(row => row[2]));
+    expect(actual['dayOfMonth']).toEqual(KNOWN_INSTANTS.map(row => row[3]));
+    expect(actual['hour']).toEqual(KNOWN_INSTANTS.map(row => row[4]));
+    expect(actual['minute']).toEqual(KNOWN_INSTANTS.map(row => row[5]));
+    fixture.destroy();
+  });
+}
+
+it('GPUCalendarBuckets floors negative sub-millisecond times to the earlier millisecond', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 1969-12-31T23:59:59.999999999Z is -1 ns and 1969-12-31T23:59:59.999999Z is -1 us: both are
+  // still 1969, where truncation toward zero would give 1970-01-01T00:00.
+  for (const [unit, value] of [
+    ['nanosecond', -1n],
+    ['microsecond', -1n],
+    ['nanosecond', -1_000_000n], // exactly -1 ms
+    ['nanosecond', -1_000_001n], // just before -1 ms
+    ['nanosecond', 999_999n], // 0.999999 ms after the epoch: still 00:00 on 1970-01-01
+    ['second', -1n]
+  ] as const) {
+    const scene: Scene = {unit, timestamps: BigInt64Array.of(value)};
+    const fixture = createFixture(device, scene, ['year', 'month', 'dayOfMonth', 'hour', 'minute']);
+    const actual = await fixture.run(0, 0);
+    const isBeforeEpoch = value < 0n;
+    expect(
+      [
+        actual['year'][0],
+        actual['month'][0],
+        actual['dayOfMonth'][0],
+        actual['hour'][0],
+        actual['minute'][0]
+      ],
+      `${unit} ${value}`
+    ).toEqual(isBeforeEpoch ? [1969, 12, 31, 23, 59] : [1970, 1, 1, 0, 0]);
+    fixture.destroy();
+  }
+});
+
+it('GPUCalendarBuckets treats seconds beyond the calendar range as invalid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene: Scene = {
+    unit: 'second',
+    timestamps: BigInt64Array.of(2n ** 52n, -(2n ** 52n), 2n ** 62n, -(2n ** 63n), 2n ** 63n - 1n)
+  };
+  const fixture = createFixture(device, scene, ['year']);
+  const actual = await fixture.run(0, 0);
+  expect(actual['year']).toEqual(
+    Array.from(scene.timestamps, () => GPU_CALENDAR_BUCKETS_INVALID_YEAR)
+  );
+  fixture.destroy();
+});
+
+it('GPUCalendarBuckets agrees with the oracle on fuzzed second, microsecond and nanosecond rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Milliseconds within +-9e12, so that nanoseconds (x 1e6) still fit Int64.
+  const milliseconds = createRandomTimestamps(5, 4000).map(value => value % 9_000_000_000_000n);
+  const next = createRandomWords(21);
+  for (const unit of ['second', 'microsecond', 'nanosecond'] as const) {
+    const {multiplier} = UNIT_FACTORS[unit];
+    // Seconds keep the whole second; finer units add a sub-millisecond part in [0, 1 ms), which
+    // floors back to the same millisecond, so the oracle input is the millisecond itself.
+    const timestamps = BigInt64Array.from(milliseconds, value =>
+      unit === 'second'
+        ? value / 1000n - (value % 1000n < 0n ? 1n : 0n)
+        : value * multiplier + BigInt(next() % Number(multiplier))
+    );
+    const fixture = createFixture(device, {unit, timestamps}, [
+      'year',
+      'month',
+      'dayOfMonth',
+      'hour'
+    ]);
+    const actual = await fixture.run(0, 0);
+    const expected = Array.from(timestamps, (time, row) =>
+      decodeCalendarOnCPU(unit === 'second' ? time * 1000n : milliseconds[row], 0, 0)
+    );
+    for (const [name, field] of COLUMNS.slice(0, 4)) {
+      expect(actual[name], `${unit} ${name}`).toEqual(expected.map(row => row[field]));
+    }
+    fixture.destroy();
+  }
 });

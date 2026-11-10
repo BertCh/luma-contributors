@@ -3,7 +3,7 @@
 # Offline independent gstat2.1-6 oracle. Requires interpolation-advanced.py output.
 library(gstat)
 library(jsonlite)
-path <- 'modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-advanced-reference.json'
+path <- 'modules/analysis/test/gpu-spatial-analysis/spatial-interpolation/interpolation-advanced-reference.json'
 reference <- fromJSON(path, simplifyVector=TRUE)
 structureModel <- function(first, second) {
   model <- NULL
@@ -42,5 +42,5 @@ set.seed(19147)
 simulation <- krige(value~1,locations=~x+y,data=data,newdata=data.frame(x=reference$queries[1:2,1],y=reference$queries[1:2,2]),model=model,beta=1.2,nsim=4096,debug.level=0)
 ensemble <- as.matrix(simulation[,grep('^sim',names(simulation))])
 output <- list(ensembleMean=rowMeans(ensemble),ensembleCovariance=cov(t(ensemble)),version=as.character(packageVersion('gstat')),rVersion=as.character(getRversion()),lmc=unname(c(result$variable3.pred,result$variable3.var)),block=unname(c(univariate$var1.pred,univariate$var1.var)))
-write_json(output,'modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-gstat-reference.json',auto_unbox=TRUE,pretty=TRUE,digits=16)
+write_json(output,'modules/analysis/test/gpu-spatial-analysis/spatial-interpolation/interpolation-gstat-reference.json',auto_unbox=TRUE,pretty=TRUE,digits=16)
 print(output)

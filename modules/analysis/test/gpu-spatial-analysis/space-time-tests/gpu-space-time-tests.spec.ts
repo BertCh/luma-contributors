@@ -9,6 +9,7 @@ import {
   getKnoxPoissonPValue,
   GPUKnoxTest,
   GPUMantelTest,
+  GPU_MANTEL_POINTPATS_TRANSFORM,
   GPU_SPACE_TIME_SUMMARY,
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from '../../../src/gpu-spatial-analysis/space-time-tests/index';
@@ -170,6 +171,61 @@ it('GPUMantelTest matches the double-precision oracle with permuted times', asyn
   expect(result[index.pseudoPGreater]).toBeCloseTo((greater + 1) / (permutations + 1), 6);
   expect(result[index.zScore]).toBeGreaterThan(2);
   rig.destroy();
+});
+
+it('GPUMantelTest reproduces the pointpats mantel transforms and keeps raw as the default', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {positions, times} = createEvents(200, 11);
+  const csr = buildBand(positions, 14);
+  const permutations = 49;
+  const seed = 99;
+  const cases = [
+    // pointpats 2.6.0 defaults: scon = tcon = 1, spow = tpow = -1, i.e. 1 / (x + 1).
+    {
+      name: 'pointpats defaults',
+      distanceTransform: GPU_MANTEL_POINTPATS_TRANSFORM,
+      timeTransform: GPU_MANTEL_POINTPATS_TRANSFORM
+    },
+    {
+      name: 'mixed constants and powers',
+      distanceTransform: {constant: 0.5, power: -2},
+      timeTransform: {constant: 2, power: 0.5}
+    },
+    {name: 'distance only', distanceTransform: {constant: 1, power: -1}, timeTransform: undefined},
+    {name: 'time only', distanceTransform: undefined, timeTransform: {constant: 1, power: -1}}
+  ];
+  const rawExpected = computeMantelOracle(csr, times, seed, permutations);
+  for (const {name, distanceTransform, timeTransform} of cases) {
+    const rig = new AnalysisRig(device);
+    const statistics = rig.output('float32', 64 + 1);
+    const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+    rig.run(
+      new GPUMantelTest({
+        pairs: uploadPairs(rig, csr),
+        times: rig.input(times, 'float32'),
+        parameters: rig.input(
+          getGPUSpaceTimeParameterValues({seed, permutationCount: permutations}),
+          'uint32'
+        ),
+        maximumPermutations: 64,
+        distanceTransform,
+        timeTransform,
+        output: {statistics, summary}
+      })
+    );
+    const expected = computeMantelOracle(csr, times, seed, permutations, {
+      distance: distanceTransform,
+      time: timeTransform
+    });
+    const actual = await rig.readFloat(statistics);
+    // The transform must matter, otherwise the raw statistic would pass this test.
+    expect(Math.abs(expected[0] - rawExpected[0]), name).toBeGreaterThan(0.02);
+    for (let slot = 0; slot <= permutations; slot++) {
+      expect(Math.abs(actual[slot] - expected[slot]), `${name} slot ${slot}`).toBeLessThan(2e-4);
+    }
+    rig.destroy();
+  }
 });
 
 it('GPUKnoxTest runs on pairs written by GPUNeighborSearch', async () => {

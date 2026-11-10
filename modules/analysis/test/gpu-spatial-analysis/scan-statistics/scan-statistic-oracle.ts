@@ -6,7 +6,7 @@ import {
   getGPUSphereRadius,
   type GPUSpatialContext
 } from '../../../src/analysis-core/contracts/spatial-context';
-import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 
 /** Philox counter tag of the multinomial case draws, equal to the contributor's. */
 const SCAN_STREAM = 0x5ca75747;

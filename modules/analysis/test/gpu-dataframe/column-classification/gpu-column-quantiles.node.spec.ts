@@ -63,7 +63,10 @@ it('GPUColumnQuantiles validates its inputs', () => {
     /must be one packed view/
   );
   expectThrows(graph => ({values: view(graph, 'float32', 0)}), /at least one row/);
-  expectThrows(graph => ({values: view(graph, 'float32', 2 ** 24 + 1)}), /at most 16777216 rows/);
+  expectThrows(
+    graph => ({values: view(graph, 'float32', 2 ** 24 + 1)}),
+    /values length must be at most 16777216 \(2\^24\): .*float32/
+  );
   expectThrows(graph => ({values: view(graph, 'uint32', 10) as never}), /values/);
   expectThrows(graph => ({mask: view(graph, 'float32', 10) as never}), /mask/);
   expectThrows(graph => ({mask: view(graph, 'uint32', 9)}), /mask length/);

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -16,6 +15,7 @@ import {
   getRasterBufferBandNodes,
   validateRasterGrid
 } from './raster-band-utils';
+import {validateRequirement} from '../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterExpansionViews, validateRasterExpansionGraph} from './raster-expansion-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 
@@ -62,9 +62,21 @@ export class GPURasterTileReprojection implements GPUCommandNodeProducer {
     for (const source of props.sources) {
       const [left, top, right, bottom] = source.pixelBounds;
       // Tile coordinates must describe a nonempty, contained rectangle on the shared lattice.
-      assert(source.pixelBounds.every(Number.isSafeInteger));
-      assert(left >= 0 && top >= 0 && right > left && bottom > top);
-      assert(right <= props.sourceGrid.width && bottom <= props.sourceGrid.height);
+      validateRequirement(
+        this.id,
+        source.pixelBounds.every(Number.isSafeInteger),
+        'sources pixelBounds must be safe integers'
+      );
+      validateRequirement(
+        this.id,
+        left >= 0 && top >= 0 && right > left && bottom > top,
+        'sources pixelBounds must be a nonempty [left, top, right, bottom] rectangle at or after the origin'
+      );
+      validateRequirement(
+        this.id,
+        right <= props.sourceGrid.width && bottom <= props.sourceGrid.height,
+        'sources pixelBounds must lie inside sourceGrid'
+      );
     }
   }
 
@@ -75,7 +87,11 @@ export class GPURasterTileReprojection implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    assert(!this.reprojection);
+    validateRequirement(
+      this.id,
+      !this.reprojection,
+      'getCommandNodes can run once; construct a new contributor for another graph'
+    );
     const {props, id} = this;
     validateRasterExpansionGraph(id, graph, [
       ...props.sources.flatMap(source => getRasterBandViews(source.input)),

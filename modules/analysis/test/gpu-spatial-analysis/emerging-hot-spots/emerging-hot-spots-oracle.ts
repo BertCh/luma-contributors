@@ -122,7 +122,11 @@ export function computeSpaceTimeGiStar(
  */
 export function computeSpaceTimeGiStarWeighted(
   cube: EmergingHotSpotCube,
-  weights: {offsets: ArrayLike<number>; neighbors: ArrayLike<number>; weights: ArrayLike<number>},
+  weights: {
+    offsets: ArrayLike<number>;
+    neighbors: ArrayLike<number>;
+    weights: ArrayLike<number>;
+  },
   selfWeight: number,
   packed: ArrayLike<number>
 ): Float64Array {
@@ -139,7 +143,10 @@ export function computeSpaceTimeGiStarWeighted(
     const spatial = [{cell, weight: selfWeight}];
     for (let slot = weights.offsets[cell]; slot < weights.offsets[cell + 1]; slot++) {
       if (weights.neighbors[slot] !== cell) {
-        spatial.push({cell: weights.neighbors[slot], weight: weights.weights[slot]});
+        spatial.push({
+          cell: weights.neighbors[slot],
+          weight: weights.weights[slot]
+        });
       }
     }
     let weightedSum = 0;
@@ -297,12 +304,16 @@ export function classifyEmergingHotSpotSeries(
   series: ArrayLike<number>,
   trend: EmergingHotSpotTrend,
   packed: ArrayLike<number>,
-  options: {states?: ArrayLike<number>; finalSlice?: 'require' | 'last-valid'} = {}
+  options: {
+    states?: ArrayLike<number>;
+    finalSlice?: 'require' | 'last-valid';
+  } = {}
 ): number {
   const criticalZ = fround(packed[2]);
   const trendLevel = fround(packed[3]);
   const fraction = fround(packed[4]);
   const minimumTrendSliceCount = fround(packed[5]);
+  const isLegacySporadic = packed[7] !== 0;
   let valid = 0;
   let hot = 0;
   let cold = 0;
@@ -398,10 +409,12 @@ export function classifyEmergingHotSpotSeries(
   if (cold > 0 && coldPersistent) {
     return categories.HISTORICAL_COLD;
   }
-  if (hot > 0 && cold === 0) {
+  // Current ArcGIS Pro needs a significant final slice for Sporadic, so only the older rule
+  // (packed[7] = 1, `sporadicRequiresFinalSlice: false`) labels a neutral final slice.
+  if (isLegacySporadic && hot > 0 && cold === 0) {
     return categories.SPORADIC_HOT;
   }
-  if (cold > 0 && hot === 0) {
+  if (isLegacySporadic && cold > 0 && hot === 0) {
     return categories.SPORADIC_COLD;
   }
   return categories.NO_PATTERN;
@@ -483,7 +496,10 @@ const COLD = -30;
 /** One designed series per category with the category it must classify as (radius 0, window 0). */
 export type DesignedSeries = {
   name: string;
+  /** Category under the default rule (Sporadic needs a significant final slice). */
   expected: number;
+  /** Category with `sporadicRequiresFinalSlice: false`, when it differs from `expected`. */
+  legacyExpected?: number;
   values: number[];
 };
 
@@ -527,14 +543,15 @@ export function createDesignedSeries(): DesignedSeries[] {
       values: ramp(48, 24)
     },
     {
-      name: 'sporadic hot',
-      expected: categories.SPORADIC_HOT,
-      values: [HOT, ...zeros(4), HOT, ...zeros(3), HOT, ...zeros(2), HOT, ...zeros(6), HOT, 0]
+      name: 'sporadic hot neutral final',
+      expected: categories.NO_PATTERN,
+      legacyExpected: categories.SPORADIC_HOT,
+      values: [HOT, ...zeros(4), HOT, ...zeros(3), HOT, ...zeros(2), HOT, ...zeros(5), HOT, 0]
     },
     {
       name: 'sporadic hot final hot',
       expected: categories.SPORADIC_HOT,
-      values: [HOT, ...zeros(4), HOT, ...zeros(3), HOT, ...zeros(2), HOT, ...zeros(6), 0, HOT]
+      values: [HOT, ...zeros(4), HOT, ...zeros(3), HOT, ...zeros(2), HOT, ...zeros(5), 0, HOT]
     },
     {
       name: 'oscillating hot',
@@ -572,9 +589,15 @@ export function createDesignedSeries(): DesignedSeries[] {
       values: ramp(-48, -24)
     },
     {
-      name: 'sporadic cold',
+      name: 'sporadic cold neutral final',
+      expected: categories.NO_PATTERN,
+      legacyExpected: categories.SPORADIC_COLD,
+      values: [COLD, ...zeros(4), COLD, ...zeros(3), COLD, ...zeros(2), COLD, ...zeros(5), COLD, 0]
+    },
+    {
+      name: 'sporadic cold final cold',
       expected: categories.SPORADIC_COLD,
-      values: [COLD, ...zeros(4), COLD, ...zeros(3), COLD, ...zeros(2), COLD, ...zeros(6), COLD, 0]
+      values: [COLD, ...zeros(4), COLD, ...zeros(3), COLD, ...zeros(2), COLD, ...zeros(5), 0, COLD]
     },
     {
       name: 'oscillating cold',
@@ -609,6 +632,7 @@ export function createDesignedCube(): {
   cube: EmergingHotSpotCube & {mask: Uint32Array; values: Float32Array};
   designed: DesignedSeries[];
   expectedCategories: number[];
+  legacyExpectedCategories: number[];
 } {
   const designed = createDesignedSeries();
   const shape = {gridWidth: 24, gridHeight: 24, sliceCount: 20};
@@ -617,6 +641,7 @@ export function createDesignedCube(): {
   const mask = new Uint32Array(cellCount).fill(1);
   const random = createSeededRandom(11);
   const expectedCategories: number[] = [];
+  const legacyExpectedCategories: number[] = [];
   for (let cell = 0; cell < cellCount; cell++) {
     const series = designed[cell];
     for (let slice = 0; slice < shape.sliceCount; slice++) {
@@ -624,6 +649,9 @@ export function createDesignedCube(): {
         series && cell < designed.length ? series.values[slice] : random() * 2 - 1;
     }
     expectedCategories.push(series?.expected ?? GPU_EMERGING_HOT_SPOTS_CATEGORIES.NO_PATTERN);
+    legacyExpectedCategories.push(
+      series?.legacyExpected ?? series?.expected ?? GPU_EMERGING_HOT_SPOTS_CATEGORIES.NO_PATTERN
+    );
   }
   // A hot series that the mask removes.
   mask[designed.length] = 0;
@@ -636,7 +664,12 @@ export function createDesignedCube(): {
     (designed.length + 1) * shape.sliceCount,
     (designed.length + 2) * shape.sliceCount
   );
-  return {cube: {...shape, values, mask}, designed, expectedCategories};
+  return {
+    cube: {...shape, values, mask},
+    designed,
+    expectedCategories,
+    legacyExpectedCategories
+  };
 }
 
 // Package-pinned references (statsmodels, scipy, python datetime) live in the generated fixture.

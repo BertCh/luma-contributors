@@ -74,8 +74,8 @@ function getTimestampBinding(
  * expanded by half the distance, so two segments within the distance at one instant have
  * overlapping boxes; time relative to row 0, padded for f32 rounding) and the number of cells it
  * covers. Rows that start no segment (last row of a track, an invalid track, a non-finite position,
- * a zero or negative duration) and segments over the per-segment cell cap get 0 cells; the cap
- * raises the entry overflow word. @internal
+ * a zero or negative duration, a segment longer than the optional `maximumGap`) and segments over
+ * the per-segment cell cap get 0 cells; the cap raises the entry overflow word. @internal
  */
 export function createClosestApproachSegmentsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -87,6 +87,8 @@ export function createClosestApproachSegmentsNode<Parameters>(
     trackOffsets: GraphDataView<'uint32'>;
     trackValid?: GraphDataView<'uint32'>;
     distance: GraphDataView<'float32'>;
+    /** Rows skipped as a data gap or an invalid track; replaces `trackValid` when present. */
+    rowSkip?: GraphDataView<'uint32'>;
     segmentRecords: GraphDataView<'uint32'>;
     segmentCounts: GraphDataView<'uint32'>;
     state: GraphDataView<'uint32'>;
@@ -96,16 +98,26 @@ export function createClosestApproachSegmentsNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: `${shape.isWordMode ? 'segments-words' : 'segments'}${props.trackValid ? '-valid' : ''}`,
+    variant: `${shape.isWordMode ? 'segments-words' : 'segments'}${props.trackValid ? '-valid' : ''}${props.rowSkip ? '-gap' : ''}`,
     bindings: [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       getTimestampBinding(props.timestamps, shape.isWordMode),
       {name: 'trackOffsets', view: props.trackOffsets, type: 'u32', access: 'read'},
-      ...(props.trackValid
+      ...(props.trackValid && !props.rowSkip
         ? [
             {
               name: 'trackValid',
               view: props.trackValid,
+              type: 'u32' as const,
+              access: 'read' as const
+            }
+          ]
+        : []),
+      ...(props.rowSkip
+        ? [
+            {
+              name: 'rowSkip',
+              view: props.rowSkip,
               type: 'u32' as const,
               access: 'read' as const
             }
@@ -140,7 +152,13 @@ fn isFiniteNumber(value: f32) -> bool {
   segmentRecords[base + 6u] = NONE;
   let track = findTrack(index);
   if (track == NONE || index + 1u >= trackOffsets[trackOffsetsOffset + track + 1u]) { return; }
-  ${props.trackValid ? 'if (trackValid[trackValidOffset + track] == 0u) { return; }' : ''}
+  ${
+    props.rowSkip
+      ? 'if (rowSkip[rowSkipOffset + index] != 0u) { return; }'
+      : props.trackValid
+        ? 'if (trackValid[trackValidOffset + track] == 0u) { return; }'
+        : ''
+  }
   let radius = distance[distanceOffset];
   if (!(isFiniteNumber(radius) && radius >= 0.0)) { return; }
   let start = vec2<f32>(positions[positionsOffset + index * 2u], positions[positionsOffset + index * 2u + 1u]);
@@ -179,6 +197,65 @@ fn isFiniteNumber(value: f32) -> bool {
   segmentRecords[base + 6u] = track;
   segmentRecords[base + 7u] = trackOffsets[trackOffsetsOffset + track];
   segmentCounts[segmentCountsOffset + index] = u32(cellCount);`
+  });
+}
+
+/**
+ * Per-row skip flags of the segments pass: 1 for a data gap (the segment starting at the row is
+ * longer than `maximumGap`) or an invalid track. A separate pass keeps the segments kernel inside
+ * the core binding limit while still skipping before the per-segment cell cap. @internal
+ */
+export function createClosestApproachRowSkipNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    shape: ClosestApproachShape;
+    timestamps: GraphDataView<'float32'> | GraphDataView<'uint32x2'>;
+    trackOffsets: GraphDataView<'uint32'>;
+    trackValid?: GraphDataView<'uint32'>;
+    maximumGap: GraphDataView<'float32'>;
+    rowSkip: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const {shape} = props;
+  const bindings: WGSLKernelBinding[] = [
+    getTimestampBinding(props.timestamps, shape.isWordMode),
+    {name: 'trackOffsets', view: props.trackOffsets, type: 'u32', access: 'read'},
+    {name: 'maximumGap', view: props.maximumGap, type: 'f32', access: 'read'},
+    {name: 'rowSkip', view: props.rowSkip, type: 'u32', access: 'read_write'}
+  ];
+  if (props.trackValid) {
+    bindings.push({name: 'trackValid', view: props.trackValid, type: 'u32', access: 'read'});
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: `row-skip${shape.isWordMode ? '-words' : ''}${props.trackValid ? '-valid' : ''}`,
+    bindings,
+    invocationCount: shape.rowCount,
+    declarations: `${getShapeConstants(shape)}
+${getTimestampSourceWGSL(shape.isWordMode)}
+fn findTrack(row: u32) -> u32 {
+  if (row < trackOffsets[trackOffsetsOffset] || row >= trackOffsets[trackOffsetsOffset + TRACK_COUNT]) {
+    return NONE;
+  }
+  var low = 0u;
+  var high = TRACK_COUNT;
+  loop {
+    if (low >= high) { break; }
+    let middle = (low + high) / 2u;
+    if (trackOffsets[trackOffsetsOffset + middle] > row) { high = middle; } else { low = middle + 1u; }
+  }
+  return low - 1u;
+}`,
+    body: `rowSkip[rowSkipOffset + index] = 1u;
+  let track = findTrack(index);
+  if (track == NONE || index + 1u >= trackOffsets[trackOffsetsOffset + track + 1u]) { return; }
+  ${props.trackValid ? 'if (trackValid[trackValidOffset + track] == 0u) { return; }' : ''}
+  let gapLimit = maximumGap[maximumGapOffset];
+  // A segment longer than the limit is a data gap, not linear motion; equal is still a segment.
+  if (gapLimit > 0.0 && rowTimeDifference(index + 1u, index) > gapLimit) { return; }
+  rowSkip[rowSkipOffset + index] = 0u;`
   });
 }
 

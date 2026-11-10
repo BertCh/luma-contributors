@@ -131,6 +131,8 @@ export type LocalPermutationReadback = {
   quadrants: number[];
   overflow: number;
   islandCount: number;
+  /** `status.invalidCount` output (rows with a negative value; 0 unless local G or G*). */
+  invalidCount: number;
 };
 
 /** Builds a compiled `GPULocalPermutationTest` graph with every optional output. */
@@ -168,6 +170,7 @@ export function createLocalPermutationHarness(
     classes: createOutputBuffer(device, rows),
     quadrants: createOutputBuffer(device, rows),
     overflow: createOutputBuffer(device, 1),
+    invalidCount: createOutputBuffer(device, 1),
     islandCount: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: 'local-permutation-test'});
@@ -204,7 +207,10 @@ export function createLocalPermutationHarness(
       islandCount: importGraphBuffer(graph, 'island-count', outputs.islandCount, 'uint32', 1),
       observed: importGraphBuffer(graph, 'observed', outputs.observed, 'float32', rows),
       significant: importGraphBuffer(graph, 'significant', outputs.significant, 'uint32', rows),
-      status: {overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)}
+      status: {
+        overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
+        invalidCount: importGraphBuffer(graph, 'invalid-count', outputs.invalidCount, 'uint32', 1)
+      }
     }
   });
   const getBuildCount = countBuilds(contributor);
@@ -241,7 +247,8 @@ export function createLocalPermutationHarness(
         classes: withClasses ? await readUint32(outputs.classes, rows) : [],
         quadrants: withQuadrants ? await readUint32(outputs.quadrants, rows) : [],
         overflow: (await readUint32(outputs.overflow, 1))[0],
-        islandCount: (await readUint32(outputs.islandCount, 1))[0]
+        islandCount: (await readUint32(outputs.islandCount, 1))[0],
+        invalidCount: (await readUint32(outputs.invalidCount, 1))[0]
       };
     },
     destroy() {
@@ -259,6 +266,8 @@ export type GlobalPermutationReadback = {
   resultBits: number[];
   referenceDistribution: number[];
   histogram: number[];
+  /** `status.invalidCount` output (rows with a negative value; 0 unless G). */
+  invalidCount: number;
 };
 
 /** Builds a compiled `GPUGlobalPermutationTest` graph with every optional output. */
@@ -284,7 +293,8 @@ export function createGlobalPermutationHarness(
   const outputs = {
     results: createOutputBuffer(device, GPU_GLOBAL_PERMUTATION_SUMMARY.length),
     referenceDistribution: createOutputBuffer(device, maximumPermutations),
-    histogram: createOutputBuffer(device, bins)
+    histogram: createOutputBuffer(device, bins),
+    invalidCount: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: 'global-permutation-test'});
   const contributor = new GPUGlobalPermutationTest({
@@ -310,7 +320,10 @@ export function createGlobalPermutationHarness(
         'float32',
         maximumPermutations
       ),
-      histogram: importGraphBuffer(graph, 'histogram', outputs.histogram, 'uint32', bins)
+      histogram: importGraphBuffer(graph, 'histogram', outputs.histogram, 'uint32', bins),
+      status: {
+        invalidCount: importGraphBuffer(graph, 'invalid-count', outputs.invalidCount, 'uint32', 1)
+      }
     }
   });
   const getBuildCount = countBuilds(contributor);
@@ -341,7 +354,8 @@ export function createGlobalPermutationHarness(
           outputs.referenceDistribution,
           maximumPermutations
         ),
-        histogram: await readUint32(outputs.histogram, bins)
+        histogram: await readUint32(outputs.histogram, bins),
+        invalidCount: (await readUint32(outputs.invalidCount, 1))[0]
       };
     },
     destroy() {

@@ -29,8 +29,14 @@ Monte Carlo inference, exact leave-one-out model selection and bounded continuou
 `GPUInstrumentalVariablesCovariance` takes structural design `Z`, instrument design `H` and
 structural residuals from the same fitted IV model. Both designs omit the implicit intercept.
 The coefficient count is 1–15; the instrument count is between the coefficient count and 16;
-there are at most 65,536 observations. All estimation rows must be finite. There is no silent
-complete-case change after a model has already been fitted.
+there are at most 2^24 observations (float32 counts), and fewer when the design, instrument or
+score rows exceed the device's storage binding size. All estimation rows must be finite. There is
+no silent complete-case change after a model has already been fitted.
+
+Every row sum (column means, the centered moments `H'H`, `H'Z`, `diag(Z'Z)` and the meat matrix)
+is a row-tile reduction merged in tile order with compensation, so results are reproducible; one
+invocation solves the small projection system. The HAC kernel is applied over its CSR neighbors,
+one invocation per row (`O(nnz · p)`), never over all pairs.
 
 The covariance uses the projected-design influence matrix, not an OLS sandwich applied to
 endogenous regressors. Columns are centered and norm-scaled before both Cholesky solves. The
@@ -61,6 +67,10 @@ restricted model. Covariance uses the restricted model's pooled `SSE / (n - p)` 
 The Chow output contains `[F, numeratorDegrees, denominatorDegrees]`. Optional `stability` contains `[Wald chi-square, degrees, upper-tail p]` for each source coefficient and then jointly. It tests equality of the varying regime coefficients, matching `spreg.Chow`; common columns are `[NaN, 0, NaN]`. This is a different hypothesis from the nested-model F test.
 Empty or singular regimes are explicit, and a singular unrestricted fit does not erase a valid
 restricted coefficient estimate. The joint test assumes independent homoskedastic normal errors.
+Rows (at most 2^24, and within the device's binding size for the predictors) are reduced in
+parallel: per-regime means and centered moments come from a stable regime sort and one workgroup
+per regime, one invocation rebuilds and solves both nested systems, and the residual sums of
+squares are compensated row-tile sums.
 
 `GPUSpatialPanelErrorMaximumLikelihood` takes the existing spatial-error ML arguments plus
 `periodCount`. Data are balanced and period-major; the supplied weights describe only the entity
@@ -85,7 +95,12 @@ Optional `spatial` selects the `spreg.SURerrorGM` convention: equation OLS resid
 ## Probit and local collinearity
 
 `GPUProbitRegression` uses centered/scaled predictors, Fisher scoring and monotone likelihood
-backtracking. It accepts 1–11 predictors and at most 65,536 rows. Complete cases are selected
+backtracking. It accepts 1–11 predictors and at most 2^24 rows (fewer when the predictors, or
+the diagnostic residual rows, exceed the device's binding size). Each iteration is a row-tile
+pass for the score and information, a one-invocation solve, one row-tile pass that evaluates all
+24 halved line-search steps, and a one-invocation step choice; iterations are unrolled
+(`estimatedCommandNodeCount`, about `6 · maximumIterations`) and gated on the GPU once the fit
+stops. Complete cases are selected
 jointly; included responses must be exactly 0 or 1. The expected-information SEs are model based.
 Marginal effects average the normal density over estimation rows, then multiply by each slope;
 they are not effects evaluated at the means.

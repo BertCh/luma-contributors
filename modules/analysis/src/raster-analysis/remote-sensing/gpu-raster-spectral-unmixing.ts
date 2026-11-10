@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GraphDataView,
   GPUCommandGraph,
@@ -11,9 +10,12 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
   RASTER_FINITE_WGSL,
   rasterBinding,
-  validateRasterCount,
   validateRasterViews,
   validateRasterGraph,
   getRasterLeastSquaresWGSL
@@ -38,6 +40,15 @@ export type GPURasterSpectralUnmixingProps = {
     iterationCounts: GraphDataView<'uint32'>;
   };
 };
+/** Bands: the per-thread design matrix and response arrays scale with bandCount. */
+export const MAXIMUM_UNMIXING_BAND_COUNT = 256;
+/** Endmembers: the QR factor and projected-gradient state are dense in endmemberCount squared per thread. */
+export const MAXIMUM_UNMIXING_ENDMEMBER_COUNT = 8;
+/** Per-thread working memory in floats (8 KiB): beyond this, private arrays spill and occupancy collapses. */
+export const UNMIXING_WORKING_MEMORY_FLOAT_COUNT = 2048;
+/** Projected-gradient rounds run inside one invocation, so the loop bound is capped. */
+export const MAXIMUM_UNMIXING_ITERATIONS = 4096;
+
 /** Small QR least squares (up to 256 bands/8 endmembers), or bounded projected-gradient NNLS.
  * Simplex mode enforces nonnegativity and sum one by Euclidean projection, not clipping.
  * Status 0=solved, 1=insufficient valid bands, 2=rank/nonfinite failure, 4=iteration limit.
@@ -48,42 +59,79 @@ export class GPURasterSpectralUnmixing implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPURasterSpectralUnmixingProps) {
     this.id = props.id ?? 'raster-spectral-unmixing';
-    validateRasterCount(props.cellCount);
-    validateRasterCount(props.bandCount, 256);
-    validateRasterCount(props.endmemberCount, 8);
-    assert(props.bandCount >= props.endmemberCount);
+    validateCapacity(this.id, 'cellCount', props.cellCount);
+    validateCapacity(this.id, 'bandCount', props.bandCount, 1, MAXIMUM_UNMIXING_BAND_COUNT);
+    validateCapacity(
+      this.id,
+      'endmemberCount',
+      props.endmemberCount,
+      1,
+      MAXIMUM_UNMIXING_ENDMEMBER_COUNT
+    );
+    validateRequirement(
+      this.id,
+      props.bandCount >= props.endmemberCount,
+      'bandCount must be at least endmemberCount'
+    );
     const bands = props.bandCount;
     const members = props.endmemberCount;
     const constrained = (props.constraint ?? 'unconstrained') !== 'unconstrained';
-    // Bound explicit per-function working arrays and scalar locals to 8 KiB.
-    assert(
+    validateRequirement(
+      this.id,
       constrained
-        ? bands * (members + 2) + 4 * members + 64 <= 2048
+        ? bands * (members + 2) + 4 * members + 64 <= UNMIXING_WORKING_MEMORY_FLOAT_COUNT
         : Math.max(
             bands * (members + 1) + members + 64,
             bands * members + members ** 2 + 2 * members + 32
-          ) <= 2048
+          ) <= UNMIXING_WORKING_MEMORY_FLOAT_COUNT,
+      `per-thread working memory (bandCount ${bands}, endmemberCount ${members}) must fit ${UNMIXING_WORKING_MEMORY_FLOAT_COUNT} floats; reduce bandCount or endmemberCount`
     );
-    validateRasterCount(props.cellCount * props.bandCount);
-    validateRasterCount(props.cellCount * props.endmemberCount);
-    assert(
-      ['unconstrained', 'nonnegative', 'simplex'].includes(props.constraint ?? 'unconstrained')
+    validateCapacity(this.id, 'cellCount times bandCount', props.cellCount * props.bandCount);
+    validateCapacity(
+      this.id,
+      'cellCount times endmemberCount',
+      props.cellCount * props.endmemberCount
     );
-    validateRasterCount(props.maximumIterations ?? 256, 4096);
-    assert(
+    validateRequirement(
+      this.id,
+      ['unconstrained', 'nonnegative', 'simplex'].includes(props.constraint ?? 'unconstrained'),
+      "constraint must be 'unconstrained', 'nonnegative' or 'simplex'"
+    );
+    validateCapacity(
+      this.id,
+      'maximumIterations',
+      props.maximumIterations ?? 256,
+      1,
+      MAXIMUM_UNMIXING_ITERATIONS
+    );
+    validateRequirement(
+      this.id,
       Number.isFinite(Math.fround(props.tolerance ?? 1e-5)) &&
-        Math.fround(props.tolerance ?? 1e-5) > 0
+        Math.fround(props.tolerance ?? 1e-5) > 0,
+      'tolerance must be a positive finite float32 value'
     );
-    assert(
+    validateRequirement(
+      this.id,
       props.values.length >= props.cellCount * props.bandCount &&
-        props.endmembers.length >= props.bandCount * props.endmemberCount
+        props.endmembers.length >= props.bandCount * props.endmemberCount,
+      'values must hold cellCount times bandCount entries and endmembers bandCount times endmemberCount'
     );
-    assert(!props.validity || props.validity.length >= props.cellCount * props.bandCount);
-    assert(props.output.abundances.length >= props.cellCount * props.endmemberCount);
-    assert(
+    validateRequirement(
+      this.id,
+      !props.validity || props.validity.length >= props.cellCount * props.bandCount,
+      'validity must hold cellCount times bandCount entries'
+    );
+    validateRequirement(
+      this.id,
+      props.output.abundances.length >= props.cellCount * props.endmemberCount,
+      'output.abundances must hold cellCount times endmemberCount entries'
+    );
+    validateRequirement(
+      this.id,
       [props.output.residual, props.output.status, props.output.iterationCounts].every(
         view => view.length >= props.cellCount
-      )
+      ),
+      'output.residual, output.status and output.iterationCounts must hold cellCount entries'
     );
     validateRasterViews(
       this.id,

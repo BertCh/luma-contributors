@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -11,10 +10,26 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateMaximumCount,
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Largest state count: the single invocation relaxes every state per round (O(states * transitions)). */
+const MAXIMUM_STATE_COUNT = 256;
+/** Largest transition count: bounds the work of each relaxation round in the single invocation. */
+const MAXIMUM_TRANSITION_COUNT = 4096;
+/** Largest `samplesPerTransition` of the piecewise arrival model. */
+const MAXIMUM_SAMPLES_PER_TRANSITION = 256;
+/** Largest `maximumRelaxations`: bounds the relaxation loop of the single invocation. */
+const MAXIMUM_RELAXATIONS = 65536;
+/** Rows of the `endpoints` view: initial state and physical destination vertex. */
+const ENDPOINT_COUNT = 2;
+/** Words of the `summary` view: valid, converged, target state, arrival time bits. */
+const SUMMARY_WORD_COUNT = 4;
 
 export type GPUNetworkTimeRoutingProps = {
   id?: string;
@@ -48,6 +63,12 @@ export type GPUNetworkTimeRoutingProps = {
  * FIFO earliest-arrival routing on caller-prepared restriction states. No waiting is necessary
  * for these everywhere-nondecreasing affine travel durations. State count <= 256, transitions <=
  * 4096. Unreached +Infinity is conclusive only when converged=1; exhausted labels are incumbents.
+ *
+ * Reference tier (contributor contract rule 2): the label-correcting search is one GPU invocation
+ * (`invocationCount: 1`) that relaxes every transition in each round, O(rounds * transitions),
+ * with at most 256 states, 4,096 transitions and 65,536 relaxation rounds (default: one per
+ * state), enforced at construction. A frontier relaxation with a time-dependent arrival function
+ * on the reachability engine would replace it for larger networks.
  */
 export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
   readonly id: string;
@@ -55,22 +76,31 @@ export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkTimeRoutingProps) {
     this.id = props.id ?? 'network-time-routing';
     this.props = props;
-    assert(
-      props.stateVertices.length > 0 &&
-        props.stateVertices.length <= 256 &&
-        props.transitions.length <= 4096
-    );
+    const {id} = this;
+    validateCapacity(id, 'stateVertices rows', props.stateVertices.length, 1, MAXIMUM_STATE_COUNT);
+    validateCapacity(id, 'transitions rows', props.transitions.length, 0, MAXIMUM_TRANSITION_COUNT);
     if (props.costModel === 'piecewise-arrival') {
-      assert(
-        Number.isInteger(props.samplesPerTransition) &&
-          props.samplesPerTransition! >= 2 &&
-          props.samplesPerTransition! <= 256
+      validateCapacity(
+        id,
+        'samplesPerTransition',
+        props.samplesPerTransition as number,
+        2,
+        MAXIMUM_SAMPLES_PER_TRANSITION
       );
     } else {
-      assert(props.samplesPerTransition === undefined && props.waitingPolicy === undefined);
+      validateRequirement(
+        id,
+        props.samplesPerTransition === undefined && props.waitingPolicy === undefined,
+        'samplesPerTransition and waitingPolicy require costModel piecewise-arrival'
+      );
     }
-    const rounds = props.maximumRelaxations ?? props.stateVertices.length;
-    assert(Number.isInteger(rounds) && rounds >= 0 && rounds <= 65536);
+    validateCapacity(
+      id,
+      'maximumRelaxations',
+      props.maximumRelaxations ?? props.stateVertices.length,
+      0,
+      MAXIMUM_RELAXATIONS
+    );
     for (const view of [
       props.stateVertices,
       props.endpoints,
@@ -82,15 +112,33 @@ export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
     validatePackedView(props.costs, ['float32x2'], this.id);
     for (const view of [props.departure, props.output.arrivals])
       validatePackedView(view, ['float32'], this.id);
-    assert(
+    validateRequirement(
+      id,
       props.costs.length ===
         props.transitions.length *
-          (props.costModel === 'piecewise-arrival' ? props.samplesPerTransition! : 1) &&
-        props.endpoints.length === 2 &&
-        props.departure.length === 1 &&
-        props.output.arrivals.length === props.stateVertices.length &&
-        props.output.predecessorTransitions.length === props.stateVertices.length &&
-        props.output.summary.length === 4
+          (props.costModel === 'piecewise-arrival' ? props.samplesPerTransition! : 1),
+      'costs must hold samplesPerTransition rows per transition (one for the affine model)'
+    );
+    validateRequirement(
+      id,
+      props.endpoints.length === ENDPOINT_COUNT,
+      `endpoints must hold ${ENDPOINT_COUNT} rows: initial state and destination vertex`
+    );
+    validateRequirement(id, props.departure.length === 1, 'departure must hold one row');
+    validateRequirement(
+      id,
+      props.output.arrivals.length === props.stateVertices.length,
+      'output.arrivals must hold one row per state'
+    );
+    validateRequirement(
+      id,
+      props.output.predecessorTransitions.length === props.stateVertices.length,
+      'output.predecessorTransitions must hold one row per state'
+    );
+    validateRequirement(
+      id,
+      props.output.summary.length === SUMMARY_WORD_COUNT,
+      `output.summary must hold ${SUMMARY_WORD_COUNT} rows`
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.stateVertices,
@@ -225,22 +273,27 @@ export function prepareGPUNetworkRestrictionStates(
   edges: readonly GPUNetworkRestrictionEdge[],
   restrictions: readonly (readonly number[])[]
 ) {
-  assert(Number.isInteger(nodeCount) && nodeCount > 0 && nodeCount <= 256);
+  const id = 'prepareGPUNetworkRestrictionStates';
+  validateCapacity(id, 'nodeCount', nodeCount, 1, MAXIMUM_STATE_COUNT);
   for (const edge of edges)
-    assert(
+    validateRequirement(
+      id,
       Number.isInteger(edge.source) &&
         Number.isInteger(edge.target) &&
         edge.source >= 0 &&
         edge.source < nodeCount &&
         edge.target >= 0 &&
-        edge.target < nodeCount
+        edge.target < nodeCount,
+      'edges must have integer source and target below nodeCount'
     );
   const prefixes: number[][] = [[]];
   const keys = new Set(['']);
   for (const restriction of restrictions) {
-    assert(
+    validateRequirement(
+      id,
       restriction.length > 0 &&
-        restriction.every(edge => Number.isInteger(edge) && edge >= 0 && edge < edges.length)
+        restriction.every(edge => Number.isInteger(edge) && edge >= 0 && edge < edges.length),
+      'each restriction must list at least one edge index below the edge count'
     );
     for (let length = 1; length < restriction.length; length++) {
       const prefix = restriction.slice(0, length);
@@ -275,14 +328,19 @@ export function prepareGPUNetworkRestrictionStates(
       let destination = states.get(key);
       if (destination === undefined) {
         destination = stateVertices.length;
-        assert(destination < 256);
+        validateMaximumCount(id, 'restriction states', destination + 1, MAXIMUM_STATE_COUNT);
         states.set(key, destination);
         stateVertices.push(edge.target);
         statePrefixes.push(nextPrefix);
       }
       transitions.push(state, destination);
       originalEdges.push(originalEdge);
-      assert(originalEdges.length <= 4096);
+      validateMaximumCount(
+        id,
+        'restriction transitions',
+        originalEdges.length,
+        MAXIMUM_TRANSITION_COUNT
+      );
     });
   }
   return {

@@ -211,6 +211,10 @@ it('GPULineClipByPolygon#reports overflow and keeps a consistent prefix', async 
   expect(vertices.overflow).toBe(1);
   const pairs = await runLineClip(device, lines, SQUARE, {intersectionCapacity: 2});
   expect(pairs.overflow).toBe(1);
+  // candidateOverflow isolates the intersection pair list from the other capacities.
+  expect(pairs.candidateOverflow).toBe(1);
+  expect(pieces.candidateOverflow).toBe(0);
+  expect(vertices.candidateOverflow).toBe(0);
 });
 
 it('GPULineClipByPolygon#orders a long skewed crossing stream with cooperative radix passes', async () => {

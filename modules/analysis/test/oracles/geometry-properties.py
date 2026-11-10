@@ -5,7 +5,7 @@ Every fixture is produced from a fixed seed with shapely, scipy, numpy and h3-py
 the package versions, the seed and the tolerances (with their derivation) so a GPU spec can compare
 against truth without re-deriving it. Nothing here reads the current output of a GPU kernel.
 
-Fixtures written (relative to modules/graph/test/gpu-spatial-analysis):
+Fixtures written (relative to modules/analysis/test/gpu-spatial-analysis):
   cell-aggregation/fixtures/cell-rollup.json         GPUCellRollup vs H3 parents (h3 cell_to_parent)
   geometry-topology/fixtures/line-noding.json        GPULineNoding vs shapely.node / unary_union
   geometry-topology/fixtures/make-valid.json         GPUMakeValid vs shapely.make_valid(method='linework')

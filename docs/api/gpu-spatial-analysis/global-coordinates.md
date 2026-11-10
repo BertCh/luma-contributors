@@ -100,6 +100,25 @@ excludes cells containing the antipodal center. Capacity truncation reports stat
 required count; such output is not a complete cover. Invalid caps report status 1. This uniform
 algorithm is appropriate for modest cap batches; it is not S2's adaptive priority coverer.
 
+`refinement: 'level-synchronous'` removes the level 8 ceiling. Instead of one invocation per cap
+scanning the whole sphere, it starts from the six face cells and runs `level + 1` rounds. Each
+round launches one invocation per frontier cell and per cap, drops cells that cannot contain a
+selected descendant (a child is never closer to the cap than its parent), splits the others in
+four, and a scan numbers the survivors, so every cap's cells stay in ascending key order with no
+sort. The cells, counts and status equal the uniform enumeration's (exterior and interior, any
+capacity) and `level` may reach 15. Each cap holds at most `frontierCapacity` cells per round
+(default `8 * capacity + 64`, at least `capacity`): a round holds the four children of every kept
+parent, and a kept parent can have no selected child, so the frontier can reach about four times
+the final cell count. The default holds a cover that exceeds `capacity` by a factor of about two,
+so the caller still gets status 2 and the required count. A cap that outgrows the frontier reports
+status bit 4, writes no cells and reports counts `(0, 0)`: a truncated frontier cannot know the
+size of the full cover, so no required count is available; raise `frontierCapacity` (or
+`capacity`) and run again. A zero-radius cap on a face center covers the four cells that touch
+it in both enumerations. The rounds are not gated on the live frontier length (the published
+`GPUScan` has no GPU-written dispatch size), and `estimatedCommandNodeCount` is exact for both the
+cap and the polygon level-synchronous coverings. The default remains `refinement: 'uniform'`, the reference tier.
+
+
 
 ## Safeguarded ellipsoidal measurements
 
@@ -125,6 +144,42 @@ the equator and antimeridian compare adaptive area with `Geodesic.WGS84.Polygon`
 below `max(2e6 square meters, 3e-6 * reference area)`. An intentionally impossible `1e-20` tolerance
 with a two-segment cap must invalidate all twelve. These are measured acceptance envelopes, not
 user-requested tolerance guarantees.
+
+## Spatial context, limits and status codes
+
+The five spherical classes and the two S2 coverings read unit direction vectors. Each takes an
+optional `spatialContext`, resolved with `resolveGPUSpatialContext` and exposed as
+`.spatialContext`. The accepted space is `longitude-latitude`, the space whose positions these
+vectors embed on the sphere, with great-circle edges and the `none` or `great-circle` metric.
+Omitted, it defaults to `GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT`. A planar context throws
+`<id> does not support planar coordinates`, and a longitude-latitude context with linear edges
+throws `<id> needs great-circle edges`. The context declares meaning only: the vectors are never
+converted, and `GPULonLatPolygonPreparation` remains the way from degrees to unit vectors.
+
+Validation messages name the contributor, the prop and the accepted range, for example
+`spherical-arc-overlay left plus right positions must be at most 128`. The limits are named
+exports with their reasons:
+
+| Constant | Value | Reason |
+| --- | --- | --- |
+| `GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES` | 128 | O(n^3) arrangement in one invocation with private scratch |
+| `GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES` | 1024 | seven floats of scratch per output vertex |
+| `GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES`, `GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES` | 3, 32 | convex polygons live in fixed private arrays |
+| `GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY` | 64 | a clip has at most the sum of two 32-vertex polygons |
+| `GPU_SPHERICAL_MINIMUM_TOLERANCE`, `GPU_SPHERICAL_MAXIMUM_TOLERANCE` | 1e-7, 1e-2 | below f32 noise, and the meaning of a boundary band |
+| `GPU_SPHERICAL_MAXIMUM_ARRANGEMENT_TOLERANCE` | 1e-3 | arc overlay and S2 polygon covering |
+| `GPU_SPHERICAL_OVERLAY_MINIMUM_COSINE` | 1e-3 | gnomonic chart scale near the horizon |
+| `GPU_S2_POLYGON_COVERING_MAXIMUM_LEVEL` | 15 | f32 vertex resolution |
+| `GPU_S2_POLYGON_COVERING_MAXIMUM_VISITED_CELLS` | 1,048,576 | frontier buffers fit one 128 MiB binding |
+| `GPU_S2_CAP_COVERING_MAXIMUM_UNIFORM_LEVEL` | 8 | `6 * 4^level` cells scanned per cap invocation |
+| `GPU_S2_CAP_COVERING_MAXIMUM_REFINED_LEVEL` | 15 | f32 vertex resolution |
+| `GPU_CELL_TOPOLOGY_MAXIMUM_RADIUS` | 8 | `GPUCellTopology` disk and ring `k` (H3 disk of 217 cells, Quadbin 289) |
+
+Status words are documented on each output type and exported as constants, with the values
+unchanged: `GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_*`, `GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_*`,
+`GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_*`, `GPU_SPHERICAL_ARC_OVERLAY_STATUS_*`,
+`GPU_SPHERICAL_POLYGON_OVERLAY_COMPLEMENT_*`, `GPU_S2_POLYGON_COVERING_STATUS_*`,
+`GPU_S2_CAP_COVERING_STATUS_*`, `GPU_S2_CELL_HIERARCHY_STATUS_*` and `GPU_S2_CELL_MEASURES_STATUS_*`.
 
 ## General spherical topology
 
@@ -181,6 +236,22 @@ H3 centroid containment or S2's priority-queue `max_cells` minimization policy.
 `maximumVisitedCells` defaults to 65,536 and may range from 6 to 1,048,576. Status bits are 1 invalid
 input, 2 output capacity and 4 traversal exhaustion. Counts are `(written, required so far)`;
 when exhausted they do not claim the complete requirement. `visitedCount` exposes traversal work.
+
+The default `refinement: 'serial'` runs the ring check and the depth-first walk in one invocation,
+which is exact but cannot use the GPU's width. `refinement: 'level-synchronous'` distributes both.
+Ring validation becomes one invocation per ring (shape, unit vertices, hemisphere center) and one
+per edge (zero length, hemisphere, crossings and touches against the ring's later edges). The
+traversal then runs `maximumLevel + 1` rounds over one ordered frontier list: each round
+classifies every cell of the round's level in parallel (drop, keep, or split into four children),
+a scan numbers the survivors and a write builds the next list, so the cover is already in
+ascending cell-ID order and needs no sort. For every input that completes, the cells, counts,
+status bits 1 and 2 and `visitedCount` equal the serial traversal's, which the recorded fixtures
+check on more than 100 cases. The difference is exhaustion: the serial traversal stops after
+exactly `maximumVisitedCells` pops and keeps the cells emitted so far, while the level-synchronous
+traversal fails the whole round, writes no cells and reports counts `(0, 0)` with status bit 4
+(`visitedCount` is capped at `maximumVisitedCells`). `maximumVisitedCells` also sizes the two
+ping-pong frontier buffers (8 bytes per cell). The serial traversal stays the default because its
+partial results are pinned.
 The direct `s2geometry==0.14.0` oracle enumerates all 6,144 level-5 cells for each of two concave/holed
 regions: emitted interior cells are S2-contained, exterior covers include every S2 `MayIntersect` cell,
 and summed interior/exterior cell areas bracket the region area. This is the precise tested

@@ -44,6 +44,9 @@ import {
   createZoneCellKeysNode,
   createZoneCellSpansNode,
   createZoneClearNode,
+  createZoneGapPrefixNode,
+  createZoneGapSnapNode,
+  createZoneObservedTimesNode,
   createZoneCrossingNode,
   createZoneDiagnosticsNode,
   createZoneEdgesNode,
@@ -66,7 +69,10 @@ import {
   type ZoneGatherColumn,
   type ZoneTableColumn
 } from './zone-events-kernels';
-import {getKeyBitCount} from '../trajectory-analysis/trajectory-common';
+import {
+  getKeyBitCount,
+  resolveGPUTrajectoryTemporalContext
+} from '../trajectory-analysis/trajectory-common';
 
 const OPERATION = 'GPUZoneEvents';
 
@@ -234,6 +240,13 @@ export type GPUZoneEventsProps = {
   leafCapacity?: number;
   /** Morton-sorts edges before the BVH build (compile-time). Results are identical. Default false. */
   spatialSort?: boolean;
+  /**
+   * Optional per-frame gap limit, one float32 row in the timestamps' unit. A segment longer than
+   * the limit is a data gap: crossings on it are reported at the first fix after the gap (its end
+   * time and position) and the gap adds no dwell, even when the track is inside the zone on both
+   * sides. A segment equal to the limit is still interpolated. Omitted or 0 means no limit.
+   */
+  maximumGap?: GraphDataView<'float32'>;
   /** Caller-owned output views. */
   output: GPUZoneEventsOutput;
 };
@@ -336,6 +349,10 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     if (tracks.trackOffsets.length < 2) {
       throw new Error(`${id} trackOffsets must contain at least two rows`);
     }
+    if (props.maximumGap) {
+      validatePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
+    }
+    resolveGPUTrajectoryTemporalContext(id, tracks.timestamps, tracks.temporalContext);
     if (zones.featureOffsets.length < 2) {
       throw new Error(`${id} zones need at least one feature`);
     }
@@ -451,7 +468,8 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         zones.positions,
         zones.featureOffsets,
         zones.polygonOffsets,
-        zones.ringOffsets
+        zones.ringOffsets,
+        props.maximumGap
       ]
     );
   }
@@ -467,6 +485,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       tracks.positions,
       tracks.timestamps,
       tracks.trackOffsets,
+      props.maximumGap,
       zones.positions,
       zones.featureOffsets,
       zones.polygonOffsets,
@@ -541,6 +560,21 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     );
     nodes.push(...bvhNodes);
 
+    const gap = props.maximumGap
+      ? {maximumGap: props.maximumGap, timestamps: tracks.timestamps, isWordMode}
+      : undefined;
+    const gapPrefix = gap ? f32('gap-prefix', rowCount) : undefined;
+    if (gap && gapPrefix) {
+      nodes.push(
+        createZoneGapPrefixNode<Parameters>(graph, {
+          id: `${id}-gap-prefix`,
+          shape,
+          gap,
+          trackOffsets: tracks.trackOffsets,
+          gapPrefix
+        })
+      );
+    }
     const state = u32('state', 4);
     const initialInside = u32('initial-inside', cellCount);
     const candidatePairs = createTransientView(
@@ -581,6 +615,18 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         candidateKinds,
         candidateParameters
       }),
+      ...(gap
+        ? [
+            createZoneGapSnapNode<Parameters>(graph, {
+              id: `${id}-gap-snap`,
+              shape,
+              gap,
+              candidatePairs,
+              candidateKinds,
+              candidateParameters
+            })
+          ]
+        : []),
       createZoneInitialStateNode<Parameters>(graph, {
         id: `${id}-initial-state`,
         shape,
@@ -690,6 +736,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     const cellOrder = u32('cell-order', capacity);
     const cellOffsets = u32('cell-offsets', cellCount + 1);
     const cellTimes = f32('cell-times', capacity);
+    const cellObservedTimes = gapPrefix ? f32('cell-observed-times', capacity) : undefined;
     nodes.push(
       createZoneSortedColumnsNode<Parameters>(graph, {
         id: `${id}-sorted-columns`,
@@ -754,6 +801,20 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         eventTypes,
         cellTimes
       }),
+      ...(gapPrefix && cellObservedTimes
+        ? [
+            createZoneObservedTimesNode<Parameters>(graph, {
+              id: `${id}-observed-times`,
+              shape,
+              state,
+              cellOrder,
+              sortedRows,
+              sortedTimes,
+              gapPrefix,
+              cellObservedTimes
+            })
+          ]
+        : []),
       ...createLoadBalancedSegmentSumNodes<Parameters>(graph, {
         id: `${id}-dwell`,
         operation: OPERATION,
@@ -764,7 +825,8 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         output: dwellTimes,
         bindings: [
           {name: 'initialInside', view: initialInside, type: 'u32', access: 'read'},
-          {name: 'cellTimes', view: cellTimes, type: 'f32', access: 'read'}
+          // Observed times in gap mode, so a gap between enter and exit adds nothing.
+          {name: 'cellTimes', view: cellObservedTimes ?? cellTimes, type: 'f32', access: 'read'}
         ],
         declarations: ZONE_DWELL_CONTRIBUTION_WGSL
       }),
@@ -776,9 +838,10 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         trackOffsets: tracks.trackOffsets,
         cellOffsets,
         initialInside,
-        cellTimes,
+        cellTimes: cellObservedTimes ?? cellTimes,
         dwellTimes,
-        visitCounts
+        visitCounts,
+        gapPrefix
       })
     );
     if (firstEnterTimes && lastExitTimes) {

@@ -5,7 +5,6 @@
 import {getGPUGreatCircleRadius} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
-  GPUGridIndex,
   GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -21,10 +20,12 @@ import {
 import {
   getGPUGridIndexMaximumCellCount,
   validateCapacity,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validatePackedView
+  validatePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getBVHNearestNeighborSearchWGSL,
@@ -38,11 +39,19 @@ import {
   getNeighborSearchLatticeWGSL,
   getRadiusNeighborLoopWGSL,
   NEIGHBOR_SEARCH_BVH_NODE_WORDS,
-  NEIGHBOR_WEIGHT_WGSL
+  NEIGHBOR_WEIGHT_WGSL,
+  type NeighborSearchTimeAxis
 } from './neighbor-search-kernels';
 import {getNearestBVHNodes} from '../spatial-join/nearest-nodes';
 import {getNextPowerOfTwo} from '../spatial-join/spatial-join-passes';
-import {GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from './neighbor-search-parameters';
+import {
+  GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+  GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH
+} from './neighbor-search-parameters';
+import {
+  createPointNeighborGridIndexNodes,
+  POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL
+} from '../shared/point-neighbor-grid-index';
 import {
   describeGPUSpatialWeights,
   type GPUSpatialWeights,
@@ -56,6 +65,10 @@ import {
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/index';
+import {
+  resolveGPUTemporalContext,
+  type GPUTemporalContext
+} from '../../analysis-core/contracts/temporal-context';
 
 const OPERATION = 'GPUNeighborSearch';
 
@@ -83,8 +96,24 @@ export type GPUNeighborSearchWeightTransform = Extract<
  */
 export type GPUNeighborSearchStructure = 'auto' | 'grid' | 'bvh';
 
-/** Largest supported compile-time `k`. */
-export const GPU_NEIGHBOR_SEARCH_MAXIMUM_K = 32;
+/**
+ * Largest supported compile-time `k`: the per-query private `(distance, id)` list is two
+ * `array<_, k>` of function-scope memory, 2 KiB at this value, well inside the 8 KiB a WGSL
+ * implementation must support for one function. `rows * k * 4` bytes must also fit one storage
+ * binding (checked when the nodes are created).
+ */
+export const GPU_NEIGHBOR_SEARCH_MAXIMUM_K = 256;
+
+/**
+ * Largest {@link GPUNeighborSearchProps.timeBucketCount}. A bound on the extra cell count; the
+ * product with the grid is also checked against the index cell limit.
+ */
+export const GPU_NEIGHBOR_SEARCH_MAXIMUM_TIME_BUCKETS = 65536;
+
+/** Space-time search reads relative float32 times, such as the output of `GPUTimeWordsRelative`. */
+const NEIGHBOR_SEARCH_TEMPORAL_CONTEXT_SUPPORT = Object.freeze({
+  encodings: Object.freeze(['float32-relative'] as const)
+});
 
 /**
  * Caller-owned outputs of {@link GPUNeighborSearch}: the CSR with its status scalars, plus an
@@ -126,6 +155,34 @@ export type GPUNeighborSearchProps = {
    * `positions` that never lists a row as its own neighbor.
    */
   queryPositions?: GraphDataView<'float32x2'>;
+  /**
+   * Optional relative time of each target, which turns the search into a space-time cylinder search:
+   * a target is a neighbor only when it also satisfies `|t_target - t_query| <= timeRadius`
+   * (per-frame, closed like the spatial test). kNN then means the `k` nearest targets inside the
+   * time window. A row whose time is non-finite or outside the per-frame `timeBounds` is invalid
+   * like a row outside `bounds`: it is empty, never a neighbor, and counted by `invalidCount`.
+   * Requires `temporalContext` and parameters of
+   * {@link GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH} words. Great-circle search takes times;
+   * `searchStructure: 'bvh'` does not. Compile-time presence; per-frame contents.
+   */
+  times?: GraphDataView<'float32'>;
+  /** Relative time of each query row. Required with `times` in a cross join, rejected otherwise. */
+  queryTimes?: GraphDataView<'float32'>;
+  /**
+   * Describes `times` and `queryTimes`: required with `times`, rejected without it. Only
+   * `'float32-relative'` times are read; any unit, epoch (a bigint origin), time zone and axis.
+   * `unit` is the unit of `timeRadius` and `timeBounds`. Nothing is converted.
+   */
+  temporalContext?: GPUTemporalContext;
+  /**
+   * Time buckets of the index. Compile-time, default 1. Results never depend on it, only speed: at 1
+   * every target of a spatial cell is tested against the time window, and above 1 the targets are
+   * also indexed by time, so a window much shorter than `timeBounds` skips most of them. Multiplies
+   * the cell count (`gridSize` cells times this is at most
+   * {@link getGPUGridIndexMaximumCellCount}). Requires `times`; at most
+   * {@link GPU_NEIGHBOR_SEARCH_MAXIMUM_TIME_BUCKETS}.
+   */
+  timeBucketCount?: number;
   /** Optional target selection: nonzero includes the target. */
   mask?: GraphDataView<'uint32'>;
   /**
@@ -163,7 +220,10 @@ export type GPUNeighborSearchProps = {
    * so results never depend on this value; it only bounds the work of one dispatch (GPU watchdog).
    */
   rowTileSize?: number;
-  /** Neighbors per query in kNN mode, an integer in `[1, 32]`. Compile-time. Ignored in radius mode. */
+  /**
+   * Neighbors per query in kNN mode, an integer in `[1, GPU_NEIGHBOR_SEARCH_MAXIMUM_K]` (256).
+   * Compile-time. Ignored in radius mode.
+   */
   k?: number;
   /**
    * Caller-owned output CSR: `offsets` has `queryRows + 1` entries; the slot capacity is
@@ -249,6 +309,10 @@ export type GPUNeighborSearchProps = {
  *   are clamped to the capacity, so a reader always sees consistent (possibly truncated) rows,
  *   and `status.overflow` is set. `status.requiredCount` and `neighborCounts` stay unclamped.
  *
+ * Space-time search: with `times` the relation gains `|t_target - t_query| <= timeRadius`; see
+ * {@link GPUNeighborSearchProps.times}. A kNN query whose window holds fewer than `k` targets
+ * finishes every ring and so scans its whole grid; set a `radius` when windows may be sparse.
+ *
  * Algorithm: `searchStructure` selects between the grid below and a point BVH (see
  * {@link GPUNeighborSearchProps.searchStructure}); both produce the identical definition above. The
  * BVH path builds a Hilbert-packed BVH over the valid targets (invalid targets get empty boxes),
@@ -276,6 +340,8 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
    * great-circle search. `'auto'` resolves to the grid before allocating either structure.
    */
   readonly searchStructure: GPUNeighborSearchStructure;
+  /** Resolved context of `times`, else undefined. */
+  readonly temporalContext?: GPUTemporalContext;
 
   constructor(props: GPUNeighborSearchProps) {
     const id = props.id ?? 'neighbor-search';
@@ -306,11 +372,61 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       validateCapacity(id, 'queryPositions length', props.queryPositions.length, 1, 2 ** 31 - 1);
     }
     const queryRows = this.getQueryRows();
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters must hold ${GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} float32 values`
+    if (props.times) {
+      validateRequirement(id, props.temporalContext !== undefined, 'times need a temporalContext');
+      this.temporalContext = resolveGPUTemporalContext(
+        id,
+        props.temporalContext,
+        NEIGHBOR_SEARCH_TEMPORAL_CONTEXT_SUPPORT
       );
+      validateRequirement(
+        id,
+        this.searchStructure !== 'bvh',
+        "times need searchStructure 'grid' or 'auto'"
+      );
+      validatePackedView(props.times, ['float32'], `${id} times`);
+      validateRequirement(
+        id,
+        props.times.length === targetRows,
+        'times length must equal positions length'
+      );
+      if (props.queryPositions) {
+        validateRequirement(
+          id,
+          props.queryTimes !== undefined,
+          'queryTimes are required with times in a cross join'
+        );
+        validatePackedView(props.queryTimes!, ['float32'], `${id} queryTimes`);
+        validateRequirement(
+          id,
+          props.queryTimes!.length === queryRows,
+          'queryTimes length must equal queryPositions length'
+        );
+      } else {
+        validateRequirement(id, props.queryTimes === undefined, 'queryTimes need queryPositions');
+      }
+      validateCapacity(
+        id,
+        'timeBucketCount',
+        props.timeBucketCount ?? 1,
+        1,
+        GPU_NEIGHBOR_SEARCH_MAXIMUM_TIME_BUCKETS
+      );
+    } else {
+      validateRequirement(
+        id,
+        props.temporalContext === undefined &&
+          props.queryTimes === undefined &&
+          props.timeBucketCount === undefined,
+        'temporalContext, queryTimes and timeBucketCount need times'
+      );
+    }
+    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    const parameterLength = props.times
+      ? GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH
+      : GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH;
+    if (props.parameters.length < parameterLength) {
+      throw new Error(`${id} parameters must hold ${parameterLength} float32 values`);
     }
     const [columns, rows] = props.gridSize;
     validateCapacity(id, 'gridSize columns', columns, 1, Number.MAX_SAFE_INTEGER);
@@ -402,7 +518,15 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
         requiredCount,
         output.neighborCounts
       ],
-      [props.positions, props.queryPositions, props.mask, props.queryMask, props.parameters]
+      [
+        props.positions,
+        props.queryPositions,
+        props.mask,
+        props.queryMask,
+        props.parameters,
+        props.times,
+        props.queryTimes
+      ]
     );
   }
 
@@ -423,6 +547,8 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       props.mask,
       props.queryMask,
       parameters,
+      props.times,
+      props.queryTimes,
       weights.offsets,
       weights.neighbors,
       weights.weights,
@@ -432,34 +558,64 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       weights.status.invalidCount,
       weights.neighborCounts
     ]);
+    const {times} = props;
+    const timeBucketCount = times ? (props.timeBucketCount ?? 1) : 1;
+    const timeAxis: NeighborSearchTimeAxis | undefined = times
+      ? {bucketCount: timeBucketCount}
+      : undefined;
+    const bucketed = timeBucketCount > 1;
+    const cellCount = gridSize[0] * gridSize[1] * timeBucketCount;
     validateMaximumCount(
       id,
       'gridSize cells',
-      gridSize[0] * gridSize[1],
+      cellCount,
       getGPUGridIndexMaximumCellCount(graph.device)
     );
     const targetRows = positions.length;
     const queryRows = this.getQueryRows();
     const capacity = weights.neighbors.length;
-    const cellCount = gridSize[0] * gridSize[1];
     const k = props.k ?? 1;
+    if (mode === 'knn') {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'k-nearest lists',
+        queryRows * k * 4,
+        'lower k or the query row count'
+      );
+    }
     const {spatialContext} = this;
     const geodesic = spatialContext.coordinateSpace === 'longitude-latitude';
     // Sphere radius in the context's length unit.
     const sphereRadius = getGPUGreatCircleRadius(spatialContext);
-    const latticeWGSL = `${getNeighborSearchLatticeWGSL(mode, gridSize, sphereRadius)}
-// The published grid index takes a literal [0, 1] domain, so grid positions are normalized onto the
-// lattice extended to COLUMNS x ROWS whole cells.
-fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
-  let width = max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)) - lattice.minimumX;
-  let height = max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)) - lattice.minimumY;
-  return vec2f((x - lattice.minimumX) / width, (y - lattice.minimumY) / height);
+    const latticeWGSL = `${getNeighborSearchLatticeWGSL(mode, gridSize, sphereRadius, timeAxis)}
+${POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL}
+${
+  timeAxis
+    ? `fn getGridUnitTime(lattice: Lattice, time: f32) -> f32 {
+  // The grid drops a coordinate above 1, and float32 rounding can put the latest time there.
+  return min(1.0, (time - lattice.minimumTime) / (lattice.timeBucketWidth * f32(TIME_BUCKETS)));
+}`
+    : ''
 }`;
     const radiusLoop = geodesic ? getGeodesicRadiusNeighborLoopWGSL : getRadiusNeighborLoopWGSL;
     const crossJoin = Boolean(queryPositions);
     const queryBinding: WGSLKernelBinding[] = queryPositions
       ? [{name: 'queryPositions', view: queryPositions, type: 'f32', access: 'read'}]
       : [];
+    // A target or query record carries its time as a fourth word.
+    const recordWords = times ? 4 : 3;
+    const queryTimes = props.queryTimes ?? times;
+    const timeBindings = (name: 'times' | 'queryTimes'): WGSLKernelBinding[] => {
+      const view = name === 'times' ? times : queryTimes;
+      return view ? [{name, view, type: 'f32', access: 'read'}] : [];
+    };
+    const readTimeWGSL = (name: 'times' | 'queryTimes', row: string) =>
+      `${name}[${name}Offset + ${row}]`;
+    const queryTimeName: 'times' | 'queryTimes' = crossJoin ? 'queryTimes' : 'times';
+    const queryTimeBinding = timeBindings(queryTimeName);
+    const queryTimeValidWGSL = (row: string) =>
+      times ? ` && isTimeInBounds(lattice, ${readTimeWGSL(queryTimeName, row)})` : '';
     const queryName = crossJoin ? 'queryPositions' : 'positions';
     const readQueryWGSL = (row: string) => `let x = ${queryName}[${queryName}Offset + ${row} * 2u];
   let y = ${queryName}[${queryName}Offset + ${row} * 2u + 1u];`;
@@ -480,49 +636,59 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
     // Grid-only scratch is one element when the grid is not used.
     const gridSized = (length: number) => (useGrid ? length : 1);
 
+    // Time is a third lattice dimension only when the time axis is bucketed.
+    const gridDimension = bucketed ? 3 : 2;
+    const gridFormat = bucketed ? ('float32x3' as const) : ('float32x2' as const);
+    // Typed as two components because the BVH path, which never buckets, reads it that way.
     const gridPositions = createTransientView(
       graph,
       `${id}-grid-positions`,
-      'float32x2',
+      gridFormat,
       targetRows
-    );
-    const cellOffsets = createTransientView(
-      graph,
-      `${id}-cell-offsets`,
-      'uint32',
-      gridSized(cellCount + 1)
-    );
-    const sortedRows = createTransientView(
-      graph,
-      `${id}-sorted-rows`,
-      'uint32',
-      gridSized(targetRows)
-    );
-    // Target `[x, y, row]` triples (coordinates as float bits) in cell order: the search loops
-    // read them sequentially instead of gathering, and one binding carries all three.
+    ) as GraphDataView<'float32x2'>;
+    const fullGridSize = bucketed
+      ? ([gridSize[0], gridSize[1], timeBucketCount] as const)
+      : ([gridSize[0], gridSize[1]] as const);
+    const targetIndex = useGrid
+      ? createPointNeighborGridIndexNodes<Parameters>(graph, {
+          id,
+          positions: gridPositions,
+          gridSize: fullGridSize,
+          rowCount: targetRows
+        })
+      : undefined;
+    const cellOffsets =
+      targetIndex?.cellOffsets ?? createTransientView(graph, `${id}-cell-offsets`, 'uint32', 1);
+    const sortedRows =
+      targetIndex?.sortedRows ?? createTransientView(graph, `${id}-sorted-rows`, 'uint32', 1);
+    const gridCount =
+      targetIndex?.gridCount ?? createTransientView(graph, `${id}-grid-count`, 'uint32', 1);
+    // Target `[x, y, row]` records (coordinates as float bits; with times a fourth time word) in
+    // cell order: the search loops read them sequentially instead of gathering, and one binding
+    // carries every field.
     const sortedTargets = createTransientView(
       graph,
       `${id}-sorted-targets`,
       'uint32',
-      gridSized(targetRows * 3)
+      gridSized(targetRows * recordWords)
     );
-    const gridCount = createTransientView(graph, `${id}-grid-count`, 'uint32', 1);
-    const gridOverflow = createTransientView(graph, `${id}-grid-overflow`, 'uint32', 1);
     const counts =
       weights.neighborCounts ?? createTransientView(graph, `${id}-counts`, 'uint32', queryRows);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', queryRows);
     const distances =
       weights.distances ?? createTransientView(graph, `${id}-distances`, 'float32', capacity);
-    const queryOrder = sharesTargetIndex
-      ? sortedRows
-      : createTransientView(graph, `${id}-query-order`, 'uint32', gridSized(queryRows));
-    // Valid query `[x, y, row]` triples in cell order; a shared index reuses the target triples.
+    // Replaced by the query index below when the queries are not the targets.
+    let queryOrder: GraphDataView<'uint32'> = sortedRows;
+    // Valid query records in cell order; a shared index reuses the target records.
     const sortedQueries = sharesTargetIndex
       ? sortedTargets
-      : createTransientView(graph, `${id}-sorted-queries`, 'uint32', gridSized(queryRows * 3));
-    const queryCount = sharesTargetIndex
-      ? gridCount
-      : createTransientView(graph, `${id}-query-count`, 'uint32', 1);
+      : createTransientView(
+          graph,
+          `${id}-sorted-queries`,
+          'uint32',
+          gridSized(queryRows * recordWords)
+        );
+    let queryCount: GraphDataView<'uint32'> = gridCount;
 
     const nodes: GPUCommandNode<Parameters>[] = [
       // The grid index has no mask and its domain is wider than the valid extent, so excluded
@@ -538,6 +704,7 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
           ...(props.mask
             ? [{name: 'mask', view: props.mask, type: 'u32' as const, access: 'read' as const}]
             : []),
+          ...timeBindings('times'),
           {name: 'gridPositions', view: gridPositions, type: 'f32', access: 'read_write'}
         ],
         invocationCount: targetRows,
@@ -545,26 +712,20 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
         body: `let lattice = readLattice();
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
-  let included = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y);
+  let included = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y)${times ? ` && isTimeInBounds(lattice, ${readTimeWGSL('times', 'index')})` : ''};
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
   ${useGrid ? 'let unit = getGridUnitPosition(lattice, x, y);' : 'let unit = vec2f(x, y);'}
-  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, unit.x, included);
-  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, unit.y, included);`
+  gridPositions[gridPositionsOffset + index * ${gridDimension}u] = select(invalid, unit.x, included);
+  gridPositions[gridPositionsOffset + index * ${gridDimension}u + 1u] = select(invalid, unit.y, included);${
+    bucketed
+      ? `
+  gridPositions[gridPositionsOffset + index * 3u + 2u] = select(invalid, getGridUnitTime(lattice, ${readTimeWGSL('times', 'index')}), included);`
+      : ''
+  }`
       }),
       // Buckets targets into the lattice: `cellOffsets` and `sortedRows` (target rows by cell, in
       // unspecified order within a cell; every consumer below is order independent or sorts).
-      ...(useGrid
-        ? new GPUGridIndex({
-            id: `${id}-grid-index`,
-            positions: gridPositions,
-            gridSize: [gridSize[0], gridSize[1]],
-            bounds: [0, 0, 1, 1],
-            cellOffsets,
-            objectIds: sortedRows,
-            count: gridCount,
-            overflow: gridOverflow
-          }).getCommandNodes(graph)
-        : []),
+      ...(targetIndex?.nodes ?? []),
       // Query validity, stored in `counts` until the search pass overwrites it with the count.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-query-valid`,
@@ -587,6 +748,7 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
                 }
               ]
             : []),
+          ...queryTimeBinding,
           {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
         ],
         invocationCount: queryRows,
@@ -594,7 +756,7 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
         body: `let lattice = readLattice();
   ${readQueryWGSL('index')}
   let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'};
-  counts[countsOffset + index] = select(0u, 1u, included && isPointValid(lattice, x, y));`
+  counts[countsOffset + index] = select(0u, 1u, included && isPointValid(lattice, x, y)${queryTimeValidWGSL('index')});`
       })
     ];
 
@@ -602,9 +764,16 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
       const queryGridPositions = createTransientView(
         graph,
         `${id}-query-grid-positions`,
-        'float32x2',
+        gridFormat,
         queryRows
-      );
+      ) as GraphDataView<'float32x2'>;
+      // Only the cell order of the queries is used; the cell offsets are scratch.
+      const queryIndex = createPointNeighborGridIndexNodes<Parameters>(graph, {
+        id: `${id}-query`,
+        positions: queryGridPositions,
+        gridSize: fullGridSize,
+        rowCount: queryRows
+      });
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-query-grid-positions`,
@@ -632,6 +801,7 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
                   }
                 ]
               : []),
+            ...queryTimeBinding,
             {
               name: 'queryGridPositions',
               view: queryGridPositions,
@@ -643,29 +813,21 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
           declarations: latticeWGSL,
           body: `let lattice = readLattice();
   ${readQueryWGSL('index')}
-  let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y);
+  let included = ${queryMask ? 'queryMask[queryMaskOffset + index] != 0u' : 'true'} && isPointValid(lattice, x, y)${queryTimeValidWGSL('index')};
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
   let unit = getGridUnitPosition(lattice, x, y);
-  queryGridPositions[queryGridPositionsOffset + index * 2u] = select(invalid, unit.x, included);
-  queryGridPositions[queryGridPositionsOffset + index * 2u + 1u] = select(invalid, unit.y, included);`
+  queryGridPositions[queryGridPositionsOffset + index * ${gridDimension}u] = select(invalid, unit.x, included);
+  queryGridPositions[queryGridPositionsOffset + index * ${gridDimension}u + 1u] = select(invalid, unit.y, included);${
+    bucketed
+      ? `
+  queryGridPositions[queryGridPositionsOffset + index * 3u + 2u] = select(invalid, getGridUnitTime(lattice, ${readTimeWGSL(queryTimeName, 'index')}), included);`
+      : ''
+  }`
         }),
-        // Only the cell order of the queries is used; the cell offsets are scratch.
-        ...new GPUGridIndex({
-          id: `${id}-query-grid-index`,
-          positions: queryGridPositions,
-          gridSize: [gridSize[0], gridSize[1]],
-          bounds: [0, 0, 1, 1],
-          cellOffsets: createTransientView(
-            graph,
-            `${id}-query-cell-offsets`,
-            'uint32',
-            cellCount + 1
-          ),
-          objectIds: queryOrder,
-          count: queryCount,
-          overflow: createTransientView(graph, `${id}-query-grid-overflow`, 'uint32', 1)
-        }).getCommandNodes(graph)
+        ...queryIndex.nodes
       );
+      queryOrder = queryIndex.sortedRows;
+      queryCount = queryIndex.gridCount;
     }
     // Kernels bind at most 8 storage buffers, so the target and query triples are single buffers
     // and a shared index binds each of them once under the target names.
@@ -692,9 +854,14 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
     const threadToRowWGSL = `if (index >= ${queryCountName}[${queryCountName}Offset]) {
     return;
   }
-  let queryIndex = ${queryBufferName}[${queryBufferName}Offset + index * 3u + 2u];
-  let x = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * 3u]);
-  let y = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * 3u + 1u]);`;
+  let queryIndex = ${queryBufferName}[${queryBufferName}Offset + index * TARGET_WORDS + 2u];
+  let x = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * TARGET_WORDS]);
+  let y = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * TARGET_WORDS + 1u]);${
+    times
+      ? `
+  let queryTime = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * TARGET_WORDS + 3u]);`
+      : ''
+  }`;
 
     if (useGrid) {
       nodes.push(
@@ -704,6 +871,7 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
           variant: 'sorted-targets',
           bindings: [
             {name: 'positions', view: positions, type: 'f32', access: 'read'},
+            ...timeBindings('times'),
             {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
             {name: 'gridCount', view: gridCount, type: 'u32', access: 'read'},
             {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read_write'}
@@ -713,9 +881,14 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
     return;
   }
   let row = sortedRows[sortedRowsOffset + index];
-  sortedTargets[sortedTargetsOffset + index * 3u] = bitcast<u32>(positions[positionsOffset + row * 2u]);
-  sortedTargets[sortedTargetsOffset + index * 3u + 1u] = bitcast<u32>(positions[positionsOffset + row * 2u + 1u]);
-  sortedTargets[sortedTargetsOffset + index * 3u + 2u] = row;`
+  sortedTargets[sortedTargetsOffset + index * ${recordWords}u] = bitcast<u32>(positions[positionsOffset + row * 2u]);
+  sortedTargets[sortedTargetsOffset + index * ${recordWords}u + 1u] = bitcast<u32>(positions[positionsOffset + row * 2u + 1u]);
+  sortedTargets[sortedTargetsOffset + index * ${recordWords}u + 2u] = row;${
+    times
+      ? `
+  sortedTargets[sortedTargetsOffset + index * ${recordWords}u + 3u] = bitcast<u32>(${readTimeWGSL('times', 'row')});`
+      : ''
+  }`
         })
       );
     }
@@ -732,6 +905,7 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
               type: 'f32',
               access: 'read'
             },
+            ...timeBindings('queryTimes'),
             {name: 'queryOrder', view: queryOrder, type: 'u32', access: 'read'},
             {name: 'queryCount', view: queryCount, type: 'u32', access: 'read'},
             {name: 'sortedQueries', view: sortedQueries, type: 'u32', access: 'read_write'}
@@ -741,9 +915,14 @@ fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
     return;
   }
   let row = queryOrder[queryOrderOffset + index];
-  sortedQueries[sortedQueriesOffset + index * 3u] = bitcast<u32>(queryPositions[queryPositionsOffset + row * 2u]);
-  sortedQueries[sortedQueriesOffset + index * 3u + 1u] = bitcast<u32>(queryPositions[queryPositionsOffset + row * 2u + 1u]);
-  sortedQueries[sortedQueriesOffset + index * 3u + 2u] = row;`
+  sortedQueries[sortedQueriesOffset + index * ${recordWords}u] = bitcast<u32>(queryPositions[queryPositionsOffset + row * 2u]);
+  sortedQueries[sortedQueriesOffset + index * ${recordWords}u + 1u] = bitcast<u32>(queryPositions[queryPositionsOffset + row * 2u + 1u]);
+  sortedQueries[sortedQueriesOffset + index * ${recordWords}u + 2u] = row;${
+    times
+      ? `
+  sortedQueries[sortedQueriesOffset + index * ${recordWords}u + 3u] = bitcast<u32>(${readTimeWGSL('queryTimes', 'row')});`
+      : ''
+  }`
         })
       );
     }
@@ -857,8 +1036,8 @@ ${getInsertNeighborWGSL(k)}`,
     let lattice = readLattice();
     ${
       geodesic
-        ? getGeodesicNearestNeighborSearchWGSL(selfCondition)
-        : getNearestNeighborSearchWGSL(selfCondition)
+        ? getGeodesicNearestNeighborSearchWGSL(selfCondition, timeAxis)
+        : getNearestNeighborSearchWGSL(selfCondition, timeAxis)
     }
   }
   ${knnTailWGSL}`
@@ -914,9 +1093,12 @@ ${bvhDeclarations}`,
   var count = 0u;
   if (counts[countsOffset + queryIndex] != 0u) {
     let lattice = readLattice();
-    ${radiusLoop(`if (${selfCondition}) {
+    ${radiusLoop(
+      `if (${selfCondition}) {
           count++;
-        }`)}
+        }`,
+      timeAxis
+    )}
   }
   counts[countsOffset + queryIndex] = count;`
             },
@@ -1078,11 +1260,14 @@ ${bvhDeclarations}`,
   if (end > begin) {
     let lattice = readLattice();
     var next = begin;
-    ${radiusLoop(`if (${selfCondition} && next < end) {
+    ${radiusLoop(
+      `if (${selfCondition} && next < end) {
           neighbors[neighborsOffset + next] = neighbor;
           distances[distancesOffset + next] = ${geodesic ? 'distance' : 'sqrt(distanceSquared)'};
           next++;
-        }`)}
+        }`,
+      timeAxis
+    )}
   }`
             },
             props.rowTileSize
@@ -1142,6 +1327,8 @@ ${bvhDeclarations}`,
             {name: 'positions', view: positions, type: 'f32', access: 'read'},
             ...queryBinding,
             {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+            ...timeBindings('times'),
+            ...(crossJoin ? timeBindings('queryTimes') : []),
             ...(props.mask
               ? [{name: 'mask', view: props.mask, type: 'u32' as const, access: 'read' as const}]
               : []),
@@ -1166,14 +1353,14 @@ const TARGET_ROWS: u32 = ${targetRows}u;`,
   if (index < TARGET_ROWS) {
     ${readPoint('positions', 'index')}
     included = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
-    inside = isPointInBounds(lattice, x, y);
+    inside = isPointInBounds(lattice, x, y)${times ? ` && isTimeInBounds(lattice, ${readTimeWGSL('times', 'index')})` : ''};
   } else {
     ${
       crossJoin
         ? `let queryRow = index - TARGET_ROWS;
     ${readPoint('queryPositions', 'queryRow')}
     included = ${crossJoin && props.queryMask ? 'queryMask[queryMaskOffset + queryRow] != 0u' : 'true'};
-    inside = isPointInBounds(lattice, x, y);`
+    inside = isPointInBounds(lattice, x, y)${times ? ` && isTimeInBounds(lattice, ${readTimeWGSL('queryTimes', 'queryRow')})` : ''};`
         : ''
     }
   }

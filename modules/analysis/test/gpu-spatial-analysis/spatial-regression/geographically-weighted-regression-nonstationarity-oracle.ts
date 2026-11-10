@@ -8,7 +8,7 @@ import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutati
 import {
   getSwapOrNotPermutationIndex,
   getSwapOrNotRounds
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
+} from '../../../src/analysis-core/kernels/permutation-shuffle';
 import {computeGeographicallyWeightedRegressionOnCPU} from './geographically-weighted-regression-oracle';
 
 /** Scene of the non-stationarity specs. */

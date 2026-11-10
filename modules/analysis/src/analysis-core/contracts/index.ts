@@ -27,7 +27,6 @@ export type {
   GPUCompactOutput,
   GPUCompactPairPort,
   GPUFeatureGeometryPort,
-  GPUFloat32Positions,
   GPUGeneratedGeometryPort,
   GPULineGeometryFields,
   GPULineGeometryPort,
@@ -89,6 +88,24 @@ export {
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT
 } from './spatial-context';
+
+export type {
+  GPUTemporalAxis,
+  GPUTemporalCalendarStep,
+  GPUTemporalCalendarUnit,
+  GPUTemporalContext,
+  GPUTemporalContextCompatibility,
+  GPUTemporalContextSupport,
+  GPUTemporalEncoding,
+  GPUTemporalEpoch
+} from './temporal-context';
+export {
+  assertCompatibleGPUTemporalContexts,
+  getGPUTemporalContextCompatibility,
+  GPU_IRREGULAR_TEMPORAL_AXIS,
+  resolveGPUTemporalContext,
+  validateGPUTemporalContext
+} from './temporal-context';
 
 export {
   GPU_EARTH_AUTHALIC_RADIUS_METERS,

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,12 +11,21 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createRankEnvelopeNodes} from './gpu-point-pattern-rank-envelope';
 import {validatePointProcessView} from './point-process-utils';
+
+/** Most curve rows: the global deviation tests reduce a curve in one serial invocation. */
+const MAXIMUM_CURVE_ROW_COUNT = 4096;
+/** Most simulated curves: the pointwise order statistics sort S values per row. */
+const MAXIMUM_SIMULATION_COUNT = 4096;
+/** Quadratic rank comparison budget of the extreme-rank test; no curves are truncated. */
+const MAXIMUM_RANK_COMPARISON_COUNT = 16777216;
 
 /** Resident simulation-curve inference with explicit exchangeability metadata. */
 export type GPUPointPatternEnvelopeProps = {
@@ -87,20 +95,27 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
     this.props = props;
     const count = props.observed.length;
     const rank = props.rank ?? 1;
-    assert(count > 0 && count <= 4096);
-    assert(
-      Number.isInteger(props.simulationCount) &&
-        props.simulationCount >= 2 &&
-        props.simulationCount <= 4096
+    const id = this.id;
+    validateCapacity(id, 'observed rows', count, 1, MAXIMUM_CURVE_ROW_COUNT);
+    validateCapacity(id, 'simulationCount', props.simulationCount, 2, MAXIMUM_SIMULATION_COUNT);
+    validateRequirement(
+      id,
+      Number.isInteger(rank) && rank >= 1 && 2 * rank <= props.simulationCount,
+      'rank must be an integer with 1 <= rank and 2 * rank <= simulationCount'
     );
-    assert(Number.isInteger(rank) && rank >= 1 && 2 * rank <= props.simulationCount);
-    assert(props.nullModel.trim().length > 0);
-    assert(['none', 'fixed-external', 'refit-each-replicate'].includes(props.fittedParameters));
-    assert(
+    validateRequirement(id, props.nullModel.trim().length > 0, 'nullModel must be non-empty');
+    validateRequirement(
+      id,
+      ['none', 'fixed-external', 'refit-each-replicate'].includes(props.fittedParameters),
+      "fittedParameters must be 'none', 'fixed-external' or 'refit-each-replicate'"
+    );
+    validateRequirement(
+      id,
       props.statistic === undefined ||
         ['maximum-deviation', 'integrated-squared-deviation', 'extreme-rank'].includes(
           props.statistic
-        )
+        ),
+      "statistic must be 'maximum-deviation', 'integrated-squared-deviation' or 'extreme-rank'"
     );
     for (const view of [
       props.observed,
@@ -109,19 +124,31 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
       props.output.lower,
       props.output.upper
     ]) {
-      validatePointProcessView(view, 'float32', count);
+      validatePointProcessView(view, 'float32', count, id);
     }
-    validatePointProcessView(props.simulations, 'float32', count * props.simulationCount);
-    validatePointProcessView(props.output.statistics, 'float32', 4);
-    validatePointProcessView(props.output.status, 'uint32', 1);
+    validatePointProcessView(props.simulations, 'float32', count * props.simulationCount, id);
+    validatePointProcessView(props.output.statistics, 'float32', 4, id);
+    validatePointProcessView(props.output.status, 'uint32', 1, id);
     if (props.statistic === 'extreme-rank') {
       // The quadratic rank comparison budget is explicit; no curves/radii are truncated.
-      assert((props.simulationCount + 1) ** 2 * count <= 16777216);
-      assert((props.significanceLevel ?? 0.05) > 0 && (props.significanceLevel ?? 0.05) < 1);
+      validateRequirement(
+        id,
+        (props.simulationCount + 1) ** 2 * count <= MAXIMUM_RANK_COMPARISON_COUNT,
+        `(simulationCount + 1)^2 * observed rows must not exceed ${MAXIMUM_RANK_COMPARISON_COUNT}`
+      );
+      validateRequirement(
+        id,
+        (props.significanceLevel ?? 0.05) > 0 && (props.significanceLevel ?? 0.05) < 1,
+        'significanceLevel must lie in (0, 1)'
+      );
     }
     if (props.output.pValueInterval) {
-      assert(props.statistic === 'extreme-rank');
-      validatePointProcessView(props.output.pValueInterval, 'float32', 2);
+      validateRequirement(
+        id,
+        props.statistic === 'extreme-rank',
+        "output.pValueInterval needs statistic 'extreme-rank'"
+      );
+      validatePointProcessView(props.output.pValueInterval, 'float32', 2, id);
     }
 
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [

@@ -24,9 +24,11 @@ import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-cont
 import {GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH} from './trajectory-clock-parameters';
 import {
   createTrajectoryArcLengthNode,
+  createTrajectoryClockTimesNode,
   createTrajectoryResampleNode
 } from './trajectory-interpolation-kernels';
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
+import {resolveGPUTrajectoryTemporalContext} from '../trajectory-analysis/trajectory-common';
 
 /** Spatial contexts supported by this distance-measuring operation. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -97,6 +99,13 @@ export type GPUTrajectoryResampleProps = Omit<GPUTrajectoryGeometryFields, 'time
    * only rewrites this buffer; the compiled graph is reused.
    */
   clock?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  /**
+   * Optional per-frame gap limit, one float32 row in the timestamps' unit, for `spacing: 'clock'`
+   * and `'time'`. A sample strictly inside a bracketing interval longer than this limit is absent (NaN),
+   * exactly as for `GPUTrajectoryPlayhead`'s `gap` status: an interval equal to the limit is still
+   * interpolated, and samples at the fixes themselves stay present. Omitted or 0 means no limit.
+   */
+  maximumGap?: GraphDataView<'float32'>;
   /** Caller-owned output views. */
   output: GPUTrajectoryResampleOutput;
 };
@@ -111,13 +120,15 @@ export type GPUTrajectoryResampleProps = Omit<GPUTrajectoryGeometryFields, 'time
  * exactly; with `sampleCount == 1` the only sample targets progress 0. The bracketing segment is
  * found by the same upper-bound search as `GPUTrajectoryPlayhead`, so duplicate timestamps and
  * zero-length steps resolve to their last row and never divide by zero. A single-row track
- * repeats that row; an empty track writes zeros (derive validity from `trackOffsets`).
+ * repeats that row; an empty track writes zeros (derive validity from `trackOffsets`). With
+ * `maximumGap` and `spacing: 'time'`, samples strictly inside a longer interval are NaN.
  *
  * Common clock: with `spacing: 'clock'` column `k` means the same instant `start + k * step` for
  * every track, the dense input `GPUTrajectoryEncounters` needs. A track is interpolated only
  * while that instant lies inside its own time range; before its first and after its last sample,
  * and for empty tracks, the position (and elevation) is NaN, which downstream contributors read as
- * "absent". `sampleCount` is then the number of clock steps.
+ * "absent". With `maximumGap` set, a sample strictly inside a longer bracketing interval is absent
+ * too. `sampleCount` is then the number of clock steps.
  *
  * Spatial context: with a great-circle `spatialContext`, samples lie on the great-circle arc of
  * the bracketing segment and are interpolated with spherical linear interpolation instead of a
@@ -159,6 +170,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     if (this.spacing !== 'time' && this.spacing !== 'arc-length' && this.spacing !== 'clock') {
       throw new Error(`${id} spacing must be 'time', 'arc-length' or 'clock'`);
     }
+    resolveGPUTrajectoryTemporalContext(id, props.timestamps, props.temporalContext);
     if (this.spacing === 'clock') {
       if (!props.clock) {
         throw new Error(`${id} clock is required for clock spacing`);
@@ -175,6 +187,12 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
       }
     } else if (props.clock) {
       throw new Error(`${id} clock requires spacing 'clock'`);
+    }
+    if (props.maximumGap) {
+      if (this.spacing === 'arc-length') {
+        throw new Error(`${id} maximumGap requires spacing 'clock' or 'time'`);
+      }
+      validatePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
     }
     validateCapacity(id, 'sampleCount', props.sampleCount);
     if (props.timestamps) {
@@ -215,7 +233,14 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.samples, output.sampleElevations, output.sampleTimes],
-      [props.positions, props.elevations, props.timestamps, props.trackOffsets, props.clock]
+      [
+        props.positions,
+        props.elevations,
+        props.timestamps,
+        props.trackOffsets,
+        props.clock,
+        props.maximumGap
+      ]
     );
   }
 
@@ -231,6 +256,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
       props.timestamps,
       props.trackOffsets,
       props.clock,
+      props.maximumGap,
       output.samples,
       output.sampleElevations,
       output.sampleTimes
@@ -259,6 +285,21 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
         })
       );
     }
+    const isGapClock = Boolean(this.spacing === 'clock' && props.maximumGap && props.clock);
+    if (isGapClock && output.sampleTimes && props.clock) {
+      nodes.push(
+        createTrajectoryClockTimesNode<Parameters>(graph, {
+          id: `${id}-clock-times`,
+          trackOffsets: props.trackOffsets,
+          clock: props.clock,
+          sampleTimes: output.sampleTimes,
+          isWordMode: props.timestamps?.format === 'uint32x2',
+          rowCount,
+          trackCount,
+          sampleCount: props.sampleCount
+        })
+      );
+    }
     nodes.push(
       createTrajectoryResampleNode<Parameters>(graph, {
         id: `${id}-samples`,
@@ -267,11 +308,12 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
         timestamps:
           this.spacing !== 'arc-length' || output.sampleTimes ? props.timestamps : undefined,
         clock: props.clock,
+        maximumGap: props.maximumGap,
         trackOffsets: props.trackOffsets,
         cumulativeLengths,
         samples: output.samples,
         sampleElevations: output.sampleElevations,
-        sampleTimes: output.sampleTimes,
+        sampleTimes: isGapClock ? undefined : output.sampleTimes,
         geodesicRadius,
         rowCount,
         trackCount,

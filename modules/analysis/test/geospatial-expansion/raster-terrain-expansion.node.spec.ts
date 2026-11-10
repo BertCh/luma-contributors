@@ -5,7 +5,10 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {GPURasterFillNoData} from '../../src/raster-analysis/gpu-raster-fill-nodata';
 import {GPURasterRankFilter} from '../../src/raster-analysis/gpu-raster-rank-filter';
-import {GPURasterReconstruction} from '../../src/raster-analysis/gpu-raster-reconstruction';
+import {
+  GPURasterFillHoles,
+  GPURasterReconstruction
+} from '../../src/raster-analysis/gpu-raster-reconstruction';
 import {GPURasterWatershedSegmentation} from '../../src/raster-analysis/gpu-raster-watershed-segmentation';
 import {GPURasterWalkingCost} from '../../src/raster-analysis/gpu-raster-walking-cost';
 import {
@@ -167,4 +170,66 @@ it('geometry expansion rejects mismatched dense capacities and aliased convergen
         output: {indices: view('uint32', 6), valid, status: {converged: valid}}
       })
   ).toThrow();
+});
+
+it('bounded raster iterations accept the documented largest maximumIterations and reject one more', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let identifier = 0;
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length = 9) =>
+    createTransientView(graph, `limit-view-${identifier++}`, format, length);
+  const grid = {
+    width: 3,
+    height: 3,
+    affine: [1, 0, 0, 0, 1, 0] as const,
+    pixelInterpretation: 'area' as const
+  };
+  const input = {
+    id: 'input',
+    format: 'float32' as const,
+    storage: {kind: 'buffer' as const, values: view('float32')}
+  };
+  const status = () => ({converged: view('uint32', 1)});
+  const classes = {
+    walkingCost: (maximumIterations: number) =>
+      new GPURasterWalkingCost({
+        grid,
+        elevation: input,
+        friction: input,
+        sources: view('uint32'),
+        maximumIterations,
+        output: {costs: view('float32'), validity: view('uint32'), status: status()}
+      }),
+    reconstruction: (maximumIterations: number) =>
+      new GPURasterReconstruction({
+        grid,
+        marker: view('float32'),
+        mask: view('float32'),
+        method: 'erosion',
+        connectivity: 8,
+        maximumIterations,
+        output: {values: view('float32'), validity: view('uint32'), status: status()}
+      }),
+    fillHoles: (maximumIterations: number) =>
+      new GPURasterFillHoles({
+        grid,
+        input: view('uint32'),
+        maximumIterations,
+        output: {values: view('uint32'), status: status()}
+      }),
+    skeleton: (maximumIterations: number) =>
+      new GPURasterSkeleton({
+        grid,
+        input: view('uint32'),
+        maximumIterations,
+        output: {skeleton: view('uint32'), status: status()}
+      })
+  };
+  const largest = {walkingCost: 26196, reconstruction: 26209, fillHoles: 26207, skeleton: 10920};
+  for (const [name, create] of Object.entries(classes) as [
+    keyof typeof classes,
+    (maximumIterations: number) => unknown
+  ][]) {
+    expect(() => create(largest[name])).not.toThrow();
+    expect(() => create(largest[name] + 1)).toThrow(/estimated command node count/);
+  }
 });

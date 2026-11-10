@@ -108,7 +108,8 @@ defineLensScenario({
                 view: result.category,
                 role: 'output',
                 keySpace: 'cell',
-                meaning: 'Emerging hot spot category (nominal): 0 none, 6 sporadic hot',
+                meaning:
+                  'Emerging hot spot category (nominal): 0 no pattern, 6 sporadic hot, which needs a significant hot final month; no cell of this dataset has one, so every cell is 0',
                 geometry: {
                   kind: 'raster',
                   shape: [lattice.width, lattice.height],

@@ -171,7 +171,7 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
         }
       }
     });
-    expect(recipe.contributors.length).toBe(5);
+    expect(recipe.contributors.length).toBe(6);
     // Default correction is Benjamini-Hochberg; the metadata states what the legend means.
     expect(recipe.inference).toEqual({
       alternative: 'two-sided',

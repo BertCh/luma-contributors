@@ -22,6 +22,7 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
+  validateCommandNodeBudget,
   validateCompactOutput,
   validatePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -91,6 +92,12 @@ export const GPU_LINE_SIMPLIFICATION_MAXIMUM_FINISH_SPAN_LIMIT = 128;
 /** Largest accepted compile-time iteration cap. */
 export const GPU_LINE_SIMPLIFICATION_MAXIMUM_ITERATIONS = 1024;
 
+/** Command nodes of one unrolled Douglas-Peucker round, without its gate. */
+const DOUGLAS_PEUCKER_ROUND_NODE_COUNT = 4;
+
+/** Command nodes of one unrolled Visvalingam-Whyatt round, without its gate. */
+const VISVALINGAM_ROUND_NODE_COUNT = 3;
+
 /** Default compile-time cap on Visvalingam-Whyatt iterations (`method: 'visvalingam'`). */
 export const GPU_LINE_SIMPLIFICATION_DEFAULT_VISVALINGAM_MAXIMUM_ITERATIONS = 256;
 
@@ -119,7 +126,8 @@ export type GPULineSimplificationStatus = {
  * Per-frame selection outputs of {@link GPULineSimplification}, all written from the current
  * tolerance in `parameters`. The kept rows are the {@link GPUCompactOutput} fields: `ids` lists them
  * in ascending order (line order, then row order), `count` is clamped to `ids.length` so it can
- * drive an indirect draw, and `overflow` is 1 when more rows were kept.
+ * drive an indirect draw, and `overflow` is 1 when more rows were kept. `count` counts kept
+ * vertex rows (not lines); `lineCounts` holds the per-line kept rows.
  */
 export type GPULineSimplificationSelectionOutput = GPUCompactOutput & {
   /** Optional per-row `1`/`0` mask of the kept rows, one row per position. */
@@ -316,6 +324,14 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   readonly finishSpanLimit: number;
   /** Whether the importance rounds are part of this contributor. */
   readonly computeImportance: boolean;
+  /**
+   * Number of command nodes `getCommandNodes` returns, not counting the `GPUCompaction` nodes of
+   * the row selection (their number depends on the row count and the device scan strategy and is
+   * about a dozen). The rounds are unrolled, so it grows with `maximumIterations`; construction
+   * checks it with `validateCommandNodeBudget` against the shared 32,768-node budget (the largest
+   * accepted `maximumIterations` needs about five thousand, so the budget is never the limit).
+   */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPULineSimplificationProps) {
     this.id = props.id ?? 'line-simplification';
@@ -448,6 +464,18 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
     if (!this.computeImportance && !selection) {
       throw new Error(`${id} requires computeImportance or selected output`);
     }
+    // Importance: reset, init, one gate per round, unresolved, and the optional status node. The
+    // selection adds the keep mask, the publish node and the optional line ranges.
+    const roundNodeCount =
+      (method === 'visvalingam' ? VISVALINGAM_ROUND_NODE_COUNT : DOUGLAS_PEUCKER_ROUND_NODE_COUNT) +
+      1;
+    this.estimatedCommandNodeCount =
+      (this.computeImportance
+        ? 3 +
+          maximumIterations * roundNodeCount +
+          (status?.converged || status?.iterationCount ? 1 : 0)
+        : 0) + (selection ? 2 + (selection.lineCounts || selection.lineStarts ? 1 : 0) : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const inputs = [props.positions, props.lineOffsets, props.timestamps, props.parameters];
     if (!this.computeImportance) {
       inputs.push(props.importance);

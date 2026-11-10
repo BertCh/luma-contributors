@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 import {
   getNetworkKFunctionLengthRange,
   NETWORK_K_FUNCTION_STREAM

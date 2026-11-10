@@ -98,7 +98,7 @@ export type GPULineSmoothProps = {
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Smoothed lines, one per input line. `sourceRows` and `measures` are not supported (a smoothed
+   * Smoothed lines, one per input line. `output.status.count` counts output vertices. `sourceRows` and `measures` are not supported (a smoothed
    * vertex blends several input vertices).
    */
   output: GPULineGeometryOutput;

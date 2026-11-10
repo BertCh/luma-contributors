@@ -4,6 +4,7 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPU_IRREGULAR_TEMPORAL_AXIS, type GPUTemporalContext} from '../contracts/temporal-context';
 import type {PreparedArrowAnalyticsTimeColumn} from './arrow-analytics-normalization';
 
 export type GPUTimeVectorFromPreparedArrowColumn = {
@@ -13,11 +14,35 @@ export type GPUTimeVectorFromPreparedArrowColumn = {
   destroy(): void;
 };
 
+/** An upload together with the context of its `timestamps`; see `makeGPUTimeVectorFromPreparedArrowColumn`. */
+export type GPUTimeVectorWithTemporalContext = GPUTimeVectorFromPreparedArrowColumn & {
+  /** Unit, Unix epoch, Int64-word encoding and time zone of `timestamps`. */
+  temporalContext: GPUTemporalContext;
+};
+
+/**
+ * Describes a prepared column as uploaded: Int64 words of its own unit counted from the Unix epoch,
+ * which is what Arrow timestamps and dates store and what declaring a unit for an Int64 column
+ * asserts (spread another `epoch` over the result otherwise). The axis is irregular because
+ * spacing is never read from the rows.
+ */
+export function getGPUTemporalContextFromPreparedArrowColumn(
+  column: PreparedArrowAnalyticsTimeColumn
+): GPUTemporalContext {
+  return Object.freeze({
+    unit: column.unit,
+    epoch: 'unix',
+    encoding: 'int64-words',
+    ...(column.timeZone ? {timeZone: column.timeZone} : {}),
+    axis: GPU_IRREGULAR_TEMPORAL_AXIS
+  });
+}
+
 /** Uploads exact time words and validity independently of dataframe scalar arithmetic. */
 export function makeGPUTimeVectorFromPreparedArrowColumn(
   device: Device,
   column: PreparedArrowAnalyticsTimeColumn
-): GPUTimeVectorFromPreparedArrowColumn {
+): GPUTimeVectorWithTemporalContext {
   if (
     column.chunks.length !== column.validity.length ||
     column.chunks.some((chunk, index) => chunk.length !== column.validity[index].length * 2)
@@ -51,6 +76,7 @@ export function makeGPUTimeVectorFromPreparedArrowColumn(
       timestamps: timestampVector,
       validity: validityVector,
       metadata: column,
+      temporalContext: getGPUTemporalContextFromPreparedArrowColumn(column),
       destroy() {
         timestampVector.destroy();
         validityVector.destroy();

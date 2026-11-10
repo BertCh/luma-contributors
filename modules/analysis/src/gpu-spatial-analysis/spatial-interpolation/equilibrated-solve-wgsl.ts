@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {KRIGING_PIVOT_RATIO_TOLERANCE} from './kriging-parameters';
+
 /**
  * Shared bounded dense solver of the local prediction kernels (kriging and RBF).
  *
@@ -17,7 +20,7 @@ export function getEquilibratedSolveWGSL(capacity: number): string {
   return /* wgsl */ `
 const SYSTEM_CAPACITY: u32 = ${capacity}u;
 const SYSTEM_PIVOT_TOLERANCE: f32 = 1e-6;
-const SYSTEM_PIVOT_RATIO_TOLERANCE: f32 = 1e-5;
+const SYSTEM_PIVOT_RATIO_TOLERANCE: f32 = ${getWGSLFloatLiteral(KRIGING_PIVOT_RATIO_TOLERANCE)};
 var<private> matrix: array<f32, ${capacity * capacity}>;
 var<private> right: array<f32, ${capacity}>;
 var<private> solution: array<f32, ${capacity}>;

@@ -29,6 +29,12 @@ import {
   TRACK_SIMILARITY_NO_BAND
 } from './track-similarity-dynamic-programs';
 import {
+  getEditDistanceBody,
+  getEditDistanceDeclarations,
+  getSymmetricSegmentPathBody,
+  getSymmetricSegmentPathDeclarations
+} from './track-similarity-edit-programs';
+import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -134,7 +140,7 @@ export const GPU_TRACK_SIMILARITY_STATUS = {
   emptyTrack: 1,
   /**
    * The shorter of the two (densified) tracks has more than `maximumFrechetVertexCount` vertices.
-   * The Frechet distance and dynamic time warping are NaN and `frechetWithin` is 0. The longer
+   * The Frechet distance, dynamic time warping, EDR and ERP are NaN and `frechetWithin` is 0. The longer
    * track is not limited.
    */
   frechetCapExceeded: 2,
@@ -166,6 +172,28 @@ export type GPUTrackSimilarityOutput = {
    * `(n + m) * 2^-24`).
    */
   dynamicTimeWarping?: GraphDataView<'float32'>;
+  /**
+   * Optional per-pair edit distance on real sequences (EDR, Chen, Ozsu and Oria 2005): the least
+   * number of insertions, deletions and substitutions turning one (densified) vertex sequence
+   * into the other, where two vertices match, at cost 0, when their distance is at most
+   * `editDistanceTolerance`. A whole number, not normalized (divide by the longer vertex count for
+   * the normalized form); NaN when not computed. Shares the shorter-track cap.
+   */
+  editDistanceOnRealSequence?: GraphDataView<'float32'>;
+  /**
+   * Optional per-pair edit distance with real penalty (ERP, Chen and Ng 2004): a substitution
+   * costs the distance of the two vertices, an insertion or deletion the distance of the vertex to
+   * `editDistanceGapPoint`, in the context's length unit. A metric. NaN when not computed.
+   * Summed in f32 like `dynamicTimeWarping`. Shares the shorter-track cap.
+   */
+  editDistanceWithRealPenalty?: GraphDataView<'float32'>;
+  /**
+   * Optional per-pair symmetric segment-path distance (SSPD, Besse et al. 2016): the mean, over the
+   * original vertices of one track, of the distance to the nearest point of the other track's
+   * polyline, averaged over both directions, in the context's length unit. Not densified and not
+   * capped; the sums are fixed-order. NaN when not computed.
+   */
+  symmetricSegmentPathDistance?: GraphDataView<'float32'>;
   /** LCSS matched length / shorter densified length, in [0, 1]; NaN for skipped pairs. */
   longestCommonSubsequence?: GraphDataView<'float32'>;
   /**
@@ -254,6 +282,17 @@ export type GPUTrackSimilarityProps = {
    * of at least `S` is unbanded. Cells outside the band are never evaluated.
    */
   dynamicTimeWarpingBandRadius?: number;
+  /**
+   * Compile-time nonnegative match distance of `output.editDistanceOnRealSequence`, in spatial-context
+   * units. Defaults to 1. A metric ball, like `lcssTolerance` (Chen's original uses a per-axis box).
+   */
+  editDistanceTolerance?: number;
+  /**
+   * Compile-time reference point of `output.editDistanceWithRealPenalty`, `[x, y]` (or
+   * `[longitude, latitude]` degrees). Defaults to the origin. Chen and Ng use a fixed point such as
+   * the origin; the result is a metric for any fixed choice.
+   */
+  editDistanceGapPoint?: readonly [number, number];
   /** Compile-time nonnegative distance tolerance for LCSS, in spatial-context units. Defaults to 1. */
   lcssTolerance?: number;
   /** Optional Sakoe-Chiba matching radius; unmatched vertices remain permitted outside the band. */
@@ -357,10 +396,13 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       !output.maximumDistance &&
       !output.frechetWithin &&
       !output.dynamicTimeWarping &&
+      !output.editDistanceOnRealSequence &&
+      !output.editDistanceWithRealPenalty &&
+      !output.symmetricSegmentPathDistance &&
       !output.longestCommonSubsequence
     ) {
       throw new Error(
-        `${id} needs hausdorff, frechet, frechetWithin, dynamicTimeWarping, longestCommonSubsequence or maximumDistance output`
+        `${id} needs hausdorff, frechet, frechetWithin, dynamicTimeWarping, editDistanceOnRealSequence, editDistanceWithRealPenalty, symmetricSegmentPathDistance, longestCommonSubsequence or maximumDistance output`
       );
     }
     if (Boolean(output.frechetWithin) !== Boolean(props.frechetEpsilon)) {
@@ -386,6 +428,9 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       ['frechet', output.frechet, 'float32'],
       ['frechetWithin', output.frechetWithin, 'uint32'],
       ['dynamicTimeWarping', output.dynamicTimeWarping, 'float32'],
+      ['editDistanceOnRealSequence', output.editDistanceOnRealSequence, 'float32'],
+      ['editDistanceWithRealPenalty', output.editDistanceWithRealPenalty, 'float32'],
+      ['symmetricSegmentPathDistance', output.symmetricSegmentPathDistance, 'float32'],
       ['longestCommonSubsequence', output.longestCommonSubsequence, 'float32'],
       ['maximumDistance', output.maximumDistance, 'float32'],
       ['pairStatus', output.pairStatus, 'uint32']
@@ -399,6 +444,15 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     }
     if (!Number.isFinite(Math.fround(props.lcssTolerance ?? 1)) || (props.lcssTolerance ?? 1) < 0) {
       throw new Error(`${id} lcssTolerance must be finite and nonnegative`);
+    }
+    if (
+      !Number.isFinite(Math.fround(props.editDistanceTolerance ?? 1)) ||
+      (props.editDistanceTolerance ?? 1) < 0
+    ) {
+      throw new Error(`${id} editDistanceTolerance must be finite and nonnegative`);
+    }
+    if (props.editDistanceGapPoint?.some(value => !Number.isFinite(Math.fround(value)))) {
+      throw new Error(`${id} editDistanceGapPoint must be finite`);
     }
     if (props.lcssBandRadius !== undefined)
       validateCapacity(id, 'lcssBandRadius', props.lcssBandRadius, 0, MAXIMUM_BAND_RADIUS);
@@ -425,6 +479,9 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
         output.frechet,
         output.frechetWithin,
         output.dynamicTimeWarping,
+        output.editDistanceOnRealSequence,
+        output.editDistanceWithRealPenalty,
+        output.symmetricSegmentPathDistance,
         output.longestCommonSubsequence,
         output.maximumDistance,
         output.pairStatus
@@ -461,6 +518,9 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       output.frechet,
       output.frechetWithin,
       output.dynamicTimeWarping,
+      output.editDistanceOnRealSequence,
+      output.editDistanceWithRealPenalty,
+      output.symmetricSegmentPathDistance,
       output.longestCommonSubsequence,
       output.maximumDistance,
       output.pairStatus
@@ -824,6 +884,54 @@ ${getDynamicTimeWarpingDeclarations(
 ${trackHelpers}`,
           body: getDynamicTimeWarpingBody(
             prologue('(STATUS_EMPTY | STATUS_INVALID | STATUS_TOO_LONG)')
+          )
+        })
+      );
+    }
+
+    for (const [kind, view, variant] of [
+      ['edr', output.editDistanceOnRealSequence, 'edit-distance-on-real-sequence'],
+      ['erp', output.editDistanceWithRealPenalty, 'edit-distance-with-real-penalty']
+    ] as const) {
+      if (!view) continue;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-${variant}`,
+          operation: OPERATION,
+          variant,
+          bindings: distanceBindings(view),
+          workgroupSize: FRECHET_LANES,
+          invocationCount: pairCount * FRECHET_LANES,
+          guardIndex: false,
+          declarations: `${constants}
+${getEditDistanceDeclarations(
+  kind,
+  FRECHET_LANES,
+  this.maximumFrechetVertexCount,
+  props.editDistanceTolerance ?? 1,
+  props.editDistanceGapPoint ?? [0, 0]
+)}
+${trackHelpers}`,
+          body: getEditDistanceBody(prologue('(STATUS_EMPTY | STATUS_INVALID | STATUS_TOO_LONG)'))
+        })
+      );
+    }
+    if (output.symmetricSegmentPathDistance) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-symmetric-segment-path`,
+          operation: OPERATION,
+          variant: 'symmetric-segment-path',
+          bindings: distanceBindings(output.symmetricSegmentPathDistance),
+          workgroupSize: HAUSDORFF_WORKGROUP_SIZE,
+          invocationCount: pairCount * HAUSDORFF_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `${constants}
+${getSymmetricSegmentPathDeclarations(HAUSDORFF_WORKGROUP_SIZE)}
+${trackHelpers}`,
+          body: getSymmetricSegmentPathBody(
+            prologue('(STATUS_EMPTY | STATUS_INVALID)'),
+            HAUSDORFF_WORKGROUP_SIZE
           )
         })
       );

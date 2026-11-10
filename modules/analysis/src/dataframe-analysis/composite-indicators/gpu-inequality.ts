@@ -161,6 +161,18 @@ export type GPUInequalityProps = {
  * rows serializes the pass; the global sums and the pooled Gini finish use one 256-lane workgroup with strided
  * reads and a fixed binary tree (depth zones / 256 + 8; the pooled Gini is tiled: rows / 256 per tile). Sums are plain f32 in sorted order, so precision degrades for segments of
  * millions of rows.
+ *
+ * Scaling limit (contract rule 2, not yet met): the per-zone walk is a serial loop over the
+ * zone's rows, twice, on one invocation. It becomes the bottleneck at about 2^20 rows in one zone
+ * (a single global Gini over a million rows already takes milliseconds on one lane while the
+ * device idles) and its f32 running sums lose roughly one digit per decade of segment length, so
+ * past about 2^22 rows the Lorenz trapezoids and Theil sums stop matching the float64 PySAL
+ * references. Replacement design: after the two sorts, a segmented inclusive `GPUScan` of `w` and
+ * `w x` gives every row its cumulative population and income, the trapezoid, Theil, Atkinson and
+ * Hoover terms become row-parallel, and `sorted-segment-sums` (or the fixed-point accumulator, for
+ * order-independent exact sums) reduces them per zone. Lorenz knots and Palma cuts are then a
+ * binary search of the cumulative population per zone. It is not done here because it rewrites
+ * every statistic of this contributor and its PySAL fixture tolerances have to be re-established.
  */
 export class GPUInequality implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

@@ -65,8 +65,11 @@ it('cluster-and-outline defaults to planar and forwards the resolved context to 
       });
       expect(result.spatialContext).toEqual(spatialContext ?? PLANAR);
       for (const contributor of result.contributors) {
+        // Raw glue stages are plain producers without a spatial context.
+        const isGlueStage = Object.getPrototypeOf(contributor) === Object.prototype;
         expect(
-          contributor instanceof GPUSpatialClustering ||
+          isGlueStage ||
+            contributor instanceof GPUSpatialClustering ||
             contributor instanceof GPUGroupGeometry ||
             contributor instanceof GPUGroupConvexHull ||
             contributor instanceof GPUGeometryMeasures

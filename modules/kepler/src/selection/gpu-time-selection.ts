@@ -14,14 +14,16 @@ import {
   GPUTimeWindowFilter,
   getGPUTimeWindowFilterWordParameterValues
 } from '@luma-contributors/analysis/dataframe-analysis';
+import type {ArrowAnalyticsTimeUnit} from '@luma-contributors/analysis/analysis-core';
 
-export type GPUKeplerTimeUnit = 'second' | 'millisecond' | 'microsecond' | 'nanosecond';
+/** @deprecated Use `ArrowAnalyticsTimeUnit` from `@luma-contributors/analysis/analysis-core`. */
+export type GPUKeplerTimeUnit = ArrowAnalyticsTimeUnit;
 
 /** Integer UTC epoch instants. Numbers must be safe integers; bigint preserves every Int64 tick. */
 export type GPUKeplerTimeWindow = {
   start: number | bigint;
   end: number | bigint;
-  unit: GPUKeplerTimeUnit;
+  unit: ArrowAnalyticsTimeUnit;
 };
 
 export type GPUKeplerTimeSelectionProps = {
@@ -35,7 +37,7 @@ export type GPUKeplerTimeSelectionProps = {
   validity?: GPUVector<'uint32'>;
   /** Zero rejects a null interval endpoint; requires endTimestamps. */
   endValidity?: GPUVector<'uint32'>;
-  unit: GPUKeplerTimeUnit;
+  unit: ArrowAnalyticsTimeUnit;
   window: GPUKeplerTimeWindow;
 };
 
@@ -49,7 +51,7 @@ export type GPUKeplerTimeSelectionStatus = {
 
 const INT64_MINIMUM = -(1n << 63n);
 const INT64_MAXIMUM = (1n << 63n) - 1n;
-const NANOSECONDS_PER_UNIT: Record<GPUKeplerTimeUnit, bigint> = {
+const NANOSECONDS_PER_UNIT: Record<ArrowAnalyticsTimeUnit, bigint> = {
   second: 1_000_000_000n,
   millisecond: 1_000_000n,
   microsecond: 1_000n,
@@ -62,8 +64,8 @@ const NANOSECONDS_PER_UNIT: Record<GPUKeplerTimeUnit, bigint> = {
  */
 export function convertKeplerTimeInstant(
   value: number | bigint,
-  sourceUnit: GPUKeplerTimeUnit,
-  targetUnit: GPUKeplerTimeUnit
+  sourceUnit: ArrowAnalyticsTimeUnit,
+  targetUnit: ArrowAnalyticsTimeUnit
 ): bigint {
   validateTimeUnit(sourceUnit);
   validateTimeUnit(targetUnit);
@@ -93,7 +95,7 @@ export function convertKeplerTimeInstant(
  */
 export class GPUKeplerTimeSelection {
   readonly mask: GPUVector<'uint32'>;
-  readonly unit: GPUKeplerTimeUnit;
+  readonly unit: ArrowAnalyticsTimeUnit;
   readonly rowCount: number;
   private readonly device: Device;
   private readonly graph: GPUCommandGraph;
@@ -308,14 +310,17 @@ export class GPUKeplerTimeSelection {
   }
 }
 
-function makeWindowParameters(window: GPUKeplerTimeWindow, unit: GPUKeplerTimeUnit): Uint32Array {
+function makeWindowParameters(
+  window: GPUKeplerTimeWindow,
+  unit: ArrowAnalyticsTimeUnit
+): Uint32Array {
   return getGPUTimeWindowFilterWordParameterValues({
     start: convertKeplerTimeInstant(window.start, window.unit, unit),
     end: convertKeplerTimeInstant(window.end, window.unit, unit)
   });
 }
 
-function validateTimeUnit(unit: GPUKeplerTimeUnit): void {
+function validateTimeUnit(unit: ArrowAnalyticsTimeUnit): void {
   if (!Object.hasOwn(NANOSECONDS_PER_UNIT, unit)) throw new Error('Unsupported time unit');
 }
 

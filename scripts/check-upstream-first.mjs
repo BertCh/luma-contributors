@@ -57,6 +57,28 @@ for (const file of roots.flatMap(walk)) {
     if (!exportsOfPackage.has(sub ? `.${sub}` : '.')) problems.push(`${file}: non-public luma.gl import '${fileName}'`);
   }
 }
+// Re-exporting luma.gl APIs from the package source is forbidden (AGENTS.md); import the symbol where it is used.
+export const findLumaReExports = (sourceText, fileName) => {
+  const sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  return sourceFile.statements
+    .filter(
+      statement =>
+        ts.isExportDeclaration(statement) &&
+        statement.moduleSpecifier &&
+        ts.isStringLiteral(statement.moduleSpecifier) &&
+        /^@luma\.gl\//.test(statement.moduleSpecifier.text)
+    )
+    .map(statement => `${fileName}: re-export from luma.gl '${statement.moduleSpecifier.text}'`);
+};
+const sourceRoots = fs.readdirSync('modules').map(name => `modules/${name}/src`);
+for (const file of sourceRoots.flatMap(walk)) {
+  problems.push(...findLumaReExports(fs.readFileSync(file, 'utf8'), file));
+}
+// Guard self-test: UPSTREAM_FIRST_SCRATCH_FILE=<path> also checks a file outside the tree.
+if (process.env.UPSTREAM_FIRST_SCRATCH_FILE) {
+  const scratchFile = process.env.UPSTREAM_FIRST_SCRATCH_FILE;
+  problems.push(...findLumaReExports(fs.readFileSync(scratchFile, 'utf8'), scratchFile));
+}
 if (problems.length) {
   process.stdout.write(`${problems.join('\n')}\n${problems.length} upstream-first violations\n`);
   process.exitCode = 1;

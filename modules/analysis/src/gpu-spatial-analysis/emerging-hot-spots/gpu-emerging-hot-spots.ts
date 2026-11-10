@@ -17,10 +17,13 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validatePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getTheilSenSlopeWGSL} from '../../analysis-core/kernels/wgsl-theil-sen-median';
 import type {
   GPUInferenceMetadata,
   GPUMultipleTestingMethod
@@ -42,6 +45,7 @@ import {
   getGPUEmergingHotSpotsParameterValues,
   type GPUEmergingHotSpotsSettings,
   GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS,
+  GPU_EMERGING_HOT_SPOTS_MAXIMUM_CORRECTED_TREND_SLICE_COUNT,
   GPU_EMERGING_HOT_SPOTS_MAXIMUM_SLICE_COUNT,
   GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
   GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
@@ -58,6 +62,8 @@ const GI_WORKGROUP_SIZE = 256;
 const MANN_KENDALL_WORKGROUP_SIZE = 64;
 /** Below this series length a single invocation is cheaper than workgroup setup and reduction. */
 const MANN_KENDALL_COOPERATIVE_SLICE_COUNT = 64;
+/** Two-sided normal critical z of a 95% lag filter, the Hamed-Rao default. */
+const DEFAULT_TREND_CORRECTION_CRITICAL_Z = 1.959963984540054;
 const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
 
 /** Caller-owned outputs of {@link GPUEmergingHotSpots}. */
@@ -169,6 +175,24 @@ export type GPUEmergingHotSpotsProps = {
    * (the previous behavior).
    */
   finalSlice?: 'require' | 'last-valid';
+  /**
+   * Compile-time autocorrelation correction of the Mann-Kendall variance. `'none'` (default) keeps the
+   * unmodified test, bit for bit. `'hamed-rao'` (Hamed and Rao 1998, ranks of the Sen-detrended series,
+   * lags with a significant autocorrelation only) and `'yue-wang'` (Yue and Wang 2004, the detrended
+   * series, all lags) scale `Var(S)` by the effective sample size correction, so `trendZ` and `trendP`
+   * are a test of trend rather than a screening threshold over serially correlated Gi* windows. The
+   * correction is skipped (factor 1) for fewer than 3 finite slices and when the factor is not
+   * positive. Needs `sliceCount <= GPU_EMERGING_HOT_SPOTS_MAXIMUM_CORRECTED_TREND_SLICE_COUNT`. `trendS` and
+   * the category codes are unchanged in meaning.
+   */
+  trendAutocorrelationCorrection?: 'none' | 'hamed-rao' | 'yue-wang';
+  /**
+   * Compile-time largest autocorrelation lag of the correction, at least 1; lags beyond `n - 1`
+   * are ignored. Defaults to `n - 1`, every lag. Hamed and Rao suggest 3, Yue and Wang 1.
+   */
+  trendCorrectionMaximumLag?: number;
+  /** Compile-time `'hamed-rao'` lag filter: a lag counts when `|r| > criticalZ / sqrt(n)`. Defaults to 1.96 (95%). */
+  trendCorrectionCriticalZ?: number;
   /** Caller-owned outputs. */
   output: GPUEmergingHotSpotsOutput;
 };
@@ -213,9 +237,13 @@ export type GPUEmergingHotSpotsProps = {
  *   significant downward / no significant trend), Sporadic (`C = 0`), otherwise Oscillating.
  * - Final slice cold: the mirror with Intensifying cold on a significant downward trend (the cold
  *   intensifies) and Diminishing cold on a significant upward trend.
- * - Final slice neither: Historical hot (`H >= 90%`), Historical cold (`C >= 90%`), Sporadic hot
- *   (`H > 0`, `C = 0`, as ArcGIS defines it without requiring a hot final slice), Sporadic cold
- *   (`C > 0`, `H = 0`), otherwise no pattern.
+ * - Final slice neither: Historical hot (`H >= 90%`), Historical cold (`C >= 90%`), otherwise no
+ *   pattern. Current ArcGIS Pro defines Sporadic hot and cold only with a statistically significant
+ *   hot (cold) final time-step interval, which the final-slice-hot (cold) track above already
+ *   covers, so a cell that fails that test with only hot (cold) history is `NO_PATTERN`. With
+ *   `sporadicRequiresFinalSlice: false` the older rule also applies here: Sporadic hot (`H > 0`,
+ *   `C = 0`) and Sporadic cold (`C > 0`, `H = 0`) without a significant final slice, to reproduce
+ *   results computed before the rule changed.
  * Ordering decisions: New is tested before Oscillating, so a cell hot only in the final slice is New
  * even with cold history; a cell with a cold final slice and `C = 1` is New cold even when 90% of
  * its earlier slices were hot; mixed hot and cold history without a significant final slice has
@@ -256,6 +284,8 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
   readonly multipleTesting: GPUMultipleTestingMethod;
   /** Resolved final slice rule (`'require'` when the prop is omitted). */
   readonly finalSlice: 'require' | 'last-valid';
+  /** Resolved Mann-Kendall variance correction (`'none'` when the prop is omitted). */
+  readonly trendAutocorrelationCorrection: 'none' | 'hamed-rao' | 'yue-wang';
 
   constructor(props: GPUEmergingHotSpotsProps) {
     this.id = props.id ?? 'emerging-hot-spots';
@@ -267,8 +297,29 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       props.multipleTesting ?? 'benjamini-hochberg'
     );
     this.finalSlice = props.finalSlice ?? 'require';
+    this.trendAutocorrelationCorrection = props.trendAutocorrelationCorrection ?? 'none';
     if (this.finalSlice !== 'require' && this.finalSlice !== 'last-valid') {
       throw new Error(`${id} finalSlice must be 'require' or 'last-valid'`);
+    }
+    validateRequirement(
+      id,
+      ['none', 'hamed-rao', 'yue-wang'].includes(this.trendAutocorrelationCorrection),
+      "trendAutocorrelationCorrection must be 'none', 'hamed-rao' or 'yue-wang'"
+    );
+    if (this.trendAutocorrelationCorrection !== 'none') {
+      validateCapacity(
+        id,
+        'sliceCount with trendAutocorrelationCorrection',
+        props.sliceCount,
+        1,
+        GPU_EMERGING_HOT_SPOTS_MAXIMUM_CORRECTED_TREND_SLICE_COUNT
+      );
+    }
+    if (props.trendCorrectionMaximumLag !== undefined) {
+      validateCapacity(id, 'trendCorrectionMaximumLag', props.trendCorrectionMaximumLag, 1);
+    }
+    if (props.trendCorrectionCriticalZ !== undefined) {
+      validateFiniteNumber(id, 'trendCorrectionCriticalZ', props.trendCorrectionCriticalZ, 0);
     }
     const {gridWidth, gridHeight, sliceCount} = props;
     const hasLattice = gridWidth !== undefined || gridHeight !== undefined;
@@ -679,7 +730,12 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
         variant: 'two-sided-p-values',
         bindings: [
           {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
-          {name: 'pValues', view: pValues!, type: 'f32', access: 'read_write'}
+          {
+            name: 'pValues',
+            view: pValues!,
+            type: 'f32',
+            access: 'read_write'
+          }
         ],
         invocationCount: binCount,
         declarations: SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
@@ -905,14 +961,24 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
             parametersBinding,
             ...(dispatch
               ? ([
-                  {name: 'offsets', view: dispatch.weights.offsets, type: 'u32', access: 'read'},
+                  {
+                    name: 'offsets',
+                    view: dispatch.weights.offsets,
+                    type: 'u32',
+                    access: 'read'
+                  },
                   {
                     name: 'neighbors',
                     view: dispatch.weights.neighbors,
                     type: 'u32',
                     access: 'read'
                   },
-                  {name: 'weights', view: dispatch.weights.weights, type: 'f32', access: 'read'}
+                  {
+                    name: 'weights',
+                    view: dispatch.weights.weights,
+                    type: 'f32',
+                    access: 'read'
+                  }
                 ] satisfies WGSLKernelBinding[])
               : []),
             statisticsBinding('read'),
@@ -955,8 +1021,18 @@ var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
                 } satisfies WGSLKernelBinding
               ]
             : []),
-          {name: 'hotSliceCount', view: output.hotSliceCount, type: 'u32', access: 'read_write'},
-          {name: 'coldSliceCount', view: output.coldSliceCount, type: 'u32', access: 'read_write'},
+          {
+            name: 'hotSliceCount',
+            view: output.hotSliceCount,
+            type: 'u32',
+            access: 'read_write'
+          },
+          {
+            name: 'coldSliceCount',
+            view: output.coldSliceCount,
+            type: 'u32',
+            access: 'read_write'
+          },
           ...(output.lastValidSlice
             ? [
                 {
@@ -1046,6 +1122,7 @@ var<workgroup> equalBeforeBits: array<atomic<u32>, ${Math.ceil(sliceCount / 32)}
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
 ${getSliceStateWGSL(usesAdjustment)}`
           : `const SLICE_COUNT: u32 = ${sliceCount}u;
+${this.trendAutocorrelationCorrection !== 'none' ? getTheilSenSlopeWGSL(sliceCount) : ''}
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
 ${getSliceStateWGSL(usesAdjustment)}`,
         body: cooperativeMannKendall
@@ -1114,7 +1191,14 @@ ${getSliceStateWGSL(usesAdjustment)}`,
   })}
   ${getClassificationWGSL({cellName: 'cell', finalSlice})}
   }`
-          : getSerialMannKendallBody({sliceCount, usesAdjustment, finalSlice})
+          : getSerialMannKendallBody({
+              sliceCount,
+              usesAdjustment,
+              finalSlice,
+              trendCorrection: this.trendAutocorrelationCorrection,
+              maximumLag: props.trendCorrectionMaximumLag ?? 0,
+              criticalZ: props.trendCorrectionCriticalZ ?? DEFAULT_TREND_CORRECTION_CRITICAL_Z
+            })
       })
     );
     return nodes;
@@ -1209,11 +1293,13 @@ function getSliceCountingWGSL(options: {
 function getClassificationWGSL(options: {
   cellName: string;
   finalSlice: 'require' | 'last-valid';
+  applyVarianceCorrection?: boolean;
 }): string {
   const {cellName} = options;
   return /* wgsl */ `let trendLevel = parameters[parametersOffset + 3u];
   let fraction = parameters[parametersOffset + 4u];
   let minimumTrendSliceCount = parameters[parametersOffset + 5u];
+  let isLegacySporadic = parameters[parametersOffset + 7u] != 0.0;
   var numerator = 0u;
   if (valid >= 2u) {
     numerator = valid * (valid - 1u) * (2u * valid + 5u) - tieTerm;
@@ -1221,7 +1307,7 @@ function getClassificationWGSL(options: {
   var trendZScore = 0.0;
   var trendPValue = 1.0;
   if (numerator > 0u) {
-    let deviation = sqrt(f32(numerator) / 18.0);
+    let deviation = sqrt(f32(numerator) / 18.0${options.applyVarianceCorrection ? ' * varianceCorrection' : ''});
     if (statistic > 0) {
       trendZScore = f32(statistic - 1) / deviation;
     } else if (statistic < 0) {
@@ -1270,9 +1356,9 @@ function getClassificationWGSL(options: {
       result = 8u;
     } else if (cold > 0u && coldPersistent) {
       result = 16u;
-    } else if (hot > 0u && cold == 0u) {
+    } else if (isLegacySporadic && hot > 0u && cold == 0u) {
       result = 6u;
-    } else if (cold > 0u && hot == 0u) {
+    } else if (isLegacySporadic && cold > 0u && hot == 0u) {
       result = 14u;
     }
     ${
@@ -1292,8 +1378,12 @@ function getSerialMannKendallBody(options: {
   sliceCount: number;
   usesAdjustment: boolean;
   finalSlice: 'require' | 'last-valid';
+  trendCorrection: 'none' | 'hamed-rao' | 'yue-wang';
+  maximumLag: number;
+  criticalZ: number;
 }): string {
-  const {sliceCount} = options;
+  const {sliceCount, trendCorrection} = options;
+  const applyVarianceCorrection = trendCorrection !== 'none';
   return /* wgsl */ `let base = index * SLICE_COUNT;
   var series: array<f32, SLICE_COUNT>;
   var hasEqualBefore: array<u32, ${Math.ceil(sliceCount / 32)}>;
@@ -1321,8 +1411,89 @@ function getSerialMannKendallBody(options: {
       tieTerm += groupSize * (groupSize - 1u) * (2u * groupSize + 5u);
     }
   }
+  ${applyVarianceCorrection ? getVarianceCorrectionWGSL(sliceCount, trendCorrection, options.maximumLag, options.criticalZ) : ''}
   ${getClassificationWGSL({
     cellName: 'index',
-    finalSlice: options.finalSlice
+    finalSlice: options.finalSlice,
+    applyVarianceCorrection
   })}`;
+}
+
+/**
+ * WGSL statements declaring `varianceCorrection` from `series` and `valid`: the factor of
+ * `Var(S)` of the modified Mann-Kendall tests over the Sen-detrended finite series, with `n` the
+ * finite slice count, `r_k` the lag autocorrelation with denominator `n` over the series
+ * deviations, positions being positions in the finite series.
+ * Hamed-Rao: `1 + 2 / (n (n - 1) (n - 2)) * sum (n - k)(n - k - 1)(n - k - 2) r_k` of the ranks,
+ * lags with `|r_k| > criticalZ / sqrt(n)` only. Yue-Wang: `1 + 2 * sum (1 - k / n) r_k` of the
+ * detrended values.
+ */
+function getVarianceCorrectionWGSL(
+  sliceCount: number,
+  trendCorrection: 'hamed-rao' | 'yue-wang',
+  maximumLag: number,
+  criticalZ: number
+): string {
+  const isHamedRao = trendCorrection === 'hamed-rao';
+  const seriesWGSL = isHamedRao
+    ? `  var ranks: array<f32, ${sliceCount}>;
+    for (var first = 0u; first < valid; first++) {
+      var lower = 0u;
+      var equal = 0u;
+      for (var second = 0u; second < valid; second++) {
+        if (detrended[second] < detrended[first]) {
+          lower++;
+        } else if (detrended[second] == detrended[first]) {
+          equal++;
+        }
+      }
+      ranks[first] = f32(lower) + 0.5 * f32(equal + 1u);
+    }`
+    : '';
+  const seriesName = isHamedRao ? 'ranks' : 'detrended';
+  const lagSumWGSL = isHamedRao
+    ? `  let lagFilter = ${getWGSLFloatLiteral(criticalZ)} / sqrt(lengthValue);
+      if (abs(correlation) > lagFilter) {
+        let gap = lengthValue - f32(lag);
+        lagSum += gap * (gap - 1.0) * (gap - 2.0) * correlation;
+      }`
+    : `  lagSum += (1.0 - f32(lag) / lengthValue) * correlation;`;
+  const scale = isHamedRao
+    ? '2.0 / (lengthValue * (lengthValue - 1.0) * (lengthValue - 2.0))'
+    : '2.0';
+  return /* wgsl */ `var varianceCorrection = 1.0;
+  if (valid >= 3u) {
+    let lengthValue = f32(valid);
+    let slope = getTheilSenSlope(&series, valid);
+    var detrended: array<f32, ${sliceCount}>;
+    for (var row = 0u; row < valid; row++) {
+      detrended[row] = series[row] - slope * f32(row + 1u);
+    }
+    ${seriesWGSL}
+    var seriesMean = 0.0;
+    for (var row = 0u; row < valid; row++) {
+      seriesMean += ${seriesName}[row];
+    }
+    seriesMean /= lengthValue;
+    var variance = 0.0;
+    for (var row = 0u; row < valid; row++) {
+      variance += (${seriesName}[row] - seriesMean) * (${seriesName}[row] - seriesMean);
+    }
+    if (variance > 0.0) {
+      var lagSum = 0.0;
+      let lastLag = ${maximumLag > 0 ? `min(${maximumLag}u, valid - 1u)` : 'valid - 1u'};
+      for (var lag = 1u; lag <= lastLag; lag++) {
+        var covariance = 0.0;
+        for (var row = 0u; row + lag < valid; row++) {
+          covariance += (${seriesName}[row] - seriesMean) * (${seriesName}[row + lag] - seriesMean);
+        }
+        let correlation = covariance / variance;
+        ${lagSumWGSL}
+      }
+      let factor = 1.0 + ${scale} * lagSum;
+      if (factor > 0.0) {
+        varianceCorrection = factor;
+      }
+    }
+  }`;
 }

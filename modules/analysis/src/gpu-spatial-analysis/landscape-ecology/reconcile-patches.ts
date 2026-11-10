@@ -17,18 +17,34 @@ export function reconcileLandscapePatchLabels<Parameters>(
     connectivity: 4 | 8;
     backgroundClass?: number;
     classCount?: number;
+    /** Caller-owned result views: the merged label of every cell, and the root of every patch. */
+    output?: {patches?: GraphDataView<'uint32'>; parents?: GraphDataView<'uint32'>};
   }
 ) {
   const count = props.width * props.height;
   const patchCount = props.patchClasses.length;
-  const parents = getRecipeView(graph, `${props.id}-patch-parents`, 'uint32', patchCount);
-  const output = getRecipeView(graph, `${props.id}-reconciled-patches`, 'uint32', count);
+  const parents = getRecipeView(
+    graph,
+    `${props.id}-patch-parents`,
+    'uint32',
+    patchCount,
+    props.output?.parents
+  );
+  const output = getRecipeView(
+    graph,
+    `${props.id}-reconciled-patches`,
+    'uint32',
+    count,
+    props.output?.patches
+  );
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${props.id}-reconcile`,
       operation: props.id,
       invocationCount: 1,
       workgroupSize: 2,
+      // One thread unions every cell with its neighbors: width times height visits. It is the
+      // slow step above about a million cells; a parallel component labeling would replace it.
       bindings: [
         {name: 'patches', view: props.patches, type: 'u32', access: 'read'},
         {name: 'classes', view: props.patchClasses, type: 'u32', access: 'read'},

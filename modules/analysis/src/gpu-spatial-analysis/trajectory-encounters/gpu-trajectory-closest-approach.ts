@@ -38,13 +38,17 @@ import {
   createClosestApproachEntryClearNode,
   createClosestApproachPairsNode,
   createClosestApproachReduceNodes,
+  createClosestApproachRowSkipNode,
   createClosestApproachSegmentsNode,
   createClosestApproachSortedHitsNode,
   createClosestApproachSortKeyNode,
   createClosestApproachStatusNode,
   type ClosestApproachShape
 } from './closest-approach-kernels';
-import {getKeyBitCount} from '../trajectory-analysis/trajectory-common';
+import {
+  getKeyBitCount,
+  resolveGPUTrajectoryTemporalContext
+} from '../trajectory-analysis/trajectory-common';
 
 /** Spatial contexts supported by this distance-measuring operation. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -113,6 +117,13 @@ export type GPUTrajectoryClosestApproachProps = GPUTrajectoryGeometryFields & {
    * matches nothing.
    */
   distance: GraphDataView<'float32'>;
+  /**
+   * Optional per-frame gap limit, one float32 row in the timestamps' unit. A segment whose
+   * duration is longer than the limit is not linear motion and is skipped (it adds no hits and no
+   * cell entries, so a long gap cannot raise `entryOverflow`); a duration equal to the limit is
+   * still bridged. Omitted or 0 means no limit.
+   */
+  maximumGap?: GraphDataView<'float32'>;
   /**
    * Compile-time spatial cell width of the space-time grid, in position units. Cells of about the
    * typical `distance` plus segment length keep the per-cell candidate lists short. A segment may
@@ -203,6 +214,10 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
     if (props.distance.length < 1) {
       throw new Error(`${id} distance must contain one float32 row`);
     }
+    if (props.maximumGap) {
+      validatePackedView(props.maximumGap, ['float32'], `${id} maximumGap`);
+    }
+    resolveGPUTrajectoryTemporalContext(id, props.timestamps, props.temporalContext);
     for (const [name, value] of [
       ['cellSize', props.cellSize],
       ['timeCellSize', props.timeCellSize]
@@ -249,7 +264,8 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
       props.timestamps,
       props.trackOffsets,
       props.trackValid,
-      props.distance
+      props.distance,
+      props.maximumGap
     ];
   }
 
@@ -314,7 +330,21 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
     const sortedEntryKeys = u32('sorted-entry-keys', props.entryCapacity);
     const sortedEntries = u32('sorted-entries', props.entryCapacity);
     const hits = u32('hits', props.hitCapacity * CLOSEST_APPROACH_HIT_WORDS);
+    const rowSkip = props.maximumGap ? u32('row-skip', rowCount) : undefined;
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...(props.maximumGap && rowSkip
+        ? [
+            createClosestApproachRowSkipNode<Parameters>(graph, {
+              id: `${id}-row-skip`,
+              shape,
+              timestamps: props.timestamps,
+              trackOffsets: props.trackOffsets,
+              trackValid: props.trackValid,
+              maximumGap: props.maximumGap,
+              rowSkip
+            })
+          ]
+        : []),
       createFillNode<Parameters>(graph, {
         id: `${id}-clear`,
         operation: OPERATION,
@@ -330,6 +360,7 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
         trackOffsets: props.trackOffsets,
         trackValid: props.trackValid,
         distance: props.distance,
+        rowSkip,
         segmentRecords,
         segmentCounts,
         state

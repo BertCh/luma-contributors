@@ -7,11 +7,27 @@ import {
   type GPUCommandGraph,
   type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-prediction-utils';
 import type {GPUVariogramModelFit} from './gpu-variogram-model-fit';
 import {COOPERATIVE_VARIOGRAM_FIT_WGSL} from './variogram-model-fit-cooperative';
+import {
+  MATERN_3_2_RANGE_FACTOR,
+  MATERN_5_2_RANGE_FACTOR,
+  type VariogramModelType
+} from './variogram-model';
+
+const MODEL_CODES: Record<VariogramModelType, number> = {
+  spherical: 0,
+  exponential: 1,
+  gaussian: 2,
+  'matern-3/2': 3,
+  'matern-5/2': 4
+};
 
 /** Parallel range ladder and cooperative bin reductions; refinement steps and rounds remain ordered. */
 export function getParallelVariogramModelFitNodes<Parameters>(
@@ -19,7 +35,7 @@ export function getParallelVariogramModelFitNodes<Parameters>(
   contributor: GPUVariogramModelFit
 ): GPUCommandNode<Parameters>[] {
   const {id, props, models, rangeSteps, maximumIterations} = contributor;
-  const modelCodes = models.map(model => ['spherical', 'exponential', 'gaussian'].indexOf(model));
+  const modelCodes = models.map(model => MODEL_CODES[model]);
   const previousStart = 4;
   const candidateStart = previousStart + models.length * 4;
   const scratch = createTransientView(
@@ -57,7 +73,10 @@ var<private> reweight: bool;
 fn shape(scaled: f32) -> f32 {
   if (model == 0u) { return select(1.5 * scaled - 0.5 * scaled * scaled * scaled, 1.0, scaled >= 1.0); }
   if (model == 1u) { return 1.0 - exp(-3.0 * scaled); }
-  return 1.0 - exp(-3.0 * scaled * scaled);
+  if (model == 2u) { return 1.0 - exp(-3.0 * scaled * scaled); }
+  if (model == 3u) { let argument = ${getWGSLFloatLiteral(MATERN_3_2_RANGE_FACTOR)} * scaled; return 1.0 - (1.0 + argument) * exp(-argument); }
+  let argument = ${getWGSLFloatLiteral(MATERN_5_2_RANGE_FACTOR)} * scaled;
+  return 1.0 - (1.0 + argument + argument * argument / 3.0) * exp(-argument);
 }
 fn usable(bin: u32) -> bool { return pairCounts[pairCountsOffset + bin] > 0u && isFiniteValue(distances[distancesOffset + bin]) && distances[distancesOffset + bin] > 0.0 && isFiniteValue(semivariances[semivariancesOffset + bin]); }
 fn weight(bin: u32) -> f32 {

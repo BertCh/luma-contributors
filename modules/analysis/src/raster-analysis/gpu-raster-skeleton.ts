@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGraphOutputViews} from '../analysis-core/kernels/gpu-contributor-utils';
-import {assert} from '@luma.gl/core';
+import {
+  getGraphOutputViews,
+  validateCommandNodeBudget,
+  validateMaximumCount,
+  validateRequirement
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -16,35 +20,68 @@ import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   requireRasterLength,
   validateRasterExpansionViews,
-  validateRasterExpansionGraph
+  validateRasterExpansionGraph,
+  type RasterIterationStatusOutputs
 } from './raster-expansion-utils';
+import {
+  createRasterIterationGateNode,
+  createRasterIterationResetNode,
+  createRasterIterationState,
+  getRasterIterationCondition
+} from './cost-distance/raster-relaxation';
 import {GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION} from './distance-field/distance-field-parameters';
 import {getRasterMedialAxisNodes} from './raster-medial-axis';
+
+/** Default number of thinning iterations, each made of two Zhang-Suen sub-iterations. */
+const DEFAULT_MAXIMUM_ITERATIONS = 64;
 
 export type GPURasterSkeletonProps = {
   id?: string;
   grid: GPURasterMetadata;
   input: GraphDataView<'uint32'>;
+  /** Thinning iterations before the run stops unconverged. Default 64; at most 10,920 (the command node budget). */
   maximumIterations?: number;
-  output: {skeleton: GraphDataView<'uint32'>; status: {converged: GraphDataView<'uint32'>}};
+  output: {skeleton: GraphDataView<'uint32'>; status: RasterIterationStatusOutputs};
 };
-/** Zhang–Suen two-subiteration thinning. Foreground is nonzero; the exterior is background. */
+/**
+ * Zhang–Suen two-subiteration thinning. Foreground is nonzero; the exterior is background.
+ * Iterations after convergence dispatch no work, and the current skeleton is always published;
+ * check `status.converged` to know whether thinning finished.
+ */
 export class GPURasterSkeleton implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURasterSkeletonProps;
+  /** Command nodes `getCommandNodes` returns; checked against the node budget. */
+  readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterSkeletonProps) {
     this.id = props.id ?? 'raster-skeleton';
     this.props = props;
+    const {id} = this;
     const count = validateRasterExpansionViews(
-      this.id,
+      id,
       props.grid,
       [props.input],
       getGraphOutputViews(props.output)
     );
-    requireRasterLength(props.input, count);
-    requireRasterLength(props.output.skeleton, count);
-    requireRasterLength(props.output.status.converged, 1);
-    assert(Number.isInteger(props.maximumIterations ?? 64) && (props.maximumIterations ?? 64) > 0);
+    requireRasterLength(props.input, count, id, 'input');
+    requireRasterLength(props.output.skeleton, count, id, 'output.skeleton');
+    requireRasterLength(props.output.status.converged, 1, id, 'output.status.converged');
+    requireRasterLength(
+      props.output.status.iterationLimitReached,
+      1,
+      id,
+      'output.status.iterationLimitReached'
+    );
+    requireRasterLength(props.output.status.iterationCount, 1, id, 'output.status.iterationCount');
+    const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
+    validateRequirement(
+      id,
+      Number.isInteger(maximumIterations) && maximumIterations > 0,
+      'maximumIterations must be a positive integer'
+    );
+    // Initialize, reset, status and publish, plus two sub-iterations and one gate per iteration.
+    this.estimatedCommandNodeCount = 4 + 3 * (maximumIterations + 1);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -53,63 +90,149 @@ export class GPURasterSkeleton implements GPUCommandNodeProducer {
     const {grid, output} = props;
     const count = grid.width * grid.height;
     validateRasterExpansionGraph(id, graph, [props.input, ...getGraphOutputViews(output)]);
-    const first = createTransientView(graph, `${id}-first`, 'uint32', count),
-      second = createTransientView(graph, `${id}-second`, 'uint32', count),
-      changed = createTransientView(graph, `${id}-changed`, 'uint32', count);
+    const first = createTransientView(graph, `${id}-first`, 'uint32', count);
+    const second = createTransientView(graph, `${id}-second`, 'uint32', count);
+    const operation = 'GPURasterSkeleton';
+    const roundCount = (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) + 1;
+    const state = createRasterIterationState<Parameters>(
+      graph,
+      `${id}-rounds`,
+      operation,
+      count,
+      id
+    );
+    const declarations = `const WIDTH: u32 = ${grid.width}u;
+const HEIGHT: u32 = ${grid.height}u;
+
+// Value of the neighbor on side 0..7 (clockwise from north); outside the raster is background.
+fn getNeighborValue(index: u32, side: u32) -> u32 {
+  let columns = array<i32, 8>(0, 1, 1, 1, 0, -1, -1, -1);
+  let rows = array<i32, 8>(-1, -1, 0, 1, 1, 1, 0, -1);
+  let column = i32(index % WIDTH) + columns[side];
+  let row = i32(index / WIDTH) + rows[side];
+  if (column < 0 || row < 0 || column >= i32(WIDTH) || row >= i32(HEIGHT)) { return 0u; }
+  return previous[previousOffset + u32(row) * WIDTH + u32(column)];
+}
+
+// Zhang-Suen deletion test for sub-iteration phase 0 or 1.
+fn shouldRemove(index: u32, phase: u32) -> bool {
+  var neighborhood: array<u32, 8>;
+  var neighbors = 0u;
+  var transitions = 0u;
+  for (var side = 0u; side < 8u; side++) {
+    neighborhood[side] = getNeighborValue(index, side);
+    neighbors += neighborhood[side];
+  }
+  for (var side = 0u; side < 8u; side++) {
+    transitions += u32(neighborhood[side] == 0u && neighborhood[(side + 1u) % 8u] != 0u);
+  }
+  if (neighbors < 2u || neighbors > 6u || transitions != 1u) { return false; }
+  if (phase == 0u) {
+    return neighborhood[0] * neighborhood[2] * neighborhood[4] == 0u
+      && neighborhood[2] * neighborhood[4] * neighborhood[6] == 0u;
+  }
+  return neighborhood[0] * neighborhood[2] * neighborhood[6] == 0u
+    && neighborhood[0] * neighborhood[4] * neighborhood[6] == 0u;
+}`;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode(graph, {
         id: `${id}-initialize`,
-        operation: 'GPURasterSkeleton',
+        operation,
         invocationCount: count,
         bindings: [
           {name: 'input', view: props.input, type: 'u32', access: 'read'},
           {name: 'first', view: first, type: 'u32', access: 'read_write'}
         ],
         body: 'first[firstOffset+index]=u32(input[inputOffset+index]!=0u);'
-      })
+      }),
+      createRasterIterationResetNode<Parameters>(graph, {id: `${id}-reset`, operation, state})
     ];
-    for (let iteration = 0; iteration <= (props.maximumIterations ?? 64); iteration++) {
+    // One extra iteration tests whether the final skeleton is a fixed point. Each iteration is
+    // two dependent sub-iterations, so the loop gates per iteration, not per group of rounds.
+    for (let iteration = 0; iteration < roundCount; iteration++) {
       for (let phase = 0; phase < 2; phase++) {
+        const nodeId = `${id}-${iteration}-${phase}`;
+        const {condition, extraResources} = getRasterIterationCondition<Parameters>(state, nodeId);
         nodes.push(
           createWGSLKernelNode(graph, {
-            id: `${id}-${iteration}-${phase}`,
-            operation: 'GPURasterSkeleton',
+            id: nodeId,
+            operation,
+            variant: `thinning-phase-${phase}`,
             invocationCount: count,
             bindings: [
               {name: 'previous', view: phase === 0 ? first : second, type: 'u32', access: 'read'},
               {name: 'next', view: phase === 0 ? second : first, type: 'u32', access: 'read_write'},
-              {name: 'changed', view: changed, type: 'u32', access: 'read_write'}
+              {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'}
             ],
-            body: `let original=previous[previousOffset+index];var remove=false;if(original!=0u){var neighborhood:array<u32,8>;let columns=array<i32,8>(0,1,1,1,0,-1,-1,-1);let rows=array<i32,8>(-1,-1,0,1,1,1,0,-1);var neighbors=0u;var transitions=0u;
-for(var side=0u;side<8u;side++){let column=i32(index%${grid.width}u)+columns[side];let row=i32(index/${grid.width}u)+rows[side];var value=0u;if(column>=0&&row>=0&&column<${grid.width}&&row<${grid.height}){value=previous[previousOffset+u32(row)*${grid.width}u+u32(column)];}neighborhood[side]=value;neighbors+=value;}
-for(var side=0u;side<8u;side++){transitions+=u32(neighborhood[side]==0u&&neighborhood[(side+1u)%8u]!=0u);}
-remove=neighbors>=2u&&neighbors<=6u&&transitions==1u&&${phase === 0 ? 'neighborhood[0]*neighborhood[2]*neighborhood[4]==0u&&neighborhood[2]*neighborhood[4]*neighborhood[6]==0u' : 'neighborhood[0]*neighborhood[2]*neighborhood[6]==0u&&neighborhood[0]*neighborhood[4]*neighborhood[6]==0u'};}
-next[nextOffset+index]=select(original,0u,remove);changed[changedOffset+index]=${phase === 0 ? 'u32(remove)' : 'changed[changedOffset+index]|u32(remove)'};`
+            declarations,
+            body: `let original = previous[previousOffset + index];
+  let remove = original != 0u && shouldRemove(index, ${phase}u);
+  next[nextOffset + index] = select(original, 0u, remove);
+  if (remove) { atomicOr(&status[statusOffset], 1u); }`,
+            condition,
+            extraResources
           })
         );
       }
+      nodes.push(
+        createRasterIterationGateNode<Parameters>(graph, {
+          id: `${id}-gate-${iteration}`,
+          operation,
+          state,
+          maxIterations: roundCount
+        })
+      );
     }
+    const statusBindings = [
+      {name: 'status', view: state.status, type: 'u32' as const, access: 'read' as const},
+      {
+        name: 'converged',
+        view: output.status.converged,
+        type: 'u32' as const,
+        access: 'read_write' as const
+      },
+      ...(output.status.iterationLimitReached
+        ? [
+            {
+              name: 'iterationLimitReached',
+              view: output.status.iterationLimitReached,
+              type: 'u32' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : []),
+      ...(output.status.iterationCount
+        ? [
+            {
+              name: 'iterationCount',
+              view: output.status.iterationCount,
+              type: 'u32' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : [])
+    ];
     nodes.push(
       createWGSLKernelNode(graph, {
         id: `${id}-status`,
-        operation: 'GPURasterSkeleton',
+        operation,
+        variant: 'iteration-status',
         invocationCount: 1,
-        bindings: [
-          {name: 'changed', view: changed, type: 'u32', access: 'read'},
-          {name: 'converged', view: output.status.converged, type: 'u32', access: 'read_write'}
-        ],
-        body: `var complete=1u;for(var cell=0u;cell<${count}u;cell++){complete&=1u-changed[changedOffset+cell];}converged[convergedOffset]=complete;`
+        bindings: statusBindings,
+        body: `converged[convergedOffset] = status[statusOffset + 3u];
+  ${output.status.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = 1u - status[statusOffset + 3u];' : ''}
+  ${output.status.iterationCount ? 'iterationCount[iterationCountOffset] = status[statusOffset + 2u];' : ''}`
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-publish`,
-        operation: 'GPURasterSkeleton',
+        operation,
         invocationCount: count,
         bindings: [
           {name: 'first', view: first, type: 'u32', access: 'read'},
-          {name: 'converged', view: output.status.converged, type: 'u32', access: 'read'},
           {name: 'skeleton', view: output.skeleton, type: 'u32', access: 'read_write'}
         ],
-        body: 'skeleton[skeletonOffset+index]=select(0xfffffffeu,first[firstOffset+index],converged[convergedOffset]!=0u);'
+        // The current skeleton is always published; status.converged says whether thinning finished.
+        body: 'skeleton[skeletonOffset+index]=first[firstOffset+index];'
       })
     );
     return nodes;
@@ -148,12 +271,21 @@ export class GPURasterMedialAxis implements GPUCommandNodeProducer {
       getGraphOutputViews(props.output)
     );
     // Squared pixel offsets, including the virtual exterior, must fit uint32 exactly.
-    assert(
-      props.grid.width <= GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION &&
-        props.grid.height <= GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION
+    validateMaximumCount(
+      this.id,
+      'grid.width',
+      props.grid.width,
+      GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION
     );
-    for (const view of [props.input, ...getGraphOutputViews(props.output)])
-      requireRasterLength(view, count);
+    validateMaximumCount(
+      this.id,
+      'grid.height',
+      props.grid.height,
+      GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION
+    );
+    requireRasterLength(props.input, count, this.id, 'input');
+    requireRasterLength(props.output.medialAxis, count, this.id, 'output.medialAxis');
+    requireRasterLength(props.output.radius, count, this.id, 'output.radius');
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>

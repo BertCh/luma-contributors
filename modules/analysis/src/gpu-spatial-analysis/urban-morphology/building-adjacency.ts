@@ -3,11 +3,35 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {measureBuildingStructures, type GPUBuildingStructureGeometry} from './building-structures';
-import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUSharedPathsOutput} from '../line-clip/gpu-shared-paths';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/**
+ * Most buildings: the pair table holds buildings squared float32x4 rows (16 MiB at this limit) and
+ * the component kernel walks the upper triangle of that table with one thread.
+ */
+export const BUILDING_ADJACENCY_MAXIMUM_BUILDING_COUNT = 1024;
+
+export type GPUBuildingAdjacencyOutput = {
+  /** `float32x4`, `count` squared rows: shared length, axial angle, adjacency flag, validity. */
+  pairs: GraphDataView<'float32x4'>;
+  /** `float32`, one row per shared-path run: run length. */
+  lengths: GraphDataView<'float32'>;
+  /** `float32x4`, one row per building: shared length, cardinal angle, mean neighbor difference, structure perimeter. */
+  morphology: GraphDataView<'float32x4'>;
+  /** `uint32`, one row per building: lowest building row of its adjacency component. */
+  components: GraphDataView<'uint32'>;
+  /** `uint32`, one row: one when the shared-path result is complete. */
+  complete: GraphDataView<'uint32'>;
+  /** `float32`, one row per building, only with `structures`: exterior perimeter of its structure. */
+  structurePerimeters: GraphDataView<'float32'>;
+};
 
 export type GPUBuildingAdjacencyProps = {
   id?: string;
@@ -21,6 +45,11 @@ export type GPUBuildingAdjacencyProps = {
   contiguity?: GraphDataView<'uint32x2'>;
   /** Optional true union/exterior-perimeter analysis. Buffering is explicit upstream geometry work. */
   structures?: GPUBuildingStructureGeometry;
+  /**
+   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
+   * Formats and lengths are those of {@link GPUBuildingAdjacencyOutput}.
+   */
+  output?: Partial<GPUBuildingAdjacencyOutput>;
 };
 
 /** Shared-wall adjacency and axial alignment from the existing shared-path topology contributor. */
@@ -31,14 +60,33 @@ export function addBuildingAdjacencyRecipe<Parameters>(
   const id = props.id ?? 'building-adjacency';
   const count = props.orientations.length;
   const {runs, status} = props.sharedPaths;
-  assert(count > 0 && count <= 1024 && props.lineBuildingIds.length > 0);
-  assert(
-    runs.leftLineIds.length === runs.rightLineIds.length &&
-      runs.offsets.length === runs.leftLineIds.length + 1
+  validateRequirement(
+    id,
+    count > 0 && count <= BUILDING_ADJACENCY_MAXIMUM_BUILDING_COUNT,
+    `orientations must have between 1 and ${BUILDING_ADJACENCY_MAXIMUM_BUILDING_COUNT} rows`
   );
-  const lengths = getRecipeView(graph, `${id}-run-lengths`, 'float32', runs.leftLineIds.length);
-  const pairs = getRecipeView(graph, `${id}-pairs`, 'float32x4', count * count);
-  const complete = getRecipeView(graph, `${id}-complete`, 'uint32', 1);
+  validateRequirement(
+    id,
+    props.lineBuildingIds.length > 0,
+    'lineBuildingIds must have at least 1 row'
+  );
+  validateViewLength(
+    id,
+    'sharedPaths.runs.rightLineIds',
+    runs.rightLineIds,
+    runs.leftLineIds.length
+  );
+  validateViewLength(id, 'sharedPaths.runs.offsets', runs.offsets, runs.leftLineIds.length + 1);
+  const output = props.output;
+  const lengths = getRecipeView(
+    graph,
+    `${id}-run-lengths`,
+    'float32',
+    runs.leftLineIds.length,
+    output?.lengths
+  );
+  const pairs = getRecipeView(graph, `${id}-pairs`, 'float32x4', count * count, output?.pairs);
+  const complete = getRecipeView(graph, `${id}-complete`, 'uint32', 1, output?.complete);
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${id}-evidence`,
@@ -111,8 +159,14 @@ let firstAngle=orientations[orientationsOffset+first];let secondAngle=orientatio
 output[outputOffset+4u*index]=select(missing,sharedLength,valid);output[outputOffset+4u*index+1u]=select(missing,angle,valid&&isFiniteValue(firstAngle)&&isFiniteValue(secondAngle));output[outputOffset+4u*index+2u]=select(missing,f32(sharedLength>0.0),valid);output[outputOffset+4u*index+3u]=f32(valid);`
     })
   );
-  const components = getRecipeView(graph, `${id}-components`, 'uint32', count);
-  const morphology = getRecipeView(graph, `${id}-morphology`, 'float32x4', count);
+  const components = getRecipeView(graph, `${id}-components`, 'uint32', count, output?.components);
+  const morphology = getRecipeView(
+    graph,
+    `${id}-morphology`,
+    'float32x4',
+    count,
+    output?.morphology
+  );
   const neighbors = getRecipeView(graph, `${id}-neighbors`, 'uint32', count * count);
   graph.add(
     createRecipeKernelNode(graph, {
@@ -146,11 +200,39 @@ output[outputOffset+4u*index]=select(missing,sharedLength,valid);output[outputOf
         {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
         {name: 'components', view: components, type: 'u32', access: 'read_write'}
       ],
-      body: `if(neighbors[neighborsOffset]==0xffffffffu){for(var vertex=0u;vertex<${count}u;vertex++){components[componentsOffset+vertex]=0xffffffffu;}return;}for(var vertex=0u;vertex<${count}u;vertex++){components[componentsOffset+vertex]=vertex;}for(var first=0u;first<${count}u;first++){for(var second=first+1u;second<${count}u;second++){if(neighbors[neighborsOffset+first*${count}u+second]==0u){continue;}var left=first;var right=second;loop{let parent=components[componentsOffset+left];if(parent==left){break;}left=parent;}loop{let parent=components[componentsOffset+right];if(parent==right){break;}right=parent;}components[componentsOffset+max(left,right)]=min(left,right);}}for(var vertex=0u;vertex<${count}u;vertex++){var root=vertex;loop{let parent=components[componentsOffset+root];if(root==parent){break;}root=parent;}components[componentsOffset+vertex]=root;}`
+      // Union-find over the upper triangle of the neighbor table in one thread: at most
+      // BUILDING_ADJACENCY_MAXIMUM_BUILDING_COUNT squared / 2 pair visits. Roots are the lowest
+      // building row of each component.
+      body: `if(neighbors[neighborsOffset]==0xffffffffu){
+  for(var vertex=0u;vertex<${count}u;vertex++){components[componentsOffset+vertex]=0xffffffffu;}
+  return;
+}
+for(var vertex=0u;vertex<${count}u;vertex++){components[componentsOffset+vertex]=vertex;}
+for(var first=0u;first<${count}u;first++){
+  for(var second=first+1u;second<${count}u;second++){
+    if(neighbors[neighborsOffset+first*${count}u+second]==0u){continue;}
+    var left=first;
+    var right=second;
+    loop{let parent=components[componentsOffset+left];if(parent==left){break;}left=parent;}
+    loop{let parent=components[componentsOffset+right];if(parent==right){break;}right=parent;}
+    components[componentsOffset+max(left,right)]=min(left,right);
+  }
+}
+for(var vertex=0u;vertex<${count}u;vertex++){
+  var root=vertex;
+  loop{let parent=components[componentsOffset+root];if(root==parent){break;}root=parent;}
+  components[componentsOffset+vertex]=root;
+}`
     })
   );
   const structures = props.structures
-    ? measureBuildingStructures(graph, id, components, props.structures)
+    ? measureBuildingStructures(
+        graph,
+        id,
+        components,
+        props.structures,
+        output?.structurePerimeters
+      )
     : undefined;
   graph.add(
     createRecipeKernelNode(graph, {

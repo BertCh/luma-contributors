@@ -26,6 +26,7 @@ export * from './network-reachability/index';
 export * from './network-statistics/index';
 export * from './network-structure/index';
 export * from './network-subgraph-filter/index';
+export * from './network-time-geography/index';
 export * from './recipes/index';
 
 // Top-level files and shared contracts.

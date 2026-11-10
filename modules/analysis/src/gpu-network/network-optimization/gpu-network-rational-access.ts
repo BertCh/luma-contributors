@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -11,10 +10,27 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Largest demand (origin) row count: the single invocation keeps per-origin state in private arrays. */
+const MAXIMUM_ORIGIN_COUNT = 64;
+/** Largest supply (facility) row count: the single invocation keeps per-facility state in private arrays. */
+const MAXIMUM_FACILITY_COUNT = 32;
+/** Largest cycle count: bounds the equalization loop of the single invocation. */
+const MAXIMUM_CYCLES = 4096;
+/** Default `maximumCycles`. */
+const DEFAULT_MAXIMUM_CYCLES = 150;
+/** Default `initialLimitCycles`. */
+const DEFAULT_INITIAL_LIMIT_CYCLES = 20;
+/** Rows of the `parameters` view: tau, rho, initial step, minimum step, half-life, gap tolerance. */
+const PARAMETER_COUNT = 6;
+/** Words of the `status` view: valid, gap within tolerance, completed cycles, maximum gap bits. */
+const STATUS_WORD_COUNT = 4;
 
 export type GPUNetworkRationalAccessProps = {
   id?: string;
@@ -46,6 +62,12 @@ export type GPUNetworkRationalAccessProps = {
  * pairwise congestion equalization and decaying demand-shift cap. Final scores use the final
  * allocation. Rounding-stalled allocation is not convergence; status reports the cost gap.
  * Parallel origins move simultaneously. Bounds: 64 origins, 32 facilities, 4096 cycles.
+ *
+ * Reference tier (contributor contract rule 2): the cycles run in one GPU invocation
+ * (`invocationCount: 1`); each cycle loops over every origin and facility, O(cycles * origins *
+ * facilities), at most about 8.4e6 operations at the limits (64 * 32 * 4,096), enforced at
+ * construction. The shift is already a Jacobi update, so a per-cycle row-parallel kernel with
+ * facility load reductions would replace it for larger problems.
  */
 export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
   readonly id: string;
@@ -53,14 +75,23 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkRationalAccessProps) {
     this.id = props.id ?? 'network-rational-access';
     this.props = props;
-    assert(
-      props.demand.length > 0 &&
-        props.demand.length <= 64 &&
-        props.supply.length > 0 &&
-        props.supply.length <= 32
+    const {id} = this;
+    validateCapacity(id, 'demand rows', props.demand.length, 1, MAXIMUM_ORIGIN_COUNT);
+    validateCapacity(id, 'supply rows', props.supply.length, 1, MAXIMUM_FACILITY_COUNT);
+    validateCapacity(
+      id,
+      'maximumCycles',
+      props.maximumCycles ?? DEFAULT_MAXIMUM_CYCLES,
+      0,
+      MAXIMUM_CYCLES
     );
-    for (const value of [props.maximumCycles ?? 150, props.initialLimitCycles ?? 20])
-      assert(Number.isInteger(value) && value >= 0 && value <= 4096);
+    validateCapacity(
+      id,
+      'initialLimitCycles',
+      props.initialLimitCycles ?? DEFAULT_INITIAL_LIMIT_CYCLES,
+      0,
+      MAXIMUM_CYCLES
+    );
     for (const view of [
       props.costs,
       props.demand,
@@ -72,13 +103,35 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
     ])
       validatePackedView(view, ['float32'], this.id);
     validatePackedView(props.output.status, ['uint32'], this.id);
-    assert(
-      props.costs.length === props.demand.length * props.supply.length &&
-        props.parameters.length === 6 &&
-        props.output.assignments.length === props.costs.length &&
-        props.output.scores.length === props.demand.length &&
-        props.output.unservedDemand.length === props.demand.length &&
-        props.output.status.length === 4
+    validateRequirement(
+      id,
+      props.costs.length === props.demand.length * props.supply.length,
+      'costs must hold demand rows times supply rows'
+    );
+    validateRequirement(
+      id,
+      props.parameters.length === PARAMETER_COUNT,
+      `parameters must hold ${PARAMETER_COUNT} rows`
+    );
+    validateRequirement(
+      id,
+      props.output.assignments.length === props.costs.length,
+      'output.assignments must hold as many rows as costs'
+    );
+    validateRequirement(
+      id,
+      props.output.scores.length === props.demand.length,
+      'output.scores must hold one row per demand row'
+    );
+    validateRequirement(
+      id,
+      props.output.unservedDemand.length === props.demand.length,
+      'output.unservedDemand must hold one row per demand row'
+    );
+    validateRequirement(
+      id,
+      props.output.status.length === STATUS_WORD_COUNT,
+      `output.status must hold ${STATUS_WORD_COUNT} rows`
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.costs,

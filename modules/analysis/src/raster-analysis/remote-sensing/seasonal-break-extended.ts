@@ -6,12 +6,14 @@ import type {GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPURasterSeasonalBreakProps} from './gpu-raster-seasonal-break';
 import {RASTER_FINITE_WGSL, rasterBinding, getRasterLeastSquaresWGSL} from './raster-kernel-utils';
+import {getGPURasterDateAxisBinding} from '../raster-time-series/raster-irregular-date-axis';
 
 /** Bounded dummy/harmonic regression, cyclic decomposition and fixed-history monitoring. */
 export function createExtendedSeasonalBreakNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  props: GPURasterSeasonalBreakProps
+  props: GPURasterSeasonalBreakProps,
+  axisDeclarations = ''
 ): GPUCommandNode<Parameters>[] {
   const slices = props.sliceCount;
   const history = props.monitoring?.historyLength ?? slices;
@@ -20,7 +22,8 @@ export function createExtendedSeasonalBreakNodes<Parameters>(
   const seasonalBasis =
     props.seasonality === 'dummy'
       ? `return select(0.0, 1.0, slice % ${props.period}u == column - 1u);`
-      : `let angle = 6.283185307179586 * f32(slice) / ${props.period}; return select(sin(angle), cos(angle), column == 2u);`;
+      : `let angle = 6.283185307179586 * ${props.dateAxis ? 'rasterSliceYears(slice)' : 'f32(slice)'} / ${props.period}; return select(sin(angle), cos(angle), column == 2u);`;
+  const sliceTime = props.dateAxis ? 'rasterSliceYears(slice)' : `f32(slice) / ${slices}.0`;
   return [
     createWGSLKernelNode<Parameters>(graph, {
       id,
@@ -31,9 +34,10 @@ export function createExtendedSeasonalBreakNodes<Parameters>(
       bindings: [
         rasterBinding('values', props.values),
         ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+        ...(props.dateAxis ? [getGPURasterDateAxisBinding(props.dateAxis)] : []),
         ...Object.entries(props.output).map(([name, view]) => rasterBinding(name, view, true))
       ],
-      declarations: `${RASTER_FINITE_WGSL}${getRasterLeastSquaresWGSL(history, columns, true)}
+      declarations: `${RASTER_FINITE_WGSL}${getRasterLeastSquaresWGSL(history, columns, true)}${axisDeclarations}
 fn isObserved(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
   return finite(values[valuesOffset + source]) ${props.validity ? '&& validity[validityOffset + source] != 0u' : ''};
@@ -100,7 +104,7 @@ for (var slice = 0u; slice < ${history}u; slice++) {
   while (left > 0u && !isObserved(index, left)) { left--; }
   while (right + 1u < ${history}u && !isObserved(index, right)) { right++; }
   if (isObserved(index, left) && isObserved(index, right) && right > left) {
-    response[slice] = mix(values[valuesOffset + index * ${slices}u + left], values[valuesOffset + index * ${slices}u + right], f32(slice - left) / f32(right - left)); training[slice / 32u] |= 1u << (slice % 32u);
+    response[slice] = mix(values[valuesOffset + index * ${slices}u + left], values[valuesOffset + index * ${slices}u + right], ${props.dateAxis ? 'rasterYearsBetween(slice, left) / rasterYearsBetween(right, left)' : 'f32(slice - left) / f32(right - left)'}); training[slice / 32u] |= 1u << (slice % 32u);
   }
 }`
     : ''
@@ -108,7 +112,7 @@ for (var slice = 0u; slice < ${history}u; slice++) {
 var count = 0u; var energy = 0.0;
 for (var slice = 0u; slice < ${history}u; slice++) {
   if ((training[slice / 32u] & (1u << (slice % 32u))) == 0u) { continue; } count++; energy += response[slice] * response[slice];
-  design[slice] = 1.0; design[${history}u + slice] = f32(slice) / ${slices}.0;
+  design[slice] = 1.0; design[${history}u + slice] = ${sliceTime};
   for (var column = 2u; column < ${baselineColumns}u; column++) { design[column * ${history}u + slice] = seasonalBasis(slice, column); }
 }
 var chosen: array<f32, ${columns}>; var boundary = 0xffffffffu; var gain = 0.0;
@@ -149,7 +153,7 @@ for (var slice = 0u; slice < ${slices}u; slice++) {
   let destination = (index * ${slices}u + slice) * 3u;
   var trend = missing(); var seasonal = missing(); var error = missing();
   if (fitted) {
-    trend = chosen[0] + chosen[1] * f32(slice) / ${slices}.0 + select(0.0, chosen[${baselineColumns}], slice >= boundary);
+    trend = chosen[0] + chosen[1] * ${sliceTime} + select(0.0, chosen[${baselineColumns}], slice >= boundary);
     seasonal = 0.0; for (var column = 2u; column < ${baselineColumns}u; column++) { seasonal += chosen[column] * seasonalBasis(slice, column); }
     if (isObserved(index, slice)) { error = values[valuesOffset + index * ${slices}u + slice] - trend - seasonal; }
     ${

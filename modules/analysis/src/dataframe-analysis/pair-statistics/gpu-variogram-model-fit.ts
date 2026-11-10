@@ -65,8 +65,11 @@ export class GPUVariogramModelFit implements GPUCommandNodeProducer {
     validateCapacity(this.id, 'maximumIterations', this.maximumIterations, 0);
     if (
       !this.models.length ||
-      this.models.length > 3 ||
-      this.models.some(model => !['spherical', 'exponential', 'gaussian'].includes(model)) ||
+      this.models.length > 5 ||
+      this.models.some(
+        model =>
+          !['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2'].includes(model)
+      ) ||
       !['pairs', 'none', 'cressie'].includes(props.weighting ?? 'cressie') ||
       this.rangeSteps > 1024 ||
       this.maximumIterations > 64 ||

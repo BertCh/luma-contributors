@@ -121,7 +121,8 @@ export type GPULineChunkProps = {
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Output pieces. In `'chunk'` mode the line capacity is `output.lineOffsets.length - 1` and the
+   * Output pieces. `output.status.count` counts output vertices (not pieces; `status.lineCount`
+   * counts pieces). In `'chunk'` mode the line capacity is `output.lineOffsets.length - 1` and the
    * piece count is data dependent (`status.lineCount` and `sourceLineIndices` report it); in `'substring'` mode
    * there is exactly one output line per input line.
    */

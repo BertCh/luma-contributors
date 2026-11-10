@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
+import {
+  validateCapacity,
+  validateFiniteNumber
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -17,6 +20,9 @@ import {
   validateRasterExpansionGraph,
   validateRasterExpansionViews
 } from './raster-expansion-utils';
+
+/** Largest footprint radius; each cell insertion-sorts (2 radius + 1) squared values in private memory. */
+const MAXIMUM_RADIUS = 8;
 
 export type GPURasterRankFilterProps = {
   id?: string;
@@ -48,9 +54,11 @@ export class GPURasterRankFilter implements GPUCommandNodeProducer {
       getRasterBandViews(props.input),
       Object.values(props.output)
     );
-    Object.values(props.output).forEach(view => requireRasterLength(view, count));
-    assert(Number.isInteger(props.radius) && props.radius >= 0 && props.radius <= 8);
-    assert((props.quantile ?? 0.5) >= 0 && (props.quantile ?? 0.5) <= 1);
+    for (const [name, view] of Object.entries(props.output)) {
+      requireRasterLength(view, count, this.id, `output.${name}`);
+    }
+    validateCapacity(this.id, 'radius', props.radius, 0, MAXIMUM_RADIUS);
+    validateFiniteNumber(this.id, 'quantile', props.quantile ?? 0.5, 0, 1);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>

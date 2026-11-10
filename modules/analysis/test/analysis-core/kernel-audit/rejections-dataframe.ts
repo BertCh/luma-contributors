@@ -14,6 +14,14 @@ export const DATAFRAME_REJECTIONS: readonly KernelAuditRejection[] = [
     rejects: /^Error: column-profile category columns categoryCount total must be at most 33554432$/
   },
   {
+    exportName: 'GPUTemporalReduction',
+    name: 'word times, slots one cell row above the binding limit',
+    kind: 'binding',
+    limit: 16777216,
+    rejects:
+      /^Error: temporal-reduction cellCount \* bucketCount must be at most 16777216 with uint32x2 times$/
+  },
+  {
     exportName: 'GPUInequality',
     name: 'zone count one above the maximum, per-zone views only',
     kind: 'binding',
@@ -34,6 +42,21 @@ export const DATAFRAME_REJECTIONS: readonly KernelAuditRejection[] = [
     limit: 8388608,
     rejects: /^Error: group-statistics output.keys rows must be at most 8388608$/
   },
+  ...[
+    ['GPUColumnQuantiles', 'column-quantiles', 'values length'],
+    ['GPUClassBreaks', 'class-breaks', 'values length'],
+    ['GPUColumnProfile', 'column-profile', 'columns\\[0\\] length']
+  ].map(
+    ([exportName, id, property]): KernelAuditRejection => ({
+      exportName,
+      name: 'one row above the maximum (2^24 + 1), float32 counts',
+      kind: 'binding',
+      limit: 16777216,
+      rejects: new RegExp(
+        `^Error: ${id} ${property} must be .*16777216\\]? \\(2\\^24\\): .*float32 and are exact only up to 2\\^24$`
+      )
+    })
+  ),
   ...[
     ['GPUVariogram', 'variogram', 'maximum rows and lattice, 409 bins with robust channel'],
     [

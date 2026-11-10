@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateRasterGrid} from '../raster-band-utils';
 import {
@@ -23,11 +22,26 @@ import {
   type WGSLKernelProps
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validatePackedView,
+  validatePowerOfTwo,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {RASTER_FINITE_WGSL, rasterBinding, validateRasterCount} from './raster-kernel-utils';
+import {
+  RASTER_FINITE_WGSL,
+  createRasterArgmaxNodes,
+  createRasterCountNodes,
+  rasterBinding
+} from './raster-kernel-utils';
+
+export {MAXIMUM_MASKED_REGISTRATION_DIMENSION} from './raster-masked-registration';
+
+/** Periodic mode FFT side length: three complex scratch fields of side squared float32x2 must fit one 128 MiB binding (2048 squared is 32 MiB per field). */
+export const MAXIMUM_PERIODIC_REGISTRATION_DIMENSION = 2048;
+/** Subpixel refinement window: (2 * ceil(factor / 2) + 1) squared candidates are scored per peak, so the factor bounds that dense window. */
+export const MAXIMUM_REGISTRATION_UPSAMPLE_FACTOR = 32;
 
 export type GPURasterRegistrationProps = {
   id?: string;
@@ -110,35 +124,54 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
   constructor(readonly props: GPURasterRegistrationProps) {
     this.id = props.id ?? 'raster-registration';
     validateRasterGrid(this.id, props.grid);
-    assert(['periodic', 'masked-linear'].includes(props.mode ?? 'periodic'));
+    validateRequirement(
+      this.id,
+      ['periodic', 'masked-linear'].includes(props.mode ?? 'periodic'),
+      "mode must be 'periodic' or 'masked-linear'"
+    );
     if (props.mode === 'masked-linear') {
       validateMaskedRegistrationProps(props, this.id);
       return;
     }
-    assert(
+    validateRequirement(
+      this.id,
       !props.referenceValidity &&
         !props.movingValidity &&
         !props.maximumShift &&
-        !props.output.overlap
+        !props.output.overlap,
+      "referenceValidity, movingValidity, maximumShift and output.overlap require mode 'masked-linear'"
     );
-    assert(
+    validateRequirement(
+      this.id,
       props.minimumOverlapFraction === undefined &&
         props.minimumOverlapCount === undefined &&
-        props.minimumCorrelation === undefined
+        props.minimumCorrelation === undefined,
+      "minimumOverlapFraction, minimumOverlapCount and minimumCorrelation require mode 'masked-linear'"
     );
-    for (const dimension of [props.grid.width, props.grid.height]) {
-      validateRasterCount(dimension, 2048);
-      assert(dimension >= 2 && (dimension & (dimension - 1)) === 0);
+    for (const [name, dimension] of [
+      ['grid.width', props.grid.width],
+      ['grid.height', props.grid.height]
+    ] as const) {
+      validatePowerOfTwo(this.id, name, dimension, 2, MAXIMUM_PERIODIC_REGISTRATION_DIMENSION);
     }
-    validateRasterCount(props.upsampleFactor ?? 20, 32);
-    assert(
-      Number.isFinite(props.ambiguityTolerance ?? 1e-4) &&
-        (props.ambiguityTolerance ?? 1e-4) >= 0 &&
-        (props.ambiguityTolerance ?? 1e-4) < 1
+    validateCapacity(
+      this.id,
+      'upsampleFactor',
+      props.upsampleFactor ?? 20,
+      1,
+      MAXIMUM_REGISTRATION_UPSAMPLE_FACTOR
     );
-    assert(
-      props.reference.length >= props.grid.width * props.grid.height &&
-        props.moving.length >= props.grid.width * props.grid.height
+    const ambiguityTolerance = props.ambiguityTolerance ?? 1e-4;
+    validateRequirement(
+      this.id,
+      Number.isFinite(ambiguityTolerance) && ambiguityTolerance >= 0 && ambiguityTolerance < 1,
+      'ambiguityTolerance must be a finite number in [0, 1)'
+    );
+    const cellCount = props.grid.width * props.grid.height;
+    validateRequirement(
+      this.id,
+      props.reference.length >= cellCount && props.moving.length >= cellCount,
+      'reference and moving must hold at least grid.width times grid.height values'
     );
     for (const view of [
       props.reference,
@@ -146,7 +179,7 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
       ...Object.values(props.output).filter(view => view !== undefined)
     ]) {
       validatePackedView(view, [view.format], this.id);
-      assert(view.length > 0);
+      validateRequirement(this.id, view.length > 0, 'input and output views must not be empty');
     }
     const outputs = Object.values(props.output).filter(view => view !== undefined);
     validateGraphOutputsDisjointFromInputs(this.id, outputs, [props.reference, props.moving]);
@@ -221,17 +254,27 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
         height: props.grid.height
       }).getCommandNodes(graph)
     );
+    const scalarView = (view: GraphDataView<'float32x2'>) =>
+      graph.createDataView(view.buffer, {
+        format: 'float32',
+        byteOffset: view.byteOffset,
+        length: view.length * 2
+      });
+    const scaleIndex = createTransientView(graph, `${id}-spectral-scale-index`, 'uint32', 1);
+    // Largest spectral product magnitude, skipping the DC cell (cell 0), as a parallel argmax.
     nodes.push(
-      createRegistrationKernel(graph, {
+      ...createRasterArgmaxNodes(graph, {
         id: `${id}-spectral-scale`,
         operation: 'GPURasterRegistration',
-        invocationCount: 1,
+        count,
         bindings: [
-          complexBinding('reference', referenceSpectrum),
-          complexBinding('moving', movingSpectrum),
-          rasterBinding('spectralScale', spectralScale, true)
+          rasterBinding('reference', scalarView(referenceSpectrum)),
+          rasterBinding('moving', scalarView(movingSpectrum))
         ],
-        body: `var maximum = 0.0; for (var cell = 1u; cell < ${count}u; cell++) { maximum = max(maximum, length(reference[referenceOffset + cell]) * length(moving[movingOffset + cell])); } spectralScale[spectralScaleOffset] = maximum;`
+        candidate: `candidateValue = length(vec2<f32>(reference[referenceOffset + index * 2u], reference[referenceOffset + index * 2u + 1u])) * length(vec2<f32>(moving[movingOffset + index * 2u], moving[movingOffset + index * 2u + 1u])); candidateEligible = index >= 1u;`,
+        initialValue: '0.0',
+        outputValue: spectralScale,
+        outputIndex: scaleIndex
       })
     );
     nodes.push(
@@ -258,26 +301,95 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
         height: props.grid.height
       }).getCommandNodes(graph)
     );
+    // Input screening by exact integer counts: any nonfinite value, or every value equal to the
+    // first (a flat field), means there is no alignment evidence (status 1).
+    const nonfiniteCondition = '(bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u';
+    // Four counts share one buffer so the status kernel binds them once: reference nonfinite,
+    // reference different, moving nonfinite, moving different.
+    const screens = createTransientView(graph, `${id}-screens`, 'uint32', 4);
+    const screenCell = (cell: number) =>
+      graph.createDataView(screens.buffer, {
+        format: 'uint32',
+        byteOffset: screens.byteOffset + cell * 4,
+        length: 1
+      });
+    (['reference', 'moving'] as const).forEach((name, nameIndex) => {
+      const values = name === 'reference' ? props.reference : props.moving;
+      const nonfiniteCount = screenCell(nameIndex * 2);
+      const differentCount = screenCell(nameIndex * 2 + 1);
+      nodes.push(
+        ...createRasterCountNodes(graph, {
+          id: `${id}-${name}-nonfinite`,
+          operation: 'GPURasterRegistration',
+          values,
+          count,
+          condition: nonfiniteCondition,
+          output: nonfiniteCount
+        }),
+        ...createRasterCountNodes(graph, {
+          id: `${id}-${name}-different`,
+          operation: 'GPURasterRegistration',
+          values,
+          count,
+          condition: 'value != countValues[countValuesOffset]',
+          output: differentCount
+        })
+      );
+    });
+    const peakValue = createTransientView(graph, `${id}-peak-value`, 'float32', 1);
+    const peakIndex = createTransientView(graph, `${id}-peak-index`, 'uint32', 1);
+    const secondaryValue = createTransientView(graph, `${id}-secondary-value`, 'float32', 1);
+    const secondaryIndex = createTransientView(graph, `${id}-secondary-index`, 'uint32', 1);
+    const correlationScalar = scalarView(correlation);
+    // Strict maximum (lowest cell wins ties), then the largest value outside the wrapped 3x3
+    // neighbourhood of that peak; both are parallel argmax reductions.
     nodes.push(
-      createRegistrationKernel(graph, {
+      ...createRasterArgmaxNodes(graph, {
         id: `${id}-coarse-peak`,
+        operation: 'GPURasterRegistration',
+        count,
+        bindings: [rasterBinding('correlation', correlationScalar)],
+        candidate:
+          'candidateValue = correlation[correlationOffset + index * 2u]; candidateEligible = true;',
+        initialValue: '-3.402823466e38',
+        outputValue: peakValue,
+        outputIndex: peakIndex
+      }),
+      ...createRasterArgmaxNodes(graph, {
+        id: `${id}-secondary-peak`,
+        operation: 'GPURasterRegistration',
+        count,
+        bindings: [
+          rasterBinding('correlation', correlationScalar),
+          rasterBinding('peakIndex', peakIndex)
+        ],
+        candidate: `let selected = peakIndex[peakIndexOffset]; let position = vec2<u32>(selected % ${props.grid.width}u, selected / ${props.grid.width}u);
+    let other = vec2<u32>(index % ${props.grid.width}u, index / ${props.grid.width}u); let distance = vec2<u32>(abs(vec2<i32>(other) - vec2<i32>(position))); let wrapped = min(distance, vec2<u32>(${props.grid.width}u, ${props.grid.height}u) - distance);
+    candidateValue = correlation[correlationOffset + index * 2u]; candidateEligible = any(wrapped > vec2<u32>(1u));`,
+        initialValue: '-3.402823466e38',
+        outputValue: secondaryValue,
+        outputIndex: secondaryIndex
+      }),
+      createRegistrationKernel(graph, {
+        id: `${id}-coarse-peak-status`,
         operation: 'GPURasterRegistration',
         invocationCount: 1,
         bindings: [
-          rasterBinding('reference', props.reference),
-          rasterBinding('moving', props.moving),
-          complexBinding('correlation', correlation),
+          rasterBinding('peakValue', peakValue),
+          rasterBinding('peakIndex', peakIndex),
+          rasterBinding('secondaryValue', secondaryValue),
+          rasterBinding('screens', screens),
           complexBinding('coarse', coarse, true),
           rasterBinding('status', props.output.status, true)
         ],
         declarations: RASTER_FINITE_WGSL,
-        body: `var maximum = -3.402823466e38; var selected = 0u; var valid = true; var referenceLow = 3.402823466e38; var referenceHigh = -3.402823466e38; var movingLow = referenceLow; var movingHigh = referenceHigh;
-for (var cell = 0u; cell < ${count}u; cell++) { let first = reference[referenceOffset + cell]; let second = moving[movingOffset + cell]; valid = valid && finite(first) && finite(second); referenceLow = min(referenceLow, first); referenceHigh = max(referenceHigh, first); movingLow = min(movingLow, second); movingHigh = max(movingHigh, second); let value = correlation[correlationOffset + cell].x; if (value > maximum) { maximum = value; selected = cell; } }
-let position = vec2<u32>(selected % ${props.grid.width}u, selected / ${props.grid.width}u); var secondary = -3.402823466e38;
-for (var cell = 0u; cell < ${count}u; cell++) { let other = vec2<u32>(cell % ${props.grid.width}u, cell / ${props.grid.width}u); let distance = vec2<u32>(abs(vec2<i32>(other) - vec2<i32>(position))); let wrapped = min(distance, vec2<u32>(${props.grid.width}u, ${props.grid.height}u) - distance); if (any(wrapped > vec2<u32>(1u))) { secondary = max(secondary, correlation[correlationOffset + cell].x); } }
+        body: `let maximum = peakValue[peakValueOffset]; let secondary = secondaryValue[secondaryValueOffset]; let selected = peakIndex[peakIndexOffset];
+let position = vec2<u32>(selected % ${props.grid.width}u, selected / ${props.grid.width}u);
+let valid = screens[screensOffset] == 0u && screens[screensOffset + 2u] == 0u;
+let isFlat = screens[screensOffset + 1u] == 0u || screens[screensOffset + 3u] == 0u;
 // Removing DC makes every nonempty finite correlation field have a positive maximum.
 // A zero field has no alignment evidence, even when all peaks are adjacent on a 2x2 grid.
-var code = 0u; if (!valid || referenceLow == referenceHigh || movingLow == movingHigh || !finite(maximum) || maximum <= 0.0) { code = 1u; } else if (maximum - secondary <= abs(maximum) * ${props.ambiguityTolerance ?? 1e-4}) { code = 2u; }
+var code = 0u; if (!valid || isFlat || !finite(maximum) || maximum <= 0.0) { code = 1u; } else if (maximum - secondary <= abs(maximum) * ${props.ambiguityTolerance ?? 1e-4}) { code = 2u; }
 status[statusOffset] = code; coarse[coarseOffset] = vec2<f32>(f32(select(i32(position.x), i32(position.x) - ${props.grid.width}, position.x > ${props.grid.width / 2}u)), f32(select(i32(position.y), i32(position.y) - ${props.grid.height}, position.y > ${props.grid.height / 2}u)));`
       })
     );
@@ -315,6 +427,8 @@ refined[refinedOffset + index] = sum / ${count}.0;`
       createRegistrationKernel(graph, {
         id: `${id}-refined-peak`,
         operation: 'GPURasterRegistration',
+        // Serial over the (2 * ceil(upsampleFactor / 2) + 1) squared refinement candidates, at most
+        // 33 x 33 = 1089 values (bounded by MAXIMUM_REGISTRATION_UPSAMPLE_FACTOR), not by raster size.
         invocationCount: 1,
         bindings: [
           rasterBinding('refined', refined),

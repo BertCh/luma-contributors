@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert, Buffer, type Device} from '@luma.gl/core';
+import {Buffer, type Device} from '@luma.gl/core';
 import {
   createGPUComputeCommandNode,
   createGPUCopyCommandNode,
@@ -83,7 +83,11 @@ export class GPUParameterBuffer<Format extends GPUParameterFormat = GPUParameter
   /** Overwrites elements starting at `firstElement`; visible to the next submitted encoding. */
   write(values: Float32Array | Uint32Array | Int32Array, firstElement: number = 0): void {
     // The written range must lie inside the buffer's `length` elements.
-    assert(firstElement >= 0 && firstElement + values.length <= this.length);
+    if (!(firstElement >= 0 && firstElement + values.length <= this.length)) {
+      throw new Error(
+        `GPUParameterBuffer ${this.id} write of ${values.length} elements at firstElement ${firstElement} must lie within [0, ${this.length}]`
+      );
+    }
     this.buffer.write(values, firstElement * Uint32Array.BYTES_PER_ELEMENT);
   }
 
@@ -280,7 +284,11 @@ export function getStorageBindingElementLimit(
   extraElementCount: number = 0
 ): number {
   // Element sizes and extra counts are constants of the calling contributor's layout.
-  assert(bytesPerElement > 0 && extraElementCount >= 0);
+  if (!(bytesPerElement > 0 && extraElementCount >= 0)) {
+    throw new Error(
+      `getStorageBindingElementLimit bytesPerElement must be positive and extraElementCount nonnegative, received ${bytesPerElement} and ${extraElementCount}`
+    );
+  }
   return (
     Math.floor(device.limits.maxStorageBufferBindingSize / bytesPerElement) - extraElementCount
   );
@@ -312,7 +320,11 @@ export function getCoreBindingElementLimit(
   extraElementCount: number = 0
 ): number {
   // Element sizes and extra counts are constants of the calling contributor's layout.
-  assert(bytesPerElement > 0 && extraElementCount >= 0);
+  if (!(bytesPerElement > 0 && extraElementCount >= 0)) {
+    throw new Error(
+      `getCoreBindingElementLimit bytesPerElement must be positive and extraElementCount nonnegative, received ${bytesPerElement} and ${extraElementCount}`
+    );
+  }
   return Math.floor(GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE / bytesPerElement) - extraElementCount;
 }
 
@@ -458,6 +470,93 @@ export function validateGPUStorageBindingByteLength(
     throw new Error(
       `${id} ${name} needs ${byteLength} bytes in one binding (limit ${limit}); ${hint}`
     );
+  }
+}
+
+/**
+ * Largest command node count one contributor may emit. Iterative contributors unroll their rounds
+ * into command nodes because the published compiler has no GPU-gated continuation, so the count
+ * grows with a round or batch prop and sets the compile and encode cost. The largest measured
+ * configuration (sampled-pivot centrality on a 224 x 224 grid) emits about 23,000 nodes.
+ */
+export const GPU_MAXIMUM_COMMAND_NODE_COUNT = 32768;
+
+/**
+ * Throws unless the command node count a contributor is about to emit fits the budget. Every
+ * contributor whose node count depends on a prop (rounds, batches, lanes, levels) computes the
+ * count at construction, exposes it as `estimatedCommandNodeCount`, and calls this.
+ *
+ * @param id Contributor ID, for the message.
+ * @param estimatedCommandNodeCount Number of command nodes `getCommandNodes` will return.
+ * @param maximum Largest accepted count.
+ */
+export function validateCommandNodeBudget(
+  id: string,
+  estimatedCommandNodeCount: number,
+  maximum: number = GPU_MAXIMUM_COMMAND_NODE_COUNT
+): void {
+  validateMaximumCount(id, 'estimated command node count', estimatedCommandNodeCount, maximum);
+}
+
+/**
+ * Throws `${id} ${requirement}` unless the construction-time requirement holds. Use it where no
+ * more specific validator ({@link validateCapacity}, {@link validateMaximumCount},
+ * {@link validateExtent}, {@link validatePowerOfTwo}) fits; the requirement names the prop and
+ * the accepted range, such as `'sampleSpacing must be a positive finite number'`.
+ *
+ * @param id Contributor ID, for the message.
+ * @param isSatisfied Whether the requirement holds.
+ * @param requirement The requirement, stated as what must be true.
+ */
+export function validateRequirement(
+  id: string,
+  isSatisfied: boolean,
+  requirement: string
+): asserts isSatisfied {
+  if (!isSatisfied) {
+    throw new Error(`${id} ${requirement}`);
+  }
+}
+
+/**
+ * Throws unless `value` is a finite number inside `[minimum, maximum]` after rounding to float32,
+ * which is the precision the kernel receives.
+ *
+ * @param id Contributor ID, for the message.
+ * @param name Prop name, for the message.
+ * @param value Value to check.
+ * @param minimum Smallest accepted value.
+ * @param maximum Largest accepted value.
+ */
+export function validateFiniteNumber(
+  id: string,
+  name: string,
+  value: number,
+  minimum: number = -Infinity,
+  maximum: number = Infinity
+): void {
+  const float32Value = Math.fround(value);
+  if (!Number.isFinite(float32Value) || float32Value < minimum || float32Value > maximum) {
+    throw new Error(`${id} ${name} must be a finite number in [${minimum}, ${maximum}]`);
+  }
+}
+
+/**
+ * Throws unless a view holds exactly `expectedLength` rows.
+ *
+ * @param id Contributor ID, for the message.
+ * @param name View name, for the message.
+ * @param view View to check.
+ * @param expectedLength Required row count.
+ */
+export function validateViewLength(
+  id: string,
+  name: string,
+  view: {readonly length: number},
+  expectedLength: number
+): void {
+  if (view.length !== expectedLength) {
+    throw new Error(`${id} ${name} must have ${expectedLength} rows`);
   }
 }
 

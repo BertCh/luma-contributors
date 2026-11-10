@@ -75,16 +75,33 @@ must be matched before comparing another package's output.
 
 `GPUCrossVariogram` computes the signed mean of `(x_i - x_j) * (y_i - y_j) / 2` for each distance bin.
 `secondValues` defaults to `values`, yielding the Matheron semivariogram. Negative cross-semivariances
-are retained. `GPUSpaceTimeVariogram` additionally requires `times` and `temporalLagCount`; bins are
-spatial-major. Parameters are `[maximumDistance, maximumTimeLag]` (the second entry is unused without
-times). Both limits must be positive and finite.
+are retained. Its dense `times` and `temporalLagCount` path is superseded by `GPUSpaceTimeVariogram`
+and should not be used.
 
-Bins are left-closed and right-open, except the final upper edge is included. Each unordered pair is
-counted once. Output views are `semivariances`, `pairCounts`, and per-bin `status` (0 defined, 1 empty
-or invalid lag parameters, 2 nonfinite arithmetic). Complete-case exclusion includes positions,
-both values, optional times, and the mask. The implementation bounds row count to 16,384 and bin
-count to 128. It uses deterministic dense pair traversal and row partials; it does not claim the
-scaling of the indexed univariate `GPUVariogram`.
+`GPUSpaceTimeVariogram` is built on the indexed pair histogram of `GPUVariogram`, so its cost follows
+the pairs in neighboring lattice cells instead of `rows^2`. Class 0 of each axis is the exact zero lag
+(identical float32 coordinates; identical float32 relative times). Positive lags fall in
+`1 + min(floor(lag / maximum * count), count - 1)`, left-closed and right-open with the final upper
+edge included. Output has `(lagCount + 1) * (temporalLagCount + 1)` bins, spatial-major:
+`spatialClass * (temporalLagCount + 1) + temporalClass`. Bin 0 is coincident points at the same time;
+the first row (spatial class 0) is the purely temporal variogram, the first column the purely spatial
+one. Each unordered pair is counted once. Parameters are written with
+`getGPUSpaceTimeVariogramParameterValues({bounds, maximumDistance, maximumTimeLag})`; rows outside
+`bounds` are excluded, and `gridSize` only affects speed. At most 409 bins are supported, and rows are
+limited as for `GPUVariogram`.
+
+`times` must be relative to a float64 origin chosen on the CPU, in one unit: float32 spaces raw Unix
+epoch seconds 128 s apart and epoch milliseconds about 2 minutes apart, which collapses short lags.
+Build them with `getGPUSpaceTimeRelativeTimes(times, origin, requiredResolution)` from
+`gpu-spatial-analysis`, which reports the remaining float32 resolution and can throw when the span is
+too long for the lags you need. Times closer than that resolution fall into the zero-lag class.
+
+Output views are `semivariances`, `pairCounts`, and per-bin `status` (0 defined, 1 empty or invalid
+lag parameters, 2 nonfinite arithmetic, 3 integer accumulation overflow). Complete-case exclusion
+includes positions, both values, times, and the mask. Terms are accumulated as exact integers (the
+positive and negative parts apart), with a fixed-point unit set by the typical cross term, so results
+are reproducible. Parity with gstat `variogramST` is not yet established: the spec compares with an
+in-repo double-precision brute-force reference, and a gstat fixture is pending.
 
 ## Generalized geographically weighted regression
 
@@ -175,7 +192,9 @@ spatial regime. `regimes` contains integer IDs in `[0, regimeCount)`; other IDs 
 rows are excluded. It publishes regime-major `coefficients`, row-level `fitted`, regime `counts`,
 and regime `status` (0 fitted, 1 insufficient observations, 2 singular/nonfinite design). Predictors
 are centered within each regime before solving. This is fully varying regime OLS, with no lag/error
-coefficient, cross-regime equality restriction, covariance output or Chow test.
+coefficient, cross-regime equality restriction, covariance output or Chow test. The per-regime
+moments are accumulated in parallel and in a fixed order (a stable regime sort, then one workgroup
+per regime), so results are reproducible; rows are limited to 2^24 and the device's binding size.
 
 ## Evidence and performance limits
 

@@ -22,6 +22,26 @@ import {validatePredictionViews} from '../../analysis-core/kernels/gpu-predictio
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUSpatialCrossValidationProps} from './gpu-spatial-cross-validation';
 
+/**
+ * Largest design row count. Fold designs run as ONE serial invocation (k-means, NNDM swaps,
+ * kNNDM restarts and the nearest-neighbor tables loop over rows and prediction rows), so 256 is
+ * where that invocation stays within a frame. This is the reference tier; the parallel design for
+ * each fold design is described in `GPUSpatialCrossValidation`.
+ */
+export const MAXIMUM_DESIGN_ROW_COUNT = 256;
+/** Largest prediction-location count: NNDM and kNNDM compare every row with every location. */
+export const MAXIMUM_PREDICTION_ROW_COUNT = 256;
+/** Most features per row in environmental k-means, bounding the per-row distance loop. */
+const MAXIMUM_FEATURE_COUNT = 8;
+/** Most clusters (folds) for environmental and generated kNNDM clustering. */
+const MAXIMUM_CLUSTER_COUNT = 16;
+/** Most Lloyd iterations in environmental k-means. */
+const MAXIMUM_ITERATION_COUNT = 1024;
+/** NNDM gives every row its own fold and keeps an exclusion radius per row; 64 bounds that swap loop. */
+const MAXIMUM_NNDM_ROW_COUNT = 64;
+/** Most kNNDM candidate partitions: each is clustered and scored in the same serial invocation. */
+const MAXIMUM_CANDIDATE_COUNT = 64;
+
 /** Finite, reproducible designs over resident rows. Environmental features never include outcomes. */
 export type GPUSpatialValidationDesign =
   | {
@@ -72,21 +92,33 @@ export function validateSpatialValidationDesign(
   const design = props.design;
   if (!design) return;
   const rows = props.positions.length;
-  validateCapacity(id, 'design rows', rows, 2, 256);
+  validateCapacity(id, 'design rows', rows, 2, MAXIMUM_DESIGN_ROW_COUNT);
   if (design.mode === 'environmental') {
-    validateCapacity(id, 'featureCount', design.featureCount, 1, 8);
-    validateCapacity(id, 'cluster count', props.foldCount, 2, 16);
-    validateCapacity(id, 'maximumIterations', design.maximumIterations ?? 100, 1, 1024);
+    validateCapacity(id, 'featureCount', design.featureCount, 1, MAXIMUM_FEATURE_COUNT);
+    validateCapacity(id, 'cluster count', props.foldCount, 2, MAXIMUM_CLUSTER_COUNT);
+    validateCapacity(
+      id,
+      'maximumIterations',
+      design.maximumIterations ?? 100,
+      1,
+      MAXIMUM_ITERATION_COUNT
+    );
     validatePackedView(design.features, ['float32'], id);
     if (design.features.length !== rows * design.featureCount)
       throw new Error(`${id}: feature shape mismatch`);
   }
   if (design.mode === 'nndm' || design.mode === 'knndm') {
     validatePackedView(design.predictionPositions, ['float32x2'], id);
-    validateCapacity(id, 'prediction rows', design.predictionPositions.length, 1, 256);
+    validateCapacity(
+      id,
+      'prediction rows',
+      design.predictionPositions.length,
+      1,
+      MAXIMUM_PREDICTION_ROW_COUNT
+    );
     if (design.mode === 'nndm') {
       if (
-        rows > 64 ||
+        rows > MAXIMUM_NNDM_ROW_COUNT ||
         props.foldCount !== rows ||
         !Number.isFinite(design.maximumDistance) ||
         design.maximumDistance < 0 ||
@@ -98,9 +130,15 @@ export function validateSpatialValidationDesign(
       )
         throw new Error(`${id}: invalid NNDM bounds`);
     } else {
-      validateCapacity(id, 'candidateCount', design.candidateCount ?? 8, 1, 64);
+      validateCapacity(
+        id,
+        'candidateCount',
+        design.candidateCount ?? 8,
+        1,
+        MAXIMUM_CANDIDATE_COUNT
+      );
       if (!design.candidates)
-        validateCapacity(id, 'generated cluster count', props.foldCount, 2, 16);
+        validateCapacity(id, 'generated cluster count', props.foldCount, 2, MAXIMUM_CLUSTER_COUNT);
       if (design.candidates) validatePackedView(design.candidates, ['uint32'], id);
       if (
         (design.candidates && design.candidates.length !== rows * (design.candidateCount ?? 8)) ||

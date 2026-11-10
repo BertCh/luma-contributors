@@ -62,6 +62,8 @@ import {
 } from '../../../src/gpu-spatial-analysis/index';
 import type {KernelAuditContext, KernelAuditCase} from './kernel-audit-context';
 
+/** Neighbors-mode limit of `GPUNearestFeatureJoin`, independent of `GPUNeighborSearch`. */
+const NEAREST_FEATURE_JOIN_MAXIMUM_K = 32;
 const ROWS = 300;
 
 /** Most BVH leaves whose node arrays (8 B per node, 2 nodes per leaf) fit one 128 MiB binding. */
@@ -1554,7 +1556,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
               name: `neighbors ${queryKind} to ${featureKind} ${name} ties ${ties} every output`,
               build: context => {
                 const {view} = context;
-                const capacity = ties === 'all' ? 64 : GPU_NEIGHBOR_SEARCH_MAXIMUM_K;
+                const capacity = ties === 'all' ? 64 : NEAREST_FEATURE_JOIN_MAXIMUM_K;
                 const slots = ROWS * capacity;
                 const features =
                   featureKind === 'segments'
@@ -1581,7 +1583,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                   exclusive: true,
                   queryIds: view('uint32', ROWS),
                   onAttribute: {left: view('uint32', ROWS), right: view('uint32', 200)},
-                  k: GPU_NEIGHBOR_SEARCH_MAXIMUM_K,
+                  k: NEAREST_FEATURE_JOIN_MAXIMUM_K,
                   neighborCapacity: capacity,
                   ties,
                   leafCapacity: 256,
@@ -1700,7 +1702,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
         new GPUNearestFeatureJoin({
           queries: {kind: 'points', positions: view('float32x2', queries)},
           features: geometry(context, 'polygons', 1 << 21, maximumRows(8)) as never,
-          k: GPU_NEIGHBOR_SEARCH_MAXIMUM_K,
+          k: NEAREST_FEATURE_JOIN_MAXIMUM_K,
           neighborCapacity: capacity,
           ties: 'all',
           spatialSort: true,

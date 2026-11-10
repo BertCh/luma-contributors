@@ -12,3 +12,20 @@ export type {
   GPUMultipleTestingAdjustmentOutput,
   GPUMultipleTestingAdjustmentProps
 } from './gpu-multiple-testing-adjustment';
+export {getPermutationRejectionFloor} from './permutation-p-value-floor';
+export type {
+  PermutationRejectionFloor,
+  PermutationRejectionFloorProps
+} from './permutation-p-value-floor';
+export {
+  getGPURasterFalseDiscoveryRateMaskParameterValues,
+  GPURasterFalseDiscoveryRateMask,
+  GPU_RASTER_FALSE_DISCOVERY_RATE_MASK_MAXIMUM_HISTOGRAM_BINS,
+  GPU_RASTER_FALSE_DISCOVERY_RATE_MASK_PARAMETER_LENGTH
+} from './gpu-raster-false-discovery-rate-mask';
+export type {
+  GPURasterFalseDiscoveryRateMaskOutput,
+  GPURasterFalseDiscoveryRateMaskProps,
+  GPURasterFalseDiscoveryRateMaskSettings,
+  GPURasterFalseDiscoveryRateMethod
+} from './gpu-raster-false-discovery-rate-mask';

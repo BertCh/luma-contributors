@@ -8,6 +8,9 @@ import {
   GPUNaturalNeighbor,
   GPUConditionalGaussianSimulation
 } from '../../../src/gpu-spatial-analysis/index';
+import {GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-interpolation/prediction-covariance';
+import {GPUSpaceTimeKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-space-time-kriging';
+import {getGPULocalKrigingParameterLength} from '../../../src/gpu-spatial-analysis/spatial-interpolation/prediction-covariance';
 import {GPUVariogramModelFit} from '@luma-contributors/analysis/dataframe-analysis';
 import type {KernelAuditCase} from './kernel-audit-context';
 
@@ -34,6 +37,95 @@ export const COVERAGE_INTERPOLATION_KERNEL_CASES: KernelAuditCase[] = [
               queryDrift: view('float32x4', 16),
               driftCount: 4,
               coregionalization: [1, 0, 0.4, 0.8],
+              output: {
+                values: view('float32x4', 16),
+                status: view('uint32', 16),
+                weights: view('float32', 256)
+              }
+            })
+          );
+        }
+      }) satisfies KernelAuditCase
+  ),
+  ...(['simple', 'ordinary', 'universal', 'external-drift', 'co-kriging'] as const).map(
+    mode =>
+      ({
+        exportName: 'GPULocalKriging',
+        name: `per-frame-parameters-${mode}`,
+        build({graph, view}) {
+          const isCoKriging = mode === 'co-kriging';
+          graph.add(
+            new GPULocalKriging({
+              positions: view('float32x2', 16),
+              observations: view('float32x4', 16),
+              supports: view('float32x2', 16),
+              neighborCount: 16,
+              mode,
+              parameters: view(
+                'float32',
+                getGPULocalKrigingParameterLength(isCoKriging ? 4 : 1, isCoKriging ? 4 : 1)
+              ),
+              covarianceStructureCount: isCoKriging ? 4 : undefined,
+              variableCount: isCoKriging ? 4 : undefined,
+              sampleDrift: view('float32x4', 16),
+              queryDrift: view('float32x4', 16),
+              driftCount: 4,
+              output: {
+                values: view('float32x4', 16),
+                status: view('uint32', 16)
+              }
+            })
+          );
+        }
+      }) satisfies KernelAuditCase
+  ),
+  ...(['metric', 'octant', 'staged'] as const).flatMap(neighborSearch =>
+    (['simple', 'ordinary'] as const).map(
+      mode =>
+        ({
+          exportName: 'GPUSpaceTimeKriging',
+          name: `maximum-neighborhood-${neighborSearch}-${mode}`,
+          build({graph, view}) {
+            graph.add(
+              new GPUSpaceTimeKriging({
+                temporalContext: {
+                  unit: 'second',
+                  epoch: 0n,
+                  encoding: 'float32-relative',
+                  axis: {kind: 'irregular'}
+                },
+                positions: view('float32x2', 64),
+                times: view('float32', 64),
+                observations: view('float32x4', 64),
+                queries: view('float32x2', 16),
+                queryTimes: view('float32', 16),
+                mode,
+                neighborCount: 32,
+                neighborSearch,
+                neighborsPerOctant: 8,
+                stagedCandidateCount: 64,
+                parameters: view('float32', GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH),
+                output: {values: view('float32x4', 16), status: view('uint32', 16)}
+              })
+            );
+          }
+        }) satisfies KernelAuditCase
+    )
+  ),
+  ...([0.5, 1.5, 2.5] as const).map(
+    smoothness =>
+      ({
+        exportName: 'GPULocalKriging',
+        name: `matern-${smoothness}`,
+        build({graph, view}) {
+          graph.add(
+            new GPULocalKriging({
+              positions: view('float32x2', 16),
+              observations: view('float32x4', 16),
+              supports: view('float32x2', 16),
+              neighborCount: 16,
+              mode: 'ordinary',
+              covariance: {model: 'matern', smoothness, range: 1, sill: 1},
               output: {
                 values: view('float32x4', 16),
                 status: view('uint32', 16),

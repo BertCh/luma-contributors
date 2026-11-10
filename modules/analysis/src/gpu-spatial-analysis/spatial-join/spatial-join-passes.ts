@@ -706,6 +706,86 @@ export function getChunkNodeId(
 }
 
 /**
+ * Adds the candidate truncation outputs of a counted and scanned candidate stage.
+ *
+ * Candidate slots are laid out in row order, so slots at or past `candidateCapacity` are the tail
+ * of the layout: the row whose segment `[offset, offset + count)` crosses the capacity keeps the
+ * first part of its candidates, and every later row with at least one candidate loses all of them.
+ * Rows before that row are untouched. `candidateTruncated[row]` is 1 for exactly those rows (it
+ * covers `rowCount` rows and is fully written), and `candidateOverflow` is 1 when the unclamped
+ * total in `total[0]` exceeds the capacity. A BVH overflow is not part of either: it drops leaves,
+ * not candidate slots.
+ *
+ * @internal
+ */
+export function getCandidateTruncationNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    counts: GraphDataView<'uint32'>;
+    offsets: GraphDataView<'uint32'>;
+    rowCount: number;
+    candidateCapacity: number;
+    /** Unclamped candidate total in its first word. */
+    total: GraphDataView<'uint32'>;
+    candidateTruncated?: GraphDataView<'uint32'>;
+    candidateOverflow?: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  const declarations = `const CANDIDATE_CAPACITY: u32 = ${props.candidateCapacity}u;`;
+  if (props.candidateTruncated) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${props.id}-candidate-truncated`,
+        operation: props.operation,
+        variant: 'candidate-truncated',
+        bindings: [
+          {name: 'counts', view: props.counts, type: 'u32', access: 'read'},
+          {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+          {
+            name: 'candidateTruncated',
+            view: props.candidateTruncated,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: props.rowCount,
+        declarations,
+        // Written without adding offset and count, which could wrap at 2^32.
+        body: `let count = counts[countsOffset + index];
+  let offset = offsets[offsetsOffset + index];
+  candidateTruncated[candidateTruncatedOffset + index] =
+    select(0u, 1u, count > 0u && (offset >= CANDIDATE_CAPACITY || count > CANDIDATE_CAPACITY - offset));`
+      })
+    );
+  }
+  if (props.candidateOverflow) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${props.id}-candidate-overflow`,
+        operation: props.operation,
+        variant: 'candidate-overflow',
+        bindings: [
+          {name: 'total', view: props.total, type: 'u32', access: 'read'},
+          {
+            name: 'candidateOverflow',
+            view: props.candidateOverflow,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: 1,
+        declarations,
+        body: 'candidateOverflow[candidateOverflowOffset] = select(0u, 1u, total[totalOffset] > CANDIDATE_CAPACITY);'
+      })
+    );
+  }
+  return nodes;
+}
+
+/**
  * Builds counted stackless BVH probes for point chunks, scans per-point counts, and writes stable
  * `[pointRow, featureRow]` candidate pairs without a contended global append atomic.
  *
@@ -745,6 +825,14 @@ export function getSpatialJoinProbeNodes<Parameters>(
      * eight bindings are full. Needs `bvh.nodeMinima` and `bvh.nodeMaxima`.
      */
     querySort?: boolean;
+    /**
+     * Optional per-point-row flag, 1 for the rows that lost candidates to `candidateCapacity`
+     * (see {@link getCandidateTruncationNodes}). Written after the probe, so it is complete when
+     * the pass returns.
+     */
+    candidateTruncated?: GraphDataView<'uint32'>;
+    /** Optional one-row flag, 1 when the candidate total exceeded `candidateCapacity`. */
+    candidateOverflow?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -973,6 +1061,19 @@ ${NODE_OVERLAPS_WGSL}`;
     }
     chunkFirstRow += chunk.length;
   }
+  nodes.push(
+    ...getCandidateTruncationNodes<Parameters>(graph, {
+      id: props.id,
+      operation: props.operation,
+      counts: pointCounts,
+      offsets: pointOffsets,
+      rowCount: props.points.length,
+      candidateCapacity: props.candidateCapacity,
+      total: props.state,
+      candidateTruncated: props.candidateTruncated,
+      candidateOverflow: props.candidateOverflow
+    })
+  );
   return nodes;
 }
 

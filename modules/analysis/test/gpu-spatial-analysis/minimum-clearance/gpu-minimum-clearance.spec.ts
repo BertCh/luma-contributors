@@ -20,14 +20,19 @@ import {SHAPELY_CLEARANCE_LINES, SHAPELY_CLEARANCE_POLYGONS} from './shapely-cle
 import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
-type ClearanceResult = {clearances: number[]; lines: number[]; vertexIds: number[]};
+type ClearanceResult = {
+  clearances: number[];
+  lines: number[];
+  vertexIds: number[];
+  candidateOverflow: number;
+};
 
 const NO_VERTEX = 0xffffffff;
 
 async function runClearance(
   device: Device,
   features: OracleSegmentFeature[],
-  options: {spatialSort?: boolean} = {}
+  options: {spatialSort?: boolean; leafCapacity?: number} = {}
 ): Promise<ClearanceResult> {
   const graph = new GPUCommandGraph(device, {id: 'minimum-clearance'});
   const buffers: Buffer[] = [];
@@ -44,11 +49,26 @@ async function runClearance(
   const clearances = output('clearances', 'float32', 1);
   const lines = output('lines', 'float32x4', 4);
   const vertexIds = output('vertex-ids', 'uint32', 1);
+  const candidateOverflowBuffer = createOutputBuffer(device, 1);
+  buffers.push(candidateOverflowBuffer);
+  const candidateOverflow = importGraphBuffer(
+    graph,
+    'candidate-overflow',
+    candidateOverflowBuffer,
+    'uint32',
+    1
+  );
   graph.add(
     new GPUMinimumClearance({
       geometry,
-      output: {clearances: clearances.view, lines: lines.view, vertexIds: vertexIds.view},
-      spatialSort: options.spatialSort
+      output: {
+        clearances: clearances.view,
+        lines: lines.view,
+        vertexIds: vertexIds.view,
+        status: {candidateOverflow}
+      },
+      spatialSort: options.spatialSort,
+      leafCapacity: options.leafCapacity
     })
   );
   const compiled = graph.compile();
@@ -56,7 +76,8 @@ async function runClearance(
   const result = {
     clearances: await readFloat32(clearances.buffer, features.length),
     lines: await readFloat32(lines.buffer, features.length * 4),
-    vertexIds: await readUint32(vertexIds.buffer, features.length)
+    vertexIds: await readUint32(vertexIds.buffer, features.length),
+    candidateOverflow: (await readUint32(candidateOverflowBuffer, 1))[0]
   };
   compiled.destroy();
   for (const buffer of buffers) {
@@ -199,6 +220,41 @@ it('GPUMinimumClearance reduces long features with the lowest-row tie rule', asy
   expect(result.clearances).toEqual([1, 2, 1]);
   // Global vertex rows: feature starts at 0, 300 and 600.
   expect(result.vertexIds).toEqual([199, 300, 600 + 497]);
+});
+
+it('GPUMinimumClearance reports BVH overflow when leafCapacity is below the segment count', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Two features of four vertices: the last vertex of the second lies 0.5 from its first segment,
+  // which only the BVH can find (it is neither the vertex's own segment nor its predecessor).
+  const features: OracleSegmentFeature[] = [
+    {
+      kind: 'lines',
+      vertices: [
+        [0, 0],
+        [10, 0],
+        [10, 10],
+        [0, 10]
+      ]
+    },
+    {
+      kind: 'lines',
+      vertices: [
+        [100, 0],
+        [110, 0],
+        [110, 10],
+        [105, 0.5]
+      ]
+    }
+  ];
+  const complete = await runClearance(device, features);
+  expect(complete.candidateOverflow).toBe(0);
+  expect(complete.clearances[1]).toBeCloseTo(0.5, 5);
+  const truncated = await runClearance(device, features, {leafCapacity: 4});
+  // Four of the eight segments fit: the rest are dropped from the BVH and the status says so.
+  expect(truncated.candidateOverflow).toBe(1);
+  expect(truncated.clearances[1]).toBeGreaterThan(complete.clearances[1]);
+  expect((await runClearance(device, features, {leafCapacity: 8})).candidateOverflow).toBe(0);
 });
 
 it('GPUMinimumClearance validates properties', async () => {

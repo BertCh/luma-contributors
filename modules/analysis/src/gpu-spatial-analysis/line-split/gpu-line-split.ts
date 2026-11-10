@@ -76,7 +76,10 @@ export type GPULineSplitPieces = GPUGeneratedGeometryPort<GPULineGeometryPort> &
     positions: GraphDataView<'float32x2'>;
   };
   sourceIds: GraphDataView<'uint32'>;
-  /** Bounded-result status plus the vertex counts of the written pieces. */
+  /**
+   * Bounded-result status plus the vertex counts of the written pieces. `count` counts pieces
+   * (linestrings), not vertices.
+   */
   status: GPUBoundedResultStatusPort & {
     /** Optional one-row scalar receiving the number of vertices written. */
     vertexCount?: GraphDataView<'uint32'>;

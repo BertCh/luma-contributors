@@ -2,11 +2,24 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
-import {createPointCloudGridIndex} from './pointcloud-grid-index';
-import type {GPUCommandNode} from '@luma.gl/graph/gpu-core';
+import type {
+  GPUCommandGraph,
+  GPUCommandNode,
+  GPUCommandNodeProducer,
+  GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateRequirement,
+  validateViewLength
+} from '../analysis-core/kernels/gpu-contributor-utils';
+import {createPointCloudGridIndex, validatePointCloudSearchGrid} from './pointcloud-grid-index';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY,
+  GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK
+} from './pointcloud-limits';
 
 export type GPUPointCloudNeighborhoodsProps = {
   id?: string;
@@ -29,65 +42,102 @@ export type GPUPointCloudNeighborhoodsProps = {
   squaredDistances: GraphDataView<'float32'>;
   /** Actual radius support, including candidates omitted by capacity. */
   counts: GraphDataView<'uint32'>;
-  /** Optional exact 3D grid acceleration. Points outside the half-open grid do not participate. */
+  /**
+   * Exact 3D grid acceleration, rebuilt each encoding. Points outside the half-open grid do not
+   * participate. Required above `GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK` query-candidate pairs: without a grid
+   * every query scans every point and the constructor refuses larger inputs.
+   */
   grid?: {
     origin: readonly [number, number, number];
     cellSize: number;
     dimensions: readonly [number, number, number];
   };
-  /** Optional bitmask: 1 invalid/outside-grid query, 2 neighborhood truncated. */
+  /**
+   * Optional per-query bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY`):
+   * the query row is out of range, not finite, or outside `grid`; its list is empty. Bit 2
+   * (`..._TRUNCATED`): more than `capacity` points lie within `radius`; the nearest `capacity` are
+   * kept and `counts` holds the true support. Bit 4 (`..._UNSUPPORTED`): only with `supportBounds`,
+   * the query's search sphere reaches outside the certified bounds, so the support may be
+   * incomplete. Bits above 4 are zero.
+   */
   status?: GraphDataView<'uint32'>;
 };
 
-/** Exact 3D neighborhoods with all-pairs or caller-bounded sorted-grid search and observable truncation. */
-export class GPUPointCloudNeighborhoods {
+/** `GPUPointCloudNeighborhoods` status bit 1: invalid, out-of-range or outside-grid query. */
+export const GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY = 1;
+/** `GPUPointCloudNeighborhoods` status bit 2: more points within radius than `capacity`. */
+export const GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_TRUNCATED = 2;
+/** `GPUPointCloudNeighborhoods` status bit 4: the search radius exceeds `supportBounds`. */
+export const GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_UNSUPPORTED = 4;
+
+/**
+ * Exact 3D neighborhoods with observable truncation. With a `grid` the search visits only the
+ * cells the radius can reach; without one every query scans every point, which the constructor
+ * allows only up to `GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK` queries times points.
+ */
+export class GPUPointCloudNeighborhoods implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointCloudNeighborhoodsProps) {
     this.id = props.id ?? 'gpu-pointcloud-neighborhoods';
-    assert(
+    validateRequirement(
+      this.id,
       props.strategy === undefined ||
         props.strategy === 'serial' ||
-        props.strategy === 'cooperative'
+        props.strategy === 'cooperative',
+      "strategy must be 'serial' or 'cooperative'"
     );
-    assert(Number.isInteger(props.capacity) && props.capacity >= 1 && props.capacity <= 64);
-    assert(
-      Math.fround(props.radius * props.radius) > 0 &&
-        Number.isFinite(Math.fround(props.radius * props.radius))
+    validateCapacity(
+      this.id,
+      'capacity',
+      props.capacity,
+      1,
+      GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY
     );
-    assert(props.radius > 0);
-    assert(
-      props.indices.length === (props.queryRows?.length ?? props.positions.length) * props.capacity
+    validateFiniteNumber(this.id, 'radius', props.radius);
+    validateRequirement(
+      this.id,
+      props.radius > 0 &&
+        Math.fround(props.radius * props.radius) > 0 &&
+        Number.isFinite(Math.fround(props.radius * props.radius)),
+      'radius must be positive with a finite nonzero float32 square'
     );
-    assert(props.squaredDistances.length === props.indices.length);
-    assert(props.counts.length === (props.queryRows?.length ?? props.positions.length));
-    assert(
-      !props.status || props.status.length === (props.queryRows?.length ?? props.positions.length)
-    );
+    const queryCount = props.queryRows?.length ?? props.positions.length;
+    validateViewLength(this.id, 'indices', props.indices, queryCount * props.capacity);
+    validateViewLength(this.id, 'squaredDistances', props.squaredDistances, props.indices.length);
+    validateViewLength(this.id, 'counts', props.counts, queryCount);
+    if (props.status) {
+      validateViewLength(this.id, 'status', props.status, queryCount);
+    }
     if (props.supportBounds) {
-      assert(props.status);
-      assert(
+      validateRequirement(this.id, Boolean(props.status), 'supportBounds requires a status view');
+      validateRequirement(
+        this.id,
         props.supportBounds.minimum.every(
           (value, axis) =>
             Number.isFinite(Math.fround(value)) && value < props.supportBounds!.maximum[axis]
-        )
+        ) && props.supportBounds.maximum.every(value => Number.isFinite(Math.fround(value))),
+        'supportBounds must hold finite minimum values below the maximum values'
       );
-      assert(props.supportBounds.maximum.every(value => Number.isFinite(Math.fround(value))));
     }
     if (props.grid) {
-      assert(props.grid.origin.every(value => Number.isFinite(Math.fround(value))));
-      assert(
-        props.grid.dimensions.every(
-          value => Number.isInteger(value) && value > 0 && value <= 0x1000000
-        )
+      validatePointCloudSearchGrid(this.id, 'grid', props.grid);
+      validateRequirement(
+        this.id,
+        Number.isFinite(Math.fround(props.radius / props.grid.cellSize)),
+        'radius divided by grid.cellSize must be finite in float32'
       );
-      assert(props.grid.dimensions.reduce((product, value) => product * value, 1) < 0xffffffff);
-      assert(
-        Math.fround(props.grid.cellSize) > 0 && Number.isFinite(Math.fround(props.grid.cellSize))
+    } else {
+      // Brute force is never the silent default at scale (contributor contract rule 3).
+      validateRequirement(
+        this.id,
+        queryCount * props.positions.length <= GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK,
+        `queries x positions is ${queryCount * props.positions.length}, above the ${GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK} limit of a search without an index; pass grid`
       );
-      assert(Number.isFinite(Math.fround(props.radius / props.grid.cellSize)));
     }
   }
-  getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {positions, indices, squaredDistances, counts, radius, capacity, grid, status} =
       this.props;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -234,7 +284,7 @@ count = supportCounts[0];
     : ''
 }
 writeCounts(index, count);
-${status ? `writeStatus(index,select(1u,0u,validQuery)|select(0u,2u,count>${capacity}u)${this.props.supportBounds ? `|select(4u,0u,all(position-vec3f(${Math.fround(radius)})>=vec3f(${this.props.supportBounds.minimum.map(Math.fround).join(',')}))&&all(position+vec3f(${Math.fround(radius)})<=vec3f(${this.props.supportBounds.maximum.map(Math.fround).join(',')})))` : ''});` : ''}
+${status ? `writeStatus(index,select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY}u,0u,validQuery)|select(0u,${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_TRUNCATED}u,count>${capacity}u)${this.props.supportBounds ? `|select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_UNSUPPORTED}u,0u,all(position-vec3f(${Math.fround(radius)})>=vec3f(${this.props.supportBounds.minimum.map(Math.fround).join(',')}))&&all(position+vec3f(${Math.fround(radius)})<=vec3f(${this.props.supportBounds.maximum.map(Math.fround).join(',')})))` : ''});` : ''}
 for (var slot = 0u; slot < ${capacity}u; slot++) {
   writeIndices(index * ${capacity}u + slot, nearestIds[slot]);
   writeSquaredDistances(index * ${capacity}u + slot, nearestDistances[slot]);

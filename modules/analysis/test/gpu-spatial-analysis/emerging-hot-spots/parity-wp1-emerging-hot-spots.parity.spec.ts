@@ -102,6 +102,8 @@ for (const testCase of fixture.cases) {
           finalSlice: testCase.finalSlice,
           parameters: rig.input(
             getGPUEmergingHotSpotsParameterValues({
+              // The generated fixture encodes the older Sporadic rule (see parity-wp1-emerging-hot-spots.py).
+              sporadicRequiresFinalSlice: false,
               radius: 1,
               temporalWindow: testCase.temporalWindow,
               multipleTesting: testCase.multipleTesting,

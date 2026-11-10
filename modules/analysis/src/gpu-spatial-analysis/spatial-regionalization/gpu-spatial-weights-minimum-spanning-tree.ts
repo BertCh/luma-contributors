@@ -26,12 +26,20 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {REGIONALIZATION_CSR_WGSL, REGIONALIZATION_NONE_WGSL} from './regionalization-wgsl';
 
 const OPERATION = 'GPUSpatialWeightsMinimumSpanningTree';
 
 /** Largest supported attribute column count. */
 export const GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS = 32;
+
+/** Words of {@link GPUSpatialWeightsMinimumSpanningTreeOutput.status}, as for AZP, Ward and max-p. */
+export const GPU_MINIMUM_SPANNING_TREE_STATUS = {
+  /** Number of non-finite entries of `values`; those entries are skipped (see the class). */
+  invalidCount: 0,
+  length: 1
+} as const;
 
 /** Lanes of the per-column standardisation workgroup. */
 const STANDARDIZE_LANES = 256;
@@ -89,6 +97,12 @@ export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
    * `ids.length` should be at least `rows - 1`; smaller capacities clamp and set `overflow`.
    */
   edges?: GPUCompactOutput;
+  /**
+   * Optional one word indexed by {@link GPU_MINIMUM_SPANNING_TREE_STATUS}: the number of
+   * non-finite entries of `values`, counted before standardisation, as `invalidCount` of
+   * `GPUAZPRegions`, `GPUWardRegions` and `GPUMaxPRegions`. Unlike those, the tree is still built.
+   */
+  status?: GraphDataView<'uint32'>;
   /** Optional `[row, neighbor]` pair per compact edge (`2 * edges.ids.length` entries). */
   edgeEndpoints?: GraphDataView<'uint32'>;
   /** Optional squared attribute dissimilarity per compact edge (`edges.ids.length` entries). */
@@ -110,6 +124,13 @@ export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
  * order like the values), so results are deterministic. Other libraries break cost ties by their
  * own rules (scipy by traversal order), so on data with exact cost ties the edge sets can differ
  * while the total cost is identical.
+ *
+ * **Non-finite attributes.** As in `GPUAZPRegions`, `GPUWardRegions` and `GPUMaxPRegions`, the
+ * standardisation statistics use the finite entries of each column only, so one NaN does not turn
+ * the column (and every edge cost) into NaN; the non-finite entry itself stays non-finite in
+ * `standardizedValues`. Every link that touches a row with a non-finite entry costs `+Infinity`,
+ * so it is chosen last and the forest still spans the graph. `output.status` reports how many
+ * entries were skipped. Callers that cut the tree (SKATER) should check it.
  *
  * Non-goals: asymmetric weights (a link listed in one row only is scanned from one end, so the
  * forest is not guaranteed minimum; build the undirected union with `GPUSpatialWeightsTranspose` first), and edge costs other than squared Euclidean distance.
@@ -149,6 +170,14 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
         throw new Error(`${id} output.standardizedValues requires standardize`);
       }
     }
+    if (output.status) {
+      validatePackedView(output.status, ['uint32'], `${id} output.status`);
+      if (output.status.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length) {
+        throw new Error(
+          `${id} output.status must hold ${GPU_MINIMUM_SPANNING_TREE_STATUS.length} word`
+        );
+      }
+    }
     if (output.edges) {
       validateCompactOutput(id, output.edges);
     } else if (output.edgeEndpoints || output.edgeDissimilarities) {
@@ -177,6 +206,7 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
         output.treeEdgeFlags,
         output.componentLabels,
         output.standardizedValues,
+        output.status,
         output.edges?.ids,
         output.edges?.status.count,
         output.edges?.status.overflow,
@@ -199,6 +229,7 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
       treeEdgeFlags,
       componentLabels,
       output.standardizedValues,
+      output.status,
       output.edges?.ids,
       output.edges?.status.count,
       output.edges?.status.overflow,
@@ -218,6 +249,7 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
     ];
     const rowDeclarations = `const ROWS: u32 = ${rows}u;
 const COLUMNS: u32 = ${columnCount}u;
+${IS_FINITE_FLOAT_WGSL}
 ${REGIONALIZATION_NONE_WGSL}
 ${REGIONALIZATION_CSR_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -246,6 +278,7 @@ ${REGIONALIZATION_CSR_WGSL}`;
           declarations: `const ROWS: u32 = ${rows}u;
 const COLUMNS: u32 = ${columnCount}u;
 const LANES: u32 = ${STANDARDIZE_LANES}u;
+${IS_FINITE_FLOAT_WGSL}
 var<workgroup> partials: array<f32, ${STANDARDIZE_LANES}>;
 
 // Sum of one value per lane over the workgroup, available to every lane.
@@ -265,24 +298,66 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
           body: `let column = index / LANES;
   let lane = localInvocationIndex;
   // Center before reducing: a rounded mean of a constant column can otherwise
-  // create a nonzero deviation and normalize every row to +1 or -1.
-  let origin = values[valuesOffset + column];
-  var sum = 0.0;
-  for (var row = lane; row < ROWS; row += LANES) {
-    sum += values[valuesOffset + row * COLUMNS + column] - origin;
+  // create a nonzero deviation and normalize every row to +1 or -1. The origin is the first
+  // finite entry; statistics skip non-finite entries, which stay as they are.
+  var origin = 0.0;
+  for (var row = 0u; row < ROWS; row++) {
+    let candidate = values[valuesOffset + row * COLUMNS + column];
+    if (isFiniteFloat(candidate)) { origin = candidate; break; }
   }
-  let mean = reduceLanes(lane, sum) / f32(ROWS);
+  var sum = 0.0;
+  var count = 0.0;
+  for (var row = lane; row < ROWS; row += LANES) {
+    let value = values[valuesOffset + row * COLUMNS + column];
+    if (isFiniteFloat(value)) { sum += value - origin; count += 1.0; }
+  }
+  let finiteCount = max(reduceLanes(lane, count), 1.0);
+  let mean = reduceLanes(lane, sum) / finiteCount;
   var squares = 0.0;
   for (var row = lane; row < ROWS; row += LANES) {
-    let delta = (values[valuesOffset + row * COLUMNS + column] - origin) - mean;
-    squares += delta * delta;
+    let value = values[valuesOffset + row * COLUMNS + column];
+    if (isFiniteFloat(value)) {
+      let delta = (value - origin) - mean;
+      squares += delta * delta;
+    }
   }
-  let deviation = sqrt(reduceLanes(lane, squares) / f32(ROWS));
+  let deviation = sqrt(reduceLanes(lane, squares) / finiteCount);
   let inverse = select(0.0, 1.0 / deviation, deviation > 1e-20);
   for (var row = lane; row < ROWS; row += LANES) {
+    let value = values[valuesOffset + row * COLUMNS + column];
     scaled[scaledOffset + row * COLUMNS + column] =
-      ((values[valuesOffset + row * COLUMNS + column] - origin) - mean) * inverse;
+      select(value, ((value - origin) - mean) * inverse, isFiniteFloat(value));
   }`
+        })
+      );
+    }
+
+    if (output.status) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-clear-invalid`,
+          operation: OPERATION,
+          variant: 'clear-invalid',
+          bindings: [{name: 'status', view: output.status, type: 'u32', access: 'read_write'}],
+          invocationCount: 1,
+          body: 'status[statusOffset] = 0u;'
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-count-invalid`,
+          operation: OPERATION,
+          variant: 'count-invalid',
+          bindings: [
+            {name: 'values', view: props.values, type: 'f32', access: 'read'},
+            {name: 'status', view: output.status, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: rows,
+          declarations: `const COLUMNS: u32 = ${columnCount}u;
+${IS_FINITE_FLOAT_WGSL}`,
+          body: `var invalid = 0u;
+  for (var column = 0u; column < COLUMNS; column++) {
+    invalid += select(1u, 0u, isFiniteFloat(values[valuesOffset + index * COLUMNS + column]));
+  }
+  if (invalid > 0u) { atomicAdd(&status[statusOffset], invalid); }`
         })
       );
     }
@@ -340,11 +415,17 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
     let low = min(index, neighbor);
     let high = max(index, neighbor);
     var cost = 0.0;
+    var finite = true;
     for (var column = 0u; column < COLUMNS; column++) {
-      let delta = table[tableOffset + low * COLUMNS + column] - table[tableOffset + high * COLUMNS + column];
+      let lowValue = table[tableOffset + low * COLUMNS + column];
+      let highValue = table[tableOffset + high * COLUMNS + column];
+      finite = finite && isFiniteFloat(lowValue) && isFiniteFloat(highValue);
+      let delta = lowValue - highValue;
       cost += delta * delta;
     }
-    slotCost[slotCostOffset + slot] = cost;
+    // A link touching a non-finite entry costs +Infinity: chosen last, never a NaN bit pattern. The
+    // runtime operand keeps the infinity out of constant evaluation.
+    slotCost[slotCostOffset + slot] = select(bitcast<f32>(0x7f800000u | (index & 0u)), cost, finite);
     var edge = slot;
     if (neighbor < index) {
       let twin = findSlot(neighbor, index);

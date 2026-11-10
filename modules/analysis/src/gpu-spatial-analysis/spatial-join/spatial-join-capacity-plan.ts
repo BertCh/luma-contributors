@@ -21,8 +21,8 @@ const BOUNDS_BYTES = 16;
 const FEATURE_RING_BYTES = 8;
 /** Bytes per robust point/polygon pair row: point, geometry offset and classification (two rows per candidate). */
 const ROBUST_PAIR_BYTES = 16;
-/** Bytes of the join's state words (candidate, uncertain, match and unmatched totals). */
-const STATE_BYTES = 16;
+/** Bytes of the join's state words (candidate, uncertain, match, unmatched and truncated-row totals). */
+const STATE_BYTES = 20;
 /** Bytes per left feature of the candidate probe's per-feature counts and offsets. */
 const LEFT_PROBE_BYTES = 8;
 /** Bytes of one live-count indirect dispatch (three `uint32` workgroup counts). */

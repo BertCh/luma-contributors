@@ -5,6 +5,8 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
+import {GPUTerrainFlowDistance} from '../../../src/gpu-terrain/hydrology/gpu-terrain-flow-distance';
+import {GPUTerrainStreamNetwork} from '../../../src/gpu-terrain/hydrology/gpu-terrain-stream-network';
 import {GPUTerrainBranchingFlow} from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-branching-flow';
 import {GPUTerrainFlowFractions} from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-flow-fractions';
 import {GPUTerrainBreach} from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-breach';
@@ -265,4 +267,171 @@ it('terrain outputs reject aliases and malformed capacity', () => {
         }
       })
   ).toThrow();
+});
+
+it('terrain processing validation names the contributor, the prop and the accepted range', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let identifier = 0;
+  const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
+    createTransientView(graph, `messages-${identifier++}`, format, length);
+  const grid = {
+    width: 4,
+    height: 4,
+    affine: [1, 0, 0, 0, 1, 0] as const,
+    pixelInterpretation: 'area' as const
+  };
+  const createBreach = (
+    overrides: Partial<ConstructorParameters<typeof GPUTerrainBreach>[0]> = {},
+    pitCount = 1,
+    maximumSteps = 2
+  ) =>
+    new GPUTerrainBreach({
+      id: 'breach-under-test',
+      grid,
+      elevation: view('float32', 16),
+      pitCells: view('uint32', pitCount),
+      maximumSteps,
+      maximumCutDepth: 3,
+      elevationDecrement: 0.1,
+      output: {
+        elevation: view('float32', 16),
+        cutDepth: view('float32', 16),
+        modificationMask: view('uint32', 16),
+        pathCells: view('uint32', pitCount * (maximumSteps + 1)),
+        pathLengths: view('uint32', pitCount),
+        pitStatus: view('uint32', pitCount),
+        unresolvedCount: view('uint32', 1)
+      },
+      ...overrides
+    });
+  expect(() => createBreach({maximumSteps: 0})).toThrow(
+    'breach-under-test maximumSteps must be an integer in [1, 4294967295]'
+  );
+  expect(() => createBreach({elevationDecrement: 0})).toThrow(
+    'breach-under-test elevationDecrement must be a positive finite number'
+  );
+  expect(() => createBreach({validity: view('uint32', 3)})).toThrow(
+    'breach-under-test validity must hold one uint32 word per grid cell'
+  );
+  expect(
+    () =>
+      new GPUTerrainBranchingFlow({
+        id: 'branching-under-test',
+        grid,
+        fractions: view('float32', 128),
+        values: view('float32', 16),
+        mode: 'transport',
+        maximumWalkLength: 2000,
+        output: {
+          values: view('float32', 16),
+          status: view('uint32', 16),
+          unresolvedCount: view('uint32', 1)
+        }
+      })
+  ).toThrow('branching-under-test maximumWalkLength must be an integer in [1, 1024]');
+  expect(
+    () =>
+      new GPUTerrainBranchingFlow({
+        id: 'geographic-under-test',
+        grid: {...grid, affine: [1, 0.5, 0, 0, 1, 0]},
+        cellSizeMode: 'geographic',
+        fractions: view('float32', 128),
+        values: view('float32', 16),
+        mode: 'expected-distance',
+        output: {
+          values: view('float32', 16),
+          status: view('uint32', 16),
+          unresolvedCount: view('uint32', 1)
+        }
+      })
+  ).toThrow('geographic cell sizes need an axis-aligned grid');
+});
+
+it('breach rejects a search scratch above the storage binding limit with a named message', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let identifier = 0;
+  const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
+    createTransientView(graph, `scratch-${identifier++}`, format, length);
+  // 300 pits x 33 steps x (65 x 65) window cells x 2 words x 4 bytes is about 335 MiB.
+  const pitCount = 300;
+  const breach = new GPUTerrainBreach({
+    id: 'scratch-under-test',
+    grid: {width: 100, height: 100, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
+    elevation: view('float32', 10000),
+    pitCells: view('uint32', pitCount),
+    maximumSteps: 32,
+    maximumCutDepth: 3,
+    elevationDecrement: 0.1,
+    output: {
+      elevation: view('float32', 10000),
+      cutDepth: view('float32', 10000),
+      modificationMask: view('uint32', 10000),
+      pathCells: view('uint32', pitCount * 33),
+      pathLengths: view('uint32', pitCount),
+      pitStatus: view('uint32', pitCount),
+      unresolvedCount: view('uint32', 1)
+    }
+  });
+  expect(() => breach.getCommandNodes(graph)).toThrow(
+    /scratch-under-test search scratch needs \d+ bytes in one binding \(limit \d+\); reduce pitCells.length or maximumSteps/
+  );
+});
+
+it('flow distance and stream network declare their command node count and stay within binding limits', () => {
+  for (const [width, height, maximumSteps] of [
+    [3, 1, undefined],
+    [64, 64, undefined],
+    [64, 64, 9]
+  ] as const) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    let identifier = 0;
+    const view = <Format extends 'float32' | 'uint32' | 'float32x2'>(
+      format: Format,
+      length: number
+    ) => createTransientView(graph, `jump-${identifier++}`, format, length);
+    const count = width * height;
+    const grid = {
+      width,
+      height,
+      affine: [1, 0, 0, 0, 1, 0] as const,
+      pixelInterpretation: 'area' as const
+    };
+    const distance = new GPUTerrainFlowDistance({
+      grid,
+      flowDirections: view('uint32', count),
+      streams: view('uint32', count),
+      transitionCosts: view('float32', count),
+      maximumSteps,
+      output: {
+        distance: view('float32', count),
+        validity: view('uint32', count),
+        terminalCells: view('uint32', count)
+      }
+    });
+    const network = new GPUTerrainStreamNetwork({
+      grid,
+      flowDirections: view('uint32', count),
+      streams: view('uint32', count),
+      maximumSteps,
+      output: {
+        sourceCells: view('uint32', 8),
+        targetCells: view('uint32', 8),
+        vertexOffsets: view('uint32', 9),
+        positions: view('float32x2', 32),
+        lengths: view('float32', 8),
+        reachCount: view('uint32', 1),
+        vertexCount: view('uint32', 1),
+        status: {overflow: view('uint32', 1)},
+        unresolvedCount: view('uint32', 1)
+      }
+    });
+    const distanceNodes = distance.getCommandNodes(graph);
+    expect(distanceNodes.length).toBe(distance.estimatedCommandNodeCount);
+    const networkNodes = network.getCommandNodes(graph);
+    expect(networkNodes.length).toBeLessThanOrEqual(network.estimatedCommandNodeCount);
+    for (const [name, source] of getParsedKernelSources([...distanceNodes, ...networkNodes])) {
+      expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
+      expect(auditWGSLModule(source), name).toEqual([]);
+    }
+  }
 });

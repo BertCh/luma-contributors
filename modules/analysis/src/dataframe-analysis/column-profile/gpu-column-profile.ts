@@ -13,7 +13,8 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validatePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getColumnProfileNodes, type ColumnProfileColumn} from './column-profile-kernels';
 import {
@@ -25,7 +26,7 @@ import {
 } from './column-profile-parameters';
 
 const OPERATION = 'GPUColumnProfile';
-/** Largest column: row counts are held in f32 arithmetic, exact up to 2^24. */
+/** Largest column: row counts are held in float32, which is exact only up to 2^24. */
 const MAXIMUM_ROW_COUNT = 2 ** 24;
 /** Largest histogram bin count; keeps the f32 bin estimate within one bin of the answer. */
 const MAXIMUM_HISTOGRAM_BIN_COUNT = 2 ** 20;
@@ -183,9 +184,11 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    if (rowCount > MAXIMUM_ROW_COUNT) {
-      throw new Error(`${id} supports at most ${MAXIMUM_ROW_COUNT} rows`);
-    }
+    validateRequirement(
+      id,
+      rowCount <= MAXIMUM_ROW_COUNT,
+      `columns[0] length must be at most ${MAXIMUM_ROW_COUNT} (2^24): row counts are held in float32 and are exact only up to 2^24`
+    );
     this.rowCount = rowCount;
     let categoryBase = 0;
     this.columns = props.columns.map((column, columnIndex) => {

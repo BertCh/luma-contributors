@@ -7,6 +7,30 @@ description: "Cells (DGGS) contributors in @luma-contributors/analysis/gpu-spati
 
 # Cells (DGGS)
 
+## Cell system support
+
+Which operation each cell system offers today. S2 is a separate partial API with its own classes,
+status words and units (steradians and radians, little-endian keys only); it is not folded into
+the H3 and Quadbin classes, so the gaps below are real, not omissions of this page.
+
+| Operation | H3 | Quadbin | S2 | quadkey / geohash | A5 |
+| --- | --- | --- | --- | --- | --- |
+| Point to cell | `GPUPointToCell`; extended precision exact | `GPUPointToCell`, also inside `GPUCellAggregation` | `GPUPointToCell`, f32 only, exact to about level 20 | `GPUPointToCell` | none |
+| Cell to center / boundary | `GPUCellGeometry` (6 to 10 vertices) | `GPUCellGeometry` | `GPUCellGeometry` | `GPUCellGeometry` | `GPUCellGeometry` |
+| Parent | `GPUCellTopology` | `GPUCellTopology` | `GPUS2CellHierarchy` | none | none |
+| Children | `GPUCellTopology`, any depth to stride 4096 | same | `GPUS2CellHierarchy`, one level only; `range` for leaf bounds | none | none |
+| k-ring / disk | `GPUCellTopology`, k at most 8 | `GPUCellTopology`, k at most 8 (Chebyshev) | 4 edge neighbors only | none | none |
+| Grid distance / path | `GPUCellGridPath` | none | none | none | none |
+| Compact / uncompact | `GPUCellCompaction` | `GPUCellCompaction` | none | none | none |
+| Polyfill / cover | `GPUCellCover` (scales) | `GPUCellCover` (scales) | `GPUS2PolygonCovering` (one polygon; `refinement: 'level-synchronous'` is parallel), `GPUS2CapCovering` (level at most 8, or 15 with `refinement: 'level-synchronous'`) | none | none |
+| Aggregation, rollup, pyramid | `GPUCellAggregation` (pre-keyed only), rollup, pyramid | all, including points | none | none | none |
+| Cell set outline | `GPUCellSetOutline` | `GPUCellSetOutline` | none | none | none |
+| Cell area, perimeter | `GPUCellMeasures`, metres or km | none | `GPUS2CellMeasures`, steradians and radians | none | none |
+| Edge / vertex identities | `GPUH3CellIdentities` | not applicable | none | not applicable | not applicable |
+
+S2 covers take unit xyz vectors and an optional `spatialContext` (longitude-latitude, great-circle
+edges); see [Global coordinates](./global-coordinates.md) for their limits and status words.
+
 
 ### `GPUCellAggregation`, `GPUCellRollup`, `GPUCellPyramid`, and `GPUCellLevelSelection`
 

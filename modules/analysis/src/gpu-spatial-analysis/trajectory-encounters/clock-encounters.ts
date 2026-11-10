@@ -37,6 +37,12 @@ export type AddClockEncountersProps = GPUTrajectoryGeometryFields &
      * timestamps, or uint32 from `getGPUTrajectoryClockWordParameterValues` for word timestamps.
      */
     clock: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+    /**
+     * Optional per-frame gap limit (one float32 row, timestamps' unit) forwarded to the clock
+     * resample: a bucket strictly inside a track interval longer than the limit reads the track as
+     * absent. Omitted or 0 means no limit.
+     */
+    maximumGap?: GraphDataView<'float32'>;
     /** Number of clock buckets, the dense table width. Bucket `k` is `start + k * step`. */
     bucketCount: number;
     /**
@@ -78,7 +84,8 @@ export type ClockEncounters = {
  * or step, or `distance`, only rewrites parameter buffers. The nodes are added to `graph` in
  * order; read pairs from `props.output.pairs`.
  *
- * Because absent samples are NaN, a pair only encounters while both tracks exist. The same
+ * Because absent samples are NaN, a pair only encounters while both tracks exist; `maximumGap`
+ * extends "absent" to the interior of over-long data gaps. The same
  * discrete-approximation caveat as `GPUTrajectoryEncounters` applies: pick a clock step small
  * compared with the distance a track travels.
  *
@@ -91,8 +98,17 @@ export function addClockEncounters<Parameters>(
   props: AddClockEncountersProps
 ): ClockEncounters {
   const id = props.id ?? 'clock-encounters';
-  const {positions, timestamps, trackOffsets, clock, bucketCount, output, ...encounterProps} =
-    props;
+  const {
+    positions,
+    timestamps,
+    trackOffsets,
+    clock,
+    maximumGap,
+    temporalContext,
+    bucketCount,
+    output,
+    ...encounterProps
+  } = props;
   const trackCount = trackOffsets.length - 1;
   if (trackCount < 1) {
     throw new Error(`${id} trackOffsets must contain at least two rows`);
@@ -112,9 +128,11 @@ export function addClockEncounters<Parameters>(
     positions,
     timestamps,
     trackOffsets,
+    temporalContext,
     sampleCount: bucketCount,
     spacing: 'clock',
     clock,
+    maximumGap,
     output: {samples}
   });
   const encounters = new GPUTrajectoryEncounters({

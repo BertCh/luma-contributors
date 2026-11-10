@@ -16,6 +16,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
+  validateCapacity,
   validatePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
@@ -78,12 +79,21 @@ export function getGPUShapeDescriptorsParameterValues(
  * small features); `'monotone-chain'` builds every feature's hull with `GPUGroupConvexHull`
  * (`O(n log n)` total, balanced for large or skewed features, but about thirty small passes);
  * `'auto'` picks `'monotone-chain'` when features average at least
- * {@link GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES} vertices.
+ * {@link GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES} vertices, or when the caller
+ * declares through `maximumVerticesPerFeature` that the largest feature has at least
+ * {@link GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_LARGEST_VERTICES} vertices.
  */
 export type GPUShapeDescriptorsConvexityMethod = 'auto' | 'gift-wrapping' | 'monotone-chain';
 
 /** Average vertices per feature from which `convexityMethod: 'auto'` uses the monotone chain. */
 export const GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES = 256;
+
+/**
+ * Declared vertices of the largest feature from which `convexityMethod: 'auto'` uses the monotone
+ * chain: gift wrapping marches `O(vertices * hull vertices)` on one invocation, so one feature
+ * this size dominates the pass however small the others are.
+ */
+export const GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_LARGEST_VERTICES = 1024;
 
 /** Per-feature output columns of {@link GPUShapeDescriptors}. Every column is optional. */
 export type GPUShapeDescriptorsOutput = {
@@ -142,9 +152,21 @@ export type GPUShapeDescriptorsProps = GPUPolygonGeometryFields & {
   spatialContext?: GPUSpatialContext;
   /** Hull algorithm behind `output.convexity`. Default `'auto'`. */
   convexityMethod?: GPUShapeDescriptorsConvexityMethod;
+  /**
+   * Compile-time upper bound on the vertices of any single feature (all its rings), known to the
+   * caller from its data. With `convexityMethod: 'auto'`, a bound of at least
+   * {@link GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_LARGEST_VERTICES} selects the balanced monotone
+   * chain even when the average feature is small, so one huge feature among many small ones does
+   * not stay on a single-invocation gift-wrapping march. When omitted, `'auto'` decides from the
+   * average feature size only, as before. Other convexity methods ignore it.
+   */
+  maximumVerticesPerFeature?: number;
   /** Per-frame packed float32 view of at least 4 elements, written with {@link getGPUShapeDescriptorsParameterValues}. */
   parameters: GraphDataView<'float32'>;
-  /** Per-feature output columns; at least one is required. */
+  /**
+   * Per-feature output columns; at least one is required. There is no `status.count`: every
+   * column has one row per feature, never a variable number of rows.
+   */
   output: GPUShapeDescriptorsOutput;
 };
 
@@ -159,7 +181,8 @@ export type GPUShapeDescriptorsProps = GPUPolygonGeometryFields & {
  * centroid in Neumaier-compensated f32 (one invocation per feature, deterministic); small nodes
  * derive the descriptors. Convexity runs a private gift-wrapping hull per feature with O(1)
  * memory, so its cost is O(vertices * hull vertices) per feature and grows with the largest
- * feature; `convexityMethod: 'monotone-chain'` (chosen by `'auto'` for large average features)
+ * feature; `convexityMethod: 'monotone-chain'` (chosen by `'auto'` for large average features, or
+ * when `maximumVerticesPerFeature` declares a large feature)
  * uses `GPUGroupConvexHull` instead, which is O(n log n) and balanced across skewed features.
  * Orientation and elongation weight holes negatively, so a polygon with a large hole is
  * described by its area, not its outline. Planar only: a longitude/latitude `spatialContext` throws
@@ -209,12 +232,26 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     if (convexityMethod === 'monotone-chain' && !canChain) {
       throw new Error(`${id} monotone-chain convexity supports fewer than 2^24 rows and features`);
     }
+    if (props.maximumVerticesPerFeature !== undefined) {
+      // The bound only steers the 'auto' choice; any positive integer is a valid declaration.
+      validateCapacity(
+        id,
+        'maximumVerticesPerFeature',
+        props.maximumVerticesPerFeature,
+        1,
+        0xffffffff
+      );
+    }
+    const declaresLargeFeature =
+      props.maximumVerticesPerFeature !== undefined &&
+      props.maximumVerticesPerFeature >= GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_LARGEST_VERTICES;
     this.useMonotoneChainConvexity =
       canChain &&
       (convexityMethod === 'monotone-chain' ||
         (convexityMethod === 'auto' &&
-          props.positions.length >=
-            GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES * this.featureCount));
+          (declaresLargeFeature ||
+            props.positions.length >=
+              GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES * this.featureCount)));
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH) {
       throw new Error(

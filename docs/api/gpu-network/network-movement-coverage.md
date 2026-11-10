@@ -85,7 +85,7 @@ retains continuous shifts and does not round early inflow scaling.
 ## Trajectory conventions
 
 Kalman parameters are acceleration spectral density, positive measurement variance, nonnegative
-initial velocity variance and positive maximum gap. Process covariance is
+initial velocity variance and maximum gap, where 0 means no limit. Process covariance is
 `q * [[dt^3/3, dt^2/2], [dt^2/2, dt]]`. A new segment starts with the first measured position and zero
 velocity. Missing positions produce prediction-only steps after initialization; no state is
 invented before the first measurement. Nonfinite timestamps or backward time produce invalid
@@ -100,9 +100,18 @@ State rows are `[x,y,vx,vy]`. Covariance rows are `[positionVariance,covariance,
 shared by the independent x and y axes. Status bits are reset=1, prediction-only=2, invalid=4,
 singular backward solve=8. A singular backward prediction retains the forward estimate and marks
 bit 8; it is not represented as a successful RTS update. Noise units must match coordinates and
-relative seconds. Subtract a nearby epoch before converting timestamps to f32.
+relative seconds. Subtract a nearby epoch before converting timestamps to f32. Far from one epoch,
+pass `times` as `uint32x2` Int64 `(low, high)` words instead: each step is differenced exactly and
+only then converted to f32, so 10 Hz samples stay 0.1 s apart however far they are from the epoch.
+Set `timeUnitsPerSecond` (default 1, for example 1000 for epoch milliseconds) so the model keeps
+running in seconds. Restriction word `times` need a per-frame `timeOrigin` (`[low, high]` uint32):
+`minimumTime`, `maximumTime` and the output intervals are f32 relative to it, so keep the origin
+near the window. `maximumGap` is always in the timestamps' unit: relative seconds for f32 Kalman
+times, the word unit (for example milliseconds) for word times. 0 means no limit in both contributors.
+Kalman and restriction also read the trajectory port (`timestamps`, `trackOffsets`) with an optional
+`temporalContext`; Kalman then takes `timeUnitsPerSecond` from `context.unit`, for float32 times too.
 
-Restriction parameters are `[minTime,maxTime,minX,minY,maxX,maxY,maxGap]`. Nonstationary segments
+Restriction parameters are `[minTime,maxTime,minX,minY,maxX,maxY,maxGap]` (`maxGap` 0 means no limit). Nonstationary segments
 need strictly increasing timestamps; equal-time equal-position rows are singletons. Crossing
 intervals preserve their original segment row, so adjacent endpoints can appear in both rows.
 Status bits are interval=1, singleton=2, invalid=4, unsupported gap=8, full temporal support inside=16,
@@ -197,7 +206,8 @@ For full Kalman covariance set `covarianceMode: 'full'`; parameters are
 measurement covariance must be positive definite. Covariance outputs contain **four float32x4 rows
 per observation**, the column-major 4x4 covariance in `[x,y,vx,vy]` state order. Full RTS uses a pivoted
 4x4 inverse; singular/nonfinite backward solves retain forward values and set bit 8.
-`prepareGPUTrajectoryObservations` subtracts a bigint epoch before f32 conversion and transforms
+`prepareGPUTrajectoryObservations` subtracts a bigint epoch before f32 conversion (and also returns
+exact `timeWords`, the absolute timestamps as a `uint32x2` Kalman `times` column) and transforms
 WGS84 longitude/latitude through ellipsoidal ECEF into an explicitly chosen local east/north plane.
 It returns projection/epoch metadata and performs no filtering or GPU readback.
 
@@ -224,6 +234,12 @@ squared relative distance on each overlapping linear segment; output positions b
 track. Repeated segment endpoints may appear in adjacent intervals. Zero common support is unknown;
 unsupported gap interiors are unknown, never bridged. This is planar within-distance (distance zero
 also supports equality), not the full set of MobilityDB temporal predicates.
+
+`addTrackQualityRecipe` bit 4 (`excessiveSpeed`) is by default the step-speed test documented in the
+recipe contract, so the valid fix after an outlier is also flagged. Set
+`speedOutlierMode: 'point-centred'` for an outlier test on the fix: a fix is flagged only when the
+speed test fails on both adjacent steps, and a track-end fix when its single step fails and the next
+step inward does not. A single pass does not catch two consecutive displaced fixes.
 
 ## Directed edge-position routing example
 

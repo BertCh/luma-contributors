@@ -622,7 +622,9 @@ it('flow stop sentinels, cycles, and bounded morphology remain unresolved', asyn
   );
   const reconstructed = output(6, 'float32'),
     reconstructionValidity = output(6, 'uint32'),
-    complete = output(1, 'uint32');
+    complete = output(1, 'uint32'),
+    limitReached = output(1, 'uint32'),
+    iterationCount = output(1, 'uint32');
   graph.add(
     new GPURasterReconstruction({
       grid: grid(6, 1),
@@ -632,17 +634,26 @@ it('flow stop sentinels, cycles, and bounded morphology remain unresolved', asyn
       output: {
         values: reconstructed.view,
         validity: reconstructionValidity.view,
-        status: {converged: complete.view}
+        status: {
+          converged: complete.view,
+          iterationLimitReached: limitReached.view,
+          iterationCount: iterationCount.view
+        }
       }
     })
   );
   const destroy = run();
   expect(Array.from(await readUint32(terminals.buffer, 3))).toEqual([0xfffffffe, 0xfffffffe, 2]);
   expect(Array.from(await readUint32(cycleTerminals.buffer, 2))).toEqual([0xfffffffe, 0xfffffffe]);
+  // An unconverged run publishes its current values (the front advanced two cells) with
+  // converged = 0 and the limit flag set.
   expect((await readUint32(complete.buffer, 1))[0]).toBe(0);
+  expect((await readUint32(limitReached.buffer, 1))[0]).toBe(1);
+  expect((await readUint32(iterationCount.buffer, 1))[0]).toBe(2);
   expect(Array.from(await readUint32(reconstructionValidity.buffer, 6))).toEqual([
-    0, 0, 0, 0, 0, 0
+    1, 1, 1, 1, 1, 1
   ]);
+  expect(Array.from(await readFloat32(reconstructed.buffer, 6))).toEqual([1, 1, 1, 0, 0, 0]);
   destroy();
 });
 
@@ -699,5 +710,125 @@ it('constrained Lawson refinement selects the Shapely Delaunay diagonal', async 
     [0, 1, 2],
     [0, 2, 3]
   ]);
+  destroy();
+});
+
+const TOBLER_FLAT_STEP_COST = 0.6 * Math.exp(3.5 * 0.05);
+
+it('walking cost publishes partial costs with converged = 0 when the iteration limit is reached', async () => {
+  const {graph, input, output, run} = await setup();
+  const elevation = {
+    id: 'elevation',
+    format: 'float32' as const,
+    storage: {kind: 'buffer' as const, values: input([0, 0, 0, 0, 0, 0], 'float32')}
+  };
+  const friction = {
+    id: 'friction',
+    format: 'float32' as const,
+    storage: {kind: 'buffer' as const, values: input([0, 0, 0, 0, 0, 0], 'float32')}
+  };
+  const sources = input([1, 0, 0, 0, 0, 0], 'uint32');
+  const runs = [2, 100].map(maximumIterations => {
+    const result = {
+      costs: output(6, 'float32'),
+      validity: output(6, 'uint32'),
+      converged: output(1, 'uint32'),
+      limitReached: output(1, 'uint32'),
+      iterationCount: output(1, 'uint32')
+    };
+    const walkingCost = new GPURasterWalkingCost({
+      id: `walk-limit-${maximumIterations}`,
+      grid: grid(6, 1),
+      elevation,
+      friction,
+      sources,
+      maximumIterations,
+      output: {
+        costs: result.costs.view,
+        validity: result.validity.view,
+        status: {
+          converged: result.converged.view,
+          iterationLimitReached: result.limitReached.view,
+          iterationCount: result.iterationCount.view
+        }
+      }
+    });
+    expect(walkingCost.estimatedCommandNodeCount).toBeGreaterThan(maximumIterations);
+    graph.add(walkingCost);
+    return result;
+  });
+  const destroy = run();
+  const [partial, complete] = runs;
+  // Three rounds move the front three cells; the rest is still unreached (+Infinity).
+  const partialCosts = Array.from(await readFloat32(partial.costs.buffer, 6));
+  expect(partialCosts[0]).toBe(0);
+  for (const cell of [1, 2, 3]) {
+    expect(partialCosts[cell]).toBeCloseTo(cell * TOBLER_FLAT_STEP_COST, 4);
+  }
+  expect(partialCosts.slice(4)).toEqual([Infinity, Infinity]);
+  expect(Array.from(await readUint32(partial.validity.buffer, 6))).toEqual([1, 1, 1, 1, 1, 1]);
+  expect((await readUint32(partial.converged.buffer, 1))[0]).toBe(0);
+  expect((await readUint32(partial.limitReached.buffer, 1))[0]).toBe(1);
+  expect((await readUint32(partial.iterationCount.buffer, 1))[0]).toBe(3);
+  // With a generous limit the GPU gate stops dispatching after the verifying round: five rounds
+  // move the front, one more changes nothing.
+  const completeCosts = Array.from(await readFloat32(complete.costs.buffer, 6));
+  expect(completeCosts[5]).toBeCloseTo(5 * TOBLER_FLAT_STEP_COST, 4);
+  expect((await readUint32(complete.converged.buffer, 1))[0]).toBe(1);
+  expect((await readUint32(complete.limitReached.buffer, 1))[0]).toBe(0);
+  expect((await readUint32(complete.iterationCount.buffer, 1))[0]).toBe(6);
+  destroy();
+});
+
+it('skeleton and fill holes publish their current values when the iteration limit is reached', async () => {
+  const {graph, input, output, run} = await setup();
+  const skeleton = output(81, 'uint32'),
+    skeletonConverged = output(1, 'uint32'),
+    skeletonLimit = output(1, 'uint32');
+  graph.add(
+    new GPURasterSkeleton({
+      id: 'thin-limit',
+      grid: grid(9, 9),
+      input: input(Array(81).fill(1), 'uint32'),
+      maximumIterations: 1,
+      output: {
+        skeleton: skeleton.view,
+        status: {converged: skeletonConverged.view, iterationLimitReached: skeletonLimit.view}
+      }
+    })
+  );
+  // Background corridor that touches the border at both ends: two rounds reach only the cells
+  // next to each end, so the middle is still reported as a hole.
+  const holes = output(33, 'uint32'),
+    holesConverged = output(1, 'uint32'),
+    holesCount = output(1, 'uint32');
+  const holeInput = Array(33).fill(1);
+  for (let column = 0; column < 11; column++) holeInput[11 + column] = 0;
+  graph.add(
+    new GPURasterFillHoles({
+      id: 'holes-limit',
+      grid: grid(11, 3),
+      input: input(holeInput, 'uint32'),
+      maximumIterations: 1,
+      output: {
+        values: holes.view,
+        status: {converged: holesConverged.view, iterationCount: holesCount.view}
+      }
+    })
+  );
+  const destroy = run();
+  const thinned = Array.from(await readUint32(skeleton.buffer, 81));
+  expect((await readUint32(skeletonConverged.buffer, 1))[0]).toBe(0);
+  expect((await readUint32(skeletonLimit.buffer, 1))[0]).toBe(1);
+  expect(thinned.every(value => value === 0 || value === 1)).toBe(true);
+  expect(thinned.some(value => value === 0)).toBe(true);
+  expect(thinned.some(value => value === 1)).toBe(true);
+  expect((await readUint32(holesConverged.buffer, 1))[0]).toBe(0);
+  expect((await readUint32(holesCount.buffer, 1))[0]).toBe(2);
+  const filled = Array.from(await readUint32(holes.buffer, 33));
+  expect(filled.every(value => value === 0 || value === 1)).toBe(true);
+  // Corridor cells beside the border are reached (not holes); the middle one is not reached.
+  expect(filled[11 + 1]).toBe(0);
+  expect(filled[11 + 5]).toBe(1);
   destroy();
 });

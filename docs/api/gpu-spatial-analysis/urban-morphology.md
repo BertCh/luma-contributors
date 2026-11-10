@@ -2,13 +2,42 @@
 
 These graph recipes operate on projected planar coordinates. They append GPU work to the supplied
 command graph and retain caller-owned inputs. Returned graph-owned outputs stay on the GPU; callers
-that need readback must add a copy into a caller-owned readback buffer. Horizontal coordinates and
+that need readback must add a copy into a caller-owned readback buffer, or pass an `output` prop
+(see below) so the results are written into views the caller owns. Horizontal coordinates and
 building heights must use compatible physical units. No recipe submits work or reads data on the CPU.
 
 The implementations retain explicit capacities and approximation controls. Direct pinned momepy
 0.10.0 fixtures cover street width and nonconvex/holed tessellation areas; independent Shapely,
 NetworkX and analytical tests cover additional geometry and graph invariants. This is evidence for
 the documented modes, not complete momepy or depthmapX library equivalence.
+
+## Caller-owned outputs, limits and obstacle index
+
+Each recipe takes an optional `output` prop. Every entry is a view the caller created in the same
+graph, with the format and length of the recipe's transient view of that name; an absent entry is a
+graph-owned transient view, as before. The `outputs` of the result are the views actually used.
+
+| Recipe | `output` entries |
+| --- | --- |
+| `addBuildingTessellationRecipe` | `overlays` (one `GPUPolygonOverlay` output per building, the final polygons), `samples`, `owners`, `fragments`, `fragmentCounts`, `samplingStatus`, `complete` |
+| `addStreetProfilesRecipe` | `profiles`, `buildings`, `validity`, `canyon`, `frontage`, and with `streetSegment` `facadeLengths`, `facadeFrontage` |
+| `addBuildingAdjacencyRecipe` | `pairs`, `lengths`, `morphology`, `components`, `complete`, and with `structures` `structurePerimeters` |
+| `addIsovistsRecipe` | `endpoints`, `distances`, `segments`, `validity`, `measures`, `angles`, `viewpointClassifications` |
+| `addVisibilityGraphRecipe` | `adjacency`, `edges`, `metrics`, `choice`, `integration`, `normalizedChoice`, `viewpointClassifications`, `extendedIntegration`, `status` |
+
+Limits are named constants and are rejected with a message that starts with the recipe ID and names
+the prop. Tessellation: 64 buildings (one overlay per building), 32 enclosure vertices and 128 boundary
+samples (thread-private polygons and a samples-squared fragment table). Adjacency: 1,024 buildings
+(buildings-squared pair table), and 64 buildings with `structures`. Visibility graph: 256 viewpoints.
+Isovists: 4,096 rays per viewpoint with `sampling: 'vertices'` and 65,536 otherwise. Street profiles:
+1,024 obstacle segments with `streetSegment`. Every recipe accepts at most 16,777,216 obstacle segments.
+
+`addIsovistsRecipe` and `addStreetProfilesRecipe` take `obstacleIndex`: `'brute-force'` tests every
+segment for every ray, `'bvh'` builds a Morton-sorted segment BVH (`GPUBVH`) and traverses it, and the
+default `'auto'` uses brute force up to 4,096 segments and the BVH above that. Both give identical
+hits: the nearest segment wins and the lowest segment row breaks ties. Segment finiteness is checked
+once per segment, not once per ray. The visibility graph and the free-space classification still test
+every segment for every pair or viewpoint.
 
 ## `addBuildingTessellationRecipe` — UR01
 

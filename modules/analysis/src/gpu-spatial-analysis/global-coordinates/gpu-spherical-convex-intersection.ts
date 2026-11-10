@@ -1,7 +1,6 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -14,12 +13,40 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validatePackedView,
+  validateCapacity,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY,
+  GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES,
+  GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES,
+  GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+  GPU_SPHERICAL_MAXIMUM_TOLERANCE,
+  GPU_SPHERICAL_MINIMUM_TOLERANCE,
+  GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT,
+  validateAngularTolerance
+} from './spherical-limits';
+
+/** Status bit: invalid, nonconvex or unsupported input in the row. */
+export const GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_INVALID = 1;
+/** Status bit: the intersection has more vertices than `capacity`; `counts` holds the required count. */
+export const GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_CAPACITY = 2;
+/** Status bit: the row is numerically ambiguous (near-parallel distinct edges or candidate overflow). */
+export const GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_AMBIGUOUS = 4;
 
 export type GPUSphericalConvexIntersectionProps = {
   id?: string;
+  /**
+   * Coordinate space of the unit vectors: longitude-latitude (their embedding on the sphere) with
+   * great-circle edges. Planar contexts are rejected. Defaults to longitude-latitude, no metric.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Unit direction vectors, counterclockwise minor great-circle arcs, no repeated closing vertex. */
   firstPositions: GraphDataView<'float32x3'>;
   secondPositions: GraphDataView<'float32x3'>;
@@ -34,7 +61,11 @@ export type GPUSphericalConvexIntersectionProps = {
     positions: GraphDataView<'float32x3'>;
     /** (written, required) counts. Incomplete output must not be interpreted as a polygon. */
     counts: GraphDataView<'uint32x2'>;
-    /** 0 complete, 1 invalid/nonconvex/unsupported input, 2 capacity, 4 numerically ambiguous. */
+    /**
+     * Per row, a bit set: {@link GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_INVALID} (1),
+     * {@link GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_CAPACITY} (2),
+     * {@link GPU_SPHERICAL_CONVEX_INTERSECTION_STATUS_AMBIGUOUS} (4); 0 is complete.
+     */
     status: GraphDataView<'uint32'>;
     /** Optional (intersection steradians, source fraction, target fraction, union steradians). Invalid/overflow rows are NaN. */
     measures?: GraphDataView<'float32x4'>;
@@ -47,8 +78,15 @@ export type GPUSphericalConvexIntersectionProps = {
  */
 export class GPUSphericalConvexIntersection implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Validated coordinate space of the unit vectors. */
+  readonly spatialContext: GPUSpatialContext;
   constructor(readonly props: GPUSphericalConvexIntersectionProps) {
     this.id = props.id ?? 'spherical-convex-intersection';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+      GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
+    );
     for (const positions of [props.firstPositions, props.secondPositions, props.output.positions])
       validatePackedView(positions, ['float32x3'], this.id);
     for (const offsets of [props.firstOffsets, props.secondOffsets, props.output.status])
@@ -56,21 +94,38 @@ export class GPUSphericalConvexIntersection implements GPUCommandNodeProducer {
     validatePackedView(props.output.counts, ['uint32x2'], this.id);
     if (props.output.measures) {
       validatePackedView(props.output.measures, ['float32x4'], this.id);
-      assert(props.output.measures.length === props.firstOffsets.length - 1);
+      validateRequirement(
+        this.id,
+        props.output.measures.length === props.firstOffsets.length - 1,
+        'output.measures must hold one entry per row'
+      );
     }
     const rows = props.firstOffsets.length - 1;
     // Private candidate storage is bounded by the sum of the two convex polygon vertex counts.
-    assert(rows >= 0 && props.secondOffsets.length === rows + 1);
-    assert(Number.isInteger(props.capacity) && props.capacity >= 1 && props.capacity <= 64);
-    assert(
+    validateRequirement(
+      this.id,
+      rows >= 0 && props.secondOffsets.length === rows + 1,
+      'firstOffsets and secondOffsets must describe the same number of rows'
+    );
+    validateCapacity(
+      this.id,
+      'capacity',
+      props.capacity,
+      1,
+      GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY
+    );
+    validateRequirement(
+      this.id,
       props.output.positions.length === rows * props.capacity &&
         props.output.counts.length === rows &&
-        props.output.status.length === rows
+        props.output.status.length === rows,
+      'output.positions must hold rows times capacity entries, and output.counts and output.status one entry per row'
     );
-    assert(
-      Number.isFinite(props.tolerance ?? 1e-6) &&
-        (props.tolerance ?? 1e-6) >= 1e-7 &&
-        (props.tolerance ?? 1e-6) <= 1e-2
+    validateAngularTolerance(
+      this.id,
+      props.tolerance ?? 1e-6,
+      GPU_SPHERICAL_MINIMUM_TOLERANCE,
+      GPU_SPHERICAL_MAXIMUM_TOLERANCE
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.firstPositions,
@@ -130,7 +185,7 @@ fn sphereContains(second: bool, begin: u32, end: u32, point: vec3f) -> bool {
 }
 fn sphereValid(second: bool, begin: u32, end: u32) -> bool {
   let capacity = select(${props.firstPositions.length}u, ${props.secondPositions.length}u, second);
-  if (begin > end || end > capacity || end - begin < 3u || end - begin > 32u) { return false; }
+  if (begin > end || end > capacity || end - begin < ${GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES}u || end - begin > ${GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES}u) { return false; }
   var center = vec3f(0.0);
   for (var vertex = begin; vertex < end; vertex++) {
     let point = spherePosition(second, vertex);
@@ -161,14 +216,14 @@ fn sphereOnArc(first: vec3f, second: vec3f, point: vec3f) -> bool {
   let normal = normalize(cross(first, second));
   return dot(cross(first, point), normal) >= -SPHERICAL_TOLERANCE && dot(cross(point, second), normal) >= -SPHERICAL_TOLERANCE;
 }
-fn sphereAppend(candidates: ptr<function, array<vec3f, 64>>, count: ptr<function, u32>, point: vec3f) {
-  for (var previous = 0u; previous < min(*count, 64u); previous++) { if (length((*candidates)[previous] - point) <= SPHERICAL_TOLERANCE * 4.0) { return; } }
-  if (*count < 64u) { (*candidates)[*count] = point; }
+fn sphereAppend(candidates: ptr<function, array<vec3f, ${GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY}>>, count: ptr<function, u32>, point: vec3f) {
+  for (var previous = 0u; previous < min(*count, ${GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY}u); previous++) { if (length((*candidates)[previous] - point) <= SPHERICAL_TOLERANCE * 4.0) { return; } }
+  if (*count < ${GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY}u) { (*candidates)[*count] = point; }
   *count += 1u;
 }`,
         body: `let firstBegin = firstOffsets[firstOffsetsOffset + index]; let firstEnd = firstOffsets[firstOffsetsOffset + index + 1u];
 let secondBegin = secondOffsets[secondOffsetsOffset + index]; let secondEnd = secondOffsets[secondOffsetsOffset + index + 1u];
-var failure = 0u; var count = 0u; var candidates: array<vec3f, 64>;
+var failure = 0u; var count = 0u; var candidates: array<vec3f, ${GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY}>;
 if (!sphereValid(false, firstBegin, firstEnd) || !sphereValid(true, secondBegin, secondEnd)) { failure = 1u; }
 if (failure == 0u) {
   for (var vertex = firstBegin; vertex < firstEnd; vertex++) { let point = spherePosition(false, vertex); if (sphereContains(true, secondBegin, secondEnd, point)) { sphereAppend(&candidates, &count, point); } }
@@ -192,15 +247,15 @@ if (failure == 0u) {
     }
   }
 }
-if (count > 64u) { failure |= 4u; }
+if (count > ${GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY}u) { failure |= 4u; }
 if (count > ${props.capacity}u) { failure |= 2u; }
 var center = vec3f(0.0);
-for (var vertex = 0u; vertex < min(count, 64u); vertex++) { center += candidates[vertex]; }
+for (var vertex = 0u; vertex < min(count, ${GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY}u); vertex++) { center += candidates[vertex]; }
 if (count > 2u && length(center) > SPHERICAL_TOLERANCE) {
   center = normalize(center);
   let tangent = normalize(candidates[0] - center * dot(center, candidates[0]));
   let bitangent = cross(center, tangent);
-  for (var vertex = 1u; vertex < min(count, 64u); vertex++) {
+  for (var vertex = 1u; vertex < min(count, ${GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY}u); vertex++) {
     let point = candidates[vertex]; let angle = atan2(dot(point, bitangent), dot(point, tangent)); var insertion = vertex;
     while (insertion > 0u) {
       let previous = candidates[insertion - 1u];

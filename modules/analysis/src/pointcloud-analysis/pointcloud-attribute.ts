@@ -2,18 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {validateRequirement} from '../analysis-core/kernels/gpu-contributor-utils';
 
 export type PointCloudAttributeFormat = 'float32' | 'float32x2' | 'float32x3' | 'float32x4';
 
 export function flattenPointCloudAttribute<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  view: GraphDataView<PointCloudAttributeFormat>
+  view: GraphDataView<PointCloudAttributeFormat>,
+  id = 'pointcloud-attribute'
 ) {
   const components = getPointCloudAttributeComponents(view.format);
   // Attribute rows must be tightly packed; reinterpretation preserves the caller's byte offset.
-  assert(view.byteStride === components * 4);
+  validateRequirement(
+    id,
+    view.byteStride === components * 4,
+    'attribute views must be tightly packed'
+  );
   return graph.createDataView(view.buffer, {
     format: 'float32',
     length: view.length * components,

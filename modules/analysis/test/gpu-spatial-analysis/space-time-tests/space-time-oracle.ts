@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {PHILOX_PURPOSES} from '../../../src/analysis-core/kernels/philox-random';
-import {fillShufflePermutation} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
+import {fillShufflePermutation} from '../../../src/analysis-core/kernels/permutation-shuffle';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
 
 /** Pair list: a CSR with optional distances; each unordered pair counts once if listed in either direction. */
@@ -95,16 +95,24 @@ export function computeMantelOracle(
   pairs: OraclePairs,
   times: Float32Array,
   seed: number,
-  permutations: number
+  permutations: number,
+  transforms: {
+    /** pointpats `scon` and `spow`: distances become `(d + constant) ** power`. */
+    distance?: {constant: number; power: number};
+    /** pointpats `tcon` and `tpow`: time differences become `(|dt| + constant) ** power`. */
+    time?: {constant: number; power: number};
+  } = {}
 ): number[] {
   const rows = times.length;
   const results: number[] = [];
+  const transform = (value: number, spec?: {constant: number; power: number}) =>
+    spec ? (value + spec.constant) ** spec.power : value;
   const unique = getUniquePairs(pairs, rows);
   for (let slot = 0; slot <= permutations; slot++) {
     const permuted = getPermutedTimes(times, slot, seed, PHILOX_PURPOSES.mantelTestShuffle.id);
-    const xs = unique.distances;
+    const xs = unique.distances.map(distance => transform(distance, transforms.distance));
     const ys = unique.first.map((row, index) =>
-      Math.abs(permuted[row] - permuted[unique.second[index]])
+      transform(Math.abs(permuted[row] - permuted[unique.second[index]]), transforms.time)
     );
     const mean = (values: number[]) =>
       values.reduce((sum, value) => sum + value, 0) / values.length;

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -11,10 +10,25 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Largest vertex count: the kernel keeps per-vertex distances in private arrays. */
+const MAXIMUM_NODE_COUNT = 128;
+/** Largest edge count: each augmentation relaxes every arc in the single invocation (O(V * E)). */
+const MAXIMUM_EDGE_COUNT = 1024;
+/** Largest `maximumAugmentations`: bounds the single invocation's augmenting-path loop. */
+const MAXIMUM_AUGMENTATIONS = 65536;
+/** Default `maximumAugmentations`. */
+const DEFAULT_MAXIMUM_AUGMENTATIONS = 1024;
+/** Rows of the `parameters` view: source, sink, required flow. */
+const PARAMETER_COUNT = 3;
+/** Words of the `summary` view, indexed by `GPU_NETWORK_FLOW_WORD`. */
+const SUMMARY_WORD_COUNT = 8;
 
 /** Summary words returned by the bounded integral residual-flow solver. */
 export const GPU_NETWORK_FLOW_WORD = {
@@ -59,6 +73,12 @@ export type GPUNetworkFlowProps = {
  * not a scalable push/relabel implementation. Each augmentation preserves feasibility.
  * Total capacities must be <= 0x00ffffff; costs <= 32767. Invalid input has valid=0.
  * Exhaustion has complete=0, never a claim of infeasibility or optimality.
+ *
+ * Reference tier (contributor contract rule 2): the solver is one GPU invocation
+ * (`invocationCount: 1`) and every augmentation is a Bellman-Ford pass over all arcs, O(V * E).
+ * The maximum size is enforced at construction: 128 nodes, 1,024 edges and 65,536 augmentations
+ * (default 1,024), about 8.6e9 serial operations at the limits. A push-relabel or cost-scaling
+ * formulation on a CSR would replace it for larger networks.
  */
 export class GPUNetworkFlow implements GPUCommandNodeProducer {
   readonly id: string;
@@ -66,12 +86,15 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkFlowProps) {
     this.props = props;
     this.id = props.id ?? 'network-flow';
-    assert(Number.isInteger(props.nodeCount) && props.nodeCount >= 2 && props.nodeCount <= 128);
-    assert(props.edges.length <= 1024);
-    assert(
-      Number.isInteger(props.maximumAugmentations ?? 1024) &&
-        (props.maximumAugmentations ?? 1024) >= 0 &&
-        (props.maximumAugmentations ?? 1024) <= 65536
+    const {id} = this;
+    validateCapacity(id, 'nodeCount', props.nodeCount, 2, MAXIMUM_NODE_COUNT);
+    validateCapacity(id, 'edges rows', props.edges.length, 0, MAXIMUM_EDGE_COUNT);
+    validateCapacity(
+      id,
+      'maximumAugmentations',
+      props.maximumAugmentations ?? DEFAULT_MAXIMUM_AUGMENTATIONS,
+      0,
+      MAXIMUM_AUGMENTATIONS
     );
     validatePackedView(props.edges, ['uint32x2'], this.id);
     for (const view of [
@@ -84,19 +107,43 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
     ]) {
       if (view) validatePackedView(view, ['uint32'], this.id);
     }
-    assert(
-      props.capacities.length === props.edges.length &&
-        (!props.costs || props.costs.length === props.edges.length)
+    validateRequirement(
+      id,
+      props.capacities.length === props.edges.length,
+      'capacities must hold one row per edge'
     );
-    assert(
-      props.parameters.length === 3 &&
-        props.output.flow.length === props.edges.length &&
-        props.output.cut.length === props.nodeCount &&
-        props.output.summary.length === 8
+    validateRequirement(
+      id,
+      !props.costs || props.costs.length === props.edges.length,
+      'costs must hold one row per edge'
+    );
+    validateRequirement(
+      id,
+      props.parameters.length === PARAMETER_COUNT,
+      `parameters must hold ${PARAMETER_COUNT} rows: source, sink, required flow`
+    );
+    validateRequirement(
+      id,
+      props.output.flow.length === props.edges.length,
+      'output.flow must hold one row per edge'
+    );
+    validateRequirement(
+      id,
+      props.output.cut.length === props.nodeCount,
+      'output.cut must hold nodeCount rows'
+    );
+    validateRequirement(
+      id,
+      props.output.summary.length === SUMMARY_WORD_COUNT,
+      `output.summary must hold ${SUMMARY_WORD_COUNT} rows`
     );
     if (props.output.exactCost) {
       validatePackedView(props.output.exactCost, ['uint32x2'], this.id);
-      assert(props.output.exactCost.length === 1);
+      validateRequirement(
+        id,
+        props.output.exactCost.length === 1,
+        'output.exactCost must hold one row'
+      );
     }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.edges,

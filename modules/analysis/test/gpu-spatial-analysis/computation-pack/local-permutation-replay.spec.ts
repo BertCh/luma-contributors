@@ -37,6 +37,7 @@ async function runReplay(
     alternative: Alternative;
     row: number;
     stopAfterExceedances?: number;
+    values?: Float32Array;
   }
 ) {
   const offsets = Uint32Array.from({length: ROWS + 1}, (_, index) => index * 2);
@@ -45,10 +46,9 @@ async function runReplay(
     (_, index) => (Math.floor(index / 2) + (index % 2 === 0 ? ROWS - 1 : 1)) % ROWS
   );
   const weights = new Float32Array(ROWS * 2).fill(0.5);
-  const values = Float32Array.from(
-    {length: ROWS},
-    (_, index) => Math.sin(index * 1.7) * 3 + index / 4
-  );
+  const values =
+    options.values ??
+    Float32Array.from({length: ROWS}, (_, index) => Math.sin(index * 1.7) * 3 + index / 4);
   const parameters = getGPUPermutationParameterValues({
     seed: 11,
     permutationCount: PERMUTATIONS,
@@ -123,7 +123,17 @@ async function runReplay(
       : await readUint32(buffers.permutationCounts, ROWS);
   const nullDistribution = await readFloat32(buffers.nullDistribution, PERMUTATIONS);
   const info = await readFloat32(buffers.replayInfo, 3);
-  return {exceedances, permutationCounts, nullDistribution, observed: info[0], count: info[1]};
+  const pseudoPValues = await readFloat32(buffers.pseudoPValues, ROWS);
+  const overflow = (await readUint32(buffers.overflow, 1))[0];
+  return {
+    exceedances,
+    permutationCounts,
+    nullDistribution,
+    observed: info[0],
+    count: info[1],
+    pseudoPValues,
+    overflow
+  };
 }
 
 /** The exceedance count of a replayed prefix, by the test's alternative. */
@@ -182,3 +192,41 @@ it('a sequential-stopping replay prefix matches the stopping index of the test',
     );
   }
 });
+
+for (const statistic of ['localG', 'localGStar'] as const) {
+  it(`${statistic} replay agrees with the live test on negative and non-negative data`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const nonNegative = Float32Array.from(
+      {length: ROWS},
+      (_, index) => 1 + (index % 5) + index / 4
+    );
+    const negative = Float32Array.from(nonNegative);
+    negative[4] = -2;
+    for (const row of [0, 7]) {
+      // Valid data: the live test tests the row and the replay lists all of its draws.
+      const valid = await runReplay(device, {
+        statistic,
+        alternative: 'two-sided',
+        row,
+        values: nonNegative
+      });
+      expect(valid.overflow).toBe(0);
+      expect(Number.isFinite(valid.pseudoPValues[row])).toBe(true);
+      expect(valid.count).toBe(PERMUTATIONS);
+      expect(Number.isFinite(valid.observed)).toBe(true);
+      // Negative data: the live test tests no row (NaN p-values, overflow 1), so the replay has no
+      // distribution to show (count 0, NaN observed).
+      const rejected = await runReplay(device, {
+        statistic,
+        alternative: 'two-sided',
+        row,
+        values: negative
+      });
+      expect(rejected.overflow).toBe(1);
+      expect(Number.isNaN(rejected.pseudoPValues[row])).toBe(true);
+      expect(rejected.count).toBe(0);
+      expect(Number.isNaN(rejected.observed)).toBe(true);
+    }
+  });
+}

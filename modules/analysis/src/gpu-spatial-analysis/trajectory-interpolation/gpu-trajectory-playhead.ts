@@ -35,6 +35,7 @@ import {
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH} from './trajectory-playhead-parameters';
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
+import {resolveGPUTrajectoryTemporalContext} from '../trajectory-analysis/trajectory-common';
 
 /** Spatial contexts supported by this distance-measuring operation. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -198,6 +199,7 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
+    resolveGPUTrajectoryTemporalContext(id, props.timestamps, props.temporalContext);
     if (props.timestamps.length !== rowCount) {
       throw new Error(`${id} timestamps length must equal positions length`);
     }

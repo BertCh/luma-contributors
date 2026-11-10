@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -14,6 +13,14 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {createRasterCountNodes} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateGPUStorageBindingByteLength,
+  validateMaximumCount,
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -21,14 +28,25 @@ import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
   checkTerrainGraph,
+  createTerrainValidityMask,
   terrainBinding,
+  validateTerrainValidityView,
   TERRAIN_FINITE_WGSL
 } from './terrain-processing-utils';
+
+/** Largest search scratch, in uint32 words: the shader indexes it with a u32. */
+export const TERRAIN_BREACH_MAXIMUM_SCRATCH_WORDS = 0xffffffff;
 
 export type GPUTerrainBreachProps = {
   id?: string;
   grid: GPURasterMetadata;
+  /** Elevation in vertical units; the breach cuts vertically, so no horizontal unit or `cellSizeMode` applies. */
   elevation: GraphDataView<'float32'>;
+  /**
+   * Optional per-cell validity of `elevation` (uint32, nonzero valid). A zero word counts as NaN:
+   * the cell cannot carry a breach and its output elevation is NaN.
+   */
+  validity?: GraphDataView<'uint32'>;
   /** Explicit candidate pits; no implicit filling or burning. Empty lists are supported. */
   pitCells: GraphDataView<'uint32'>;
   maximumSteps: number;
@@ -51,44 +69,64 @@ export type GPUTerrainBreachProps = {
   };
 };
 
-/** Bounded least total excavation-depth path on a step-layered D8 graph, with deterministic simultaneous minimum-elevation edits. */
+/**
+ * Bounded least total excavation-depth path on a step-layered D8 graph, with deterministic
+ * simultaneous minimum-elevation edits. The search scratch holds `pitCells.length * (maximumSteps
+ * + 1) * min(width, 2 * maximumSteps + 1) * min(height, 2 * maximumSteps + 1) * 2` words in one
+ * storage binding; `getCommandNodes` rejects a request above the device binding limit (128 MiB by
+ * default, about 15 pits at `maximumSteps` 64) with a message that names the scratch.
+ */
 export class GPUTerrainBreach implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUTerrainBreachProps) {
     this.id = props.id ?? 'terrain-breach';
     const count = validateRasterGrid(this.id, props.grid);
-    assert(
-      props.elevation.length === count && (!props.burnDepth || props.burnDepth.length === count)
-    );
-    assert(Number.isInteger(props.maximumSteps) && props.maximumSteps > 0);
-    assert(Number.isFinite(props.maximumCutDepth) && props.maximumCutDepth >= 0);
-    assert(
+    validateViewLength(this.id, 'elevation', props.elevation, count);
+    if (props.burnDepth) validateViewLength(this.id, 'burnDepth', props.burnDepth, count);
+    validateTerrainValidityView(this.id, props.validity, count);
+    validateCapacity(this.id, 'maximumSteps', props.maximumSteps);
+    validateFiniteNumber(this.id, 'maximumCutDepth', props.maximumCutDepth, 0);
+    validateRequirement(
+      this.id,
       Number.isFinite(props.elevationDecrement) &&
         props.elevationDecrement > 0 &&
-        Math.fround(props.elevationDecrement) > 0
+        Math.fround(props.elevationDecrement) > 0,
+      'elevationDecrement must be a positive finite number that is above zero in float32'
     );
-    for (const view of [
-      props.output.elevation,
-      props.output.cutDepth,
-      props.output.modificationMask
-    ])
-      assert(view.length === count);
-    assert(props.output.pathCells.length === props.pitCells.length * (props.maximumSteps + 1));
-    assert(
-      props.output.pathLengths.length === props.pitCells.length &&
-        props.output.pitStatus.length === props.pitCells.length &&
-        props.output.unresolvedCount.length === 1
+    validateViewLength(this.id, 'output.elevation', props.output.elevation, count);
+    validateViewLength(this.id, 'output.cutDepth', props.output.cutDepth, count);
+    validateViewLength(this.id, 'output.modificationMask', props.output.modificationMask, count);
+    validateViewLength(
+      this.id,
+      'output.pathCells',
+      props.output.pathCells,
+      props.pitCells.length * (props.maximumSteps + 1)
     );
+    validateViewLength(
+      this.id,
+      'output.pathLengths',
+      props.output.pathLengths,
+      props.pitCells.length
+    );
+    validateViewLength(this.id, 'output.pitStatus', props.output.pitStatus, props.pitCells.length);
+    validateViewLength(this.id, 'output.unresolvedCount', props.output.unresolvedCount, 1);
     const searchCount =
       Math.min(props.grid.width, props.maximumSteps * 2 + 1) *
       Math.min(props.grid.height, props.maximumSteps * 2 + 1);
-    assert(
-      Number.isSafeInteger(props.pitCells.length * (props.maximumSteps + 1) * searchCount * 2) &&
-        props.pitCells.length * (props.maximumSteps + 1) * searchCount * 2 <= 0xffffffff
+    validateMaximumCount(
+      this.id,
+      'search scratch words (pitCells x (maximumSteps + 1) x search window cells x 2)',
+      props.pitCells.length * (props.maximumSteps + 1) * searchCount * 2,
+      TERRAIN_BREACH_MAXIMUM_SCRATCH_WORDS
     );
     checkTerrainViews(
       this.id,
-      [props.elevation, props.pitCells, ...(props.burnDepth ? [props.burnDepth] : [])],
+      [
+        props.elevation,
+        props.pitCells,
+        ...(props.burnDepth ? [props.burnDepth] : []),
+        ...(props.validity ? [props.validity] : [])
+      ],
       Object.values(props.output)
     );
   }
@@ -104,16 +142,27 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
     const searchCount = searchWidth * searchHeight;
     checkTerrainGraph(id, graph, [
       props.elevation,
+      ...(props.validity ? [props.validity] : []),
       props.pitCells,
       ...(props.burnDepth ? [props.burnDepth] : []),
       ...Object.values(props.output)
     ]);
-    const scratch = createTransientView(
-      graph,
-      `${id}-search`,
-      'uint32',
-      Math.max(1, pitCount * (props.maximumSteps + 1) * searchCount * 2)
+    const scratchWords = Math.max(1, pitCount * (props.maximumSteps + 1) * searchCount * 2);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'search scratch',
+      scratchWords * 4,
+      'reduce pitCells.length or maximumSteps'
     );
+    const masked = createTerrainValidityMask(graph, {
+      id,
+      operation: 'GPUTerrainBreach',
+      values: props.elevation,
+      validity: props.validity
+    });
+    const elevation = masked.values;
+    const scratch = createTransientView(graph, `${id}-search`, 'uint32', scratchWords);
     const edits = createTransientView(graph, `${id}-edits`, 'uint32', count);
     const decrement = getWGSLFloatLiteral(props.elevationDecrement);
     const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}\n${TERRAIN_FINITE_WGSL}
@@ -122,7 +171,7 @@ fn searchIndex(cell: u32, origin: vec2<u32>) -> u32 {
  if (column < origin.x || row < origin.y || column >= origin.x + ${searchWidth}u || row >= origin.y + ${searchHeight}u) { return NO_CELL; }
  return (row - origin.y) * ${searchWidth}u + column - origin.x;
 }`;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = [...masked.nodes];
     if (pitCount > 0)
       nodes.push(
         createWGSLKernelNode(graph, {
@@ -131,7 +180,7 @@ fn searchIndex(cell: u32, origin: vec2<u32>) -> u32 {
           invocationCount: pitCount,
           declarations,
           bindings: [
-            terrainBinding('elevation', props.elevation),
+            terrainBinding('elevation', elevation),
             terrainBinding('pits', props.pitCells),
             terrainBinding('scratch', scratch, 'read_write'),
             terrainBinding('paths', props.output.pathCells, 'read_write'),
@@ -184,7 +233,7 @@ paths[pathOffset] = pit; lengths[lengthsOffset + index] = bestStep + 1u; status[
         operation: 'GPUTerrainBreach',
         invocationCount: count,
         bindings: [
-          terrainBinding('source', props.elevation),
+          terrainBinding('source', elevation),
           terrainBinding('edits', edits, 'read_write')
         ],
         body: `let bits = bitcast<u32>(source[sourceOffset + index]); edits[editsOffset + index] = select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);`
@@ -194,7 +243,7 @@ paths[pathOffset] = pit; lengths[lengthsOffset + index] = bestStep + 1u; status[
         operation: 'GPUTerrainBreach',
         invocationCount: pitCount * (props.maximumSteps + 1),
         bindings: [
-          terrainBinding('source', props.elevation),
+          terrainBinding('source', elevation),
           terrainBinding('paths', props.output.pathCells),
           terrainBinding('lengths', props.output.pathLengths),
           {name: 'edits', view: edits, type: 'atomic<u32>', access: 'read_write'}
@@ -213,7 +262,7 @@ atomicMin(&edits[editsOffset + cell], select(bits ^ 0x80000000u, ~bits, (bits & 
         invocationCount: count,
         declarations,
         bindings: [
-          terrainBinding('source', props.elevation),
+          terrainBinding('source', elevation),
           terrainBinding('edits', edits),
           terrainBinding('elevation', props.output.elevation, 'read_write'),
           terrainBinding('depth', props.output.cutDepth, 'read_write'),

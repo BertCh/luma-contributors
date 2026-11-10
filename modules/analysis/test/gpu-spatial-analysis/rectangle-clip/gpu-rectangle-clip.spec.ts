@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -48,7 +49,8 @@ function createFixture(
   lines: Point[][],
   geometryType: 'lines' | 'polygons',
   capacity: number,
-  lineCapacity: number
+  lineCapacity: number,
+  spatialContext?: GPUSpatialContext
 ) {
   const flat = flatten(lines);
   return createGeometryFixture(device, {
@@ -75,6 +77,7 @@ function createFixture(
     },
     create: ({inputs, outputs, parameters}) =>
       new GPURectangleClip({
+        spatialContext,
         positions: inputs['positions'] as never,
         ...(geometryType === 'polygons'
           ? {
@@ -282,4 +285,31 @@ it('GPURectangleClip clips polygon rings like f64 Sutherland-Hodgman and matches
   expect(clipped['overflow'][0]).toBe(1);
   expect(clipped['count'][0]).toBeLessThanOrEqual(6);
   small.destroy();
+});
+
+it('GPURectangleClip clips longitude-latitude degrees like planar coordinates', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const spatialContext: GPUSpatialContext = {coordinateSpace: 'longitude-latitude', metric: 'none'};
+  // Lines near Paris; the rectangle is in the same degrees as the input.
+  const lines: Point[][] = [
+    [
+      [1.5, 48.5],
+      [2.5, 48.9],
+      [3.5, 49.5]
+    ],
+    [
+      [2.1, 48.0],
+      [2.2, 48.2]
+    ]
+  ];
+  const rect: Rectangle = {minX: 2, minY: 48.25, maxX: 3, maxY: 49};
+  const fixture = createFixture(device, lines, 'lines', 64, 8, spatialContext);
+  const result = await fixture.run(getGPURectangleClipParameterValues(rect));
+  const expected = clipLines(round(lines), rect);
+  expect(expected.lines.length).toBe(1);
+  expect(result['overflow'][0]).toBe(0);
+  expect(result['lineCount'][0]).toBe(expected.lines.length);
+  expectLinesClose(readLines(result, result['lineCount'][0]), expected.lines, 1e-5);
+  fixture.destroy();
 });

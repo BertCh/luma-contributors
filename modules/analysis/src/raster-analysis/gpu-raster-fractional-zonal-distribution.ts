@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,7 +11,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   getGraphOutputViews,
-  validateGPUStorageBindingByteLength
+  validateCapacity,
+  validateGPUStorageBindingByteLength,
+  validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
@@ -76,6 +77,9 @@ export type GPURasterFractionalZonalDistributionProps = {
   output: GPURasterFractionalZonalDistributionOutput;
 };
 
+/** Largest zone count; bounds the per-zone serial scans and the zone-major quantile result. */
+const MAXIMUM_ZONES = 65536;
+
 const OPERATION = 'GPURasterFractionalZonalDistribution';
 const RECORD_WORDS = 7;
 const SUMMARY_WORDS = 11;
@@ -102,40 +106,75 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
       getInputViews(props),
       getGraphOutputViews(props.output)
     );
-    for (const view of [props.observationWeights, props.cellAreas]) {
-      if (view)
-        assert(view.format === 'float32' && view.length === props.grid.width * props.grid.height);
+    for (const [name, view] of Object.entries({
+      observationWeights: props.observationWeights,
+      cellAreas: props.cellAreas
+    })) {
+      validateRequirement(
+        this.id,
+        !view ||
+          (view.format === 'float32' && view.length === props.grid.width * props.grid.height),
+        `${name} must be a float32 view with one entry per grid cell`
+      );
     }
-    assert(
+    validateRequirement(
+      this.id,
       props.quantileMethod === undefined ||
-        ['exactextract', 'inverse-cdf'].includes(props.quantileMethod)
+        ['exactextract', 'inverse-cdf'].includes(props.quantileMethod),
+      "quantileMethod must be 'exactextract' or 'inverse-cdf'"
     );
     const capacity = props.coverage.zoneIds.length;
-    // Bound tuple sorting, serial per-zone scans and the zone-major quantile result.
-    assert(Number.isInteger(props.zoneCount) && props.zoneCount >= 0 && props.zoneCount <= 65536);
-    assert(capacity >= 1 && capacity <= GPU_RASTER_FRACTIONAL_ZONAL_DISTRIBUTION_MAXIMUM_TUPLES);
-    assert(
-      props.probabilities.length >= 1 &&
-        props.probabilities.length <= GPU_RASTER_FRACTIONAL_ZONAL_DISTRIBUTION_MAXIMUM_QUANTILES
+    validateCapacity(this.id, 'zoneCount', props.zoneCount, 0, MAXIMUM_ZONES);
+    validateCapacity(
+      this.id,
+      'coverage.zoneIds length',
+      capacity,
+      1,
+      GPU_RASTER_FRACTIONAL_ZONAL_DISTRIBUTION_MAXIMUM_TUPLES
     );
-    assert(
-      props.coverage.cellIds.length === capacity && props.coverage.fractions.length === capacity
+    validateCapacity(
+      this.id,
+      'probabilities length',
+      props.probabilities.length,
+      1,
+      GPU_RASTER_FRACTIONAL_ZONAL_DISTRIBUTION_MAXIMUM_QUANTILES
     );
-    assert(props.coverage.zoneValidity.length === props.zoneCount);
-    for (const view of Object.values(props.coverage.status)) assert(view.length === 1);
+    validateRequirement(
+      this.id,
+      props.coverage.cellIds.length === capacity && props.coverage.fractions.length === capacity,
+      'coverage.cellIds and coverage.fractions must match the length of coverage.zoneIds'
+    );
+    validateRequirement(
+      this.id,
+      props.coverage.zoneValidity.length === props.zoneCount,
+      'coverage.zoneValidity must hold zoneCount entries'
+    );
+    for (const [name, view] of Object.entries(props.coverage.status)) {
+      validateRequirement(
+        this.id,
+        view.length === 1,
+        `coverage.status.${name} must hold one entry`
+      );
+    }
     for (const [name, view] of Object.entries(props.output)) {
       const expectedLength =
         name === 'quantiles' || name === 'quantileValidity'
           ? props.zoneCount * props.probabilities.length
           : props.zoneCount;
-      assert(view.length === expectedLength);
+      validateRequirement(
+        this.id,
+        view.length === expectedLength,
+        `output.${name} must hold ${expectedLength} entries`
+      );
     }
     const determinant =
       props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3];
     // Area support requires an invertible finite planar affine transform.
-    assert(
+    validateRequirement(
+      this.id,
       Number.isFinite(Math.fround(Math.abs(determinant) * capacity)) &&
-        Math.fround(Math.abs(determinant)) > 0
+        Math.fround(Math.abs(determinant)) > 0,
+      'grid.affine must have a finite nonzero determinant whose total area fits float32'
     );
   }
 

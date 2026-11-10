@@ -36,7 +36,11 @@ import {
   resolveInterpolationSeparation,
   type InterpolationSeparation
 } from './separation-wgsl';
-import {GPU_KRIGING_PARAMETER_LENGTH} from './kriging-parameters';
+import {GPU_KRIGING_PARAMETER_LENGTH, KRIGING_PIVOT_RATIO_TOLERANCE} from './kriging-parameters';
+import {
+  MATERN_3_2_RANGE_FACTOR,
+  MATERN_5_2_RANGE_FACTOR
+} from '../../dataframe-analysis/pair-statistics/variogram-model';
 
 const OPERATION = 'GPUKriging';
 /** Largest compile-time neighborhood; the per-cell system is `(k + 1) x (k + 1)`. */
@@ -48,15 +52,7 @@ const MAXIMUM_NEIGHBOR_CAPACITY = 16;
  * the bound is about 10 f32 ulps, the rounding noise of one elimination column.
  */
 export const KRIGING_RELATIVE_PIVOT_TOLERANCE = 1e-6;
-/**
- * A system whose smallest elimination pivot is below this fraction of its largest is rejected as
- * ill conditioned. The ratio tracks `1 / cond` to within a small factor, and an f32 solve loses
- * about `cond * 6e-8` of relative accuracy in the weights. At `1e-4` the weights are good to
- * about `1e-3`; measured on emulated f32 solves, a Gaussian model with nugget 0.001 and 12
- * clustered samples sits at 3e-5 with weight errors of 5e-2, and well spaced neighborhoods sit
- * above 2e-2.
- */
-export const KRIGING_PIVOT_RATIO_TOLERANCE = 1e-4;
+export {KRIGING_PIVOT_RATIO_TOLERANCE};
 /**
  * Kriging variance is `mu + sum(w * gamma)` in units of the total sill and is never negative for a
  * valid model. Negatives above `-1e-4` are f32 rounding of terms of order 1 and are clamped to
@@ -624,8 +620,14 @@ fn evaluateVariogram(distance: f32, modelCode: u32, nugget: f32, sill: f32, rang
     shape = select(1.5 * scaled - 0.5 * scaled * scaled * scaled, 1.0, scaled >= 1.0);
   } else if (modelCode == 1u) {
     shape = 1.0 - exp(-3.0 * scaled);
-  } else {
+  } else if (modelCode == 2u) {
     shape = 1.0 - exp(-3.0 * scaled * scaled);
+  } else if (modelCode == 3u) {
+    let argument = ${getWGSLFloatLiteral(MATERN_3_2_RANGE_FACTOR)} * scaled;
+    shape = 1.0 - (1.0 + argument) * exp(-argument);
+  } else {
+    let argument = ${getWGSLFloatLiteral(MATERN_5_2_RANGE_FACTOR)} * scaled;
+    shape = 1.0 - (1.0 + argument + argument * argument / 3.0) * exp(-argument);
   }
   return (nugget + sill * shape) / (nugget + sill);
 }
@@ -682,7 +684,7 @@ fn solveSystem(system: ptr<function, array<f32, ${(MAXIMUM_NEIGHBOR_CAPACITY + 1
 fn estimateKriging(center: vec2f, localCenter: vec2f, origin: vec2f, excludeRow: u32) -> KrigingEstimate {
   let radius = params[paramsOffset + 4u];
   let neighborLimitValue = params[paramsOffset + 5u];
-  let modelCode = u32(clamp(params[paramsOffset + 6u], 0.0, 2.0));
+  let modelCode = u32(clamp(params[paramsOffset + 6u], 0.0, 4.0));
   let nugget = params[paramsOffset + 7u];
   let sill = params[paramsOffset + 8u];
   let range = params[paramsOffset + 9u];

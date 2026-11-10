@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts/index';
+import type {
+  GPUCandidateStatusPort,
+  GPULonLatPolygonStatusPort
+} from '../../analysis-core/contracts/index';
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
@@ -188,6 +191,15 @@ function prefersRelateEngine(left: GPUSpatialJoinGeometry, right: GPUSpatialJoin
 
 /** Caller-owned outputs of {@link GPUSpatialPredicateJoin}. */
 export type GPUSpatialPredicateJoinOutput = {
+  /**
+   * Optional per-left-row flag, one `uint32` per left feature, 1 when that row lost candidates
+   * because the candidate total exceeded `candidateCapacity`. Candidates are laid out in left-row
+   * order and the slots past the capacity are dropped, so the flagged rows are the row whose
+   * candidates cross the capacity (it keeps its first ones) and every later row that had any
+   * candidate (it keeps none); earlier rows are complete. Rows lost to a BVH overflow are not
+   * flagged. See `status.candidateOverflow`.
+   */
+  candidateTruncated?: GraphDataView<'uint32'>;
   /** Compact left rows without a match, ascending. Required for, and only for, `how: 'anti'`. */
   unmatched?: GPUCompactOutput;
   /** Matched pairs sorted by `(left, right)`. With `how: 'inner'`, at least one of `pairs` and `weights` is required. */
@@ -213,32 +225,39 @@ export type GPUSpatialPredicateJoinOutput = {
    * optional `poleUncertainCount` counts unprepared pole-enclosing rings. Prepare these polygons
    * with `GPULonLatPolygonPreparation`. Both fields are left untouched in planar contexts.
    */
-  status?: GPULonLatPolygonStatusPort & {
-    /** One-row flag: 1 when the BVH, candidate, or pair capacity overflowed. Required for `'inner'` without `pairs`. */
-    overflow?: GraphDataView<'uint32'>;
-    /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
-    candidateCount?: GraphDataView<'uint32'>;
-    /**
-     * Optional one-row count of candidates whose classification could not be certified. A candidate
-     * is counted here when
-     * - the robust point/polygon classifier returned `uncertain` (point/polygon pairs), or
-     * - on any other kind pair, in either engine, an orientation sign does not exist: a non-finite
-     *   coordinate, or product exponents spanning more than 200 bits. Every other orientation is
-     *   decided exactly (f32 filter, then exact integer arithmetic).
-     *
-     * An uncertain pair is never dropped or decided at random. The undecidable orientation is treated
-     * as collinear (sign 0) and the predicate is evaluated with that value; for point/polygon pairs
-     * the f32 relate/predicate kernel decides. So an uncertain pair can be wrong in either
-     * direction, and the count says how many results to distrust. Zero means every decision is
-     * certified. The pairs themselves are identifiable through the `relate` output: bit 31
-     * ({@link GPU_SPATIAL_RELATE_UNCERTAIN_BIT}) of a matched pair's value is set when that pair was
-     * uncertain (a matched pair only; an uncertain pair that did not match is counted but has no
-     * row). Not tracked, so reported as 0: the workgroup `dwithin` kernel (`engine: 'relate'`) and
-     * the short-circuiting kernel of a polygon/polygon pair (its eight storage bindings leave no
-     * room for the counter).
-     */
-    uncertainCount?: GraphDataView<'uint32'>;
-  };
+  status?: GPULonLatPolygonStatusPort &
+    GPUCandidateStatusPort & {
+      /** One-row flag: 1 when the BVH, candidate, or pair capacity overflowed. Required for `'inner'` without `pairs`. */
+      overflow?: GraphDataView<'uint32'>;
+      /**
+       * Optional one-row count of left rows that lost candidates to `candidateCapacity` (the rows
+       * flagged in `output.candidateTruncated`). Non-zero exactly when `candidateOverflow` is 1.
+       * With `how: 'anti'` these rows are unknown, so they are kept out of `output.unmatched`.
+       */
+      candidateTruncatedCount?: GraphDataView<'uint32'>;
+      /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
+      candidateCount?: GraphDataView<'uint32'>;
+      /**
+       * Optional one-row count of candidates whose classification could not be certified. A candidate
+       * is counted here when
+       * - the robust point/polygon classifier returned `uncertain` (point/polygon pairs), or
+       * - on any other kind pair, in either engine, an orientation sign does not exist: a non-finite
+       *   coordinate, or product exponents spanning more than 200 bits. Every other orientation is
+       *   decided exactly (f32 filter, then exact integer arithmetic).
+       *
+       * An uncertain pair is never dropped or decided at random. The undecidable orientation is treated
+       * as collinear (sign 0) and the predicate is evaluated with that value; for point/polygon pairs
+       * the f32 relate/predicate kernel decides. So an uncertain pair can be wrong in either
+       * direction, and the count says how many results to distrust. Zero means every decision is
+       * certified. The pairs themselves are identifiable through the `relate` output: bit 31
+       * ({@link GPU_SPATIAL_RELATE_UNCERTAIN_BIT}) of a matched pair's value is set when that pair was
+       * uncertain (a matched pair only; an uncertain pair that did not match is counted but has no
+       * row). Not tracked, so reported as 0: the workgroup `dwithin` kernel (`engine: 'relate'`) and
+       * the short-circuiting kernel of a polygon/polygon pair (its eight storage bindings leave no
+       * room for the counter).
+       */
+      uncertainCount?: GraphDataView<'uint32'>;
+    };
 };
 
 /**
@@ -354,8 +373,12 @@ export type GPUSpatialPredicateJoinProps = {
    * `'inner'` (default) emits matched pairs. `'anti'` emits the left features that match no right
    * feature (the complement of `intersects`, and of any other predicate, for example `disjoint` as
    * an anti-join of `intersects`) into `output.unmatched`; `pairs`, `weights` and `relate` are then
-   * not available. If a capacity overflows, the anti output is incomplete in the unsafe direction
-   * (rows whose candidates were dropped look unmatched), so check `output.unmatched.overflow`.
+   * not available. If the candidate capacity overflows, the left rows whose candidates were dropped
+   * (`output.candidateTruncated`) cannot be classified: they are kept out of `output.unmatched`
+   * and counted in `status.candidateTruncatedCount`, so the output never reports a row that may
+   * have a match (it can omit true unmatched rows among them). If the BVH or the unmatched
+   * capacity overflows, check `output.unmatched.overflow`: rows lost to the BVH still look
+   * unmatched.
    */
   how?: GPUSpatialJoinHow;
   /**
@@ -755,6 +778,12 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       }
     }
     validateStatusScalars(id, props.output.status ?? {});
+    if (views.candidateTruncated) {
+      validatePackedView(views.candidateTruncated, ['uint32'], `${id} output.candidateTruncated`);
+      if (views.candidateTruncated.length !== this.leftCount) {
+        throw new Error(`${id} output.candidateTruncated needs one row per left feature`);
+      }
+    }
     if (views.onAttribute) {
       const {left, right} = views.onAttribute;
       validatePackedView(left, ['uint32'], `${id} onAttribute.left`);
@@ -777,8 +806,18 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
-    const {pairs, weights, overflow, candidateCount, uncertainCount, unmatched, relate} =
-      this.views;
+    const {
+      pairs,
+      weights,
+      overflow,
+      candidateCount,
+      uncertainCount,
+      unmatched,
+      relate,
+      candidateOverflow,
+      candidateTruncatedCount,
+      candidateTruncated
+    } = this.views;
     return [
       pairs?.leftIds,
       pairs?.rightIds,
@@ -797,6 +836,9 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       overflow,
       candidateCount,
       uncertainCount,
+      candidateOverflow,
+      candidateTruncatedCount,
+      candidateTruncated,
       this.views.antimeridianUncertainCount,
       this.views.poleUncertainCount
     ];
@@ -943,8 +985,14 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       bvhOverflow = bvh.overflow;
     }
 
-    // state: [candidate total, uncertain count, match total, unmatched total]
-    const state = createTransientView(graph, `${id}-state`, 'uint32', 4);
+    // state: [candidate total, uncertain count, match total, unmatched total, truncated rows]
+    const state = createTransientView(graph, `${id}-state`, 'uint32', 5);
+    // Left rows that lost candidates; an anti join needs them to keep unknown rows out of its output.
+    const candidateTruncated =
+      views.candidateTruncated ??
+      (isAnti || views.candidateTruncatedCount
+        ? createTransientView(graph, `${id}-candidate-truncated`, 'uint32', leftCount)
+        : undefined);
     // A per-frame dwithin distance rides in one extra trailing row of the candidate table (its
     // float32 bits in the first word, written by the clear kernel), because a polygon-polygon exact
     // kernel already binds eight storage buffers, the default device limit.
@@ -1026,7 +1074,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         );
       }
       const lengths = [
-        4,
+        5,
         candidateCapacity,
         leftMatchCounts?.length ?? 0,
         robust?.pairGeometryOffsets.length ?? 0
@@ -1039,7 +1087,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
           bindings,
           invocationCount: Math.max(...lengths),
           declarations: SPATIAL_JOIN_WGSL_HELPERS,
-          body: `if (index < 4u) { state[stateOffset + index] = 0u; }
+          body: `if (index < 5u) { state[stateOffset + index] = 0u; }
   if (index < ${candidateCapacity}u) {
     candidatePairs[candidatePairsOffset + index * 2u] = NO_FEATURE;
     candidatePairs[candidatePairsOffset + index * 2u + 1u] = NO_FEATURE;
@@ -1078,9 +1126,28 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         margin: predicate === 'dwithin' ? (this.distanceView ?? (views.distance as number)) : 0,
         sphereRadius: this.sphereRadius,
         state,
-        candidatePairs
+        candidatePairs,
+        candidateTruncated,
+        candidateOverflow: views.candidateOverflow
       })
     );
+    if (views.candidateTruncatedCount && candidateTruncated) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-count-truncated`,
+          operation: OPERATION,
+          variant: 'count-truncated',
+          bindings: [
+            {name: 'candidateTruncated', view: candidateTruncated, type: 'u32', access: 'read'},
+            {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: leftCount,
+          body: `if (candidateTruncated[candidateTruncatedOffset + index] != 0u) {
+    atomicAdd(&state[stateOffset + 4u], 1u);
+  }`
+        })
+      );
+    }
     const candidateDispatch = createWGSLActiveCountDispatch(graph, {
       id: `${id}-candidate-dispatch`,
       operation: OPERATION,
@@ -1410,6 +1477,7 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
         leftMatchCounts,
         unmatched,
         state,
+        candidateTruncated,
         candidateCondition: candidateDispatch.condition
       });
     } else if (leftIds && rightIds && flagOffsets) {
@@ -1486,7 +1554,8 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
         ['unmatchedCount', unmatched?.status.count],
         ['unmatchedTotal', unmatched?.status.requiredCount],
         ['candidateCount', views.candidateCount],
-        ['uncertainCount', views.uncertainCount]
+        ['uncertainCount', views.uncertainCount],
+        ['candidateTruncatedCount', views.candidateTruncatedCount]
       ];
       const wired = scalars.filter((entry): entry is [string, GraphDataView<'uint32'>] =>
         Boolean(entry[1])
@@ -1532,7 +1601,8 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
   ${has('unmatchedCount') ? 'unmatchedCount[unmatchedCountOffset] = min(unmatchedTotalValue, UNMATCHED_CAPACITY);' : ''}
   ${has('unmatchedTotal') ? 'unmatchedTotal[unmatchedTotalOffset] = unmatchedTotalValue;' : ''}
   ${has('candidateCount') ? 'candidateCount[candidateCountOffset] = candidateTotal;' : ''}
-  ${has('uncertainCount') ? 'uncertainCount[uncertainCountOffset] = state[stateOffset + 1u];' : ''}`
+  ${has('uncertainCount') ? 'uncertainCount[uncertainCountOffset] = state[stateOffset + 1u];' : ''}
+  ${has('candidateTruncatedCount') ? 'candidateTruncatedCount[candidateTruncatedCountOffset] = state[stateOffset + 4u];' : ''}`
           })
         );
       }
@@ -1769,6 +1839,8 @@ ${
       leftMatchCounts: GraphDataView<'uint32'>;
       unmatched: GPUCompactOutput;
       state: GraphDataView<'uint32'>;
+      /** Left rows whose candidates were dropped: unknown, never reported as unmatched. */
+      candidateTruncated?: GraphDataView<'uint32'>;
       candidateCondition: GPUCommandGraphGPUIndirectCondition;
     }
   ): void {
@@ -1810,10 +1882,25 @@ ${
         variant: 'unmatched-flags',
         bindings: [
           {name: 'leftMatchCounts', view: leftMatchCounts, type: 'u32', access: 'read'},
+          ...(context.candidateTruncated
+            ? [
+                {
+                  name: 'candidateTruncated',
+                  view: context.candidateTruncated,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
           {name: 'unmatchedFlags', view: unmatchedFlags, type: 'u32', access: 'read_write'}
         ],
         invocationCount: leftCount,
-        body: `unmatchedFlags[unmatchedFlagsOffset + index] = select(0u, 1u, leftMatchCounts[leftMatchCountsOffset + index] == 0u);`
+        // A row that lost candidates to the capacity may have a match among them, so it is unknown.
+        body: `unmatchedFlags[unmatchedFlagsOffset + index] = select(0u, 1u, leftMatchCounts[leftMatchCountsOffset + index] == 0u${
+          context.candidateTruncated
+            ? ' && candidateTruncated[candidateTruncatedOffset + index] == 0u'
+            : ''
+        });`
       })
     );
     nodes.push(

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateRasterGrid} from '../raster-band-utils';
 import type {
@@ -13,9 +12,12 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
   RASTER_FINITE_WGSL,
   rasterBinding,
-  validateRasterCount,
   validateRasterViews,
   validateRasterGraph
 } from './raster-kernel-utils';
@@ -37,6 +39,11 @@ export type GPURasterTextureProps = {
   features: GraphDataView<'float32'>;
   pairCount: GraphDataView<'uint32'>;
 };
+/** Quantization levels: each invocation keeps a levels squared u32 histogram in private memory (32 squared is 4 KiB). */
+export const MAXIMUM_TEXTURE_LEVELS = 32;
+/** Window radius and offset magnitude: each cell scans (2 * radius + 1) squared neighbours in one invocation. */
+export const MAXIMUM_TEXTURE_RADIUS = 8;
+
 /** Local normalized GLCM; natural-log entropy, constant-window correlation 1, empty features NaN.
  * Run once per direction; symmetry counts each directed pair twice. requiredHalo is radius,
  * since endpoints outside each window are excluded. Interior seams require a source halo.
@@ -48,24 +55,36 @@ export class GPURasterTexture implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-texture';
     validateRasterGrid(this.id, props.grid);
     this.requiredHalo = props.radius;
-    validateRasterCount(props.grid.width);
-    validateRasterCount(props.grid.height);
+    validateCapacity(this.id, 'grid.width', props.grid.width);
+    validateCapacity(this.id, 'grid.height', props.grid.height);
     const count = props.grid.width * props.grid.height;
-    validateRasterCount(count * 7);
-    validateRasterCount(props.levels, 32);
-    assert(props.levels >= 2);
-    validateRasterCount(props.radius, 8);
-    assert(
+    validateCapacity(this.id, 'feature rows (seven per cell)', count * 7);
+    validateCapacity(this.id, 'levels', props.levels, 2, MAXIMUM_TEXTURE_LEVELS);
+    validateCapacity(this.id, 'radius', props.radius, 1, MAXIMUM_TEXTURE_RADIUS);
+    validateRequirement(
+      this.id,
       props.range.every(value => Number.isFinite(Math.fround(value))) &&
         props.range[1] > props.range[0] &&
-        Number.isFinite(Math.fround(props.range[1] - props.range[0]))
+        Number.isFinite(Math.fround(props.range[1] - props.range[0])),
+      'range must be finite float32 values with range[1] > range[0]'
     );
-    assert(
-      props.offset.every(value => Number.isInteger(value) && Math.abs(value) <= 8) &&
-        props.offset.some(value => value !== 0)
+    validateRequirement(
+      this.id,
+      props.offset.every(
+        value => Number.isInteger(value) && Math.abs(value) <= MAXIMUM_TEXTURE_RADIUS
+      ) && props.offset.some(value => value !== 0),
+      `offset must be nonzero integers with magnitude at most ${MAXIMUM_TEXTURE_RADIUS}`
     );
-    assert(props.values.length >= count && (!props.validity || props.validity.length >= count));
-    assert(props.features.length >= count * 7 && props.pairCount.length >= count);
+    validateRequirement(
+      this.id,
+      props.values.length >= count && (!props.validity || props.validity.length >= count),
+      'values and validity must hold at least grid.width times grid.height entries'
+    );
+    validateRequirement(
+      this.id,
+      props.features.length >= count * 7 && props.pairCount.length >= count,
+      'features must hold seven entries per cell and pairCount one per cell'
+    );
     validateRasterViews(
       this.id,
       [props.values, ...(props.validity ? [props.validity] : [])],

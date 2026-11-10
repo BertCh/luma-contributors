@@ -2,8 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {
+  GPUCommandGraph,
+  GPUCommandNode,
+  GPUCommandNodeProducer,
+  GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateRequirement,
+  validateViewLength
+} from '../analysis-core/kernels/gpu-contributor-utils';
+import {
+  GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_CELLS,
+  GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_COUNT
+} from './pointcloud-limits';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {getPointCloudCellSource, validatePointCloudGrid} from './gpu-pointcloud-surfaces';
@@ -25,45 +39,75 @@ export type GPUPointCloudGroundProps = {
   groundMask: GraphDataView<'uint32'>;
   /** Ground becomes LAS class 2; rejected existing class 2 becomes class 1; other classes survive. */
   outputClassifications: GraphDataView<'uint32'>;
-  /** Bit 1 outside/unsupported, bit 2 final morphology window has incomplete support. */
+  /**
+   * Per-point bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_GROUND_STATUS_UNSUPPORTED`): the
+   * point is outside the grid, not finite, or in a cell with no coverage. Bit 2
+   * (`..._INCOMPLETE_WINDOW`): the final morphology window around the point's cell reached past the
+   * covered cells. Bit 1 excludes bit 2. Bits above 2 are zero.
+   */
   status: GraphDataView<'uint32'>;
 };
 
+/** `GPUPointCloudGround` status bit 1: outside the grid, not finite, or an uncovered cell. */
+export const GPU_POINT_CLOUD_GROUND_STATUS_UNSUPPORTED = 1;
+/** `GPUPointCloudGround` status bit 2: the final morphology window has incomplete support. */
+export const GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW = 2;
+
 /** Bounded progressive morphological filter; a square-window PMF, not SMRF equivalence. */
-export class GPUPointCloudGround {
+export class GPUPointCloudGround implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointCloudGroundProps) {
     this.id = props.id ?? 'gpu-pointcloud-ground';
-    validatePointCloudGrid(props.grid);
-    assert(props.radii.length > 0 && props.radii.length <= 32);
-    assert(
-      props.radii.every(
-        (radius, index) =>
-          Number.isInteger(radius) &&
-          radius >= 1 &&
-          radius <= 32 &&
-          (!index || radius > props.radii[index - 1])
-      )
+    validatePointCloudGrid(props.grid, this.id);
+    validateCapacity(
+      this.id,
+      'radii.length',
+      props.radii.length,
+      1,
+      GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_COUNT
     );
-    assert(
-      [props.initialThreshold, props.slope, props.maximumThreshold].every(
-        value => value >= 0 && Number.isFinite(Math.fround(value))
-      )
+    props.radii.forEach((radius, index) => {
+      validateCapacity(
+        this.id,
+        `radii[${index}]`,
+        radius,
+        1,
+        GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_CELLS
+      );
+      validateRequirement(
+        this.id,
+        !index || radius > props.radii[index - 1],
+        'radii must be strictly increasing'
+      );
+    });
+    validateFiniteNumber(this.id, 'initialThreshold', props.initialThreshold, 0);
+    validateFiniteNumber(this.id, 'slope', props.slope, 0);
+    validateFiniteNumber(this.id, 'maximumThreshold', props.maximumThreshold, 0);
+    validateRequirement(
+      this.id,
+      props.maximumThreshold >= props.initialThreshold,
+      'maximumThreshold must be at least initialThreshold'
     );
-    assert(props.maximumThreshold >= props.initialThreshold);
-    assert(
-      props.minimumSurface.length === props.grid.width * props.grid.height &&
-        props.coverage.length === props.minimumSurface.length
+    validateViewLength(
+      this.id,
+      'minimumSurface',
+      props.minimumSurface,
+      props.grid.width * props.grid.height
     );
-    for (const view of [
-      props.classifications,
-      props.groundMask,
+    validateViewLength(this.id, 'coverage', props.coverage, props.minimumSurface.length);
+    validateViewLength(this.id, 'classifications', props.classifications, props.positions.length);
+    validateViewLength(this.id, 'groundMask', props.groundMask, props.positions.length);
+    validateViewLength(
+      this.id,
+      'outputClassifications',
       props.outputClassifications,
-      props.status
-    ])
-      assert(view.length === props.positions.length);
+      props.positions.length
+    );
+    validateViewLength(this.id, 'status', props.status, props.positions.length);
   }
-  getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {
       positions,
       classifications,
@@ -138,7 +182,7 @@ for (var vertical = -${radius}; vertical <= ${radius}; vertical++) {
   }
 }
 writeResult(index, select(0.0, value, count > 0u));
-writeSupport(index, select(2u, 0u, count == ${(2 * radius + 1) ** 2}u && complete));`
+writeSupport(index, select(${GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW}u, 0u, count == ${(2 * radius + 1) ** 2}u && complete));`
           })
         );
       }
@@ -167,7 +211,7 @@ let ground = valid && readPrevious(index) != 0u && position.z - readOpening(cell
 ${
   final
     ? `writeGroundMask(index, u32(ground));
-writeStatus(index, select(1u, readSupport(cellIndex), valid));`
+writeStatus(index, select(${GPU_POINT_CLOUD_GROUND_STATUS_UNSUPPORTED}u, readSupport(cellIndex), valid));`
     : 'writeNext(index, u32(ground));'
 }`
         })

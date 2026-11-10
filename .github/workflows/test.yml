@@ -35,6 +35,9 @@ jobs:
       - name: Check upstream-first rules
         run: yarn check-upstream-first
 
+      - name: Check contributor contract (new departures only)
+        run: yarn check-contributor-contract
+
       - name: Lint
         run: yarn lint
 

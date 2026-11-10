@@ -161,6 +161,8 @@ and matched count, plus candidate and route-overflow stages. Route-search overfl
 interpreted as a reliable off-route result. Resampling is a separate upstream choice; raw flags do
 not silently become flags on a resampled track.
 
+By default bit 4 is the step-speed test, so the valid fix after an outlier is flagged too; set `speedOutlierMode: 'point-centred'` to flag a fix only when the speed test fails on both of its adjacent steps (see [network movement coverage](../gpu-network/network-movement-coverage.md)).
+
 ## Local variability comparison
 
 `addLocalVariabilityRecipe` uses one explicit weights graph, values and mask for LOSH and local

@@ -48,7 +48,8 @@ for (const kind of [
       try {
         expect(graph.computeNodeCount).toBeGreaterThan(1);
         expect(recording.specs['pairCounts'].view.length).toBe(
-          kind === 'space-time-variogram' ? 4 : 2
+          // Space-time: (2 + 1) spatial x (2 + 1) temporal classes, with a zero-lag class on each axis.
+          kind === 'space-time-variogram' ? 9 : 2
         );
         expect(recording.specs['status'].view.length).toBe(
           recording.specs['pairCounts'].view.length

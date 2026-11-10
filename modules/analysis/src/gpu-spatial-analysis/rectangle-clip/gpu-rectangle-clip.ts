@@ -36,11 +36,20 @@ import {
   GPU_RECTANGLE_CLIP_PARAMETER_LENGTH
 } from './rectangle-clip-kernels';
 import {
+  GPU_LINEAR_EDGE_MODELS,
   resolveGPUSpatialContext,
-  type GPUSpatialContext
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPURectangleClip';
+
+// The clip is the usual straight-edge clip in the plane of the coordinates, which for degrees
+// means edges are straight in longitude and latitude (the linear edge model).
+const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  edgeModels: GPU_LINEAR_EDGE_MODELS
+});
 
 export {GPU_RECTANGLE_CLIP_PARAMETER_LENGTH};
 
@@ -107,16 +116,17 @@ export type GPURectangleClipProps = (
   /** Prefix for generated node and transient IDs. Defaults to `'rectangle-clip'`. */
   id?: string;
   /**
-   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
-   * construction: project positions to a planar frame first, for example with
-   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
-   * (`geometry-measures`), and pass the frame's context.
+   * Default: native planar coordinates. A longitude-latitude context is accepted: the rectangle
+   * is read in the same coordinates as the input (degrees) and edges are straight in longitude
+   * and latitude, as in turf `bboxClip`. There is no antimeridian handling: a rectangle crossing
+   * longitude 180 is not supported. A context declaring great-circle edges throws.
    */
   spatialContext?: GPUSpatialContext;
   /** Per-frame packed float32 view written with {@link getGPURectangleClipParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /**
-   * Bounded output. `positions.length` is the vertex capacity. For `'polygons'`,
+   * Bounded output. `positions.length` is the vertex capacity and `output.status.count` counts
+   * output vertices (`status.lineCount` counts output lines or rings). For `'polygons'`,
    * `output.lineOffsets` holds the output ring offsets and must have the length of the input
    * `ringOffsets` (one output ring per input ring, possibly empty), so the input `featureOffsets`
    * and `polygonOffsets` describe the output rings unchanged; `sourceLineIndices`, `sourceRows` and
@@ -155,14 +165,18 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPURectangleClipProps;
-  /** Resolved spatial context (planar only). */
+  /** Resolved spatial context (planar unless given). */
   readonly spatialContext: GPUSpatialContext;
   /** Line offsets, or the polygon ring offsets, as read by the kernels. */
   readonly boundaryOffsets: GraphDataView<'uint32'>;
 
   constructor(props: GPURectangleClipProps) {
     this.id = props.id ?? 'rectangle-clip';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.props = props;
     const {id} = this;
     this.boundaryOffsets =

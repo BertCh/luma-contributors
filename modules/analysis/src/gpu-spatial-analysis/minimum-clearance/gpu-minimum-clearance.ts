@@ -24,7 +24,8 @@ import {
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validatePackedView,
-  validatePowerOfTwo
+  validatePowerOfTwo,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
 import {createSegmentTableNode} from '../segment-intersection/segment-table';
@@ -70,6 +71,19 @@ export type GPUMinimumClearanceOutput = {
    * view, or `0xffffffff` when the feature has no clearance.
    */
   vertexIds?: GraphDataView<'uint32'>;
+  /**
+   * Optional status scalars. There is no `count`: every output column has one row per feature
+   * (`featureCount` rows), never a variable number of rows.
+   */
+  status?: {
+    /**
+     * Optional caller-owned one-row `uint32` receiving `1` when `leafCapacity` is smaller than the
+     * segment count, so the BVH dropped the trailing segments (in Morton order when `spatialSort`
+     * is on) and clearances may be too large; otherwise `0`. The default `leafCapacity` never
+     * overflows.
+     */
+    candidateOverflow?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -97,7 +111,11 @@ export type GPUMinimumClearanceProps = {
   geometry: GPUSegmentGeometry;
   /** Caller-owned outputs; at least one column is required. */
   output: GPUMinimumClearanceOutput;
-  /** Power-of-two BVH leaf slots over the segments. Defaults to the next power of two of the vertex count. */
+  /**
+   * Power-of-two BVH leaf slots over the segments. Defaults to the next power of two of the vertex
+   * count. A smaller value drops the segments beyond it from the BVH and sets
+   * `output.status.candidateOverflow`.
+   */
   leafCapacity?: number;
   /**
    * Compile-time. Morton-sorts the segments before the BVH build, which keeps traversal short for
@@ -206,6 +224,18 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
         }
       }
     }
+    if (props.output.status?.candidateOverflow) {
+      validatePackedView(
+        props.output.status.candidateOverflow,
+        ['uint32'],
+        `${id} output.status.candidateOverflow`
+      );
+      validateRequirement(
+        id,
+        props.output.status.candidateOverflow.length >= 1,
+        'output.status.candidateOverflow must hold one row'
+      );
+    }
     this.spatialSort = props.spatialSort ?? this.vertexCount >= SPATIAL_SORT_MINIMUM_SLOTS;
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(this.vertexCount);
     validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
@@ -224,8 +254,8 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
-    const {clearances, lines, vertexIds} = this.props.output;
-    return [clearances, lines, vertexIds];
+    const {clearances, lines, vertexIds, status} = this.props.output;
+    return [clearances, lines, vertexIds, status?.candidateOverflow];
   }
 
   /** Returns table, BVH, vertex feature, probe, per-feature minimum and output nodes in order. */
@@ -273,6 +303,27 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
       spatialSort
     });
     nodes.push(...bvhNodes);
+    if (props.output.status?.candidateOverflow) {
+      // The BVH stores only `leafCapacity` segments and reports the rest through its overflow.
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-candidate-overflow`,
+          operation: OPERATION,
+          variant: 'candidate-overflow',
+          bindings: [
+            {name: 'bvhOverflow', view: bvh.overflow, type: 'u32', access: 'read'},
+            {
+              name: 'candidateOverflow',
+              view: props.output.status.candidateOverflow,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: 1,
+          body: 'candidateOverflow[candidateOverflowOffset] = select(0u, 1u, bvhOverflow[bvhOverflowOffset] != 0u);'
+        })
+      );
+    }
 
     // Feature row of every vertex, or SEGMENT_NONE for vertices that belong to no usable ring.
     const vertexFeatures = createTransientView(

@@ -177,8 +177,7 @@ export function addCellFlowTopologyRecipe<Parameters>(
   ]);
   validateGraphOutputsDisjointFromInputs(id, Object.values(getOutputColumns(outputs)), inputs);
   const builder = new RecipeBuilder(graph);
-  const addNode = (node: GPUCommandNode<Parameters>) =>
-    builder.add({getCommandNodes: () => [node]});
+  const addNode = (node: GPUCommandNode<Parameters>) => builder.addGlue(node.id, node);
   builder.add(
     new GPUH3CellIdentities({
       id: `${id}-identities`,

@@ -73,7 +73,12 @@ type Readback = {
 
 /** Weights mode: a hand-built CSR, or a `GPUNeighborSearch` radius search in the same graph. */
 type WeightsSource =
-  | {kind: 'csr'; offsets: Uint32Array; neighbors: Uint32Array; weights: Float32Array}
+  | {
+      kind: 'csr';
+      offsets: Uint32Array;
+      neighbors: Uint32Array;
+      weights: Float32Array;
+    }
   | {
       kind: 'neighbor-search';
       positions: Float32Array;
@@ -189,7 +194,9 @@ function createHarness(
           parameters: neighborParameterBuffer.importToGraph(graph),
           output: {
             ...weights,
-            status: {overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)}
+            status: {
+              overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
+            }
           }
         })
       );
@@ -247,7 +254,10 @@ function createHarness(
     },
     async run(parameters, neighborParameters) {
       parameterBuffer.write(
-        getGPUEmergingHotSpotsParameterValues({...parameters, multipleTesting})
+        getGPUEmergingHotSpotsParameterValues({
+          ...parameters,
+          multipleTesting
+        })
       );
       if (neighborParameters && neighborParameterBuffer) {
         neighborParameterBuffer.write(getGPUNeighborSearchParameterValues(neighborParameters));
@@ -334,10 +344,16 @@ function expectCellsMatchOracle(
   cube: EmergingHotSpotCube,
   parameters: Omit<GPUEmergingHotSpotsSettings, 'multipleTesting'>,
   label: string,
-  options: {multipleTesting?: GPUMultipleTestingMethod; finalSlice?: 'require' | 'last-valid'} = {}
+  options: {
+    multipleTesting?: GPUMultipleTestingMethod;
+    finalSlice?: 'require' | 'last-valid';
+  } = {}
 ): void {
   const multipleTesting = options.multipleTesting ?? 'benjamini-hochberg';
-  const packed = getGPUEmergingHotSpotsParameterValues({...parameters, multipleTesting});
+  const packed = getGPUEmergingHotSpotsParameterValues({
+    ...parameters,
+    multipleTesting
+  });
   // p-values come from the GPU's own z; the family is every finite z.
   const oraclePValues = computeBinPValues(result.giZScores);
   const oracleAdjusted = computeAdjustedBinPValues(result.giZScores, multipleTesting);
@@ -382,7 +398,7 @@ function expectCellsMatchOracle(
 it('GPUEmergingHotSpots classifies all 17 categories on the designed cube', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const {cube, designed, expectedCategories} = createDesignedCube();
+  const {cube, designed, expectedCategories, legacyExpectedCategories} = createDesignedCube();
   const harness = createHarness(device, cube);
   try {
     const parameters = {radius: 0, temporalWindow: 0};
@@ -404,6 +420,18 @@ it('GPUEmergingHotSpots classifies all 17 categories on the designed cube', asyn
     ).toBe(true);
     expect(result.category[designed.length]).toBe(0);
     expect(result.category[designed.length + 1]).toBe(0);
+    // The older Sporadic rule is a per-frame setting: same graph, only the parameters change.
+    const legacyParameters = {
+      ...parameters,
+      sporadicRequiresFinalSlice: false
+    };
+    const legacyResult = await harness.run(legacyParameters);
+    expectCellsMatchOracle(legacyResult, cube, legacyParameters, 'designed legacy sporadic');
+    for (const [cell, expected] of legacyExpectedCategories.entries()) {
+      expect(legacyResult.category[cell], `legacy cell ${cell} ${designed[cell]?.name}`).toBe(
+        expected
+      );
+    }
     expect(harness.buildCount).toBe(1);
   } finally {
     harness.destroy();
@@ -612,7 +640,11 @@ it('GPUEmergingHotSpots writes NaN z for degenerate cubes', async () => {
   });
   try {
     // A constant cube has zero deviation: no z, no trend, no pattern.
-    const constant = await harness.run({radius: 1, temporalWindow: 1, minimumTrendSliceCount: 0});
+    const constant = await harness.run({
+      radius: 1,
+      temporalWindow: 1,
+      minimumTrendSliceCount: 0
+    });
     expect(constant.giZScores.every(Number.isNaN)).toBe(true);
     expect(constant.category.every(category => category === 0)).toBe(true);
     expect(constant.trendS.every(statistic => statistic === 0)).toBe(true);
@@ -669,7 +701,9 @@ it('GPUEmergingHotSpots weights mode reproduces lattice mode on lattice-disc wei
   const cube = createSpaceTimeCube(5);
   for (const radius of [1, 1.5, 2.3]) {
     const weights = createLatticeDiscWeights(cube.gridWidth, cube.gridHeight, radius);
-    const harness = createHarness(device, cube, {weights: {kind: 'csr', ...weights}});
+    const harness = createHarness(device, cube, {
+      weights: {kind: 'csr', ...weights}
+    });
     try {
       for (const frame of [
         {temporalWindow: 0},
@@ -710,7 +744,13 @@ function createScatteredCube(seed: number, cellCount: number, sliceCount: number
   mask[11] = 0;
   return {
     positions,
-    cube: {gridWidth: cellCount, gridHeight: 1, sliceCount, values, mask} as EmergingHotSpotCube & {
+    cube: {
+      gridWidth: cellCount,
+      gridHeight: 1,
+      sliceCount,
+      values,
+      mask
+    } as EmergingHotSpotCube & {
       values: Float32Array;
     }
   };
@@ -725,7 +765,9 @@ it('GPUEmergingHotSpots weights mode matches the weighted oracle on irregular we
     [0, false],
     [0.5, true]
   ] as const) {
-    const weights = createDistanceBandWeights(positions, 14, {rowStandardize});
+    const weights = createDistanceBandWeights(positions, 14, {
+      rowStandardize
+    });
     const harness = createHarness(device, cube, {
       weights: {kind: 'csr', ...weights},
       selfWeight
@@ -765,7 +807,10 @@ it('GPUEmergingHotSpots weights mode consumes weights written by GPUNeighborSear
   try {
     for (const radius of [10, 18]) {
       const frame = {temporalWindow: 3};
-      const result = await harness.run(frame, {bounds: [0, 0, 100, 100], radius});
+      const result = await harness.run(frame, {
+        bounds: [0, 0, 100, 100],
+        radius
+      });
       const expected = createDistanceBandWeights(positions, radius);
       const used = result.csr.offsets[150];
       expect(result.csr.neighbors.slice(0, used), `radius ${radius}`).toEqual(
@@ -831,7 +876,9 @@ it('GPUEmergingHotSpots multiple testing drops weakly significant bins (statsmod
       // The legend does not change with the correction: signs map to the same category codes.
       expect(result.category[92]).toBe(GPU_EMERGING_HOT_SPOTS_CATEGORIES.NEW_HOT);
       expect(result.category[94]).toBe(GPU_EMERGING_HOT_SPOTS_CATEGORIES.NEW_COLD);
-      expectCellsMatchOracle(result, cube, frame, method, {multipleTesting: method});
+      expectCellsMatchOracle(result, cube, frame, method, {
+        multipleTesting: method
+      });
     } finally {
       harness.destroy();
     }
@@ -842,17 +889,28 @@ it('GPUEmergingHotSpots criticalZ override reproduces the uncorrected rule with 
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const cube = createSpaceTimeCube(5);
-  const harness = createHarness(device, cube, {maximumRadius: 4, multipleTesting: 'none'});
+  const harness = createHarness(device, cube, {
+    maximumRadius: 4,
+    multipleTesting: 'none'
+  });
   try {
     for (const frame of [
       {radius: 1.5, temporalWindow: 2, confidenceLevel: 0.9 as const},
-      {radius: 2, temporalWindow: 3, criticalZ: 1.2, trendSignificanceLevel: 0.2}
+      {
+        radius: 2,
+        temporalWindow: 3,
+        criticalZ: 1.2,
+        trendSignificanceLevel: 0.2
+      }
     ]) {
       const result = await harness.run(frame);
       const label = JSON.stringify(frame);
       // |z| >= criticalZ exactly, on the GPU's own z.
       const criticalZ = Math.fround(
-        getGPUEmergingHotSpotsParameterValues({...frame, multipleTesting: 'none'})[2]
+        getGPUEmergingHotSpotsParameterValues({
+          ...frame,
+          multipleTesting: 'none'
+        })[2]
       );
       const hot = Array.from({length: 70}, (_, cell) =>
         result.giZScores
@@ -860,7 +918,9 @@ it('GPUEmergingHotSpots criticalZ override reproduces the uncorrected rule with 
           .filter(z => z >= criticalZ)
       );
       expect(result.hotSliceCount, label).toEqual(hot.map(series => series.length));
-      expectCellsMatchOracle(result, cube, frame, label, {multipleTesting: 'none'});
+      expectCellsMatchOracle(result, cube, frame, label, {
+        multipleTesting: 'none'
+      });
     }
   } finally {
     harness.destroy();
@@ -887,7 +947,9 @@ it('GPUEmergingHotSpots handles a missing final slice under both finalSlice mode
     try {
       const result = await harness.run(frame);
       results.set(finalSlice, result);
-      expectCellsMatchOracle(result, staleCube, frame, finalSlice, {finalSlice});
+      expectCellsMatchOracle(result, staleCube, frame, finalSlice, {
+        finalSlice
+      });
       for (const cell of staleCells) {
         expect(result.lastValidSlice[cell], `${finalSlice} last valid ${cell}`).toBe(
           sliceCount - 2

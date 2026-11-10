@@ -11,7 +11,11 @@ See [Geospatial workflow recipes](./expansion-recipes.md) for zonal distribution
 
 
 Recipes are plain functions, not classes: `addXRecipe(graph, props)` constructs the contributors, calls
-`graph.add` in chain order, wires outputs to inputs and returns `{contributors, ...named views}`. Views you
+`graph.add` in chain order, wires outputs to inputs and returns `{contributors, ...named views}`. `contributors`
+lists every stage the recipe added, in order: composed contributors, and each raw glue kernel as one named
+stage (registered with `RecipeBuilder.addGlue(stage, nodes)`). Status counts over rows or cells (invalid
+rows, unresolved cells) run as a row-parallel kernel plus a published `GPUReduction` sum, never as one
+invocation looping over the rows. Views you
 pass in (`zScores`, `bins`, `colors`, ...) are caller-owned and readable; every other intermediate is a
 graph transient. Inference recipes (hot spot, rate cluster, space-time hot spots, spatial regression) take
 one `settings` object and `GPUParameterBuffer`s they fill themselves, derive `result.inference` from the same

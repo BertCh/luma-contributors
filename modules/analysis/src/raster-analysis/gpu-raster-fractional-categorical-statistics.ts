@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,7 +11,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   getGraphOutputViews,
-  validatePackedView
+  validateCapacity,
+  validatePackedView,
+  validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../analysis-core/kernels/sorted-segment-sums';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
@@ -24,6 +25,15 @@ import {
 } from './raster-expansion-utils';
 import type {GPURasterFractionalCoverageProps} from './gpu-raster-fractional-coverage';
 import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+
+/** Largest category capacity; dense categories bound scratch space and the per-zone winner scan. */
+const MAXIMUM_CATEGORY_CAPACITY = 65534;
+
+/** Largest zone x (category + missing) group count addressable by one segment-sum pass. */
+const MAXIMUM_ZONE_CATEGORY_GROUPS = 65535;
+
+/** Largest coverage tuple capacity accepted in one invocation. */
+const MAXIMUM_TUPLES = 1048576;
 
 export type GPURasterFractionalCategoricalStatisticsProps = {
   id?: string;
@@ -82,24 +92,42 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
       getGraphOutputViews(output)
     );
     // Dense categories bound scratch space and the per-zone winner scan.
-    assert(
-      Number.isInteger(categoryCapacity) && categoryCapacity >= 1 && categoryCapacity <= 65534
+    validateCapacity(this.id, 'categoryCapacity', categoryCapacity, 1, MAXIMUM_CATEGORY_CAPACITY);
+    validateRequirement(
+      this.id,
+      Number.isInteger(zoneCount) &&
+        zoneCount >= 1 &&
+        zoneCount * (categoryCapacity + 1) <= MAXIMUM_ZONE_CATEGORY_GROUPS,
+      `zoneCount must be an integer of at least 1 with zoneCount times (categoryCapacity + 1) at most ${MAXIMUM_ZONE_CATEGORY_GROUPS}`
     );
-    assert(
-      Number.isInteger(zoneCount) && zoneCount >= 1 && zoneCount * (categoryCapacity + 1) <= 65535
+    validateCapacity(
+      this.id,
+      'coverage.zoneIds length',
+      coverage.zoneIds.length,
+      1,
+      MAXIMUM_TUPLES
     );
-    assert(coverage.zoneIds.length >= 1 && coverage.zoneIds.length <= 1048576);
     const cellArea = Math.fround(
       Math.abs(grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3])
     );
     // A category is an identity: implicit calibration must never merge or alter IDs.
-    assert(input.format === 'uint32' && (input.scale ?? 1) === 1 && (input.offset ?? 0) === 0);
-    assert(Number.isFinite(cellArea) && cellArea > 0);
-    assert(
+    validateRequirement(
+      this.id,
+      input.format === 'uint32' && (input.scale ?? 1) === 1 && (input.offset ?? 0) === 0,
+      "input must be a 'uint32' band without scale or offset"
+    );
+    validateRequirement(
+      this.id,
+      Number.isFinite(cellArea) && cellArea > 0,
+      'grid.affine must have a finite nonzero determinant in float32'
+    );
+    validateRequirement(
+      this.id,
       input.noDataValue === undefined ||
         (Number.isInteger(input.noDataValue) &&
           input.noDataValue >= 0 &&
-          input.noDataValue <= 0xffffffff)
+          input.noDataValue <= 0xffffffff),
+      'input.noDataValue must be an unsigned 32-bit integer'
     );
     for (const view of [
       input.storage.values,
@@ -125,23 +153,27 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
     ]) {
       validatePackedView(view, ['float32'], this.id);
     }
-    requireRasterLength(input.storage.values, cellCount);
-    requireRasterLength(input.validity, cellCount);
-    requireRasterLength(coverage.cellIds, coverage.zoneIds.length);
-    requireRasterLength(coverage.fractions, coverage.zoneIds.length);
-    requireRasterLength(coverage.zoneValidity, zoneCount);
-    for (const view of Object.values(coverage.status)) requireRasterLength(view, 1);
-    for (const view of [output.coverageSums, output.classAreas, output.proportions])
-      requireRasterLength(view, zoneCount * categoryCapacity);
-    for (const view of [
-      output.coveredArea,
-      output.validArea,
-      output.missingArea,
-      output.majority,
-      output.minority,
-      output.validity
-    ])
-      requireRasterLength(view, zoneCount);
+    requireRasterLength(input.storage.values, cellCount, this.id, 'input values');
+    requireRasterLength(input.validity, cellCount, this.id, 'input.validity');
+    requireRasterLength(coverage.cellIds, coverage.zoneIds.length, this.id, 'coverage.cellIds');
+    requireRasterLength(coverage.fractions, coverage.zoneIds.length, this.id, 'coverage.fractions');
+    requireRasterLength(coverage.zoneValidity, zoneCount, this.id, 'coverage.zoneValidity');
+    for (const [name, view] of Object.entries(coverage.status)) {
+      requireRasterLength(view, 1, this.id, `coverage.status.${name}`);
+    }
+    for (const name of ['coverageSums', 'classAreas', 'proportions'] as const) {
+      requireRasterLength(output[name], zoneCount * categoryCapacity, this.id, `output.${name}`);
+    }
+    for (const name of [
+      'coveredArea',
+      'validArea',
+      'missingArea',
+      'majority',
+      'minority',
+      'validity'
+    ] as const) {
+      requireRasterLength(output[name], zoneCount, this.id, `output.${name}`);
+    }
   }
 
   getCommandNodes<Parameters>(

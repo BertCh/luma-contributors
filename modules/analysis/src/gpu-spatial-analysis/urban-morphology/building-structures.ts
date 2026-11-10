@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert, type VertexFormat} from '@luma.gl/core';
+import type {VertexFormat} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {
   GPUPackedGeometryPort,
@@ -10,6 +10,13 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {GPUPolygonOverlay, type GPUPolygonOverlayOutput} from '../polygon-overlay/index';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/**
+ * Most buildings with structures: every building adds a layout, a pack, a `GPUPolygonOverlay`
+ * dissolve and a measure to the graph, so the node count grows with the building count.
+ */
+export const BUILDING_STRUCTURES_MAXIMUM_BUILDING_COUNT = 64;
 
 export type GPUBuildingStructureGeometry = {
   /** One feature per building; counterclockwise shells, clockwise holes. */
@@ -22,13 +29,29 @@ export function measureBuildingStructures<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
   components: GraphDataView<'uint32'>,
-  props: GPUBuildingStructureGeometry
+  props: GPUBuildingStructureGeometry,
+  perimetersOutput?: GraphDataView<'float32'>
 ) {
   const count = components.length;
-  assert(count <= 64 && props.geometry.featureOffsets.length === count + 1);
+  validateRequirement(
+    id,
+    count <= BUILDING_STRUCTURES_MAXIMUM_BUILDING_COUNT,
+    `structures support at most ${BUILDING_STRUCTURES_MAXIMUM_BUILDING_COUNT} buildings`
+  );
+  validateRequirement(
+    id,
+    props.geometry.featureOffsets.length === count + 1,
+    'structures.geometry.featureOffsets must have one row per building plus one'
+  );
   const view = <Format extends VertexFormat>(name: string, format: Format, length: number) =>
     getRecipeView(graph, `${id}-${name}`, format, length);
-  const perimeters = view('structure-perimeters', 'float32', count);
+  const perimeters = getRecipeView(
+    graph,
+    `${id}-structure-perimeters`,
+    'float32',
+    count,
+    perimetersOutput
+  );
   const ringCount = props.geometry.ringOffsets.length - 1;
   const owners = view('ring-owners', 'uint32', ringCount);
   graph.add(

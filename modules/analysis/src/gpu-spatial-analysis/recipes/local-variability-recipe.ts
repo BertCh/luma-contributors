@@ -4,16 +4,12 @@
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
-import {
-  createRecipeKernelNode,
-  getRecipeView as getOrCreateView,
-  validateRecipeBoundary
-} from './expansion-recipe-utils';
+import {getRecipeView as getOrCreateView, validateRecipeBoundary} from './expansion-recipe-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GPULocalSpatialHeteroscedasticity} from '../spatial-autocorrelation/gpu-local-variability';
 import {GPULocalMoran} from '../spatial-autocorrelation/gpu-local-moran';
 import type {GPUSpatialWeights} from '../spatial-weights/index';
-import {RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {addRecipeCountNodes, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
 
 export type GPULocalVariabilityRecipeOutputs = {
   losh: GraphDataView<'float32'>;
@@ -124,29 +120,27 @@ export function addLocalVariabilityRecipe<Parameters>(
   );
   const loshInvalidCount = getOrCreateView(graph, `${id}-losh-invalid`, 'uint32', 1);
   const moranInvalidCount = getOrCreateView(graph, `${id}-moran-invalid`, 'uint32', 1);
-  graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-status`,
-      operation: 'GPULocalVariabilityRecipe',
-      variant: 'status',
-      invocationCount: 1,
-      bindings: [
-        {name: 'loshStatus', view: outputs.loshStatus, type: 'u32', access: 'read'},
-        {name: 'zScores', view: outputs.zScores, type: 'f32', access: 'read'},
-        {name: 'moranStatus', view: outputs.moranStatus, type: 'u32', access: 'read_write'},
-        {name: 'loshInvalidCount', view: loshInvalidCount, type: 'u32', access: 'read_write'},
-        {name: 'moranInvalidCount', view: moranInvalidCount, type: 'u32', access: 'read_write'}
-      ],
-      declarations: IS_FINITE_BITS_WGSL,
-      body: `var loshInvalid = 0u; var moranInvalid = 0u;
-for (var row = 0u; row < ${rows}u; row++) {
-  loshInvalid += select(0u, 1u, loshStatus[loshStatusOffset + row] != 0u);
-  let code = select(1u, 0u, isFiniteBits(zScores[zScoresOffset + row]));
-  moranStatus[moranStatusOffset + row] = code; moranInvalid += code;
-}
-loshInvalidCount[loshInvalidCountOffset] = loshInvalid; moranInvalidCount[moranInvalidCountOffset] = moranInvalid;`
-    })
-  );
+  addRecipeCountNodes(builder, {
+    id: `${id}-status`,
+    operation: 'GPULocalVariabilityRecipe',
+    rowCount: rows,
+    bindings: [
+      {name: 'loshStatus', view: outputs.loshStatus, type: 'u32', access: 'read'},
+      {name: 'zScores', view: outputs.zScores, type: 'f32', access: 'read'},
+      {name: 'moranStatus', view: outputs.moranStatus, type: 'u32', access: 'read_write'}
+    ],
+    declarations: IS_FINITE_BITS_WGSL,
+    prelude: `let code = select(1u, 0u, isFiniteBits(zScores[zScoresOffset + index]));
+moranStatus[moranStatusOffset + index] = code;`,
+    counts: [
+      {
+        name: 'loshInvalid',
+        output: loshInvalidCount,
+        value: 'select(0u, 1u, loshStatus[loshStatusOffset + index] != 0u)'
+      },
+      {name: 'moranInvalid', output: moranInvalidCount, value: 'code'}
+    ]
+  });
   return {
     contributors: builder.contributors,
     outputs,

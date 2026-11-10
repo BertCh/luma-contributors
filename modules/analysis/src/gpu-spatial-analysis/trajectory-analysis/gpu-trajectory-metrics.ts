@@ -38,6 +38,7 @@ import {
 } from './trajectory-metrics-kernels';
 import {GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH} from './trajectory-metrics-parameters';
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
+import {resolveGPUTrajectoryTemporalContext} from './trajectory-common';
 
 /** Spatial contexts supported by this distance-measuring operation. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -252,6 +253,12 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         throw new Error(`${id} timestampsLow length must equal positions length`);
       }
     }
+    resolveGPUTrajectoryTemporalContext(
+      id,
+      props.timestamps,
+      props.temporalContext,
+      props.timestampsLow
+    );
     validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
     if (props.timestamps.length !== props.positions.length) {
       throw new Error(`${id} timestamps length must equal positions length`);

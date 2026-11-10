@@ -30,7 +30,7 @@ import {
   type GPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {getCholeskyWGSL} from './spatial-regression-solve';
-import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../distribution-dynamics/incomplete-gamma-wgsl';
+import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../analysis-core/kernels/incomplete-gamma-wgsl';
 
 export type GPUSpatialPanelLagMaximumLikelihoodProps = {
   id?: string;

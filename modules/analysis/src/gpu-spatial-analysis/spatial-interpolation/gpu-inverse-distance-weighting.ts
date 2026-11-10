@@ -10,7 +10,6 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -25,6 +24,7 @@ import {
   validatePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
+import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
@@ -271,7 +271,6 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       indexCellCount + 1
     );
     const objectIds = createTransientView(graph, `${id}-object-ids`, 'uint32', sampleCount);
-    const sortedIds = createTransientView(graph, `${id}-sorted-ids`, 'uint32', sampleCount);
     const indexCount = createTransientView(graph, `${id}-index-count`, 'uint32', 1);
     const indexOverflow = createTransientView(graph, `${id}-index-overflow`, 'uint32', 1);
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -287,56 +286,19 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       }).getCommandNodes(graph)
     ];
 
-    // GPUGridIndex scatters IDs with atomics, so in-cell order varies between runs. Rank every ID
-    // within its cell to restore ascending row order before any floating-point sum depends on it.
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-sort-cells`,
-        operation: OPERATION,
-        variant: 'sort-cells',
-        bindings: [
-          {
-            name: 'cellOffsets',
-            view: cellOffsets,
-            type: 'u32',
-            access: 'read'
-          },
-          {name: 'objectIds', view: objectIds, type: 'u32', access: 'read'},
-          {name: 'indexCount', view: indexCount, type: 'u32', access: 'read'},
-          {
-            name: 'sortedIds',
-            view: sortedIds,
-            type: 'u32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: sampleCount,
-        declarations: `const INDEX_CELL_COUNT: u32 = ${indexCellCount}u;
-const SAMPLE_COUNT: u32 = ${sampleCount}u;`,
-        body: `if (index >= min(indexCount[indexCountOffset], SAMPLE_COUNT)) {
-    return;
-  }
-  let sample = objectIds[objectIdsOffset + index];
-  // Largest cell whose first slot is at or before this slot.
-  var low = 0u;
-  var high = INDEX_CELL_COUNT - 1u;
-  while (low < high) {
-    let middle = low + (high - low + 1u) / 2u;
-    if (cellOffsets[cellOffsetsOffset + middle] <= index) {
-      low = middle;
-    } else {
-      high = middle - 1u;
-    }
-  }
-  let start = cellOffsets[cellOffsetsOffset + low];
-  let end = cellOffsets[cellOffsetsOffset + low + 1u];
-  var rank = 0u;
-  for (var slot = start; slot < end; slot++) {
-    rank += select(0u, 1u, objectIds[objectIdsOffset + slot] < sample);
-  }
-  sortedIds[sortedIdsOffset + start + rank] = sample;`
-      })
-    );
+    // GPUGridIndex scatters IDs with atomics, so in-cell order varies between runs. A stable sort
+    // of the rows by cell restores ascending row order (before any floating-point sum depends on
+    // it) in O(rows) work, however many rows share a cell.
+    const cellRowOrder = createGridCellRowOrderNodes(graph, {
+      id: `${id}-cell-row-order`,
+      operation: OPERATION,
+      cellOffsets,
+      objectIds,
+      indexCount,
+      rowCount: sampleCount
+    });
+    nodes.push(...cellRowOrder.nodes);
+    const sortedIds = cellRowOrder.sortedRows;
 
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},

@@ -6,7 +6,6 @@ import {
   createTransientView,
   GPUCompaction,
   GPUFlagOffsets,
-  GPUGridIndex,
   GPUGroupAggregation,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -39,7 +38,12 @@ import {
   createSpatialClusteringUnionNode
 } from './spatial-clustering-kernels';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
+import {createPointNeighborGridIndexNodes} from '../shared/point-neighbor-grid-index';
 import {GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} from './spatial-clustering-parameters';
+import {
+  resolveGPUTemporalContext,
+  type GPUTemporalContext
+} from '../../analysis-core/contracts/temporal-context';
 import {
   getGPUSphereRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -55,6 +59,11 @@ const CLUSTERING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.free
 });
 
 const OPERATION = 'GPUSpatialClustering';
+
+/** ST-DBSCAN reads relative float32 times, such as the output of `GPUTimeWordsRelative`. */
+const CLUSTERING_TEMPORAL_CONTEXT_SUPPORT = Object.freeze({
+  encodings: Object.freeze(['float32-relative'] as const)
+});
 
 /**
  * Largest cluster capacity (`output.clusters.ids` rows) of {@link GPUSpatialClustering} with
@@ -142,6 +151,24 @@ export type GPUSpatialClusteringProps = {
   /** Packed points, one row per point. Compile-time length; per-frame contents. */
   positions: GraphDataView<'float32x2'>;
   /**
+   * Optional relative times, one `float32` per point, which turn the clustering into ST-DBSCAN:
+   * two points are neighbors only when they are within `epsilon` in space and within
+   * `parameters.timeEpsilon` in time (`|t_a - t_b| <= timeEpsilon`, the same closed test as the
+   * spatial one). Core points, clusters, borders and noise follow from that neighbor relation
+   * exactly as without times. Typically the output of `GPUTimeWordsRelative`. A point with a
+   * non-finite time is excluded and labeled noise. Requires `temporalContext`, `timeEpsilon` in
+   * the packed parameters, and is incompatible with `denseBoxShortcut`, because a dense box
+   * proves spatial closeness only. When absent, nothing changes. Compile-time presence;
+   * per-frame contents.
+   */
+  times?: GraphDataView<'float32'>;
+  /**
+   * Describes `times`: required with `times`, rejected without it. Only `'float32-relative'`
+   * times are read; any unit, epoch (a bigint origin), time zone and axis. `unit` is the unit of
+   * `timeEpsilon`. Nothing is converted.
+   */
+  temporalContext?: GPUTemporalContext;
+  /**
    * Per-frame parameters: packed float32 view of at least
    * {@link GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} elements written with
    * `getGPUSpatialClusteringParameterValues`. Invalid parameters (non-finite or non-positive
@@ -210,7 +237,13 @@ export type GPUSpatialClusteringProps = {
  * Positions are float32, planar by default or longitude/latitude with a great-circle `epsilon` (see
  * `spatialContext` for the quantization limit, local-origin advice and the antimeridian rule).
  *
- * Non-goals: OPTICS or HDBSCAN, ellipsoidal distances, 3D points, chunked positions, incremental
+ * ST-DBSCAN: with `times` the neighbor relation gains the temporal test `|t_a - t_b| <= timeEpsilon`
+ * (see {@link GPUSpatialClusteringProps.times}); the same grid, core, union, border and label
+ * kernels run with that extra predicate, and times are gathered into cell order beside the
+ * positions. The spatial grid does not prune by time, so the cost is that of the spatial neighbor
+ * scan.
+ *
+ * Non-goals: OPTICS or HDBSCAN (see `GPUOPTICS` for ST-OPTICS), ellipsoidal distances, 3D points, chunked positions, incremental
  * clustering across frames, and cluster shapes or hulls (compose `GPUGroupGeometry` and
  * `GPUGroupConvexHull` over the cluster labels).
  */
@@ -221,6 +254,8 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
   readonly props: GPUSpatialClusteringProps;
   /** Resolved spatial context (native planar when none was given). */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved context of `times` (ST-DBSCAN), else undefined. */
+  readonly temporalContext?: GPUTemporalContext;
   /** Sphere radius in the epsilon unit for a great-circle context, else undefined (planar). */
   readonly geographicRadius?: number;
 
@@ -247,6 +282,25 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       throw new Error(`${id} denseBoxShortcut is planar only`);
     }
     const rows = props.positions.length;
+    if (props.times) {
+      if (!props.temporalContext) {
+        throw new Error(`${id} times need a temporalContext`);
+      }
+      this.temporalContext = resolveGPUTemporalContext(
+        id,
+        props.temporalContext,
+        CLUSTERING_TEMPORAL_CONTEXT_SUPPORT
+      );
+      validatePackedView(props.times, ['float32'], `${id} times`);
+      if (props.times.length !== rows) {
+        throw new Error(`${id} times length must equal positions length`);
+      }
+      if (props.denseBoxShortcut) {
+        throw new Error(`${id} denseBoxShortcut cannot be combined with times`);
+      }
+    } else if (props.temporalContext) {
+      throw new Error(`${id} temporalContext needs times`);
+    }
 
     if (
       props.sumOrder !== undefined &&
@@ -348,7 +402,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         props.output.clusterCentroids,
         props.output.drawInstanceCount
       ],
-      [props.positions, props.parameters, props.sourceIds]
+      [props.positions, props.parameters, props.sourceIds, props.times]
     );
   }
 
@@ -404,6 +458,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       parameters,
+      props.times,
       props.sourceIds,
       props.output.labels,
       props.output.rootRows,
@@ -483,12 +538,18 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
 
     const gridPositions = createTransientView(graph, `${id}-grid-positions`, 'float32x2', rows);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
-    const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
-    const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', rows);
+    const gridIndex = createPointNeighborGridIndexNodes<Parameters>(graph, {
+      id,
+      positions: gridPositions,
+      gridSize: [gridSize[0], gridSize[1]],
+      rowCount: rows
+    });
+    const {cellOffsets, sortedRows, gridCount} = gridIndex;
     const cellPositions = createTransientView(graph, `${id}-cell-positions`, 'float32x2', rows);
     const cellCoreFlags = createTransientView(graph, `${id}-cell-core-flags`, 'uint32', rows);
-    const gridCount = createTransientView(graph, `${id}-grid-count`, 'uint32', 1);
-    const gridOverflow = createTransientView(graph, `${id}-grid-overflow`, 'uint32', 1);
+    const cellTimes = props.times
+      ? createTransientView(graph, `${id}-cell-times`, 'float32', rows)
+      : undefined;
     const coreFlags =
       props.output.coreFlags ?? createTransientView(graph, `${id}-core-flags`, 'uint32', rows);
     const parents = createTransientView(graph, `${id}-parents`, 'uint32', rows);
@@ -504,7 +565,8 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       parameters,
       sortedRows,
       gridCount,
-      cellOffsets
+      cellOffsets,
+      cellTimes
     };
 
     nodes.push(
@@ -517,16 +579,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         gridPositions,
         rowIds
       }),
-      ...new GPUGridIndex({
-        id: `${id}-grid-index`,
-        positions: gridPositions,
-        gridSize: [gridSize[0], gridSize[1]],
-        bounds: [0, 0, 1, 1],
-        cellOffsets,
-        objectIds: sortedRows,
-        count: gridCount,
-        overflow: gridOverflow
-      }).getCommandNodes(graph),
+      ...gridIndex.nodes,
       // Cell-ordered copy: neighbor scans walk `sortedRows`, so they read consecutive slots.
       createSpatialClusteringCellGatherNode<Parameters>(graph, {
         id: `${id}-cell-positions`,
@@ -536,6 +589,18 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         gridCount,
         cellValues: cellPositions
       }),
+      ...(props.times && cellTimes
+        ? [
+            createSpatialClusteringCellGatherNode<Parameters>(graph, {
+              id: `${id}-cell-times`,
+              variant: 'cell-times',
+              values: props.times,
+              sortedRows,
+              gridCount,
+              cellValues: cellTimes
+            })
+          ]
+        : []),
       ...(boxCounts ? this._getBoxCountNodes(graph, boxCounts) : []),
       // The core pass visits valid points only, so excluded rows need their zero flag first.
       createFillNode<Parameters>(graph, {

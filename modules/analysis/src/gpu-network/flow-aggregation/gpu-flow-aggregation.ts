@@ -21,10 +21,8 @@ import {
   createPublishNode,
   createWGSLActiveCountDispatch
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import type {
-  GPUCompactOutput,
-  GPUFloat32Positions
-} from '../../analysis-core/kernels/gpu-contributor-types';
+import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
+import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,

@@ -2,17 +2,65 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {GPUSort} from '@luma.gl/graph/gpu-core';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateGPUStorageBindingByteLength,
+  validateMaximumCount,
+  validateRequirement
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS,
+  GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS
+} from './pointcloud-limits';
 
 export type PointCloudGrid = {
   origin: readonly [number, number, number];
   dimensions: readonly [number, number, number];
   cellSize: number;
 };
+
+/**
+ * Throws unless a 3-D search grid is usable: finite origin and cell size, integer axis counts up to
+ * `GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS` and a total below `GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS`.
+ *
+ * @param id Contributor ID, for the message.
+ * @param name Prop name of the grid, for the message.
+ * @param grid Grid to check.
+ * @internal
+ */
+export function validatePointCloudSearchGrid(id: string, name: string, grid: PointCloudGrid): void {
+  validateRequirement(
+    id,
+    grid.origin.every(value => Number.isFinite(Math.fround(value))),
+    `${name}.origin must hold finite numbers`
+  );
+  for (const [axis, dimension] of grid.dimensions.entries()) {
+    validateCapacity(
+      id,
+      `${name}.dimensions[${axis}]`,
+      dimension,
+      1,
+      GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS
+    );
+  }
+  validateFiniteNumber(id, `${name}.cellSize`, grid.cellSize);
+  validateRequirement(
+    id,
+    Math.fround(grid.cellSize) > 0,
+    `${name}.cellSize must be positive in float32`
+  );
+  validateMaximumCount(
+    id,
+    `${name} cell count`,
+    grid.dimensions.reduce((product, value) => product * value, 1),
+    GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS
+  );
+}
 
 /** @internal Exact reusable grid index. Raster mode ignores Z only for the cell key. */
 export function createPointCloudGridIndex<Parameters>(
@@ -22,13 +70,16 @@ export function createPointCloudGridIndex<Parameters>(
   grid: PointCloudGrid,
   raster = false
 ) {
-  assert(grid.origin.every(value => Number.isFinite(Math.fround(value))));
-  assert(
-    grid.dimensions.every(value => Number.isSafeInteger(value) && value > 0 && value <= 0x1000000)
-  );
-  assert(Math.fround(grid.cellSize) > 0 && Number.isFinite(Math.fround(grid.cellSize)));
+  validatePointCloudSearchGrid(id, 'grid', grid);
   const cells = grid.dimensions.reduce((product, value) => product * value, 1);
-  assert(cells < 0xffffffff && (cells + 1) * 4 <= graph.device.limits.maxStorageBufferBindingSize);
+  // The cell offsets hold one uint32 per cell plus one closing entry.
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'grid cell offsets',
+    (cells + 1) * 4,
+    'reduce grid.dimensions or increase grid.cellSize'
+  );
   const allocate = (name: string, length = positions.length) =>
     createTransientView(graph, `${id}-${name}`, 'uint32', length);
   const keys = allocate('keys');

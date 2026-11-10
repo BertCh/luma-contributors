@@ -421,7 +421,7 @@ not vertex order: rectangle area within 2e-4 relative, radius 1e-4, diameter 1e-
 group, and near-collinear circumcenters fall back to the diametral circle.
 
 Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
-`createGPULocalFrame` and `GPULocalFrameProjection`.
+`createGPULocalFrame` and `GPULocalFrameProjection`. `output.status` has no `count`: every column has one row per group.
 
 #### How it computes
 
@@ -647,7 +647,7 @@ polygon layout (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`; 
 `sliver`. It builds on `GPUGeometryMeasures` (area, perimeter, centroid) plus central second moments.
 `elongation = 1 - sqrt(lambda2 / lambda1)`. `orientation` is the major axis in radians in `(-pi/2, pi/2]`, and exactly 0 when the second moments are
 isotropic (an axis-aligned square or a circle).
-`convexity = area / hull area` uses a private gift-wrapping hull (`O(n * h)` per feature). `clockwise` is
+`convexity = area / hull area` uses a private gift-wrapping hull (`O(n * h)` per feature) for small features and `GPUGroupConvexHull` (`O(n log n)`, balanced) for large ones: `convexityMethod: 'auto'` chooses the monotone chain when features average at least 256 vertices, or when the optional `maximumVerticesPerFeature` prop declares a largest feature of at least `GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_LARGEST_VERTICES` (1024) vertices, so one huge feature among many small ones is not walked by a single invocation. The moments node still integrates one feature per invocation; a segmented-sum version (per-edge terms reduced with `sorted-segment-sums`) would balance it. Outputs have one row per feature and no `status.count`. `clockwise` is
 read from the first ring (y up), and `sliver` is set when Polsby-Popper is below the per-frame threshold.
 Coordinates are planar and degenerate features give NaN. A longitude/latitude `spatialContext` throws at
 construction; project first with `createGPULocalFrame` and `GPULocalFrameProjection`. The resolved context,
@@ -1075,7 +1075,7 @@ Clips lines or polygons to a rectangle (turf `bboxClip`, Shapely `clip_by_rect`,
 Props: `geometryType` (`'lines'` with `positions` and `lineOffsets`, or `'polygons'` with the four-level
 `positions`, `featureOffsets`, `polygonOffsets` and `ringOffsets`), `parameters`
 (`getGPURectangleClipParameterValues({minX, minY, maxX, maxY})`) and `output: GPULineGeometryOutput`
-(`positions`, `lineOffsets`, `status` with `count`, `overflow`, optional `requiredCount` and `lineCount`, and, for lines,
+(`positions`, `lineOffsets`, `status` with `count` (output vertices), `overflow`, optional `requiredCount` and `lineCount`, and, for lines,
 `sourceLineIndices`). Lines use Liang-Barsky, and the pieces are re-joined into lines, so a line that leaves and
 re-enters becomes several lines. Polygons use Sutherland-Hodgman in four count, scan and emit stages, with
 one output ring per input ring (possibly empty; `output.lineOffsets` holds the output ring offsets, and the input
@@ -1083,7 +1083,7 @@ one output ring per input ring (possibly empty; `output.lineOffsets` holds the o
 exact). The output capacity is `output.positions.length`, shared by all stages. Single-vertex lines are
 dropped, degenerate bridges are not removed, and there is no spherical mode.
 
-Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`).
+`spatialContext` defaults to native planar coordinates. A longitude-latitude context is accepted: the rectangle is in the same degrees as the input and edges are straight in longitude and latitude (turf `bboxClip`), with no antimeridian handling; a context declaring great-circle edges throws.
 
 ```ts
 graph.add(new GPURectangleClip({positions, geometryType: 'polygons', featureOffsets, polygonOffsets, ringOffsets, parameters, output}));

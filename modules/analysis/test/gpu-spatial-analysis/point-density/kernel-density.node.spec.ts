@@ -118,7 +118,7 @@ it('GPUKernelDensity schedules index, sort, weights, reductions, and gather', ()
     .getCommandNodes(graph)
     .map(node => node.id);
   expect(ids.some(id => id.startsWith('kernel-density-index'))).toBe(true);
-  expect(ids).toContain('kernel-density-sort-cells');
+  expect(ids.some(id => id.startsWith('kernel-density-cell-row-order'))).toBe(true);
   expect(ids).toContain('kernel-density-point-weights');
   expect(ids.some(id => id.startsWith('kernel-density-weight-sum'))).toBe(true);
   expect(ids.some(id => id.startsWith('kernel-density-invalid-count'))).toBe(true);
@@ -428,4 +428,28 @@ it('polygon exact oracle agrees with the pinned rectangle fields at their docume
       expect(Math.abs(actual[index] - expected)).toBeLessThanOrEqual(tolerance);
     }
   }
+});
+
+it('GPUKernelDensity accepts bisquare as an alias of quartic', () => {
+  const device = createNullWebGPUDevice();
+  const getKernelAndSources = (kernel: 'quartic' | 'bisquare') => {
+    const graph = new GPUCommandGraph(device);
+    const contributor = new GPUKernelDensity({
+      positions: createTransientView(graph, 'positions', 'float32x2', 8),
+      parameters: createTransientView(graph, 'parameters', 'float32', 9),
+      grid: GRID_4_BY_3,
+      indexGridSize: [2, 2],
+      indexBounds: [0, 0, 4, 3],
+      kernel,
+      output: {values: createTransientView(graph, 'values', 'float32', 12)}
+    });
+    return {
+      kernel: contributor.kernel,
+      sources: getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph))
+    };
+  };
+  const quartic = getKernelAndSources('quartic');
+  const bisquare = getKernelAndSources('bisquare');
+  expect(bisquare.kernel).toBe('quartic');
+  expect(bisquare.sources).toEqual(quartic.sources);
 });

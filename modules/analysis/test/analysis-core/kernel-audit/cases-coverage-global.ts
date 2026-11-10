@@ -73,6 +73,56 @@ for (const mode of ['exterior', 'interior'] as const)
       );
     }
   });
+for (const mode of ['exterior', 'interior'] as const)
+  cases.push({
+    exportName: 'GPUS2CapCovering',
+    name: `${mode},level-synchronous,level15,frontier-limited caps`,
+    build(context) {
+      const capacity = 1024;
+      const frontierCapacity = 8 * capacity + 64;
+      const count = context.maximumRows(frontierCapacity * 16);
+      context.graph.add(
+        new GPUS2CapCovering({
+          refinement: 'level-synchronous',
+          caps: context.view('float32x4', count),
+          level: 15,
+          mode,
+          tolerance: 1e-2,
+          capacity,
+          output: {
+            cells: context.view('uint32x2', count * capacity),
+            counts: context.view('uint32x2', count),
+            status: context.view('uint32', count)
+          }
+        })
+      );
+    }
+  });
+for (const mode of ['interior', 'exterior'] as const)
+  cases.push({
+    exportName: 'GPUS2PolygonCovering',
+    name: `${mode},level-synchronous,level15,maximum traversal budget`,
+    build(context) {
+      context.graph.add(
+        new GPUS2PolygonCovering({
+          refinement: 'level-synchronous',
+          positions: context.view('float32x3', 128),
+          ringOffsets: context.view('uint32', 3),
+          maximumLevel: 15,
+          maximumVisitedCells: 1048576,
+          capacity: 65536,
+          mode,
+          complement: true,
+          output: {
+            cells: context.view('uint32x2', 65536),
+            counts: context.view('uint32x2', 1),
+            status: context.view('uint32', 1),
+            visitedCount: context.view('uint32', 1)
+          }
+        })
+      );
+    }
+  });
 for (const boundary of ['open', 'closed'] as const)
   for (const complement of [false, true])
     cases.push({

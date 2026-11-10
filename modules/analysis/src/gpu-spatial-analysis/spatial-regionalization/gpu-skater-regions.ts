@@ -27,6 +27,7 @@ import {
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {REGIONALIZATION_CSR_WGSL, REGIONALIZATION_NONE_WGSL} from './regionalization-wgsl';
+import {GPU_MINIMUM_SPANNING_TREE_STATUS} from './gpu-spatial-weights-minimum-spanning-tree';
 
 const OPERATION = 'GPUSkaterRegions';
 
@@ -133,6 +134,14 @@ export type GPUSkaterRegionsProps = {
   /** Number of attribute columns. Defaults to 1; at most 16. */
   columnCount?: number;
   /**
+   * Optional `GPUSpatialWeightsMinimumSpanningTree` `output.status`. As `GPUAZPRegions`,
+   * `GPUWardRegions` and `GPUMaxPRegions` do with their `invalidCount`, SKATER makes no cut when
+   * its `invalidCount` word is nonzero (the attribute table has non-finite entries): every tree
+   * stays one region, `regionCount` is the tree count and every `cutEdges` entry is
+   * `GPU_SKATER_NO_CUT`.
+   */
+  treeStatus?: GraphDataView<'uint32'>;
+  /**
    * Compile-time cap on the region count, and the number of unrolled greedy steps minus the
    * islands: `maximumRegionCount - 1` steps are compiled. Must be at least 2.
    */
@@ -229,6 +238,14 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
     if (props.componentLabels.length !== rows) {
       throw new Error(`${id} componentLabels length must equal the weights row count`);
     }
+    if (props.treeStatus) {
+      validatePackedView(props.treeStatus, ['uint32'], `${id} treeStatus`);
+      if (props.treeStatus.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length) {
+        throw new Error(
+          `${id} treeStatus must hold ${GPU_MINIMUM_SPANNING_TREE_STATUS.length} word`
+        );
+      }
+    }
     validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.parameters.length < GPU_SKATER_REGIONS_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold ${GPU_SKATER_REGIONS_PARAMETER_LENGTH} words`);
@@ -259,6 +276,7 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
       [
         props.values,
         props.parameters,
+        props.treeStatus,
         props.treeEdgeFlags,
         props.componentLabels,
         props.weights.offsets,
@@ -279,6 +297,7 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
       props.treeEdgeFlags,
       props.componentLabels,
       props.parameters,
+      props.treeStatus,
       labels,
       output.regionCount,
       output.cutEdges,
@@ -522,6 +541,16 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
         bindings: [
           {name: 'parameters', view: props.parameters, type: 'u32', access: 'read'},
           {name: 'state', view: state, type: 'u32', access: 'read_write'},
+          ...(props.treeStatus
+            ? [
+                {
+                  name: 'treeStatus',
+                  view: props.treeStatus,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           stepGate.binding
         ],
         invocationCount: stateLength,
@@ -531,7 +560,8 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
   }
   var word = 0u;
   if (index == STATE_TARGET) {
-    word = min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS);
+    // A nonzero invalid count from the tree sets the target to 0, so no step finds a candidate.
+    word = ${props.treeStatus ? `select(min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS), 0u, treeStatus[treeStatusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount}u] > 0u)` : `min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS)`};
   } else if (index == STATE_MINIMUM_SIZE) {
     word = max(parameters[parametersOffset + ${PARAMETER_MINIMUM_REGION_SIZE}u], 1u);
   } else if (index >= STATE_LOG && ((index - STATE_LOG) % 2u) == 0u) {

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -20,18 +19,35 @@ import {
   validateRasterGrid
 } from '../raster-band-utils';
 import {
+  validateCapacity,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validatePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getFocalPairsDeclarations, getFocalPairsBody} from './raster-focal-pairs-wgsl';
 
-/** Per-cell diagnostic bits. Constant-band flags do not invalidate covariance. */
+/** Window radius: a (2 * radius + 1) squared window (17 by 17) bounds each invocation's work and needs no private sample array. */
+export const MAXIMUM_FOCAL_PAIRS_RADIUS = 8;
+/** Most paired observations a window can hold at the maximum radius, 17 squared. */
+export const MAXIMUM_FOCAL_PAIRS_WINDOW_CELLS = (2 * MAXIMUM_FOCAL_PAIRS_RADIUS + 1) ** 2;
+/** Scratch rows: six scalar metrics per pixel, addressed with uint32 indices. */
+const FOCAL_PAIRS_METRIC_COUNT = 6;
+
+/**
+ * Per-cell diagnostic bits of `GPURasterFocalPairsOutput.status`, combined with bitwise or.
+ * Constant-band flags do not invalidate covariance.
+ */
 export const GPU_RASTER_FOCAL_PAIRS_STATUS = {
+  /** Bit 0: fewer than `minimumCount` paired-valid observations; all metrics are NaN. */
   insufficientPairs: 1,
+  /** Bit 1: required neighborhood or center invalidity (see `noDataPolicy`, `propagateCenterNoData`); all metrics are NaN. */
   missingPair: 2,
+  /** Bit 2: zero predictor centered sum of squares; covariance stays zero, regression and correlation are NaN. */
   constantPredictor: 4,
+  /** Bit 3: zero response centered sum of squares; covariance stays zero, correlation and R-squared are NaN. */
   constantResponse: 8,
+  /** Bit 4: moment or fit overflow, or other nonfinite arithmetic; all metrics are NaN. */
   nonFiniteResult: 16
 } as const;
 
@@ -39,7 +55,11 @@ export const GPU_RASTER_FOCAL_PAIRS_STATUS = {
 export type GPURasterFocalPairsOutput = {
   /** Paired-valid observations, including repeated samples under clamp/reflect, even on failure. */
   pairedCount: GraphDataView<'uint32'>;
-  /** Bitwise combination of GPU_RASTER_FOCAL_PAIRS_STATUS; zero means all metrics are defined. */
+  /**
+   * Bitwise combination of `GPU_RASTER_FOCAL_PAIRS_STATUS`; zero means all metrics are defined.
+   * Bit 0 (1) insufficientPairs, bit 1 (2) missingPair, bit 2 (4) constantPredictor,
+   * bit 3 (8) constantResponse, bit 4 (16) nonFiniteResult.
+   */
   status: GraphDataView<'uint32'>;
   covariance?: GraphDataView<'float32'>;
   correlation?: GraphDataView<'float32'>;
@@ -109,22 +129,46 @@ export class GPURasterFocalPairs implements GPUCommandNodeProducer {
     const count = validateRasterGrid(this.id, props.grid);
     validateRasterBand(props.predictor, props.grid, `${this.id} predictor`);
     validateRasterBand(props.response, props.grid, `${this.id} response`);
-    // A 17-by-17 window bounds each invocation's work and requires no private sample array.
-    assert(Number.isInteger(props.radius) && props.radius >= 0 && props.radius <= 8);
-    assert(
-      Number.isInteger(props.minimumCount ?? 2) &&
-        (props.minimumCount ?? 2) >= 2 &&
-        (props.minimumCount ?? 2) <= 289
+    validateCapacity(this.id, 'radius', props.radius, 0, MAXIMUM_FOCAL_PAIRS_RADIUS);
+    validateCapacity(
+      this.id,
+      'minimumCount',
+      props.minimumCount ?? 2,
+      2,
+      MAXIMUM_FOCAL_PAIRS_WINDOW_CELLS
     );
-    assert(['nodata', 'clamp', 'reflect'].includes(props.borderMode ?? 'nodata'));
-    assert(['ignore', 'propagate'].includes(props.noDataPolicy ?? 'ignore'));
-    assert(['sample', 'population'].includes(props.covarianceNormalization ?? 'sample'));
-    assert(
-      props.propagateCenterNoData === undefined || typeof props.propagateCenterNoData === 'boolean'
+    validateRequirement(
+      this.id,
+      ['nodata', 'clamp', 'reflect'].includes(props.borderMode ?? 'nodata'),
+      "borderMode must be 'nodata', 'clamp' or 'reflect'"
     );
-    assert(METRICS.some(metric => props.output[metric]));
-    // Scratch uses six scalar rows per pixel, addressed with uint32 indices.
-    assert(count <= Math.floor(0xffffffff / METRICS.length));
+    validateRequirement(
+      this.id,
+      ['ignore', 'propagate'].includes(props.noDataPolicy ?? 'ignore'),
+      "noDataPolicy must be 'ignore' or 'propagate'"
+    );
+    validateRequirement(
+      this.id,
+      ['sample', 'population'].includes(props.covarianceNormalization ?? 'sample'),
+      "covarianceNormalization must be 'sample' or 'population'"
+    );
+    validateRequirement(
+      this.id,
+      props.propagateCenterNoData === undefined || typeof props.propagateCenterNoData === 'boolean',
+      'propagateCenterNoData must be a boolean'
+    );
+    validateRequirement(
+      this.id,
+      METRICS.some(metric => props.output[metric]),
+      'output must request at least one float metric'
+    );
+    validateCapacity(
+      this.id,
+      'grid cell count',
+      count,
+      1,
+      Math.floor(0xffffffff / FOCAL_PAIRS_METRIC_COUNT)
+    );
     for (const [name, view] of Object.entries(props.output)) {
       if (!view) continue;
       validatePackedView(
@@ -132,7 +176,11 @@ export class GPURasterFocalPairs implements GPUCommandNodeProducer {
         [name === 'pairedCount' || name === 'status' ? 'uint32' : 'float32'],
         this.id
       );
-      assert(view.length >= count);
+      validateRequirement(
+        this.id,
+        view.length >= count,
+        `output.${name} must hold at least one entry per cell`
+      );
     }
     validateRasterBuffersDistinct(this.id, Object.values(props.output), [
       ...getRasterBandViews(props.predictor),

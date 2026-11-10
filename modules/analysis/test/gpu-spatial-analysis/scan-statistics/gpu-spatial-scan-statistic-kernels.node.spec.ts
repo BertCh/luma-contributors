@@ -7,7 +7,7 @@ import {describe, expect, test} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUSpatialScanStatistic} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
-import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 import {PHILOX_PURPOSES} from '../../../src/analysis-core/kernels/philox-random';
 import {
   getGPUSpatialScanStatisticLayout,

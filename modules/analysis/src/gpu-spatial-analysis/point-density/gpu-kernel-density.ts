@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  GPUGridIndex,
   GPUReduction,
   type GPUCommandGraph,
   type GPUCommandGraphNodeCondition,
@@ -41,12 +40,15 @@ import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {getRasterGridCorners} from '../spatial-interpolation/spatial-interpolation-parameters';
 import {getRectangleScanWGSL} from '../spatial-interpolation/grid-neighbor-scan';
+import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
+import {createPointNeighborGridIndexNodes} from '../shared/point-neighbor-grid-index';
 import {GRID_COORDINATE_WGSL} from '../spatial-interpolation/gpu-inverse-distance-weighting';
 import {
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION,
   getGPUKernelDensityCanonicalBandwidthScale,
   type GPUKernelDensityBandwidthRule,
   type GPUKernelDensityKernel,
+  type GPUKernelDensityKernelName,
   type GPUKernelDensityMethod,
   type GPUKernelDensityWindow
 } from './kernel-density-math';
@@ -269,8 +271,11 @@ export type GPUKernelDensityProps = {
    * Topology: changing it needs a new graph.
    */
   bandwidthRule?: GPUKernelDensityBandwidthRule;
-  /** Kernel, `K_h(d) = K(d / h) / h^2`, normalised to integrate to one. Defaults to `'gaussian'`. */
-  kernel?: GPUKernelDensityKernel;
+  /**
+   * Kernel, `K_h(d) = K(d / h) / h^2`, normalised to integrate to one. Defaults to `'gaussian'`.
+   * `'bisquare'` is an alias of `'quartic'` (the name neighbor search uses for the same shape).
+   */
+  kernel?: GPUKernelDensityKernelName;
   /**
    * Treatment of the study window boundary, where an uncorrected estimate loses the kernel mass
    * that falls outside the data region and underestimates the intensity.
@@ -388,6 +393,7 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
   /** Resolved compile-time study window. */
   readonly studyWindow: GPUStudyWindow;
   /** Resolved kernel. */
+  /** The canonical kernel name: a `'bisquare'` prop reads back as `'quartic'`. */
   readonly kernel: GPUKernelDensityKernel;
   /** Resolved edge correction. */
   readonly edgeCorrection: GPUKernelDensityEdgeCorrection;
@@ -410,7 +416,7 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
-    this.kernel = props.kernel ?? 'gaussian';
+    this.kernel = props.kernel === 'bisquare' ? 'quartic' : (props.kernel ?? 'gaussian');
     this.edgeCorrection = props.edgeCorrection ?? 'uniform';
     if (this.studyWindow !== 'rectangle' && this.edgeCorrection === 'none') {
       throw new Error(
@@ -423,7 +429,7 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       getGPUKernelDensityDefaultBinnedPadding(props.grid.width, props.grid.height);
     const requestedMethod = props.method ?? 'exact';
     if (!['gaussian', 'quartic', 'epanechnikov'].includes(this.kernel)) {
-      throw new Error(`${id} kernel must be gaussian, quartic, or epanechnikov`);
+      throw new Error(`${id} kernel must be gaussian, quartic (alias bisquare), or epanechnikov`);
     }
     if (!['none', 'uniform', 'diggle'].includes(this.edgeCorrection)) {
       throw new Error(`${id} edgeCorrection must be none, uniform, or diggle`);
@@ -731,70 +737,30 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {indexGridSize, indexBounds} = props;
     const pointCount = props.positions.length;
-    const indexCellCount = indexGridSize[0] * indexGridSize[1];
-    const cellOffsets = createTransientView(
-      graph,
-      `${id}-cell-offsets`,
-      'uint32',
-      indexCellCount + 1
-    );
-    const objectIds = createTransientView(graph, `${id}-object-ids`, 'uint32', pointCount);
-    const sortedIds = createTransientView(graph, `${id}-sorted-ids`, 'uint32', pointCount);
-    const indexCount = createTransientView(graph, `${id}-index-count`, 'uint32', 1);
-    const indexOverflow = createTransientView(graph, `${id}-index-overflow`, 'uint32', 1);
-    const nodes: GPUCommandNode<Parameters>[] = [
-      ...new GPUGridIndex({
-        id: `${id}-index`,
-        positions: props.positions,
-        gridSize: indexGridSize,
-        bounds: indexBounds,
-        cellOffsets,
-        objectIds,
-        count: indexCount,
-        overflow: indexOverflow
-      }).getCommandNodes(graph)
-    ];
+    const index = createPointNeighborGridIndexNodes<Parameters>(graph, {
+      id,
+      indexId: `${id}-index`,
+      positions: props.positions,
+      gridSize: indexGridSize,
+      bounds: indexBounds,
+      rowCount: pointCount
+    });
+    const {cellOffsets, sortedRows: objectIds, gridCount: indexCount} = index;
+    const nodes: GPUCommandNode<Parameters>[] = [...index.nodes];
 
-    // GPUGridIndex scatters IDs with atomics, so in-cell order varies between runs. Rank every ID
-    // within its cell to restore ascending row order before any floating-point sum depends on it.
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-sort-cells`,
-        operation: OPERATION,
-        variant: 'sort-cells',
-        bindings: [
-          {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'},
-          {name: 'objectIds', view: objectIds, type: 'u32', access: 'read'},
-          {name: 'indexCount', view: indexCount, type: 'u32', access: 'read'},
-          {name: 'sortedIds', view: sortedIds, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: pointCount,
-        declarations: `const INDEX_CELL_COUNT: u32 = ${indexCellCount}u;
-const POINT_COUNT: u32 = ${pointCount}u;`,
-        body: `if (index >= min(indexCount[indexCountOffset], POINT_COUNT)) {
-    return;
-  }
-  let point = objectIds[objectIdsOffset + index];
-  // Largest cell whose first slot is at or before this slot.
-  var low = 0u;
-  var high = INDEX_CELL_COUNT - 1u;
-  while (low < high) {
-    let middle = low + (high - low + 1u) / 2u;
-    if (cellOffsets[cellOffsetsOffset + middle] <= index) {
-      low = middle;
-    } else {
-      high = middle - 1u;
-    }
-  }
-  let start = cellOffsets[cellOffsetsOffset + low];
-  let end = cellOffsets[cellOffsetsOffset + low + 1u];
-  var rank = 0u;
-  for (var slot = start; slot < end; slot++) {
-    rank += select(0u, 1u, objectIds[objectIdsOffset + slot] < point);
-  }
-  sortedIds[sortedIdsOffset + start + rank] = point;`
-      })
-    );
+    // GPUGridIndex scatters IDs with atomics, so in-cell order varies between runs. A stable sort
+    // of the rows by cell restores ascending row order (before any floating-point sum depends on
+    // it) in O(rows) work, however many rows share a cell.
+    const cellRowOrder = createGridCellRowOrderNodes(graph, {
+      id: `${id}-cell-row-order`,
+      operation: OPERATION,
+      cellOffsets,
+      objectIds,
+      indexCount,
+      rowCount: pointCount
+    });
+    nodes.push(...cellRowOrder.nodes);
+    const sortedIds = cellRowOrder.sortedRows;
     return {nodes, cellOffsets, sortedIds};
   }
 

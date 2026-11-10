@@ -169,6 +169,14 @@ parameters.write(
   lowest AICc wins (ties to the lowest index), so a bandwidth with singular rows is chosen only when
   every valid candidate has some. This is a deliberate deviation from mgwr, which raises on a singular
   local system.
+- `localStatus` 1 (`SINGULAR`) also covers an ill-conditioned local design. The local normal equations
+  are scaled to unit diagonal (a correlation matrix, on the design centred at the focus), and a Cholesky
+  pivot below `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` (1e-3, the OLS limit) is singular, so a
+  local predictor within about `1 - 1e-6` of the span of the earlier columns (variance inflation factor
+  above 1e6) is rejected exactly where `GPUOrdinaryLeastSquares` reports status 1. Before this test only
+  a non-positive pivot failed and a nearly collinear design returned coefficients with status 0. The
+  same test applies to the generalized GWR information matrix and the nonstationarity test refits.
+  Well-conditioned fits are unchanged.
 - Refinement (new, default on; `refinement: false` keeps the fixed ladder, a number from 1 to 4 sets
   the pass count, default 2): after the caller ladder, a GPU kernel writes a new ladder that zooms
   around the best candidate between its nearest evaluated neighbours (it never extrapolates beyond the
@@ -840,5 +848,23 @@ graph.add(new GPUSpatialErrorMaximumLikelihood({weights, predictors, response, p
 ::lens{scenario=gpu-spatial-analysis.spatial-error-maximum-likelihood rung=kernel caption="Inspect the Gram, trace, lambda search and variance kernels with retained WGSL bindings."}
 ::lens{scenario=gpu-spatial-analysis.spatial-error-maximum-likelihood rung=graph caption="Trace the Gram passes, 128 trace powers and the lambda search over 788 tracts."}
 
+### `GPUGeographicallyTemporallyWeightedRegression`
+
+Geographically and temporally weighted regression (GTWR; Huang, Wu and Barry 2010) at a fixed bandwidth. Every row is fitted by weighted least squares with kernel weights on the space-time distance `sqrt(ds^2 + tau dt^2)`, where `ds` is the planar distance, `dt` the difference of the times in ticks and `tau` the time scale (the `tau` of the Python package mgtwr, whose `GTWRKernel` and `GTWR.fit` are the oracle). The kernel is Gaussian `exp(-z^2 / 2)` or bisquare `(1 - z^2)^2` with `z = d / h`, chosen at compile time. `bandwidth` and `timeScale` are per-frame (`getGPUGTWRParameterValues`), so a caller can move through the `(bandwidth, timeScale)` plane without recompiling and compare `summary` AICc; the adaptive (nearest-neighbour) bandwidth and the automatic search of mgtwr are not ported.
+
+`times` are float32 ticks after the origin of a `temporalContext` that declares `float32-relative` encoding with an origin epoch; the unit is whatever the context declares, and `timeScale` converts one tick into spatial units squared per tick squared. The local system is solved in coordinates centered on the focal row with the diagonally equilibrated Cholesky factorization shared with the GWR family, so a rank-deficient or ill-conditioned local design reports `SINGULAR` for that row (NaN coefficients, fitted value and hat) instead of an unstable fit; `EXCLUDED` marks a masked row or one with a non-finite value. `summary` has the layout of `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY` over the non-singular rows: residual sum of squares, trace of the hat matrix, AICc (mgtwr `aicc`: `-2 llf + 2 (tr S + 1) + 2 tr S (tr S + 1) / (n - tr S - 1)`), R squared, observation count, singular row count, sigma squared, log-likelihood and included row count.
+
+The fit is exhaustive over rows (`O(rows^2 x predictors^2)`, at most 32,768 rows and 11 predictors), float32 and planar. `gtwr-mgtwr.spec.ts` compares coefficients, fitted values, residuals, hat diagonals and summary statistics with mgtwr 2.0.5 output for four configurations (Gaussian and bisquare, time scale 0, 1.5, 2 and 8) and checks time-shift invariance, a larger time scale changing the fit, rank-deficient designs and masked rows. mgtwr declares no licence, so it is executed as an oracle (`test/oracles/gtwr-mgtwr-oracle.py`) and no code is copied.
+
+{/* lens:GPUGeographicallyTemporallyWeightedRegression */}
+
+### `GPUMultiscaleGeographicallyTemporallyWeightedRegression`
+
+Multiscale GTWR by backfitting, following mgtwr `multi_bws`. A GTWR fit at the initial `(bandwidth, timeScale)` starts the components `beta_j x_j` (the intercept is component 0). Each iteration visits the components in order and smooths the partial residual `beta_j x_j + err` with a one-covariate local regression at that component's own bandwidth and time scale, `beta_ij = sum_l w_il x_lj r_l / sum_l w_il x_lj^2`, updating `err` before the next component (Gauss-Seidel order). `iterationCount` (1 to 32) is compile-time and every iteration runs; `output.scores` holds mgtwr's convergence score `sqrt(sum (XB_new - XB_old)^2 / n / sum (sum_j XB_new)^2)` for each iteration, so a caller sees where mgtwr would have stopped. The bandwidths are the caller's (`getGPUMGTWRParameterValues`); mgtwr's per-component search is not ported. A row whose initial local fit is singular starts from zero components, and a component smoother whose weighted `x^2` sum is not positive leaves a NaN coefficient (status `SINGULAR`) and contributes nothing.
+
+The spec compares the final coefficients, residuals and the whole score history with `mgtwr.function.multi_bws` run with fixed per-component bandwidths and time scales for two configurations that converge in five iterations.
+
 See [local variability and regression extensions](./statistical-expansion.md) for the expanded
 statistics, fixed/grid-selected multiscale fits, generalized local models, pooled panels and regimes.
+
+{/* lens:GPUMultiscaleGeographicallyTemporallyWeightedRegression */}

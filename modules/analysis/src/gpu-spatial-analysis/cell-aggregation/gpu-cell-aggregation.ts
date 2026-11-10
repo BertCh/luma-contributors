@@ -15,6 +15,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validatePackedView
@@ -196,7 +197,16 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
       ...getCellTableViews(props.output),
       ...(props.extraCounts ?? [])
     ]);
-    const rows = (props.positions ?? props.cells)!.length;
+    const rowView = (props.positions ?? props.cells)!;
+    const rows = rowView.length;
+    // The positions or the cell keys are the widest row-proportional binding (8 bytes a row).
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      props.positions ? 'positions' : 'cells',
+      rows * rowView.rowByteLength,
+      'reduce the row count or aggregate the rows in several calls'
+    );
     const twoWords = hasCellKeyHighWord(layout);
     const keyLow = createTransientView(graph, `${id}-key-low`, 'uint32', rows);
     const keyHigh = twoWords

@@ -63,6 +63,8 @@ export async function runZoneEvents(
     /** Sparse table row capacity. Defaults to every `(track, zone)` cell. */
     tableCapacity?: number;
     spatialSort?: boolean;
+    /** Largest bridged segment in time units; omitted means no limit. */
+    maximumGap?: number;
     /** A/B timing: extra encodings after the first, whose median wall time is returned. */
     timedEncodings?: number;
   }
@@ -179,6 +181,16 @@ export async function runZoneEvents(
       candidateCapacity: options.candidateCapacity,
       trackEventCapacity: options.trackEventCapacity,
       spatialSort: options.spatialSort,
+      maximumGap:
+        options.maximumGap === undefined
+          ? undefined
+          : importGraphBuffer(
+              graph,
+              'maximum-gap',
+              input(Float32Array.of(options.maximumGap)),
+              'float32',
+              1
+            ),
       output: {
         events: {
           ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', eventCapacity),

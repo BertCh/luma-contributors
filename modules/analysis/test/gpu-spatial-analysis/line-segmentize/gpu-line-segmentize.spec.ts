@@ -69,6 +69,7 @@ function createSegmentizeFixture(
       lineOffsets: {values: lines.lineOffsets, format: 'uint32'}
     },
     capacity: options.capacity,
+    withApproximation: true,
     lineCapacity: lines.lineOffsets.length - 1,
     createContributor: (inputs, parameters, output) =>
       new GPULineSegmentize({
@@ -691,4 +692,61 @@ it('degree-step kernels retain wrapped vertex bits and integer turns across long
       fixture.destroy();
     }
   }
+});
+
+it('GPULineSegmentize flags an edge clamped at maximumPieceCount through status.approximation', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines: FlatLines = {
+    positions: new Float32Array([0, 0, 10, 0, 10, 1]),
+    lineOffsets: new Uint32Array([0, 3])
+  };
+  const fixture = createSegmentizeFixture(device, lines, {capacity: 64, maximumPieces: 4});
+  // The 10 unit edge needs 20 pieces at length 0.5 but is cut into 4: approximate.
+  const clamped = await fixture.run(
+    getGPULineSegmentizeParameterValues({maximumSegmentLength: 0.5})
+  );
+  expect(clamped.approximation).toBe(1);
+  // Re-encoding with a length that fits clears the flag, because the node zeroes it each time.
+  const exact = await fixture.run(getGPULineSegmentizeParameterValues({maximumSegmentLength: 4}));
+  expect(exact.approximation).toBe(0);
+  const untouched = await fixture.run(
+    getGPULineSegmentizeParameterValues({maximumSegmentLength: 0})
+  );
+  expect(untouched.approximation).toBe(0);
+  fixture.destroy();
+});
+
+it('GPUGreatCircleArcs flags an arc clamped at maximumSegmentCount through status.approximation', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const create = (maximumSegmentCount: number) =>
+    createLineLineFixture(device, {
+      inputs: {
+        sources: {values: new Float32Array([0, 0, 10, 10]), format: 'float32x2'},
+        targets: {values: new Float32Array([90, 0, 10, 12]), format: 'float32x2'}
+      },
+      capacity: 64,
+      withApproximation: true,
+      lineCapacity: 2,
+      createContributor: (inputs, parameters, output) =>
+        new GPUGreatCircleArcs({
+          sources: inputs['sources'] as GraphDataView<'float32x2'>,
+          targets: inputs['targets'] as GraphDataView<'float32x2'>,
+          maximumSegmentCount,
+          parameters,
+          output
+        })
+    });
+  // A quarter of the equator is 10,007 km: 100 km segments would need 101 pieces.
+  const parameters = getGPUGreatCircleArcsParameterValues({
+    maximumSegmentLength: 100000,
+    minimumSegments: 1
+  });
+  const clamped = create(8);
+  expect((await clamped.run(parameters)).approximation).toBe(1);
+  clamped.destroy();
+  const exact = create(256);
+  expect((await exact.run(parameters)).approximation).toBe(0);
+  exact.destroy();
 });

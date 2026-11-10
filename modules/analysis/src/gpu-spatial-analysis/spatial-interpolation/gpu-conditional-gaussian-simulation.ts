@@ -97,6 +97,10 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
     this.props = props;
     this.id = props.id ?? 'conditional-gaussian-simulation';
     validatePredictionCovariance(props.covariance);
+    // Matern is validated for local kriging only; the dense Cholesky here has no pivot ratio check.
+    if (props.covariance.model === 'matern') {
+      throw new Error(`${this.id} does not support the Matern covariance`);
+    }
     validateCapacity(this.id, 'replicateCount', props.replicateCount, 1);
     validateCapacity(this.id, 'replicateOffset', props.replicateOffset ?? 0, 0);
     if (

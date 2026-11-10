@@ -14,7 +14,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createScanCarryNode} from '../../analysis-core/kernels/scan-total';
-import {SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
+import {getCandidateTruncationNodes, SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
 import {NODE_OVERLAPS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 
@@ -75,6 +75,14 @@ export function getSpatialJoinCandidateNodes<Parameters>(
     sphereRadius?: number;
     state: GraphDataView<'uint32'>;
     candidatePairs: GraphDataView<'uint32x2'>;
+    /**
+     * Optional per-left-row flag, 1 for the rows that lost candidates to `candidateCapacity`: the
+     * row that crosses the capacity and every later row with candidates (see
+     * {@link getCandidateTruncationNodes}).
+     */
+    candidateTruncated?: GraphDataView<'uint32'>;
+    /** Optional one-row flag, 1 when the candidate total exceeded `candidateCapacity`. */
+    candidateOverflow?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const {id, leftCount, rightCount, candidateCapacity, tree, state, candidatePairs} = props;
@@ -319,6 +327,19 @@ fn siftCandidateDown(start: u32, size: u32, value: u32) {
   }`
           : ''
       )
+    })
+  );
+  nodes.push(
+    ...getCandidateTruncationNodes<Parameters>(graph, {
+      id,
+      operation: OPERATION,
+      counts: leftCounts,
+      offsets: leftOffsets,
+      rowCount: leftCount,
+      candidateCapacity,
+      total: state,
+      candidateTruncated: props.candidateTruncated,
+      candidateOverflow: props.candidateOverflow
     })
   );
   return nodes;

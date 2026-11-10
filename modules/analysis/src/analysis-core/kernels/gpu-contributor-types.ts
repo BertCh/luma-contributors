@@ -12,12 +12,6 @@ import type {GraphDataView, GraphVectorView} from '@luma.gl/graph/gpu-core';
  */
 export type GPUUint32Rows = GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
 
-/**
- * Packed two-dimensional f32 positions, for example projected map coordinates or
- * longitude/latitude pairs.
- */
-export type GPUFloat32Positions = GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>;
-
 /** One GPU-written unsigned scalar: a one-row `uint32` status word. */
 export type GPUStatusScalar = GraphDataView<'uint32'>;
 

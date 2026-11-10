@@ -39,6 +39,11 @@ import {
   getMergeVisitWGSL
 } from './spatial-weights-algebra-wgsl';
 import {
+  getSpaceTimeStages,
+  type GPUSpaceTimeWeightsLayout,
+  type GPUSpatialWeightsSpaceTimeLag
+} from './spatial-weights-space-time-stages';
+import {
   getBinaryMergeStages,
   getSelfWeightStages,
   getSubgraphStages
@@ -180,8 +185,36 @@ export type GPUSpatialWeightsBlockProps = GPUSpatialWeightsAlgebraBaseProps & {
   groupCount: number;
 };
 
+/**
+ * Space-time weights `T (x) W` (STX-02): a spatial weights matrix `W` crossed with a temporal lag
+ * matrix `T`. The result has `cellCount * periodCount` rows; row (cell `i`, period `t`) lists, for
+ * every lag `l` of `lags`, the cells `j` of row `i` of `W` at period `t - l` with weight
+ * `T[t, t - l] * w_ij`. Contemporaneous neighbors are the lag 0 entry, lagged neighbors are lags
+ * above 0, and `includeSelf` adds the same cell at a lagged period (`(I + W)` for that lag). It
+ * is the sparse CSR of {@link GPUSpatialWeights}, so the permutation tests, spatial lag, global
+ * statistics and multiple testing read it unchanged.
+ *
+ * `layout` fixes the row order of the cube the weights index: `'period-major'` is
+ * `period * cellCount + cell`, `'cell-major'` is `cell * periodCount + period` (see
+ * `GPUCubeLayoutTranspose`). Neighbor IDs stay ascending within each row in both. Rows with no
+ * entry (the first `max(lag)` periods of a pure lag matrix) are islands. `output.distances` is
+ * not supported: there is no geometric distance across periods.
+ */
+export type GPUSpatialWeightsSpaceTimeProps = GPUSpatialWeightsAlgebraBaseProps & {
+  operation: 'spaceTime';
+  /** Spatial weights `W`, square over `cellCount` cells (`weights.offsets.length - 1`). */
+  weights: GPUSpatialWeights;
+  /** Number of periods, at least 1. The output has `cellCount * periodCount` rows. */
+  periodCount: number;
+  /** Row order of the space-time cube: `'period-major'` or `'cell-major'`. */
+  layout: GPUSpaceTimeWeightsLayout;
+  /** Distinct integer lags (at most 16), see {@link GPUSpatialWeightsSpaceTimeLag}. */
+  lags: readonly GPUSpatialWeightsSpaceTimeLag[];
+};
+
 /** Properties for {@link GPUSpatialWeightsAlgebra}. */
 export type GPUSpatialWeightsAlgebraProps =
+  | GPUSpatialWeightsSpaceTimeProps
   | GPUSpatialWeightsBinaryProps
   | GPUSpatialWeightsHigherOrderProps
   | GPUSpatialWeightsSelfWeightProps
@@ -265,6 +298,21 @@ function getAlgebraOutputInformation(
         hasSelfWeights: true,
         provenance
       };
+    case 'spaceTime': {
+      const unitWeights = props.lags.every(
+        entry => (entry.weight ?? 1) === 1 && !entry.includeSelf
+      );
+      const transform = props.weights.information?.transform;
+      return {
+        rowCount,
+        // Row sums and totals change with the lag count, so only unit temporal weights keep a state.
+        transform:
+          unitWeights && (transform === 'raw' || transform === 'binary') ? transform : 'unknown',
+        symmetric: 'unknown',
+        hasSelfWeights: props.weights.information?.hasSelfWeights,
+        provenance: {...provenance, order: props.lags.length}
+      };
+    }
     case 'subgraph':
       return {
         rowCount,
@@ -389,6 +437,32 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
           throw new Error(`${id} mask length must equal the row count`);
         }
         break;
+      case 'spaceTime': {
+        const cellCount = validateGPUSpatialWeights(id, props.weights, 'weights');
+        validateCapacity(id, 'periodCount', props.periodCount);
+        if (cellCount * props.periodCount !== outputRows) {
+          throw new Error(`${id} output.offsets length must equal cellCount * periodCount + 1`);
+        }
+        if (props.layout !== 'period-major' && props.layout !== 'cell-major') {
+          throw new Error(`${id} layout must be 'period-major' or 'cell-major'`);
+        }
+        validateCapacity(id, 'lags length', props.lags.length, 1, 16);
+        if (new Set(props.lags.map(entry => entry.lag)).size !== props.lags.length) {
+          throw new Error(`${id} lags must be distinct`);
+        }
+        for (const entry of props.lags) {
+          validateCapacity(id, 'lag', entry.lag, -0x7fffffff, 0x7fffffff);
+          if (
+            !(entry.weight === undefined || (Number.isFinite(entry.weight) && entry.weight > 0))
+          ) {
+            throw new Error(`${id} lag weight must be positive and finite`);
+          }
+          if (entry.includeSelf && entry.lag === 0) {
+            throw new Error(`${id} includeSelf is not allowed at lag 0`);
+          }
+        }
+        break;
+      }
       case 'block':
         validatePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
         if (props.groupIds.length !== outputRows) {
@@ -401,7 +475,9 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
     }
     if (
       props.output.distances &&
-      (props.operation === 'higherOrder' || props.operation === 'block')
+      (props.operation === 'higherOrder' ||
+        props.operation === 'block' ||
+        props.operation === 'spaceTime')
     ) {
       throw new Error(`${id} '${props.operation}' has no distances: omit output.distances`);
     }
@@ -449,6 +525,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       case 'higherOrder':
       case 'selfWeight':
       case 'subgraph':
+      case 'spaceTime':
         return [props.weights];
       default:
         return [];
@@ -477,6 +554,11 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         return this.getSelfWeightNodes(graph, props);
       case 'subgraph':
         return this.getSubgraphNodes(graph, props);
+      case 'spaceTime':
+        return getSpaceTimeStages(graph, this.getStageBase(props.output), {
+          ...props,
+          cellCount: props.weights.offsets.length - 1
+        });
       case 'block':
         return this.getBlockNodes(graph, props);
       default:

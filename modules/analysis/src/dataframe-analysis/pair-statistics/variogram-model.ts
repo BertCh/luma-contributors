@@ -3,7 +3,30 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /** Variogram model families supported by {@link fitVariogramModel}. */
-export type VariogramModelType = 'spherical' | 'exponential' | 'gaussian';
+export type VariogramModelType =
+  | 'spherical'
+  | 'exponential'
+  | 'gaussian'
+  | 'matern-3/2'
+  | 'matern-5/2';
+
+/**
+ * Argument factor `a = factor * h / range` of the closed-form Matern 3/2 correlation
+ * `(1 + a) exp(-a)`, so that it equals `exp(-3)` at `h = range`, the exponential and Gaussian
+ * convention. Solved in double precision from `a - ln(1 + a) = 3`.
+ *
+ * @internal
+ */
+export const MATERN_3_2_RANGE_FACTOR = 4.749031386012701;
+
+/**
+ * Argument factor of the closed-form Matern 5/2 correlation `(1 + a + a^2 / 3) exp(-a)`, so that
+ * it equals `exp(-3)` at `h = range`. Solved in double precision from
+ * `a - ln(1 + a + a^2 / 3) = 3`.
+ *
+ * @internal
+ */
+export const MATERN_5_2_RANGE_FACTOR = 5.924462618951797;
 
 /**
  * Least-squares weighting of {@link fitVariogramModel}:
@@ -25,8 +48,9 @@ export type VariogramModel = {
   /** Partial sill `c >= 0`; the total sill is `nugget + sill`. */
   sill: number;
   /**
-   * Effective (practical) range: the spherical model reaches the sill at `range`, the exponential
-   * and Gaussian models reach 95% of it there (gstat ranges `range / 3` and `range / sqrt(3)`).
+   * Effective (practical) range: the spherical model reaches the sill at `range`, the exponential,
+   * Gaussian and Matern models reach 95% of it there (gstat ranges `range / 3` and
+   * `range / sqrt(3)`).
    */
   range: number;
   /** Weighted sum of squared residuals at the fitted parameters. */
@@ -69,6 +93,14 @@ export function getVariogramModelShape(model: VariogramModelType, scaledDistance
       return 1 - Math.exp(-3 * scaledDistance);
     case 'gaussian':
       return 1 - Math.exp(-3 * scaledDistance * scaledDistance);
+    case 'matern-3/2': {
+      const argument = MATERN_3_2_RANGE_FACTOR * scaledDistance;
+      return 1 - (1 + argument) * Math.exp(-argument);
+    }
+    case 'matern-5/2': {
+      const argument = MATERN_5_2_RANGE_FACTOR * scaledDistance;
+      return 1 - (1 + argument + (argument * argument) / 3) * Math.exp(-argument);
+    }
     default:
       throw new Error(`Unknown variogram model ${String(model)}`);
   }
@@ -91,7 +123,7 @@ export function evaluateVariogramModel(
 }
 
 /**
- * Fits a spherical, exponential or Gaussian model to empirical variogram bins by weighted least
+ * Fits a spherical, exponential, Gaussian or Matern model to empirical variogram bins by weighted least
  * squares, on the CPU.
  *
  * Fitting runs on at most a few hundred read-back bins and is nonlinear only in the range, so it

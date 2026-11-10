@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -19,6 +22,9 @@ import {
   validateRasterExpansionGraph,
   validateRasterExpansionViews
 } from './raster-expansion-utils';
+
+/** Largest search radius in cells; the brute-force disk search costs O(radius squared) per cell. */
+const MAXIMUM_SEARCH_DISTANCE = 256;
 
 /** Caller-owned prepared surface and provenance. */
 export type GPURasterFillNoDataOutput = {
@@ -56,9 +62,11 @@ export class GPURasterFillNoData implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-fill-nodata';
     this.props = props;
     // Reject unsupported interpolation names instead of silently choosing all-donor IDW.
-    assert(
+    validateRequirement(
+      this.id,
       props.method === undefined ||
-        ['nearest', 'inverse-distance', 'gdal-four-quadrant'].includes(props.method)
+        ['nearest', 'inverse-distance', 'gdal-four-quadrant'].includes(props.method),
+      "method must be 'nearest', 'inverse-distance' or 'gdal-four-quadrant'"
     );
     const count = validateRasterExpansionViews(
       this.id,
@@ -66,15 +74,11 @@ export class GPURasterFillNoData implements GPUCommandNodeProducer {
       getRasterBandViews(props.input),
       Object.values(props.output)
     );
-    for (const view of [props.output.values, props.output.validity, props.output.filled])
-      requireRasterLength(view, count);
-    requireRasterLength(props.output.unresolvedCount, 1);
-    // The disk search is deliberately bounded to avoid unbounded shader work.
-    assert(
-      Number.isInteger(props.maximumDistance) &&
-        props.maximumDistance > 0 &&
-        props.maximumDistance <= 256
-    );
+    requireRasterLength(props.output.values, count, this.id, 'output.values');
+    requireRasterLength(props.output.validity, count, this.id, 'output.validity');
+    requireRasterLength(props.output.filled, count, this.id, 'output.filled');
+    requireRasterLength(props.output.unresolvedCount, 1, this.id, 'output.unresolvedCount');
+    validateCapacity(this.id, 'maximumDistance', props.maximumDistance, 1, MAXIMUM_SEARCH_DISTANCE);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>

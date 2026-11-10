@@ -53,6 +53,8 @@ const MAP_MATCHING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.fr
 });
 
 const OPERATION = 'GPUMapMatching';
+/** Words per point of the hop table read by the traversed-route kernel. */
+const HOP_WORD_COUNT = 5;
 /** Bits of `-1.0f`: an out-of-range node ID and a negative (invalid) edge length. */
 const INVALID_EDGE_WORD = 0xbf800000;
 
@@ -73,6 +75,27 @@ export function getGPUMapMatchingMaximumEdgeCount(device: Device): number {
  */
 export function getGPUMapMatchingMaximumEntryCapacity(device: Device): number {
   return getStorageBindingElementLimit(device, 4);
+}
+
+/**
+ * Largest point count of {@link GPUMapMatching} on `device` for `candidateCount` candidates per
+ * point (default 8). The per-point scratch is the binding that limits it: the route table takes
+ * `candidateCount * (candidateCount + 1) * 4` bytes per point (288 for 8 candidates, so 466033
+ * points on a default device with 128 MiB bindings), the candidate table 12 bytes per candidate,
+ * and, with {@link GPUMapMatchingOutput.traversedEdges}, the hop table 20 bytes.
+ */
+export function getGPUMapMatchingMaximumPointCount(
+  device: Device,
+  candidateCount: number = 8,
+  hasTraversedEdges: boolean = false
+): number {
+  return Math.min(
+    getStorageBindingElementLimit(device, candidateCount * (candidateCount + 1) * 4),
+    getStorageBindingElementLimit(device, candidateCount * 12),
+    getStorageBindingElementLimit(device, (candidateCount + 1) * 4),
+    getStorageBindingElementLimit(device, 8),
+    hasTraversedEdges ? getStorageBindingElementLimit(device, HOP_WORD_COUNT * 4) : Infinity
+  );
 }
 
 /** Number of `float32` words in the per-frame parameter view of {@link GPUMapMatching}. */
@@ -149,8 +172,18 @@ export type GPUMapMatchingOutput = {
    * not breaks.
    */
   breaks?: GraphDataView<'uint32'>;
-  /** Optional log-likelihood per track: the sum of the best final score of each unbroken stretch. */
+  /**
+   * Optional log-likelihood per track: the sum of the best final score of each unbroken stretch.
+   * Scores are renormalized per step in `float32` and the per-step offsets are summed as a whole
+   * part and a fraction, so the value is accurate to about one `float32` rounding of its own magnitude
+   * however long the track is.
+   */
   trackLogLikelihoods?: GraphDataView<'float32'>;
+  /**
+   * Optional traversed route: the edges the vehicle passed along, including the intermediate
+   * edges that no fix landed on. Requires {@link GPUMapMatchingProps.traversedEdgeCapacity}.
+   */
+  traversedEdges?: GPUMapMatchingTraversedEdges;
   /** Optional one-row count of points with a matched edge. */
   matchedCount?: GraphDataView<'uint32'>;
   /** Optional one-row count of points flagged in `breaks` (ordinary and budget breaks). */
@@ -171,6 +204,44 @@ export type GPUMapMatchingOutput = {
      * 0 means every route search was exact (up to f32 rounding).
      */
     routeOverflow?: GraphDataView<'uint32'>;
+  };
+};
+
+/**
+ * Caller-owned traversed-route output of {@link GPUMapMatching}: a compact list of CSR edge rows
+ * per track, in travel order.
+ *
+ * Within a track the list holds the matched edge of the first matched fix, then, per consecutive
+ * matched fixes of one unbroken sub-track, the edges of the shortest route between them (found by
+ * a fresh bounded search over the same network and bound that the model used) and the second fix's
+ * edge. A fix on the edge of the previous fix and not behind it adds nothing, so consecutive
+ * entries differ except after a loop. Between sub-tracks (after a break or a fix with no match)
+ * the list holds one {@link GPU_MAP_MATCHING_NONE} entry, so a consumer that counts traversals
+ * skips it and does not invent an adjacency across the break. Dropped fixes
+ * ({@link GPUMapMatchingProps.minimumFixSpacingSigmas}) contribute nothing. Hops are processed one
+ * thread per track, serially, like the Viterbi passes.
+ */
+export type GPUMapMatchingTraversedEdges = {
+  /**
+   * `trackCount * traversedEdgeCapacity` rows; track `t` owns rows
+   * `t * traversedEdgeCapacity` to `(t + 1) * traversedEdgeCapacity - 1`, of which the first
+   * `min(counts[t], traversedEdgeCapacity)` are written. Other rows are not touched.
+   */
+  edges: GraphDataView<'uint32'>;
+  /**
+   * Entries the route of each track needs, including {@link GPU_MAP_MATCHING_NONE} separators and
+   * entries past the capacity that were not stored, so `counts[t] > traversedEdgeCapacity` tells
+   * how much capacity the track needed.
+   */
+  counts: GraphDataView<'uint32'>;
+  /** Optional GPU-written status words. */
+  status?: {
+    /**
+     * One-row flag: 1 when a track needed more than `traversedEdgeCapacity` entries, or when the
+     * intermediate edges of a hop could not be recovered because the bounded search of the hop
+     * dropped nodes (the hop then lists only its end edge).
+     */
+    overflow?: GraphDataView<'uint32'>;
   };
 };
 
@@ -241,7 +312,10 @@ export type GPUMapMatchingProps = {
    * clamped). On longitude/latitude the maximum longitude may exceed 180 for a grid that crosses
    * the antimeridian.
    */
-  bounds: {minimum: readonly [number, number]; maximum: readonly [number, number]};
+  bounds: {
+    minimum: readonly [number, number];
+    maximum: readonly [number, number];
+  };
   /**
    * Compile-time capacity of the edge-cell table, at most {@link getGPUMapMatchingMaximumEntryCapacity}
    * (33554432 on a default device). Defaults to `16 * edgeCount + 256`, capped at that maximum;
@@ -257,6 +331,20 @@ export type GPUMapMatchingProps = {
    * about 1.1 km.
    */
   routeNodeBudget?: number;
+  /**
+   * Drops fixes closer than this many `sigma` to the previous retained fix of the track (Newson
+   * and Krumm 2009, section 4: 2 is their value), measured with the `sigma` and the distance of
+   * the frame's parameters. Without it a fix that jitters backward on a one-way edge has no
+   * feasible transition and breaks the track. A dropped fix is never a candidate source or target
+   * and is unmatched in every output (`matchedEdges` is {@link GPU_MAP_MATCHING_NONE}, `breaks`
+   * is 0); the first fix of a track is always kept. Compile-time; omitted or 0 keeps every fix.
+   */
+  minimumFixSpacingSigmas?: number;
+  /**
+   * Compile-time number of edge rows reserved per track by `output.traversedEdges`, required with
+   * it. The route of a long track needs one entry per edge passed plus one per sub-track break.
+   */
+  traversedEdgeCapacity?: number;
   /**
    * Optional precomputed cost table of a static network (UBODT, Yang and Gidofalvi 2018). A route
    * search whose bound `routeFactor * straight + routeSlack - tail` is within the table's
@@ -343,7 +431,9 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       props.spatialContext,
       MAP_MATCHING_SPATIAL_CONTEXT_SUPPORT
     );
-    const topologyShape = validateGPUNetworkTopology(id, props.topology, {nodePositions: true});
+    const topologyShape = validateGPUNetworkTopology(id, props.topology, {
+      nodePositions: true
+    });
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     for (const [name, view] of [
@@ -353,7 +443,10 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       ['output.matchedCount', output.matchedCount],
       ['output.breakCount', output.breakCount],
       ['output.status.overflow', output.status?.overflow],
-      ['output.status.routeOverflow', output.status?.routeOverflow]
+      ['output.status.routeOverflow', output.status?.routeOverflow],
+      ['output.traversedEdges.edges', output.traversedEdges?.edges],
+      ['output.traversedEdges.counts', output.traversedEdges?.counts],
+      ['output.traversedEdges.status.overflow', output.traversedEdges?.status?.overflow]
     ] as const) {
       if (view) {
         validatePackedView(view, ['uint32'], `${id} ${name}`);
@@ -403,6 +496,31 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     }
     if (props.entryCapacity !== undefined) {
       validateCapacity(id, 'entryCapacity', props.entryCapacity);
+    }
+    if (props.minimumFixSpacingSigmas !== undefined) {
+      if (
+        !(props.minimumFixSpacingSigmas >= 0) ||
+        !Number.isFinite(props.minimumFixSpacingSigmas)
+      ) {
+        throw new Error(`${id} minimumFixSpacingSigmas must be a non-negative number`);
+      }
+    }
+    if (output.traversedEdges) {
+      // A traversed route needs a capacity; the views are sized from it.
+      validateCapacity(id, 'traversedEdgeCapacity', props.traversedEdgeCapacity ?? 0);
+      const {edges, counts} = output.traversedEdges;
+      const overflow = output.traversedEdges.status?.overflow;
+      if (edges.length !== this.trackCount * props.traversedEdgeCapacity!) {
+        throw new Error(
+          `${id} output.traversedEdges.edges must contain trackCount * traversedEdgeCapacity rows`
+        );
+      }
+      if (counts.length !== this.trackCount) {
+        throw new Error(`${id} output.traversedEdges.counts must contain ${this.trackCount} rows`);
+      }
+      if (overflow && overflow.length !== 1) {
+        throw new Error(`${id} output.traversedEdges.status.overflow must contain 1 rows`);
+      }
     }
     for (const [name, view, length] of [
       ['matchedEdges', output.matchedEdges, this.pointCount],
@@ -475,11 +593,32 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       edgeCount,
       getGPUMapMatchingMaximumEdgeCount(graph.device)
     );
+    // Per-point scratch (candidates, routes, scores, hops) must fit one storage binding.
+    validateMaximumCount(
+      id,
+      'positions rows',
+      pointCount,
+      getGPUMapMatchingMaximumPointCount(
+        graph.device,
+        candidateCount,
+        Boolean(output.traversedEdges)
+      )
+    );
+    if (output.traversedEdges) {
+      validateMaximumCount(
+        id,
+        'trackCount * traversedEdgeCapacity',
+        trackCount * props.traversedEdgeCapacity!,
+        getStorageBindingElementLimit(graph.device, 4)
+      );
+    }
     const maximumEntryCapacity = getGPUMapMatchingMaximumEntryCapacity(graph.device);
     if (props.entryCapacity !== undefined) {
       validateCapacity(id, 'entryCapacity', props.entryCapacity, 1, maximumEntryCapacity);
     }
     const budget = props.routeNodeBudget ?? 64;
+    const hasFixFilter = (props.minimumFixSpacingSigmas ?? 0) > 0;
+    const {traversedEdges} = output;
     const cellCount = this.gridWidth * this.gridHeight;
     const entryCapacity =
       props.entryCapacity ?? Math.min(16 * edgeCount + 256, maximumEntryCapacity);
@@ -504,6 +643,10 @@ const ROUTE_STRIDE: u32 = ${candidateCount + 1}u;
 const NONE: u32 = 0xffffffffu;
 // Back pointer of a restart where a route search into the point dropped nodes: a budget break.
 const BUDGET_BREAK: u32 = 0xfffffffeu;
+// Predecessor of a fix dropped by the minimum fix spacing (NONE marks the first fix of a track).
+const DROPPED_FIX: u32 = 0xfffffffeu;
+// Score rows: K scores, then the offset subtracted from them (per-step renormalization).
+const SCORE_STRIDE: u32 = ${candidateCount + 1}u;
 const NEG: f32 = -1.0e30;
 const GRID_WIDTH: u32 = ${this.gridWidth}u;
 const GRID_HEIGHT: u32 = ${this.gridHeight}u;
@@ -554,12 +697,15 @@ ${declarations}`,
     const entries = transient('entries', 'uint32', entryCapacity);
     const candidates = transient('candidates', 'uint32', pointCount * candidateCount * 3);
     const pointStarts = transient('point-starts', 'uint32', pointCount);
+    // Previous retained fix per point (NONE for the first of a track, DROPPED_FIX for a dropped one).
+    const predecessors = transient('predecessors', 'uint32', pointCount);
+    const hops = transient('hops', 'uint32', pointCount * HOP_WORD_COUNT);
     const routes = transient(
       'routes',
       'float32',
       pointCount * candidateCount * (candidateCount + 1)
     );
-    const scores = transient('scores', 'float32', pointCount * candidateCount);
+    const scores = transient('scores', 'float32', pointCount * (candidateCount + 1));
     const backPointers = transient('back-pointers', 'uint32', pointCount * candidateCount);
     const chosen = transient('chosen', 'uint32', pointCount);
     const breaks = output.breaks ?? transient('breaks', 'uint32', pointCount);
@@ -580,7 +726,7 @@ ${declarations}`,
         kernel(
           'route-bounds',
           [
-            read('pointStarts', pointStarts),
+            hasFixFilter ? read('predecessors', predecessors) : read('pointStarts', pointStarts),
             read('points', props.positions, 'f32'),
             read('parameters', props.parameters, 'f32'),
             read('candidates', candidates),
@@ -594,11 +740,8 @@ ${declarations}`,
   let fromSlot = index % K;
   let base = routesOffset + index * ROUTE_STRIDE;
   routes[base + K] = -1.0;
-  if (point == 0u || pointStarts[pointStartsOffset + point] != 0u) {
-    return;
-  }
+  ${getPreviousFixWGSL(hasFixFilter)}
   ${tableOverflow ? 'if (tableOverflow[tableOverflowOffset] != 0u) {\n    return;\n  }' : ''}
-  let previous = point - 1u;
   let fromEdge = getCandidateEdge(previous, fromSlot);
   if (fromEdge == NONE) {
     return;
@@ -624,10 +767,11 @@ ${getAccessDeclarations()}`
             write('routes', routes, 'f32'),
             read('tableOffsets', routeTable.offsets),
             read('tableTargets', routeTable.targets),
-            read('tableCosts', routeTable.costs, 'f32')
+            read('tableCosts', routeTable.costs, 'f32'),
+            ...(hasFixFilter ? [read('predecessors', predecessors)] : [])
           ],
           pointCount * candidateCount,
-          getRouteTableBody(),
+          getRouteTableBody(hasFixFilter),
           `${edgeTableAccess}
 ${getRouteTableDeclarations()}`
         )
@@ -841,27 +985,68 @@ ${getRouteTableDeclarations()}`
         `${edgeTableAccess}
 ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
       ),
-      createFillNode<Parameters>(graph, {
-        id: `${id}-clear-starts`,
-        operation: OPERATION,
-        view: pointStarts,
-        type: 'u32',
-        value: '0u'
-      }),
-      kernel(
-        'starts',
-        [read('trackOffsets', props.trackOffsets), write('pointStarts', pointStarts)],
-        trackCount,
-        `let first = trackOffsets[trackOffsetsOffset + index];
+      ...(hasFixFilter
+        ? [
+            createFillNode<Parameters>(graph, {
+              id: `${id}-clear-predecessors`,
+              operation: OPERATION,
+              view: predecessors,
+              type: 'u32',
+              value: '0xffffffffu'
+            }),
+            // Newson and Krumm preprocessing: a fix within the minimum spacing of the previous
+            // retained fix is dropped; the next fix is measured from the retained one.
+            kernel(
+              'fix-filter',
+              [
+                read('trackOffsets', props.trackOffsets),
+                read('points', props.positions, 'f32'),
+                read('parameters', props.parameters, 'f32'),
+                write('predecessors', predecessors)
+              ],
+              trackCount,
+              `let first = trackOffsets[trackOffsetsOffset + index];
+  let last = min(trackOffsets[trackOffsetsOffset + index + 1u], POINT_COUNT);
+  let minimumSpacing = max(parameters[parametersOffset], 1.0e-6) * MINIMUM_FIX_SPACING_SIGMAS;
+  var kept = NONE;
+  for (var point = first; point < last; point++) {
+    var predecessor = kept;
+    if (kept != NONE && networkDistance(readFixPoint(point), readFixPoint(kept)) < minimumSpacing) {
+      predecessor = DROPPED_FIX;
+    } else {
+      kept = point;
+    }
+    predecessors[predecessorsOffset + point] = predecessor;
+  }`,
+              `const MINIMUM_FIX_SPACING_SIGMAS: f32 = ${toLiteral(props.minimumFixSpacingSigmas!)};
+fn readFixPoint(point: u32) -> vec2<f32> {
+  return vec2<f32>(points[pointsOffset + point * 2u], points[pointsOffset + point * 2u + 1u]);
+}`
+            )
+          ]
+        : [
+            createFillNode<Parameters>(graph, {
+              id: `${id}-clear-starts`,
+              operation: OPERATION,
+              view: pointStarts,
+              type: 'u32',
+              value: '0u'
+            }),
+            kernel(
+              'starts',
+              [read('trackOffsets', props.trackOffsets), write('pointStarts', pointStarts)],
+              trackCount,
+              `let first = trackOffsets[trackOffsetsOffset + index];
   if (first < POINT_COUNT) {
     pointStarts[pointStartsOffset + first] = 1u;
   }`
-      ),
+            )
+          ]),
       ...getRouteTableNodes(),
       kernel(
         'routes',
         [
-          read('pointStarts', pointStarts),
+          hasFixFilter ? read('predecessors', predecessors) : read('pointStarts', pointStarts),
           read('points', props.positions, 'f32'),
           read('nodePositions', props.topology.nodePositions, 'f32'),
           read('adjacency', props.topology.offsets),
@@ -871,7 +1056,7 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
           write('routes', routes, 'f32')
         ],
         pointCount * candidateCount,
-        getRoutesBody(Boolean(props.routeTable)),
+        getRoutesBody(Boolean(props.routeTable), hasFixFilter),
         getForwardDeclarations(budget, getHashSize(budget), candidateCount, edgeTableAccess)
       ),
       kernel(
@@ -883,10 +1068,11 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
           read('parameters', props.parameters, 'f32'),
           read('routes', routes, 'f32'),
           write('scores', scores, 'f32'),
-          write('backPointers', backPointers)
+          write('backPointers', backPointers),
+          ...(hasFixFilter ? [read('predecessors', predecessors)] : [])
         ],
         trackCount,
-        getForwardBody(),
+        getForwardBody(hasFixFilter),
         getViterbiDeclarations(candidateCount)
       ),
       kernel(
@@ -899,10 +1085,12 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
           write('breaks', breaks),
           ...(output.trackLogLikelihoods
             ? [write('logLikelihoods', output.trackLogLikelihoods, 'f32')]
-            : [])
+            : []),
+          ...(hasFixFilter ? [read('predecessors', predecessors)] : [])
         ],
         trackCount,
-        getBackwardBody(Boolean(output.trackLogLikelihoods))
+        getBackwardBody(Boolean(output.trackLogLikelihoods), hasFixFilter),
+        getSumDeclarations()
       )
     );
 
@@ -983,6 +1171,58 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
         edgeTableAccess
       )
     );
+    if (traversedEdges) {
+      const edgeCapacity = props.traversedEdgeCapacity!;
+      const traversedOverflow =
+        traversedEdges.status?.overflow ?? transient('traversed-overflow', 'uint32', 1);
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-clear-traversed-overflow`,
+          operation: OPERATION,
+          view: traversedOverflow,
+          type: 'u32',
+          value: '0u'
+        }),
+        // Per point, in parallel: the hop that leads to the point's matched edge from the previous
+        // retained fix, as start node, target node, search allowance and end edge.
+        kernel(
+          'hops',
+          [
+            read('chosen', chosen),
+            read('breaks', breaks),
+            read('candidates', candidates),
+            read('points', props.positions, 'f32'),
+            read('parameters', props.parameters, 'f32'),
+            read('edgeTable', edgeTable),
+            hasFixFilter ? read('predecessors', predecessors) : read('pointStarts', pointStarts),
+            write('hops', hops)
+          ],
+          pointCount,
+          getHopsBody(hasFixFilter),
+          `${edgeTableAccess}
+${getAccessDeclarations()}`
+        ),
+        // Per track, serially: one bounded search per hop and the edges of its route, in order.
+        kernel(
+          'route-edges',
+          [
+            read('trackOffsets', props.trackOffsets),
+            read('hops', hops),
+            read('nodePositions', props.topology.nodePositions, 'f32'),
+            read('adjacency', props.topology.offsets),
+            read('edgeTable', edgeTable),
+            write('traversedEdges', traversedEdges.edges),
+            write('traversedCounts', traversedEdges.counts),
+            write('traversedOverflow', traversedOverflow)
+          ],
+          trackCount,
+          getRouteEdgesBody(),
+          `const EDGE_CAPACITY: u32 = ${edgeCapacity}u;
+${getRouteSearchDeclarations(budget, getHashSize(budget), candidateCount, edgeTableAccess)}
+${getRouteEdgesDeclarations(budget)}`
+        )
+      );
+    }
     if (output.snappedPositions) {
       nodes.push(
         kernel(
@@ -1169,12 +1409,28 @@ function getForwardDeclarations(
 ): string {
   return `${edgeTableAccess}
 ${getAccessDeclarations()}
+${getRouteSearchDeclarations(budget, hashSize, candidateCount)}`;
+}
+
+/**
+ * Declarations of the bounded route search alone: private node table, hash and `searchNetwork`.
+ * Needs the `adjacency`, `edgeTable` and `nodePositions` bindings and the edge table accessors.
+ */
+function getRouteSearchDeclarations(
+  budget: number,
+  hashSize: number,
+  candidateCount: number,
+  edgeTableAccess: string = ''
+): string {
+  return `${edgeTableAccess}
 const S: u32 = ${budget}u;
 const HASH_MASK: u32 = ${hashSize - 1}u;
 var<private> tableNode: array<u32, ${budget}>;
 var<private> tableDistance: array<f32, ${budget}>;
 var<private> tableKey: array<f32, ${budget}>;
 var<private> tableDone: array<u32, ${budget}>;
+// Edge row that reached each table node with its current distance (NONE for the start).
+var<private> tableParent: array<u32, ${budget}>;
 var<private> tableHash: array<u32, ${hashSize}>;
 var<private> pendingTargets: array<u32, ${candidateCount}>;
 var<private> targetPositions: array<vec2<f32>, ${candidateCount}>;
@@ -1250,8 +1506,9 @@ fn findWorstOpenEntry(count: u32) -> u32 {
   }
   return worst;
 }
-fn addEntry(slot: u32, node: u32, distance: f32) {
+fn addEntry(slot: u32, node: u32, distance: f32, parentEdge: u32) {
   tableNode[slot] = node;
+  tableParent[slot] = parentEdge;
   tableDistance[slot] = distance;
   tableKey[slot] = distance + getHeuristic(node);
   tableDone[slot] = 0u;
@@ -1283,7 +1540,7 @@ fn searchNetwork(start: u32, limit: f32, pendingCount: u32) -> u32 {
     tableHash[slot] = 0u;
   }
   var count = 0u;
-  addEntry(count, start, 0.0);
+  addEntry(count, start, 0.0, NONE);
   count = 1u;
   loop {
     var best = NONE;
@@ -1326,10 +1583,11 @@ fn searchNetwork(start: u32, limit: f32, pendingCount: u32) -> u32 {
       if (found != NONE) {
         if (tableDone[found] == 0u && candidateDistance < tableDistance[found]) {
           tableDistance[found] = candidateDistance;
+          tableParent[found] = edge;
           tableKey[found] = candidateDistance + getHeuristic(neighbor);
         }
       } else if (count < S) {
-        addEntry(count, neighbor, candidateDistance);
+        addEntry(count, neighbor, candidateDistance, edge);
         count++;
       } else {
         // Full table: the node is dropped, or replaces the open entry with the worst key when its
@@ -1339,7 +1597,7 @@ fn searchNetwork(start: u32, limit: f32, pendingCount: u32) -> u32 {
         let worst = findWorstOpenEntry(count);
         if (worst != NONE && key < tableKey[worst]) {
           removeHashEntry(worst);
-          addEntry(worst, neighbor, candidateDistance);
+          addEntry(worst, neighbor, candidateDistance, edge);
         }
       }
     }
@@ -1398,7 +1656,7 @@ const CANDIDATE_COUNT: u32 = ${candidateCount}u;`;
  * Body of the route kernel: one thread per (point, candidate of the previous point). Writes the
  * route length to every candidate of the point, or -1 when there is none within the bound.
  */
-function getRoutesBody(hasRouteTable: boolean): string {
+function getRoutesBody(hasRouteTable: boolean, hasFixFilter: boolean): string {
   return `let point = index / K;
   let fromSlot = index % K;
   ${
@@ -1414,10 +1672,7 @@ function getRoutesBody(hasRouteTable: boolean): string {
   }
   routes[routesOffset + index * ROUTE_STRIDE + K] = 0.0;
   // Point 0 has no predecessor even when it lies before the first track (review B-23).
-  if (point == 0u || pointStarts[pointStartsOffset + point] != 0u) {
-    return;
-  }
-  let previous = point - 1u;
+  ${getPreviousFixWGSL(hasFixFilter)}
   let fromEdge = getCandidateEdge(previous, fromSlot);
   if (fromEdge == NONE) {
     return;
@@ -1463,6 +1718,24 @@ function getRoutesBody(hasRouteTable: boolean): string {
   }`;
 }
 
+/**
+ * Lines that return from a (point, candidate) kernel when `point` has no previous fix to come
+ * from, and otherwise declare `previous`, the point the transition starts at: the preceding point,
+ * or, with a fix filter, the previous retained fix.
+ */
+function getPreviousFixWGSL(hasFixFilter: boolean): string {
+  if (hasFixFilter) {
+    return `let previous = predecessors[predecessorsOffset + point];
+  if (previous >= DROPPED_FIX) {
+    return;
+  }`;
+  }
+  return `if (point == 0u || pointStarts[pointStartsOffset + point] != 0u) {
+    return;
+  }
+  let previous = point - 1u;`;
+}
+
 /** Candidate accessors and the binary search of the `route-table` kernel. */
 function getRouteTableDeclarations(): string {
   return `fn getCandidateEdge(point: u32, slot: u32) -> u32 {
@@ -1497,7 +1770,7 @@ fn findTableCost(row: u32, targetNode: u32) -> f32 {
  * the rows `route-bounds` marked (trailing word `>= 0`) exactly like the A* route kernel, with the
  * network cost read from the table, and marks them resolved (trailing word 0).
  */
-function getRouteTableBody(): string {
+function getRouteTableBody(hasFixFilter: boolean): string {
   return `let base = routesOffset + index * ROUTE_STRIDE;
   let remaining = routes[base + K];
   if (!(remaining >= 0.0)) {
@@ -1505,8 +1778,9 @@ function getRouteTableBody(): string {
   }
   let bound = routes[base];
   let point = index / K;
-  let fromEdge = getCandidateEdge(point - 1u, index % K);
-  let fromFraction = getCandidateFraction(point - 1u, index % K);
+  let previous = ${hasFixFilter ? 'predecessors[predecessorsOffset + point]' : 'point - 1u'};
+  let fromEdge = getCandidateEdge(previous, index % K);
+  let fromFraction = getCandidateFraction(previous, index % K);
   let fromLength = edgeLength(fromEdge);
   let tail = (1.0 - fromFraction) * fromLength;
   let startNode = edgeTarget(fromEdge);
@@ -1535,7 +1809,7 @@ function getRouteTableBody(): string {
 }
 
 /** Body of the forward Viterbi kernel: one thread per track. */
-function getForwardBody(): string {
+function getForwardBody(hasFixFilter: boolean): string {
   return `let first = trackOffsets[trackOffsetsOffset + index];
   let last = trackOffsets[trackOffsetsOffset + index + 1u];
   let sigma = max(parameters[parametersOffset], 1.0e-6);
@@ -1551,12 +1825,26 @@ function getForwardBody(): string {
     }
     var isReachable = false;
     var isBudgetLimited = false;
-    if (point > first) {
-      let previous = point - 1u;
+    ${
+      hasFixFilter
+        ? `let previous = predecessors[predecessorsOffset + point];
+    if (previous == DROPPED_FIX) {
+      // A dropped fix is skipped: neither a source nor a target of a transition.
+      for (var slot = 0u; slot < K; slot++) {
+        scores[scoresOffset + point * SCORE_STRIDE + slot] = NEG;
+        backPointers[backPointersOffset + point * K + slot] = NONE;
+      }
+      scores[scoresOffset + point * SCORE_STRIDE + K] = 0.0;
+      continue;
+    }
+    if (previous != NONE) {`
+        : `let previous = point - 1u;
+    if (point > first) {`
+    }
       let straight = networkDistance(readPoint(point), readPoint(previous));
       for (var fromSlot = 0u; fromSlot < K; fromSlot++) {
         let fromEdge = getCandidateEdge(previous, fromSlot);
-        let fromScore = scores[scoresOffset + previous * K + fromSlot];
+        let fromScore = scores[scoresOffset + previous * SCORE_STRIDE + fromSlot];
         if (fromEdge == NONE || fromScore < -1.0e29) {
           continue;
         }
@@ -1595,34 +1883,67 @@ function getForwardBody(): string {
         newBack[slot] = select(NONE, BUDGET_BREAK, isBudgetLimited);
       }
     }
+    // Renormalize: subtract the best score of the step from every valid score. Every score of the
+    // step moves by the same amount, so the best path is unchanged, and the magnitudes stay small
+    // over any track length. The subtracted amount is kept for the log-likelihood.
+    var maximum = NEG;
     for (var slot = 0u; slot < K; slot++) {
-      scores[scoresOffset + point * K + slot] = newScore[slot];
+      if (newScore[slot] > -1.0e29) {
+        maximum = max(maximum, newScore[slot]);
+      }
+    }
+    let offset = select(0.0, maximum, maximum > -1.0e29);
+    for (var slot = 0u; slot < K; slot++) {
+      if (newScore[slot] > -1.0e29) {
+        newScore[slot] -= offset;
+      }
+      scores[scoresOffset + point * SCORE_STRIDE + slot] = newScore[slot];
       backPointers[backPointersOffset + point * K + slot] = newBack[slot];
     }
+    scores[scoresOffset + point * SCORE_STRIDE + K] = offset;
   }`;
 }
 
 /** Body of the backward pass: one thread per track traces the best path of every unbroken stretch. */
-function getBackwardBody(hasLogLikelihood: boolean): string {
+function getBackwardBody(hasLogLikelihood: boolean, hasFixFilter: boolean): string {
   return `let first = trackOffsets[trackOffsetsOffset + index];
   let last = trackOffsets[trackOffsetsOffset + index + 1u];
-  var logLikelihood = 0.0;
+  sumWhole = 0;
+  sumFraction = 0.0;
+  sumLarge = 0.0;
   var current = NONE;
   var isPicking = true;
   for (var step = 0u; step < last - first; step++) {
     let point = last - 1u - step;
+    ${
+      hasFixFilter
+        ? `if (predecessors[predecessorsOffset + point] == DROPPED_FIX) {
+      // Skipped: the walk continues with the slot chosen for the next retained fix.
+      chosen[chosenOffset + point] = NONE;
+      breaks[breaksOffset + point] = 0u;
+      continue;
+    }`
+        : ''
+    }
+    ${
+      hasLogLikelihood
+        ? `// The scores of a stretch are renormalized per step: its log-likelihood is its final score
+    // plus the amounts subtracted at its points.
+    addToSum(scores[scoresOffset + point * SCORE_STRIDE + K]);`
+        : ''
+    }
     if (isPicking) {
       var bestScore = -1.0e29;
       current = NONE;
       for (var slot = 0u; slot < K; slot++) {
-        let score = scores[scoresOffset + point * K + slot];
+        let score = scores[scoresOffset + point * SCORE_STRIDE + slot];
         if (score > bestScore) {
           bestScore = score;
           current = slot;
         }
       }
       if (current != NONE) {
-        logLikelihood += bestScore;
+        ${hasLogLikelihood ? 'addToSum(bestScore);' : ''}
       }
     }
     chosen[chosenOffset + point] = current;
@@ -1641,7 +1962,150 @@ function getBackwardBody(hasLogLikelihood: boolean): string {
     }
     breaks[breaksOffset + point] = select(0u, select(1u, 2u, isBudgetBreak), isBreak && point > first);
   }
-  ${hasLogLikelihood ? 'logLikelihoods[logLikelihoodsOffset + index] = logLikelihood;' : ''}`;
+  ${hasLogLikelihood ? 'logLikelihoods[logLikelihoodsOffset + index] = getSum();' : ''}`;
+}
+
+/**
+ * Sum of the terms added with `addToSum`, held as a whole part (`i32`) and a fraction in [0, 1)
+ * (`f32`) so the log-likelihood of a long track keeps the accuracy of one rounding of its final
+ * magnitude instead of one per step. A compensated float sum (Neumaier) did not keep the accuracy on the
+ * Metal test device (error of hundreds on a 1e7 total); floor and integer adds do. Terms beyond 1e9 go in a third
+ * float sum.
+ */
+function getSumDeclarations(): string {
+  return `var<private> sumWhole: i32 = 0;
+var<private> sumFraction: f32 = 0.0;
+var<private> sumLarge: f32 = 0.0;
+fn addToSum(term: f32) {
+  if (abs(term) > 1.0e9) {
+    sumLarge += term;
+    return;
+  }
+  let whole = floor(term);
+  sumWhole += i32(whole);
+  sumFraction += term - whole;
+  if (sumFraction >= 1.0) {
+    sumFraction -= 1.0;
+    sumWhole += 1;
+  }
+}
+fn getSum() -> f32 {
+  return f32(sumWhole) + sumFraction + sumLarge;
+}`;
+}
+
+/**
+ * Body of the hop kernel: one thread per point. Word 0 of a point's hop is 0 for a point with no
+ * route to record (dropped or unmatched), 1 for the first matched point of a sub-track, 2 for a
+ * point reached from the previous retained fix over the network and 3 for one reached along the
+ * same edge. Words 1 to 3 of a kind 2 hop are the start node, the target node and the search
+ * allowance (the `remaining` of the route kernel) and word 4 is the point's matched edge.
+ */
+function getHopsBody(hasFixFilter: boolean): string {
+  return `let base = hopsOffset + index * ${HOP_WORD_COUNT}u;
+  hops[base] = 0u;
+  let slot = chosen[chosenOffset + index];
+  if (slot == NONE) {
+    return;
+  }
+  let toEdge = getCandidateEdge(index, slot);
+  hops[base + 4u] = toEdge;
+  ${
+    hasFixFilter
+      ? `let previous = predecessors[predecessorsOffset + index];
+  if (previous >= DROPPED_FIX || breaks[breaksOffset + index] != 0u) {`
+      : `let previous = index - 1u;
+  if (index == 0u || pointStarts[pointStartsOffset + index] != 0u || breaks[breaksOffset + index] != 0u) {`
+  }
+    hops[base] = 1u;
+    return;
+  }
+  let fromSlot = chosen[chosenOffset + previous];
+  let fromEdge = getCandidateEdge(previous, fromSlot);
+  let fromFraction = getCandidateFraction(previous, fromSlot);
+  if (toEdge == fromEdge && getCandidateFraction(index, slot) >= fromFraction) {
+    hops[base] = 3u;
+    return;
+  }
+  let straight = networkDistance(readPoint(index), readPoint(previous));
+  let bound = straight * parameters[parametersOffset + 3u] + parameters[parametersOffset + 4u];
+  let tail = (1.0 - fromFraction) * edgeLength(fromEdge);
+  hops[base] = 2u;
+  hops[base + 1u] = edgeTarget(fromEdge);
+  hops[base + 2u] = edgeSource(toEdge);
+  hops[base + 3u] = bitcast<u32>(bound - tail);`;
+}
+
+/** Private state and emit function of the `route-edges` kernel. */
+function getRouteEdgesDeclarations(budget: number): string {
+  return `var<private> emittedCount: u32 = 0u;
+var<private> pathEdges: array<u32, ${budget}>;
+fn emitEdge(track: u32, edge: u32) {
+  if (emittedCount < EDGE_CAPACITY) {
+    traversedEdges[traversedEdgesOffset + track * EDGE_CAPACITY + emittedCount] = edge;
+  } else {
+    traversedOverflow[traversedOverflowOffset] = 1u;
+  }
+  emittedCount++;
+}`;
+}
+
+/** Body of the route-edges kernel: one thread per track walks its hops in order. */
+function getRouteEdgesBody(): string {
+  return `let first = trackOffsets[trackOffsetsOffset + index];
+  let last = trackOffsets[trackOffsetsOffset + index + 1u];
+  emittedCount = 0u;
+  for (var point = first; point < last; point++) {
+    let base = hopsOffset + point * ${HOP_WORD_COUNT}u;
+    let kind = hops[base];
+    if (kind == 0u || kind == 3u) {
+      continue;
+    }
+    let toEdge = hops[base + 4u];
+    if (kind == 1u) {
+      if (emittedCount > 0u) {
+        emitEdge(index, NONE);
+      }
+      emitEdge(index, toEdge);
+      continue;
+    }
+    // Hop over the network: search again with the allowance of the route kernel, then walk the
+    // parent edges from the target node back to the start node.
+    let startNode = hops[base + 1u];
+    let targetNode = hops[base + 2u];
+    var pathLength = 0u;
+    var isRecovered = true;
+    if (startNode != targetNode) {
+      for (var slot = 0u; slot < K; slot++) {
+        pendingTargets[slot] = NONE;
+      }
+      pendingTargets[0] = targetNode;
+      searchNetwork(startNode, bitcast<f32>(hops[base + 3u]), 1u);
+      var node = targetNode;
+      loop {
+        if (node == startNode) {
+          break;
+        }
+        let entry = findEntry(node);
+        if (entry == NONE || tableDone[entry] == 0u || pathLength >= S) {
+          isRecovered = false;
+          break;
+        }
+        pathEdges[pathLength] = tableParent[entry];
+        pathLength++;
+        node = edgeSource(tableParent[entry]);
+      }
+    }
+    if (!isRecovered) {
+      traversedOverflow[traversedOverflowOffset] = 1u;
+    } else {
+      for (var step = 0u; step < pathLength; step++) {
+        emitEdge(index, pathEdges[pathLength - 1u - step]);
+      }
+    }
+    emitEdge(index, toEdge);
+  }
+  traversedCounts[traversedCountsOffset + index] = emittedCount;`;
 }
 
 /** Returns every read-only view of a map-matching contributor. */
@@ -1673,6 +2137,9 @@ function getOutputs(props: GPUMapMatchingProps): (GraphDataView | undefined)[] {
     output.matchedCount,
     output.breakCount,
     output.status?.overflow,
-    output.status?.routeOverflow
+    output.status?.routeOverflow,
+    output.traversedEdges?.edges,
+    output.traversedEdges?.counts,
+    output.traversedEdges?.status?.overflow
   ];
 }

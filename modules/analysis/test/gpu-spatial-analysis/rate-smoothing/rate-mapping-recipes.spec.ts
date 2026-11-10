@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -17,6 +17,8 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {RecipeTestFixture} from '../recipes/recipe-harness';
 
 it('GeoDa pooled risk and binary spatial rates handle masks, self edges, islands and replay', async () => {
   const device = await getWebGPUTestDevice();
@@ -102,5 +104,46 @@ it('GeoDa pooled risk and binary spatial rates handle masks, self edges, islands
   } finally {
     compiled.destroy();
     for (const buffer of [...buffers, riskBuffer, spatialBuffer, ownBuffer]) buffer.destroy();
+  }
+});
+
+it('excess risk counts only mask-included rows with an undefined rate as invalid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'excess-risk-invalid-count');
+  try {
+    // 200 rows, only rows 0..4 selected. Row 3 (population 0) and row 4 (NaN events) are selected
+    // but undefined, so the count is 2. The 195 deselected rows are NaN but must not be counted.
+    const rowCount = 200;
+    const events = new Float32Array(rowCount).fill(2);
+    const populations = new Float32Array(rowCount).fill(20);
+    const mask = new Uint32Array(rowCount);
+    mask.fill(1, 0, 5);
+    populations[3] = 0;
+    events[4] = NaN;
+    const result = addExcessRiskRecipe(fixture.graph, {
+      events: fixture.input('events', events, 'float32', rowCount),
+      populations: fixture.input('populations', populations, 'float32', rowCount),
+      mask: fixture.input('mask', mask, 'uint32', rowCount),
+      output: fixture.output('risk', 'float32', rowCount).view
+    });
+    const invalidCount = result.status.stages[0].status.invalidCount as GraphDataView<'uint32'>;
+    const published = fixture.output('published-invalid-count', 'uint32', 1);
+    fixture.graph.add(
+      createWGSLKernelNode(fixture.graph, {
+        id: 'publish-invalid-count',
+        operation: 'excess-risk-test-readback',
+        invocationCount: 1,
+        bindings: [
+          {name: 'source', view: invalidCount, type: 'u32', access: 'read'},
+          {name: 'output', view: published.view, type: 'u32', access: 'read_write'}
+        ],
+        body: 'output[outputOffset] = source[sourceOffset];'
+      })
+    );
+    fixture.run();
+    expect(await fixture.readUint32(published, 1)).toEqual([2]);
+  } finally {
+    fixture.destroy();
   }
 });

@@ -194,3 +194,52 @@ it('GPUSharedPaths#compiles within the default storage buffer limit', async () =
     ]
   ]);
 });
+
+it('GPUSharedPaths#sizes and writes long chains and shared tails without walking them', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A 600 vertex road shared with a right line that splits every left segment in two and with a
+  // second right line that runs it backward over 300 long segments: two chains of 1,198 spans.
+  const left = [Array.from({length: 600}, (_, index) => [index, 0])];
+  const right = [
+    [[0, 0], ...Array.from({length: 599}, (_, index) => [index + 0.5, 0]), [599, 0]],
+    [[599, 0], ...Array.from({length: 300}, (_, index) => [598 - 2 * index, 0])]
+  ];
+  const result = await runSharedPaths(device, left, right, {
+    intersectionCapacity: 8192,
+    runCapacity: 8,
+    vertexCapacity: 4096
+  });
+  expect(result.overflow).toBe(0);
+  expect(result.count).toBe(2);
+  expect(result.rightLineIds).toEqual([0, 1]);
+  expect(result.forward).toEqual([1, 0]);
+  expect(result.vertexCount).toBe(1200);
+  for (const run of result.runs) {
+    expect(run.map(point => point[0])).toEqual(Array.from({length: 600}, (_, index) => index));
+  }
+  // A right line that retraces itself starts two runs that share their tail; each run keeps it.
+  const retraced = await runSharedPaths(
+    device,
+    [
+      [
+        [0, 0],
+        [2, 0],
+        [4, 0]
+      ]
+    ],
+    [
+      [
+        [0, 0],
+        [1, 0],
+        [3, 0],
+        [1, 0],
+        [4, 0]
+      ]
+    ],
+    {intersectionCapacity: 64}
+  );
+  expect(retraced.overflow).toBe(0);
+  expect(retraced.count).toBeGreaterThanOrEqual(1);
+  expect(retraced.vertexCount).toBe(retraced.runs.reduce((sum, run) => sum + run.length, 0));
+});

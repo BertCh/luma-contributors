@@ -15,6 +15,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -32,6 +33,8 @@ import {alignElementCount, getSubView} from '../network-view-utils';
 
 const OPERATION = 'GPUNetworkCostMatrix';
 const DEFAULT_LOCAL_ITERATIONS = 16;
+/** Matches the `GPUNetworkReachability` default, which the estimate of command nodes must mirror. */
+const DEFAULT_MAXIMUM_ITERATIONS = 64;
 /**
  * Elements per 256-byte storage binding alignment. Batch sub-views start at multiples of it, so
  * the element offset `createWGSLKernelNode` bakes into each kernel is the same for every batch and
@@ -162,6 +165,13 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
   readonly batchCount: number;
   /** Resolved starts per row used when `startRows` is omitted. */
   readonly startsPerRow: number;
+  /**
+   * Exact number of command nodes `getCommandNodes` returns: the seed expansion, the batch info
+   * node, per batch one `GPUNetworkReachability` of `maximumIterations` rounds plus a copy or
+   * gather node when the batch cannot write `output.costs` in place, and the converged reduction.
+   * Checked against the shared command node budget at construction.
+   */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUNetworkCostMatrixProps) {
     this.id = props.id ?? 'network-cost-matrix';
@@ -236,6 +246,36 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
       throw new Error(`${id} laneCount * nodeCount must fit in uint32`);
     }
     this.batchCount = Math.ceil(this.rowCount / this.laneCount);
+    // Mirrors the in-place rule of `getCommandNodes`: batches that cannot write `costs` in place
+    // add a copy or gather node, and the first such batch adds the batch info node.
+    const batchNodeCount = this.laneCount * this.nodeCount;
+    const isAligned =
+      batchNodeCount % ALIGNMENT_ELEMENTS === 0 &&
+      (costs.byteOffset / 4) % ALIGNMENT_ELEMENTS === 0;
+    let copiedBatchCount = 0;
+    for (let batch = 0; batch < this.batchCount; batch++) {
+      const isInPlace =
+        !props.targetNodes &&
+        (batch + 1) * this.laneCount <= this.rowCount &&
+        (this.batchCount === 1 || isAligned);
+      copiedBatchCount += Number(!isInPlace);
+    }
+    const seedCount = props.startNodes.length;
+    // Reachability: initialize, seed (when there are seeds), one node per round, finalize when
+    // `converged` is requested.
+    const reachabilityNodeCount =
+      Number(seedCount > 0) +
+      1 +
+      (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) +
+      Number(Boolean(converged));
+    this.estimatedCommandNodeCount =
+      Number(seedCount > 0) +
+      Number(copiedBatchCount > 0) +
+      this.batchCount * reachabilityNodeCount +
+      copiedBatchCount +
+      Number(Boolean(converged));
+    // The rounds of every batch are unrolled; lower maximumIterations or raise laneCount.
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(id, [costs, converged], getInputs(props));
     if (converged && converged.buffer === costs.buffer) {
       throw new Error(`${id} outputs must use separate buffers`);

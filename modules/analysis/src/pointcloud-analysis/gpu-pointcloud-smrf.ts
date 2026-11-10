@@ -2,10 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
-import type {GPUCommandNode} from '@luma.gl/graph/gpu-core';
-import {createTransientView} from '@luma.gl/graph/gpu-core';
+import type {
+  GPUCommandGraph,
+  GPUCommandNode,
+  GPUCommandNodeProducer,
+  GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUReduction} from '@luma.gl/graph/gpu-core';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateMaximumCount,
+  validateViewLength
+} from '../analysis-core/kernels/gpu-contributor-utils';
+import {
+  GPU_POINT_CLOUD_MAXIMUM_SMRF_CUT_CELLS,
+  GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS
+} from './pointcloud-limits';
 import {createPointCloudGridIndex} from './pointcloud-grid-index';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {getPointCloudCellSource, validatePointCloudGrid} from './gpu-pointcloud-surfaces';
@@ -33,9 +46,25 @@ export type GPUPointCloudSMRFProps = {
   groundSurface: GraphDataView<'float32'>;
   groundMask: GraphDataView<'uint32'>;
   outputClassifications: GraphDataView<'uint32'>;
-  /** 0 valid, 1 invalid/outside, 2 no terrain anchors, 4 excluded, 8 inpainted or edge-supported. */
+  /**
+   * Per-point bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_SMRF_STATUS_INVALID`): the point is
+   * outside the grid or not finite. Bit 2 (`..._NO_TERRAIN`): its cell has no terrain anchors, so
+   * it is not classified. Bit 4 (`..._EXCLUDED`): `selection` is zero for the point, which keeps its
+   * original class. Bit 8 (`..._INPAINTED`): the terrain under the point is inpainted, or the point
+   * lies within the filter margin of the grid edge, so its classification is less certain. Bits 1,
+   * 2 and 4 are mutually exclusive and exclude bit 8. Bits above 8 are zero.
+   */
   status: GraphDataView<'uint32'>;
 };
+
+/** `GPUPointCloudSMRF` status bit 1: outside the grid or not finite. */
+export const GPU_POINT_CLOUD_SMRF_STATUS_INVALID = 1;
+/** `GPUPointCloudSMRF` status bit 2: the point's cell has no terrain anchors. */
+export const GPU_POINT_CLOUD_SMRF_STATUS_NO_TERRAIN = 2;
+/** `GPUPointCloudSMRF` status bit 4: excluded by `selection`. */
+export const GPU_POINT_CLOUD_SMRF_STATUS_EXCLUDED = 4;
+/** `GPUPointCloudSMRF` status bit 8: inpainted terrain or a point near the grid edge. */
+export const GPU_POINT_CLOUD_SMRF_STATUS_INPAINTED = 8;
 
 type RasterViews = Record<
   string,
@@ -47,45 +76,65 @@ type RasterViews = Record<
  * low outliers, optional net cuts, eight-neighbor inpainting and slope-scaled classification.
  * Independently implemented WGSL; no CPU numerical fallback or intermediate readback.
  */
-export class GPUPointCloudSMRF {
+export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
   readonly id: string;
   readonly maximumRadius: number;
   readonly cutRadius: number;
   constructor(readonly props: GPUPointCloudSMRFProps) {
     this.id = props.id ?? 'gpu-pointcloud-smrf';
-    validatePointCloudGrid(props.grid);
+    validatePointCloudGrid(props.grid, this.id);
     // One-sided slope differences require at least two rows and columns.
-    assert(props.grid.width >= 2 && props.grid.height >= 2);
+    validateCapacity(this.id, 'grid.width', props.grid.width, 2);
+    validateCapacity(this.id, 'grid.height', props.grid.height, 2);
     // Integer grid distances in the eight-neighbor fill must fit signed 32 bits.
-    assert(props.grid.width ** 2 + props.grid.height ** 2 < 0x7fffffff);
+    validateMaximumCount(
+      this.id,
+      'grid.width squared plus grid.height squared',
+      props.grid.width ** 2 + props.grid.height ** 2,
+      0x7ffffffe
+    );
     this.maximumRadius = Math.ceil(
       (props.window ?? 18 * props.grid.cellSize) / props.grid.cellSize
     );
     this.cutRadius = Math.ceil((props.cut ?? 0) / props.grid.cellSize);
-    assert(
-      this.maximumRadius >= 1 &&
-        this.maximumRadius <= 64 &&
-        this.cutRadius >= 0 &&
-        this.cutRadius <= 32
+    validateCapacity(
+      this.id,
+      'window in cells',
+      this.maximumRadius,
+      1,
+      GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS
     );
-    assert(
-      [props.slope ?? 0.15, props.scalar ?? 1.25, props.threshold ?? 0.5, props.cut ?? 0].every(
-        value => value >= 0 && Number.isFinite(Math.fround(value))
-      )
+    validateCapacity(
+      this.id,
+      'cut in cells',
+      this.cutRadius,
+      0,
+      GPU_POINT_CLOUD_MAXIMUM_SMRF_CUT_CELLS
     );
-    for (const classification of [props.groundClass ?? 2, props.otherClass ?? 1])
-      assert(
-        Number.isInteger(classification) && classification >= 0 && classification <= 0xffffffff
-      );
-    assert(props.groundSurface.length === props.grid.width * props.grid.height);
-    for (const view of [
-      props.classifications,
-      props.groundMask,
+    validateFiniteNumber(this.id, 'slope', props.slope ?? 0.15, 0);
+    validateFiniteNumber(this.id, 'scalar', props.scalar ?? 1.25, 0);
+    validateFiniteNumber(this.id, 'threshold', props.threshold ?? 0.5, 0);
+    validateFiniteNumber(this.id, 'cut', props.cut ?? 0, 0);
+    validateCapacity(this.id, 'groundClass', props.groundClass ?? 2, 0);
+    validateCapacity(this.id, 'otherClass', props.otherClass ?? 1, 0);
+    validateViewLength(
+      this.id,
+      'groundSurface',
+      props.groundSurface,
+      props.grid.width * props.grid.height
+    );
+    validateViewLength(this.id, 'classifications', props.classifications, props.positions.length);
+    validateViewLength(this.id, 'groundMask', props.groundMask, props.positions.length);
+    validateViewLength(
+      this.id,
+      'outputClassifications',
       props.outputClassifications,
-      props.status
-    ])
-      assert(view.length === props.positions.length);
-    assert(!props.selection || props.selection.length === props.positions.length);
+      props.positions.length
+    );
+    validateViewLength(this.id, 'status', props.status, props.positions.length);
+    if (props.selection) {
+      validateViewLength(this.id, 'selection', props.selection, props.positions.length);
+    }
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -165,12 +214,14 @@ writeMinimum(index,select(0.0,elevation,count>0u)); writeOccupied(index,u32(coun
       availability: GraphDataView<'uint32'>
     ) => {
       const validCount = createTransientView(graph, `${this.id}-${name}-valid-count`, 'uint32', 1);
-      emit(
-        `${name}-valid-count`,
-        {validity},
-        {validCount},
-        `var count=0u;for(var cell=0u;cell<${cells}u;cell++){count+=u32(readValidity(cell)!=0u);}writeValidCount(0u,count);`,
-        1
+      // Both validity inputs hold only zero or one, so their sum is the valid cell count.
+      nodes.push(
+        ...new GPUReduction({
+          id: `${this.id}-${name}-valid-count`,
+          input: validity,
+          output: validCount,
+          operation: 'sum'
+        }).getCommandNodes(graph)
       );
       emit(
         name,
@@ -326,16 +377,16 @@ writeGradients(index,length(vec2f(horizontal,vertical)));`
       {groundMask, status},
       `
 writeGroundMask(index,0u);
-${selection ? 'if (readSelection(index)==0u) { writeStatus(index,4u); return; }' : ''}
+${selection ? `if (readSelection(index)==0u) { writeStatus(index,${GPU_POINT_CLOUD_SMRF_STATUS_EXCLUDED}u); return; }` : ''}
 let position=readPositions(index);
 ${getPointCloudCellSource(grid)}
-if (!inside || !all(abs(position)<=vec3f(3.402823e38))) { writeStatus(index,1u); return; }
-if (readAvailability(cellIndex)==0u) { writeStatus(index,2u); return; }
+if (!inside || !all(abs(position)<=vec3f(3.402823e38))) { writeStatus(index,${GPU_POINT_CLOUD_SMRF_STATUS_INVALID}u); return; }
+if (readAvailability(cellIndex)==0u) { writeStatus(index,${GPU_POINT_CLOUD_SMRF_STATUS_NO_TERRAIN}u); return; }
 let tolerance=${Math.fround(this.props.threshold ?? 0.5)}+${Math.fround(this.props.scalar ?? 1.25)}*readGradients(cellIndex);
 writeGroundMask(index,u32(abs(position.z-readTerrain(cellIndex))<=tolerance));
 let margin=${Math.max(2 * this.maximumRadius, 4 * this.cutRadius, 2)}u;
 let edge = cell.x<margin || cell.y<margin || cell.x+margin>=${grid.width}u || cell.y+margin>=${grid.height}u;
-writeStatus(index,select(0u,8u,edge || readAvailability(cellIndex)==2u));`,
+writeStatus(index,select(0u,${GPU_POINT_CLOUD_SMRF_STATUS_INPAINTED}u,edge || readAvailability(cellIndex)==2u));`,
       positions.length
     );
     emit(
@@ -345,7 +396,7 @@ writeStatus(index,select(0u,8u,edge || readAvailability(cellIndex)==2u));`,
       `
 let original=readClassifications(index); var result=original;
 if (readGroundMask(index)!=0u) { result=${this.props.groundClass ?? 2}u; }
-else if ((readStatus(index)&7u)==0u && ${!this.props.onlyGround}) { result=${this.props.otherClass ?? 1}u; }
+else if ((readStatus(index)&${GPU_POINT_CLOUD_SMRF_STATUS_INVALID | GPU_POINT_CLOUD_SMRF_STATUS_NO_TERRAIN | GPU_POINT_CLOUD_SMRF_STATUS_EXCLUDED}u)==0u && ${!this.props.onlyGround}) { result=${this.props.otherClass ?? 1}u; }
 writeOutputClassifications(index,result);`,
       positions.length
     );

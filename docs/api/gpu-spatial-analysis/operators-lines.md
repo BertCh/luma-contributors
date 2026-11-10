@@ -27,8 +27,8 @@ description: "Lines & trajectories contributors in @luma-contributors/analysis/g
 ::lens{scenario=gpu-spatial-analysis.line-chunk rung=result caption="Grey: 223 Wicker Park streets · blue: 100 m chunks"}
 
 Geometry-producing line contributors. Each writes a `GPULineGeometryOutput`: flat `positions`, clamped
-`lineOffsets` (deck.gl `PathLayer` `startIndices`), `status` (`count`, `overflow`, and optional `requiredCount` and
-`lineCount`), optional `sourceLineIndices` (output line to input line), `sourceRows` (output vertex to input
+`lineOffsets` (deck.gl `PathLayer` `startIndices`), `status` (`count`, which counts output vertices, `overflow`, and optional `requiredCount`,
+`lineCount` and `approximation`), optional `sourceLineIndices` (output line to input line), `sourceRows` (output vertex to input
 segment row) and `measures` (distance along the source line). The vertex capacity is
 `positions.length`; offsets are clamped to it, so a truncated result is still a valid layout.
 Inputs are packed `positions` sorted by line with `lineOffsets` (`lineCount + 1` rows).
@@ -76,6 +76,10 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
   `GPULineChunk` (and `radius` of `GPUGreatCircleArcs`) are replaced by `spatialContext`; planar is
   the default. `GPUGreatCircleArcs` defaults to a great-circle longitude/latitude context and
   throws for planar ones; `GPULineSmooth` is planar only and throws for longitude/latitude.
+- `status.approximation` (optional, `GPULineSegmentize` and `GPUGreatCircleArcs` only; other contributors that
+  write this layout reject a view for it) is set to 1 when an edge or arc needed more than `maximumPieceCount`
+  (`maximumSegmentCount`) pieces for the requested maximum length, so some output segments are longer than
+  requested; otherwise 0, rewritten on every encoding.
 - `GPUGreatCircleArcs` (turf `greatCircle`): one line of `segments + 1` vertices per
   origin/destination pair, `segments = clamp(max(ceil(distance / maximumSegmentLength),
   minimumSegments), 1, maximumSegmentCount)`. Endpoints are exact; longitudes are unwrapped from the
@@ -480,7 +484,8 @@ locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMe
   along the line to the foot point), side (`1` left of the line direction, `-1` right, `0` on it)
   and `side * distance`. Points with nothing in range get `0xffffffff` indices, distance `-1`,
   side `0` and NaN elsewhere. `output.status.overflow` reports BVH leaf or candidate capacity overflow (and the optional
-  `output.status.candidateCount` the unclamped candidate count). `queryPositions` are the points to snap; `positions` and
+  `output.status.requiredCount` the unclamped candidate count; `output.status.candidateCount` holds the same value
+  and is deprecated because it is not in the shared status vocabulary). There is no `count`: every row is one query point. `queryPositions` are the points to snap; `positions` and
   `lineOffsets` are the lines.
 - `GPULineLocate` (turf `along`, PostGIS `ST_LineInterpolatePoint` and `ST_LocateAlong`): each
   event's measure (distance or fraction, optionally `measure * scale + offset` from the parameter
@@ -563,7 +568,7 @@ Settings of `getGPULineLocateParameterValues`:
 
 Maximum (`GPULineSplit`): `lines.positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4194304 on a default device: the 32-byte segment-table row per vertex must fit one storage binding) rows, and the line count plus four times `intersectionCapacity` is at most `getGPULineSplitMaximumPieceBound(device)` (4194304 on a default device).
 
-Both classes are planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first.
+`GPULineSplit` is planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first. `GPULineMerge` also accepts a longitude-latitude `spatialContext`: lines join only where end points have identical coordinates (bit patterns), nothing is measured, and longitude 180 and -180 are different coordinates.
 
 `GPULineSplit` splits linestrings at every crossing, touch, shared vertex and overlap end (turf `lineSplit`
 against the union of the lines; verified against Shapely `unary_union`). It reuses `GPUSegmentIntersection`
@@ -571,7 +576,7 @@ in self mode, groups the split events by segment with a stable `GPUSort`, remove
 GeoArrow-layout pieces. Props: `lines` (`{kind: 'lines', positions, lineOffsets}`), `intersectionCapacity`,
 `output`, optional `spatialSort` and `leafCapacity`. `output` is `{pieces, status?: {uncertainCount?}}`; `pieces` is a
 `GPUGeneratedGeometryPort`: `geometry` holds `{kind: 'lines', positions, lineOffsets}`, `sourceIds`
-identifies the source line, and `status` holds `count`, `overflow`, optional `candidateOverflow`,
+identifies the source line, and `status` holds `count` (pieces, not vertices), `overflow`, optional `candidateOverflow`,
 optional `requiredCount` and optional `vertexCount` and `requiredVertexCount`, which report the flattened vertex cardinality. Pieces are ordered by
 source line, then traversal order. Splits at line ends are ignored, and a line with fewer than two
 vertices yields no piece. Piece or vertex truncation sets `status.overflow`; an insufficient
@@ -583,7 +588,7 @@ stop a chain, a closed line never joins itself, and lines with fewer than two ve
 `directed: true` (Shapely `line_merge(directed=True)`) only a line end meeting a line start joins, chains
 follow the input direction and `lineReversed` is all 0.
 Props: `positions`, `lineOffsets` and `output: {chainOffsets, positions, status: {count}, lineChains?, lineOrders?,
-lineReversed?}`. The result is deterministic: chains are ordered by their lowest line, paths start at the
+lineReversed?}`; `status.count` counts chains. The list-ranking rounds are the shared helper in `line-merge/list-ranking.ts`, which `GPUSharedPaths` also uses. The result is deterministic: chains are ordered by their lowest line, paths start at the
 lower endpoint ID and cycles start at their lowest line and are emitted closed. Chains are ranked by
 pointer jumping (list ranking), so a chain of `n` lines takes `O(log n)` dispatches rather than `n`
 serial steps. Merging with a tolerance is not provided.
@@ -646,7 +651,7 @@ collinear overlap are boundary and count as inside; the rest are classified by `
 their midpoint, and kept sub-pieces that continue each other merge. Several polygon features act as their
 union. Props: `lines`, `polygons`, `mode`, `intersectionCapacity`, `candidateCapacity` and
 `output: {pieces, status?: {uncertainCount}}` (`pieces` has the `GPULineSplitPieces` layout). Overflow of pairs,
-candidates, pieces or vertices sets `output.pieces.status.overflow`. Limits: a line is not noded at its own crossings, a line running over itself keeps both
+candidates, pieces or vertices sets `output.pieces.status.overflow`; the optional `output.pieces.status.candidateOverflow` is set only when the `intersectionCapacity` pair list was exceeded, as `GPULineSplit` reports it. `status.count` counts pieces. Limits: a line is not noded at its own crossings, a line running over itself keeps both
 traversals (Shapely dedupes), a point-only touch yields no piece (`keep_geom_type=True`), and a sub-piece a
 few f32 ulps long beside an edge can be misclassified. Against Shapely 2.1.2, 52 lines in both modes
 matched on total length (under 2e-3) and piece end points.
@@ -656,8 +661,10 @@ matched on total length (under 2e-3) and piece end points.
 the segment directions, and chained into one polyline per (left line, right line, direction). The output
 `output: {runs, status}`: `runs` (`GPUSharedPathsRuns`) has `leftLineIds`, `rightLineIds`, `forward`, `offsets` and
 `positions`; `status` has `count`, `vertexCount?`, `overflow?`, `requiredCount?`, `requiredVertexCount?` and
-`uncertainCount?`. Closed left lines are cut at their first vertex, a chain walk is serial per run, and two
-coincident right segments emit duplicate runs.
+`uncertainCount?` (`count` counts runs, not vertices). Closed left lines are cut at their first vertex and two
+coincident right segments emit duplicate runs. Runs are sized and written by list ranking (Wyllie pointer jumping, `ceil(log2(intersectionCapacity))`
+rounds per pass) rather than one invocation walking each run, so a long shared road costs the same dispatches as a short one; the work is
+`O(intersectionCapacity * log(intersectionCapacity))`.
 
 #### How it computes
 
@@ -715,7 +722,7 @@ toleranceParameters.write(getGPULineSimplificationParameterValues({tolerance: 2}
   to the smallest row) and splits there. The row's importance is
   `min(distance, min(importance[a], importance[b]))`, so importance never increases from a split
   to its children. An interval whose largest distance is 0 is resolved at once with importance 0.
-- Rounds are GPU gated. They stop when no row is left (`status.converged = 1`) or after `maximumIterations`.
+- Rounds are GPU gated. They stop when no row is left (`status.converged = 1`) or after `maximumIterations`. The rounds are unrolled, so the command node count grows with `maximumIterations`: `estimatedCommandNodeCount` (exact for the importance rounds, excluding the `GPUCompaction` nodes of a row selection) is checked at construction against the shared 32,768-node budget (`validateCommandNodeBudget`); the largest accepted `maximumIterations` (1024) needs about five thousand nodes, so the budget is never the limit.
   A balanced split tree takes about `log2(n)` rounds and a spiral can take up to `n - 2`. If the
   cap is reached, the remaining rows get their interval's split importance, so the kept set is a
   superset of Douglas-Peucker's.
@@ -1047,7 +1054,9 @@ views in `output`. The playhead packer takes a `GPUTrajectoryPlayheadSettings` a
 `[start, step]`, packed with `getGPUTrajectoryClockParameterValues` or, for Int64 timestamps,
 `getGPUTrajectoryClockWordParameterValues`; `GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH` words). Column `k` is the
 same instant for every track and the sample is NaN outside a track's own time span, which is the layout
-`GPUTrajectoryEncounters` expects.
+`GPUTrajectoryEncounters` expects. With `spacing: 'clock'` or `'time'`, a sample is NaN too when it lies
+strictly inside a bracketing interval longer than the optional per-frame `maximumGap` view (one `float32`
+row, the timestamps' unit); see the gap rule below. Omitted or 0 means no limit, the previous behaviour.
 
 - Sample `k` targets `total * k / (sampleCount - 1)`; the last sample is the last row exactly. It
   uses the playhead's search and duplicate rule. Single-row tracks repeat that row; empty tracks
@@ -1109,6 +1118,28 @@ Settings of `getGPUTrajectoryClockParameterValues`:
 
 ::lens{scenario=gpu-spatial-analysis.trajectory-resample rung=graph caption="Command graph nodes and buffers that produce the resampled points"}
 
+#### The `maximumGap` rule
+
+`GPUTrajectoryPlayhead`, `GPUTrajectoryResample` with clock or time spacing, `addClockEncounters`,
+`GPUTrajectoryClosestApproach`, `GPUZoneEvents`, `GPUTrajectoryKalman` and `GPUTrajectoryRestriction`
+use one rule. `maximumGap` is in the unit of the timestamps (word timestamps: the integer unit, and
+`context.unit` when a `temporalContext` is declared). A step between two consecutive samples is a gap only
+when it is strictly longer than the limit; a step exactly equal to the limit is still interpolated.
+The samples at both ends of a gap are real fixes and stay present, so only times strictly inside the
+gap are affected. Omitted (views) or 0 (everywhere) means no limit. Arc-length resampling takes no
+limit: its samples are spaced along the path, and a straight line across a gap is still path length.
+
+#### Trajectory port and sort check
+
+These contributors share the `GPUTrajectoryGeometryPort` layout, including Kalman and restriction,
+which also keep their `times` and `offsets` names. The optional `temporalContext` must match the rows:
+`float32` is `float32-relative` (`double-single` with `timestampsLow`), `uint32x2` is `int64-words`,
+and the axis is `{kind: 'irregular'}`; a mismatch throws at construction.
+
+`addTrajectorySortCheck(graph, {positions, timestamps, trackOffsets, output: {status: {invalidCount}}})`
+is an optional check of the sorted-by-track-then-time precondition, which nothing else validates. It
+writes one `uint32` row, the number of rows out of order, and costs nothing unless called.
+
 ### `GPUZoneEvents`
 
 **`GPUZoneEvents`** — Finds when each track enters and exits polygon zones, with crossing times and dwell time and visits per track and zone.
@@ -1118,6 +1149,11 @@ Settings of `getGPUTrajectoryClockParameterValues`:
 **`addFleetDwellZoneEventsRecipe`** — Chains zone events and a per-zone roll-up into total dwell time and visiting-track counts per zone.
 
 ::lens{scenario=gpu-spatial-analysis.fleet-dwell-zone-events-recipe rung=result caption="Right: 13 harbour zones coloured by total vessel dwell in seconds · grey: tracks"}
+
+With the optional per-frame `maximumGap` view (one `float32` row, the timestamps' unit), a segment
+longer than the limit is a data gap. Crossings on it are reported at the first fix after the gap
+(its time, position and row) and the gap adds no dwell, even when the track is inside the zone on
+both sides of it. Omitted or 0 keeps the previous straight-line behaviour.
 
 Entry and exit events of trajectories against polygon zones, with interpolated times, bounded events per
 track, and dwell time and visit count per `(track, zone)`.
@@ -1274,7 +1310,9 @@ onto one clock (`GPUTrajectoryResample` with `spacing: 'clock'`, a per-frame `[s
 feeds `GPUTrajectoryEncounters`, so tracks need not cover the same window. It takes the trajectory layout
 (`positions`, `timestamps`, `trackOffsets`) and the encounter options as flat props. Optional
 `output.bucketTimes` and `output.samples` expose the clock and the resampled tracks
-(`AddClockEncountersProps`, `ClockEncounters`).
+(`AddClockEncountersProps`, `ClockEncounters`). The optional per-frame `maximumGap` view is forwarded
+to the clock resample, so a bucket inside an over-long track interval reads that track as absent and
+produces no encounter.
 
 Clock mode compares positions only at the shared bucket instants, so two tracks that pass each other
 between buckets are missed. Treat it as a fast preview and use `GPUTrajectoryClosestApproach` for the
@@ -1306,7 +1344,9 @@ binned into a hashed grid of `cellSize` by `cellSize` by `timeCellSize` cells an
 segments of different tracks that shares a cell is tested once (in the cell holding the minimum corner of
 the two boxes' intersection). The test solves the closest point of approach over the common time interval:
 the separation is `D + V tau`, its minimum is at `tau = -(D . V) / |V|^2`, and the time within the distance
-lies between the roots of `|D + V tau|^2 = distance^2`.
+lies between the roots of `|D + V tau|^2 = distance^2`. With the optional per-frame `maximumGap` view
+(one `float32` row, the timestamps' unit) a segment longer than the limit is not motion: it adds no hits
+and no cell entries, so a long gap can no longer raise `entryOverflow`.
 
 - Inputs: the trajectory layout (`positions`, `timestamps` as `float32` seconds or `uint32x2` Int64 words,
   `trackOffsets`), optional `trackValid`, a per-frame one-row `distance`, and the compile-time `cellSize`,

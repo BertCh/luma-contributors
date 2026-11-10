@@ -21,6 +21,17 @@ import {
   queryGPUSpatialAnalysisCapabilities,
   queryGPUSpatialAnalysisOperators
 } from '../../../src/gpu-spatial-analysis/ontology/index';
+import {SPATIOTEMPORAL_REVIEW_OPERATORS} from '../../../src/gpu-spatial-analysis/ontology/spatiotemporal-review-catalog';
+
+/**
+ * Operators of `gpu-spatial-analysis` added after the original 261. They are catalogued in
+ * `SPATIOTEMPORAL_REVIEW_OPERATORS` so that `GPU_SPATIAL_ANALYSIS_OPERATORS` and
+ * `GPU_SPATIAL_ANALYSIS_CAPABILITIES` keep returning what the website generator and the kepler
+ * bindings enumerate.
+ */
+const ADDED_SPATIAL_OPERATOR_NAMES = SPATIOTEMPORAL_REVIEW_OPERATORS.map(
+  ({exportName}) => exportName
+);
 
 it('catalogues every public contributor and recipe exactly once', () => {
   const publicOperators = Object.entries({...spatialAnalysis, GPUTerrainPeakProminence})
@@ -30,9 +41,10 @@ it('catalogues every public contributor and recipe exactly once', () => {
     )
     .map(([name]) => name)
     .sort();
-  const cataloguedOperators = GPU_SPATIAL_ANALYSIS_CAPABILITIES.flatMap(
-    capability => capability.operators
-  ).sort();
+  const cataloguedOperators = [
+    ...GPU_SPATIAL_ANALYSIS_CAPABILITIES.flatMap(capability => capability.operators),
+    ...ADDED_SPATIAL_OPERATOR_NAMES
+  ].sort();
 
   expect(new Set(cataloguedOperators).size).toBe(cataloguedOperators.length);
   expect(cataloguedOperators).toEqual(publicOperators);
@@ -47,9 +59,12 @@ it('describes every public contributor and recipe at operator level', () => {
     .map(([name]) => name)
     .sort();
 
-  expect(GPU_SPATIAL_ANALYSIS_OPERATORS.map(({exportName}) => exportName).sort()).toEqual(
-    publicOperators
-  );
+  expect(
+    [
+      ...GPU_SPATIAL_ANALYSIS_OPERATORS.map(({exportName}) => exportName),
+      ...ADDED_SPATIAL_OPERATOR_NAMES
+    ].sort()
+  ).toEqual(publicOperators);
   expect(new Set(GPU_SPATIAL_ANALYSIS_OPERATORS.map(({exportName}) => exportName)).size).toBe(
     GPU_SPATIAL_ANALYSIS_OPERATORS.length
   );
@@ -84,7 +99,9 @@ it('describes every public contributor and recipe at operator level', () => {
       }
     }
   }
-  expect(GPU_SPATIAL_ANALYSIS_AUDIT.operatorCount).toBe(publicOperators.length);
+  expect(GPU_SPATIAL_ANALYSIS_AUDIT.operatorCount).toBe(
+    publicOperators.length - ADDED_SPATIAL_OPERATOR_NAMES.length
+  );
 });
 
 it('requires scale, memory, dispatch and correctness evidence for every available family', () => {

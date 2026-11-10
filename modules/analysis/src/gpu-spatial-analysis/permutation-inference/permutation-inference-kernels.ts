@@ -639,3 +639,52 @@ const COLUMN_COUNT: u32 = ${count}u;`,
     })
   ];
 }
+
+/**
+ * Counts the analysis rows whose compacted `x` is negative, for the statistics that are defined
+ * only for non-negative data (Getis-Ord G). The count is an exact float32 integer below 2^24.
+ * Reads the uncentered `compactX` (`centerX: false`). @internal
+ */
+export function getNegativeValueCountNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    rows: number;
+    compactX: GraphDataView<'float32'>;
+    rowPositions: GraphDataView<'uint32'>;
+  }
+): {nodes: GPUCommandNode<Parameters>[]; negativeCount: GraphDataView<'float32'>} {
+  const {id, operation, rows} = props;
+  const indicators = createTransientView(graph, `${id}-negative-indicators`, 'float32', rows);
+  const negativeCount = createTransientView(graph, `${id}-negative-count`, 'float32', 1);
+  return {
+    negativeCount,
+    nodes: [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-negative-indicators`,
+        operation,
+        variant: 'negative-indicators',
+        bindings: [
+          {name: 'compactX', view: props.compactX, type: 'f32', access: 'read'},
+          {name: 'rowPositions', view: props.rowPositions, type: 'u32', access: 'read'},
+          {name: 'indicators', view: indicators, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        declarations: `const ROWS: u32 = ${rows}u;`,
+        // Positions at or past the analysis count hold no value.
+        body: `indicators[indicatorsOffset + index] = select(0.0, 1.0, index < rowPositions[rowPositionsOffset + ROWS] && compactX[compactXOffset + index] < 0.0);`
+      }),
+      ...getColumnSumNodes<Parameters>(graph, {
+        id: `${id}-negative-sum`,
+        operation,
+        matrix: indicators,
+        rows,
+        blockCount: Math.ceil(rows / BLOCK_ROWS),
+        first: 0,
+        count: 1,
+        totals: negativeCount
+      })
+    ]
+  };
+}

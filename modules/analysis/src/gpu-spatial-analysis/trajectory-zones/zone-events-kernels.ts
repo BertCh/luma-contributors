@@ -30,6 +30,39 @@ export type ZoneEventsShape = {
 
 type Nodes<Parameters> = GPUCommandNode<Parameters>[];
 
+/** Timing inputs of the optional gap rule. @internal */
+export type ZoneGapProps = {
+  maximumGap: GraphDataView<'float32'>;
+  timestamps: GraphDataView<'float32'> | GraphDataView<'uint32x2'>;
+  isWordMode: boolean;
+};
+
+/** Bindings and WGSL `isGapSegment(row)` for the segment ending at `row`. @internal */
+function getZoneGapSource(gap: ZoneGapProps | undefined): {
+  bindings: WGSLKernelBinding[];
+  declarations: string;
+} {
+  if (!gap) {
+    return {bindings: [], declarations: ''};
+  }
+  return {
+    bindings: [
+      {
+        name: 'timestamps',
+        view: gap.timestamps,
+        type: gap.isWordMode ? 'u32' : 'f32',
+        access: 'read'
+      },
+      {name: 'maximumGap', view: gap.maximumGap, type: 'f32', access: 'read'}
+    ],
+    declarations: `${getTimestampSourceWGSL(gap.isWordMode)}
+fn isGapSegment(row: u32) -> bool {
+  let limit = maximumGap[maximumGapOffset];
+  return limit > 0.0 && rowTimeDifference(row, row - 1u) > limit;
+}`
+  };
+}
+
 /** WGSL track lookup over a `trackOffsets` binding. @internal */
 const TRACK_LOOKUP_WGSL = /* wgsl */ `
 const NO_TRACK: u32 = 0xffffffffu;
@@ -597,6 +630,125 @@ export function createZoneCellKeysNode<Parameters>(
 }
 
 /**
+ * Moves every crossing on a gap segment to the first fix after the gap (parameter 1), so no event
+ * lies inside the gap. A separate pass keeps the crossing kernel inside the core binding limit.
+ * @internal
+ */
+export function createZoneGapSnapNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    shape: ZoneEventsShape;
+    gap: ZoneGapProps;
+    candidatePairs: GraphDataView<'uint32x2'>;
+    candidateKinds: GraphDataView<'uint32'>;
+    candidateParameters: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const gapSource = getZoneGapSource(props.gap);
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: props.gap.isWordMode ? 'gap-snap-words' : 'gap-snap',
+    bindings: [
+      ...gapSource.bindings,
+      {name: 'candidatePairs', view: props.candidatePairs, type: 'u32', access: 'read'},
+      {name: 'candidateKinds', view: props.candidateKinds, type: 'u32', access: 'read'},
+      {
+        name: 'candidateParameters',
+        view: props.candidateParameters,
+        type: 'f32',
+        access: 'read_write'
+      }
+    ],
+    invocationCount: props.shape.candidateCapacity,
+    declarations: gapSource.declarations,
+    body: `if (candidateKinds[candidateKindsOffset + index] != 1u) { return; }
+  if (isGapSegment(candidatePairs[candidatePairsOffset + index * 2u])) {
+    candidateParameters[candidateParametersOffset + index] = 1.0;
+  }`
+  });
+}
+
+/**
+ * Observed time of every cell-ordered event: `time - gapPrefix[row]`, which does not advance across
+ * a gap. Separate from the cell-events pass to stay inside the core binding limit. @internal
+ */
+export function createZoneObservedTimesNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    shape: ZoneEventsShape;
+    state: GraphDataView<'uint32'>;
+    cellOrder: GraphDataView<'uint32'>;
+    sortedRows: GraphDataView<'uint32'>;
+    sortedTimes: GraphDataView<'float32'>;
+    gapPrefix: GraphDataView<'float32'>;
+    cellObservedTimes: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'observed-times',
+    bindings: [
+      {name: 'state', view: props.state, type: 'u32', access: 'read'},
+      {name: 'cellOrder', view: props.cellOrder, type: 'u32', access: 'read'},
+      {name: 'sortedRows', view: props.sortedRows, type: 'u32', access: 'read'},
+      {name: 'sortedTimes', view: props.sortedTimes, type: 'f32', access: 'read'},
+      {name: 'gapPrefix', view: props.gapPrefix, type: 'f32', access: 'read'},
+      {name: 'cellObservedTimes', view: props.cellObservedTimes, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: props.shape.candidateCapacity,
+    body: `if (index >= state[stateOffset + 1u]) {
+    cellObservedTimes[cellObservedTimesOffset + index] = 0.0;
+    return;
+  }
+  let slot = cellOrder[cellOrderOffset + index];
+  cellObservedTimes[cellObservedTimesOffset + index] = sortedTimes[sortedTimesOffset + slot] - gapPrefix[gapPrefixOffset + sortedRows[sortedRowsOffset + slot]];`
+  });
+}
+
+/**
+ * Per-row cumulative duration of gap segments (longer than `maximumGap`) from the track's first
+ * row, summed in row order. `time - prefix` is observed time, which does not advance across a gap.
+ * @internal
+ */
+export function createZoneGapPrefixNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    shape: ZoneEventsShape;
+    gap: ZoneGapProps;
+    trackOffsets: GraphDataView<'uint32'>;
+    gapPrefix: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const gapSource = getZoneGapSource(props.gap);
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: props.gap.isWordMode ? 'gap-prefix-words' : 'gap-prefix',
+    bindings: [
+      ...gapSource.bindings,
+      {name: 'trackOffsets', view: props.trackOffsets, type: 'u32', access: 'read'},
+      {name: 'gapPrefix', view: props.gapPrefix, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: props.shape.trackCount,
+    declarations: gapSource.declarations,
+    body: `let start = min(trackOffsets[trackOffsetsOffset + index], ${props.shape.rowCount}u);
+  let end = min(trackOffsets[trackOffsetsOffset + index + 1u], ${props.shape.rowCount}u);
+  if (start >= end) { return; }
+  var total = 0.0;
+  gapPrefix[gapPrefixOffset + start] = 0.0;
+  for (var row = start + 1u; row < end; row++) {
+    if (isGapSegment(row)) { total = total + rowTimeDifference(row, row - 1u); }
+    gapPrefix[gapPrefixOffset + row] = total;
+  }`
+  });
+}
+
+/**
  * Event types in parallel. Events of one `(track, zone)` cell are a run of the cell-ordered list
  * (a stable sort by cell of the time-ordered events, so each run is in time order), and the `k`-th
  * event of a run toggles the cell's seeded inside state for the `k`-th time: after it the state is
@@ -776,13 +928,20 @@ export function createZoneCellFinalizeNode<Parameters>(
     cellTimes: GraphDataView<'float32'>;
     dwellTimes: GraphDataView<'float32'>;
     visitCounts: GraphDataView<'uint32'>;
+    /** With `maximumGap`: removes gap time from a visit still open at the last sample. */
+    gapPrefix?: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: props.isWordMode ? 'cell-finalize-words' : 'cell-finalize',
+    variant: `${props.isWordMode ? 'cell-finalize-words' : 'cell-finalize'}${props.gapPrefix ? '-gap' : ''}`,
     bindings: [
+      ...(props.gapPrefix
+        ? ([
+            {name: 'gapPrefix', view: props.gapPrefix, type: 'f32', access: 'read'}
+          ] as WGSLKernelBinding[])
+        : []),
       {
         name: 'timestamps',
         view: props.timestamps,
@@ -810,7 +969,7 @@ ${getTimestampSourceWGSL(props.isWordMode)}`,
   let track = index / ZONE_COUNT;
   let firstRow = trackOffsets[trackOffsetsOffset + track];
   let lastRow = trackOffsets[trackOffsetsOffset + track + 1u] - 1u;
-  let duration = rowTimeDifference(lastRow, firstRow);
+  let duration = rowTimeDifference(lastRow, firstRow)${props.gapPrefix ? ' - gapPrefix[gapPrefixOffset + lastRow]' : ''};
   dwellTimes[dwellTimesOffset + index] = dwellTimes[dwellTimesOffset + index] + (duration - enterTime);`
   });
 }

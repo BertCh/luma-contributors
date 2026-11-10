@@ -9,13 +9,14 @@ filtering and octree construction (`GPUPointCloudVoxelDownsample`, `GPUPointClou
 
 | Operation | Result | Cost |
 | --- | --- | --- |
-| `GPUPointCloudNeighborhoods` | Bounded nearest 3D neighbors and actual radius support | O(points² × capacity) |
+| `GPUPointCloudNeighborhoods` | Bounded nearest 3D neighbors and actual radius support | With `grid`: sort + visited candidates × capacity. Without: O(queries × points × capacity), refused above 2^27 query-point pairs |
 | `GPUPointCloudFeatures` | Oriented normals, covariance eigenvalues, shape measures | O(points × capacity) |
-| `GPUPointCloudStatisticalFilter` | Mean neighbor distance and outlier mask | O(points²) |
+| `GPUPointCloudStatisticalFilter` | Mean neighbor distance and outlier mask | O(points × capacity) + three published reductions |
 | `GPUPointCloudSurfaces` / `GPUPointCloudHeight` | Indexed DTM/DSM/CHM and cell, bilinear or bounded-IDW HAG | Sort + O(points + cells); HAG O(points × sampling window) |
 | `GPUPointCloudGround` / `GPUPointCloudSMRF` | Progressive morphology / SMRF ground mask/classification | O(cells × sum(windowArea) + points × stages) |
-| `GPUPointCloudICP` | Point-to-point / point-to-plane rigid transform, robust weights, status/history | Optional target index; O(iterations × visited candidates + sourcePoints) |
-| `GPUPointCloudChange` | Signed cylinder change, confidence interval and support | O(cores × totalPoints) |
+| `GPUPointCloudICP` | Point-to-point / point-to-plane rigid transform, robust weights, status/history | With `targetGrid`: O(iterations × visited candidates + sourcePoints). Without: O(iterations × source × target), refused above 2^27 pairs |
+| `GPUPointCloudChange` | Signed cylinder change, confidence interval and support | With `grid`: sort + O(cores × points in the cylinder's cells). Without: O(cores × totalPoints), refused above 2^27 core-point pairs |
+| `GPUPointCloudVoxelMerge` | Associative merge of per-part voxel counts, centroids, representatives and attribute means | O(voxels × parts) |
 
 ## Ownership and batching
 
@@ -29,6 +30,131 @@ compiled kernels does not destroy imported buffers.
 Initial operations accept one resident packed view per attribute, fitting device storage-binding
 limits. They never concatenate streaming chunks. `GPUPointCloudVoxelMerge` explicitly merges disjoint owned-row reductions on an identical grid; it never infers overlap or deduplicates halo copies.
 
+
+## Contributor reference
+
+One heading per class. All ten implement `GPUCommandNodeProducer`, take non-owning packed
+`GraphDataView`s, and refuse bad props at construction with a message that starts with the
+contributor ID (default `gpu-pointcloud-<name>`) and names the prop and its accepted range. Numeric
+props are compiled into the shader, so changing one rebuilds the pipeline. The limits are exported
+from `pointcloud-limits.ts` as `GPU_POINT_CLOUD_MAXIMUM_*`. Status bit and code values are exported
+as `GPU_POINT_CLOUD_<NAME>_STATUS_*`.
+
+### GPUPointCloudNeighborhoods
+
+- Props: `positions` (`float32x3`), `radius` (inclusive, positive), `capacity` (1 to 64,
+  `GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY`), optional `queryRows`, `strategy` (`'serial'` default or
+  `'cooperative'`), `supportBounds` (requires `status`) and `grid`.
+- Outputs: `indices` and `squaredDistances` (`capacity` slots per query), `counts` (full radius
+  support), optional `status`.
+- Status bits: 1 `..._NEIGHBORHOODS_STATUS_INVALID_QUERY` (query row out of range, not finite or outside
+  `grid`; the list is empty), 2 `..._TRUNCATED` (support above `capacity`), 4 `..._UNSUPPORTED`
+  (the search sphere crosses `supportBounds`). Bits combine; higher bits are zero.
+- Limits: `grid` axes at most 2^24 cells (`GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS`, exact float32 cell
+  coordinates), total cells below 2^32, offsets within one storage binding. Without `grid`,
+  queries × positions at most 2^27 (`GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK`).
+
+### GPUPointCloudFeatures
+
+- Props: `positions`, `indices`, `counts`, `capacity` (1 to 64), optional `viewpoint` (finite).
+- Outputs: `normals`, `eigenvalues`, `shapes` (`float32x3`), `status`, optional packed `covariance`
+  (6 values per row).
+- Status bits: 1 `..._FEATURES_STATUS_DEGENERATE` (fewer than three neighbors, or collinear or
+  coincident neighbors: normal and shape are zero), 2 `..._TRUNCATED` (counts above `capacity`),
+  4 `..._NOT_CONVERGED` (24 Jacobi sweeps were not enough).
+- Limits: capacity 64, per-lane arrays and the unrolled 24-sweep eigensolve.
+
+### GPUPointCloudStatisticalFilter
+
+- Props: `squaredDistances`, `counts`, `capacity` (1 to 64), `standardDeviations` (default 2).
+- Outputs: `meanDistances` (`-1` without support), `mask` (1 inlier, 0 outlier).
+- Status: none per row. A row without neighbors is an outlier by definition.
+- Limits: capacity 64. The global statistics are three `GPUReduction` sums plus one single-row
+  threshold kernel; no kernel loops over the rows.
+
+### GPUPointCloudSurfaces
+
+- Props: `positions`, `classifications`, `grid` (`PointCloudRasterGrid`), `groundClass` (default 2).
+- Outputs: `terrain`, `surface`, `canopy`, `coverage` (one per cell).
+- Coverage bits: 1 `GPU_POINT_CLOUD_COVERAGE_ANY_POINT`, 2 `GPU_POINT_CLOUD_COVERAGE_GROUND`.
+- Limits: grid cells below 2^32 (`GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS`), row 0 at the minimum y (rows run north).
+
+### GPUPointCloudHeight
+
+- Props: `positions`, `grid`, `terrain`, `coverage`, `coverageBit`, `interpolation` (`bilinear` or
+  `idw` with `radius`, `power`, `minimumSupport`).
+- Outputs: `heights`, `status`.
+- Status codes (values, not bits): 0 `GPU_POINT_CLOUD_HEIGHT_STATUS_VALID`, 1 `..._INVALID_POINT`,
+  2 `..._UNSUPPORTED_TERRAIN`, 3 `..._NONFINITE`.
+- Limits: IDW radius at most 64 cells (`GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS`, each point visits that many cells squared),
+  power in (0, 8] (`GPU_POINT_CLOUD_MAXIMUM_IDW_POWER`, higher powers underflow the normalized weights).
+
+### GPUPointCloudGround
+
+- Props: `positions`, `classifications`, `grid`, `minimumSurface`, `coverage`, `radii`,
+  `initialThreshold`, `slope`, `maximumThreshold`.
+- Outputs: `groundMask`, `outputClassifications`, `status`.
+- Status bits: 1 `..._GROUND_STATUS_UNSUPPORTED` (outside the grid, not finite or uncovered cell),
+  2 `..._INCOMPLETE_WINDOW` (the final window reaches past covered cells). Bit 1 excludes bit 2.
+- Limits: 1 to 32 radii (`GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_COUNT`, three kernels each), each radius 1 to 32
+  cells (`GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_CELLS`, each cell scans (2r+1)² neighbors).
+
+### GPUPointCloudSMRF
+
+- Props: `positions`, `classifications`, `grid` (at least 2 by 2), `selection`, `slope`, `scalar`,
+  `threshold`, `window`, `cut`, `groundClass`, `otherClass`, `onlyGround`.
+- Outputs: `groundSurface` (per cell), `groundMask`, `outputClassifications`, `status` (per point).
+- Status bits: 1 `..._SMRF_STATUS_INVALID`, 2 `..._NO_TERRAIN`, 4 `..._EXCLUDED`, 8 `..._INPAINTED`
+  (inpainted terrain, or within the filter margin of the grid edge). Bits 1, 2 and 4 are exclusive
+  and exclude bit 8.
+- Limits: window at most 64 cells (`GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS`, unrolled openings grow as the
+  square of the radius: about 190 nodes at the default 18 and 2,100 at 64), cut at most 32 cells
+  (`GPU_POINT_CLOUD_MAXIMUM_SMRF_CUT_CELLS`). The inpainting valid counts are published `GPUReduction` sums. The
+  inpainting ring search is still a per-cell loop that can reach `max(width, height)` rings on sparse coverage.
+
+### GPUPointCloudICP
+
+- Props: `source`, `target`, `maximumDistance`, `iterations` (1 to 100, default 20,
+  `GPU_POINT_CLOUD_MAXIMUM_ICP_ITERATIONS`), `targetGrid`, `metric`, `targetNormals`, `robust`,
+  `initialTransform`, `origin`, tolerances.
+- Outputs: `transform` (16), `history` (one `float32x3` per iteration), `inlierMask`, `status` (1 row).
+- Status codes (values, not bits): 0 `..._ICP_STATUS_CONVERGED`, 1 `..._ITERATION_LIMIT`,
+  2 `..._INSUFFICIENT_MATCHES`, 3 `..._DEGENERATE`, 4 `..._EIGENSOLVE_EXHAUSTED`.
+- Limits: iterations are unrolled graph nodes. Without `targetGrid`, source × target at most 2^27.
+
+### GPUPointCloudChange
+
+- Props: `reference`, `comparison`, `cores`, `normals`, `alignment`, `radius`, `halfDepth`,
+  `minimumSupport`, uncertainty options, optional `grid`.
+- Outputs: `changes`, `roughness` (`float32x3` per core), `counts` (two per core), `status`.
+- Status codes (values, not bits): 0 `..._CHANGE_STATUS_VALID`, 1 `..._INVALID_CORE`,
+  2 `..._INSUFFICIENT_SUPPORT`, 3 `..._NONFINITE_UNCERTAINTY`. In grid mode the flag
+  `GPU_POINT_CLOUD_CHANGE_STATUS_GRID_INCOMPLETE` (0x100) is OR-ed onto any code except
+  `..._INVALID_CORE` when a cell the core's cylinder needs lies outside the grid, so its counts may
+  be incomplete; mask it off to read the code.
+- Grid limit: each core visits `(ceil(2 * sqrt(halfDepth^2 + radius^2) / cellSize) + 3)^3` cells, at
+  most `GPU_POINT_CLOUD_MAXIMUM_CHANGE_CELLS_PER_CORE` (2^20, about 4,800 times the largest use in
+  the tests); the constructor asks for a larger `cellSize` above it.
+- Limits: without `grid`, cores × (reference + comparison) at most 2^27; with `samplingCovariance`,
+  at most 32768 points per cloud (`GPU_POINT_CLOUD_MAXIMUM_SAMPLING_COVARIANCE_POINTS`).
+- Grid path: pass a `grid` of the same kind `GPUPointCloudNeighborhoods` takes. The reference and
+  the aligned comparison are indexed once per encoding, and each core visits only the cells that the
+  bounding box of its cylinder touches (half-depth along the normal, radius across it, plus one cell of margin).
+  Counts and statuses equal the unindexed scan exactly; changes and roughness equal it to float32
+  summation order (the tests compare to four decimals on the PDAL golden fixture and on a random cloud
+  with tilted normals, alignment and sampling covariance). Points outside the half-open grid do not
+  participate, so the grid must cover both clouds after alignment. The work is one kernel per cloud and a final
+  combining kernel in both modes.
+
+### GPUPointCloudVoxelMerge
+
+- Props: `parts` (counts, centroids, representatives, `sourceRowOffset`, optional attribute),
+  `partitionPolicy: 'disjoint-owned-rows'`, merged outputs and optional `attribute`.
+- Outputs: `counts`, `centroids`, `representatives`, `status`, optional attribute means and counts.
+- Status bits: 1 `..._VOXEL_MERGE_STATUS_COUNT_OVERFLOW` (merged count above uint32),
+  2 `..._REPRESENTATIVE_OVERFLOW` (representative plus offset above the largest row ID). Reject flagged voxels.
+- Limits: part `sourceRowOffset` below 2^32 - 1. No published or local contributor produces the
+  `centroids` input yet; the tests build the parts by hand.
 
 ## 3D neighborhoods, normals and shape
 
@@ -60,7 +186,9 @@ then x at exact ties. This is a local orientation convention, not globally consi
 Feature status is a bitmask: 1 means fewer than three retained neighbors or a rank-deficient
 neighborhood; 2 means radius support exceeded capacity; 4 means the eigensolver exhausted its
 bound. Degenerate neighborhoods produce a zero normal and zero shape. Check status before use.
-The default search costs O(N² × capacity) and uses O(N × capacity) output storage. Optional
+Without a `grid` the search costs O(N² × capacity) and uses O(N × capacity) output storage; the
+constructor refuses queries × positions above `GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK` (2^27) and
+asks for a `grid`. The optional
 `grid: {origin: [x,y,z], cellSize, dimensions: [width,height,depth]}` adds a GPU sorted 3D grid.
 The grid bounds are half-open: points outside them do not participate. Grid key sorting, cell offset
 construction, candidate search and features stay in the graph and rebuild on each encoding.
@@ -81,7 +209,11 @@ It writes the mean distance to retained neighbors (`-1` without support), and a 
 `uint32` mask. Its threshold is the population mean of supported rows' mean distances plus
 `standardDeviations` (default 2) times their population standard deviation. Zero-support rows are
 rejected. Radius truncation remains observable through the input counts. The implementation is
-O(N × capacity) for neighbor means and O(N) for stable block-merged global statistics; it performs no compaction or attribute rewriting.
+O(N × capacity) for neighbor means; the valid count, mean and variance are three published
+`GPUReduction` sums, each term divided by the valid count before it is summed so that a finite
+distance cannot overflow the accumulated moment. It performs no compaction or attribute rewriting.
+A point exactly at the threshold can classify differently across devices, because the sums are
+tree-ordered and the reduction strategy depends on the device.
 
 An optional `centroids: float32x3[voxelCount]` on `GPUPointCloudVoxelDownsample` adds arithmetic
 means of positions. The existing `output` stays the sampled source position, and representatives
@@ -208,11 +340,18 @@ local frame: convert a readback with `icp.getAbsoluteTransform(transform)`
 registered or compared together must use one origin; `GPUPointCloudChange` needs no origin option because it
 consumes local-frame clouds and an ICP transform in that same frame.
 
-Without `targetGrid`, `GPUPointCloudICP` asserts `sourceCount * targetCount <=
-GPU_POINT_CLOUD_MAXIMUM_BRUTE_FORCE_WORK` (2^32, about 65,536 by 65,536). Use `targetGrid` for larger clouds.
-`GPUPointCloudChange` scans every point per core and asserts `coreCount * (referenceCount + comparisonCount)`
-against the same limit; with `samplingCovariance` each cloud is also limited to 32768 points because the
-all-pairs correlation sum is quadratic. Subsample or tile larger inputs.
+Without `targetGrid`, `GPUPointCloudICP` refuses `sourceCount * targetCount` above
+`GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK` (2^27, about 11,585 by 11,585) and asks for `targetGrid`.
+`GPUPointCloudChange` does the same for `coreCount * (referenceCount + comparisonCount)` and asks for
+`grid`; `GPUPointCloudNeighborhoods` does the same for `queryCount * positionCount`. With a grid there
+is no cap on the pair count, because the work follows the points near each query. With
+`samplingCovariance` each cloud is also limited to 32768 points because the in-cylinder correlation
+sum is quadratic. Subsample or tile larger inputs.
+
+How the limit was chosen: the largest unindexed run in the tests and the website is 5,000 by 5,000
+points (25 million pairs, the feature-extraction page), and the largest kernel-audit case is 4,096
+squared (16.8 million). 2^27 is about five to eight times those, so no existing run changes. The older
+ceiling `GPU_POINT_CLOUD_MAXIMUM_BRUTE_FORCE_WORK` (2^32) is still exported.
 
 ## Surface change and confidence
 
@@ -236,7 +375,7 @@ normal orientation reverses the signed change. `minimumSupport` defaults to 3 an
 2. Status is 0 for valid results, 1 for an invalid core/normal, 2 for insufficient support, and
 3 for nonfinite accumulated uncertainty or confidence endpoints. Invalid result values stay zero
 and must be masked; support counts remain available. This M3C2-style estimator uses caller-selected
-normal and projection scales, independent-sample Gaussian intervals by default, and no automatic normal-scale optimization. Optional known spatial covariance is described below. Work is O(coreCount × totalCloudPoints).
+normal and projection scales, independent-sample Gaussian intervals by default, and no automatic normal-scale optimization. Optional known spatial covariance is described below. Work is O(coreCount × totalCloudPoints) without `grid` and O(coreCount × points in the cells the cylinder touches) with it.
 
 ## Numerical evidence and current limits
 
@@ -269,6 +408,15 @@ the resident samples. Graphs used 28 nodes for the two smaller sizes and 44 for 
 each measurement made four submissions. The million-point case used 108 MB of output and 12 MB of
 input; its largest output binding was 32 MB. The native device advertised approximately 4 GiB
 storage-binding/buffer limits, though these individual outputs fit the baseline 128 MiB binding limit.
+
+**Which path these numbers measured.** The neighborhood run used the indexed path: the benchmark
+passes `grid: {origin: [0, 0, 0], cellSize: 1, dimensions: [side, side, side]}`
+(`gpu-pointcloud-benchmark.spec.ts`). It did not measure the default path without a grid, which tests
+every point for every query and is now refused above 2^27 pairs. The advanced table below used
+`targetGrid` for ICP, and for SMRF a grid capped at 256 by 256 cells with `window: 4` (the default
+window is 18 cells), so its cost follows the raster and the window, not the point count. No
+one-million-point measurement of the unindexed path, of `GPUPointCloudChange` or of `grid`-indexed
+change exists.
 
 These numbers establish this lattice workload and device only. Dense coincident points, highly
 uneven cells, larger capacities, wide radii, and other GPUs can behave differently. The scaled
@@ -306,7 +454,7 @@ Optional `samplingCovariance: {referenceVariance, comparisonVariance, correlatio
 
 The pinned generators now execute PDAL 2.8.4 directly. Four SMRF fixtures (holes, low outliers, slope sensitivity, scalar zero and net cutting) agree on every classification. Planar normals agree with PDAL `filters.normal`; that fixture uses PDAL's self-inclusive support and compares orientation only, not covariance eigenvalues across differing supports. Point-to-point ICP agrees with PDAL's composed source-to-target matrix, including its centroid adjustment. Outlier classifications agree on a separated-cluster fixture; PDAL uses sample standard deviation while this API explicitly uses population standard deviation, so exact threshold parity is not claimed. Raster HAG agrees with `hag_nn(count=1)` where queries share ground samples' cell-centre XY, including negative heights; this is not general nearest-ground interpolation parity. `pdal-pointcloud.json` and `smrf.json` retain the version and actual reference outputs. Independent NumPy/SciPy fixtures still check covariance, interpolation and uncertainty conventions.
 
-The advanced native Apple WebGPU measurements rebuild their indexes every encoding. Warm values are medians of three full encode/submit/queue-fence wall measurements, including host overhead. No individual binding exceeds 128 MiB.
+The advanced native Apple WebGPU measurements rebuild their indexes every encoding. ICP ran with `targetGrid` and SMRF with a 256 by 256 grid and `window: 4` (see the note above); neither measures the default window or an unindexed search. Warm values are medians of three full encode/submit/queue-fence wall measurements, including host overhead. No individual binding exceeds 128 MiB.
 
 | Workload | 10,000 points | 100,000 points | 1,000,000 points |
 | --- | --- | --- | --- |

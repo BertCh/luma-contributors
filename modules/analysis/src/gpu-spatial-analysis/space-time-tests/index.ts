@@ -4,8 +4,36 @@
 
 export {GPUKnoxTest} from './gpu-knox-test';
 export type {GPUKnoxTestOutput, GPUKnoxTestProps} from './gpu-knox-test';
-export {GPUMantelTest} from './gpu-mantel-test';
-export type {GPUMantelTestOutput, GPUMantelTestProps} from './gpu-mantel-test';
+export {
+  GPU_NEAR_REPEAT_CELL_SUMMARY,
+  GPU_NEAR_REPEAT_CELL_SUMMARY_LENGTH,
+  GPUNearRepeatKnox
+} from './gpu-near-repeat-knox';
+export type {GPUNearRepeatKnoxOutput, GPUNearRepeatKnoxProps} from './gpu-near-repeat-knox';
+export {
+  GPU_LOCAL_KNOX_SUMMARY,
+  GPU_LOCAL_KNOX_SUMMARY_LENGTH,
+  GPULocalKnox
+} from './gpu-local-knox';
+export type {GPULocalKnoxOutput, GPULocalKnoxProps} from './gpu-local-knox';
+export {GPU_JACQUEZ_MAXIMUM_K, GPUJacquezTest} from './gpu-jacquez-test';
+export type {GPUJacquezTestOutput, GPUJacquezTestProps} from './gpu-jacquez-test';
+export {
+  getGPUSpaceTimeGuardedRelativeTimes,
+  GPU_NEAR_REPEAT_MAXIMUM_BANDS,
+  GPU_NEAR_REPEAT_MAXIMUM_CELLS,
+  GPU_SPACE_TIME_BAND_RESOLUTION_FRACTION
+} from './space-time-bands';
+export type {
+  GPUSpaceTimeGuardedRelativeTimes,
+  GPUSpaceTimeGuardedRelativeTimesOptions
+} from './space-time-bands';
+export {GPUMantelTest, GPU_MANTEL_POINTPATS_TRANSFORM} from './gpu-mantel-test';
+export type {
+  GPUMantelTestOutput,
+  GPUMantelTestProps,
+  GPUMantelTransform
+} from './gpu-mantel-test';
 export {
   getGPUSpaceTimeParameterValues,
   getGPUSpaceTimeRelativeTimes,

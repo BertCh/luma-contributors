@@ -264,3 +264,52 @@ it('GPULineSimplification rounds are gated on the GPU and share pipelines (rules
     expect(countDistinctPipelines(buildNodes(6))).toBe(countDistinctPipelines(buildNodes(4)));
   }
 });
+
+it('GPULineSimplification estimatedCommandNodeCount matches the unrolled importance nodes', () => {
+  for (const method of ['douglas-peucker', 'visvalingam'] as const) {
+    for (const maximumIterations of [1, 3, 17]) {
+      for (const withStatus of [false, true]) {
+        const graph = new GPUCommandGraph(createNullWebGPUDevice());
+        const base = createProps(graph, {
+          id: `estimate-${method}-${maximumIterations}`,
+          method,
+          maximumIterations
+        });
+        const view = (name: string) =>
+          createTransientView(graph, `${name}-${serial++}`, 'uint32', 1);
+        const contributor = new GPULineSimplification({
+          ...base,
+          output: withStatus
+            ? {status: {converged: view('converged'), iterationCount: view('count')}}
+            : undefined
+        });
+        expect(contributor.estimatedCommandNodeCount).toBe(
+          contributor.getCommandNodes(graph).length
+        );
+      }
+    }
+  }
+});
+
+it('GPULineSimplification estimatedCommandNodeCount excludes only the compaction nodes of a selection', () => {
+  for (const method of ['douglas-peucker', 'visvalingam'] as const) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const contributor = new GPULineSimplification(
+      createProps(graph, {id: `estimate-selection-${method}`, method, maximumIterations: 5})
+    );
+    const actual = contributor.getCommandNodes(graph).length;
+    // The compaction scan nodes depend on the row count and the device.
+    expect(actual - contributor.estimatedCommandNodeCount).toBeGreaterThan(0);
+    expect(actual - contributor.estimatedCommandNodeCount).toBeLessThan(40);
+  }
+});
+
+it('GPULineSimplification rejects an importance pass beyond the command node budget', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  // 1024 rounds of the longest method stay inside the 32768-node budget, so the budget is a
+  // safety net that only a changed round structure could trip.
+  const contributor = new GPULineSimplification(
+    createProps(graph, {id: 'estimate-maximum', method: 'visvalingam', maximumIterations: 1024})
+  );
+  expect(contributor.estimatedCommandNodeCount).toBeLessThan(32768);
+});

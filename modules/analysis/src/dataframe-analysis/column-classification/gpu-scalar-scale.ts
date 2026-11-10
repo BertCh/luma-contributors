@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -13,7 +12,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validatePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -29,7 +29,13 @@ export type GPUScalarScaleProps = {
   id?: string;
   /** Prepared scalar f32 values, or exact uint32 category codes for point mode only. */
   values: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Source validity only; display filtering is a separate renderer selection mask. */
+  /**
+   * Optional packed `uint32` row mask, one entry per source row; nonzero keeps the row, zero maps
+   * it to `nullValue` with output validity 0. Source validity only; display filtering is a separate
+   * renderer selection mask.
+   */
+  mask?: GraphDataView<'uint32'>;
+  /** @deprecated Use `mask`; same meaning (nonzero keeps the row). `mask` wins when both are set. */
   validity?: GraphDataView<'uint32'>;
   /** Numeric endpoint pair, or unique ordered finite point-domain entries. */
   domain: GraphDataView<'float32'>;
@@ -79,9 +85,12 @@ export type GPUScalarScaleProps = {
 export class GPUScalarScale implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUScalarScaleProps;
+  /** Resolved row mask: `props.mask`, else the deprecated `props.validity`. */
+  readonly mask: GraphDataView<'uint32'> | undefined;
   constructor(props: GPUScalarScaleProps) {
     this.id = props.id ?? 'scalar-scale';
     this.props = props;
+    this.mask = props.mask ?? props.validity;
     const id = this.id;
     validateCapacity(
       id,
@@ -96,30 +105,52 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     validatePackedView(props.output.values, ['float32'], `${id} output.values`);
     // Controls cover their declared capacity; output storage covers every source row.
-    assert(
-      props.domain.length >= props.maximumDomainCount &&
-        props.range.length >= 2 &&
-        props.parameters.length >= GPU_SCALAR_SCALE_PARAMETER_LENGTH &&
-        props.output.values.length >= props.values.length
+    validateRequirement(
+      id,
+      props.domain.length >= props.maximumDomainCount,
+      'domain must hold at least maximumDomainCount entries'
     );
-    if (props.validity) {
-      validatePackedView(props.validity, ['uint32'], `${id} validity`);
-      // Source validity follows the exact source row topology.
-      assert(props.validity.length === props.values.length);
+    validateRequirement(id, props.range.length >= 2, 'range must hold at least 2 entries');
+    validateRequirement(
+      id,
+      props.parameters.length >= GPU_SCALAR_SCALE_PARAMETER_LENGTH,
+      `parameters must hold at least ${GPU_SCALAR_SCALE_PARAMETER_LENGTH} values`
+    );
+    validateRequirement(
+      id,
+      props.output.values.length >= props.values.length,
+      'output.values must hold at least one value per source row'
+    );
+    if (this.mask) {
+      validatePackedView(this.mask, ['uint32'], `${id} mask`);
+      // The row mask follows the exact source row topology.
+      validateRequirement(
+        id,
+        this.mask.length === props.values.length,
+        'mask must hold exactly one entry per source row'
+      );
     }
     if (props.output.validity) {
       validatePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
       // Every source row receives an output validity value.
-      assert(props.output.validity.length >= props.values.length);
+      validateRequirement(
+        id,
+        props.output.validity.length >= props.values.length,
+        'output.validity must hold at least one value per source row'
+      );
     }
     const outputs = [props.output.values, props.output.validity].filter(
       (view): view is GraphDataView<'float32'> | GraphDataView<'uint32'> => Boolean(view)
     );
     // Writable bindings use distinct buffers, including when byte ranges would be disjoint.
-    assert(new Set(outputs.map(view => view.buffer)).size === outputs.length);
+    validateRequirement(
+      id,
+      new Set(outputs.map(view => view.buffer)).size === outputs.length,
+      'output.values and output.validity must use separate buffers'
+    );
     validateGraphOutputsDisjointFromInputs(id, outputs, [
       props.values,
-      props.validity,
+      this.mask,
       props.domain,
       props.range,
       props.parameters
@@ -131,7 +162,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
     const {props, id} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
-      props.validity,
+      this.mask,
       props.domain,
       props.range,
       props.parameters,
@@ -153,7 +184,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
         invocationCount: props.values.length,
         bindings: [
           read('values', props.values, props.values.format === 'uint32' ? 'u32' : 'f32'),
-          ...(props.validity ? [read('sourceValidity', props.validity, 'u32')] : []),
+          ...(this.mask ? [read('sourceMask', this.mask, 'u32')] : []),
           read('domain', props.domain, 'f32'),
           read('range', props.range, 'f32'),
           read('parameters', props.parameters, 'f32'),
@@ -173,7 +204,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
         body: `let nullValue = parameters[parametersOffset + 2u];
   outputValues[outputValuesOffset + index] = select(0.0, nullValue, scalarIsFinite(nullValue));
   ${props.output.validity ? 'outputValidity[outputValidityOffset + index] = 0u;' : ''}
-  ${props.validity ? 'if (sourceValidity[sourceValidityOffset + index] == 0u) { return; }' : ''}
+  ${this.mask ? 'if (sourceMask[sourceMaskOffset + index] == 0u) { return; }' : ''}
   let scaleParameter = parameters[parametersOffset];
   let domainCountParameter = parameters[parametersOffset + 1u];
   if (!scalarIsFinite(scaleParameter) || !scalarIsFinite(domainCountParameter) || !scalarIsFinite(nullValue)) { return; }

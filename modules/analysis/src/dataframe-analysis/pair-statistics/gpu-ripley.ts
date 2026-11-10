@@ -179,8 +179,8 @@ export type GPURipleyProps = {
  * Isotropic weights are accumulated as `round(e * 2^17)`, an error of at most `2^-18` per pair
  * plus the f32 error of the weight itself. Results are bitwise reproducible.
  *
- * Monte Carlo CSR envelopes are provided by {@link GPURipleyEnvelope}; cross-type and
- * inhomogeneous K are not implemented. Polygon windows support holes and disjoint components.
+ * Monte Carlo CSR envelopes are provided by {@link GPURipleyEnvelope}; cross-type K is not
+ * implemented. Inhomogeneous K is provided by `GPUInhomogeneousPointPattern`. Polygon windows support holes and disjoint components.
  */
 export class GPURipley implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

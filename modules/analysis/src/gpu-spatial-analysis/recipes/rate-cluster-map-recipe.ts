@@ -492,7 +492,8 @@ export function addRateClusterMapRecipe<Parameters>(
     outputs.quadrants
   );
   const colors = getOrCreateView(graph, `${id}-colors`, 'uint32', rowCount, outputs.colors);
-  graph.add(
+  builder.addGlue(
+    'quadrant-colors',
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-quadrant-colors`,
       operation: 'GPURateClusterMapQuadrantColors',

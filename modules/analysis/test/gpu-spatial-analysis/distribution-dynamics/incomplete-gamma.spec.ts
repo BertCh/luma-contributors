@@ -4,7 +4,7 @@
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../../src/gpu-spatial-analysis/distribution-dynamics/incomplete-gamma-wgsl';
+import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../../src/analysis-core/kernels/incomplete-gamma-wgsl';
 import {GET_NAN_WGSL, IS_NAN_BITS_WGSL} from '../../../src/analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';

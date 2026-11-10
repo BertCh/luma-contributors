@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,12 +11,32 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validatePackedView
+  validateMaximumCount,
+  validatePackedView,
+  validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {validatePointProcessView} from '../gpu-spatial-analysis/point-process/point-process-utils';
+
+/** Largest event count: scratch and work are quadratic in the events (1,048,576 pairs). */
+const MAXIMUM_EVENT_COUNT = 1024;
+/** Largest `maximumPairCount`, the all-pairs scratch budget (events squared). */
+const MAXIMUM_PAIR_COUNT = 1048576;
+/** Largest node count: the Ang shell count scans every node once per pair. */
+const MAXIMUM_NODE_COUNT = 65536;
+/** Largest event-by-node distance table, 2^24 entries (64 MiB). */
+const MAXIMUM_DISTANCE_COUNT = 16777216;
+/** Largest edge count: the Ang shell count scans every edge once per pair. */
+const MAXIMUM_EDGE_COUNT = 65536;
+/** Largest radius count: bounds the per-radius status bitmask and finishing work. */
+const MAXIMUM_RADIUS_COUNT = 256;
+/** Threads of the workgroup that reduces the pairs of one radius. A power of two for the tree. */
+const FINISH_WORKGROUP_SIZE = 256;
+const CORRECTIONS = ['none', 'ang'];
+const NORMALIZATIONS = ['network-length', 'inverse-intensity', 'inverse-intensity-squared'];
 
 /** Caller-owned results of the inhomogeneous network K estimator. */
 export type GPUNetworkInhomogeneousKOutput = {
@@ -66,6 +85,13 @@ export type GPUNetworkInhomogeneousKProps = {
  * No Euclidean distance substitute or CPU numerical fallback is used. O(events²*(nodes+edges))
  * Ang preparation, O(events²*radii) finishing, O(events²) scratch. At most 1024 events and 256 radii.
  * This is distinct from the existing homogeneous spaghetti-normalized GPUNetworkKFunction.
+ *
+ * Parallelism: the pair kernel is one thread per ordered pair. The radius finish is one workgroup
+ * per radius whose 256 threads stride over the pairs and combine with a fixed-order tree, so the
+ * sums are deterministic. Two stages stay sequential: the `normalize` kernel is one invocation
+ * over all edges and events, and the Ang shell count scans every node and edge for each pair
+ * (about 1.3e11 operations at the limits). Sorting each source's level-set crossings once and
+ * binary-searching per pair would replace the Ang scan.
  */
 export class GPUNetworkInhomogeneousK implements GPUCommandNodeProducer {
   readonly id: string;
@@ -77,26 +103,40 @@ export class GPUNetworkInhomogeneousK implements GPUCommandNodeProducer {
     const eventCount = props.eventNodeIds.length;
     const pairCount = eventCount * eventCount;
     const budget = props.maximumPairCount ?? 1048576;
+    const {id} = this;
     // The explicit all-pairs path has a finite storage/work envelope and never truncates pairs.
-    assert(Number.isInteger(budget) && budget > 0 && budget <= 1048576 && pairCount <= budget);
-    assert(eventCount > 0 && eventCount <= 1024);
-    assert(Number.isInteger(props.nodeCount) && props.nodeCount > 0 && props.nodeCount <= 65536);
-    assert(eventCount * props.nodeCount <= 16777216);
-    assert(props.edgeLengths.length > 0 && props.edgeLengths.length <= 65536);
-    assert(props.radii.length > 0 && props.radii.length <= 256);
-    assert(props.correction === undefined || ['none', 'ang'].includes(props.correction));
-    assert(
-      props.normalization === undefined ||
-        ['network-length', 'inverse-intensity', 'inverse-intensity-squared'].includes(
-          props.normalization
-        )
+    validateCapacity(id, 'maximumPairCount', budget, 1, MAXIMUM_PAIR_COUNT);
+    validateMaximumCount(id, 'event pairs (eventNodeIds rows squared)', pairCount, budget);
+    validateCapacity(id, 'eventNodeIds rows', eventCount, 1, MAXIMUM_EVENT_COUNT);
+    validateCapacity(id, 'nodeCount', props.nodeCount, 1, MAXIMUM_NODE_COUNT);
+    validateMaximumCount(
+      id,
+      'nodeDistances rows (eventNodeIds rows times nodeCount)',
+      eventCount * props.nodeCount,
+      MAXIMUM_DISTANCE_COUNT
+    );
+    validateCapacity(id, 'edgeLengths rows', props.edgeLengths.length, 1, MAXIMUM_EDGE_COUNT);
+    validateCapacity(id, 'radii rows', props.radii.length, 1, MAXIMUM_RADIUS_COUNT);
+    validateRequirement(
+      id,
+      props.correction === undefined || CORRECTIONS.includes(props.correction),
+      `correction must be one of ${CORRECTIONS.join(', ')}`
+    );
+    validateRequirement(
+      id,
+      props.normalization === undefined || NORMALIZATIONS.includes(props.normalization),
+      `normalization must be one of ${NORMALIZATIONS.join(', ')}`
     );
     validatePointProcessView(props.eventNodeIds, 'uint32', eventCount);
     validatePointProcessView(props.intensity, 'float32', eventCount);
     validatePointProcessView(props.nodeDistances, 'float32', eventCount * props.nodeCount);
     validatePointProcessView(props.edgeLengths, 'float32', props.edgeLengths.length);
     validatePackedView(props.edgeNodes, ['uint32x2'], 'network-inhomogeneous-k edgeNodes');
-    assert(props.edgeNodes.length === props.edgeLengths.length);
+    validateRequirement(
+      id,
+      props.edgeNodes.length === props.edgeLengths.length,
+      'edgeNodes must hold one row per edge length'
+    );
     validatePointProcessView(props.radii, 'float32', props.radii.length);
     validatePointProcessView(props.output.k, 'float32', props.radii.length);
     validatePointProcessView(props.output.numerator, 'float32', props.radii.length);
@@ -236,7 +276,11 @@ fn nodeDistance(event: u32, node: u32) -> f32 {
         id: `${id}-finish`,
         operation: 'GPUNetworkInhomogeneousK',
         variant: 'radius-reduction',
-        invocationCount: props.radii.length,
+        // One workgroup per radius: its threads stride over the pairs and a fixed-order tree sums
+        // their partial sums and ORs their status flags, so the result does not depend on scheduling.
+        workgroupSize: FINISH_WORKGROUP_SIZE,
+        invocationCount: props.radii.length * FINISH_WORKGROUP_SIZE,
+        guardIndex: false,
         bindings: [
           {name: 'pairs', view: pairs, type: 'f32', access: 'read'},
           {name: 'pairStatus', view: pairStatus, type: 'u32', access: 'read'},
@@ -247,22 +291,40 @@ fn nodeDistance(event: u32, node: u32) -> f32 {
           {name: 'result', view: props.output.k, type: 'f32', access: 'read_write'},
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
-        declarations: IS_FINITE_FLOAT_WGSL,
-        body: `let radius = radii[radiiOffset + index];
-  var flags = inputStatus[inputStatusOffset];
-  if (!isFiniteFloat(radius) || radius < 0.0) { flags |= 16u; }
-  if (index > 0u && radius <= radii[radiiOffset + index - 1u]) { flags |= 16u; }
-  var sum = 0.0;
-  for (var pair = 0u; pair < ${pairCount}u; pair++) {
-    flags |= pairStatus[pairStatusOffset + pair];
-    if (pairs[pairsOffset + 2u * pair] <= radius) { sum += pairs[pairsOffset + 2u * pair + 1u]; }
+        declarations: `${IS_FINITE_FLOAT_WGSL}
+var<workgroup> partialSums: array<f32, ${FINISH_WORKGROUP_SIZE}>;
+var<workgroup> partialFlags: array<u32, ${FINISH_WORKGROUP_SIZE}>;`,
+        // No early return: every invocation of a workgroup must reach the barriers.
+        body: `let radiusIndex = index / ${FINISH_WORKGROUP_SIZE}u;
+  let radius = radii[radiiOffset + radiusIndex];
+  var partialFlag = 0u;
+  var partialSum = 0.0;
+  for (var pair = localInvocationIndex; pair < ${pairCount}u; pair += ${FINISH_WORKGROUP_SIZE}u) {
+    partialFlag |= pairStatus[pairStatusOffset + pair];
+    if (pairs[pairsOffset + 2u * pair] <= radius) { partialSum += pairs[pairsOffset + 2u * pair + 1u]; }
   }
-  let value = sum / normalization[normalizationOffset + 2u];
-  if (!isFiniteFloat(value) || !isFiniteFloat(sum)) { flags |= 32u; }
-  let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  result[resultOffset + index] = select(invalid, value, flags == 0u);
-  numerator[numeratorOffset + index] = select(invalid, sum, flags == 0u);
-  status[statusOffset + index] = flags;`
+  partialSums[localInvocationIndex] = partialSum;
+  partialFlags[localInvocationIndex] = partialFlag;
+  workgroupBarrier();
+  for (var stride = ${FINISH_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+      partialFlags[localInvocationIndex] |= partialFlags[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u) {
+    var flags = inputStatus[inputStatusOffset] | partialFlags[0];
+    let sum = partialSums[0];
+    if (!isFiniteFloat(radius) || radius < 0.0) { flags |= 16u; }
+    if (radiusIndex > 0u && radius <= radii[radiiOffset + radiusIndex - 1u]) { flags |= 16u; }
+    let value = sum / normalization[normalizationOffset + 2u];
+    if (!isFiniteFloat(value) || !isFiniteFloat(sum)) { flags |= 32u; }
+    let invalid = bitcast<f32>(0x7fc00000u | (radiusIndex & 0u));
+    result[resultOffset + radiusIndex] = select(invalid, value, flags == 0u);
+    numerator[numeratorOffset + radiusIndex] = select(invalid, sum, flags == 0u);
+    status[statusOffset + radiusIndex] = flags;
+  }`
       })
     ];
   }

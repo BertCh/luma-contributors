@@ -6,7 +6,7 @@
 Writes fixtures/dataframe-variogram.json next to this script (consumed by
 test/gpu-dataframe/pair-statistics/variogram-reference.node.spec.ts and the
 'scikit-gstat references' case of gpu-variogram.spec.ts). Run from anywhere with
-    <venv>/bin/python -I modules/graph/test/oracles/dataframe-variogram.py
+    <venv>/bin/python -I modules/analysis/test/oracles/dataframe-variogram.py
 in a venv with numpy and scikit-gstat (versions are recorded in the fixture).
 
 Reference: skgstat.Variogram(coordinates, values, estimator=..., bin_func='even', n_lags=L,

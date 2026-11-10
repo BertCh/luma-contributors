@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,14 +11,23 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
   validatePointProcessPositive,
   validatePointProcessView
 } from '../gpu-spatial-analysis/point-process/point-process-utils';
+
+/** Largest event count: bounds the per-query loop of the intensity kernel. */
+const MAXIMUM_EVENT_COUNT = 65536;
+/** Largest query count: bounds the per-event loop of the mass kernel. */
+const MAXIMUM_QUERY_COUNT = 65536;
+/** Largest distance matrix, 2^24 entries (64 MiB): the dense query-by-event table is read in full. */
+const MAXIMUM_DISTANCE_COUNT = 16777216;
 
 /** Edge-length quadrature-normalized network intensity. */
 export type GPUNetworkKernelDensityProps = {
@@ -57,8 +65,15 @@ export class GPUNetworkKernelDensity implements GPUCommandNodeProducer {
     this.id = props.id ?? 'network-kernel-density';
     this.props = props;
     const queryCount = props.quadratureLengths.length;
-    assert(Number.isInteger(props.eventCount) && props.eventCount > 0 && props.eventCount <= 65536);
-    assert(queryCount > 0 && queryCount <= 65536 && queryCount * props.eventCount <= 16777216);
+    const {id} = this;
+    validateCapacity(id, 'eventCount', props.eventCount, 1, MAXIMUM_EVENT_COUNT);
+    validateCapacity(id, 'quadratureLengths rows', queryCount, 1, MAXIMUM_QUERY_COUNT);
+    validateMaximumCount(
+      id,
+      'distances rows (quadratureLengths rows times eventCount)',
+      queryCount * props.eventCount,
+      MAXIMUM_DISTANCE_COUNT
+    );
     validatePointProcessPositive(props.bandwidth);
     validatePointProcessView(props.distances, 'float32', queryCount * props.eventCount);
     validatePointProcessView(props.quadratureLengths, 'float32', queryCount);

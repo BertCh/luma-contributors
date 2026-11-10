@@ -20,6 +20,9 @@ async function getDevice(): Promise<Device> {
 const COLUMNS = 10;
 const ROWS = 8;
 
+const getSignedValue = (column: number, row: number) =>
+  Math.sin(column / 2) * 3 + row * 0.7 + ((column * 13 + row * 5) % 7) * 0.2;
+
 function makeGrid(): CatalogFeatureCollection {
   const features: CatalogFeatureCollection['features'] = [];
   for (let row = 0; row < ROWS; row++)
@@ -40,7 +43,10 @@ function makeGrid(): CatalogFeatureCollection {
         properties: {
           // Clustered black block plus noise.
           b: column < 5 && row < 4 ? 1 : (column * 7 + row * 3) % 11 === 0 ? 1 : 0,
-          x: Math.sin(column / 2) * 3 + row * 0.7 + ((column * 13 + row * 5) % 7) * 0.2,
+          x: getSignedValue(column, row),
+          // The same surface shifted by a constant above its minimum (about -3): Getis-Ord G is
+          // defined for non-negative data only.
+          xShifted: getSignedValue(column, row) + 4,
           y: Math.cos(row / 2) * 2 + column * 0.4 + ((column * 3 + row * 11) % 5) * 0.3
         }
       });
@@ -131,21 +137,37 @@ test('local-lisa-variants matches independent local statistics', async () => {
   );
 
   const x = properties(features, 'x');
-  const total = x.reduce((sum, value) => sum + value, 0);
-  const g = await run({variant: 'local-getis-ord-g'});
+  const xShifted = properties(features, 'xShifted');
+  expect(Math.min(...x)).toBeLessThan(0);
+  expect(Math.min(...xShifted)).toBeGreaterThan(0);
+  const total = xShifted.reduce((sum, value) => sum + value, 0);
+  const g = await run({variant: 'local-getis-ord-g', valueProperty: 'xShifted'});
+  expect(g.engine, g.fallbackReason).toBe('gpu');
   const gStatistic = g.tables[0].columns['statistic'] as number[];
   neighbors.forEach((list, row) => {
     const expected =
-      list.reduce((sum, other) => sum + x[other] / list.length, 0) / (total - x[row]);
+      list.reduce((sum, other) => sum + xShifted[other] / list.length, 0) / (total - xShifted[row]);
     expect(Math.abs(gStatistic[row] - expected), `G ${row}`).toBeLessThan(1e-4);
   });
 
-  const star = await run({variant: 'local-getis-ord-g-star'});
-  expect(star.tables[0].columns['statistic'].every(value => Number.isFinite(value as number))).toBe(
-    true
-  );
+  const star = await run({variant: 'local-getis-ord-g-star', valueProperty: 'xShifted'});
+  expect(star.engine, star.fallbackReason).toBe('gpu');
+  const starStatistic = star.tables[0].columns['statistic'] as number[];
+  neighbors.forEach((list, row) => {
+    // A self weight of 1 plus the row-standardized neighbor weights of the binding (1 / k each),
+    // over the total, as in the documented G*_i = (x_i + sum_s w_s x_s) / sum x.
+    const lag = list.reduce((sum, other) => sum + xShifted[other] / list.length, 0);
+    const expected = (xShifted[row] + lag) / total;
+    expect(Math.abs(starStatistic[row] - expected) / expected, `G* ${row}`).toBeLessThan(1e-3);
+  });
   const starP = star.tables[0].columns['p_value'] as number[];
   expect(starP.every(value => value > 0 && value <= 1)).toBe(true);
+
+  // Negative data is rejected by G and G*: the binding fails (it has no CPU engine to fall back
+  // to) and the error names the cause.
+  for (const variant of ['local-getis-ord-g', 'local-getis-ord-g-star']) {
+    await expect(run({variant})).rejects.toThrow(/Getis-Ord local G requires non-negative values/);
+  }
 
   const y = properties(features, 'y');
   const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;

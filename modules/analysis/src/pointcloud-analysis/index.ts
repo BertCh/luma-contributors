@@ -13,5 +13,6 @@ export * from './gpu-pointcloud-surfaces';
 export * from './gpu-pointcloud-voxel-merge';
 export * from './pointcloud-attribute';
 export * from './pointcloud-grid-index';
+export * from './pointcloud-limits';
 export * from './pointcloud-local-origin';
 export * from './pointcloud-plane-icp';

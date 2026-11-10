@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GraphDataView,
   GPUCommandGraph,
@@ -11,13 +10,23 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
   RASTER_FINITE_WGSL,
   rasterBinding,
-  validateRasterCount,
   validateRasterViews,
   validateRasterGraph,
   getRasterLeastSquaresWGSL
 } from './raster-kernel-utils';
+import {
+  getGPURasterDateAxisBinding,
+  getGPURasterDateAxisDeclarations,
+  resolveGPURasterIrregularDateAxis,
+  validateGPURasterDateAxisGraph,
+  type GPURasterIrregularDateAxis
+} from '../raster-time-series/raster-irregular-date-axis';
 
 export type GPURasterTemporalProps = {
   id?: string;
@@ -32,6 +41,12 @@ export type GPURasterTemporalProps = {
   windowLength?: number;
   polynomialOrder?: number;
   edgeMode?: 'interp' | 'truncate';
+  /**
+   * Acquisition dates of an irregular stack. The Savitzky-Golay polynomial is fitted on real
+   * elapsed time across the same window of neighbouring acquisitions; composites do not depend on
+   * time and only carry the declaration. Slot-index behaviour is unchanged when this is absent.
+   */
+  dateAxis?: GPURasterIrregularDateAxis;
   output: {
     values: GraphDataView<'float32'>;
     counts: GraphDataView<'uint32'>;
@@ -39,6 +54,11 @@ export type GPURasterTemporalProps = {
     status: GraphDataView<'uint32'>;
   };
 };
+/** Time slices: each invocation sorts or fits its slices in a private array of this length (256 floats is 1 KiB), and slice indices stay exact in float32. */
+export const MAXIMUM_TEMPORAL_SLICE_COUNT = 256;
+/** Savitzky-Golay window: the design matrix of window by (order + 1) floats lives in private memory. */
+const MAXIMUM_SAVITZKY_GOLAY_WINDOW = 15;
+
 /** Composites write one row per cell; SG writes cellCount*sliceCount rows. SG refits a
  * polynomial with QR over valid observations, rather than renormalizing signed coefficients.
  * Status 1=insufficient support, 2=rank failure. Dates use original indices; extrema take the
@@ -46,32 +66,56 @@ export type GPURasterTemporalProps = {
  * and SG have no unique source and write 0xffffffff. */
 export class GPURasterTemporal implements GPUCommandNodeProducer {
   readonly id: string;
+  private readonly ticksPerYear: number;
   constructor(readonly props: GPURasterTemporalProps) {
     this.id = props.id ?? 'raster-temporal';
-    validateRasterCount(props.cellCount);
-    validateRasterCount(props.sliceCount, 256);
-    validateRasterCount(props.cellCount * props.sliceCount);
-    assert(['mean', 'minimum', 'maximum', 'median', 'savitzky-golay'].includes(props.operation));
+    this.ticksPerYear = props.dateAxis
+      ? resolveGPURasterIrregularDateAxis(this.id, props.dateAxis, props.sliceCount)
+      : 0;
+    validateCapacity(this.id, 'cellCount', props.cellCount);
+    validateCapacity(this.id, 'sliceCount', props.sliceCount, 1, MAXIMUM_TEMPORAL_SLICE_COUNT);
+    validateCapacity(this.id, 'cellCount times sliceCount', props.cellCount * props.sliceCount);
+    validateRequirement(
+      this.id,
+      ['mean', 'minimum', 'maximum', 'median', 'savitzky-golay'].includes(props.operation),
+      "operation must be 'mean', 'minimum', 'maximum', 'median' or 'savitzky-golay'"
+    );
     const smoothing = props.operation === 'savitzky-golay';
     if (smoothing) {
       const window = props.windowLength ?? 7;
       const order = props.polynomialOrder ?? 2;
-      assert(
+      validateRequirement(
+        this.id,
         Number.isInteger(window) &&
           window >= 3 &&
-          window <= 15 &&
+          window <= MAXIMUM_SAVITZKY_GOLAY_WINDOW &&
           window % 2 === 1 &&
-          window <= props.sliceCount
+          window <= props.sliceCount,
+        `windowLength must be an odd integer in [3, ${MAXIMUM_SAVITZKY_GOLAY_WINDOW}] and at most sliceCount`
       );
-      assert(Number.isInteger(order) && order >= 0 && order <= 3 && order < window);
-      assert(['interp', 'truncate'].includes(props.edgeMode ?? 'interp'));
+      validateRequirement(
+        this.id,
+        Number.isInteger(order) && order >= 0 && order <= 3 && order < window,
+        'polynomialOrder must be an integer in [0, 3] below windowLength'
+      );
+      validateRequirement(
+        this.id,
+        ['interp', 'truncate'].includes(props.edgeMode ?? 'interp'),
+        "edgeMode must be 'interp' or 'truncate'"
+      );
     }
     const inputCount = props.cellCount * props.sliceCount;
     const outputCount = smoothing ? inputCount : props.cellCount;
-    assert(
-      props.values.length >= inputCount && (!props.validity || props.validity.length >= inputCount)
+    validateRequirement(
+      this.id,
+      props.values.length >= inputCount && (!props.validity || props.validity.length >= inputCount),
+      'values and validity must hold cellCount times sliceCount entries'
     );
-    assert(Object.values(props.output).every(view => view.length >= outputCount));
+    validateRequirement(
+      this.id,
+      Object.values(props.output).every(view => view.length >= outputCount),
+      'output views must hold one entry per cell (per observation for savitzky-golay)'
+    );
     validateRasterViews(
       this.id,
       [props.values, ...(props.validity ? [props.validity] : [])],
@@ -89,6 +133,8 @@ export class GPURasterTemporal implements GPUCommandNodeProducer {
       [props.values, ...(props.validity ? [props.validity] : [])],
       Object.values(props.output)
     );
+    if (props.dateAxis) validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
+    const useDates = smoothing && props.dateAxis !== undefined;
     const window = props.windowLength ?? 7;
     const order = props.polynomialOrder ?? 2;
     return [
@@ -100,21 +146,31 @@ export class GPURasterTemporal implements GPUCommandNodeProducer {
         bindings: [
           rasterBinding('values', props.values),
           ...(props.validity ? [rasterBinding('validity', props.validity)] : []),
+          ...(useDates ? [getGPURasterDateAxisBinding(props.dateAxis!)] : []),
           ...Object.entries(props.output).map(([name, view]) =>
             rasterBinding(`output${name}`, view, true)
           )
         ],
         declarations:
-          RASTER_FINITE_WGSL + (smoothing ? getRasterLeastSquaresWGSL(window, order + 1) : ''),
+          RASTER_FINITE_WGSL +
+          (smoothing ? getRasterLeastSquaresWGSL(window, order + 1) : '') +
+          (useDates
+            ? `\n${getGPURasterDateAxisDeclarations(this.ticksPerYear, props.sliceCount)}`
+            : ''),
         body: smoothing
           ? `let cell = index / ${props.sliceCount}u; let center = i32(index % ${props.sliceCount}u);
 let first = ${props.edgeMode === 'truncate' ? `center - ${Math.floor(window / 2)}` : `clamp(center - ${Math.floor(window / 2)}, 0, ${props.sliceCount - window})`};
-var design: array<f32, ${window * (order + 1)}>; var response: array<f32, ${window}>; var count = 0u;
+${
+  useDates
+    ? `let lastInRange = min(first + ${window} - 1, ${props.sliceCount - 1}); let firstInRange = max(first, 0); let axisScale = max(rasterYearsBetween(u32(lastInRange), u32(center)), rasterYearsBetween(u32(center), u32(firstInRange)));
+`
+    : ''
+}var design: array<f32, ${window * (order + 1)}>; var response: array<f32, ${window}>; var count = 0u;
 for (var position = 0u; position < ${window}u; position++) {
   let slice = first + i32(position); if (slice < 0 || slice >= ${props.sliceCount}) { continue; }
   let source = cell * ${props.sliceCount}u + u32(slice); let value = values[valuesOffset + source];
   if (!finite(value) ${props.validity ? '|| validity[validityOffset + source] == 0u' : ''}) { continue; }
-  let coordinate = f32(slice - center) / ${window}.0; var power = 1.0;
+  let coordinate = ${useDates ? 'rasterYearsBetween(u32(slice), u32(center)) / axisScale' : `f32(slice - center) / ${window}.0`}; var power = 1.0;
   for (var column = 0u; column < ${order + 1}u; column++) { design[column * ${window}u + position] = power; power *= coordinate; }
   response[position] = value; count++;
 }

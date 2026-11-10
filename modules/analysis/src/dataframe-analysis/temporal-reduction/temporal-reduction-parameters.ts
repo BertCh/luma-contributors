@@ -41,12 +41,13 @@ export function getGPUTemporalReductionParameterValues(
 /**
  * Packs bucketing parameters for exact Int64 word timestamps.
  *
- * Layout: `[originLow, originHigh, width, 0]` as uint32. Both values are integers in the unit of
- * the timestamps (for example epoch milliseconds); the width is at most `2^32 - 1` and bucket
- * assignment is exact integer division.
+ * Layout: `[originLow, originHigh, widthLow, widthHigh]` as uint32. Both values are integers in the
+ * unit of the timestamps (for example epoch milliseconds or nanoseconds); the width is an unsigned
+ * 64-bit integer and bucket assignment is exact integer division. A width below `2^32` has
+ * `widthHigh` zero, the layout this packer wrote when the width was limited to 32 bits.
  *
  * @param origin Integer start of bucket 0, any signed 64-bit value.
- * @param width Integer bucket width in `[1, 2^32 - 1]`.
+ * @param width Integer bucket width in `[1, 2^64 - 1]`. A `number` must be a safe integer to be exact; pass a `bigint` beyond 2^53.
  * @param target Optional destination of at least 4 elements.
  * @throws If `origin` is not an integer, `width` is not an integer in range, or `target` is short.
  */
@@ -65,13 +66,13 @@ export function getGPUTemporalReductionWordParameterValues(
   }
   const widthValue =
     typeof width === 'bigint' ? width : Number.isInteger(width) ? BigInt(width) : -1n;
-  if (widthValue < 1n || widthValue > 0xffffffffn) {
-    throw new Error('Temporal reduction word width must be an integer in [1, 2^32 - 1]');
+  if (widthValue < 1n || widthValue > 0xffffffffffffffffn) {
+    throw new Error('Temporal reduction word width must be an integer in [1, 2^64 - 1]');
   }
   const words = splitTimeWords(origin);
   target[0] = words.low;
   target[1] = words.high;
-  target[2] = Number(widthValue);
-  target[3] = 0;
+  target[2] = Number(widthValue & 0xffffffffn);
+  target[3] = Number(widthValue >> 32n);
   return target;
 }

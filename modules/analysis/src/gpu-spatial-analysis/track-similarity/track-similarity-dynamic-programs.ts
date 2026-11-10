@@ -19,7 +19,7 @@
 export const TRACK_SIMILARITY_NO_BAND = 0xffffffff;
 
 /** WGSL: metric value between densified vertex `rowLong` of the longer track and `rowShort` of the other. */
-const COUPLED_METRIC_WGSL = /* wgsl */ `
+export const COUPLED_METRIC_WGSL = /* wgsl */ `
 fn coupledMetric(swapped: bool, startA: u32, countA: u32, startB: u32, countB: u32, rowLong: u32, rowShort: u32) -> f32 {
   if (swapped) {
     return pointMetric(densifiedPointB(startB, countB, rowLong), densifiedPointA(startA, countA, rowShort));

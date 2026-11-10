@@ -373,31 +373,48 @@ add('GPUMultivariateLocalGeary', '32variables,masked16384rows and upstream overf
     })
   );
 });
-for (const temporal of [false, true])
-  add(
-    'GPUCrossVariogram',
-    `${temporal ? 'space-time subclass' : 'spatial'} maximum16384rows128bins,allcomplete-caseinputs`,
-    context => {
-      const Constructor = temporal ? GPUSpaceTimeVariogram : GPUCrossVariogram;
-      context.graph.add(
-        new Constructor({
-          positions: context.view('float32x2', 16384),
-          values: context.view('float32', 16384),
-          secondValues: context.view('float32', 16384),
-          times: temporal ? context.view('float32', 16384) : undefined,
-          mask: context.view('uint32', 16384),
-          parameters: context.view('float32', 2),
-          lagCount: temporal ? 16 : 128,
-          temporalLagCount: temporal ? 8 : 1,
-          output: {
-            semivariances: context.view('float32', 128),
-            pairCounts: context.view('uint32', 128),
-            status: context.view('uint32', 128)
-          }
-        })
-      );
-    }
+add('GPUCrossVariogram', 'spatial maximum16384rows128bins,allcomplete-caseinputs', context => {
+  context.graph.add(
+    new GPUCrossVariogram({
+      positions: context.view('float32x2', 16384),
+      values: context.view('float32', 16384),
+      secondValues: context.view('float32', 16384),
+      mask: context.view('uint32', 16384),
+      parameters: context.view('float32', 2),
+      lagCount: 128,
+      output: {
+        semivariances: context.view('float32', 128),
+        pairCounts: context.view('uint32', 128),
+        status: context.view('uint32', 128)
+      }
+    })
   );
+});
+// 19 + 1 spatial and 19 + 1 temporal classes: 400 bins of the 409 the five-channel pair histogram holds.
+add(
+  'GPUSpaceTimeVariogram',
+  'maximum16384rows400bins,allcomplete-caseinputs,indexed pair histogram',
+  context => {
+    context.graph.add(
+      new GPUSpaceTimeVariogram({
+        positions: context.view('float32x2', 16384),
+        values: context.view('float32', 16384),
+        secondValues: context.view('float32', 16384),
+        times: context.view('float32', 16384),
+        mask: context.view('uint32', 16384),
+        parameters: context.view('float32', 8),
+        gridSize: [64, 64],
+        lagCount: 19,
+        temporalLagCount: 19,
+        output: {
+          semivariances: context.view('float32', 400),
+          pairCounts: context.view('uint32', 400),
+          status: context.view('uint32', 400)
+        }
+      })
+    );
+  }
+);
 for (const edgeCorrection of ['translation', 'none'] as const)
   for (const extras of [false, true])
     add(

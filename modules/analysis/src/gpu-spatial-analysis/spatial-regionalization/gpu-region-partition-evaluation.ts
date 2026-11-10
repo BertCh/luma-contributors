@@ -146,6 +146,11 @@ export type GPURegionPartitionEvaluationOutput = {
   regionSizes?: GraphDataView<'uint32'>;
   /** Optional within-region sum of squared deviations per label (`labelCapacity` entries). */
   regionWithinSumOfSquares?: GraphDataView<'float32'>;
+  /**
+   * Optional mean per label and column (`labelCapacity * columnCount` entries, label-major), NaN
+   * for an empty label. The geographical detector reads these for its non-centrality.
+   */
+  regionMeans?: GraphDataView<'float32'>;
 };
 
 /**
@@ -217,9 +222,15 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
         throw new Error(`${id} output.regionWithinSumOfSquares must hold labelCapacity entries`);
       }
     }
+    if (output.regionMeans) {
+      validatePackedView(output.regionMeans, ['float32'], `${id} output.regionMeans`);
+      if (output.regionMeans.length < labelCapacity * columnCount) {
+        throw new Error(`${id} output.regionMeans must hold labelCapacity * columnCount entries`);
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.summary, output.regionSizes, output.regionWithinSumOfSquares],
+      [output.summary, output.regionSizes, output.regionWithinSumOfSquares, output.regionMeans],
       [
         props.values,
         props.labels,
@@ -240,6 +251,7 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
       output.summary,
       output.regionSizes,
       output.regionWithinSumOfSquares,
+      output.regionMeans,
       ...(weights ? getGPUSpatialWeightsOrChunksViews(weights) : [])
     ]);
     const rows = labels.length;
@@ -403,6 +415,25 @@ fn getLoadBalancedContribution(label: u32, item: u32, column: u32) -> f32 {
   return delta * delta;
 }`
       }),
+      ...(output.regionMeans
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-region-means`,
+              operation: OPERATION,
+              variant: 'region-means',
+              bindings: [
+                {name: 'regionSums', view: regionSums, type: 'f32', access: 'read'},
+                {name: 'sizes', view: sizes, type: 'u32', access: 'read'},
+                {name: 'regionMeans', view: output.regionMeans, type: 'f32', access: 'read_write'}
+              ],
+              invocationCount: labelCapacity * columnCount,
+              declarations: `${declarations}
+${GET_NAN_WGSL}`,
+              body: `let size = sizes[sizesOffset + index / COLUMNS];
+  regionMeans[regionMeansOffset + index] = select(getNaN(), regionSums[regionSumsOffset + index] / f32(size), size > 0u);`
+            })
+          ]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-region-within`,
         operation: OPERATION,

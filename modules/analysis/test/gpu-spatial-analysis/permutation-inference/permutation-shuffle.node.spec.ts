@@ -10,7 +10,7 @@ import {
   getSwapOrNotRoundCount,
   getSwapOrNotRounds,
   PERMUTATION_SHUFFLE_MAXIMUM_ROUNDS
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
+} from '../../../src/analysis-core/kernels/permutation-shuffle';
 import {
   PERMUTATION_ALTERNATIVE_REFERENCE,
   PERMUTATION_ALTERNATIVE_TOLERANCES

@@ -88,10 +88,30 @@ export const NETWORK_REJECTIONS: readonly KernelAuditRejection[] = [
   },
   {
     exportName: 'GPUNetworkKFunction',
-    name: 'events at the binding limit, row blocks at the invocation limit, seed table above the maximum',
-    kind: 'binding',
-    limit: 33554432,
-    rejects:
-      /^Error: network-k-function expanded seed words \(rows, rowsPerBlock, laneCount\) must be at most 33554432$/
+    name: 'events at the binding limit, row blocks at the invocation limit, over the command node budget',
+    kind: 'dispatch',
+    limit: 32768,
+    rejects: /^Error: network-k-function estimated command node count must be at most 32768$/
+  },
+  {
+    exportName: 'GPUNetworkCostMatrix',
+    name: 'lane count 1, 40 rows, maximum rounds, over the command node budget',
+    kind: 'dispatch',
+    limit: 32768,
+    rejects: /^Error: network-cost-matrix estimated command node count must be at most 32768$/
+  },
+  {
+    exportName: 'GPUNetworkCostTable',
+    name: 'lane count 1, 600 nodes, default rounds, over the command node budget',
+    kind: 'dispatch',
+    limit: 32768,
+    rejects: /^Error: network-cost-table estimated command node count must be at most 32768$/
+  },
+  {
+    exportName: 'GPULocationAllocation',
+    name: 'p-median, 11,000 greedy steps, over the command node budget',
+    kind: 'dispatch',
+    limit: 32768,
+    rejects: /^Error: location-allocation estimated command node count must be at most 32768$/
   }
 ];

@@ -22,6 +22,13 @@ import {validateRasterParameters} from '../raster-band-utils';
 import {GPU_CHANGE_DETECTION_PARAMETER_LENGTH} from './change-detection-parameters';
 import {ERFC_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {NAN_WGSL, STUDENT_T_WGSL} from './change-detection-wgsl';
+import {
+  getGPURasterDateAxisBinding,
+  getGPURasterDateAxisDeclarations,
+  resolveGPURasterIrregularDateAxis,
+  validateGPURasterDateAxisGraph,
+  type GPURasterIrregularDateAxis
+} from '../raster-time-series/raster-irregular-date-axis';
 
 const OPERATION = 'GPUChangeDetection';
 const MAXIMUM_SLICE_COUNT = 256;
@@ -104,6 +111,11 @@ export type GPUChangeDetectionProps = {
   bandCount?: number;
   /** Which statistic drives `output.significance`. Defaults to `'t-test'`. */
   significanceSource?: GPUChangeDetectionSignificanceSource;
+  /**
+   * Acquisition dates of an irregular stack. `senSlope` then uses elapsed years between acquisitions (slope
+   * per year); other outputs depend only on slice order and are unaffected.
+   */
+  dateAxis?: GPURasterIrregularDateAxis;
   /** Caller-owned outputs; at least one. */
   output: GPUChangeDetectionOutput;
 };
@@ -169,6 +181,7 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
   readonly bandCount: number;
   /** Resolved significance source. */
   readonly significanceSource: GPUChangeDetectionSignificanceSource;
+  private readonly ticksPerYear: number;
 
   constructor(props: GPUChangeDetectionProps) {
     this.id = props.id ?? 'change-detection';
@@ -178,6 +191,9 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     const bandCount = props.bandCount ?? 1;
     this.bandCount = bandCount;
     this.significanceSource = props.significanceSource ?? 't-test';
+    this.ticksPerYear = props.dateAxis
+      ? resolveGPURasterIrregularDateAxis(id, props.dateAxis, sliceCount)
+      : 0;
     validateCapacity(id, 'cellCount', cellCount, 1, 0x7fffffff);
     validateCapacity(id, 'bandCount', bandCount, 1, 0x7fffffff);
     validateCapacity(id, 'sliceCount', sliceCount, 2, MAXIMUM_SLICE_COUNT);
@@ -263,6 +279,7 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
       props.parameters,
       ...(Object.values(output) as GraphDataView[])
     ]);
+    if (props.dateAxis) validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
     const read = (name: string, view: GraphDataView): WGSLKernelBinding => ({
       name,
       view,
@@ -529,9 +546,15 @@ ${NAN_WGSL}`;
           operation: OPERATION,
           variant: 'sen-slope',
           workgroupSize: 64,
-          bindings: [...common(), write('senOut', output.senSlope, 'f32')],
+          bindings: [
+            ...common(),
+            ...(props.dateAxis ? [getGPURasterDateAxisBinding(props.dateAxis)] : []),
+            write('senOut', output.senSlope, 'f32')
+          ],
           invocationCount: cellCount,
-          declarations,
+          declarations: props.dateAxis
+            ? `${declarations}\n${getGPURasterDateAxisDeclarations(this.ticksPerYear, sliceCount)}`
+            : declarations,
           body: `let cell = index;
   senOut[senOutOffset + cell] = quietNan();
   ${maskGuard}
@@ -558,7 +581,7 @@ ${NAN_WGSL}`;
       if (isNanValue(valueJ)) {
         continue;
       }
-      let slope = (valueJ - valueI) / f32(j - i);
+      let slope = (valueJ - valueI) / ${props.dateAxis ? 'rasterYearsBetween(j, i)' : 'f32(j - i)'};
       if (size < heapSize) {
         var child = size;
         size++;

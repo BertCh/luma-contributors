@@ -8,6 +8,13 @@ import {
   type GPUCalendarBucketsTimeZone
 } from '../../dataframe-analysis/calendar-buckets/index';
 import {GPUColorScale} from '../../dataframe-analysis/column-classification/index';
+import {
+  getGPUPeriodIndexCalendarPeriod,
+  getGPUPeriodIndexDaysFromCivil,
+  getGPUPeriodIndexStepIndex,
+  GPU_PERIOD_INDEX_OUT_OF_RANGE,
+  GPUPeriodIndex
+} from '../../dataframe-analysis/period-index/index';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
 import type {
   GPUInferenceMetadata,
@@ -24,7 +31,10 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
-import {GPUParameterBuffer} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  GPUParameterBuffer,
+  validateGPUStorageBindingByteLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -84,17 +94,10 @@ export type GPUSpaceTimeSlices = {
 
 /**
  * Days since 1970-01-01 of a proleptic Gregorian date (Hinnant's `days_from_civil`), in integer
- * arithmetic with truncating division, the same formula the adapter kernel evaluates.
+ * arithmetic with truncating division, the same formula the period index kernel evaluates.
  */
 export function getSpaceTimeDaysFromCivil(year: number, month: number, day: number): number {
-  const adjustedYear = month <= 2 ? year - 1 : year;
-  const era = Math.trunc((adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400);
-  const yearOfEra = adjustedYear - era * 400;
-  const shiftedMonth = (month + 9) % 12;
-  const dayOfYear = Math.trunc((153 * shiftedMonth + 2) / 5) + day - 1;
-  const dayOfEra =
-    yearOfEra * 365 + Math.trunc(yearOfEra / 4) - Math.trunc(yearOfEra / 100) + dayOfYear;
-  return era * 146097 + dayOfEra - 719468;
+  return getGPUPeriodIndexDaysFromCivil(year, month, day);
 }
 
 /** Whole-step index of a local calendar time for `step` (see {@link GPUSpaceTimeSlices}). */
@@ -102,38 +105,24 @@ export function getSpaceTimeStepIndex(
   step: GPUSpaceTimeStep,
   fields: {year: number; month?: number; day?: number; hour?: number}
 ): number {
-  const {year, month = 1, day = 1, hour = 0} = fields;
-  switch (step) {
-    case 'year':
-      return year;
-    case 'quarter':
-      return year * 4 + Math.trunc((month - 1) / 3);
-    case 'month':
-      return year * 12 + month - 1;
-    case 'week':
-    case 'day':
-      return getSpaceTimeDaysFromCivil(year, month, day);
-    case 'hour':
-      return getSpaceTimeDaysFromCivil(year, month, day) * 24 + hour;
-  }
+  return getGPUPeriodIndexStepIndex(step, fields);
 }
 
 /**
  * Slice index of a local calendar time, or `-1` when it falls before the origin or past the last
- * slice. The CPU twin of the adapter kernel, used by tests and by callers that bin on the CPU.
+ * slice. The CPU twin of the `GPUPeriodIndex` calendar kernel, used by tests and by callers that
+ * bin on the CPU.
  */
 export function getSpaceTimeSliceIndex(
   slices: GPUSpaceTimeSlices,
   fields: {year: number; month?: number; day?: number; hour?: number}
 ): number {
-  const difference =
-    getSpaceTimeStepIndex(slices.step, fields) - getSpaceTimeStepIndex(slices.step, slices.origin);
-  const slice = Math.trunc(difference / getSliceDivisor(slices));
-  return difference >= 0 && slice < slices.count ? slice : -1;
-}
-
-function getSliceDivisor(slices: GPUSpaceTimeSlices): number {
-  return (slices.interval ?? 1) * (slices.step === 'week' ? 7 : 1);
+  return getGPUPeriodIndexCalendarPeriod(
+    {calendarUnit: slices.step, interval: slices.interval},
+    slices.origin,
+    slices.count,
+    fields
+  );
 }
 
 /** Cells given as a precomputed index per event. Spatial neighbors then come from `weights`. */
@@ -216,6 +205,11 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
     calendarMonth?: GraphDataView<'uint32'>;
     calendarDayOfMonth?: GraphDataView<'uint32'>;
     calendarHour?: GraphDataView<'uint32'>;
+    /**
+     * Per-event slice (`GPUPeriodIndex` output): the slice, `0xfffffffe` for a valid time outside
+     * the slices, `0xffffffff` for an invalid time.
+     */
+    periods?: GraphDataView<'uint32'>;
     /** Per-event cube key; setting it selects the sorted counting path. */
     keys?: GraphDataView<'uint32'>;
     /** Per-event key validity; setting it selects the sorted counting path. */
@@ -270,6 +264,12 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
   multipleTesting?: GPUMultipleTestingMethod;
   /** Final-slice rule passed to `GPUEmergingHotSpots`. Defaults to `'require'`. */
   finalSlice?: 'require' | 'last-valid';
+  /** Mann-Kendall autocorrelation correction, see `GPUEmergingHotSpotsProps.trendAutocorrelationCorrection`. */
+  trendAutocorrelationCorrection?: 'none' | 'hamed-rao' | 'yue-wang';
+  /** Largest autocorrelation lag of the correction, see `GPUEmergingHotSpotsProps.trendCorrectionMaximumLag`. */
+  trendCorrectionMaximumLag?: number;
+  /** Hamed-Rao lag filter, see `GPUEmergingHotSpotsProps.trendCorrectionCriticalZ`. */
+  trendCorrectionCriticalZ?: number;
   /** Category colors; skipped when absent. */
   color?: {
     /** Packed rgba8 palette indexed by category code, at least 18 entries (0 to 17). */
@@ -316,7 +316,8 @@ export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult & {
 /**
  * Space-time hot spot recipe: timestamped events to an ArcGIS-style emerging hot spot map.
  *
- * Chain: `GPUCalendarBuckets` decodes event times, an adapter kernel bins every event into
+ * Chain: `GPUCalendarBuckets` decodes event times, `GPUPeriodIndex` turns the calendar columns into
+ * a slice per event, an adapter kernel bins every event into
  * `cell * sliceCount + slice` of a zeroed dense `cell x slice` cube (`uint32`, the layout
  * `GPUEmergingHotSpots` reads) with an integer `atomicAdd`, `GPUEmergingHotSpots` classifies every
  * cell, and `GPUColorScale` (ordinal) colors the categories.
@@ -396,6 +397,23 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   const cellCount = cells.kind === 'ids' ? cells.cellCount : cells.width * cells.height;
   const cubeLength = cellCount * sliceCount;
   assertRecipe(ID, cubeLength < 0xfffffffe, 'cellCount * sliceCount is too large for a u32 key');
+  // The contributors check their own bindings as they are added. Checking the Int64 event times
+  // (8 bytes a row) and the dense cube (4 bytes a bin) here fails before the graph holds a partial
+  // recipe.
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'timestamps',
+    eventCount * props.timestamps.rowByteLength,
+    'reduce timestamps.length'
+  );
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'cube',
+    cubeLength * 4,
+    'reduce cells or slices.count'
+  );
 
   // 1. Calendar columns of the event times: only the ones the step needs.
   const needsMonth = slices.step !== 'year';
@@ -456,48 +474,37 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   let fy = floor((py - ${getWGSLFloatLiteral(cells.bounds[1])}) / ${getWGSLFloatLiteral((cells.bounds[3] - cells.bounds[1]) / cells.height)});
   let cellValid = fx >= 0.0 && fy >= 0.0 && fx < ${cells.width}.0 && fy < ${cells.height}.0;
   let cell = select(0u, u32(fy) * ${cells.width}u + u32(fx), cellValid);`;
-  const stepsPerSlice = getSliceDivisor(slices);
-  const originStep = getSpaceTimeStepIndex(slices.step, origin);
-  const stepExpression = {
-    year: 'year',
-    quarter: 'year * 4 + (month - 1) / 3',
-    month: 'year * 12 + month - 1',
-    week: 'daysFromCivil(year, month, day)',
-    day: 'daysFromCivil(year, month, day)',
-    hour: 'daysFromCivil(year, month, day) * 24 + hour'
-  }[slices.step];
+  // Slice per event from the calendar columns (`GPUPeriodIndex`), an integer or a sentinel.
+  const periods = getOrCreateView(graph, `${id}-periods`, 'uint32', eventCount, scratch.periods);
+  graph.add(
+    new GPUPeriodIndex({
+      id: `${id}-period-index`,
+      temporalContext: {
+        unit: 'millisecond',
+        epoch: 'unix',
+        encoding: 'int64-words',
+        axis: {kind: 'irregular'}
+      },
+      columns: {
+        year: calendarYear,
+        ...(calendarMonth ? {month: calendarMonth} : {}),
+        ...(calendarDay ? {dayOfMonth: calendarDay} : {}),
+        ...(calendarHour ? {hour: calendarHour} : {})
+      },
+      periods: {
+        kind: 'calendar',
+        step: {calendarUnit: slices.step, interval},
+        origin,
+        count: sliceCount
+      },
+      output: {periods}
+    })
+  );
+  const periodBindings = [{name: 'periods', view: periods, type: 'u32', access: 'read'} as const];
   const eventBinSource = `${cellSource}
-  let year = calendarYear[calendarYearOffset + index];
-  ${calendarMonth ? 'let month = i32(calendarMonth[calendarMonthOffset + index]);' : ''}
-  ${calendarDay ? 'let day = i32(calendarDay[calendarDayOffset + index]);' : ''}
-  ${calendarHour ? 'let hour = i32(calendarHour[calendarHourOffset + index]);' : ''}
-  let isCalendarValid = year != bitcast<i32>(0x80000000u);
-  let stepOffset = select(-1, ${stepExpression} - (${originStep}), isCalendarValid);
-  let slice = stepOffset / ${stepsPerSlice};
-  let sliceValid = stepOffset >= 0 && slice < ${sliceCount};
+  let period = periods[periodsOffset + index];
+  let sliceValid = period < ${sliceCount}u;
   let valid = cellValid && sliceValid;`;
-  const calendarBindings = [
-    {name: 'calendarYear', view: calendarYear, type: 'i32', access: 'read'} as const,
-    ...(calendarMonth
-      ? [{name: 'calendarMonth', view: calendarMonth, type: 'u32', access: 'read'} as const]
-      : []),
-    ...(calendarDay
-      ? [{name: 'calendarDay', view: calendarDay, type: 'u32', access: 'read'} as const]
-      : []),
-    ...(calendarHour
-      ? [{name: 'calendarHour', view: calendarHour, type: 'u32', access: 'read'} as const]
-      : [])
-  ];
-  // Hinnant's days_from_civil in i32 arithmetic with truncating division.
-  const calendarDeclarations = `fn daysFromCivil(year: i32, month: i32, day: i32) -> i32 {
-  let adjustedYear = select(year, year - 1, month <= 2);
-  let era = select(adjustedYear, adjustedYear - 399, adjustedYear < 0) / 400;
-  let yearOfEra = adjustedYear - era * 400;
-  let shiftedMonth = (month + 9) % 12;
-  let dayOfYear = (153 * shiftedMonth + 2) / 5 + day - 1;
-  let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
-  return era * 146097 + dayOfEra - 719468;
-}`;
 
   // Events with a valid cell and time that fall before the origin or past the last slice.
   const skippedCount = getOrCreateView(
@@ -522,14 +529,13 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       operation: 'GPUSpaceTimeHotSpotsCube',
       variant: 'slice-range',
       bindings: [
-        ...calendarBindings,
+        ...periodBindings,
         ...cellBindings,
         {name: 'skippedOutput', view: skippedCount, type: 'atomic<u32>', access: 'read_write'}
       ],
       invocationCount: eventCount,
-      declarations: calendarDeclarations,
       body: `${eventBinSource}
-  if (cellValid && isCalendarValid && !sliceValid) {
+  if (cellValid && period == ${GPU_PERIOD_INDEX_OUT_OF_RANGE}u) {
     atomicAdd(&skippedOutput[skippedOutputOffset], 1u);
   }`
     })
@@ -562,6 +568,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     outputOverrides.status?.groupOverflow !== undefined;
   let intermediates: GPUSpaceTimeHotSpotsRecipeResult['intermediates'] = {
     calendarYear,
+    periods,
     ...(calendarMonth ? {calendarMonth} : {}),
     ...(calendarDay ? {calendarDayOfMonth: calendarDay} : {}),
     ...(calendarHour ? {calendarHour} : {})
@@ -576,15 +583,14 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
         operation: 'GPUSpaceTimeHotSpotsCube',
         variant: 'atomic-count',
         bindings: [
-          ...calendarBindings,
+          ...periodBindings,
           ...cellBindings,
           {name: 'cubeOutput', view: cube, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: eventCount,
-        declarations: calendarDeclarations,
         body: `${eventBinSource}
   if (valid) {
-    atomicAdd(&cubeOutput[cubeOutputOffset + cell * ${sliceCount}u + u32(slice)], 1u);
+    atomicAdd(&cubeOutput[cubeOutputOffset + cell * ${sliceCount}u + period], 1u);
   }`
       })
     );
@@ -597,15 +603,14 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
         id: `${id}-keys`,
         operation: 'GPUSpaceTimeHotSpotsKeys',
         bindings: [
-          ...calendarBindings,
+          ...periodBindings,
           ...cellBindings,
           {name: 'keyOutput', view: keys, type: 'u32', access: 'read_write'},
           {name: 'keyMaskOutput', view: keyMask, type: 'u32', access: 'read_write'}
         ],
         invocationCount: eventCount,
-        declarations: calendarDeclarations,
         body: `${eventBinSource}
-  keyOutput[keyOutputOffset + index] = select(0xffffffffu, cell * ${sliceCount}u + u32(slice), valid);
+  keyOutput[keyOutputOffset + index] = select(0xffffffffu, cell * ${sliceCount}u + period, valid);
   keyMaskOutput[keyMaskOutputOffset + index] = select(0u, 1u, valid);`
       })
     );
@@ -745,6 +750,9 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       parameters: parameterView,
       multipleTesting: props.multipleTesting,
       finalSlice: props.finalSlice,
+      trendAutocorrelationCorrection: props.trendAutocorrelationCorrection,
+      trendCorrectionMaximumLag: props.trendCorrectionMaximumLag,
+      trendCorrectionCriticalZ: props.trendCorrectionCriticalZ,
       output: {...outputs, ...optionalOutputs}
     })
   );

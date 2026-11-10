@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView, GraphVectorView} from '@luma.gl/graph/gpu-core';
-import type {GPUFloat32Positions, GPUUint32Rows} from '../kernels/gpu-contributor-types';
+import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
+import type {GPUUint32Rows} from '../kernels/gpu-contributor-types';
 import type {
   GPUBoundedResultStatusPort,
   GPUCandidateStatusPort,
@@ -11,12 +12,9 @@ import type {
   GPUOverflowStatusPort
 } from './status';
 import {validateGPUStatusPort} from './status';
+import type {GPUTemporalContext} from './temporal-context';
 
-export type {
-  GPUCompactOutput,
-  GPUFloat32Positions,
-  GPUUint32Rows
-} from '../kernels/gpu-contributor-types';
+export type {GPUCompactOutput, GPUUint32Rows} from '../kernels/gpu-contributor-types';
 
 /** Point features with optional stable source identity. */
 export type GPUPointGeometryPort = {
@@ -64,6 +62,12 @@ export type GPUTrajectoryGeometryPort<
   trackOffsets: GraphDataView<'uint32'>;
   timestamps: GraphDataView<TimestampFormat> | GraphVectorView<TimestampFormat>;
   sourceIds?: GPUUint32Rows;
+  /**
+   * Optional declaration of what `timestamps` mean: `float32` rows are `float32-relative`,
+   * `uint32x2` rows are `int64-words`, and the axis is `{kind: 'irregular'}`. Durations given with
+   * these times, such as `maximumGap`, are in its `unit`.
+   */
+  temporalContext?: GPUTemporalContext;
 };
 
 /** Canonical logical feature geometry accepted by spatial-analysis contributors. */

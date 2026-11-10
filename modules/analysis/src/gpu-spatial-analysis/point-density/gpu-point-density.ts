@@ -18,7 +18,7 @@ import {
   type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {GPURasterBufferToTexture} from '@luma.gl/graph/gpu-raster';
-import type {GPUFloat32Positions} from '../../analysis-core/kernels/gpu-contributor-types';
+import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,

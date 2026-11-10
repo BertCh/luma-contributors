@@ -3,10 +3,30 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {reconcileLandscapePatchLabels} from './reconcile-patches';
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {
+  validateGPUStorageBindingByteLength,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPULandscapeMetricsProps} from './landscape-metrics';
+
+export type GPUPatchProximityOutput = {
+  /** `uint32`, one row per cell: one when the cell is core area of its patch. */
+  core: GraphDataView<'uint32'>;
+  /** `float32`, `patchCount` squared rows: boundary distance from patch row to patch column. */
+  distances: GraphDataView<'float32'>;
+  /** `float32x4`, one row per patch: area, core area, nearest same-class distance, proximity index. */
+  metrics: GraphDataView<'float32x4'>;
+  /** `float32`, `patchCount * cellCount` rows: per patch row-wise distance transform. */
+  horizontal: GraphDataView<'float32'>;
+  /** `float32`, `patchCount * cellCount` rows: per patch distance field. */
+  fields: GraphDataView<'float32'>;
+  /** `uint32`, one row per cell, only with `reconcilePatches`: merged patch label. */
+  reconciledPatches: GraphDataView<'uint32'>;
+  /** `uint32`, one row per patch, only with `reconcilePatches`: lowest patch row of its merged patch. */
+  patchParents: GraphDataView<'uint32'>;
+};
 
 export type GPUPatchProximityProps = Omit<
   GPULandscapeMetricsProps,
@@ -28,6 +48,11 @@ export type GPUPatchProximityProps = Omit<
   coreModel?: 'physical' | 'raster-erosion';
   /** Treat domain exterior as an edge (default), or leave it open. */
   coreBoundary?: 'edge' | 'open';
+  /**
+   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
+   * Formats and lengths are those of {@link GPUPatchProximityOutput}.
+   */
+  output?: Partial<GPUPatchProximityOutput>;
 };
 
 /** Exact rectangular-cell boundary distances on a complete raster; background is a core-area barrier. */
@@ -39,32 +64,78 @@ export function addPatchProximityRecipe<Parameters>(
   const {width, height, cellSize, edgeDepth, searchRadius} = props;
   const cellCount = width * height;
   const patchCount = props.patchClasses.length;
-  const reconciled = props.reconcilePatches
-    ? reconcileLandscapePatchLabels(graph, {...props, id, connectivity: props.connectivity ?? 4})
-    : undefined;
-  const patches = reconciled?.patches ?? props.patches;
-  assert(Number.isSafeInteger(width) && width > 0 && Number.isSafeInteger(height) && height > 0);
-  assert(props.patches.length === cellCount && patchCount > 0);
-  assert(cellSize.every(value => Number.isFinite(Math.fround(value)) && value > 0));
-  assert(
+  validateRequirement(
+    id,
+    Number.isSafeInteger(width) && width > 0 && Number.isSafeInteger(height) && height > 0,
+    'width and height must be positive integers'
+  );
+  validateRequirement(
+    id,
+    props.patches.length === cellCount,
+    'patches must have width times height rows'
+  );
+  validateRequirement(id, patchCount > 0, 'patchClasses must have at least 1 row');
+  validateRequirement(
+    id,
+    cellSize.every(value => Number.isFinite(Math.fround(value)) && value > 0),
+    'cellSize entries must be positive finite float32 numbers'
+  );
+  validateRequirement(
+    id,
     Number.isFinite(edgeDepth) &&
       edgeDepth >= 0 &&
       Number.isFinite(searchRadius) &&
-      searchRadius >= 0
+      searchRadius >= 0,
+    'edgeDepth and searchRadius must be finite numbers of at least 0'
   );
+  // Two float32 distance fields of one value per patch and cell; the binding limit caps patches times cells.
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'distance fields',
+    patchCount * cellCount * Float32Array.BYTES_PER_ELEMENT,
+    'reduce the patch count or the raster size'
+  );
+  const output = props.output;
+  const reconciled = props.reconcilePatches
+    ? reconcileLandscapePatchLabels(graph, {
+        ...props,
+        id,
+        connectivity: props.connectivity ?? 4,
+        output: {patches: output?.reconciledPatches, parents: output?.patchParents}
+      })
+    : undefined;
+  const patches = reconciled?.patches ?? props.patches;
   const rasterCore = props.coreModel === 'raster-erosion';
-  assert(!rasterCore || Number.isSafeInteger(edgeDepth));
+  validateRequirement(
+    id,
+    !rasterCore || Number.isSafeInteger(edgeDepth),
+    "edgeDepth must be an integer when coreModel is 'raster-erosion'"
+  );
   const separation = props.distanceModel === 'cell-center' ? 0 : 1;
-  const core = getRecipeView(graph, `${id}-core`, 'uint32', cellCount);
-  const distances = getRecipeView(graph, `${id}-distances`, 'float32', patchCount * patchCount);
+  const core = getRecipeView(graph, `${id}-core`, 'uint32', cellCount, output?.core);
+  const distances = getRecipeView(
+    graph,
+    `${id}-distances`,
+    'float32',
+    patchCount * patchCount,
+    output?.distances
+  );
   const horizontal = getRecipeView(
     graph,
     `${id}-horizontal-distances`,
     'float32',
-    patchCount * cellCount
+    patchCount * cellCount,
+    output?.horizontal
   );
-  const fields = getRecipeView(graph, `${id}-distance-fields`, 'float32', patchCount * cellCount);
-  const metrics = getRecipeView(graph, `${id}-metrics`, 'float32x4', patchCount);
+  const fields = getRecipeView(
+    graph,
+    `${id}-distance-fields`,
+    'float32',
+    patchCount * cellCount,
+    output?.fields
+  );
+  const metrics = getRecipeView(graph, `${id}-metrics`, 'float32x4', patchCount, output?.metrics);
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${id}-core-distance`,

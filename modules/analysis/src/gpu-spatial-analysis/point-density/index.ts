@@ -55,6 +55,42 @@ export {
 export type {
   GPUKernelDensityBandwidthRule,
   GPUKernelDensityKernel,
+  GPUKernelDensityKernelName,
   GPUKernelDensityMethod,
   GPUKernelDensityWindow
 } from './kernel-density-math';
+export {GPUSpaceTimeKernelDensity} from './gpu-space-time-kernel-density';
+export type {
+  GPUSpaceTimeKernelDensityEdgeCorrection,
+  GPUSpaceTimeKernelDensityOutput,
+  GPUSpaceTimeKernelDensityProps
+} from './gpu-space-time-kernel-density';
+export {GPUSpaceTimeRelativeRisk} from './gpu-space-time-relative-risk';
+export type {
+  GPUSpaceTimeRelativeRiskOutput,
+  GPUSpaceTimeRelativeRiskProps
+} from './gpu-space-time-relative-risk';
+export {
+  evaluateGPUSpaceTimeTemporalKernel,
+  getGPUSpaceTimeKernelDensityParameterValues,
+  getGPUSpaceTimeTemporalSupportRadius,
+  getGPUSpaceTimeTemporalWindowMass,
+  GPU_SPACE_TIME_KERNEL_DENSITY_PARAMETER_LENGTH
+} from './space-time-kernel-density-math';
+export type {
+  GPUSpaceTimeKernelDensitySettings,
+  GPUSpaceTimeTemporalKernel
+} from './space-time-kernel-density-math';
+export {
+  getGPUAdaptiveBandwidthKernelDensityParameterValues,
+  GPUAdaptiveBandwidthKernelDensity,
+  GPU_ADAPTIVE_BANDWIDTH_DEFAULT_FACTOR_LIMIT,
+  GPU_ADAPTIVE_BANDWIDTH_DEFAULT_SENSITIVITY,
+  GPU_ADAPTIVE_BANDWIDTH_KERNEL_DENSITY_PARAMETER_LENGTH,
+  GPU_ADAPTIVE_BANDWIDTH_MAXIMUM_FACTOR_LIMIT
+} from './gpu-adaptive-bandwidth-kernel-density';
+export type {
+  GPUAdaptiveBandwidthKernelDensityOutput,
+  GPUAdaptiveBandwidthKernelDensityProps,
+  GPUAdaptiveBandwidthKernelDensitySettings
+} from './gpu-adaptive-bandwidth-kernel-density';

@@ -13,6 +13,10 @@ import {GPUTerrainCatchmentSummary} from '../../../src/gpu-terrain/terrain-proce
 import {GPUTerrainDEMCoregistration} from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-dem-coregistration';
 import {GPUTerrainDepressionHierarchy} from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-depression-hierarchy';
 import {GPUTerrainTiledFlow} from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-tiled-flow';
+import {
+  getRasterGridGeoreference,
+  getRasterGroundCellSize
+} from '../../../src/analysis-core/raster-grid';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -852,4 +856,292 @@ it('branching corner transfers use the diagonal owner rather than an adjacent ti
   expect(await results[1].read()).toEqual([0]);
   expect(await results[2].read()).toEqual([0]);
   destroy();
+});
+
+it('a validity view counts exactly like NaN in coregistration, catchment summaries and breaching', async () => {
+  const {graph, input, output, run} = await setup();
+  const coregistrations = [false, true].map(useValidity => {
+    const result = {
+      fit: output(4, 'float32'),
+      differences: output(10, 'float32'),
+      validity: output(5, 'uint32'),
+      volume: output(3, 'float32')
+    };
+    graph.add(
+      new GPUTerrainDEMCoregistration({
+        id: `coregistration-${useValidity}`,
+        grid: grid(5),
+        reference: input([0, 0, 0, 0, 0], 'float32'),
+        moving: input([2, 2, 2, useValidity ? 100 : NaN, 5], 'float32'),
+        ...(useValidity ? {validity: input([1, 1, 1, 0, 1], 'uint32')} : {}),
+        stableMask: input([1, 1, 1, 1, 0], 'uint32'),
+        differenceVariance: input([1, 1, 1, 1, 1], 'float32'),
+        output: {
+          fit: result.fit.view,
+          differences: result.differences.view,
+          validity: result.validity.view,
+          volume: result.volume.view
+        }
+      })
+    );
+    return result;
+  });
+  const catchments = [false, true].map(useValidity => {
+    const result = {
+      statistics: output(6, 'float32'),
+      hypsometry: output(2, 'float32'),
+      profiles: output(9, 'float32'),
+      profileStatus: output(3, 'uint32')
+    };
+    graph.add(
+      new GPUTerrainCatchmentSummary({
+        id: `catchment-${useValidity}`,
+        grid: grid(3),
+        elevation: input([3, 2, useValidity ? -9999 : NaN], 'float32'),
+        ...(useValidity ? {validity: input([1, 1, 0], 'uint32')} : {}),
+        basinIds: input([0, 0, 0], 'uint32'),
+        basinCount: 1,
+        streams: input([1, 1, 1], 'uint32'),
+        flowDirections: input([1, 1, 0], 'uint32'),
+        histogramBins: 2,
+        output: {
+          statistics: result.statistics.view,
+          hypsometry: result.hypsometry.view,
+          profiles: result.profiles.view,
+          profileStatus: result.profileStatus.view
+        }
+      })
+    );
+    return result;
+  });
+  const breaches = [false, true].map(useValidity => {
+    const result = {
+      elevation: output(3, 'float32'),
+      cutDepth: output(3, 'float32'),
+      modificationMask: output(3, 'uint32'),
+      pathCells: output(3, 'uint32'),
+      pathLengths: output(1, 'uint32'),
+      pitStatus: output(1, 'uint32'),
+      unresolvedCount: output(1, 'uint32')
+    };
+    graph.add(
+      new GPUTerrainBreach({
+        id: `breach-${useValidity}`,
+        grid: grid(3),
+        elevation: input([2, 5, useValidity ? -9999 : NaN], 'float32'),
+        ...(useValidity ? {validity: input([1, 1, 0], 'uint32')} : {}),
+        pitCells: input([0], 'uint32'),
+        maximumSteps: 2,
+        maximumCutDepth: 4,
+        elevationDecrement: 0.5,
+        output: {
+          elevation: result.elevation.view,
+          cutDepth: result.cutDepth.view,
+          modificationMask: result.modificationMask.view,
+          pathCells: result.pathCells.view,
+          pathLengths: result.pathLengths.view,
+          pitStatus: result.pitStatus.view,
+          unresolvedCount: result.unresolvedCount.view
+        }
+      })
+    );
+    return result;
+  });
+  const destroy = run();
+  try {
+    for (const group of [coregistrations, catchments, breaches]) {
+      for (const key of Object.keys(group[0]) as (keyof (typeof group)[0])[]) {
+        const withNaN = await (group[0][key] as TerrainOutput).read();
+        const withValidity = await (group[1][key] as TerrainOutput).read();
+        expect(withValidity, String(key)).toEqual(withNaN);
+      }
+    }
+    // The masked breach has no outlet to drain into, so nothing is cut.
+    expect(await (breaches[1].pitStatus as TerrainOutput).read()).toEqual([2]);
+  } finally {
+    destroy();
+  }
+});
+
+it('cellSizeMode measures catchment areas, lengths and coregistration volume in ground meters', async () => {
+  const {graph, input, output, run} = await setup();
+  const geographicGrid = {
+    width: 3,
+    height: 2,
+    affine: [0.001, 0, 10, 0, -0.001, 50] as const,
+    pixelInterpretation: 'area' as const
+  };
+  const statistics = output(6, 'float32'),
+    hypsometry = output(2, 'float32'),
+    profiles = output(18, 'float32'),
+    profileStatus = output(6, 'uint32');
+  graph.add(
+    new GPUTerrainCatchmentSummary({
+      id: 'geographic-catchment',
+      grid: geographicGrid,
+      cellSizeMode: 'geographic',
+      elevation: input([6, 5, 4, 3, 2, 1], 'float32'),
+      basinIds: input([0, 0, 0, 0, 0, 0], 'uint32'),
+      basinCount: 1,
+      // Row 0 flows east, then south on the last column; row 1 flows east.
+      flowDirections: input([1, 1, 4, 1, 1, 0], 'uint32'),
+      streams: input([1, 1, 1, 1, 1, 1], 'uint32'),
+      histogramBins: 2,
+      output: {
+        statistics: statistics.view,
+        hypsometry: hypsometry.view,
+        profiles: profiles.view,
+        profileStatus: profileStatus.view
+      }
+    })
+  );
+  const fit = output(4, 'float32'),
+    differences = output(12, 'float32'),
+    validity = output(6, 'uint32'),
+    volume = output(3, 'float32');
+  graph.add(
+    new GPUTerrainDEMCoregistration({
+      id: 'geographic-coregistration',
+      grid: geographicGrid,
+      cellSizeMode: 'geographic',
+      reference: input([0, 0, 0, 0, 0, 0], 'float32'),
+      moving: input([1, 2, 2, 2, 2, 5], 'float32'),
+      stableMask: input([1, 1, 1, 1, 1, 1], 'uint32'),
+      differenceVariance: input([1, 1, 1, 1, 1, 1], 'float32'),
+      output: {
+        fit: fit.view,
+        differences: differences.view,
+        validity: validity.view,
+        volume: volume.view
+      }
+    })
+  );
+  const destroy = run();
+  try {
+    const georeference = getRasterGridGeoreference(geographicGrid);
+    const cellAreas = [0, 1].map(row => {
+      const [cellX, cellY] = getRasterGroundCellSize('geographic', georeference, row + 0.5, 2);
+      return cellX * cellY;
+    });
+    const expectedArea = 3 * (cellAreas[0] + cellAreas[1]);
+    const actual = await statistics.read();
+    expect(actual[0] / expectedArea).toBeCloseTo(1, 4);
+    // Ground square meters (six cells of about 8,000 m2), not the 6e-6 square degrees of the affine.
+    expect(actual[0]).toBeGreaterThan(1e4);
+    expect((await hypsometry.read())[1] / expectedArea).toBeCloseTo(1, 4);
+    // Stream length: three east moves of one cell width plus a south move in the last column.
+    const [firstWidth, firstHeight] = getRasterGroundCellSize('geographic', georeference, 0.5, 2);
+    const [secondWidth] = getRasterGroundCellSize('geographic', georeference, 1.5, 2);
+    expect(actual[4] / (2 * firstWidth + firstHeight + 2 * secondWidth)).toBeCloseTo(1, 3);
+    // The volume integrates the corrected differences over the ground area: median shift is 2.
+    const volumes = await volume.read();
+    expect(volumes[2] / expectedArea).toBeCloseTo(1, 4);
+    expect(volumes[0] / (-cellAreas[0] + 3 * cellAreas[1])).toBeCloseTo(1, 3);
+  } finally {
+    destroy();
+  }
+});
+
+it('depression hierarchy and branching flow honour validity and ground units', async () => {
+  const {graph, input, output, run} = await setup();
+  const geographicGrid = {
+    width: 3,
+    height: 1,
+    affine: [0.001, 0, 10, 0, -0.001, 50] as const,
+    pixelInterpretation: 'area' as const
+  };
+  const hierarchies = [false, true].map(useValidity => {
+    const result = {
+      nodes: output(12, 'uint32'),
+      levels: output(6, 'float32'),
+      cellNodes: output(3, 'uint32'),
+      curves: output(12, 'float32'),
+      status: output(3, 'uint32')
+    };
+    graph.add(
+      new GPUTerrainDepressionHierarchy({
+        id: `hierarchy-${useValidity}`,
+        grid: geographicGrid,
+        cellSizeMode: 'geographic',
+        elevation: input([0, 2, useValidity ? -9999 : NaN], 'float32'),
+        ...(useValidity ? {validity: input([1, 1, 0], 'uint32')} : {}),
+        outlets: input([0, 0, 0], 'uint32'),
+        stages: input([1, 3], 'float32'),
+        nodeCapacity: 3,
+        output: {
+          nodes: result.nodes.view,
+          levels: result.levels.view,
+          cellNodes: result.cellNodes.view,
+          curves: result.curves.view,
+          status: result.status.view
+        }
+      })
+    );
+    return result;
+  });
+  const flows = [false, true].map(useValidity => {
+    const result = {
+      values: output(2, 'float32'),
+      status: output(2, 'uint32'),
+      unresolvedCount: output(1, 'uint32')
+    };
+    graph.add(
+      new GPUTerrainBranchingFlow({
+        id: `branching-${useValidity}`,
+        grid: {...geographicGrid, width: 2},
+        cellSizeMode: 'geographic',
+        mode: 'expected-distance',
+        // Cell 0 sends everything east to cell 1, which is a terminal.
+        fractions: input([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'float32'),
+        values: input([0, useValidity ? -1 : NaN], 'float32'),
+        ...(useValidity ? {validity: input([1, 0], 'uint32')} : {}),
+        output: {
+          values: result.values.view,
+          status: result.status.view,
+          unresolvedCount: result.unresolvedCount.view
+        }
+      })
+    );
+    return result;
+  });
+  const distance = output(2, 'float32'),
+    distanceStatus = output(2, 'uint32'),
+    distanceUnresolved = output(1, 'uint32');
+  graph.add(
+    new GPUTerrainBranchingFlow({
+      id: 'branching-distance',
+      grid: {...geographicGrid, width: 2},
+      cellSizeMode: 'geographic',
+      mode: 'expected-distance',
+      fractions: input([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'float32'),
+      values: input([0, 0], 'float32'),
+      output: {
+        values: distance.view,
+        status: distanceStatus.view,
+        unresolvedCount: distanceUnresolved.view
+      }
+    })
+  );
+  const destroy = run();
+  try {
+    for (const group of [hierarchies, flows]) {
+      for (const key of Object.keys(group[0]) as (keyof (typeof group)[0])[]) {
+        expect(await (group[1][key] as TerrainOutput).read(), String(key)).toEqual(
+          await (group[0][key] as TerrainOutput).read()
+        );
+      }
+    }
+    const georeference = getRasterGridGeoreference(geographicGrid);
+    const [cellWidth, cellHeight] = getRasterGroundCellSize('geographic', georeference, 0.5, 1);
+    // One finite basin of cells 0 and 1: stage 3 floods both, so the area is two ground cells.
+    const curves = await hierarchies[0].curves.read();
+    expect(
+      Math.max(...curves.filter(Number.isFinite)) / (2 * cellWidth * cellHeight * 3)
+    ).toBeLessThanOrEqual(1.0001);
+    expect(curves.some(value => value > 1e3)).toBe(true);
+    // Cell 0 is one ground cell width upstream of the terminal at cell 1.
+    expect((await distance.read())[0] / cellWidth).toBeCloseTo(1, 4);
+  } finally {
+    destroy();
+  }
 });

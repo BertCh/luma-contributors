@@ -11,6 +11,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  createFillNode,
   createWGSLDispatchGate,
   createWGSLKernelNode,
   type WGSLDispatchGate,
@@ -40,6 +41,7 @@ import {
   type GPUSpatialWeightsChunkDispatch
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 import {
+  getNegativeValueCountNodes,
   getPermutationInputNodes,
   getPermutationParameterWGSL,
   PERMUTATION_FLOAT_WGSL,
@@ -47,8 +49,8 @@ import {
   PERMUTATION_TOTAL,
   validatePermutationInputs
 } from './permutation-inference-kernels';
-import {PERMUTATION_RANDOM_WGSL} from './permutation-random';
-import {getPermutationShuffleWGSL} from './permutation-shuffle';
+import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
+import {getPermutationShuffleWGSL} from '../../analysis-core/kernels/permutation-shuffle';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {
   getAlternativeMultiplier,
@@ -194,6 +196,16 @@ export type GPUGlobalPermutationTestOutput = {
   referenceDistribution?: GraphDataView<'float32'>;
   /** Optional caller-owned histogram of the reference distribution over `[minimum, maximum]`. */
   histogram?: GraphDataView<'uint32'>;
+  /** Optional status. */
+  status?: {
+    /**
+     * Optional caller-owned one-row uint32 output: the number of analysis rows with a negative
+     * value, which `'getisOrdG'` rejects (G is defined for non-negative data). When it is
+     * nonzero `observed`, every p-value, `zSimulated`, the simulated mean, deviation, minimum and
+     * maximum and the reference distribution are NaN. Written as 0 for other statistics.
+     */
+    invalidCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -393,6 +405,10 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       GPU_GLOBAL_PERMUTATION_TEST_MAXIMUM_PAIR_BLOCK_COUNT
     );
     const {output} = props;
+    if (output.status?.invalidCount) {
+      validatePackedUint32View(output.status.invalidCount, `${id} output.status.invalidCount`);
+      validateCapacity(id, 'output.status.invalidCount length', output.status.invalidCount.length);
+    }
     validatePackedView(output.summary, ['float32'], `${id} output.summary`);
     validateCapacity(
       id,
@@ -416,7 +432,12 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.output.summary, props.output.referenceDistribution, props.output.histogram],
+      [
+        props.output.summary,
+        props.output.referenceDistribution,
+        props.output.histogram,
+        props.output.status?.invalidCount
+      ],
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.values,
@@ -472,7 +493,8 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       weights.status?.overflow,
       props.output.summary,
       props.output.referenceDistribution,
-      props.output.histogram
+      props.output.histogram,
+      props.output.status?.invalidCount
     ]);
     const rows = props.values.length;
     const lee = statistic === 'leesL';
@@ -817,6 +839,21 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
     }
 
     const T = PERMUTATION_TOTAL;
+    // G is defined for non-negative data: with a negative value the scale can be negative or
+    // infinite, so the run is reported invalid (NaN results) instead of ranked in the wrong tail.
+    const rejectsNegative = statistic === 'getisOrdG';
+    const negative = rejectsNegative
+      ? getNegativeValueCountNodes<Parameters>(graph, {
+          id,
+          operation: OPERATION,
+          rows,
+          compactX,
+          rowPositions
+        })
+      : undefined;
+    if (negative) {
+      nodes.push(...negative.nodes);
+    }
     const scaleWGSL = {
       moran: `count / (totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
       geary: `(count - 1.0) / (2.0 * totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
@@ -842,6 +879,50 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
         type: 'f32',
         access: 'read_write'
       });
+    }
+    // The finalize kernel already binds eight buffers (the device limit), so a negative value
+    // poisons the row count in `totals` instead of adding a binding: every scaled statistic is
+    // then NaN, and `invalidInput` below is how the kernel recognizes it.
+    const invalidCountView = props.output.status?.invalidCount;
+    if (negative) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-reject-negative`,
+          operation: OPERATION,
+          variant: 'reject-negative',
+          bindings: [
+            {name: 'negativeCount', view: negative.negativeCount, type: 'f32', access: 'read'},
+            {name: 'totals', view: totals, type: 'f32', access: 'read_write'},
+            ...(invalidCountView
+              ? [
+                  {
+                    name: 'invalidCount',
+                    view: invalidCountView,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          invocationCount: 1,
+          declarations: PERMUTATION_FLOAT_WGSL,
+          body: `if (negativeCount[negativeCountOffset] > 0.0) {
+    totals[totalsOffset + ${T.count}u] = getQuietNaN(5u);
+  }
+  ${invalidCountView ? 'invalidCount[invalidCountOffset] = u32(negativeCount[negativeCountOffset]);' : ''}`
+        })
+      );
+    } else if (invalidCountView) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-invalid-clear`,
+          operation: OPERATION,
+          view: invalidCountView,
+          type: 'u32',
+          value: '0u',
+          componentCount: 1
+        })
+      );
     }
     if (props.output.histogram) {
       finalizeBindings.push({
@@ -910,6 +991,7 @@ fn reduceCount(local: u32, value: u32) -> u32 {
       : 'let permutations = readValidPermutationCount();'
   }
   let count = totals[totalsOffset + ${T.count}u];
+  let invalidInput = ${negative ? '!isFiniteFloat(count)' : 'false'};
   let scale = ${scaleWGSL};
   let observedSum = pairSums[pairSumsOffset];
   let observed = scale * observedSum;
@@ -972,7 +1054,9 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     if (range > 0.0 && isFiniteFloat(range)) {
       bin = min(u32(max(floor((simulated - minimum) / range * f32(BINS)), 0.0)), BINS - 1u);
     }
-    atomicAdd(&histogram[histogramOffset + bin], 1u);
+    if (!invalidInput) {
+      atomicAdd(&histogram[histogramOffset + bin], 1u);
+    }
   }`
       : ''
   }
@@ -981,7 +1065,7 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     let zSimulated = (observed - mean) / standardDeviation;
     let validZ = standardDeviation > 0.0 && isFiniteFloat(zSimulated);
     // Tested: a valid permutation count and an observed statistic that exists (n >= 2, not truncated).
-    let tested = permutations > 0u && isFiniteFloat(observed);
+    let tested = permutations > 0u && isFiniteFloat(observed) && !invalidInput;
     results[resultsOffset + ${R.observed}u] = select(getQuietNaN(0u), observed, isFiniteFloat(observed));
     results[resultsOffset + ${R.pseudoPValue}u] = select(getQuietNaN(1u), ${
       sequential
@@ -990,12 +1074,12 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     }, tested);
     results[resultsOffset + ${R.exceedances}u] = select(getQuietNaN(1u), f32(larger), tested);
     results[resultsOffset + ${R.permutationCount}u] = select(getQuietNaN(1u), f32(permutations), permutations > 0u);
-    results[resultsOffset + ${R.simulatedMean}u] = mean;
-    results[resultsOffset + ${R.simulatedStandardDeviation}u] = standardDeviation;
+    results[resultsOffset + ${R.simulatedMean}u] = select(mean, getQuietNaN(2u), invalidInput);
+    results[resultsOffset + ${R.simulatedStandardDeviation}u] = select(standardDeviation, getQuietNaN(3u), invalidInput);
     results[resultsOffset + ${R.zSimulated}u] = select(getQuietNaN(1u), zSimulated, validZ && tested);
     results[resultsOffset + ${R.pZSimulated}u] = select(getQuietNaN(1u), 0.5 * getTwoSidedPValue(zSimulated), validZ && tested);
-    results[resultsOffset + ${R.minimum}u] = select(getQuietNaN(4u), minimum, permutations > 0u);
-    results[resultsOffset + ${R.maximum}u] = select(getQuietNaN(4u), maximum, permutations > 0u);
+    results[resultsOffset + ${R.minimum}u] = select(getQuietNaN(4u), minimum, permutations > 0u && !invalidInput);
+    results[resultsOffset + ${R.maximum}u] = select(getQuietNaN(4u), maximum, permutations > 0u && !invalidInput);
     results[resultsOffset + ${R.islandCount}u] = f32(islandCount[islandCountOffset]);
     results[resultsOffset + ${R.analysisCount}u] = f32(rowPositions[rowPositionsOffset + ROWS]);
   }`

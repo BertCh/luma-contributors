@@ -27,6 +27,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateCapacity,
+  validateCommandNodeBudget,
   validateMaximumCount,
   validateGraphViewsBelongToGraph,
   validatePackedView
@@ -37,7 +38,7 @@ import {
   type GPUNetworkTopology
 } from '../../analysis-core/network-topology';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {PERMUTATION_RANDOM_WGSL} from '../../gpu-spatial-analysis/permutation-inference/permutation-random';
+import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
 import type {
   GPUSpatialContext,
   GPUSpatialContextSupport
@@ -95,6 +96,16 @@ const ALIGNMENT_ELEMENTS = 64;
 const DEFAULT_BAND_COUNT = 32;
 const DEFAULT_ROWS_PER_BLOCK = 32;
 const DEFAULT_LOCAL_ITERATIONS = 16;
+/** Matches the `GPUNetworkReachability` default, which the estimate of command nodes must mirror. */
+const DEFAULT_MAXIMUM_ITERATIONS = 64;
+/**
+ * Command nodes added to {@link GPUNetworkKFunction.estimatedCommandNodeCount} for the snapping,
+ * reduction and scan primitives, whose node counts depend on data sizes inside published luma.gl
+ * classes (a hierarchical reduction or scan adds a pass per factor of the workgroup size, and the
+ * snapping BVH adds sort and build passes). Measured at most 131 for snapping with a Morton sort on
+ * 600,000 edges and 5 per reduction or scan up to 3,000,000 rows, so 192 covers all of them.
+ */
+const SHARED_PRIMITIVE_NODE_ALLOWANCE = 192;
 
 /** GPU-written views of {@link GPUNetworkKFunction}. */
 export type GPUNetworkKFunctionOutput = {
@@ -261,6 +272,13 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
   readonly rowsPerBlock: number;
   /** Number of row blocks. */
   readonly blockCount: number;
+  /**
+   * Upper bound of the command nodes `getCommandNodes` returns, checked against the shared command
+   * node budget at construction. Every node this class creates is counted exactly (the cost-matrix
+   * searches, `count` nodes and the fixed kernels). The snapping, reduction and scan primitives are
+   * counted as a flat allowance of 192, so the value exceeds the true count by at most 192.
+   */
+  readonly estimatedCommandNodeCount: number;
   /** Resolved spatial context of the event snapping. */
   readonly spatialContext: GPUSpatialContext;
 
@@ -371,6 +389,26 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
       0xffffffff
     );
     this.blockCount = Math.ceil(this.rowCount / this.rowsPerBlock);
+    const laneCount = Math.min(props.laneCount ?? this.rowsPerBlock, this.rowsPerBlock);
+    const batchCount = this.blockCount * Math.ceil(this.rowsPerBlock / laneCount);
+    // Reachability per batch: initialize, seed, one node per round, finalize when `converged`.
+    const reachabilityNodeCount =
+      2 +
+      (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) +
+      Number(Boolean(output.status?.converged));
+    this.estimatedCommandNodeCount =
+      SHARED_PRIMITIVE_NODE_ALLOWANCE +
+      // event-flags, clear, expand-seeds, block-info, finalize
+      5 +
+      // live-weights, quantize, simulate
+      (this.simulationCount > 0 ? 3 : 0) +
+      batchCount * reachabilityNodeCount +
+      this.blockCount +
+      Number(Boolean(output.envelope)) +
+      Number(Boolean(output.status?.converged));
+    // The rounds of every block are unrolled; lower simulationCount or maximumIterations, or raise
+    // rowsPerBlock.
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const outputs = getOutputs(props);
     validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
     const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);

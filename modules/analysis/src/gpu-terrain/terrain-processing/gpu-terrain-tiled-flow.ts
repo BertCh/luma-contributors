@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -11,6 +10,10 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
+import {
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {checkTerrainViews, checkTerrainGraph} from './terrain-processing-utils';
 
 import {createTerrainResidentTileNodes} from './terrain-tiled-resident';
@@ -50,29 +53,31 @@ export type GPUTerrainTiledFlowProps = {
   maximumIterations?: number;
 };
 
-/** Owned-cell GPU exchange into a resident global DAG, with atomic transport and pointer-jumped reach identity. */
+/**
+ * Owned-cell GPU exchange into a resident global DAG, with atomic transport and pointer-jumped
+ * reach identity. Accumulation is in runoff units: it is a transport sum, so no length or area
+ * unit and no `cellSizeMode` applies. NaN runoff marks a cell invalid.
+ */
 export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUTerrainTiledFlowProps) {
     this.id = props.id ?? 'terrain-tiled-flow';
     validateRasterGrid(this.id, props.grid);
-    assert(
-      Number.isInteger(props.grid.width) &&
-        props.grid.width > 0 &&
-        Number.isInteger(props.grid.height) &&
-        props.grid.height > 0
-    );
     validateRasterIterations(this.id, 'maximumIterations', props.maximumIterations ?? 128);
     let ownedCount = 0;
     const rectangles: number[][] = [];
     const inputs: GraphDataView[] = [],
       outputs: GraphDataView[] = [];
-    for (const tile of props.tiles) {
+    for (const [tileIndex, tile] of props.tiles.entries()) {
+      const name = `tiles[${tileIndex}]`;
       const [column, row, width, height] = tile.owned;
-      assert(
-        [tile.column, tile.row, tile.width, tile.height, ...tile.owned].every(Number.isInteger)
+      validateRequirement(
+        this.id,
+        [tile.column, tile.row, tile.width, tile.height, ...tile.owned].every(Number.isInteger),
+        `${name} column, row, width, height and owned must be integers`
       );
-      assert(
+      validateRequirement(
+        this.id,
         tile.width > 0 &&
           tile.height > 0 &&
           column >= 0 &&
@@ -80,41 +85,62 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
           width > 0 &&
           height > 0 &&
           column + width <= tile.width &&
-          row + height <= tile.height
+          row + height <= tile.height,
+        `${name} owned rectangle must be non-empty and inside the tile`
       );
       const rectangle = [tile.column + column, tile.row + row, width, height];
-      assert(
+      validateRequirement(
+        this.id,
         rectangle[0] >= 0 &&
           rectangle[1] >= 0 &&
           rectangle[0] + width <= props.grid.width &&
-          rectangle[1] + height <= props.grid.height
+          rectangle[1] + height <= props.grid.height,
+        `${name} owned rectangle must be inside the grid`
       );
       for (const other of rectangles)
-        assert(
+        validateRequirement(
+          this.id,
           rectangle[0] >= other[0] + other[2] ||
             other[0] >= rectangle[0] + width ||
             rectangle[1] >= other[1] + other[3] ||
-            other[1] >= rectangle[1] + height
+            other[1] >= rectangle[1] + height,
+          `${name} owned rectangle must not overlap another tile's`
         );
       rectangles.push(rectangle);
       ownedCount += width * height;
       if (props.routing === 'branching') {
-        assert(tile.fractions && tile.fractions.length === tile.width * tile.height * 8);
-        inputs.push(tile.fractions);
+        validateRequirement(
+          this.id,
+          Boolean(tile.fractions),
+          `${name} fractions are required with routing 'branching'`
+        );
+        validateViewLength(
+          this.id,
+          `${name} fractions`,
+          tile.fractions!,
+          tile.width * tile.height * 8
+        );
+        inputs.push(tile.fractions!);
       } else {
-        assert(!tile.fractions);
+        validateRequirement(this.id, !tile.fractions, `${name} fractions need routing 'branching'`);
       }
       inputs.push(tile.flowDirections, tile.runoff, tile.streams);
       outputs.push(...Object.values(tile.output));
-      for (const view of [
-        tile.flowDirections,
-        tile.runoff,
-        tile.streams,
-        ...Object.values(tile.output)
-      ])
-        assert(view.length === tile.width * tile.height);
+      for (const [viewName, view] of [
+        ['flowDirections', tile.flowDirections],
+        ['runoff', tile.runoff],
+        ['streams', tile.streams],
+        ...Object.entries(tile.output).map(
+          ([outputName, output]) => [`output.${outputName}`, output] as const
+        )
+      ] as const)
+        validateViewLength(this.id, `${name} ${viewName}`, view, tile.width * tile.height);
     }
-    assert(ownedCount === props.grid.width * props.grid.height);
+    validateRequirement(
+      this.id,
+      ownedCount === props.grid.width * props.grid.height,
+      'owned rectangles must cover every grid cell exactly once'
+    );
     checkTerrainViews(this.id, inputs, outputs);
   }
   getCommandNodes<Parameters>(

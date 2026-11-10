@@ -16,7 +16,7 @@ import {
   createPublishNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import type {GPUFloat32Positions} from '../../analysis-core/kernels/gpu-contributor-types';
+import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,

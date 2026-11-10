@@ -2,8 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUCommandNode, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateMaximumCount,
+  validateRequirement,
+  validateViewLength
+} from '../analysis-core/kernels/gpu-contributor-utils';
+import {
+  GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS,
+  GPU_POINT_CLOUD_MAXIMUM_IDW_POWER,
+  GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS
+} from './pointcloud-limits';
 import {createPointCloudGridIndex} from './pointcloud-grid-index';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 
@@ -14,17 +26,34 @@ export type PointCloudRasterGrid = {
   height: number;
 };
 
-/** @internal */
-export function validatePointCloudGrid(grid: PointCloudRasterGrid): void {
-  assert(
-    Number.isInteger(grid.width) &&
-      grid.width > 0 &&
-      Number.isInteger(grid.height) &&
-      grid.height > 0
+/**
+ * Throws unless a raster grid has positive integer dimensions below `GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS`
+ * cells, a positive float32 cell size and a finite origin.
+ *
+ * @param grid Grid to check.
+ * @param id Contributor ID, for the message.
+ * @internal
+ */
+export function validatePointCloudGrid(grid: PointCloudRasterGrid, id = 'pointcloud'): void {
+  validateCapacity(id, 'grid.width', grid.width);
+  validateCapacity(id, 'grid.height', grid.height);
+  validateMaximumCount(
+    id,
+    'grid cell count',
+    grid.width * grid.height,
+    GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS
   );
-  assert(grid.width * grid.height < 0xffffffff);
-  assert(Math.fround(grid.cellSize) > 0 && Number.isFinite(Math.fround(grid.cellSize)));
-  assert(grid.origin.every(value => Number.isFinite(Math.fround(value))));
+  validateFiniteNumber(id, 'grid.cellSize', grid.cellSize);
+  validateRequirement(
+    id,
+    Math.fround(grid.cellSize) > 0,
+    'grid.cellSize must be positive in float32'
+  );
+  validateRequirement(
+    id,
+    grid.origin.every(value => Number.isFinite(Math.fround(value))),
+    'grid.origin must hold finite numbers'
+  );
 }
 
 /** @internal */
@@ -47,26 +76,35 @@ export type GPUPointCloudSurfacesProps = {
   surface: GraphDataView<'float32'>;
   /** Surface minus terrain; negative values are preserved. */
   canopy: GraphDataView<'float32'>;
-  /** Bit 1 has any point; bit 2 has classified ground. */
+  /**
+   * Per-cell coverage bits: `GPU_POINT_CLOUD_COVERAGE_ANY_POINT` (1) the cell holds a finite point,
+   * `GPU_POINT_CLOUD_COVERAGE_GROUND` (2) it holds a point of the ground class. Other bits are zero.
+   */
   coverage: GraphDataView<'uint32'>;
 };
 
+/** `GPUPointCloudSurfaces` coverage bit: the cell holds at least one finite point. */
+export const GPU_POINT_CLOUD_COVERAGE_ANY_POINT = 1;
+/** `GPUPointCloudSurfaces` coverage bit: the cell holds at least one point of the ground class. */
+export const GPU_POINT_CLOUD_COVERAGE_GROUND = 2;
+
 /** Explicit cell-min DTM and cell-max DSM, with no interpolation or implicit datum conversion. */
-export class GPUPointCloudSurfaces {
+export class GPUPointCloudSurfaces implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointCloudSurfacesProps) {
     this.id = props.id ?? 'gpu-pointcloud-surfaces';
-    validatePointCloudGrid(props.grid);
-    assert(props.classifications.length === props.positions.length);
-    assert(
-      Number.isInteger(props.groundClass ?? 2) &&
-        (props.groundClass ?? 2) >= 0 &&
-        (props.groundClass ?? 2) <= 0xffffffff
-    );
-    for (const view of [props.terrain, props.surface, props.canopy, props.coverage])
-      assert(view.length === props.grid.width * props.grid.height);
+    validatePointCloudGrid(props.grid, this.id);
+    validateViewLength(this.id, 'classifications', props.classifications, props.positions.length);
+    validateCapacity(this.id, 'groundClass', props.groundClass ?? 2, 0);
+    const cells = props.grid.width * props.grid.height;
+    validateViewLength(this.id, 'terrain', props.terrain, cells);
+    validateViewLength(this.id, 'surface', props.surface, cells);
+    validateViewLength(this.id, 'canopy', props.canopy, cells);
+    validateViewLength(this.id, 'coverage', props.coverage, cells);
   }
-  getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {positions, classifications, grid, terrain, surface, canopy, coverage} = this.props;
     const indexed = createPointCloudGridIndex(
       graph,
@@ -98,12 +136,12 @@ for (var slot = readOffsets(index); slot < readOffsets(index+1u); slot++) {
   if (!all(abs(position) <= vec3f(3.402823e38))) { continue; }
   ${getPointCloudCellSource(grid)}
   if (!inside || cellIndex != index) { continue; }
-  flags |= 1u; maximum = max(maximum, position.z);
-  if (readClassifications(point) == ${this.props.groundClass ?? 2}u) { minimum = min(minimum, position.z); flags |= 2u; }
+  flags |= ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT}u; maximum = max(maximum, position.z);
+  if (readClassifications(point) == ${this.props.groundClass ?? 2}u) { minimum = min(minimum, position.z); flags |= ${GPU_POINT_CLOUD_COVERAGE_GROUND}u; }
 }
-writeTerrain(index, select(0.0, minimum, (flags & 2u) != 0u));
-writeSurface(index, select(0.0, maximum, (flags & 1u) != 0u));
-writeCanopy(index, select(0.0, maximum - minimum, flags == 3u));
+writeTerrain(index, select(0.0, minimum, (flags & ${GPU_POINT_CLOUD_COVERAGE_GROUND}u) != 0u));
+writeSurface(index, select(0.0, maximum, (flags & ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT}u) != 0u));
+writeCanopy(index, select(0.0, maximum - minimum, flags == ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT | GPU_POINT_CLOUD_COVERAGE_GROUND}u));
 writeCoverage(index, flags);`
       })
     ];
@@ -123,48 +161,69 @@ export type GPUPointCloudHeightProps = {
     | {method: 'bilinear'}
     | {method: 'idw'; radius: number; power?: number; minimumSupport?: number};
   heights: GraphDataView<'float32'>;
-  /** 0 valid sample, 1 outside grid/invalid point, 2 unsupported terrain, 3 nonfinite elevation/height. */
+  /**
+   * Per-point status code (a value, not a bit set): `GPU_POINT_CLOUD_HEIGHT_STATUS_VALID` (0)
+   * valid sample, `..._INVALID_POINT` (1) the point is outside the grid or not finite,
+   * `..._UNSUPPORTED_TERRAIN` (2) the terrain under the point is unsupported (or the interpolation
+   * lacks support), `..._NONFINITE` (3) the elevation or height overflowed float32.
+   */
   status: GraphDataView<'uint32'>;
 };
 
+/** `GPUPointCloudHeight` status code: valid sample. */
+export const GPU_POINT_CLOUD_HEIGHT_STATUS_VALID = 0;
+/** `GPUPointCloudHeight` status code: the point is outside the grid or has a nonfinite coordinate. */
+export const GPU_POINT_CLOUD_HEIGHT_STATUS_INVALID_POINT = 1;
+/** `GPUPointCloudHeight` status code: unsupported terrain under the point, or too little interpolation support. */
+export const GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN = 2;
+/** `GPUPointCloudHeight` status code: the elevation or height is not finite in float32. */
+export const GPU_POINT_CLOUD_HEIGHT_STATUS_NONFINITE = 3;
+
 /** Height above ground using the containing terrain cell, explicitly preserving negative heights. */
-export class GPUPointCloudHeight {
+export class GPUPointCloudHeight implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointCloudHeightProps) {
     this.id = props.id ?? 'gpu-pointcloud-height';
+    validatePointCloudGrid(props.grid, this.id);
     if (props.interpolation?.method === 'idw') {
-      assert(
+      validateRequirement(
+        this.id,
         props.interpolation.radius > 0 &&
           Math.fround(props.interpolation.radius ** 2) > 0 &&
-          Number.isFinite(Math.fround(props.interpolation.radius ** 2))
+          Number.isFinite(Math.fround(props.interpolation.radius ** 2)),
+        'interpolation.radius must be positive with a finite nonzero float32 square'
       );
-      assert(props.interpolation.radius / props.grid.cellSize <= 64);
-      assert((props.interpolation.power ?? 2) > 0 && (props.interpolation.power ?? 2) <= 8);
-      assert(
-        Number.isSafeInteger(props.interpolation.minimumSupport ?? 1) &&
-          (props.interpolation.minimumSupport ?? 1) > 0 &&
-          (props.interpolation.minimumSupport ?? 1) <= 0xffffffff
+      validateMaximumCount(
+        this.id,
+        'interpolation.radius in cells',
+        props.interpolation.radius / props.grid.cellSize,
+        GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS
+      );
+      validateRequirement(
+        this.id,
+        (props.interpolation.power ?? 2) > 0 &&
+          (props.interpolation.power ?? 2) <= GPU_POINT_CLOUD_MAXIMUM_IDW_POWER,
+        `interpolation.power must be in (0, ${GPU_POINT_CLOUD_MAXIMUM_IDW_POWER}]`
+      );
+      validateCapacity(
+        this.id,
+        'interpolation.minimumSupport',
+        props.interpolation.minimumSupport ?? 1
       );
     }
-    validatePointCloudGrid(props.grid);
-    assert(
-      props.terrain.length === props.grid.width * props.grid.height &&
-        props.coverage.length === props.terrain.length
-    );
-    assert(
-      props.heights.length === props.positions.length &&
-        props.status.length === props.positions.length
-    );
-    assert(
-      Number.isInteger(props.coverageBit ?? 0xffffffff) &&
-        (props.coverageBit ?? 0xffffffff) > 0 &&
-        (props.coverageBit ?? 0xffffffff) <= 0xffffffff
-    );
+    const cells = props.grid.width * props.grid.height;
+    validateViewLength(this.id, 'terrain', props.terrain, cells);
+    validateViewLength(this.id, 'coverage', props.coverage, cells);
+    validateViewLength(this.id, 'heights', props.heights, props.positions.length);
+    validateViewLength(this.id, 'status', props.status, props.positions.length);
+    validateCapacity(this.id, 'coverageBit', props.coverageBit ?? 0xffffffff);
   }
-  getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {positions, grid, terrain, coverage, heights, status, interpolation} = this.props;
     const supported = `(readCoverage(sampleIndex)&${this.props.coverageBit ?? 0xffffffff}u)!=0u && abs(readTerrain(sampleIndex))<=3.402823e38`;
-    let sample = `if ((readCoverage(cellIndex) & ${this.props.coverageBit ?? 0xffffffff}u) == 0u || !(abs(readTerrain(cellIndex)) <= 3.402823e38)) { writeStatus(index, 2u); return; }
+    let sample = `if ((readCoverage(cellIndex) & ${this.props.coverageBit ?? 0xffffffff}u) == 0u || !(abs(readTerrain(cellIndex)) <= 3.402823e38)) { writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN}u); return; }
 elevation = readTerrain(cellIndex);`;
     if (interpolation?.method === 'bilinear')
       sample = `
@@ -177,7 +236,7 @@ for(var vertical=0;vertical<2;vertical++){for(var horizontal=0;horizontal<2;hori
  let sampleIndex=u32(location.y)*${grid.width}u+u32(location.x);
  if(!(${supported})){valid=false;continue;}elevation+=weight*readTerrain(sampleIndex);
 }}
-if(!valid){writeStatus(index,2u);return;}`;
+if(!valid){writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN}u);return;}`;
     if (interpolation?.method === 'idw') {
       const reach = Math.ceil(interpolation.radius / grid.cellSize) + 1;
       sample = `
@@ -199,7 +258,7 @@ for(var row=max(0,center.y-${reach});row<=min(${grid.height - 1},center.y+${reac
   totalWeight=combinedWeight;
  }}
 let valid=exact||(support>=${interpolation.minimumSupport ?? 1}u&&totalWeight>0.0);
-if(!exact&&totalWeight>0.0){elevation=meanElevation;}if(!valid){writeStatus(index,2u);return;}`;
+if(!exact&&totalWeight>0.0){elevation=meanElevation;}if(!valid){writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN}u);return;}`;
     }
     return getPointCloudKernelNodes(graph, {
       id: this.id,
@@ -209,13 +268,13 @@ if(!exact&&totalWeight>0.0){elevation=meanElevation;}if(!valid){writeStatus(inde
       body: `let position = readPositions(index);
 ${getPointCloudCellSource(grid)}
 writeHeights(index, 0.0);
-if (!inside || !all(abs(position) <= vec3f(3.402823e38))) { writeStatus(index, 1u); return; }
+if (!inside || !all(abs(position) <= vec3f(3.402823e38))) { writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_INVALID_POINT}u); return; }
 var elevation=0.0;
 ${sample}
 let height=position.z-elevation;
 // Finite observations can still overflow interpolation or the final signed difference.
-if(any((bitcast<vec2u>(vec2f(elevation,height))&vec2u(0x7f800000u))==vec2u(0x7f800000u))){writeStatus(index,3u);return;}
-writeHeights(index,height);writeStatus(index,0u);`
+if(any((bitcast<vec2u>(vec2f(elevation,height))&vec2u(0x7f800000u))==vec2u(0x7f800000u))){writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_NONFINITE}u);return;}
+writeHeights(index,height);writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_VALID}u);`
     });
   }
 }

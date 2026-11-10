@@ -180,3 +180,29 @@ it('linear referencing selects planar or great-circle through spatialContext', (
     expect(construct).toThrow();
   }
 });
+
+it('GPULinearReferencing writes requiredCount through a final copy node, with or without candidateCount', () => {
+  for (const coordinateSpace of ['planar', 'longitude-latitude'] as const) {
+    for (const withCandidateCount of [false, true]) {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice());
+      const requiredCount = view(graph, 'uint32', 1);
+      const nodes = new GPULinearReferencing(
+        createReferencingProps(graph, {
+          spatialContext:
+            coordinateSpace === 'planar'
+              ? undefined
+              : {coordinateSpace, metric: 'great-circle', units: 'meters'},
+          output: {
+            measures: view(graph, 'float32', 8),
+            status: {
+              overflow: view(graph, 'uint32', 1),
+              requiredCount,
+              ...(withCandidateCount ? {candidateCount: view(graph, 'uint32', 1)} : {})
+            }
+          }
+        })
+      ).getCommandNodes(graph);
+      expect(nodes[nodes.length - 1].id).toMatch(/-required-count$/);
+    }
+  }
+});

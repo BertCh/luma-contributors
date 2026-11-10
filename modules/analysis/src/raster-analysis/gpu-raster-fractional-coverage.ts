@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGraphOutputViews} from '../analysis-core/kernels/gpu-contributor-utils';
-import {assert} from '@luma.gl/core';
+import {
+  getGraphOutputViews,
+  validateCapacity,
+  validateMaximumCount,
+  validateRequirement
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -17,6 +21,7 @@ import {
   GPUPolygonTriangulation,
   getPolygonTriangulationIndexCount
 } from '../analysis-core/polygon-triangulation/gpu-polygon-triangulation';
+import {GPUCompaction} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {getRasterBandViews, getRasterBufferBandNodes} from './raster-band-utils';
 import {
@@ -24,6 +29,9 @@ import {
   validateRasterExpansionGraph,
   requireRasterLength
 } from './raster-expansion-utils';
+
+/** Largest dense zone x cell candidate grid per invocation; bounds the coverage and compaction scratch. */
+const MAXIMUM_CANDIDATE_PAIRS = 4194304;
 
 export type GPURasterFractionalCoverageProps = {
   id?: string;
@@ -66,20 +74,25 @@ export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
       getGraphOutputViews(props.output)
     );
     const zones = props.zones.featureOffsets.length - 1;
-    assert(count * zones <= 4194304);
-    assert(
+    validateMaximumCount(this.id, 'zones times grid cells', count * zones, MAXIMUM_CANDIDATE_PAIRS);
+    validateRequirement(
+      this.id,
       props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3] !==
-        0
+        0,
+      'grid.affine must be invertible (nonzero determinant)'
     );
-    requireRasterLength(props.output.cellIds, props.output.zoneIds.length);
-    requireRasterLength(props.output.fractions, props.output.zoneIds.length);
-    requireRasterLength(props.output.zoneValidity, zones);
-    for (const view of [
-      props.output.status.count,
+    const capacity = props.output.zoneIds.length;
+    requireRasterLength(props.output.cellIds, capacity, this.id, 'output.cellIds');
+    requireRasterLength(props.output.fractions, capacity, this.id, 'output.fractions');
+    requireRasterLength(props.output.zoneValidity, zones, this.id, 'output.zoneValidity');
+    requireRasterLength(props.output.status.count, 1, this.id, 'output.status.count');
+    requireRasterLength(
       props.output.status.requiredCount,
-      props.output.status.overflow
-    ])
-      requireRasterLength(view, 1);
+      1,
+      this.id,
+      'output.status.requiredCount'
+    );
+    requireRasterLength(props.output.status.overflow, 1, this.id, 'output.status.overflow');
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -111,6 +124,21 @@ export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
     );
     const valid = createTransientView(graph, `${id}-valid`, 'uint32', polygonCount);
     const coverage = createTransientView(graph, `${id}-coverage`, 'float32', cellCount * zoneCount);
+    // Dense pair identifiers, selection flags, and the compacted pairs (all zone x cell long).
+    const pairIds = createTransientView(graph, `${id}-pair-ids`, 'uint32', cellCount * zoneCount);
+    const pairFlags = createTransientView(
+      graph,
+      `${id}-pair-flags`,
+      'uint32',
+      cellCount * zoneCount
+    );
+    const compactPairs = createTransientView(
+      graph,
+      `${id}-compact-pairs`,
+      'uint32',
+      cellCount * zoneCount
+    );
+    const requiredCount = createTransientView(graph, `${id}-required-total`, 'uint32', 1);
     const determinant = grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3];
     return [
       ...new GPUPolygonTriangulation({
@@ -148,21 +176,77 @@ for(var polygon=features[featuresOffset+zone];polygon<features[featuresOffset+zo
  }
 }coverage[coverageOffset+index]=select(-1.0,min(area,1.0),complete);`
       }),
+      // Parallel stable compaction of the positive-coverage pairs of the dense zone x cell grid.
+      // Dense pair indices ascend zone-major and cell-minor, so the order matches the former
+      // serial walk exactly.
       createWGSLKernelNode(graph, {
-        id: `${id}-compact`,
+        id: `${id}-flag`,
         operation: 'GPURasterFractionalCoverage',
-        invocationCount: 1,
+        variant: 'compaction-flags',
+        invocationCount: cellCount * zoneCount,
         bindings: [
           {name: 'coverage', view: coverage, type: 'f32', access: 'read'},
+          {name: 'pairIds', view: pairIds, type: 'u32', access: 'read_write'},
+          {name: 'flags', view: pairFlags, type: 'u32', access: 'read_write'}
+        ],
+        // Incomplete zones carry coverage -1 and NaN is kept, as in a "fraction <= 0 is skipped" walk.
+        body: `pairIds[pairIdsOffset + index] = index;
+  flags[flagsOffset + index] = u32(!(coverage[coverageOffset + index] <= 0.0));`
+      }),
+      ...new GPUCompaction({
+        id: `${id}-compaction`,
+        input: pairIds,
+        flags: pairFlags,
+        output: compactPairs,
+        count: requiredCount
+      }).getCommandNodes(graph),
+      createWGSLKernelNode(graph, {
+        id: `${id}-publish`,
+        operation: 'GPURasterFractionalCoverage',
+        variant: 'publish-tuples',
+        invocationCount: Math.max(output.zoneIds.length, 1),
+        bindings: [
+          {name: 'coverage', view: coverage, type: 'f32', access: 'read'},
+          {name: 'compactPairs', view: compactPairs, type: 'u32', access: 'read'},
+          {name: 'required', view: requiredCount, type: 'u32', access: 'read'},
           {name: 'zoneIds', view: output.zoneIds, type: 'u32', access: 'read_write'},
           {name: 'cellIds', view: output.cellIds, type: 'u32', access: 'read_write'},
-          {name: 'fractions', view: output.fractions, type: 'f32', access: 'read_write'},
-          {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
-          {name: 'required', view: output.status.requiredCount, type: 'u32', access: 'read_write'},
-          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          {name: 'fractions', view: output.fractions, type: 'f32', access: 'read_write'}
+        ],
+        body: `if (index >= required[requiredOffset]) { return; }
+  let pair = compactPairs[compactPairsOffset + index];
+  zoneIds[zoneIdsOffset + index] = pair / ${cellCount}u;
+  cellIds[cellIdsOffset + index] = pair % ${cellCount}u;
+  fractions[fractionsOffset + index] = coverage[coverageOffset + pair];`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-zone-validity`,
+        operation: 'GPURasterFractionalCoverage',
+        variant: 'zone-validity',
+        invocationCount: Math.max(zoneCount, 1),
+        bindings: [
+          {name: 'coverage', view: coverage, type: 'f32', access: 'read'},
           {name: 'zoneValidity', view: output.zoneValidity, type: 'u32', access: 'read_write'}
         ],
-        body: `var total=0u;for(var zone=0u;zone<${zoneCount}u;zone++){zoneValidity[zoneValidityOffset+zone]=u32(coverage[coverageOffset+zone*${cellCount}u]>=0.0);for(var cell=0u;cell<${cellCount}u;cell++){let fraction=coverage[coverageOffset+zone*${cellCount}u+cell];if(fraction<=0.0){continue;}if(total<${output.zoneIds.length}u){zoneIds[zoneIdsOffset+total]=zone;cellIds[cellIdsOffset+total]=cell;fractions[fractionsOffset+total]=fraction;}total++;}}count[countOffset]=min(total,${output.zoneIds.length}u);required[requiredOffset]=total;overflow[overflowOffset]=u32(total>${output.zoneIds.length}u);`
+        // A zone is valid when its first cell was not marked incomplete (coverage -1).
+        body: `if (index >= ${zoneCount}u) { return; }
+  zoneValidity[zoneValidityOffset + index] = u32(coverage[coverageOffset + index * ${cellCount}u] >= 0.0);`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-status`,
+        operation: 'GPURasterFractionalCoverage',
+        variant: 'publish-status',
+        invocationCount: 1,
+        bindings: [
+          {name: 'total', view: requiredCount, type: 'u32', access: 'read'},
+          {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
+          {name: 'required', view: output.status.requiredCount, type: 'u32', access: 'read_write'},
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
+        ],
+        body: `let capacity = ${output.zoneIds.length}u;
+  count[countOffset] = min(total[totalOffset], capacity);
+  required[requiredOffset] = total[totalOffset];
+  overflow[overflowOffset] = u32(total[totalOffset] > capacity);`
       })
     ];
   }
@@ -201,11 +285,28 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
       [...getRasterBandViews(props.input), ...getGraphOutputViews(props.coverage)],
       getGraphOutputViews(props.output)
     );
-    assert(Number.isInteger(props.zoneCount) && props.zoneCount >= 0);
-    getGraphOutputViews(props.output).forEach(view => requireRasterLength(view, props.zoneCount));
-    requireRasterLength(props.coverage.zoneValidity, props.zoneCount);
-    requireRasterLength(props.coverage.cellIds, props.coverage.zoneIds.length);
-    requireRasterLength(props.coverage.fractions, props.coverage.zoneIds.length);
+    validateCapacity(this.id, 'zoneCount', props.zoneCount, 0);
+    for (const [name, view] of Object.entries(props.output)) {
+      requireRasterLength(view, props.zoneCount, this.id, `output.${name}`);
+    }
+    requireRasterLength(
+      props.coverage.zoneValidity,
+      props.zoneCount,
+      this.id,
+      'coverage.zoneValidity'
+    );
+    requireRasterLength(
+      props.coverage.cellIds,
+      props.coverage.zoneIds.length,
+      this.id,
+      'coverage.cellIds'
+    );
+    requireRasterLength(
+      props.coverage.fractions,
+      props.coverage.zoneIds.length,
+      this.id,
+      'coverage.fractions'
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>

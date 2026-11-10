@@ -165,15 +165,17 @@ it('cross and space-time variograms retain negative covariance and exact boundar
       output: {semivariances: cross.view, pairCounts: counts.view, status: status.view}
     })
   );
-  const temporal = output('float32', 9);
-  const temporalCounts = output('uint32', 9);
-  const temporalStatus = output('uint32', 9);
+  const temporal = output('float32', 16);
+  const temporalCounts = output('uint32', 16);
+  const temporalStatus = output('uint32', 16);
   graph.add(
     new GPUSpaceTimeVariogram({
       positions,
       values,
       secondValues,
-      parameters,
+      // Bounds cover the three stations; maximum distance 3 and maximum time lag 3.
+      parameters: input('float32', [0, 0, 2, 0, 3, 3, 0, 0]),
+      gridSize: [2, 2],
       lagCount: 3,
       times: input('float32', [0, 1, 3]),
       temporalLagCount: 3,
@@ -187,9 +189,29 @@ it('cross and space-time variograms retain negative covariance and exact boundar
   context.run();
   close(await readFloat32(cross.buffer, 3), [NaN, -2.5, -1]);
   expect(Array.from(await readUint32(counts.buffer, 3))).toEqual([0, 2, 1]);
-  close(await readFloat32(temporal.buffer, 9), [NaN, NaN, NaN, NaN, -4, -1, NaN, NaN, -1]);
-  expect(Array.from(await readUint32(temporalCounts.buffer, 9))).toEqual([
-    0, 0, 0, 0, 1, 1, 0, 0, 1
+  // The former 3 x 3 grid had its occupied bins at 4, 5 and 8 (spatial class s, temporal class t,
+  // index s * 3 + t). With a zero-lag class on each axis, bin (s, t) moves to (s + 1, t + 1) of a
+  // 4 x 4 grid: indices 10, 11 and 15. The values -4, -1 and -1 are unchanged.
+  close(await readFloat32(temporal.buffer, 16), [
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    NaN,
+    -4,
+    -1,
+    NaN,
+    NaN,
+    NaN,
+    -1
+  ]);
+  expect(Array.from(await readUint32(temporalCounts.buffer, 16))).toEqual([
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1
   ]);
   context.destroy();
 });
@@ -480,7 +502,7 @@ it('statistical expansion matches independent esda, mgwr, statsmodels and spreg 
     })
   );
   const cross = output('float32', 3);
-  const spaceTime = output('float32', 9);
+  const spaceTime = output('float32', 16);
   const pairInputs = {
     positions,
     values: response,
@@ -502,11 +524,14 @@ it('statistical expansion matches independent esda, mgwr, statsmodels and spreg 
     new GPUSpaceTimeVariogram({
       ...pairInputs,
       times: input('float32', reference.pairs.times),
+      // The 4 x 4 lattice spans [0, 3]; the maximum lags are the fixture's [3.3, 4.5].
+      parameters: input('float32', [0, 0, 3, 3, ...reference.pairs.parameters, 0, 0]),
+      gridSize: [4, 4],
       temporalLagCount: 3,
       output: {
         semivariances: spaceTime.view,
-        pairCounts: output('uint32', 9).view,
-        status: output('uint32', 9).view
+        pairCounts: output('uint32', 16).view,
+        status: output('uint32', 16).view
       }
     })
   );
@@ -661,10 +686,13 @@ it('statistical expansion matches independent esda, mgwr, statsmodels and spreg 
     await readFloat32(cross.buffer, 3),
     reference.pairs.cross.map(value => value ?? NaN)
   );
-  close(
-    await readFloat32(spaceTime.buffer, 9),
-    reference.pairs.spaceTime.map(value => value ?? NaN)
-  );
+  // The fixture is in the former 3 x 3 layout. No two stations coincide and no two times are
+  // equal, so the zero-lag classes are empty and bin (s, t) is bin (s + 1, t + 1) of the 4 x 4 grid.
+  const expectedSpaceTime = new Array<number>(16).fill(NaN);
+  reference.pairs.spaceTime.forEach((value, bin) => {
+    expectedSpaceTime[(Math.floor(bin / 3) + 1) * 4 + (bin % 3) + 1] = value ?? NaN;
+  });
+  close(await readFloat32(spaceTime.buffer, 16), expectedSpaceTime);
   close(
     await readFloat32(marked.buffer, 12),
     reference.marked.statistics,

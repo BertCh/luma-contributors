@@ -1,7 +1,6 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -11,11 +10,37 @@ import type {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES,
+  GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES,
+  GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+  GPU_SPHERICAL_MAXIMUM_TOLERANCE,
+  GPU_SPHERICAL_MINIMUM_TOLERANCE,
+  GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT,
+  validateAngularTolerance
+} from './spherical-limits';
+
+/** Status of one containment row: the value of `output.status`. */
+export const GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_VALID = 0;
+/** Status: invalid or unsupported polygon, polygon index or query (nonconvex, non-unit, too few or too many vertices). */
+export const GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_INVALID = 1;
+/** Status: the query lies within `tolerance` of the polygon boundary; `contains` follows `boundary`. */
+export const GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_BOUNDARY = 2;
 export type GPUSphericalConvexContainsProps = {
   id?: string;
+  /**
+   * Coordinate space of the unit vectors: longitude-latitude (their embedding on the sphere) with
+   * great-circle edges. Planar contexts are rejected. Defaults to longitude-latitude, no metric.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Unit xyz vertices, CCW minor arcs; each polygon is convex and lies in an open hemisphere. */
   positions: GraphDataView<'float32x3'>;
   offsets: GraphDataView<'uint32'>;
@@ -28,30 +53,48 @@ export type GPUSphericalConvexContainsProps = {
   output: {
     /** 0 false, 1 true; invalid rows must be interpreted using status. */
     contains: GraphDataView<'uint32'>;
-    /** 0 valid, 1 invalid/unsupported polygon or query, 2 boundary tolerance band. */
+    /**
+     * Per query: {@link GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_VALID} (0),
+     * {@link GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_INVALID} (1, invalid or unsupported polygon or
+     * query) or {@link GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_BOUNDARY} (2, boundary tolerance band).
+     */
     status: GraphDataView<'uint32'>;
   };
 };
 /** Convex spherical containment with explicit boundary and complement semantics. */
 export class GPUSphericalConvexContains implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Validated coordinate space of the unit vectors. */
+  readonly spatialContext: GPUSpatialContext;
   constructor(readonly props: GPUSphericalConvexContainsProps) {
     this.id = props.id ?? 'spherical-convex-contains';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+      GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
+    );
     for (const view of [props.positions, props.queries])
       validatePackedView(view, ['float32x3'], this.id);
     for (const view of [props.offsets, props.polygonIndices, ...Object.values(props.output)])
       validatePackedView(view, ['uint32'], this.id);
     // One polygon selector and output per query; polygons contain at most 32 vertices.
-    assert(
-      props.offsets.length >= 1 &&
-        props.polygonIndices.length === props.queries.length &&
-        props.output.contains.length === props.queries.length &&
-        props.output.status.length === props.queries.length
+    validateRequirement(this.id, props.offsets.length >= 1, 'offsets must hold at least one entry');
+    validateRequirement(
+      this.id,
+      props.polygonIndices.length === props.queries.length,
+      'polygonIndices must hold one entry per query'
     );
-    assert(
-      Number.isFinite(props.tolerance ?? 1e-6) &&
-        (props.tolerance ?? 1e-6) >= 1e-7 &&
-        (props.tolerance ?? 1e-6) <= 1e-2
+    validateRequirement(
+      this.id,
+      props.output.contains.length === props.queries.length &&
+        props.output.status.length === props.queries.length,
+      'output.contains and output.status must hold one entry per query'
+    );
+    validateAngularTolerance(
+      this.id,
+      props.tolerance ?? 1e-6,
+      GPU_SPHERICAL_MINIMUM_TOLERANCE,
+      GPU_SPHERICAL_MAXIMUM_TOLERANCE
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
@@ -93,7 +136,7 @@ let polygon = polygonIndices[polygonIndicesOffset + index]; var failure = 0u; va
 if (!containsUnit(point) || polygon >= ${props.offsets.length - 1}u) { failure = 1u; }
 if (failure == 0u) {
   let begin = offsets[offsetsOffset + polygon]; let end = offsets[offsetsOffset + polygon + 1u];
-  if (begin > end || end > ${props.positions.length}u || end - begin < 3u || end - begin > 32u) { failure = 1u; }
+  if (begin > end || end > ${props.positions.length}u || end - begin < ${GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES}u || end - begin > ${GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES}u) { failure = 1u; }
   if (failure == 0u) {
     var center = vec3f(0.0);
     for (var vertex = begin; vertex < end; vertex++) { let position = containsPosition(vertex); if (!containsUnit(position)) { failure = 1u; } center += position; }

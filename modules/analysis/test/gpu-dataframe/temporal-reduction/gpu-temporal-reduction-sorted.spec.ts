@@ -280,7 +280,13 @@ it('GPUTemporalReduction sorted equals the unsorted path (Int64 word times)', as
       [2n ** 40n, 1n],
       [5000n, 10n],
       [-(2n ** 63n), 0xffffffffn],
-      [0n, 1n]
+      [0n, 1n],
+      // Widths of 2^32 and more, the 64-bit division path.
+      [-(2n ** 40n), 2n ** 32n],
+      [-(2n ** 63n), 2n ** 40n],
+      [-(2n ** 63n), 2n ** 62n],
+      [0n, 2n ** 63n],
+      [-5000n, 3_600_000_000_000n]
     ]);
   }
 });

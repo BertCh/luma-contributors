@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
+import {splitTimeWords} from '../../dataframe-analysis/time-window-filter/time-words';
 import {
   createLocalFrameBasis,
   eastNorthUpBasis,
@@ -62,6 +63,7 @@ export function prepareGPUTrajectoryObservations(props: GPUTrajectoryObservation
   );
   const positions = new Float32Array(props.longitudeLatitude.length);
   const times = new Float32Array(props.timestamps.length);
+  const timeWords = new Uint32Array(props.timestamps.length * 2);
   for (let row = 0; row < times.length; row++) {
     const inputLongitude = props.longitudeLatitude[row * 2];
     const inputLatitude = props.longitudeLatitude[row * 2 + 1];
@@ -88,10 +90,16 @@ export function prepareGPUTrajectoryObservations(props: GPUTrajectoryObservation
       Number(delta / props.unitsPerSecond) +
       Number(delta % props.unitsPerSecond) / Number(props.unitsPerSecond);
     assert(Number.isFinite(times[row]));
+    // Word rows keep every timestamp exact; `times` is only precise within weeks of the epoch.
+    const words = splitTimeWords(props.timestamps[row]);
+    timeWords[row * 2] = words.low;
+    timeWords[row * 2 + 1] = words.high;
   }
   return {
     positions,
     times,
+    /** Absolute Int64 `(low, high)` timestamp words, two per row: a `uint32x2` Kalman `times` column. */
+    timeWords,
     projection: {
       kind: 'wgs84-local-east-north' as const,
       origin: props.origin,

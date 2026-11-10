@@ -29,6 +29,8 @@ export type LineLineReadback = {
   overflow: number;
   requiredCount: number;
   lineCount: number;
+  /** Present only when the fixture was built with `withApproximation`. */
+  approximation: number;
   sourceLineIndices: number[];
   sourceRows: number[];
   measures: number[];
@@ -60,6 +62,8 @@ export function createLineLineFixture(
     capacity: number;
     /** Whether to request the per-vertex `sourceRows` and `measures` outputs. Default true. */
     withVertexColumns?: boolean;
+    /** Whether to request `status.approximation` (only segmentize and arcs write it). Default false. */
+    withApproximation?: boolean;
     lineCapacity: number;
     createContributor: (
       inputs: Record<string, GraphDataView>,
@@ -96,6 +100,7 @@ export function createLineLineFixture(
     overflow: output('overflow', 1),
     requiredCount: output('total', 1),
     lineCount: output('line-count', 1),
+    approximation: output('approximation', 1),
     sourceLineIndices: output('source-line-indexs', lineCapacity),
     sourceRows: output('source-rows', capacity),
     measures: output('measures', capacity)
@@ -119,7 +124,18 @@ export function createLineLineFixture(
         count: importGraphBuffer(graph, 'o-count', outputs.count, 'uint32', 1),
         overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
         requiredCount: importGraphBuffer(graph, 'o-total', outputs.requiredCount, 'uint32', 1),
-        lineCount: importGraphBuffer(graph, 'o-line-count', outputs.lineCount, 'uint32', 1)
+        lineCount: importGraphBuffer(graph, 'o-line-count', outputs.lineCount, 'uint32', 1),
+        ...(options.withApproximation
+          ? {
+              approximation: importGraphBuffer(
+                graph,
+                'o-approximation',
+                outputs.approximation,
+                'uint32',
+                1
+              )
+            }
+          : {})
       },
       sourceLineIndices: importGraphBuffer(
         graph,
@@ -160,6 +176,7 @@ export function createLineLineFixture(
         overflow: (await readUint32(outputs.overflow, 1))[0],
         requiredCount: (await readUint32(outputs.requiredCount, 1))[0],
         lineCount: (await readUint32(outputs.lineCount, 1))[0],
+        approximation: (await readUint32(outputs.approximation, 1))[0],
         sourceLineIndices: await readUint32(outputs.sourceLineIndices, lineCapacity),
         sourceRows: (await readUint32(outputs.sourceRows, capacity)).slice(0, count),
         measures: (await readFloat32(outputs.measures, capacity)).slice(0, count)

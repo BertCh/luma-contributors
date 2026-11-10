@@ -101,7 +101,8 @@ export function addExposureByZoneRecipe<Parameters>(
   const totals = getOrCreateView(graph, `${id}-totals`, 'float32', count);
   const observed = getOrCreateView(graph, `${id}-observed`, 'float32', count);
   const exposed = getOrCreateView(graph, `${id}-exposed`, 'float32', count);
-  graph.add(
+  builder.addGlue(
+    'weights',
     createWGSLKernelNode(graph, {
       id: `${id}-weights`,
       operation: id,
@@ -168,7 +169,8 @@ exposed[exposedOffset + index] = select(missing, select(0.0, weight, value >= th
     );
     stages.push({stage: `${name}-population`, status: {overflow}});
   }
-  graph.add(
+  builder.addGlue(
+    'shares',
     createWGSLKernelNode(graph, {
       id: `${id}-shares`,
       operation: id,
@@ -249,7 +251,8 @@ export function addRegionalRasterChangeRecipe<Parameters>(
   const validAreas = getOrCreateView(graph, `${id}-valid-areas`, 'float32', count);
   const changedAreas = getOrCreateView(graph, `${id}-changed-areas`, 'float32', count);
   const totalAreas = getOrCreateView(graph, `${id}-total-areas`, 'float32', count);
-  graph.add(
+  builder.addGlue(
+    'area',
     createWGSLKernelNode(graph, {
       id: `${id}-area`,
       operation: id,
@@ -311,7 +314,8 @@ changed[changedOffset + index] = select(missing, select(0.0, area, abs(delta) >=
   stages.push({stage: 'change-summary', status: {overflow: summaryOverflow}});
   const coverage = getOrCreateView(graph, `${id}-coverage`, 'float32', props.zoneCount);
   const thresholdInvalidCount = getOrCreateView(graph, `${id}-threshold-invalid`, 'uint32', 1);
-  graph.add(
+  builder.addGlue(
+    'coverage',
     createWGSLKernelNode(graph, {
       id: `${id}-coverage`,
       operation: id,

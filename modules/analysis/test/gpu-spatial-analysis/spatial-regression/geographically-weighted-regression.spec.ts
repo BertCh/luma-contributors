@@ -539,3 +539,37 @@ it('GPUGeographicallyWeightedRegression handles 4096 locations with an adaptive 
     fixture.destroy();
   }
 }, 60000);
+
+it('GPUGeographicallyWeightedRegression flags a nearly collinear local design as singular', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const settings: GPUGeographicallyWeightedRegressionSettings = {
+    kernel: 'gaussian',
+    bandwidths: [20]
+  };
+  const wellConditioned = createScene(10, 5, () => [1, 2, -1], 0.1);
+  // The second predictor equals the first plus uniform noise of standard deviation 5e-4, so the
+  // last pivot of the unit-diagonal Cholesky factor is about 4e-4, below the OLS limit of 1e-3
+  // but far above float32 rounding: every pivot is positive, which the old test accepted.
+  const random = createRandom(11);
+  const collinear: Scene = {
+    ...wellConditioned,
+    predictors: Float32Array.from(wellConditioned.predictors)
+  };
+  for (let row = 0; row < collinear.response.length; row++) {
+    collinear.predictors[2 * row + 1] = Math.fround(
+      collinear.predictors[2 * row] + 5e-4 * Math.sqrt(12) * (random() - 0.5)
+    );
+  }
+  const goodFixture = createFixture(device, wellConditioned);
+  const badFixture = createFixture(device, collinear);
+  try {
+    const good = await goodFixture.run(settings);
+    expect(good.localStatus.every(status => status === STATUS.OK)).toBe(true);
+    const bad = await badFixture.run(settings);
+    expect(bad.localStatus.every(status => status === STATUS.SINGULAR)).toBe(true);
+  } finally {
+    goodFixture.destroy();
+    badFixture.destroy();
+  }
+});

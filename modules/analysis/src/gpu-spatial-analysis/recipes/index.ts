@@ -122,3 +122,12 @@ export * from './dasymetric-redistribution-recipe';
 
 export * from './quantile-lisa-recipe';
 export * from './rate-mapping-recipes';
+export {
+  addContiguityOrderCorrelogramRecipe,
+  GPU_CONTIGUITY_ORDER_CORRELOGRAM_COLUMNS
+} from './contiguity-order-correlogram-recipe';
+export type {
+  GPUContiguityOrderCorrelogramRecipeOutputs,
+  GPUContiguityOrderCorrelogramRecipeProps,
+  GPUContiguityOrderCorrelogramRecipeResult
+} from './contiguity-order-correlogram-recipe';

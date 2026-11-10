@@ -98,7 +98,7 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
         hullVertexIndices: hullIndices.view
       }
     });
-    expect(recipe.contributors.length).toBe(4);
+    expect(recipe.contributors.length).toBe(5);
     expect(recipe.spatialContext).toEqual({
       coordinateSpace: 'planar',
       metric: 'native',

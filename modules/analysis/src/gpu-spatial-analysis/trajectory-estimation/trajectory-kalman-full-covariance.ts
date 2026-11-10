@@ -5,13 +5,43 @@
 import type {GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import type {GPUTrajectoryKalmanProps} from './gpu-trajectory-kalman';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {TIME_WORDS_WGSL} from '../../dataframe-analysis/time-window-filter/time-words';
+import {getEffectiveMaximumGapWGSL} from '../trajectory-analysis/trajectory-common';
+import type {GPUTrajectoryKalmanResolvedProps} from './gpu-trajectory-kalman';
+
+/** Filter/smoother time helpers: the `times` binding type, WGSL and the `delta` scaling. @internal */
+export function getKalmanTimeSource(props: GPUTrajectoryKalmanResolvedProps): {
+  bindingType: 'f32' | 'u32';
+  source: string;
+  deltaExpression: string;
+} {
+  const timeUnitsPerSecond = props.timeUnitsPerSecond ?? 1;
+  const deltaExpression =
+    timeUnitsPerSecond === 1 ? 'elapsed' : `elapsed / ${getWGSLFloatLiteral(timeUnitsPerSecond)}`;
+  if (props.times.format !== 'uint32x2') {
+    return {
+      bindingType: 'f32',
+      source: `fn isRowTimeFinite(row: u32) -> bool { return finite(times[timesOffset + row]); }
+fn rowElapsed(row: u32, previous: u32) -> f32 { return times[timesOffset + row] - times[timesOffset + previous]; }`,
+      deltaExpression
+    };
+  }
+  return {
+    bindingType: 'u32',
+    source: `${TIME_WORDS_WGSL}
+fn getTimeWords(row: u32) -> vec2<u32> { return vec2<u32>(times[timesOffset + 2u * row], times[timesOffset + 2u * row + 1u]); }
+fn isRowTimeFinite(row: u32) -> bool { _ = row; return true; }
+fn rowElapsed(row: u32, previous: u32) -> f32 { return timeWordsDifferenceToF32(getTimeWords(row), getTimeWords(previous)); }`,
+    deltaExpression
+  };
+}
 
 /** Full correlated-axis covariance, with Joseph updates and pivoted backward covariance solves. */
 export function createFullCovarianceKalmanNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  props: GPUTrajectoryKalmanProps
+  props: GPUTrajectoryKalmanResolvedProps
 ): GPUCommandNode<Parameters>[] {
   const declarations = `${GET_NAN_WGSL}
 const IDENTITY = mat4x4<f32>(vec4<f32>(1.0,0.0,0.0,0.0),vec4<f32>(0.0,1.0,0.0,0.0),vec4<f32>(0.0,0.0,1.0,0.0),vec4<f32>(0.0,0.0,0.0,1.0));
@@ -59,16 +89,18 @@ fn inverse4(value: mat4x4<f32>) -> InverseResult {
     return `fn load${capitalized}(row: u32) -> ${type} { let base = ${name}Offset + row * ${width}u; return ${type}(${Array.from({length: width}, (_, component) => `${name}[base + ${component}u]`).join(',')}); }
 ${writable ? `fn store${capitalized}(row: u32, value: ${type}) { let base = ${name}Offset + row * ${width}u; ${Array.from({length: width}, (_, component) => `${name}[base + ${component}u] = value[${matrix ? `${Math.floor(component / 4)}][${component % 4}` : component}];`).join(' ')} }` : ''}`;
   };
+  const time = getKalmanTimeSource(props);
+  const wordSuffix = time.bindingType === 'u32' ? '-words' : '';
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-filter`,
       operation: 'GPUTrajectoryKalman',
-      variant: 'full-covariance-filter',
+      variant: `full-covariance-filter${wordSuffix}`,
       invocationCount: props.offsets.length - 1,
       workgroupSize: 32,
       bindings: [
         {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-        {name: 'times', view: props.times, type: 'f32', access: 'read'},
+        {name: 'times', view: props.times, type: time.bindingType, access: 'read'},
         {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
         {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
         {name: 'state', view: props.output.filteredState, type: 'f32', access: 'read_write'},
@@ -81,16 +113,19 @@ ${writable ? `fn store${capitalized}(row: u32, value: ${type}) { let base = ${na
         {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
       ],
       declarations:
-        declarations + accessors('state', false, true) + accessors('covariance', true, true),
+        declarations +
+        time.source +
+        accessors('state', false, true) +
+        accessors('covariance', true, true),
       body: `let start = min(offsets[offsetsOffset + index], ${props.positions.length}u); let end = min(offsets[offsetsOffset + index + 1u], ${props.positions.length}u);
-let noise = covariance2(0u); let measurement = covariance2(3u); let initialVelocity = covariance2(6u); let maximumGap = parameters[parametersOffset + 9u];
+let noise = covariance2(0u); let measurement = covariance2(3u); let initialVelocity = covariance2(6u); let maximumGap = ${getEffectiveMaximumGapWGSL('parameters[parametersOffset + 9u]')};
 let validParameters = validCovariance(noise, false) && validCovariance(measurement, true) && validCovariance(initialVelocity, false) && maximumGap > 0.0;
-var initialized = false; var estimate = vec4<f32>(0.0); var uncertainty = IDENTITY; var previousTime = 0.0;
+var initialized = false; var estimate = vec4<f32>(0.0); var uncertainty = IDENTITY; var previousRow = start;
 for (var row = start; row < end; row++) {
   let missing = getNaN(); storeState(row, vec4<f32>(missing)); storeCovariance(row, mat4x4<f32>(vec4<f32>(missing),vec4<f32>(missing),vec4<f32>(missing),vec4<f32>(missing)));
-  let time = times[timesOffset + row]; let delta = time - previousTime; let position = vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]); let measured = finite(position.x) && finite(position.y);
-  if (!validParameters || !finite(time) || (initialized && delta < 0.0)) { status[statusOffset + row] = 4u; initialized = false; continue; }
-  if (initialized && delta > maximumGap) { initialized = false; }
+  let elapsed = rowElapsed(row, previousRow); let delta = ${time.deltaExpression}; let position = vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]); let measured = finite(position.x) && finite(position.y);
+  if (!validParameters || !isRowTimeFinite(row) || (initialized && elapsed < 0.0)) { status[statusOffset + row] = 4u; initialized = false; continue; }
+  if (initialized && elapsed > maximumGap) { initialized = false; }
   var flags = 0u;
   if (!initialized) {
     if (!measured) { status[statusOffset + row] = 6u; continue; }
@@ -111,7 +146,7 @@ for (var row = start; row < end; row++) {
   var valid = true;
   for (var component = 0u; component < 4u; component++) { valid = valid && finite(estimate[component]); for (var column = 0u; column < 4u; column++) { valid = valid && finite(uncertainty[column][component]); } }
   if (!valid) { status[statusOffset + row] = 4u; initialized = false; continue; }
-  previousTime = time; storeState(row, estimate); storeCovariance(row, uncertainty); status[statusOffset + row] = flags;
+  previousRow = row; storeState(row, estimate); storeCovariance(row, uncertainty); status[statusOffset + row] = flags;
 }`
     })
   ];
@@ -120,11 +155,11 @@ for (var row = start; row < end; row++) {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-smooth`,
         operation: 'GPUTrajectoryKalman',
-        variant: 'full-covariance-smooth',
+        variant: `full-covariance-smooth${wordSuffix}`,
         invocationCount: props.offsets.length - 1,
         workgroupSize: 32,
         bindings: [
-          {name: 'times', view: props.times, type: 'f32', access: 'read'},
+          {name: 'times', view: props.times, type: time.bindingType, access: 'read'},
           {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'state', view: props.output.filteredState, type: 'f32', access: 'read'},
@@ -145,6 +180,7 @@ for (var row = start; row < end; row++) {
         ],
         declarations:
           declarations +
+          time.source +
           accessors('state', false, false) +
           accessors('covariance', true, false) +
           accessors('smoothedState', false, true) +
@@ -155,7 +191,7 @@ loop {
   if (row <= start) { break; } row--;
   let estimate = loadState(row); let uncertainty = loadCovariance(row); storeSmoothedState(row, estimate); storeSmoothedCovariance(row, uncertainty);
   if (row + 1u >= end || (status[statusOffset + row] & 4u) != 0u || (status[statusOffset + row + 1u] & 5u) != 0u) { continue; }
-  let delta = times[timesOffset + row + 1u] - times[timesOffset + row]; let prediction = transition(delta); let predicted = prediction * uncertainty * transpose(prediction) + processCovariance(delta); let inverse = inverse4(predicted);
+  let elapsed = rowElapsed(row + 1u, row); let delta = ${time.deltaExpression}; let prediction = transition(delta); let predicted = prediction * uncertainty * transpose(prediction) + processCovariance(delta); let inverse = inverse4(predicted);
   if (!inverse.valid) { status[statusOffset + row] |= 8u; continue; }
   let gain = uncertainty * transpose(prediction) * inverse.value;
   let correctedState = estimate + gain * (loadSmoothedState(row + 1u) - prediction * estimate);

@@ -4,3 +4,4 @@
 
 import './gpu-space-time-tests.spec';
 import './gpu-space-time-stopping.spec';
+import './gpu-space-time-statistics.spec';

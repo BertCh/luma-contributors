@@ -6,7 +6,7 @@
 Writes fixtures/statistics-global-autocorrelation.json next to this script, consumed (through
 test/gpu-spatial-analysis/global-spatial-statistics/global-spatial-statistics-reference.ts) by
 gpu-global-spatial-statistics.spec.ts and gpu-global-spatial-statistics.node.spec.ts. Run with
-    <venv>/bin/python -I modules/graph/test/oracles/statistics-global-autocorrelation.py
+    <venv>/bin/python -I modules/analysis/test/oracles/statistics-global-autocorrelation.py
 in a venv with numpy, scipy, esda and libpysal (versions are recorded in the fixture).
 
 Moran / Geary / General G scene (`reference`): 40 rows, two bumps plus U(0, 2.6) noise (seed 11),

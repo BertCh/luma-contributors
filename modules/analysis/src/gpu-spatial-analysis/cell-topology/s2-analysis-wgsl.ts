@@ -9,7 +9,12 @@ fn s2AnalysisVertex(cell: vec2u, slot: u32) -> vec3f {
   let surface = dggs_s2_ij_to_st(coordinate, dggs_s2_get_level(cell), offset);
   return normalize(dggs_s2_face_uv_to_xyz(dggs_s2_get_face(cell), dggs_s2_st_to_uv(surface)));
 }
-fn s2AnalysisAngle(first: vec3f, second: vec3f) -> f32 { return atan2(length(cross(first, second)), dot(first, second)); }
+// atan2 with a zero (or negative zero) second argument returns minus half pi on some GPU
+// compilers, which made a cell 90 degrees from a face-center query look like it touched it.
+fn s2AnalysisAngle(first: vec3f, second: vec3f) -> f32 {
+  let cosine = dot(first, second);
+  return select(atan2(length(cross(first, second)), cosine), 1.5707963267948966, cosine == 0.0);
+}
 fn s2AnalysisTriangle(first: vec3f, second: vec3f, third: vec3f) -> f32 {
   return 2.0 * atan2(abs(dot(first, cross(second - first, third - first))), 1.0 + dot(first, second) + dot(second, third) + dot(third, first));
 }

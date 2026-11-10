@@ -13,21 +13,70 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
+import {
+  getGPUGreatCircleRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
+import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {GPUTrackSimilarity} from './gpu-track-similarity';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  getTrackSimilarityGreatCircleBoundDeclarations,
+  getTrackSimilarityGreatCircleBoundStatements
+} from './track-similarity-search-great-circle-bounds';
+import {
+  getTrackSimilaritySearchBoundStatements,
+  TRACK_SIMILARITY_BOUND_DECLARATIONS,
+  type TrackSimilaritySearchBoundMetric
+} from './track-similarity-search-bounds';
 import {
   validatePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
+/** Spatial contexts of the search: the same as {@link GPUTrackSimilarity}. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 export type GPUTrackSimilaritySearchProps = {
   id?: string;
+  /**
+   * Coordinate space of both line sets, as in {@link GPUTrackSimilarityProps.spatialContext}:
+   * native planar (the default), or `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}` with `[longitude, latitude]` degrees, where `threshold` and `distance` are
+   * great-circle distances in the context's length unit. The endpoint bound (DTW, Frechet) and the
+   * possible-match bound (LCSS) use the haversine distance; the EDR bound is the vertex-count
+   * difference, the ERP bound the difference of the gap-distance sums, and Hausdorff and SSPD
+   * have no bound in this context (0), so every pair is evaluated.
+   */
+  spatialContext?: GPUSpatialContext;
   linesA: GPUPackedGeometryPort<GPULineGeometryPort>;
   linesB?: GPUPackedGeometryPort<GPULineGeometryPort>;
   pairA: GraphDataView<'uint32'>;
   pairB: GraphDataView<'uint32'>;
-  metric: 'dynamic-time-warping' | 'frechet' | 'longest-common-subsequence';
+  /**
+   * Measure searched. `hausdorff`, `edit-distance-on-real-sequence`,
+   * `edit-distance-with-real-penalty` and `symmetric-segment-path` are the measures of the same
+   * names in {@link GPUTrackSimilarity}; their lower bounds are in `output.lowerBound`.
+   */
+  metric:
+    | 'dynamic-time-warping'
+    | 'frechet'
+    | 'longest-common-subsequence'
+    | 'hausdorff'
+    | 'edit-distance-on-real-sequence'
+    | 'edit-distance-with-real-penalty'
+    | 'symmetric-segment-path';
+  /** Match distance of `edit-distance-on-real-sequence`, as in {@link GPUTrackSimilarityProps}. */
+  editDistanceTolerance?: number;
+  /** Gap point of `edit-distance-with-real-penalty`, as in {@link GPUTrackSimilarityProps}. */
+  editDistanceGapPoint?: readonly [number, number];
   /** Inclusive maximum distance, or minimum LCSS similarity in [0,1]. */
   threshold: GraphDataView<'float32'>;
   maximumFrechetVertexCount?: number;
@@ -60,7 +109,11 @@ export type GPUTrackSimilaritySearchProps = {
 /**
  * Batched planar threshold search composing the existing tiled dynamic programs. Endpoint
  * distance is an admissible lower bound for both discrete Frechet and sum-of-distances DTW,
- * including any band. LCSS uses a possible-match cardinality upper bound; evaluating it is O(n*m). Pruned pairs skip dynamic programming and have NaN distance, never zero.
+ * including any band. LCSS uses a possible-match cardinality upper bound; evaluating it is O(n*m).
+ * The other measures use `O(n + m)` bounds: Hausdorff and SSPD the distance of the vertices to the
+ * bounding box of the other track, EDR a count of the vertices that can match inside the box
+ * widened by the tolerance, ERP the difference of the two sums of gap distances (ERP is a metric).
+ * Pruned pairs skip the measure and have NaN distance, never zero.
  * Input pair IDs are preserved; explicit query batches bound scratch. No approximate pruning.
  */
 export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
@@ -68,9 +121,19 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
   readonly props: GPUTrackSimilaritySearchProps;
   readonly value: GraphDataView<'float32'>;
   readonly bound: GraphDataView<'float32'>;
+  /** Resolved coordinate context. */
+  readonly spatialContext: GPUSpatialContext;
+  /** Sphere radius of a great-circle context, `undefined` for planar. */
+  readonly sphereRadius: number | undefined;
   constructor(props: GPUTrackSimilaritySearchProps) {
     this.id = props.id ?? 'track-similarity-search';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
+    this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     const value =
       props.metric === 'longest-common-subsequence'
         ? props.output.similarity
@@ -138,9 +201,20 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, value, bound} = this;
+    const {id, props, value, bound, sphereRadius} = this;
     const subsequence = props.metric === 'longest-common-subsequence';
+    const isBoxBounded =
+      props.metric === 'hausdorff' ||
+      props.metric === 'edit-distance-on-real-sequence' ||
+      props.metric === 'edit-distance-with-real-penalty' ||
+      props.metric === 'symmetric-segment-path';
     const linesB = props.linesB ?? props.linesA;
+    const distanceExpression =
+      sphereRadius === undefined
+        ? 'sqrt(dot(loadA(rowA) - loadB(rowB), loadA(rowA) - loadB(rowB)))'
+        : 'pointDistance(loadA(rowA), loadB(rowB))';
+    // Hausdorff and SSPD have no dynamic program, so the shorter-track cap does not apply.
+    const isUncapped = props.metric === 'hausdorff' || props.metric === 'symmetric-segment-path';
     validateGraphViewsBelongToGraph(id, graph, [
       props.linesA.positions,
       props.linesA.lineOffsets,
@@ -165,7 +239,11 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-bound`,
         operation: 'GPUTrackSimilaritySearch',
-        variant: subsequence ? 'possible-match-bound' : 'endpoint-bound',
+        variant: subsequence
+          ? 'possible-match-bound'
+          : isBoxBounded
+            ? `${props.metric}-bound`
+            : 'endpoint-bound',
         invocationCount: props.pairA.length,
         bindings: [
           {name: 'positionsA', view: props.linesA.positions, type: 'f32', access: 'read'},
@@ -178,7 +256,11 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
         ],
         declarations: `fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
 fn loadA(row: u32) -> vec2<f32> { return vec2<f32>(positionsA[positionsAOffset + 2u * row], positionsA[positionsAOffset + 2u * row + 1u]); }
-fn loadB(row: u32) -> vec2<f32> { return vec2<f32>(positionsB[positionsBOffset + 2u * row], positionsB[positionsBOffset + 2u * row + 1u]); }`,
+fn loadB(row: u32) -> vec2<f32> { return vec2<f32>(positionsB[positionsBOffset + 2u * row], positionsB[positionsBOffset + 2u * row + 1u]); }${
+          sphereRadius === undefined
+            ? TRACK_SIMILARITY_BOUND_DECLARATIONS
+            : getTrackSimilarityGreatCircleBoundDeclarations(sphereRadius)
+        }`,
         body: `var nanBits = 0x7fc00000u; bounds[boundsOffset + index] = bitcast<f32>(nanBits);
 let first = pairA[pairAOffset + index]; let second = pairB[pairBOffset + index];
 if (first >= ${props.linesA.lineOffsets.length - 1}u || second >= ${linesB.lineOffsets.length - 1}u) { return; }
@@ -186,22 +268,35 @@ let startA = offsetsA[offsetsAOffset + first]; let endA = offsetsA[offsetsAOffse
 if (startA >= endA || endA > ${props.linesA.positions.length}u || startB >= endB || endB > ${linesB.positions.length}u) { return; }
 for (var row = startA; row < endA; row++) { let position = loadA(row); if (!finite(position.x) || !finite(position.y)) { return; } }
 for (var row = startB; row < endB; row++) { let position = loadB(row); if (!finite(position.x) || !finite(position.y)) { return; } }
-let startDifference = loadA(startA) - loadB(startB); let endDifference = loadA(endA - 1u) - loadB(endB - 1u);
+${sphereRadius === undefined ? 'let startDifference = loadA(startA) - loadB(startB); let endDifference = loadA(endA - 1u) - loadB(endB - 1u);' : ''}
 ${
-  subsequence
-    ? `var possibleA = 0u; var possibleB = 0u;
+  isBoxBounded
+    ? sphereRadius === undefined
+      ? getTrackSimilaritySearchBoundStatements(
+          props.metric as TrackSimilaritySearchBoundMetric,
+          props.editDistanceTolerance ?? 1,
+          props.editDistanceGapPoint ?? [0, 0]
+        )
+      : getTrackSimilarityGreatCircleBoundStatements(
+          props.metric as TrackSimilaritySearchBoundMetric,
+          props.editDistanceGapPoint ?? [0, 0]
+        )
+    : subsequence
+      ? `var possibleA = 0u; var possibleB = 0u;
 for (var rowA = startA; rowA < endA; rowA++) {
   var possible = false;
-  for (var rowB = startB; rowB < endB; rowB++) { let difference = loadA(rowA) - loadB(rowB); if (sqrt(dot(difference, difference)) <= f32(${props.lcssTolerance ?? 1})) { possible = true; break; } }
+  for (var rowB = startB; rowB < endB; rowB++) { if (${distanceExpression} <= f32(${props.lcssTolerance ?? 1})) { possible = true; break; } }
   if (possible) { possibleA++; }
 }
 for (var rowB = startB; rowB < endB; rowB++) {
   var possible = false;
-  for (var rowA = startA; rowA < endA; rowA++) { let difference = loadA(rowA) - loadB(rowB); if (sqrt(dot(difference, difference)) <= f32(${props.lcssTolerance ?? 1})) { possible = true; break; } }
+  for (var rowA = startA; rowA < endA; rowA++) { if (${distanceExpression} <= f32(${props.lcssTolerance ?? 1})) { possible = true; break; } }
   if (possible) { possibleB++; }
 }
 bounds[boundsOffset + index] = f32(min(possibleA, possibleB)) / f32(min(endA - startA, endB - startB));`
-    : 'bounds[boundsOffset + index] = max(sqrt(dot(startDifference, startDifference)), sqrt(dot(endDifference, endDifference)));'
+      : sphereRadius === undefined
+        ? 'bounds[boundsOffset + index] = max(sqrt(dot(startDifference, startDifference)), sqrt(dot(endDifference, endDifference)));'
+        : 'bounds[boundsOffset + index] = max(pointDistance(loadA(startA), loadB(startB)), pointDistance(loadA(endA - 1u), loadB(endB - 1u)));'
 }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -272,6 +367,7 @@ filteredA[filteredAOffset + rank] = pairA[pairAOffset + index]; filteredB[filter
       nodes.push(
         ...new GPUTrackSimilarity({
           id: `${id}-metric`,
+          spatialContext: props.spatialContext,
           linesA: props.linesA,
           linesB,
           pairA: filteredA,
@@ -280,7 +376,16 @@ filteredA[filteredAOffset + rank] = pairA[pairAOffset + index]; filteredB[filter
           dynamicTimeWarpingBandRadius: props.dynamicTimeWarpingBandRadius,
           lcssTolerance: props.lcssTolerance,
           lcssBandRadius: props.lcssBandRadius,
+          editDistanceTolerance: props.editDistanceTolerance,
+          editDistanceGapPoint: props.editDistanceGapPoint,
           output: {
+            hausdorff: props.metric === 'hausdorff' ? compactValue : undefined,
+            editDistanceOnRealSequence:
+              props.metric === 'edit-distance-on-real-sequence' ? compactValue : undefined,
+            editDistanceWithRealPenalty:
+              props.metric === 'edit-distance-with-real-penalty' ? compactValue : undefined,
+            symmetricSegmentPathDistance:
+              props.metric === 'symmetric-segment-path' ? compactValue : undefined,
             frechet: props.metric === 'frechet' ? compactValue : undefined,
             dynamicTimeWarping: props.metric === 'dynamic-time-warping' ? compactValue : undefined,
             longestCommonSubsequence: subsequence ? compactValue : undefined,
@@ -306,43 +411,103 @@ filteredA[filteredAOffset + rank] = pairA[pairAOffset + index]; filteredB[filter
         body: `var nanBits = 0x7fc00000u; distance[distanceOffset + index] = bitcast<f32>(nanBits);
 if (status[statusOffset + index] == 0u) { let rank = ranks[ranksOffset + index];
   distance[distanceOffset + index] = compactValue[compactValueOffset + rank];
-  if (programStatus[programStatusOffset + rank] != 0u) { status[statusOffset + index] = select(2u, 4u, (programStatus[programStatusOffset + rank] & 2u) != 0u); }
+  if ((programStatus[programStatusOffset + rank] & ${isUncapped ? '5u' : '0xffffffffu'}) != 0u) { status[statusOffset + index] = select(2u, 4u, (programStatus[programStatusOffset + rank] & 2u) != 0u); }
 }
 matched[matchedOffset + index] = select(0u, 1u, status[statusOffset + index] == 0u && distance[distanceOffset + index] ${subsequence ? '>=' : '<='} threshold[thresholdOffset]);`
       })
     );
-    if (props.topK !== undefined && props.output.topKIndices && props.output.topKSummary)
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-top-k`,
-          operation: 'GPUTrackSimilaritySearch',
-          variant: 'exact-stable-top-k',
-          invocationCount: props.linesA.lineOffsets.length - 1,
-          bindings: [
-            {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
-            {name: 'values', view: value, type: 'f32', access: 'read'},
-            {name: 'matched', view: props.output.matched, type: 'u32', access: 'read'},
-            {name: 'status', view: props.output.status, type: 'u32', access: 'read'},
-            {name: 'selected', view: props.output.topKIndices, type: 'u32', access: 'read_write'},
-            {name: 'summary', view: props.output.topKSummary, type: 'u32', access: 'read_write'}
-          ],
-          body: `var complete = 1u; var count = 0u;
-for (var row = 0u; row < ${props.pairA.length}u; row++) { if (pairA[pairAOffset + row] == index && status[statusOffset + row] > 1u) { complete = 0u; } }
-for (var slot = 0u; slot < ${props.topK}u; slot++) {
-  var best = 0xffffffffu; var bestValue = 0.0;
-  for (var row = 0u; row < ${props.pairA.length}u; row++) {
-    if (pairA[pairAOffset + row] != index || matched[matchedOffset + row] == 0u) { continue; }
-    var used = false;
-    for (var previous = 0u; previous < slot; previous++) { if (selected[selectedOffset + index * ${props.topK}u + previous] == row) { used = true; } }
-    if (used) { continue; } let candidate = values[valuesOffset + row];
-    if (best == 0xffffffffu || candidate ${subsequence ? '>' : '<'} bestValue) { best = row; bestValue = candidate; }
-  }
-  selected[selectedOffset + index * ${props.topK}u + slot] = best;
-  if (best != 0xffffffffu) { count++; }
-}
-summary[summaryOffset + index * 2u] = count; summary[summaryOffset + index * 2u + 1u] = complete;`
-        })
-      );
+    if (props.topK !== undefined && props.output.topKIndices && props.output.topKSummary) {
+      nodes.push(...this.createTopKNodes(graph, value, subsequence));
+    }
     return nodes;
+  }
+
+  /**
+   * Segmented select: one stable sort of the pair rows by `(pairA, value)`, then one thread per A
+   * track binary-searches its segment and copies the first `topK` rows. Replaces the scan of every
+   * pair for each of the K slots with the check of the previous picks.
+   */
+  private createTopKNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    value: GraphDataView<'float32'>,
+    subsequence: boolean
+  ): GPUCommandNode<Parameters>[] {
+    const {id, props} = this;
+    const topK = props.topK!;
+    const trackCount = props.linesA.lineOffsets.length - 1;
+    const pairCount = props.pairA.length;
+    const identity = createTransientView(graph, `${id}-top-k-identity`, 'uint32', pairCount);
+    const trackKeys = createTransientView(graph, `${id}-top-k-track-keys`, 'uint32', pairCount);
+    const valueKeys = createTransientView(graph, `${id}-top-k-value-keys`, 'uint32', pairCount);
+    const sort = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-top-k-sort`,
+      operation: 'GPUTrackSimilaritySearch',
+      indices: identity,
+      keys: [{view: trackKeys, keyBits: getSortKeyBits(trackCount)}, {view: valueKeys}]
+    });
+    return [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-top-k-keys`,
+        operation: 'GPUTrackSimilaritySearch',
+        variant: 'top-k-sort-keys',
+        invocationCount: pairCount,
+        bindings: [
+          {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
+          {name: 'values', view: value, type: 'f32', access: 'read'},
+          {name: 'matched', view: props.output.matched, type: 'u32', access: 'read'},
+          {name: 'status', view: props.output.status, type: 'u32', access: 'read'},
+          {name: 'identity', view: identity, type: 'u32', access: 'read_write'},
+          {name: 'trackKeys', view: trackKeys, type: 'u32', access: 'read_write'},
+          {name: 'valueKeys', view: valueKeys, type: 'u32', access: 'read_write'}
+        ],
+        // Float order as an unsigned key (negative values flip every bit, others the sign bit);
+        // `+ 0.0` turns -0 into +0 so equal values tie. Matched rows sort by value (descending
+        // similarity for LCSS), then rows with an error status (0xfffffffe), then the rest. Ties
+        // keep the pair row order because the sort is stable.
+        body: `identity[identityOffset + index] = index;
+let track = pairA[pairAOffset + index];
+trackKeys[trackKeysOffset + index] = select(${trackCount}u, track, track < ${trackCount}u);
+let bits = bitcast<u32>(values[valuesOffset + index] + 0.0);
+var ordered = bits ^ select(0x80000000u, 0xffffffffu, (bits & 0x80000000u) != 0u);
+${subsequence ? 'ordered = ~ordered;' : ''}
+var key = 0xffffffffu;
+if (matched[matchedOffset + index] != 0u) { key = ordered; }
+else if (status[statusOffset + index] > 1u) { key = 0xfffffffeu; }
+valueKeys[valueKeysOffset + index] = key;`
+      }),
+      ...sort.nodes,
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-top-k-select`,
+        operation: 'GPUTrackSimilaritySearch',
+        variant: 'segmented-top-k',
+        invocationCount: trackCount,
+        bindings: [
+          {name: 'sortedIndices', view: sort.sortedIndices, type: 'u32', access: 'read'},
+          {name: 'sortedTracks', view: sort.sortedPrimaryKeys, type: 'u32', access: 'read'},
+          {name: 'valueKeys', view: valueKeys, type: 'u32', access: 'read'},
+          {name: 'selected', view: props.output.topKIndices!, type: 'u32', access: 'read_write'},
+          {name: 'summary', view: props.output.topKSummary!, type: 'u32', access: 'read_write'}
+        ],
+        // First sorted position whose (track, value key) is not below the given one.
+        declarations: `fn lowerBound(track: u32, key: u32) -> u32 {
+  var low = 0u; var high = ${pairCount}u;
+  while (low < high) {
+    let middle = low + (high - low) / 2u;
+    let middleTrack = sortedTracks[sortedTracksOffset + middle];
+    let middleKey = valueKeys[valueKeysOffset + sortedIndices[sortedIndicesOffset + middle]];
+    if (middleTrack < track || (middleTrack == track && middleKey < key)) { low = middle + 1u; } else { high = middle; }
+  }
+  return low;
+}`,
+        body: `let first = lowerBound(index, 0u);
+let matchedEnd = lowerBound(index, 0xfffffffeu);
+let errorEnd = lowerBound(index, 0xffffffffu);
+let count = min(matchedEnd - first, ${topK}u);
+for (var slot = 0u; slot < ${topK}u; slot++) {
+  selected[selectedOffset + index * ${topK}u + slot] = select(0xffffffffu, sortedIndices[sortedIndicesOffset + first + slot], slot < count);
+}
+summary[summaryOffset + index * 2u] = count; summary[summaryOffset + index * 2u + 1u] = select(1u, 0u, errorEnd > matchedEnd);`
+      })
+    ];
   }
 }

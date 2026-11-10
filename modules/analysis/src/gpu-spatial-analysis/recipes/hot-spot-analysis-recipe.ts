@@ -757,7 +757,8 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     );
     // Rows past the cover count are unwritten; mask them out of the aggregation.
     const coverMask = createTransientView(graph, `${id}-cover-mask`, 'uint32', coverCapacity);
-    graph.add(
+    builder.addGlue(
+      'cover-mask',
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-cover-mask`,
         operation: ID,
@@ -905,7 +906,8 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     const joinedSums = source.values
       ? createTransientView(graph, `${id}-joined-sums`, 'float32', rowCount)
       : undefined;
-    graph.add(
+    builder.addGlue(
+      'join',
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-join`,
         operation: ID,
@@ -953,7 +955,8 @@ export function addHotSpotAnalysisRecipe<Parameters>(
       1,
       outputs.status?.pointsOutsideStudyArea
     );
-    graph.add(
+    builder.addGlue(
+      'points-outside-clear',
       createFillNode<Parameters>(graph, {
         id: `${id}-points-outside-clear`,
         operation: ID,
@@ -962,7 +965,8 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         value: '0u'
       })
     );
-    graph.add(
+    builder.addGlue(
+      'points-outside-count',
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-points-outside-count`,
         operation: ID,
@@ -1023,7 +1027,8 @@ export function addHotSpotAnalysisRecipe<Parameters>(
       : areas
         ? 'areas[areasOffset + index]'
         : '1.0';
-    graph.add(
+    builder.addGlue(
+      'analysis-values',
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-analysis-values`,
         operation: ID,
@@ -1206,7 +1211,8 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
     1,
     outputs.status?.invalidCount
   );
-  graph.add(
+  builder.addGlue(
+    'invalid-clear',
     createFillNode<Parameters>(graph, {
       id: `${id}-invalid-clear`,
       operation: ID,
@@ -1221,7 +1227,8 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
     {name: 'zScores', view: zScores, type: 'f32', access: 'read'},
     {name: 'invalid', view: invalidCount, type: 'atomic<u32>', access: 'read_write'}
   ];
-  graph.add(
+  builder.addGlue(
+    'invalid-tally',
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-invalid-tally`,
       operation: ID,

@@ -18,23 +18,28 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {VariogramModelType} from '../../dataframe-analysis/pair-statistics/variogram-model';
 import {
   getPackedPredictionAccessors,
   validatePredictionViews
 } from '../../analysis-core/kernels/gpu-prediction-utils';
 import {getEquilibratedSolveWGSL} from './equilibrated-solve-wgsl';
+import {
+  getCoregionalizationCoefficient,
+  getGPULocalKrigingParameterLength,
+  getPerFramePredictionCovarianceWGSL,
+  getPredictionCovarianceWGSL,
+  validatePredictionCovariance,
+  type GPUPredictionCovariance
+} from './prediction-covariance';
 
-/** Shared isotropic covariance. Effective ranges match fitVariogramModel. */
-export type GPUPredictionCovariance = {
-  model: VariogramModelType;
-  range: number;
-  sill: number;
-  /** Process microscale variance; observation error is separately supplied per observation. */
-  nugget?: number;
-};
+export {getPredictionCovarianceWGSL, validatePredictionCovariance};
+export type {GPUPredictionCovariance};
 
-/** Explicit local, planar prediction contract; counts and model parameters specialize the graph. */
+/**
+ * Explicit local, planar prediction contract. Counts specialize the graph. Covariance parameters
+ * specialize it unless the `parameters` buffer is supplied, in which case they change per frame
+ * without a recompile.
+ */
 export type GPULocalKrigingProps = {
   id?: string;
   positions: GraphDataView<'float32x2'>;
@@ -44,7 +49,23 @@ export type GPULocalKrigingProps = {
   supports: GraphDataView<'float32x2' | 'float32x4'>;
   supportCount?: number;
   mode: 'simple' | 'ordinary' | 'universal' | 'external-drift' | 'co-kriging';
-  covariance: GPUPredictionCovariance;
+  /**
+   * Compile-time covariance of the univariate modes and of the two-by-two `coregionalization`
+   * shortcut. Required unless `parameters` is supplied, in which case it is ignored.
+   */
+  covariance?: GPUPredictionCovariance;
+  /**
+   * Per-frame covariance buffer written by `getGPULocalKrigingParameterValues`: model, nugget, sill
+   * and range change between frames without a recompile. Counts one more storage binding. Replaces
+   * `covariance`, `coregionalization` and the values of `coregionalizationModels`; a buffer that
+   * was never written reports status 1 for every query.
+   */
+  parameters?: GraphDataView<'float32'>;
+  /**
+   * Covariance structures in `parameters`, 1..4, for co-kriging. Compile time. Defaults to the
+   * length of `coregionalizationModels`, else 1.
+   */
+  covarianceStructureCount?: number;
   /** Known means for simple or known-mean co-kriging. Defaults to zero. */
   means?: readonly number[];
   /** Number of response variables for co-kriging, 2..4. */
@@ -108,6 +129,7 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
   readonly queryCount: number;
   readonly variableCount: number;
   readonly suppliedDrift: boolean;
+  readonly covarianceStructureCount: number;
 
   constructor(props: GPULocalKrigingProps) {
     this.props = props;
@@ -133,7 +155,25 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
     validateCapacity(this.id, 'neighborCount', this.neighborCount, 1);
     validateCapacity(this.id, 'supportCount', this.supportCount, 1);
     validateCapacity(this.id, 'queryCount', this.queryCount, 0);
-    validatePredictionCovariance(props.covariance);
+    this.covarianceStructureCount =
+      props.covarianceStructureCount ?? props.coregionalizationModels?.length ?? 1;
+    if (props.covariance) {
+      validatePredictionCovariance(props.covariance);
+    } else if (!props.parameters) {
+      throw new Error(`${this.id} needs covariance or parameters`);
+    }
+    if (
+      props.parameters &&
+      (props.parameters.format !== 'float32' ||
+        !Number.isInteger(this.covarianceStructureCount) ||
+        this.covarianceStructureCount < 1 ||
+        this.covarianceStructureCount > 4 ||
+        (props.mode !== 'co-kriging' && this.covarianceStructureCount !== 1) ||
+        props.parameters.length <
+          getGPULocalKrigingParameterLength(this.covarianceStructureCount, this.variableCount))
+    ) {
+      throw new Error(`${this.id} invalid parameters`);
+    }
     if (
       this.neighborCount > 32 ||
       this.supportCount > 64 ||
@@ -176,7 +216,12 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${this.id} missing external drift`);
     }
-    if (props.mode === 'co-kriging' && !props.coregionalization && !props.coregionalizationModels) {
+    if (
+      props.mode === 'co-kriging' &&
+      !props.parameters &&
+      !props.coregionalization &&
+      !props.coregionalizationModels
+    ) {
       throw new Error(`${this.id} co-kriging requires PSD loading factors`);
     }
     if (
@@ -196,7 +241,10 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
       (props.targetVariable ?? 0) >= this.variableCount ||
       (props.means && props.means.length < this.variableCount) ||
       (props.coKrigingMean && !['known', 'ordinary'].includes(props.coKrigingMean)) ||
-      (props.mode === 'co-kriging' && this.variableCount !== 2 && !structures) ||
+      (props.mode === 'co-kriging' &&
+        this.variableCount !== 2 &&
+        !structures &&
+        !props.parameters) ||
       (structures && (structures.length < 1 || structures.length > 4))
     ) {
       throw new Error(`${this.id} invalid multivariate model`);
@@ -220,7 +268,8 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
           (view): view is GraphDataView<'float32' | 'float32x4'> => Boolean(view)
         ),
         ...(props.neighborhoods ? [props.neighborhoods] : []),
-        ...(props.neighborhoodOffsets ? [props.neighborhoodOffsets] : [])
+        ...(props.neighborhoodOffsets ? [props.neighborhoodOffsets] : []),
+        ...(props.parameters ? [props.parameters] : [])
       ],
       [
         props.output.values,
@@ -263,6 +312,9 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
         access: 'read'
       });
     }
+    if (props.parameters) {
+      bindings.push({name: 'params', view: props.parameters, type: 'f32', access: 'read'});
+    }
     if (props.output.weights) {
       bindings.push({
         name: 'weights',
@@ -293,9 +345,9 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
       : props.mode === 'co-kriging'
         ? 'select(0.0, 1.0, TARGET_VARIABLE == column)'
         : 'select(0.0, 1.0, column == 0u)';
-    const structures = props.coregionalizationModels ?? [
-      {covariance: props.covariance, loadings: factors}
-    ];
+    const structures =
+      props.coregionalizationModels ??
+      (props.covariance ? [{covariance: props.covariance, loadings: factors}] : []);
     // The system is divided by the largest structure variance (times its cross loading), so the
     // covariance block is O(1) next to the unit-scale drift rows for any sill from 1e-4 to 1e6.
     // Weights are unchanged, the Lagrange multipliers scale by the same constant.
@@ -304,15 +356,10 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
       if (props.mode === 'co-kriging') {
         loadingScale = 0;
         for (let pair = 0; pair < this.variableCount ** 2; pair++) {
-          const first = Math.floor(pair / this.variableCount);
-          const second = pair % this.variableCount;
-          let value = 0;
-          for (let component = 0; component < this.variableCount; component++) {
-            value +=
-              structure.loadings[first * this.variableCount + component] *
-              structure.loadings[second * this.variableCount + component];
-          }
-          loadingScale = Math.max(loadingScale, Math.abs(value));
+          loadingScale = Math.max(
+            loadingScale,
+            Math.abs(getCoregionalizationCoefficient(structure.loadings, this.variableCount, pair))
+          );
         }
       }
       const variance = structure.covariance.sill + (structure.covariance.nugget ?? 0);
@@ -322,17 +369,11 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
       props.mode === 'co-kriging'
         ? structures
             .map((structure, structureIndex) => {
-              const coefficients = Array.from({length: this.variableCount ** 2}, (_, pair) => {
-                const first = Math.floor(pair / this.variableCount);
-                const second = pair % this.variableCount;
-                let value = 0;
-                for (let component = 0; component < this.variableCount; component++) {
-                  value +=
-                    structure.loadings[first * this.variableCount + component] *
-                    structure.loadings[second * this.variableCount + component];
-                }
-                return getWGSLFloatLiteral(value);
-              });
+              const coefficients = Array.from({length: this.variableCount ** 2}, (_, pair) =>
+                getWGSLFloatLiteral(
+                  getCoregionalizationCoefficient(structure.loadings, this.variableCount, pair)
+                )
+              );
               return `${getPredictionCovarianceWGSL(structure.covariance).replace('fn covariance(', `fn covariance${structureIndex}(`)}\nconst CROSS${structureIndex}: array<f32, ${coefficients.length}> = array<f32, ${coefficients.length}>(${coefficients.join(', ')});`;
             })
             .join('\n')
@@ -345,22 +386,27 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
         bindings,
         invocationCount: queryCount,
         workgroupSize: 32,
-        declarations: `${getPackedPredictionAccessors({positions: 2, observations: 4, supports: props.supports.format === 'float32x4' ? 4 : 2}, ['results'])}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${getEquilibratedSolveWGSL(neighborCount + driftCount)}\n${getPredictionCovarianceWGSL(props.covariance)}
-const COVARIANCE_SCALE: f32 = ${getWGSLFloatLiteral(covarianceScale > 0 && Number.isFinite(covarianceScale) ? covarianceScale : 1)};
+        declarations: `${getPackedPredictionAccessors({positions: 2, observations: 4, supports: props.supports.format === 'float32x4' ? 4 : 2}, ['results'])}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${getEquilibratedSolveWGSL(neighborCount + driftCount)}\n${props.parameters ? getPerFramePredictionCovarianceWGSL(this.covarianceStructureCount, this.variableCount) : getPredictionCovarianceWGSL(props.covariance!)}
 const NEIGHBOR_COUNT: u32 = ${neighborCount}u;
 const DRIFT_COUNT: u32 = ${driftCount}u;
 const SUPPORT_COUNT: u32 = ${supportCount}u;
 const SAMPLE_COUNT: u32 = ${props.positions.length}u;
 const TARGET_VARIABLE: u32 = ${targetVariable}u;
 const MEANS: array<f32, ${means.length}> = array<f32, ${means.length}>(${means.map(getWGSLFloatLiteral).join(', ')});
+${
+  props.parameters
+    ? ''
+    : `const COVARIANCE_SCALE: f32 = ${getWGSLFloatLiteral(covarianceScale > 0 && Number.isFinite(covarianceScale) ? covarianceScale : 1)};
 ${crossModel}
 fn crossCovariance(first: vec2<f32>, second: vec2<f32>, firstVariable: u32, secondVariable: u32) -> f32 {
   return ${props.mode === 'co-kriging' ? structures.map((_, structureIndex) => `covariance${structureIndex}(first, second) * CROSS${structureIndex}[firstVariable * ${this.variableCount}u + secondVariable]`).join(' + ') : 'covariance(first, second)'};
+}`
 }`,
         body: `
 write_results(index, vec4<f32>(getNaN(), getNaN(), 0.0, 0.0));
 statuses[statusesOffset + index] = 1u;
 ${props.output.weights ? 'for (var column = 0u; column < NEIGHBOR_COUNT; column++) { weights[weightsOffset + index * NEIGHBOR_COUNT + column] = 0.0; }' : ''}
+${props.parameters ? 'if (!loadCovarianceParameters()) { return; }\nlet covarianceScale = params[paramsOffset];' : 'let covarianceScale = COVARIANCE_SCALE;'}
 var center = vec2<f32>(0.0);
 var supportWeightSum = 0.0;
 var supportWeights: array<f32, ${supportCount}>;
@@ -407,12 +453,12 @@ for (var row = 0u; row < retained; row++) {
   let variable = ${props.mode === 'co-kriging' ? 'u32(observation.z)' : '0u'};
   for (var column = 0u; column < retained; column++) {
     let otherObservation = read_observations(neighbors[column]);
-    matrix[row * SYSTEM_CAPACITY + column] = crossCovariance(position, read_positions(neighbors[column]), variable, ${props.mode === 'co-kriging' ? 'u32(otherObservation.z)' : '0u'}) / COVARIANCE_SCALE;
+    matrix[row * SYSTEM_CAPACITY + column] = crossCovariance(position, read_positions(neighbors[column]), variable, ${props.mode === 'co-kriging' ? 'u32(otherObservation.z)' : '0u'}) / covarianceScale;
   }
-  matrix[row * SYSTEM_CAPACITY + row] += observation.y / COVARIANCE_SCALE;
+  matrix[row * SYSTEM_CAPACITY + row] += observation.y / covarianceScale;
   var crossValue = 0.0;
   for (var support = 0u; support < SUPPORT_COUNT; support++) { crossValue += crossCovariance(position, read_supports(index * SUPPORT_COUNT + support).xy, variable, TARGET_VARIABLE) * supportWeights[support]; }
-  crossValues[row] = crossValue; right[row] = crossValue / COVARIANCE_SCALE;
+  crossValues[row] = crossValue; right[row] = crossValue / covarianceScale;
   for (var column = 0u; column < DRIFT_COUNT; column++) {
     let value = ${drift};
     matrix[row * SYSTEM_CAPACITY + retained + column] = value;
@@ -440,7 +486,7 @@ for (var row = 0u; row < retained; row++) {
   prediction += solution[row] * (observation.x ${driftCount ? '' : `- MEANS[${props.mode === 'co-kriging' ? 'u32(observation.z)' : '0u'}]`});
   variance -= solution[row] * crossValues[row];
 }
-for (var column = 0u; column < DRIFT_COUNT; column++) { variance -= solution[retained + column] * queryDesign[column] * COVARIANCE_SCALE; }
+for (var column = 0u; column < DRIFT_COUNT; column++) { variance -= solution[retained + column] * queryDesign[column] * covarianceScale; }
 if (!isFiniteValue(prediction) || !isFiniteValue(variance) || variance < -1e-4 * varianceScale) { return; }
 write_results(index, vec4<f32>(prediction, max(variance, 0.0), pivotRatio, f32(retained)));
 statuses[statusesOffset + index] = 0u;
@@ -448,32 +494,4 @@ ${props.output.weights ? 'for (var row = 0u; row < retained; row++) { weights[we
       })
     ];
   }
-}
-
-/** @internal */
-export function validatePredictionCovariance(model: GPUPredictionCovariance): void {
-  if (
-    !['spherical', 'exponential', 'gaussian'].includes(model.model) ||
-    !(model.range > 0) ||
-    !(model.sill >= 0) ||
-    !((model.nugget ?? 0) >= 0) ||
-    !(model.sill + (model.nugget ?? 0) > 0) ||
-    ![model.range, model.sill, model.nugget ?? 0].every(Number.isFinite)
-  ) {
-    throw new Error('Invalid prediction covariance');
-  }
-}
-
-/** @internal */
-export function getPredictionCovarianceWGSL(model: GPUPredictionCovariance): string {
-  const correlation =
-    model.model === 'spherical'
-      ? 'select(1.0 - 1.5 * scaled + 0.5 * scaled * scaled * scaled, 0.0, scaled >= 1.0)'
-      : model.model === 'exponential'
-        ? 'exp(-3.0 * scaled)'
-        : 'exp(-3.0 * scaled * scaled)';
-  return `fn covariance(first: vec2<f32>, second: vec2<f32>) -> f32 {
-    let scaled = distance(first, second) / ${getWGSLFloatLiteral(model.range)};
-    return ${getWGSLFloatLiteral(model.sill)} * (${correlation}) + select(0.0, ${getWGSLFloatLiteral(model.nugget ?? 0)}, all(first == second));
-  }`;
 }

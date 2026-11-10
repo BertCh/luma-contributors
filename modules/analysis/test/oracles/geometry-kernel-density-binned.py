@@ -29,7 +29,7 @@ import numpy as np
 from scipy.stats import multivariate_normal, norm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GENERATOR = 'modules/graph/test/oracles/geometry-kernel-density-binned.py'
+GENERATOR = 'modules/analysis/test/oracles/geometry-kernel-density-binned.py'
 WIDTH, HEIGHT, CELL = 128, 96, 0.5
 WINDOW = [0.0, 0.0, WIDTH * CELL, HEIGHT * CELL]
 BANDWIDTH_CELLS = [2, 6, 40, 80, 200]

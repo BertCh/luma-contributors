@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  validateCapacity,
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {GPUReduction, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
   GPURasterFractionalCoverage,
@@ -25,7 +29,7 @@ import {
   getRecipeView,
   validateRecipeBoundary
 } from './expansion-recipe-utils';
-import {createTransientSpatialWeights, RecipeBuilder} from './recipe-utils';
+import {addRecipeCountNodes, createTransientSpatialWeights, RecipeBuilder} from './recipe-utils';
 
 type FractionalCoverage = GPURasterFractionalCoverageProps['output'];
 
@@ -63,6 +67,9 @@ export type GPUDasymetricRedistributionRecipeProps = {
   outputs?: Partial<GPUDasymetricRedistributionOutput>;
 };
 
+/** Largest `targetZoneCount * tupleCapacity`; the per-target support kernel scans every tuple row once per target. */
+const GPU_DASYMETRIC_MAXIMUM_TUPLE_PRODUCT = 4194304;
+
 /**
  * Fractional source support -> ancillary eligibility -> weighted areal interpolation -> mass ledger.
  * Targets own complete raster cells: independent source/target fractions are never multiplied.
@@ -90,17 +97,29 @@ export function addDasymetricRedistributionRecipe<Parameters>(
       ? props.source.tupleCapacity
       : props.source.coverage.zoneIds.length;
   // Bound the explicit target/support summary and require nonempty, aligned buffer shapes.
-  assert(Number.isSafeInteger(targetCount) && targetCount > 0 && sourceCount > 0);
-  assert(Number.isSafeInteger(tupleCapacity) && tupleCapacity > 0);
-  assert(targetCount * tupleCapacity <= 4194304);
-  assert(
-    props.targetZones.length === cellCount && (!props.mask || props.mask.length === cellCount)
+  validateCapacity(id, 'targetZoneCount', targetCount, 1, GPU_DASYMETRIC_MAXIMUM_TUPLE_PRODUCT);
+  validateCapacity(id, 'sourceTotals length', sourceCount, 1);
+  validateCapacity(id, 'tupleCapacity', tupleCapacity, 1, GPU_DASYMETRIC_MAXIMUM_TUPLE_PRODUCT);
+  validateRequirement(
+    id,
+    targetCount * tupleCapacity <= GPU_DASYMETRIC_MAXIMUM_TUPLE_PRODUCT,
+    `targetZoneCount times tupleCapacity must be at most ${GPU_DASYMETRIC_MAXIMUM_TUPLE_PRODUCT}`
   );
-  assert(!props.denominator || props.denominator === 'zone' || props.denominator === 'overlap');
+  validateViewLength(id, 'targetZones', props.targetZones, cellCount);
+  if (props.mask) validateViewLength(id, 'mask', props.mask, cellCount);
+  validateRequirement(
+    id,
+    !props.denominator || props.denominator === 'zone' || props.denominator === 'overlap',
+    "denominator must be 'zone' or 'overlap'"
+  );
   const cellArea = Math.abs(
     props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]
   );
-  assert(Number.isFinite(Math.fround(cellArea)) && Math.fround(cellArea) > 0);
+  validateRequirement(
+    id,
+    Number.isFinite(Math.fround(cellArea)) && Math.fround(cellArea) > 0,
+    'grid cell area must be finite and positive in float32'
+  );
   const createView = <Format extends 'float32' | 'uint32'>(
     name: string,
     format: Format,
@@ -108,7 +127,12 @@ export function addDasymetricRedistributionRecipe<Parameters>(
   ) => getRecipeView(graph, `${id}-${name}`, format, length);
   let coverage: FractionalCoverage;
   if (props.source.kind === 'polygons') {
-    assert(props.source.zones.featureOffsets.length === sourceCount + 1);
+    validateViewLength(
+      id,
+      'source.zones.featureOffsets',
+      props.source.zones.featureOffsets,
+      sourceCount + 1
+    );
     coverage = {
       zoneIds: createView('coverage-sources', 'uint32', tupleCapacity),
       cellIds: createView('coverage-cells', 'uint32', tupleCapacity),
@@ -131,9 +155,11 @@ export function addDasymetricRedistributionRecipe<Parameters>(
   } else {
     coverage = props.source.coverage;
   }
-  assert(coverage.cellIds.length === tupleCapacity && coverage.fractions.length === tupleCapacity);
-  assert(coverage.zoneValidity.length === sourceCount);
-  Object.values(coverage.status).forEach(view => assert(view.length === 1));
+  validateViewLength(id, 'coverage.cellIds', coverage.cellIds, tupleCapacity);
+  validateViewLength(id, 'coverage.fractions', coverage.fractions, tupleCapacity);
+  validateViewLength(id, 'coverage.zoneValidity', coverage.zoneValidity, sourceCount);
+  for (const [name, view] of Object.entries(coverage.status))
+    validateViewLength(id, `coverage.status.${name}`, view, 1);
   const outputs = {
     targetTotals: getRecipeView(
       graph,
@@ -209,10 +235,11 @@ export function addDasymetricRedistributionRecipe<Parameters>(
     props.grid,
     true
   );
-  band.nodes.forEach(node => graph.add(node));
+  builder.addGlue('ancillary-band', band.nodes);
   const cellWeights = createView('cell-weights', 'float32', cellCount);
   const cellArithmeticInvalid = createView('cell-arithmetic-invalid', 'uint32', cellCount);
-  graph.add(
+  builder.addGlue(
+    'eligibility',
     createRecipeKernelNode(graph, {
       id: `${id}-eligibility`,
       operation: id,
@@ -237,7 +264,8 @@ weights[weightsOffset+index]=weight;arithmeticInvalid[arithmeticInvalidOffset+in
   const tupleTargets = createView('tuple-targets', 'uint32', tupleCapacity);
   const tupleInvalid = createView('tuple-invalid', 'uint32', tupleCapacity);
   const tupleWeights = createView('tuple-weights', 'float32', tupleCapacity);
-  graph.add(
+  builder.addGlue(
+    'tuple-identities',
     createRecipeKernelNode(graph, {
       id: `${id}-tuple-identities`,
       operation: id,
@@ -260,7 +288,8 @@ invalidTuple=u32(!valid);if(valid){source=sources[sourcesOffset+index];targetZon
 outputSources[outputSourcesOffset+index]=source;outputTargets[outputTargetsOffset+index]=targetZone;invalid[invalidOffset+index]=invalidTuple;`
     })
   );
-  graph.add(
+  builder.addGlue(
+    'tuple-weights',
     createRecipeKernelNode(graph, {
       id: `${id}-tuple-weights`,
       operation: id,
@@ -320,7 +349,8 @@ outputSources[outputSourcesOffset+index]=source;outputTargets[outputTargetsOffse
     })
   );
   const targetSupport = createView('raw-target-support', 'float32', targetCount);
-  graph.add(
+  builder.addGlue(
+    'target-support',
     createRecipeKernelNode(graph, {
       id: `${id}-target-support`,
       operation: id,
@@ -334,29 +364,52 @@ outputSources[outputSourcesOffset+index]=source;outputTargets[outputTargetsOffse
     })
   );
   const arithmeticInvalidCount = createView('arithmetic-invalid', 'uint32', 1);
-  graph.add(
-    createRecipeKernelNode(graph, {
-      id: `${id}-arithmetic-evidence`,
-      operation: id,
-      invocationCount: 1,
-      declarations: IS_FINITE_VALUE_WGSL,
-      bindings: [
-        {name: 'cells', view: cellArithmeticInvalid, type: 'u32', access: 'read'},
-        {name: 'eligible', view: eligibleWeights, type: 'f32', access: 'read'},
-        {name: 'fractions', view: transferredFractions, type: 'f32', access: 'read'},
-        {name: 'sources', view: props.sourceTotals, type: 'f32', access: 'read'},
-        {name: 'targets', view: targetTotals, type: 'f32', access: 'read'},
-        {name: 'support', view: targetSupport, type: 'f32', access: 'read'},
-        {name: 'output', view: arithmeticInvalidCount, type: 'u32', access: 'read_write'}
-      ],
-      body: `var failures=0u;for(var cell=0u;cell<${cellCount}u;cell++){failures+=cells[cellsOffset+cell];}
-for(var source=0u;source<${sourceCount}u;source++){let eligibleWeight=eligible[eligibleOffset+source];let fraction=fractions[fractionsOffset+source];let total=sources[sourcesOffset+source];failures+=u32(!isFiniteValue(eligibleWeight));if(eligibleWeight>0.0){failures+=u32(!isFiniteValue(fraction)||!isFiniteValue(total*fraction)||!isFiniteValue(total*(1.0-fraction)));}}
-for(var targetZone=0u;targetZone<${targetCount}u;targetZone++){failures+=u32(!isFiniteValue(targets[targetsOffset+targetZone])||!isFiniteValue(support[supportOffset+targetZone]));}output[outputOffset]=failures;`
-    })
-  );
+  addRecipeCountNodes(builder, {
+    id: `${id}-arithmetic-evidence`,
+    operation: id,
+    // Cell, source and target rows share one index space; each branch is guarded by its own count.
+    rowCount: Math.max(cellCount, sourceCount, targetCount),
+    declarations: IS_FINITE_VALUE_WGSL,
+    bindings: [
+      {name: 'cells', view: cellArithmeticInvalid, type: 'u32', access: 'read'},
+      {name: 'eligible', view: eligibleWeights, type: 'f32', access: 'read'},
+      {name: 'fractions', view: transferredFractions, type: 'f32', access: 'read'},
+      {name: 'sources', view: props.sourceTotals, type: 'f32', access: 'read'},
+      {name: 'targets', view: targetTotals, type: 'f32', access: 'read'},
+      {name: 'support', view: targetSupport, type: 'f32', access: 'read'}
+    ],
+    prelude: `var failures=0u;
+if(index<${cellCount}u){failures+=cells[cellsOffset+index];}
+if(index<${sourceCount}u){let eligibleWeight=eligible[eligibleOffset+index];let fraction=fractions[fractionsOffset+index];let total=sources[sourcesOffset+index];failures+=u32(!isFiniteValue(eligibleWeight));if(eligibleWeight>0.0){failures+=u32(!isFiniteValue(fraction)||!isFiniteValue(total*fraction)||!isFiniteValue(total*(1.0-fraction)));}}
+if(index<${targetCount}u){failures+=u32(!isFiniteValue(targets[targetsOffset+index])||!isFiniteValue(support[supportOffset+index]));}`,
+    counts: [{name: 'failures', output: arithmeticInvalidCount, value: 'failures'}]
+  });
   const coverageComplete = createView('coverage-complete', 'uint32', 1);
   const invalidTupleCount = createView('invalid-tuples', 'uint32', 1);
-  graph.add(
+  builder.add(
+    new GPUReduction({
+      id: `${id}-invalid-tuples`,
+      input: tupleInvalid,
+      output: invalidTupleCount,
+      operation: 'sum'
+    })
+  );
+  const invalidZoneCount = createView('coverage-invalid-zones', 'uint32', 1);
+  addRecipeCountNodes(builder, {
+    id: `${id}-coverage-zones`,
+    operation: id,
+    rowCount: sourceCount,
+    bindings: [{name: 'validity', view: coverage.zoneValidity, type: 'u32', access: 'read'}],
+    counts: [
+      {
+        name: 'invalidZones',
+        output: invalidZoneCount,
+        value: 'u32(validity[validityOffset+index]==0u)'
+      }
+    ]
+  });
+  builder.addGlue(
+    'coverage-evidence',
     createRecipeKernelNode(graph, {
       id: `${id}-coverage-evidence`,
       operation: id,
@@ -365,41 +418,54 @@ for(var targetZone=0u;targetZone<${targetCount}u;targetZone++){failures+=u32(!is
         {name: 'count', view: coverage.status.count, type: 'u32', access: 'read'},
         {name: 'required', view: coverage.status.requiredCount, type: 'u32', access: 'read'},
         {name: 'overflow', view: coverage.status.overflow, type: 'u32', access: 'read'},
-        {name: 'validity', view: coverage.zoneValidity, type: 'u32', access: 'read'},
-        {name: 'invalid', view: tupleInvalid, type: 'u32', access: 'read'},
-        {name: 'complete', view: coverageComplete, type: 'u32', access: 'read_write'},
-        {name: 'invalidCount', view: invalidTupleCount, type: 'u32', access: 'read_write'}
+        {name: 'invalidZones', view: invalidZoneCount, type: 'u32', access: 'read'},
+        {name: 'invalidTuples', view: invalidTupleCount, type: 'u32', access: 'read'},
+        {name: 'complete', view: coverageComplete, type: 'u32', access: 'read_write'}
       ],
-      body: `var valid=overflow[overflowOffset]==0u&&count[countOffset]==required[requiredOffset]&&count[countOffset]<=${tupleCapacity}u;
-for(var source=0u;source<${sourceCount}u;source++){valid=valid&&validity[validityOffset+source]!=0u;}
-var totalInvalid=0u;for(var row=0u;row<${tupleCapacity}u;row++){totalInvalid+=invalid[invalidOffset+row];}
-invalidCount[invalidCountOffset]=totalInvalid;complete[completeOffset]=u32(valid&&totalInvalid==0u);`
+      body: `let valid=overflow[overflowOffset]==0u&&count[countOffset]==required[requiredOffset]&&count[countOffset]<=${tupleCapacity}u&&invalidZones[invalidZonesOffset]==0u;
+complete[completeOffset]=u32(valid&&invalidTuples[invalidTuplesOffset]==0u);`
     })
   );
   const complete = createView('complete', 'uint32', 1);
   const invalidSourceCount = createView('invalid-sources', 'uint32', 1);
   const zeroEligibleCount = createView('zero-eligible', 'uint32', 1);
-  graph.add(
+  addRecipeCountNodes(builder, {
+    id: `${id}-source-counts`,
+    operation: id,
+    rowCount: sourceCount,
+    declarations: IS_FINITE_VALUE_WGSL,
+    bindings: [
+      {name: 'totals', view: props.sourceTotals, type: 'f32', access: 'read'},
+      {name: 'eligible', view: eligibleWeights, type: 'f32', access: 'read'}
+    ],
+    prelude: 'let total=totals[totalsOffset+index];',
+    counts: [
+      {
+        name: 'invalidSources',
+        output: invalidSourceCount,
+        value: 'u32(!isFiniteValue(total)||total<0.0)'
+      },
+      {name: 'empty', output: zeroEligibleCount, value: 'u32(eligible[eligibleOffset+index]<=0.0)'}
+    ]
+  });
+  builder.addGlue(
+    'source-evidence',
     createRecipeKernelNode(graph, {
       id: `${id}-source-evidence`,
       operation: id,
       invocationCount: 1,
-      declarations: IS_FINITE_VALUE_WGSL,
       bindings: [
         {name: 'coverage', view: coverageComplete, type: 'u32', access: 'read'},
         {name: 'arithmetic', view: arithmeticInvalidCount, type: 'u32', access: 'read'},
         {name: 'overflow', view: pairOverflow, type: 'u32', access: 'read'},
-        {name: 'totals', view: props.sourceTotals, type: 'f32', access: 'read'},
-        {name: 'eligible', view: eligibleWeights, type: 'f32', access: 'read'},
-        {name: 'complete', view: complete, type: 'u32', access: 'read_write'},
-        {name: 'invalid', view: invalidSourceCount, type: 'u32', access: 'read_write'},
-        {name: 'zeroEligible', view: zeroEligibleCount, type: 'u32', access: 'read_write'}
+        {name: 'invalidSources', view: invalidSourceCount, type: 'u32', access: 'read'},
+        {name: 'complete', view: complete, type: 'u32', access: 'read_write'}
       ],
-      body: `var invalidSources=0u;var empty=0u;for(var source=0u;source<${sourceCount}u;source++){let total=totals[totalsOffset+source];invalidSources+=u32(!isFiniteValue(total)||total<0.0);empty+=u32(eligible[eligibleOffset+source]<=0.0);}
-invalid[invalidOffset]=invalidSources;zeroEligible[zeroEligibleOffset]=empty;complete[completeOffset]=u32(coverage[coverageOffset]!=0u&&overflow[overflowOffset]==0u&&invalidSources==0u&&arithmetic[arithmeticOffset]==0u);`
+      body: 'complete[completeOffset]=u32(coverage[coverageOffset]!=0u&&overflow[overflowOffset]==0u&&invalidSources[invalidSourcesOffset]==0u&&arithmetic[arithmeticOffset]==0u);'
     })
   );
-  graph.add(
+  builder.addGlue(
+    'source-ledger',
     createRecipeKernelNode(graph, {
       id: `${id}-source-ledger`,
       operation: id,
@@ -427,7 +493,8 @@ allocated[allocatedOffset+index]=select(missing,total*fraction,valid);unallocate
     ['eligible', eligibleWeights, outputs.sourceEligibleWeights],
     ['fractions', transferredFractions, outputs.sourceTransferredFractions]
   ] as const) {
-    graph.add(
+    builder.addGlue(
+      `publish-${name}`,
       createRecipeKernelNode(graph, {
         id: `${id}-publish-${name}`,
         operation: id,
@@ -441,7 +508,8 @@ allocated[allocatedOffset+index]=select(missing,total*fraction,valid);unallocate
       })
     );
   }
-  graph.add(
+  builder.addGlue(
+    'target-ledger',
     createRecipeKernelNode(graph, {
       id: `${id}-target-ledger`,
       operation: id,

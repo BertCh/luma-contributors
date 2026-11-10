@@ -206,7 +206,8 @@ it('GPUInverseDistanceWeighting returns deterministic node IDs', () => {
     }
     expect(ids[0]).toEqual(ids[1]);
     expect(ids[0].every(id => id.startsWith('idw-'))).toBe(true);
-    expect(ids[0].slice(-2)).toEqual(['idw-sort-cells', 'idw-gather']);
+    expect(ids[0].some(id => id.startsWith('idw-cell-row-order'))).toBe(true);
+    expect(ids[0].at(-1)).toBe('idw-gather');
   }
 });
 

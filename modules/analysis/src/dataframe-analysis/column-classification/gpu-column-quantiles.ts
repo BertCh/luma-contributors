@@ -11,7 +11,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validatePackedView
+  validatePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getColumnQuantileNodes, type GPUColumnQuantilesOutput} from './column-quantiles-nodes';
 import {
@@ -22,7 +23,7 @@ import {
 export type {GPUColumnQuantilesOutput} from './column-quantiles-nodes';
 
 const OPERATION = 'GPUColumnQuantiles';
-/** Largest column: row counts are held in f32 arithmetic, exact up to 2^24. */
+/** Largest column: row counts and ranks are held in float32, which is exact only up to 2^24. */
 const MAXIMUM_ROW_COUNT = 2 ** 24;
 
 /**
@@ -106,9 +107,11 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    if (rows > MAXIMUM_ROW_COUNT) {
-      throw new Error(`${id} supports at most ${MAXIMUM_ROW_COUNT} rows`);
-    }
+    validateRequirement(
+      id,
+      rows <= MAXIMUM_ROW_COUNT,
+      `values length must be at most ${MAXIMUM_ROW_COUNT} (2^24): row counts and ranks are held in float32 and are exact only up to 2^24`
+    );
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.mask) {
       validatePackedView(props.mask, ['uint32'], `${id} mask`);

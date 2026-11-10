@@ -118,7 +118,8 @@ export function addInterpolationDiagnosticsRecipe<Parameters>(
       }
     })
   );
-  graph.add(
+  builder.addGlue(
+    'residuals',
     createWGSLKernelNode(graph, {
       id: `${id}-residuals`,
       operation: 'GPUInterpolationDiagnostics',
@@ -153,8 +154,13 @@ standardized[standardizedOffset + index] = score;`
   );
   const invalidCount = getOrCreateView(graph, `${id}-validation-invalid`, 'uint32', 1);
   // Streaming means and a scaled sum of squares avoid fixed-point and squared-error overflow.
-  // This diagnostic pass is O(sampleCount), independent of output-grid size.
-  graph.add(
+  // This diagnostic pass is O(sampleCount), independent of output-grid size. It stays one
+  // invocation on purpose: the streaming mean and scaled sum of squares are order-dependent float
+  // recurrences, so a parallel reduction would change the results (not bit-identical). One thread
+  // reading about 10^6 samples is the size at which it starts to dominate; validation sets are
+  // normally thousands of samples. The integer counts alone could move to GPUReduction.
+  builder.addGlue(
+    'summary',
     createWGSLKernelNode(graph, {
       id: `${id}-summary`,
       operation: 'GPUInterpolationDiagnostics',

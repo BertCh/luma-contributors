@@ -16,6 +16,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  validateCommandNodeBudget,
   validateGraphViewsBelongToGraph,
   validatePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -33,6 +34,27 @@ import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientat
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 const OPERATION = 'GPUDelaunayTessellation';
+/** Command nodes per unrolled insertion-and-flip step: a gate, four insertion and four flip kernels. */
+const NODES_PER_STEP = 9;
+/** Largest step count of {@link getDelaunayStepCount}, which caps the unrolled steps. */
+const MAXIMUM_STEP_COUNT = 4096;
+/**
+ * Command nodes added to {@link GPUDelaunayTessellation.estimatedCommandNodeCount} for everything
+ * except the steps: status and group initialization, the site sorts, the exponent range, the
+ * duplicate flags, the output sort, classification, materialization and status. The sorts add
+ * passes with the site count inside published luma.gl classes. Measured 22 to 210 nodes for 1 to
+ * 1,000,000 sites with and without groups, so 512 covers every accepted size.
+ */
+const FIXED_NODE_ALLOWANCE = 512;
+/**
+ * Largest command node count of one {@link GPUDelaunayTessellation}. Above 2,048 sites every
+ * input unrolls the full 4,096 steps (36,864 nodes), so the shared 32,768 budget would reject
+ * every large tessellation; measured totals are 37,010 for 2,049 sites and 37,074 for 1,000,000.
+ * The bound is the step cap plus the fixed allowance, so it rejects only a future change that
+ * lets the node count grow past what is measured here.
+ */
+export const GPU_DELAUNAY_MAXIMUM_COMMAND_NODE_COUNT =
+  NODES_PER_STEP * MAXIMUM_STEP_COUNT + FIXED_NODE_ALLOWANCE;
 /** Widest binary exponent span (in bits) of nonzero coordinates the exact incircle path certifies. */
 const INCIRCLE_MAXIMUM_SPAN_VALUE = 55;
 /** Sort key for non-finite sites: a NaN bit pattern, which no finite coordinate key can equal. */
@@ -578,7 +600,7 @@ export function getDelaunayStepCount(pointCount: number): number {
   }
   const initialBudget =
     4 * Math.ceil(Math.log2(pointCount + 2)) + 32 + Math.ceil(0.5 * Math.sqrt(pointCount));
-  return clamp(2 * pointCount + 32, initialBudget, 4096);
+  return clamp(2 * pointCount + 32, initialBudget, MAXIMUM_STEP_COUNT);
 }
 
 /** Number of parallel steps before the small-input GPU continuation. @internal */
@@ -647,6 +669,13 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
   readonly props: GPUDelaunayTessellationProps;
   /** Resolved spatial context (planar). */
   readonly spatialContext: GPUSpatialContext;
+  /**
+   * Upper bound of the command nodes `getCommandNodes` returns, checked against
+   * {@link GPU_DELAUNAY_MAXIMUM_COMMAND_NODE_COUNT} at construction: nine nodes per unrolled step
+   * (exact, from {@link getDelaunayParallelStepCount}) plus a flat allowance of 512 for the fixed
+   * nodes and sorts, so it exceeds the true count by at most 512.
+   */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUDelaunayTessellationProps) {
     this.id = props.id ?? 'delaunay-tessellation';
@@ -693,6 +722,13 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
         throw new Error(`${id} output.status.duplicateCount must contain one row`);
       }
     }
+    this.estimatedCommandNodeCount =
+      NODES_PER_STEP * getDelaunayParallelStepCount(props.positions.length) + FIXED_NODE_ALLOWANCE;
+    validateCommandNodeBudget(
+      id,
+      this.estimatedCommandNodeCount,
+      GPU_DELAUNAY_MAXIMUM_COMMAND_NODE_COUNT
+    );
   }
 
   getCommandNodes<Parameters>(

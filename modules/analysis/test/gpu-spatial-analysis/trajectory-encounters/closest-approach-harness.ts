@@ -47,6 +47,8 @@ export async function runClosestApproach(
     hitCapacity: number;
     pairCapacity: number;
     wordBase?: bigint;
+    /** Largest bridged segment in time units; omitted means no limit. */
+    maximumGap?: number;
     timedEncodings?: number;
   }
 ): Promise<ClosestApproachGPUResult> {
@@ -116,6 +118,16 @@ export async function runClosestApproach(
         'float32',
         1
       ),
+      maximumGap:
+        options.maximumGap === undefined
+          ? undefined
+          : importGraphBuffer(
+              graph,
+              'maximum-gap',
+              input(Float32Array.of(options.maximumGap)),
+              'float32',
+              1
+            ),
       cellSize: options.cellSize,
       timeCellSize: options.timeCellSize,
       entryCapacity: options.entryCapacity,

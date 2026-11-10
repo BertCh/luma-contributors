@@ -1,7 +1,6 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -12,17 +11,26 @@ import {dggs} from '@luma.gl/shaders';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {S2_ANALYSIS_WGSL} from './s2-analysis-wgsl';
+
+/** Status of one cell: the measures are valid. */
+export const GPU_S2_CELL_MEASURES_STATUS_VALID = 0;
+/** Status of one cell: the input is not a valid S2 cell ID, so its measures are NaN. */
+export const GPU_S2_CELL_MEASURES_STATUS_INVALID = 1;
 export type GPUS2CellMeasuresProps = {
   id?: string;
   cells: GraphDataView<'uint32x2'>;
   output: {
     /** Spherical area (steradians), perimeter (radians). Multiply by radius squared/radius externally. */
     measures: GraphDataView<'float32x2'>;
-    /** 0 success, 1 invalid ID. */
+    /**
+     * Per cell: {@link GPU_S2_CELL_MEASURES_STATUS_VALID} (0) or
+     * {@link GPU_S2_CELL_MEASURES_STATUS_INVALID} (1, invalid cell ID).
+     */
     status: GraphDataView<'uint32'>;
   };
 };
@@ -35,9 +43,11 @@ export class GPUS2CellMeasures implements GPUCommandNodeProducer {
     validatePackedView(props.output.measures, ['float32x2'], this.id);
     validatePackedView(props.output.status, ['uint32'], this.id);
     // One measurement/status row per cell.
-    assert(
+    validateRequirement(
+      this.id,
       props.output.measures.length === props.cells.length &&
-        props.output.status.length === props.cells.length
+        props.output.status.length === props.cells.length,
+      'output.measures and output.status must hold one entry per cell'
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [props.cells]);
   }

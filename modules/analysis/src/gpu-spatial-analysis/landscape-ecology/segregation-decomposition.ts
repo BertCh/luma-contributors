@@ -2,11 +2,39 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  GPUReduction,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {
+  validateCapacity,
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {PHILOX_WGSL, PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
+/** Most randomization replicates: each replicate is a thread that sweeps every unit twice. */
+export const SEGREGATION_DECOMPOSITION_MAXIMUM_REPLICATES = 65536;
+
+/** Largest random seed: the Philox key word is a uint32. */
+const SEGREGATION_DECOMPOSITION_MAXIMUM_SEED = 0xffffffff;
+
+export type GPUSegregationDecompositionOutput = {
+  /** `float32`, 4 rows: dissimilarity of baseline, composition-only, spatial-only and final. */
+  indices: GraphDataView<'float32'>;
+  /** `uint32`, 4 rows: one when the matching index is valid. */
+  validity: GraphDataView<'uint32'>;
+  /** `float32x4`, one row: change, composition term, spatial term, residual. */
+  decomposition: GraphDataView<'float32x4'>;
+  /** `float32`, one row per replicate, only with `randomization`: paired exchange change in D. */
+  distribution: GraphDataView<'float32'>;
+  /** `float32x4`, one row, only with `randomization`: observed change, p value, valid, extreme. */
+  inference: GraphDataView<'float32x4'>;
+};
 
 export type GPUSegregationDecompositionProps = {
   id?: string;
@@ -23,6 +51,11 @@ export type GPUSegregationDecompositionProps = {
   counterfactualMethod: string;
   /** Paired within-support baseline/final label exchange, assuming exchangeability of the two labels. */
   randomization?: {replicates: number; seed: number; swaps?: GraphDataView<'uint32'>};
+  /**
+   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
+   * Formats and lengths are those of {@link GPUSegregationDecompositionOutput}.
+   */
+  output?: Partial<GPUSegregationDecompositionOutput>;
 };
 
 /** Two-factor Shapley decomposition of the dissimilarity-index change, without randomization inference. */
@@ -32,32 +65,118 @@ export function addSegregationDecompositionRecipe<Parameters>(
 ) {
   const id = props.id ?? 'segregation-decomposition';
   const count = props.populations[0].length;
-  assert(count > 0 && props.populations.every(population => population.length === count));
-  assert(props.supportId.length > 0 && props.counterfactualMethod.length > 0);
-  const indices = getRecipeView(graph, `${id}-indices`, 'float32', 4);
-  const validity = getRecipeView(graph, `${id}-validity`, 'uint32', 4);
-  const decomposition = getRecipeView(graph, `${id}-decomposition`, 'float32x4', 1);
+  validateRequirement(id, count > 0, 'populations must have at least 1 row');
+  for (const population of props.populations) {
+    validateViewLength(id, 'populations entry', population, count);
+  }
+  validateRequirement(id, props.supportId.length > 0, 'supportId must not be empty');
+  validateRequirement(
+    id,
+    props.counterfactualMethod.length > 0,
+    'counterfactualMethod must not be empty'
+  );
+  const output = props.output;
+  const indices = getRecipeView(graph, `${id}-indices`, 'float32', 4, output?.indices);
+  const validity = getRecipeView(graph, `${id}-validity`, 'uint32', 4, output?.validity);
+  const decomposition = getRecipeView(
+    graph,
+    `${id}-decomposition`,
+    'float32x4',
+    1,
+    output?.decomposition
+  );
+  // Every index is built from reductions over the units: unit terms, totals, then the shares.
   for (let scenario = 0; scenario < 4; scenario++) {
+    const prefix = `${id}-index-${scenario}`;
+    const focal = createTransientView(graph, `${prefix}-focal`, 'float32', count);
+    const complement = createTransientView(graph, `${prefix}-complement`, 'float32', count);
+    const invalidUnits = createTransientView(graph, `${prefix}-invalid-units`, 'uint32', count);
+    const dissimilarityTerms = createTransientView(graph, `${prefix}-terms`, 'float32', count);
+    const focalTotal = createTransientView(graph, `${prefix}-focal-total`, 'float32', 1);
+    const complementTotal = createTransientView(graph, `${prefix}-complement-total`, 'float32', 1);
+    const invalidTotal = createTransientView(graph, `${prefix}-invalid-total`, 'uint32', 1);
+    const dissimilarityTotal = createTransientView(graph, `${prefix}-total`, 'float32', 1);
     graph.add(
       createRecipeKernelNode(graph, {
-        id: `${id}-index-${scenario}`,
+        id: `${prefix}-units`,
         operation: id,
-        invocationCount: 1,
-        declarations:
-          IS_FINITE_VALUE_WGSL +
-          `
-fn readPopulation(row:u32)->vec2<f32>{return vec2<f32>(population[populationOffset+row*2u+0u],population[populationOffset+row*2u+1u]);}
-`,
+        invocationCount: count,
+        declarations: IS_FINITE_VALUE_WGSL,
         bindings: [
           {name: 'population', view: props.populations[scenario], type: 'f32', access: 'read'},
+          {name: 'focal', view: focal, type: 'f32', access: 'read_write'},
+          {name: 'complement', view: complement, type: 'f32', access: 'read_write'},
+          {name: 'invalidUnits', view: invalidUnits, type: 'u32', access: 'read_write'}
+        ],
+        body: `let counts=vec2<f32>(population[populationOffset+index*2u],population[populationOffset+index*2u+1u]);
+focal[focalOffset+index]=counts.x;
+complement[complementOffset+index]=counts.y;
+invalidUnits[invalidUnitsOffset+index]=u32(!(isFiniteValue(counts.x)&&isFiniteValue(counts.y)&&all(counts>=vec2<f32>(0.0))));`
+      })
+    );
+    for (const [name, input, total] of [
+      ['focal', focal, focalTotal],
+      ['complement', complement, complementTotal]
+    ] as const) {
+      graph.add(
+        new GPUReduction({
+          id: `${prefix}-${name}-sum`,
+          input,
+          output: total,
+          operation: 'sum'
+        }).getCommandNodes(graph)
+      );
+    }
+    graph.add(
+      new GPUReduction({
+        id: `${prefix}-invalid-sum`,
+        input: invalidUnits,
+        output: invalidTotal,
+        operation: 'sum'
+      }).getCommandNodes(graph)
+    );
+    graph.add(
+      createRecipeKernelNode(graph, {
+        id: `${prefix}-shares`,
+        operation: id,
+        invocationCount: count,
+        bindings: [
+          {name: 'focal', view: focal, type: 'f32', access: 'read'},
+          {name: 'complement', view: complement, type: 'f32', access: 'read'},
+          {name: 'focalTotal', view: focalTotal, type: 'f32', access: 'read'},
+          {name: 'complementTotal', view: complementTotal, type: 'f32', access: 'read'},
+          {name: 'terms', view: dissimilarityTerms, type: 'f32', access: 'read_write'}
+        ],
+        body: `let shares=vec2<f32>(focal[focalOffset+index],complement[complementOffset+index])/vec2<f32>(focalTotal[focalTotalOffset],complementTotal[complementTotalOffset]);
+terms[termsOffset+index]=0.5*abs(shares.x-shares.y);`
+      })
+    );
+    graph.add(
+      new GPUReduction({
+        id: `${prefix}-dissimilarity-sum`,
+        input: dissimilarityTerms,
+        output: dissimilarityTotal,
+        operation: 'sum'
+      }).getCommandNodes(graph)
+    );
+    graph.add(
+      createRecipeKernelNode(graph, {
+        id: prefix,
+        operation: id,
+        invocationCount: 1,
+        declarations: IS_FINITE_VALUE_WGSL,
+        bindings: [
+          {name: 'invalidTotal', view: invalidTotal, type: 'u32', access: 'read'},
+          {name: 'focalTotal', view: focalTotal, type: 'f32', access: 'read'},
+          {name: 'complementTotal', view: complementTotal, type: 'f32', access: 'read'},
+          {name: 'dissimilarityTotal', view: dissimilarityTotal, type: 'f32', access: 'read'},
           {name: 'indices', view: indices, type: 'f32', access: 'read_write'},
           {name: 'validity', view: validity, type: 'u32', access: 'read_write'}
         ],
-        body: `var totals=vec2<f32>(0.0);var valid=true;
-for(var unit=0u;unit<${count}u;unit++){let counts=readPopulation(unit);valid=valid&&isFiniteValue(counts.x)&&isFiniteValue(counts.y)&&all(counts>=vec2<f32>(0.0));totals+=counts;}
-valid=valid&&all(totals>vec2<f32>(0.0))&&isFiniteValue(totals.x)&&isFiniteValue(totals.y);
-var dissimilarity=0.0;for(var unit=0u;unit<${count}u;unit++){let shares=readPopulation(unit)/totals;dissimilarity+=0.5*abs(shares.x-shares.y);}
-indices[indicesOffset+${scenario}u]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),dissimilarity,valid);validity[validityOffset+${scenario}u]=u32(valid);`
+        body: `let totals=vec2<f32>(focalTotal[focalTotalOffset],complementTotal[complementTotalOffset]);
+let valid=invalidTotal[invalidTotalOffset]==0u&&all(totals>vec2<f32>(0.0))&&isFiniteValue(totals.x)&&isFiniteValue(totals.y);
+indices[indicesOffset+${scenario}u]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),dissimilarityTotal[dissimilarityTotalOffset],valid);
+validity[validityOffset+${scenario}u]=u32(valid);`
       })
     );
   }
@@ -84,15 +203,31 @@ writeOutput(0u,vec4<f32>(change,composition,spatial,change-composition-spatial))
     | undefined;
   if (props.randomization) {
     const options = props.randomization;
-    assert(
-      Number.isSafeInteger(options.replicates) &&
-        options.replicates > 0 &&
-        options.replicates <= 65536
+    validateCapacity(
+      id,
+      'randomization.replicates',
+      options.replicates,
+      1,
+      SEGREGATION_DECOMPOSITION_MAXIMUM_REPLICATES
     );
-    assert(Number.isSafeInteger(options.seed) && options.seed >= 0 && options.seed <= 0xffffffff);
-    assert(!options.swaps || options.swaps.length === count * options.replicates);
-    const distribution = getRecipeView(graph, `${id}-randomization`, 'float32', options.replicates);
-    const inference = getRecipeView(graph, `${id}-inference`, 'float32x4', 1);
+    validateCapacity(
+      id,
+      'randomization.seed',
+      options.seed,
+      0,
+      SEGREGATION_DECOMPOSITION_MAXIMUM_SEED
+    );
+    if (options.swaps) {
+      validateViewLength(id, 'randomization.swaps', options.swaps, count * options.replicates);
+    }
+    const distribution = getRecipeView(
+      graph,
+      `${id}-randomization`,
+      'float32',
+      options.replicates,
+      output?.distribution
+    );
+    const inference = getRecipeView(graph, `${id}-inference`, 'float32x4', 1, output?.inference);
     graph.add(
       createRecipeKernelNode(graph, {
         id: `${id}-paired-randomization`,
@@ -121,6 +256,56 @@ for(var unit=0u;unit<${count}u;unit++){let swap=swapAt(unit,index);let shares0=p
 output[outputOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),values.y-values.x,valid);`
       })
     );
+    // Valid and extreme replicates are counted by reductions over per-replicate flags.
+    const validReplicates = createTransientView(
+      graph,
+      `${id}-valid-flags`,
+      'uint32',
+      options.replicates
+    );
+    const extremeReplicates = createTransientView(
+      graph,
+      `${id}-extreme-flags`,
+      'uint32',
+      options.replicates
+    );
+    const validTotal = createTransientView(graph, `${id}-valid-total`, 'uint32', 1);
+    const extremeTotal = createTransientView(graph, `${id}-extreme-total`, 'uint32', 1);
+    graph.add(
+      createRecipeKernelNode(graph, {
+        id: `${id}-randomization-flags`,
+        operation: id,
+        invocationCount: options.replicates,
+        declarations: IS_FINITE_VALUE_WGSL,
+        bindings: [
+          {name: 'indices', view: indices, type: 'f32', access: 'read'},
+          {name: 'distribution', view: distribution, type: 'f32', access: 'read'},
+          {name: 'validFlags', view: validReplicates, type: 'u32', access: 'read_write'},
+          {name: 'extremeFlags', view: extremeReplicates, type: 'u32', access: 'read_write'}
+        ],
+        body: `let observed=indices[indicesOffset+3u]-indices[indicesOffset];
+let value=distribution[distributionOffset+index];
+let valid=isFiniteValue(value);
+validFlags[validFlagsOffset+index]=u32(valid);
+extremeFlags[extremeFlagsOffset+index]=u32(valid&&abs(value)>=abs(observed));`
+      })
+    );
+    graph.add(
+      new GPUReduction({
+        id: `${id}-valid-replicates`,
+        input: validReplicates,
+        output: validTotal,
+        operation: 'sum'
+      }).getCommandNodes(graph)
+    );
+    graph.add(
+      new GPUReduction({
+        id: `${id}-extreme-replicates`,
+        input: extremeReplicates,
+        output: extremeTotal,
+        operation: 'sum'
+      }).getCommandNodes(graph)
+    );
     graph.add(
       createRecipeKernelNode(graph, {
         id: `${id}-randomization-inference`,
@@ -129,10 +314,19 @@ output[outputOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),value
         declarations: IS_FINITE_VALUE_WGSL,
         bindings: [
           {name: 'indices', view: indices, type: 'f32', access: 'read'},
-          {name: 'distribution', view: distribution, type: 'f32', access: 'read'},
+          {name: 'validTotal', view: validTotal, type: 'u32', access: 'read'},
+          {name: 'extremeTotal', view: extremeTotal, type: 'u32', access: 'read'},
           {name: 'output', view: inference, type: 'f32', access: 'read_write'}
         ],
-        body: `let observed=indices[indicesOffset+3u]-indices[indicesOffset];var valid=0u;var extreme=0u;for(var replicate=0u;replicate<${options.replicates}u;replicate++){let value=distribution[distributionOffset+replicate];if(isFiniteValue(value)){valid++;extreme+=u32(abs(value)>=abs(observed));}}let complete=valid==${options.replicates}u&&isFiniteValue(observed);let missing=bitcast<f32>(0x7fc00000u | (index & 0u));output[outputOffset]=observed;output[outputOffset+1u]=select(missing,f32(extreme+1u)/f32(valid+1u),complete);output[outputOffset+2u]=f32(valid);output[outputOffset+3u]=f32(extreme);`
+        body: `let observed=indices[indicesOffset+3u]-indices[indicesOffset];
+let valid=validTotal[validTotalOffset];
+let extreme=extremeTotal[extremeTotalOffset];
+let complete=valid==${options.replicates}u&&isFiniteValue(observed);
+let missing=bitcast<f32>(0x7fc00000u | (index & 0u));
+output[outputOffset]=observed;
+output[outputOffset+1u]=select(missing,f32(extreme+1u)/f32(valid+1u),complete);
+output[outputOffset+2u]=f32(valid);
+output[outputOffset+3u]=f32(extreme);`
       })
     );
     randomization = {distribution, inference};

@@ -28,7 +28,8 @@ it('rate mapping composes existing kernels within core binding limits', () => {
   };
   const risk = addExcessRiskRecipe(graph, {events, populations, mask});
   const spatial = addSpatialRateRecipe(graph, {events, populations, mask, weights, scale: 100000});
-  expect(risk.status.stages).toEqual([]);
+  expect(risk.status.stages.map(entry => entry.stage)).toEqual(['excess-risk']);
+  expect(risk.status.stages[0].status.invalidCount?.length).toBe(1);
   expect(spatial.status.stages).toEqual([{stage: 'weights', status: weights.status}]);
   expect(spatial.status.stages[0].status.overflow).toBe(weights.status.overflow);
   expect(risk.outputs.excessRisk.length).toBe(4);

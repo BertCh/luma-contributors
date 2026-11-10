@@ -14,6 +14,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  getStorageBindingElementLimit,
   validateCapacity,
   validatePackedView,
   validateGraphOutputsDisjointFromInputs,
@@ -21,6 +22,11 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getCholeskyWGSL} from './spatial-regression-solve';
+import {
+  getRegressionTileLayout,
+  getRowTileSumNodes,
+  REGRESSION_TILE_MAXIMUM_ROW_COUNT
+} from './regression-row-tiles';
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
@@ -54,13 +60,20 @@ export type GPUInstrumentalVariablesCovarianceProps = {
  * symmetry, bounds and nonnegative weights are checked on GPU; PSD remains a caller precondition.
  * Inputs contain only estimation rows, with no automatic deletion/imputation. This is a covariance
  * stage, never a new estimator or an OLS sandwich applied incorrectly to endogenous regressors.
+ *
+ * Every row sum is a row-tile reduction with a compensated, fixed-order tile merge (the pattern of
+ * `GPUOrdinaryLeastSquares`): the column means, the centered moments H'H, H'Z and diag(Z'Z), and
+ * the meat matrix. One invocation solves the small projection system from the moments. The HAC
+ * kernel is applied row-parallel over its CSR neighbors (one invocation per row smooths the
+ * scores, `O(nnz * p)`), never over all pairs. Rows are limited by float32 counts (`2^24`) and
+ * by the design, instrument and score bindings of the device.
  */
 export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUInstrumentalVariablesCovarianceProps) {
     this.id = props.id ?? 'instrumental-variables-covariance';
     const rows = props.residuals.length;
-    validateCapacity(this.id, 'rows', rows, 1, 65536);
+    validateCapacity(this.id, 'rows', rows, 1, REGRESSION_TILE_MAXIMUM_ROW_COUNT);
     validateCapacity(this.id, 'coefficientCount', props.coefficientCount, 1, 15);
     validateCapacity(this.id, 'instrumentCount', props.instrumentCount, props.coefficientCount, 16);
     if (
@@ -98,7 +111,34 @@ export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProduce
     const columns = props.coefficientCount;
     const instruments = props.instrumentCount;
     const coefficients = columns + 1;
-    const means = createTransientView(graph, `${id}-means`, 'float32', columns + instruments);
+    // The design or instrument view is the largest caller binding, the score rows the largest
+    // transient one; both are float32 rows of at most 16 values.
+    validateCapacity(
+      id,
+      'rows',
+      rows,
+      1,
+      Math.min(
+        REGRESSION_TILE_MAXIMUM_ROW_COUNT,
+        getStorageBindingElementLimit(graph.device, 4 * Math.max(instruments, coefficients))
+      )
+    );
+    const layout = getRegressionTileLayout(rows);
+    const instrumentMomentCount = (instruments * (instruments + 1)) / 2;
+    const momentCount = instrumentMomentCount + instruments * columns + columns;
+    const meatCount = coefficients ** 2;
+    // Float32 workspace: column means of [design, instruments] and a nonfinite flag, the centered
+    // moments H'H (packed upper triangle), H'Z and diag(Z'Z), then the meat matrix and, with a
+    // kernel, the invalid-kernel flag.
+    const workspaceFlag = columns + instruments;
+    const workspaceMoments = workspaceFlag + 1;
+    const workspaceMeat = workspaceMoments + momentCount;
+    const workspace = createTransientView(
+      graph,
+      `${id}-workspace`,
+      'float32',
+      workspaceMeat + meatCount + 1
+    );
     const projection = createTransientView(
       graph,
       `${id}-projection`,
@@ -107,12 +147,9 @@ export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProduce
     );
     const scores = createTransientView(graph, `${id}-scores`, 'float32', rows * coefficients);
     const kernelStatus = createTransientView(graph, `${id}-kernel-status`, 'uint32', rows);
-    const covariance = createTransientView(
-      graph,
-      `${id}-candidate-covariance`,
-      'float32',
-      coefficients ** 2
-    );
+    const smoothedScores = props.kernel
+      ? createTransientView(graph, `${id}-smoothed-scores`, 'float32', rows * coefficients)
+      : undefined;
     const binding = (
       name: string,
       view: GraphDataView,
@@ -145,46 +182,114 @@ export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProduce
       props.kernel?.status?.overflow,
       ...Object.values(props.output)
     ]);
+    const rowWGSL = `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}
+fn getColumn(row: u32, column: u32) -> f32 {
+  if (column < ${columns}u) { return design[designOffset + row * ${columns}u + column]; }
+  return instruments[instrumentsOffset + row * ${instruments}u + column - ${columns}u];
+}`;
     const nodes = [
+      ...getRowTileSumNodes<Parameters>(graph, {
+        id: `${id}-sums`,
+        operation: 'GPUInstrumentalVariablesCovariance',
+        variant: 'sums',
+        rowCount: rows,
+        layout,
+        sumCount: columns + instruments,
+        maximumCount: 1,
+        bindings: [binding('design', props.design), binding('instruments', props.instruments)],
+        declarations: `${rowWGSL}
+fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  for (var column = 0u; column < SUM_COUNT; column++) {
+    let value = getColumn(row, column);
+    (*terms)[column] += value;
+    if (!isFiniteBits(value)) { (*terms)[SUM_COUNT] = 1.0; }
+  }
+}`,
+        partial: createTransientView(
+          graph,
+          `${id}-sum-partials`,
+          'float32',
+          layout.tileCount * (workspaceFlag + 1)
+        ),
+        output: workspace
+      }),
+      // Column sums become means in place, with the row count as a literal (as before the tiles).
       node(
         'means',
         columns + instruments,
-        [
+        [binding('workspace', workspace, 'read_write')],
+        `workspace[workspaceOffset + index] = workspace[workspaceOffset + index] / ${rows}.0;`
+      ),
+      ...getRowTileSumNodes<Parameters>(graph, {
+        id: `${id}-moments`,
+        operation: 'GPUInstrumentalVariablesCovariance',
+        variant: 'moments',
+        rowCount: rows,
+        layout,
+        sumCount: momentCount,
+        bindings: [
           binding('design', props.design),
           binding('instruments', props.instruments),
-          binding('means', means, 'read_write')
+          binding('workspace', workspace)
         ],
-        `var sum = 0.0; var correction = 0.0;
-for (var row = 0u; row < ${rows}u; row++) { var value = 0.0;
-if (index < ${columns}u) { value = design[designOffset + row * ${columns}u + index]; } else { value = instruments[instrumentsOffset + row * ${instruments}u + index - ${columns}u]; }
-let term = value - correction; let next = sum + term; correction = (next - sum) - term; sum = next; }
-means[meansOffset + index] = sum / ${rows}.0;`
-      ),
+        declarations: `${rowWGSL}
+fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  var centered: array<f32, ${columns + instruments}>;
+  for (var column = 0u; column < ${columns + instruments}u; column++) {
+    centered[column] = getColumn(row, column) - workspace[workspaceOffset + column];
+  }
+  var slot = 0u;
+  for (var first = 0u; first < ${instruments}u; first++) {
+    for (var second = first; second < ${instruments}u; second++) {
+      (*terms)[slot] += centered[${columns}u + first] * centered[${columns}u + second];
+      slot++;
+    }
+  }
+  for (var first = 0u; first < ${instruments}u; first++) {
+    for (var column = 0u; column < ${columns}u; column++) {
+      (*terms)[slot] += centered[${columns}u + first] * centered[column];
+      slot++;
+    }
+  }
+  for (var column = 0u; column < ${columns}u; column++) {
+    (*terms)[slot] += centered[column] * centered[column];
+    slot++;
+  }
+}`,
+        partial: createTransientView(
+          graph,
+          `${id}-moment-partials`,
+          'float32',
+          layout.tileCount * momentCount
+        ),
+        output: workspace,
+        outputSlot: workspaceMoments
+      }),
       node(
         'projection',
         1,
         [
-          binding('design', props.design),
-          binding('instruments', props.instruments),
-          binding('means', means),
+          binding('workspace', workspace),
           binding('projection', projection, 'read_write'),
           binding('status', props.output.status, 'read_write', 'u32')
         ],
+        // A small dense solve over at most 16 instruments: the row sums come from the tiles above.
         `status[statusOffset] = 0u;
 for (var slot = 0u; slot < ${columns * instruments}u; slot++) { projection[projectionOffset + slot] = getNaN(); }
 if (${rows}u <= ${coefficients}u) { status[statusOffset] = 2u; return; }
+var nonfinite = workspace[workspaceOffset + ${workspaceFlag}u] != 0.0;
+for (var column = 0u; column < ${columns + instruments}u; column++) { nonfinite = nonfinite || !isFiniteBits(workspace[workspaceOffset + column]); }
+if (nonfinite) { status[statusOffset] = 3u; return; }
 var instrumentGram: array<f32, ${instruments * instruments}>;
 var crossGram: array<f32, ${instruments * columns}>;
 var designScale: array<f32, ${columns}>;
-for (var row = 0u; row < ${rows}u; row++) {
- var instrumentRow: array<f32, ${instruments}>; var designRow: array<f32, ${columns}>;
- for (var column = 0u; column < ${columns}u; column++) { let value = design[designOffset + row * ${columns}u + column] - means[meansOffset + column]; if (!isFiniteBits(value)) { status[statusOffset] = 3u; return; } designRow[column] = value; designScale[column] += value * value; }
- for (var instrument = 0u; instrument < ${instruments}u; instrument++) { let value = instruments[instrumentsOffset + row * ${instruments}u + instrument] - means[meansOffset + ${columns}u + instrument]; if (!isFiniteBits(value)) { status[statusOffset] = 3u; return; } instrumentRow[instrument] = value; }
- for (var first = 0u; first < ${instruments}u; first++) {
-  for (var second = 0u; second < ${instruments}u; second++) { instrumentGram[first * ${instruments}u + second] += instrumentRow[first] * instrumentRow[second]; }
-  for (var column = 0u; column < ${columns}u; column++) { crossGram[first * ${columns}u + column] += instrumentRow[first] * designRow[column]; }
- }
-}
+var slot = ${workspaceMoments}u;
+for (var first = 0u; first < ${instruments}u; first++) { for (var second = first; second < ${instruments}u; second++) {
+ let value = workspace[workspaceOffset + slot]; slot++;
+ instrumentGram[first * ${instruments}u + second] = value; instrumentGram[second * ${instruments}u + first] = value;
+} }
+for (var first = 0u; first < ${instruments}u; first++) { for (var column = 0u; column < ${columns}u; column++) { crossGram[first * ${columns}u + column] = workspace[workspaceOffset + slot]; slot++; } }
+for (var column = 0u; column < ${columns}u; column++) { designScale[column] = workspace[workspaceOffset + slot]; slot++; }
 var instrumentScale: array<f32, ${instruments}>;
 for (var instrument = 0u; instrument < ${instruments}u; instrument++) { let diagonal = instrumentGram[instrument * ${instruments + 1}u]; if (!(diagonal > 0.0)) { status[statusOffset] = 1u; return; } instrumentScale[instrument] = inverseSqrt(diagonal); }
 for (var column = 0u; column < ${columns}u; column++) { if (!(designScale[column] > 0.0)) { status[statusOffset] = 1u; return; } designScale[column] = inverseSqrt(designScale[column]); }
@@ -215,21 +320,21 @@ for (var instrument = 0u; instrument < ${instruments}u; instrument++) { var righ
         rows,
         [
           binding('instruments', props.instruments),
-          binding('means', means),
+          binding('workspace', workspace),
           binding('projection', projection),
           binding('residuals', props.residuals),
           binding('scores', scores, 'read_write')
         ],
         `let residual = residuals[residualsOffset + index]; var intercept = 1.0 / ${rows}.0;
 for (var column = 0u; column < ${columns}u; column++) { var influence = 0.0;
-for (var instrument = 0u; instrument < ${instruments}u; instrument++) { influence += projection[projectionOffset + column * ${instruments}u + instrument] * (instruments[instrumentsOffset + index * ${instruments}u + instrument] - means[meansOffset + ${columns}u + instrument]); }
-intercept -= means[meansOffset + column] * influence;
+for (var instrument = 0u; instrument < ${instruments}u; instrument++) { influence += projection[projectionOffset + column * ${instruments}u + instrument] * (instruments[instrumentsOffset + index * ${instruments}u + instrument] - workspace[workspaceOffset + ${columns}u + instrument]); }
+intercept -= workspace[workspaceOffset + column] * influence;
 scores[scoresOffset + index * ${coefficients}u + column + 1u] = residual * influence;
 }
 scores[scoresOffset + index * ${coefficients}u] = residual * intercept;`
       )
     ];
-    if (props.kernel) {
+    if (props.kernel && smoothedScores) {
       const kernel = props.kernel;
       nodes.push(
         node(
@@ -258,52 +363,78 @@ if (!invalid) { for (var slot = begin; slot < end; slot++) {
 } }
 invalid = invalid || abs(diagonal - 1.0) > 1e-5;
 kernelStatus[kernelStatusOffset + index] = select(0u, 4u, invalid);`
+        ),
+        // One invocation per row smooths the scores over its kernel neighbors: O(nnz * p) work.
+        node(
+          'smooth-scores',
+          rows,
+          [
+            binding('scores', scores),
+            binding('offsets', kernel.offsets, 'read', 'u32'),
+            binding('neighbors', kernel.neighbors, 'read', 'u32'),
+            binding('weights', kernel.weights),
+            binding('smoothed', smoothedScores, 'read_write')
+          ],
+          `var right: array<f32, ${coefficients}>;
+let begin = offsets[offsetsOffset + index]; let end = offsets[offsetsOffset + index + 1u];
+if (begin <= end && end <= ${kernel.neighbors.length}u) { for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; if (neighbor < ${rows}u) {
+ let weight = weights[weightsOffset + slot];
+ for (var second = 0u; second < ${coefficients}u; second++) { right[second] += weight * scores[scoresOffset + neighbor * ${coefficients}u + second]; } } } }
+for (var second = 0u; second < ${coefficients}u; second++) { smoothed[smoothedOffset + index * ${coefficients}u + second] = right[second]; }`
         )
       );
     }
     nodes.push(
-      node(
-        'covariance',
-        coefficients ** 2,
-        [
+      ...getRowTileSumNodes<Parameters>(graph, {
+        id: `${id}-meat`,
+        operation: 'GPUInstrumentalVariablesCovariance',
+        variant: 'meat',
+        rowCount: rows,
+        layout,
+        sumCount: meatCount,
+        maximumCount: props.kernel ? 1 : 0,
+        bindings: [
           binding('scores', scores),
-          ...(props.kernel
+          ...(smoothedScores
             ? [
-                binding('offsets', props.kernel.offsets, 'read', 'u32'),
-                binding('neighbors', props.kernel.neighbors, 'read', 'u32'),
-                binding('weights', props.kernel.weights)
+                binding('smoothed', smoothedScores),
+                binding('kernelStatus', kernelStatus, 'read', 'u32')
               ]
-            : []),
-          binding('covariance', covariance, 'read_write')
+            : [])
         ],
-        `let first = index / ${coefficients}u; let second = index % ${coefficients}u; var sum = 0.0; var correction = 0.0;
-for (var row = 0u; row < ${rows}u; row++) { var right = scores[scoresOffset + row * ${coefficients}u + second];
-${
-  props.kernel
-    ? `right = 0.0;
-let begin = offsets[offsetsOffset + row]; let end = offsets[offsetsOffset + row + 1u];
-if (begin <= end && end <= ${props.kernel.neighbors.length}u) { for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; if (neighbor < ${rows}u) { right += weights[weightsOffset + slot] * scores[scoresOffset + neighbor * ${coefficients}u + second]; } } }`
-    : ''
-}
-let term = scores[scoresOffset + row * ${coefficients}u + first] * right - correction;
-let next = sum + term; correction = (next - sum) - term; sum = next; }
-covariance[covarianceOffset + index] = sum ${props.method === 'HC1' ? `* ${rows}.0 / ${Math.max(rows - coefficients, 1)}.0` : ''};`
-      )
-    );
-    nodes.push(
+        // HC: sum of s_i s_i'. HAC: sum of s_i (K s)_i', with the smoothed scores above.
+        declarations: `${IS_FINITE_BITS_WGSL}
+fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  for (var first = 0u; first < ${coefficients}u; first++) {
+    let left = scores[scoresOffset + row * ${coefficients}u + first];
+    for (var second = 0u; second < ${coefficients}u; second++) {
+      (*terms)[first * ${coefficients}u + second] += left * ${smoothedScores ? 'smoothed[smoothedOffset' : 'scores[scoresOffset'} + row * ${coefficients}u + second];
+    }
+  }
+  ${smoothedScores ? `if (kernelStatus[kernelStatusOffset + row] != 0u) { (*terms)[SUM_COUNT] = 1.0; }` : ''}
+}`,
+        partial: createTransientView(
+          graph,
+          `${id}-meat-partials`,
+          'float32',
+          layout.tileCount * (meatCount + (props.kernel ? 1 : 0))
+        ),
+        output: workspace,
+        outputSlot: workspaceMeat
+      }),
       node(
         'finish',
         1,
         [
-          binding('candidate', covariance),
+          binding('workspace', workspace),
           binding('covariance', props.output.covariance, 'read_write'),
-          binding('status', props.output.status, 'read_write', 'u32'),
-          ...(props.kernel ? [binding('kernelStatus', kernelStatus, 'read', 'u32')] : [])
+          binding('status', props.output.status, 'read_write', 'u32')
         ],
         `var code = status[statusOffset];
-${props.kernel ? `for (var row = 0u; row < ${rows}u; row++) { if (kernelStatus[kernelStatusOffset + row] != 0u) { code = 4u; } }` : ''}
-for (var slot = 0u; slot < ${coefficients ** 2}u; slot++) { if (code == 0u && !isFiniteBits(candidate[candidateOffset + slot])) { code = 3u; } }
-for (var slot = 0u; slot < ${coefficients ** 2}u; slot++) { covariance[covarianceOffset + slot] = select(getNaN(), candidate[candidateOffset + slot], code == 0u); }
+${props.kernel ? `if (workspace[workspaceOffset + ${workspaceMeat + meatCount}u] != 0.0) { code = 4u; }` : ''}
+let scale = ${props.method === 'HC1' ? `${rows}.0 / ${Math.max(rows - coefficients, 1)}.0` : '1.0'};
+for (var slot = 0u; slot < ${meatCount}u; slot++) { if (code == 0u && !isFiniteBits(workspace[workspaceOffset + ${workspaceMeat}u + slot] * scale)) { code = 3u; } }
+for (var slot = 0u; slot < ${meatCount}u; slot++) { covariance[covarianceOffset + slot] = select(getNaN(), workspace[workspaceOffset + ${workspaceMeat}u + slot] * scale, code == 0u); }
 status[statusOffset] = code;`
       )
     );

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   createFixedPointClearNode,
   createFixedPointScaleNodes,
@@ -22,12 +21,22 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
   RASTER_FINITE_WGSL,
   rasterBinding,
-  validateRasterCount,
   validateRasterViews,
   validateRasterGraph
 } from './raster-kernel-utils';
+
+/** Regions: adjacency and weights are dense regionCount squared matrices and the merge scans a whole matrix row per round in one invocation (reference tier). */
+export const MAXIMUM_REGION_GRAPH_REGION_COUNT = 256;
+/** Merge rounds: every round is an unrolled command node (adaptive rounds merge one pair each), so the count bounds the node total. */
+export const MAXIMUM_REGION_GRAPH_ITERATIONS = 256;
+/** Cells: labels index cells with 30 bits so the boundary pass can count neighbour pairs in a u32 atomic without overflow. */
+export const MAXIMUM_REGION_GRAPH_CELL_COUNT = 0x3fffffff;
 
 export type GPURasterRegionGraphProps = {
   id?: string;
@@ -53,6 +62,14 @@ export type GPURasterRegionGraphProps = {
   };
 };
 /** Four-neighbor region adjacency with bounded fixed or adaptive mean-difference merging. Explicit rounds use ping-pong graph scratch; no cross-workgroup barrier.
+ *
+ * Reference tier: the adjacency and weight matrices are dense regionCount squared, and the
+ * adaptive merge (and the final pending check of fixed mode) runs in one invocation that scans
+ * the whole matrix, one merge per round. The size is enforced at construction:
+ * `regionCount <= MAXIMUM_REGION_GRAPH_REGION_COUNT` (256) and
+ * `maximumIterations <= MAXIMUM_REGION_GRAPH_ITERATIONS` (256). Use it for oracles, small
+ * segmentations and tests, not for production-scale region counts.
+ *
  * Labels remain source IDs; missing observations exclude only mean contributions. Complete
  * domains are required: tile seams must be reconciled before this contributor.
  * All adaptive merges recompute observation-count-weighted component means; the closest
@@ -63,22 +80,52 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
   constructor(readonly props: GPURasterRegionGraphProps) {
     this.id = props.id ?? 'raster-region-graph';
     validateRasterGrid(this.id, props.grid);
-    validateRasterCount(props.grid.width);
-    validateRasterCount(props.grid.height);
-    validateRasterCount(props.grid.width * props.grid.height, 0x3fffffff);
-    validateRasterCount(props.regionCount, 256);
-    validateRasterCount(props.maximumIterations, 256);
-    assert(['fixed', 'adaptive'].includes(props.mergeMode ?? 'fixed'));
-    assert(Number.isFinite(Math.fround(props.mergeThreshold)) && props.mergeThreshold >= 0);
-    assert(
-      props.labels.length >= props.grid.width * props.grid.height &&
-        props.values.length >= props.grid.width * props.grid.height
+    validateCapacity(this.id, 'grid.width', props.grid.width);
+    validateCapacity(this.id, 'grid.height', props.grid.height);
+    validateCapacity(
+      this.id,
+      'grid cell count',
+      props.grid.width * props.grid.height,
+      1,
+      MAXIMUM_REGION_GRAPH_CELL_COUNT
     );
-    assert(
+    validateCapacity(
+      this.id,
+      'regionCount',
+      props.regionCount,
+      1,
+      MAXIMUM_REGION_GRAPH_REGION_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'maximumIterations',
+      props.maximumIterations,
+      1,
+      MAXIMUM_REGION_GRAPH_ITERATIONS
+    );
+    validateRequirement(
+      this.id,
+      ['fixed', 'adaptive'].includes(props.mergeMode ?? 'fixed'),
+      "mergeMode must be 'fixed' or 'adaptive'"
+    );
+    validateRequirement(
+      this.id,
+      Number.isFinite(Math.fround(props.mergeThreshold)) && props.mergeThreshold >= 0,
+      'mergeThreshold must be a nonnegative finite float32 value'
+    );
+    validateRequirement(
+      this.id,
+      props.labels.length >= props.grid.width * props.grid.height &&
+        props.values.length >= props.grid.width * props.grid.height,
+      'labels and values must hold at least grid.width times grid.height entries'
+    );
+    validateRequirement(
+      this.id,
       props.output.adjacency.length >= props.regionCount ** 2 &&
         props.output.weights.length >= props.regionCount ** 2 &&
         props.output.mapping.length >= props.regionCount &&
-        props.output.status.length >= 1
+        props.output.status.length >= 1,
+      'output.adjacency and output.weights must hold regionCount squared entries, output.mapping regionCount entries and output.status one'
     );
     validateRasterViews(this.id, [props.labels, props.values], Object.values(props.output));
   }

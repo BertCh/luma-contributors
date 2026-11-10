@@ -40,6 +40,7 @@ import {
 import {
   BLOCK_ROWS,
   getColumnSumNodes,
+  getNegativeValueCountNodes,
   getPermutationInputNodes,
   getPermutationParameterWGSL,
   PERMUTATION_FLOAT_WGSL,
@@ -47,7 +48,7 @@ import {
   PERMUTATION_TOTAL,
   validatePermutationInputs
 } from './permutation-inference-kernels';
-import {PERMUTATION_RANDOM_WGSL} from './permutation-random';
+import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
 import {
   getAlternativeMultiplier,
   getExceedanceCountWGSL,
@@ -141,7 +142,7 @@ type LocalStatisticSpec = {
   drawnA: string;
   /** WGSL of the second lag's per-draw term (Lee's L only). */
   drawnB?: string;
-  /** WGSL of the row term in `fx, fy, lagA, lagB`; the statistic up to a positive per-row constant. */
+  /** WGSL of the row term in `fx, fy, lagA, lagB`; the statistic up to a positive per-row constant (for G only with non-negative data; negative data is rejected). */
   term: string;
 };
 
@@ -262,6 +263,13 @@ export type GPULocalPermutationTestOutput = {
      * (no row is tested and all p-values are NaN; the count is never clamped).
      */
     overflow: GraphDataView<'uint32'>;
+    /**
+     * Optional caller-owned one-row uint32 output: the number of analysis rows with a negative
+     * value, which `'localG'` and `'localGStar'` reject (G is defined for non-negative data).
+     * When it is nonzero no row is tested (`exceedances` is `GPU_LOCAL_PERMUTATION_NOT_TESTED`,
+     * every p-value and `observed` is NaN) and `overflow` is 1. Written as 0 for other statistics.
+     */
+    invalidCount?: GraphDataView<'uint32'>;
   };
 };
 
@@ -530,6 +538,8 @@ type LocalPermutationReplayInputs = {
   kernel: LocalPermutationKernelOptions;
   bindings: readonly WGSLKernelBinding[];
   observedRaw: GraphDataView<'float32'>;
+  /** One-row count of negative analysis values, set for `'localG'` and `'localGStar'`: the replay of a rejected test is unavailable, like the live test. */
+  negativeCount?: GraphDataView<'float32'>;
 };
 
 /**
@@ -692,6 +702,17 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     }
     validatePackedUint32View(props.output.status.overflow, `${id} output.status.overflow`);
     validateCapacity(id, 'output.status.overflow length', props.output.status.overflow.length);
+    if (props.output.status.invalidCount) {
+      validatePackedUint32View(
+        props.output.status.invalidCount,
+        `${id} output.status.invalidCount`
+      );
+      validateCapacity(
+        id,
+        'output.status.invalidCount length',
+        props.output.status.invalidCount.length
+      );
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -704,7 +725,8 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
         props.output.classes,
         props.output.quadrants,
         props.output.islandCount,
-        props.output.status.overflow
+        props.output.status.overflow,
+        props.output.status.invalidCount
       ],
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
@@ -768,7 +790,8 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
       props.output.classes,
       props.output.quadrants,
       props.output.islandCount,
-      props.output.status.overflow
+      props.output.status.overflow,
+      props.output.status.invalidCount
     ]);
     const rows = props.values.length;
     const alternative = resolvePermutationAlternative(id, props.alternative);
@@ -1134,6 +1157,90 @@ ${accessWGSL}`,
   let scaledBits = bitcast<u32>(scaled);
   let canonical = bitcast<f32>(select(scaledBits, 0u, (scaledBits & 0x7fffffffu) == 0u));
   observed[observedOffset + index] = select(getQuietNaN(index), canonical, isFiniteFloat(raw));`
+        })
+      );
+    }
+
+    // G is defined for non-negative data: with a negative value the dropped denominator is not a
+    // positive constant and the ranking would be of the wrong tail, so no row is tested.
+    if (statistic === 'localG' || statistic === 'localGStar') {
+      const negative = getNegativeValueCountNodes<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        rows,
+        compactX,
+        rowPositions
+      });
+      if (this.replayInputs) {
+        this.replayInputs.negativeCount = negative.negativeCount;
+      }
+      const invalidBindings: WGSLKernelBinding[] = [
+        {name: 'negativeCount', view: negative.negativeCount, type: 'f32', access: 'read'},
+        {name: 'exceedances', view: props.output.exceedances, type: 'u32', access: 'read_write'},
+        {
+          name: 'overflow',
+          view: props.output.status.overflow,
+          type: 'atomic<u32>',
+          access: 'read_write'
+        }
+      ];
+      if (permutationCounts) {
+        invalidBindings.push({
+          name: 'permutationCounts',
+          view: permutationCounts,
+          type: 'u32',
+          access: 'read_write'
+        });
+      }
+      if (props.output.observed) {
+        invalidBindings.push({
+          name: 'observed',
+          view: props.output.observed,
+          type: 'f32',
+          access: 'read_write'
+        });
+      }
+      if (props.output.status.invalidCount) {
+        invalidBindings.push({
+          name: 'invalidCount',
+          view: props.output.status.invalidCount,
+          type: 'u32',
+          access: 'read_write'
+        });
+      }
+      nodes.push(
+        ...negative.nodes,
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-negative-values`,
+          operation: OPERATION,
+          variant: 'negative-values',
+          bindings: invalidBindings,
+          invocationCount: rows,
+          declarations: `const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;
+${PERMUTATION_FLOAT_WGSL}`,
+          body: `let invalid = negativeCount[negativeCountOffset] > 0.0;
+  if (invalid) {
+    exceedances[exceedancesOffset + index] = NOT_TESTED;
+    ${permutationCounts ? 'permutationCounts[permutationCountsOffset + index] = NOT_TESTED;' : ''}
+    ${props.output.observed ? 'observed[observedOffset + index] = getQuietNaN(index);' : ''}
+  }
+  if (index == 0u) {
+    ${props.output.status.invalidCount ? 'invalidCount[invalidCountOffset] = u32(negativeCount[negativeCountOffset]);' : ''}
+    if (invalid) {
+      atomicMax(&overflow[overflowOffset], 1u);
+    }
+  }`
+        })
+      );
+    } else if (props.output.status.invalidCount) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-invalid-clear`,
+          operation: OPERATION,
+          view: props.output.status.invalidCount,
+          type: 'u32',
+          value: '0u',
+          componentCount: 1
         })
       );
     }

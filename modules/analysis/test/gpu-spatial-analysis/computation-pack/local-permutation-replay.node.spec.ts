@@ -83,6 +83,21 @@ describe('GPULocalPermutationReplay', () => {
     }
   });
 
+  it('binds the negative-value count in the setup of G and G* only', () => {
+    for (const [statistic, expected] of [
+      ['localG', true],
+      ['localGStar', true],
+      ['localMoran', false]
+    ] as const) {
+      const {graph, replay} = createReplay({}, {statistic});
+      const [setup] = getGPUCommandNodeKernelSources(replay.getCommandNodes(graph));
+      expect(setup.source.includes('negativeCount[negativeCountOffset] == 0.0'), statistic).toBe(
+        expected
+      );
+      graph.device.destroy();
+    }
+  });
+
   it('requires a lowered test', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const test = createReplayTest(graph);

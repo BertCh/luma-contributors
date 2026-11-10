@@ -4,8 +4,8 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
-import {getPermutationShuffleWGSL} from '../permutation-inference/permutation-shuffle';
+import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
+import {getPermutationShuffleWGSL} from '../../analysis-core/kernels/permutation-shuffle';
 import {GPU_SPACE_TIME_SUMMARY} from './space-time-parameters';
 import {SPACE_TIME_STATE} from './space-time-stopping';
 

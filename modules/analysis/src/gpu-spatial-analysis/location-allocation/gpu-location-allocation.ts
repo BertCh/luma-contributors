@@ -19,6 +19,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
@@ -67,8 +68,17 @@ export const GPU_LOCATION_ALLOCATION_STATUS = {
 /** Default `maximumSwapIterations` of the p-median and maximum-coverage operations. */
 export const GPU_LOCATION_ALLOCATION_DEFAULT_MAXIMUM_SWAP_ITERATIONS = 100;
 
-/** Largest `maximumSwapIterations`: every iteration adds five dispatches to the graph. */
+/** Largest `maximumSwapIterations`: every iteration adds six command nodes to the graph. */
 export const GPU_LOCATION_ALLOCATION_MAXIMUM_SWAP_ITERATIONS = 1000;
+
+/**
+ * Command nodes the sparse transpose sort adds to
+ * {@link GPULocationAllocation.estimatedCommandNodeCount}. A `GPUSort` adds a pass per key digit
+ * and per factor of its workgroup size, so its node count depends on the entry count and the
+ * facility count inside a published luma.gl class. Measured at most 35 for 3,000,000 entries with
+ * 20 key bits, so 64 covers every accepted size.
+ */
+const SPARSE_TRANSPOSE_SORT_NODE_ALLOWANCE = 64;
 
 /**
  * A swap must improve the objective by more than this fraction of the objective scale (the sum of
@@ -250,6 +260,14 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
   readonly demandCount: number;
   /** Resolved `maximumSwapIterations` (0 when the phase is disabled or not applicable). */
   readonly maximumSwapIterations: number;
+  /**
+   * Upper bound of the command nodes `getCommandNodes` returns, checked against the shared command
+   * node budget at construction. Exact for dense costs: initialize, validate, three nodes per
+   * facility chosen, six per swap iteration plus the swap initialization, assign and finalize. For
+   * sparse costs the transpose sort is counted as a flat allowance of 64, so the value exceeds the
+   * true count by at most 64.
+   */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPULocationAllocationProps) {
     this.id = props.id ?? 'location-allocation';
@@ -365,6 +383,28 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
       ],
       [...this.getCostViews(), props.demandWeights, props.coverageDistance]
     );
+    const hasSwaps = this.maximumSwapIterations > 0;
+    // Sparse setup: two structure validations, a weight and coverage validation when either exists,
+    // and the transpose (row scatter, sort, segment offsets, gather). Dense setup: one validation.
+    const setupNodeCount = props.sparseCosts
+      ? 2 +
+        Number(props.demandWeights !== undefined || props.operation !== 'p-median') +
+        3 +
+        SPARSE_TRANSPOSE_SORT_NODE_ALLOWANCE
+      : 1;
+    this.estimatedCommandNodeCount =
+      // initialize, finalize, and the assign node (two for sparse costs)
+      2 +
+      Number(Boolean(props.sparseCosts)) +
+      1 +
+      setupNodeCount +
+      // score, choose and update per greedy step
+      3 * props.maximumFacilityCount +
+      // swap initialization, then list, prepare, totals, score, choose and apply per iteration
+      (hasSwaps ? 1 + 6 * this.maximumSwapIterations : 0);
+    // Every greedy step and swap iteration is unrolled; lower maximumFacilityCount or
+    // maximumSwapIterations.
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /** The cost views read by the kernels: the dense matrix, or the three CSR views. */

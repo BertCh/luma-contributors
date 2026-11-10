@@ -100,8 +100,12 @@ export function createHierarchicalDensityInitNode<Parameters>(
     id: string;
     shape: HierarchicalDensityShape;
     positions: GraphDataView<'float32x2'>;
-    neighborDistances: GraphDataView<'float32'>;
-    neighborCounts: GraphDataView<'uint32'>;
+    /**
+     * CSR of the `minimumSamples - 1` nearest other points, whose largest distance is the
+     * self-inclusive core distance. Omitted when `minimumSamples` is 1, which needs no search.
+     */
+    neighborOffsets?: GraphDataView<'uint32'>;
+    neighborDistances?: GraphDataView<'float32'>;
     boxMinima: GraphDataView<'float32x2'>;
     boxMaxima: GraphDataView<'float32x2'>;
     parents: GraphDataView<'uint32'>;
@@ -115,8 +119,22 @@ export function createHierarchicalDensityInitNode<Parameters>(
     variant: 'init',
     bindings: [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      {name: 'neighborDistances', view: props.neighborDistances, type: 'f32', access: 'read'},
-      {name: 'neighborCounts', view: props.neighborCounts, type: 'u32', access: 'read'},
+      ...(props.neighborOffsets && props.neighborDistances
+        ? [
+            {
+              name: 'neighborOffsets',
+              view: props.neighborOffsets,
+              type: 'u32' as const,
+              access: 'read' as const
+            },
+            {
+              name: 'neighborDistances',
+              view: props.neighborDistances,
+              type: 'f32' as const,
+              access: 'read' as const
+            }
+          ]
+        : []),
       {name: 'boxMinima', view: props.boxMinima, type: 'f32', access: 'read_write'},
       {name: 'boxMaxima', view: props.boxMaxima, type: 'f32', access: 'read_write'},
       {name: 'parents', view: props.parents, type: 'u32', access: 'read_write'},
@@ -130,8 +148,19 @@ export function createHierarchicalDensityInitNode<Parameters>(
   let isValid = isFiniteNumber(x) && isFiniteNumber(y);
   parents[parentsOffset + index] = index;
   var core = bitcast<f32>(0x7f800000u | (index & 0u));
-  if (isValid && neighborCounts[neighborCountsOffset + index] >= MINIMUM_SAMPLES) {
-    core = neighborDistances[neighborDistancesOffset + index * MINIMUM_SAMPLES + MINIMUM_SAMPLES - 1u];
+  if (isValid) {
+    ${
+      props.neighborOffsets
+        ? `let begin = neighborOffsets[neighborOffsetsOffset + index];
+    let end = neighborOffsets[neighborOffsetsOffset + index + 1u];
+    if (end - begin + 1u >= MINIMUM_SAMPLES) {
+      core = 0.0;
+      for (var slot = begin; slot < end; slot++) {
+        core = max(core, neighborDistances[neighborDistancesOffset + slot]);
+      }
+    }`
+        : 'core = 0.0;'
+    }
   }
   coreDistances[coreDistancesOffset + index] = core;
   boxMinima[boxMinimaOffset + index * 2u] = select(FLOAT32_MAXIMUM, x, isValid);

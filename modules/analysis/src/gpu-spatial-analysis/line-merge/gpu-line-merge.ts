@@ -25,10 +25,18 @@ import type {GPUCardinalityPort, GPULineGeometryFields} from '../../analysis-cor
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   resolveGPUSpatialContext,
-  type GPUSpatialContext
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
 
+import {createListRankingNodes, getListRankingRoundCount} from './list-ranking';
+
 const OPERATION = 'GPULineMerge';
+
+// Merging compares endpoint bit patterns and measures nothing, so any coordinate space works.
+const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const)
+});
 
 /** Value written to per-line outputs for a line that is in no chain (fewer than two vertices). */
 export const GPU_LINE_MERGE_NONE = 0xffffffff;
@@ -47,7 +55,7 @@ export type GPULineMergeOutput = {
   chainOffsets: GraphDataView<'uint32'>;
   /** Chain vertices in chain order. Rows past the last chain are left untouched. */
   positions: GraphDataView<'float32x2'>;
-  /** One-row status scalars; `count` receives the number of chains. */
+  /** One-row status scalars; `count` counts chains (not vertices or lines) and receives their number. */
   status: GPUCardinalityPort;
   /** Optional chain index per input line, or {@link GPU_LINE_MERGE_NONE} for lines with under two vertices. */
   lineChains?: GraphDataView<'uint32'>;
@@ -62,10 +70,10 @@ export type GPULineMergeProps = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'line-merge'`. */
   id?: string;
   /**
-   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
-   * construction: project positions to a planar frame first, for example with
-   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
-   * (`geometry-measures`), and pass the frame's context.
+   * Default: native planar coordinates. Planar and longitude-latitude contexts are both accepted,
+   * because lines join only where their end points have identical coordinates (bit patterns) and
+   * nothing is measured; a longitude of 180 and one of -180 are different coordinates and do not
+   * join.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -111,14 +119,18 @@ export class GPULineMerge implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineMergeProps;
-  /** Resolved spatial context (planar only). */
+  /** Resolved spatial context (planar unless given). */
   readonly spatialContext: GPUSpatialContext;
   /** Number of input lines. */
   readonly lineCount: number;
 
   constructor(props: GPULineMergeProps) {
     this.id = props.id ?? 'line-merge';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.props = props;
     const {id} = this;
     const {output} = props;
@@ -332,7 +344,7 @@ fn isSame(a: u32, b: u32) -> bool {
     // carrying the head, the vertex-count prefix and (when needed) the line count. Rounds are fixed,
     // so there are no readbacks: `O(L log L)` work in `O(log L)` dispatches instead of `O(L)` serial
     // steps per chain, and every output is then written by one thread per traversal.
-    const rounds = Math.max(1, Math.ceil(Math.log2(Math.max(lineCount, 2))));
+    const rounds = getListRankingRoundCount(lineCount);
     const needLineCounts = Boolean(output.lineOrders);
     const walkDeclarations = `
 fn vertexCount(line: u32) -> u32 {
@@ -366,33 +378,16 @@ fn vertexCount(line: u32) -> u32 {
   minKey[minKeyOffset + index] = ${lineKey('index')};`
       )
     );
-    for (let round = 0; round < rounds; round++) {
-      const from = round % 2;
-      const to = 1 - from;
-      nodes.push(
-        kernel(
-          'min-round',
-          [
-            read('predecessorIn', minPredecessors[from]),
-            read('keyIn', minKeys[from]),
-            write('predecessorOut', minPredecessors[to]),
-            write('keyOut', minKeys[to])
-          ],
-          endpointCount,
-          `let previous = predecessorIn[predecessorInOffset + index];
-  var key = keyIn[keyInOffset + index];
-  var nextPrevious = previous;
-  if (previous != NONE) {
-    key = min(key, keyIn[keyInOffset + previous]);
-    nextPrevious = predecessorIn[predecessorInOffset + previous];
-  }
-  predecessorOut[predecessorOutOffset + index] = nextPrevious;
-  keyOut[keyOutOffset + index] = key;`,
-          '',
-          `-${round}`
-        )
-      );
-    }
+    const minimum = createListRankingNodes<Parameters>(graph, {
+      id: `${id}-min-round`,
+      operation: OPERATION,
+      variant: 'min-round',
+      length: endpointCount,
+      rounds,
+      pointers: minPredecessors,
+      values: [{name: 'key', views: minKeys, rule: 'minimum'}]
+    });
+    nodes.push(...minimum.nodes);
     const minFinal = rounds % 2;
     nodes.push(
       // leaderBits: 0 inactive, 1 active, 3 active cycle leader. A cycle node is canonical when its
@@ -438,59 +433,20 @@ fn vertexCount(line: u32) -> u32 {
         })
       );
     }
-    for (let round = 0; round < rounds; round++) {
-      const from = round % 2;
-      const to = 1 - from;
-      nodes.push(
-        kernel(
-          'rank-round',
-          [
-            read('predecessorIn', rankPredecessors[from]),
-            read('headIn', rankHeads[from]),
-            read('sumIn', rankSums[from]),
-            write('predecessorOut', rankPredecessors[to]),
-            write('headOut', rankHeads[to]),
-            write('sumOut', rankSums[to])
-          ],
-          endpointCount,
-          `let previous = predecessorIn[predecessorInOffset + index];
-  var head = headIn[headInOffset + index];
-  var sum = sumIn[sumInOffset + index];
-  var nextPrevious = previous;
-  if (previous != NONE) {
-    head = headIn[headInOffset + previous];
-    sum += sumIn[sumInOffset + previous];
-    nextPrevious = predecessorIn[predecessorInOffset + previous];
-  }
-  predecessorOut[predecessorOutOffset + index] = nextPrevious;
-  headOut[headOutOffset + index] = head;
-  sumOut[sumOutOffset + index] = sum;`,
-          '',
-          `-${round}`
-        )
-      );
-      if (needLineCounts) {
-        nodes.push(
-          kernel(
-            'rank-count-round',
-            [
-              read('predecessorIn', rankPredecessors[from]),
-              read('countIn', rankCounts[from]),
-              write('countOut', rankCounts[to])
-            ],
-            endpointCount,
-            `let previous = predecessorIn[predecessorInOffset + index];
-  var count = countIn[countInOffset + index];
-  if (previous != NONE) {
-    count += countIn[countInOffset + previous];
-  }
-  countOut[countOutOffset + index] = count;`,
-            '',
-            `-${round}`
-          )
-        );
-      }
-    }
+    const ranking = createListRankingNodes<Parameters>(graph, {
+      id: `${id}-rank-round`,
+      operation: OPERATION,
+      variant: needLineCounts ? 'rank-round-counts' : 'rank-round',
+      length: endpointCount,
+      rounds,
+      pointers: rankPredecessors,
+      values: [
+        {name: 'head', views: rankHeads, rule: 'replace'},
+        {name: 'sum', views: rankSums, rule: 'add'},
+        ...(needLineCounts ? [{name: 'count', views: rankCounts, rule: 'add' as const}] : [])
+      ]
+    });
+    nodes.push(...ranking.nodes);
     const rankFinal = rounds % 2;
     const headFinal = rankHeads[rankFinal];
     const sumFinal = rankSums[rankFinal];

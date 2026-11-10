@@ -58,6 +58,10 @@ import {
   GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS,
   GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE
 } from '../../../src/gpu-network/index';
+import {
+  GPU_LOCATION_ALLOCATION_STATUS,
+  GPULocationAllocation
+} from '../../../src/gpu-spatial-analysis/index';
 import type {TextureFormat} from '@luma.gl/core';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
@@ -890,7 +894,8 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
             targetNodes: view('uint32', 17),
             costLimit: view('float32', 1),
             laneCount,
-            maximumIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
+            // One lane runs 40 batches, so the maximum rounds would pass the command node budget.
+            maximumIterations: laneCount === 1 ? 512 : GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
             localIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,
             output: {
               costs: view('float32', COST_MATRIX_ROWS * 17),
@@ -916,7 +921,8 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
             startsPerRow: 2,
             costLimit: view('float32', 1),
             laneCount,
-            maximumIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
+            // One lane runs 40 batches, so the maximum rounds would pass the command node budget.
+            maximumIterations: laneCount === 1 ? 512 : GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
             localIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,
             output: {
               costs: view('float32', COST_MATRIX_ROWS * NODES),
@@ -927,6 +933,23 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
       }
     })
   ),
+  {
+    // 40 one-lane batches of the maximum 1,024 rounds emit about 41,000 command nodes.
+    exportName: 'GPUNetworkCostMatrix',
+    name: 'lane count 1, 40 rows, maximum rounds, over the command node budget',
+    build: context => {
+      const {graph, view} = context;
+      graph.add(
+        new GPUNetworkCostMatrix({
+          topology: topology(context, NODES, EDGES, {positions: false}) as never,
+          startNodes: view('uint32', COST_MATRIX_ROWS),
+          laneCount: 1,
+          maximumIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
+          output: {costs: view('float32', COST_MATRIX_ROWS * NODES)}
+        })
+      );
+    }
+  },
   {
     exportName: 'GPUNetworkCostMatrix',
     name: 'defaults, start rows derived from startsPerRow',
@@ -1982,14 +2005,21 @@ const NETWORK_K_FUNCTION_CASES: KernelAuditCase[] = [
     build: context => kFunctionEventsCase(context, 256)
   },
   {
+    // Past the 2^32 - 1 invocation limit the blocks are narrower than the events, so at the binding
+    // limit the blocks alone emit far more command nodes than the budget allows.
     exportName: 'GPUNetworkKFunction',
-    name: 'events at the binding limit, row blocks at the invocation limit, seed table above the maximum',
+    name: 'events at the binding limit, row blocks at the invocation limit, over the command node budget',
     build: context => kFunctionEventsCase(context, 255)
   },
   {
+    // A quarter of the largest event table, the widest row blocks the invocation limit allows and
+    // one round: about 4,100 blocks of four command nodes, inside the 32,768 budget.
     exportName: 'GPUNetworkKFunction',
-    name: 'half the events, row blocks at the invocation limit',
-    build: context => kFunctionEventsCase(context, 255, 2)
+    name: 'quarter of the events, widest row blocks at the invocation limit, one round',
+    build: context => {
+      const events = Math.floor(context.maximumRows(8) / 4);
+      kFunctionEventsCase(context, Math.floor(0xffffffff / events), 4, 1);
+    }
   }
 ];
 
@@ -1997,7 +2027,8 @@ const NETWORK_K_FUNCTION_CASES: KernelAuditCase[] = [
 function kFunctionEventsCase(
   context: KernelAuditContext,
   rowsPerBlock: number,
-  eventDivisor: number = 1
+  eventDivisor: number = 1,
+  maximumIterations: number = 8
 ): void {
   const {graph, view, maximumRows} = context;
   graph.add(
@@ -2008,7 +2039,7 @@ function kFunctionEventsCase(
       networkLength: view('float32', 1),
       parameters: view('uint32', GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH),
       rowsPerBlock,
-      maximumIterations: 8,
+      maximumIterations,
       output: kFunctionOutput(context, 32, 0, false)
     })
   );
@@ -2927,6 +2958,26 @@ const NETWORK_COST_TABLE_CASES: KernelAuditCase[] = [
     })
   ),
   {
+    // 600 one-lane batches of the default 64 rounds emit about 42,000 command nodes.
+    exportName: 'GPUNetworkCostTable',
+    name: 'lane count 1, 600 nodes, default rounds, over the command node budget',
+    build: context => {
+      const {graph, view} = context;
+      graph.add(
+        new GPUNetworkCostTable({
+          topology: topology(context, 600, EDGES, {positions: false}) as never,
+          costLimit: view('float32', 1),
+          laneCount: 1,
+          output: {
+            offsets: view('uint32', 601),
+            targets: view('uint32', 4096),
+            costs: view('float32', 4096)
+          }
+        })
+      );
+    }
+  },
+  {
     exportName: 'GPUNetworkCostTable',
     name: 'one lane, defaults, no status',
     build: context => {
@@ -3009,6 +3060,29 @@ const NETWORK_CENTRALITY_CASES: KernelAuditCase[] = [
       }
     })
   ),
+  {
+    // Three command nodes per greedy step: 11,000 steps emit about 33,000 nodes.
+    exportName: 'GPULocationAllocation',
+    name: 'p-median, 11,000 greedy steps, over the command node budget',
+    build: ({graph, view}) => {
+      const facilities = 11000;
+      graph.add(
+        new GPULocationAllocation({
+          costs: view('float32', facilities * 2),
+          facilityCount: facilities,
+          operation: 'p-median',
+          maximumFacilityCount: facilities,
+          maximumSwapIterations: 0,
+          output: {
+            selectedFacilities: view('uint32', facilities),
+            assignments: view('uint32', 2),
+            objective: view('float32', 1),
+            status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+          }
+        })
+      );
+    }
+  },
   {
     exportName: 'GPUNetworkCentrality',
     name: 'default lanes, closeness only',

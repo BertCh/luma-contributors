@@ -22,7 +22,10 @@ const kernelSources: Record<string, string[]> = {
   GPUSimilarLocations: [`${SOURCE_ROOT}/similar-locations/gpu-similar-locations.ts`],
   GPULocalOutlierFactor: [`${SOURCE_ROOT}/outlier-detection/gpu-local-outlier-factor.ts`],
   GPUEmergingHotSpots: [`${SOURCE_ROOT}/emerging-hot-spots/gpu-emerging-hot-spots.ts`],
-  addSpaceTimeHotSpotsRecipe: [`${SOURCE_ROOT}/recipes/space-time-hot-spots-recipe.ts`]
+  addSpaceTimeHotSpotsRecipe: [
+    `${SOURCE_ROOT}/recipes/space-time-hot-spots-recipe.ts`,
+    'modules/analysis/src/dataframe-analysis/period-index/gpu-period-index.ts'
+  ]
 };
 
 test('the clustering table holds exactly the directions, clustering, groups, similarity, outlier and space-time elements', () => {

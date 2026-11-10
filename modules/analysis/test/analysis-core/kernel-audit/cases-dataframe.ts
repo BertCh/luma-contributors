@@ -179,6 +179,19 @@ const CLASS_BREAKS_CASES: KernelAuditCase[] = [
   },
   {
     exportName: 'GPUClassBreaks',
+    name: 'one row above the maximum (2^24 + 1), float32 counts',
+    build: ({graph, view}) =>
+      graph.add(
+        new GPUClassBreaks({
+          values: view('float32', COLUMN_MAXIMUM_ROWS + 1),
+          parameters: view('float32', getGPUClassBreaksParameterLength(6)),
+          maximumClassCount: 6,
+          output: {breaks: view('float32', 7), classCount: view('uint32', 1)}
+        })
+      )
+  },
+  {
+    exportName: 'GPUClassBreaks',
     name: 'every method, 6 classes, default bins, no optional views',
     build: ({graph, view}) =>
       graph.add(
@@ -404,6 +417,19 @@ const DATAFRAME_COLUMN_CASES: KernelAuditCase[] = [
         })
       );
     }
+  },
+  {
+    exportName: 'GPUColumnQuantiles',
+    name: 'one row above the maximum (2^24 + 1), float32 counts',
+    build: ({graph, view}) =>
+      graph.add(
+        new GPUColumnQuantiles({
+          values: view('float32', COLUMN_MAXIMUM_ROWS + 1),
+          parameters: view('float32', getGPUColumnQuantilesParameterLength(3)),
+          quantileCount: 3,
+          output: {quantiles: view('float32', 3), validCount: view('uint32', 1)}
+        })
+      )
   },
   {
     exportName: 'GPUColumnQuantiles',
@@ -661,6 +687,21 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
         })
       );
     }
+  },
+  {
+    exportName: 'GPUColumnProfile',
+    name: 'one row above the maximum (2^24 + 1), float32 counts',
+    build: ({graph, view}) =>
+      graph.add(
+        new GPUColumnProfile({
+          columns: [{values: view('float32', COLUMN_MAXIMUM_ROWS + 1)}],
+          parameters: view('float32', getGPUColumnProfileParameterLength(1)),
+          histogramBinCount: 2048,
+          hyperLogLogPrecision: 12,
+          topCategoryCount: 1,
+          output: {statistics: view('float32', GPU_COLUMN_PROFILE_STATISTIC_COUNT)}
+        })
+      )
   },
   {
     exportName: 'GPUColumnProfile',
@@ -1936,7 +1977,8 @@ const TEMPORAL_REDUCTION_CASES: KernelAuditCase[] = [
       exportName: 'GPUTemporalReduction',
       name: `${words ? 'word' : 'float'} times, slots at the binding limit`,
       build: context => {
-        const slots = context.maximumRows(4);
+        // Word times bind two key words per slot (8 bytes), float times one (4 bytes).
+        const slots = context.maximumRows(words ? 8 : 4);
         const bucketCount = words ? 1024 : 2 ** 20;
         const cellCount = Math.floor(slots / bucketCount);
         context.graph.add(
@@ -1950,6 +1992,22 @@ const TEMPORAL_REDUCTION_CASES: KernelAuditCase[] = [
       }
     })
   ),
+  {
+    exportName: 'GPUTemporalReduction',
+    name: 'word times, slots one cell row above the binding limit',
+    build: context => {
+      const bucketCount = 1024;
+      const cellCount = Math.floor(context.maximumRows(8) / bucketCount) + 1;
+      context.graph.add(
+        temporalReduction(context, {
+          rows: context.maximumRows(8),
+          cellCount,
+          bucketCount,
+          words: true
+        })
+      );
+    }
+  },
   ...[false, true].flatMap(words =>
     [
       [16, 16],

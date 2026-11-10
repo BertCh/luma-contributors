@@ -42,18 +42,26 @@ export type GPUSpatialClusteringSettings = {
    * itself, holds at least this many points.
    */
   minimumPoints: number;
+  /**
+   * Space-time clustering (ST-DBSCAN): two points are neighbors only when, besides the spatial
+   * test, their relative times differ by at most this many ticks of the contributor's
+   * `temporalContext` unit. Positive. Required when the contributor has `times`, and ignored
+   * otherwise. Stored at index 6.
+   */
+  timeEpsilon?: number;
 };
 
 /**
  * Packs spatial-clustering parameters into the 8-element float32 layout read by
  * `GPUSpatialClustering`.
  *
- * Layout: `[minX, minY, maxX, maxY, epsilon, minimumPoints, 0, 0]`.
+ * Layout: `[minX, minY, maxX, maxY, epsilon, minimumPoints, timeEpsilon, 0]`; `timeEpsilon` is 0
+ * when omitted.
  *
  * @param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
- * @throws If a value is not finite, `epsilon <= 0`, `minimumPoints` is not an integer in
- * `[1, 2^24]`, or `target` is too short.
+ * @throws If a value is not finite, `epsilon <= 0`, `timeEpsilon` is given and not positive and
+ * finite, `minimumPoints` is not an integer in `[1, 2^24]`, or `target` is too short.
  */
 export function getGPUSpatialClusteringParameterValues(
   settings: GPUSpatialClusteringSettings,
@@ -73,6 +81,12 @@ export function getGPUSpatialClusteringParameterValues(
     throw new Error('Spatial clustering epsilon must be positive');
   }
   if (
+    settings.timeEpsilon !== undefined &&
+    (!Number.isFinite(settings.timeEpsilon) || settings.timeEpsilon <= 0)
+  ) {
+    throw new Error('Spatial clustering timeEpsilon must be positive and finite');
+  }
+  if (
     !Number.isInteger(settings.minimumPoints) ||
     settings.minimumPoints < 1 ||
     settings.minimumPoints > MAXIMUM_MINIMUM_POINTS
@@ -86,6 +100,12 @@ export function getGPUSpatialClusteringParameterValues(
     settings.spatialContext,
     settings.epsilon
   );
-  target.set([...settings.bounds, settings.epsilon, settings.minimumPoints, 0, 0]);
+  target.set([
+    ...settings.bounds,
+    settings.epsilon,
+    settings.minimumPoints,
+    settings.timeEpsilon ?? 0,
+    0
+  ]);
   return target;
 }

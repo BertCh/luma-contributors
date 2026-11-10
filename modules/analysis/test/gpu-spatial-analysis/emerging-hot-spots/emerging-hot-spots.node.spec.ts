@@ -130,6 +130,18 @@ it('getGPUEmergingHotSpotsParameterValues packs and validates the layout', () =>
     persistentFraction: 0.8,
     minimumTrendSliceCount: 0
   });
+  expect(
+    getGPUEmergingHotSpotsParameterValues({
+      temporalWindow: 0,
+      sporadicRequiresFinalSlice: false
+    })[7]
+  ).toBe(1);
+  expect(
+    getGPUEmergingHotSpotsParameterValues({
+      temporalWindow: 0,
+      sporadicRequiresFinalSlice: true
+    })[7]
+  ).toBe(0);
   expect(strict[2]).toBeCloseTo(2.5758293, 6);
   expect(strict[3]).toBeCloseTo(0.01, 6);
   expect(strict[4]).toBeCloseTo(0.8, 6);
@@ -154,7 +166,10 @@ it('getGPUEmergingHotSpotsParameterValues packs and validates the layout', () =>
   ).toBe(3);
   // Any level is allowed with a correction.
   expect(
-    getGPUEmergingHotSpotsParameterValues({temporalWindow: 0, confidenceLevel: 0.8})[6]
+    getGPUEmergingHotSpotsParameterValues({
+      temporalWindow: 0,
+      confidenceLevel: 0.8
+    })[6]
   ).toBeCloseTo(0.2, 6);
   const bad = (parameters: Parameters<typeof getGPUEmergingHotSpotsParameterValues>[0]) =>
     expect(() => getGPUEmergingHotSpotsParameterValues(parameters));
@@ -163,12 +178,20 @@ it('getGPUEmergingHotSpotsParameterValues packs and validates the layout', () =>
   bad({radius: 1, temporalWindow: 1.5}).toThrow(/temporalWindow/);
   bad({radius: 1, temporalWindow: -1}).toThrow(/temporalWindow/);
   bad({radius: 1, temporalWindow: 0, criticalZ: 3}).toThrow(/requires multipleTesting 'none'/);
-  bad({radius: 1, temporalWindow: 0, criticalZ: 0, multipleTesting: 'none'}).toThrow(/criticalZ/);
+  bad({
+    radius: 1,
+    temporalWindow: 0,
+    criticalZ: 0,
+    multipleTesting: 'none'
+  }).toThrow(/criticalZ/);
   bad({radius: 1, temporalWindow: 0, trendSignificanceLevel: 1}).toThrow(/trendSignificanceLevel/);
   bad({radius: 1, temporalWindow: 0, persistentFraction: 0.5}).toThrow(/persistentFraction/);
-  bad({radius: 1, temporalWindow: 0, confidenceLevel: 0.8, multipleTesting: 'none'}).toThrow(
-    /confidenceLevel/
-  );
+  bad({
+    radius: 1,
+    temporalWindow: 0,
+    confidenceLevel: 0.8,
+    multipleTesting: 'none'
+  }).toThrow(/confidenceLevel/);
   bad({radius: 1, temporalWindow: 0, confidenceLevel: 1}).toThrow(/confidenceLevel/);
   bad({radius: 1, temporalWindow: 0, minimumTrendSliceCount: 2.5}).toThrow(
     /minimumTrendSliceCount/
@@ -225,11 +248,15 @@ it('GPUEmergingHotSpots validates its inputs', () => {
     /pValues length/
   );
   expectThrows(
-    graph => ({adjustedPValues: createTransientView(graph, 'a', 'float32', 12)}),
+    graph => ({
+      adjustedPValues: createTransientView(graph, 'a', 'float32', 12)
+    }),
     /adjustedPValues length/
   );
   expectThrows(
-    graph => ({lastValidSlice: createTransientView(graph, 'l', 'uint32', 60)}),
+    graph => ({
+      lastValidSlice: createTransientView(graph, 'l', 'uint32', 60)
+    }),
     /lastValidSlice length/
   );
   expectThrows(graph => {
@@ -447,7 +474,10 @@ it('multiple testing removes weakly significant bins and matches statsmodels', (
     sliceCount: 1,
     values: Float32Array.from(MULTIPLE_TESTING_VALUES)
   };
-  const packed = getGPUEmergingHotSpotsParameterValues({radius: 0, temporalWindow: 0});
+  const packed = getGPUEmergingHotSpotsParameterValues({
+    radius: 0,
+    temporalWindow: 0
+  });
   const zScores = computeSpaceTimeGiStar(cube, packed);
   // The oracle's p uses the shader's erfcc fit (relative error below 1.2e-7).
   const pValues = computeAdjustedBinPValues(zScores, 'none');
@@ -473,17 +503,25 @@ it('multiple testing removes weakly significant bins and matches statsmodels', (
       temporalWindow: 0,
       multipleTesting: method as 'none'
     });
-    const states = computeBinStates(zScores, level, {multipleTesting: method as 'none'});
+    const states = computeBinStates(zScores, level, {
+      multipleTesting: method as 'none'
+    });
     const flagged = Array.from(states, (state, bin) => (state > 0 ? bin : -1)).filter(
       bin => bin >= 0
     );
     expect(flagged, method).toEqual(significant);
   }
-  const states = computeBinStates(zScores, packed, {multipleTesting: 'benjamini-hochberg'});
+  const states = computeBinStates(zScores, packed, {
+    multipleTesting: 'benjamini-hochberg'
+  });
   // Strong outliers: 92 and 93 hot, 94 cold. Weak ones are dropped.
   expect([92, 93, 94, 95, 96, 97].map(bin => states[bin])).toEqual([1, 1, 2, 0, 0, 0]);
   // The family is every valid bin: an extra missing bin does not change anything.
-  const withMissing = {...cube, values: Float32Array.from([...cube.values, NaN]), gridWidth: 101};
+  const withMissing = {
+    ...cube,
+    values: Float32Array.from([...cube.values, NaN]),
+    gridWidth: 101
+  };
   const missingZ = computeSpaceTimeGiStar(withMissing, packed);
   expect(Number.isNaN(missingZ[100])).toBe(true);
   expect(computeBinStates(missingZ, packed).slice(0, 100)).toEqual(
@@ -549,7 +587,13 @@ it('the classifier oracle reaches all 17 categories on designed z series', () =>
     ['intensifying hot', ramp(2, 4), categories.INTENSIFYING_HOT],
     ['persistent hot', rep(20, hot), categories.PERSISTENT_HOT],
     ['diminishing hot', ramp(4, 2), categories.DIMINISHING_HOT],
-    ['sporadic hot', series([hot], rep(3, 0), [hot], rep(5, 0), [hot, 0]), categories.SPORADIC_HOT],
+    // Sporadic needs a significant final slice (current ArcGIS Pro); a neutral final slice is
+    // 'no pattern' by default and Sporadic only under the older rule (see the legacy test below).
+    [
+      'sporadic hot neutral final',
+      series([hot], rep(3, 0), [hot], rep(5, 0), [hot, 0]),
+      categories.NO_PATTERN
+    ],
     ['sporadic hot final hot', series([hot, 0, hot, 0, hot]), categories.SPORADIC_HOT],
     ['oscillating hot', series([cold, 0, hot, 0, hot, hot]), categories.OSCILLATING_HOT],
     ['historical hot', series(rep(19, hot), [0]), categories.HISTORICAL_HOT],
@@ -558,7 +602,8 @@ it('the classifier oracle reaches all 17 categories on designed z series', () =>
     ['intensifying cold', ramp(-2, -4), categories.INTENSIFYING_COLD],
     ['persistent cold', rep(20, cold), categories.PERSISTENT_COLD],
     ['diminishing cold', ramp(-4, -2), categories.DIMINISHING_COLD],
-    ['sporadic cold', series([cold, 0, 0, cold, 0]), categories.SPORADIC_COLD],
+    ['sporadic cold neutral final', series([cold, 0, 0, cold, 0]), categories.NO_PATTERN],
+    ['sporadic cold final cold', series([cold, 0, 0, 0, cold]), categories.SPORADIC_COLD],
     ['oscillating cold', series([hot, 0, cold, 0, cold, cold]), categories.OSCILLATING_COLD],
     ['historical cold', series(rep(19, cold), [0]), categories.HISTORICAL_COLD],
     ['no pattern', rep(10, 0), categories.NO_PATTERN],
@@ -611,7 +656,7 @@ it('the classifier oracle reaches all 17 categories on designed z series', () =>
 });
 
 it('the designed cube is classified as designed by the double precision oracle', () => {
-  const {cube, designed, expectedCategories} = createDesignedCube();
+  const {cube, designed, expectedCategories, legacyExpectedCategories} = createDesignedCube();
   expect(designed.map(entry => entry.expected).sort((a, b) => a - b)).toEqual(
     expect.arrayContaining(Array.from({length: 17}, (_, index) => index))
   );
@@ -646,6 +691,20 @@ it('the designed cube is classified as designed by the double precision oracle',
   for (const [cell, expected] of expectedCategories.entries()) {
     expect(cells.category[cell], `cell ${cell} ${designed[cell]?.name}`).toBe(expected);
   }
+  // The older rule, requested explicitly, reproduces the previous sporadic categories.
+  const legacyPacked = getGPUEmergingHotSpotsParameterValues({
+    radius: 0,
+    temporalWindow: 0,
+    sporadicRequiresFinalSlice: false
+  });
+  const legacyCells = computeEmergingHotSpotCells(zScores, cube, legacyPacked);
+  for (const [cell, expected] of legacyExpectedCategories.entries()) {
+    expect(legacyCells.category[cell], `legacy cell ${cell} ${designed[cell]?.name}`).toBe(
+      expected
+    );
+  }
+  expect(legacyCells.category.filter(category => category === 6)).toHaveLength(2);
+  expect(cells.category.filter(category => category === 6)).toHaveLength(1);
   // Radius 0 and window 0: z is the plain standard score of each valid bin.
   const moments = computeEmergingHotSpotMoments(cube);
   expect(zScores[0]).toBeCloseTo((cube.values[0] - moments.mean) / moments.standardDeviation, 12);
@@ -665,7 +724,10 @@ it('GPUEmergingHotSpots weights mode creates the same pipeline over weights bind
   const graph = new GPUCommandGraph(device);
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `weights-mode-${serial++}`, format, length);
-  const base = createProps(graph, {gridWidth: undefined, gridHeight: undefined});
+  const base = createProps(graph, {
+    gridWidth: undefined,
+    gridHeight: undefined
+  });
   const contributor = new GPUEmergingHotSpots({
     ...base,
     weights: {

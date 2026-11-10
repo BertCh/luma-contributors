@@ -371,3 +371,25 @@ export {
   getSymmetricEigenvalues,
   type GPUSpatialLogDeterminantMode
 } from './spatial-exact-log-determinant';
+export {
+  GPUGeographicallyTemporallyWeightedRegression,
+  getGPUGTWRParameterValues,
+  GPU_GTWR_MAXIMUM_PREDICTOR_COUNT,
+  GPU_GTWR_MAXIMUM_ROW_COUNT,
+  GPU_GTWR_PARAMETER_LENGTH
+} from './gpu-geographically-temporally-weighted-regression';
+export type {
+  GPUGeographicallyTemporallyWeightedRegressionOutput,
+  GPUGeographicallyTemporallyWeightedRegressionProps,
+  GPUGTWRSettings
+} from './gpu-geographically-temporally-weighted-regression';
+export {
+  GPUMultiscaleGeographicallyTemporallyWeightedRegression,
+  getGPUMGTWRParameterValues,
+  GPU_MGTWR_MAXIMUM_ITERATION_COUNT
+} from './gpu-multiscale-geographically-temporally-weighted-regression';
+export type {
+  GPUMGTWRSettings,
+  GPUMultiscaleGeographicallyTemporallyWeightedRegressionOutput,
+  GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps
+} from './gpu-multiscale-geographically-temporally-weighted-regression';

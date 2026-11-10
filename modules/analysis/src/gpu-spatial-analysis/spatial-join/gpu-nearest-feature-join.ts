@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts/index';
+import type {
+  GPUCandidateStatusPort,
+  GPULonLatPolygonStatusPort
+} from '../../analysis-core/contracts/index';
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
@@ -22,9 +25,9 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import type {
   GPUCompactOutput,
-  GPUFloat32Positions,
   GPUUint32Rows
 } from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
@@ -33,6 +36,7 @@ import {
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
+  validateRequirement,
   validatePowerOfTwo,
   validateCapacity,
   validateMaximumCount,
@@ -138,19 +142,32 @@ export type GPUNearestFeatureJoinOutput = {
   /** Optional compact stable IDs of points with a feature within the radius. */
   matches?: GPUCompactOutput;
   /**
+   * Nearest-feature mode: optional per-query-row flag (one `uint32` per point, in row order across
+   * chunks), 1 when that point lost candidates because the candidate total exceeded
+   * `candidateCapacity`. Candidates are laid out in point-row order and the slots past the
+   * capacity are dropped, so the flagged points are the point whose candidates cross the capacity
+   * (it keeps its first ones) and every later point that had a candidate (it keeps none); earlier
+   * points are complete. A flagged point may report a farther feature than the true nearest, or
+   * none. Rows lost to a BVH overflow are not flagged. Not available in neighbors mode, whose
+   * traversal has no candidate stage.
+   */
+  candidateTruncated?: GraphDataView<'uint32'>;
+  /**
    * Completeness scalars. Optional `antimeridianUncertainCount` counts unprepared crossing rings;
    * optional `poleUncertainCount` counts unprepared pole-enclosing rings. Prepare these polygons
    * with `GPULonLatPolygonPreparation`. Both fields are left untouched in planar contexts.
    */
-  status: GPULonLatPolygonStatusPort & {
-    /**
-     * One-row flag: 1 when BVH leaf, candidate, `matches` or (neighbors mode) tie capacity
-     * overflowed.
-     */
-    overflow: GraphDataView<'uint32'>;
-    /** Optional one-row unclamped candidate count. */
-    candidateCount?: GraphDataView<'uint32'>;
-  };
+  status: GPULonLatPolygonStatusPort &
+    GPUCandidateStatusPort & {
+      /**
+       * One-row flag: 1 when BVH leaf, candidate, `matches` or (neighbors mode) tie capacity
+       * overflowed. Its meaning is unchanged; `candidateOverflow` isolates the candidate capacity
+       * (nearest-feature mode only).
+       */
+      overflow: GraphDataView<'uint32'>;
+      /** Optional one-row unclamped candidate count. */
+      candidateCount?: GraphDataView<'uint32'>;
+    };
 };
 
 /**
@@ -347,6 +364,7 @@ type NearestFeatureJoinViews = Omit<GPUNearestFeatureJoinProps, 'queries' | 'out
     featureIds?: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
     candidateCount?: GraphDataView<'uint32'>;
+    candidateOverflow?: GraphDataView<'uint32'>;
   };
 
 function getNearestFeatureJoinViews(props: GPUNearestFeatureJoinProps): NearestFeatureJoinViews {
@@ -361,6 +379,7 @@ function getNearestFeatureJoinViews(props: GPUNearestFeatureJoinProps): NearestF
     featureIds: props.features.sourceIds,
     overflow: status.overflow,
     candidateCount: status.candidateCount,
+    candidateOverflow: status.candidateOverflow,
     antimeridianUncertainCount: status.antimeridianUncertainCount,
     poleUncertainCount: status.poleUncertainCount
   };
@@ -489,6 +508,14 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       }
     }
     validateStatusScalars(id, props.output.status);
+    // The neighbors traversal and the great-circle search have no candidate stage, so these
+    // would never be written.
+    validateRequirement(
+      id,
+      (this.mode === 'nearest-feature' && this.sphereRadius === undefined) ||
+        (!views.candidateTruncated && !views.candidateOverflow),
+      'output.candidateTruncated and output.status.candidateOverflow need nearest-feature mode with a planar or native metric'
+    );
     if (this.mode === 'neighbors') {
       this.neighborCapacity = views.neighborCapacity ?? this.k;
       this.candidateCapacity = 0;
@@ -630,6 +657,14 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
     }
     if (this.sphereRadius === undefined) {
       validateCapacity(id, 'candidateCapacity', this.candidateCapacity);
+    }
+    if (views.candidateTruncated) {
+      validatePackedView(views.candidateTruncated, ['uint32'], `${id} output.candidateTruncated`);
+      validateRequirement(
+        id,
+        views.candidateTruncated.length === views.points.length,
+        'output.candidateTruncated needs one row per query point'
+      );
     }
     return views.points.length;
   }
@@ -965,7 +1000,9 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
         pointRowScale: 1,
         pointRowOffset: 0,
         radius,
-        querySort: this.querySort
+        querySort: this.querySort,
+        candidateTruncated: views.candidateTruncated,
+        candidateOverflow: views.candidateOverflow
       })
     );
     const candidateDispatch = createWGSLActiveCountDispatch(graph, {
@@ -1249,6 +1286,8 @@ function getOutputs(
     props.featureCounts,
     props.overflow,
     props.candidateCount,
+    props.candidateOverflow,
+    props.candidateTruncated,
     props.antimeridianUncertainCount,
     props.poleUncertainCount,
     props.neighborIds,

@@ -27,7 +27,13 @@ import {
   validatePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
-import {getOrCreateView, RecipeBuilder, type GPURecipeResult} from './recipe-utils';
+import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  addRecipeCountNodes,
+  getOrCreateView,
+  RecipeBuilder,
+  type GPURecipeResult
+} from './recipe-utils';
 
 type RateRecipeInputs = {
   /** Unique prefix when composing multiple recipes. */
@@ -79,11 +85,34 @@ export function addExcessRiskRecipe<Parameters>(
   );
   const builder = new RecipeBuilder(graph);
   builder.add(new GPUEmpiricalBayesRates({...props, id, output: {excessRisk}}));
+  // The contributor has no status port. It writes NaN to every excluded row, including rows the
+  // mask deselects on purpose, so only rows the mask includes can be invalid here: those with an
+  // undefined rate (zero or negative expected count, or unusable events or population).
+  const invalidCount = createTransientView(graph, `${id}-invalid`, 'uint32', 1);
+  addRecipeCountNodes(builder, {
+    id: `${id}-invalid-rows`,
+    operation: 'addExcessRiskRecipe',
+    rowCount: props.events.length,
+    declarations: IS_FINITE_BITS_WGSL,
+    bindings: [
+      {name: 'excessRisk', view: excessRisk, type: 'f32', access: 'read'},
+      ...(props.mask
+        ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
+        : [])
+    ],
+    counts: [
+      {
+        name: 'invalid',
+        output: invalidCount,
+        value: `u32(${props.mask ? 'mask[maskOffset + index] != 0u && ' : ''}!isFiniteBits(excessRisk[excessRiskOffset + index]))`
+      }
+    ]
+  });
   return {
     contributors: builder.contributors,
     outputs: {excessRisk},
     intermediates: {},
-    status: {stages: []}
+    status: {stages: [{stage: 'excess-risk', status: {invalidCount}}]}
   };
 }
 
@@ -167,7 +196,7 @@ export function addSpatialRateRecipe<Parameters>(
       });
     })
   );
-  builder.add({getCommandNodes: () => nodes});
+  builder.addGlue('island-scaling', nodes);
   return {
     contributors: builder.contributors,
     outputs: {spatialRates},

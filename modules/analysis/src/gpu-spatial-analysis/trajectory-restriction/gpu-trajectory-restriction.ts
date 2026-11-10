@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {
   doGraphDataViewsOverlap,
   type GPUCommandGraph,
@@ -10,11 +9,23 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createTrajectoryPairwiseNodes} from './trajectory-pairwise-kernels';
-import {createTrajectoryRestrictionNodes} from './trajectory-restriction-kernels';
+import {
+  getEffectiveMaximumGapWGSL,
+  getGPUTrajectoryTimeColumns,
+  resolveGPUTrajectoryTemporalContext,
+  type GPUTrajectoryTimeColumns,
+  type GPUTrajectoryTimeFields
+} from '../trajectory-analysis/trajectory-common';
+import {createTrajectoryPairwiseMergeNodes} from './trajectory-restriction-pair-merge-kernels';
+import {
+  createRestrictionWordTimeNodes,
+  createTrajectoryRestrictionNodes,
+  getRestrictionTimeSource
+} from './trajectory-restriction-kernels';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -31,16 +42,37 @@ export const GPU_TRAJECTORY_RESTRICTION_STATUS = {
   capacityExceeded: 256
 } as const;
 
-export type GPUTrajectoryRestrictionProps = {
+type GPUTrajectoryRestrictionOptions = {
   id?: string;
   positions: GraphDataView<'float32x2'>;
-  /** Finite relative timestamps. Strictly increasing for nonstationary segments. */
-  times: GraphDataView<'float32'>;
-  offsets: GraphDataView<'uint32'>;
-  /** [minimumTime, maximumTime, minimumX, minimumY, maximumX, maximumY, maximumGap]; boundary inclusion is explicit. */
+  /**
+   * Word `times` only: per-frame `[low, high]` uint32 origin. `minimumTime`, `maximumTime` and
+   * output intervals are f32 time units relative to it, so keep it near the window of interest
+   * (within 2^24 units keeps sample times exact). `maximumGap` stays in the timestamps' unit.
+   */
+  timeOrigin?: GraphDataView<'uint32'>;
+  /**
+   * [minimumTime, maximumTime, minimumX, minimumY, maximumX, maximumY, maximumGap]; boundary
+   * inclusion is explicit. `maximumGap` is in the timestamps' unit and 0 means no limit.
+   */
   parameters: GraphDataView<'float32'>;
-  /** Static pairs of track IDs for temporal within-distance predicates. Parameters[2] is distance. */
+  /**
+   * Compile-time pairs of track IDs for temporal within-distance predicates (up to 4096, baked
+   * into the shader: changing them recompiles). Parameters[2] is distance. Prefer `pairs`.
+   */
   pairwiseTracks?: readonly (readonly [number, number])[];
+  /**
+   * Pairs of track IDs read from GPU views, for example `GPUTrajectoryEncounters`
+   * `output.pairs.ids`, `output.pairs.partners` and `output.pairs.status.count`. The pair capacity
+   * is `first.length`. Pair rows at and after `count` are inactive: NaN intervals, status 0 and
+   * relationships `[0xffffffff, 0xffffffff, 0, 0]`. An active pair with a track outside the
+   * track range gets status bit 4 and the same unknown relationships. Per-frame.
+   */
+  pairs?: {
+    first: GraphDataView<'uint32'>;
+    second: GraphDataView<'uint32'>;
+    count?: GraphDataView<'uint32'>;
+  };
   /** Per-pair interval capacity in pairwise mode; slots are already compact within each pair. */
   intervalsPerPair?: number;
   /** Rings are implicitly closed; coordinates follow the seven scalar parameters. Even-odd holes. */
@@ -70,105 +102,195 @@ export type GPUTrajectoryRestrictionProps = {
 };
 
 /**
+ * Time is either the trajectory port (`timestamps`, `trackOffsets`, as for the other trajectory
+ * contributors) or the equivalent `times` and `offsets`. Finite and strictly increasing for
+ * nonstationary segments. `float32`: relative time. `uint32x2`: Int64 `(low, high)` words, with
+ * steps differenced exactly before the f32 conversion; requires `timeOrigin`.
+ */
+export type GPUTrajectoryRestrictionProps = GPUTrajectoryRestrictionOptions &
+  GPUTrajectoryTimeFields;
+
+/** {@link GPUTrajectoryRestrictionProps} with the time columns under one name. @internal */
+export type GPUTrajectoryRestrictionResolvedProps = GPUTrajectoryRestrictionOptions &
+  GPUTrajectoryTimeColumns;
+
+/**
  * Time/geometry restriction of planar linearly interpolated tracks, with explicit endpoint policy,
  * polygon rings, optional interval union and continuous pairwise within-distance predicates.
- * Positive-duration gaps above maximumGap are unknown support, never straight-line bridges.
+ * Positive-duration gaps above a nonzero maximumGap are unknown support, never straight-line bridges.
+ *
+ * Pairwise mode merges the two time-sorted tracks of each pair in one pass (`O(nA + nB)` per pair,
+ * not the product), and takes its pairs from GPU views (`pairs`), so an encounter list can feed it
+ * without a readback. Tracks must be sorted by time. Unknown count: the number of invalid
+ * segments of both tracks plus the number of overlapping segment pairs touching a gap.
  */
 export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
   readonly id: string;
-  readonly props: GPUTrajectoryRestrictionProps;
-  constructor(props: GPUTrajectoryRestrictionProps) {
-    this.id = props.id ?? 'trajectory-restriction';
-    this.props = props;
+  readonly props: GPUTrajectoryRestrictionResolvedProps;
+  constructor(input: GPUTrajectoryRestrictionProps) {
+    this.id = input.id ?? 'trajectory-restriction';
+    const {times, offsets} = getGPUTrajectoryTimeColumns(this.id, input);
+    resolveGPUTrajectoryTemporalContext(this.id, times, input.temporalContext);
+    this.props = {...input, times, offsets};
+    const {props} = this;
     for (const view of [props.positions, props.output.intervals])
       validatePackedView(view, ['float32x2'], this.id);
-    for (const view of [props.times, props.parameters])
-      validatePackedView(view, ['float32'], this.id);
+    validatePackedView(props.times, ['float32', 'uint32x2'], this.id);
+    validatePackedView(props.parameters, ['float32'], this.id);
+    validateRequirement(
+      this.id,
+      (props.times.format === 'uint32x2') === Boolean(props.timeOrigin),
+      'word times need timeOrigin and float times must not have one'
+    );
+    if (props.timeOrigin) {
+      validatePackedView(props.timeOrigin, ['uint32'], this.id);
+      validateRequirement(
+        this.id,
+        props.timeOrigin.length >= 2,
+        'timeOrigin must hold at least two rows'
+      );
+    }
     for (const view of [props.offsets, props.output.status])
       validatePackedView(view, ['uint32'], this.id);
     validatePackedView(props.output.positions, ['float32x4'], this.id);
     validatePackedView(props.output.relationships, ['uint32x4'], this.id);
     const slots = props.intervalsPerSegment ?? 1;
-    assert(Number.isInteger(slots) && slots > 0 && slots <= 256);
+    validateRequirement(
+      this.id,
+      Number.isInteger(slots) && slots > 0 && slots <= 256,
+      'intervalsPerSegment must be an integer in [1, 256]'
+    );
     const rings = props.polygonRingVertexCounts ?? [];
-    assert(rings.every(count => Number.isInteger(count) && count >= 3));
+    validateRequirement(
+      this.id,
+      rings.every(count => Number.isInteger(count) && count >= 3),
+      'polygon rings need at least 3 vertices each'
+    );
     const vertexCount = rings.reduce((total, count) => total + count, 0);
-    assert(vertexCount <= 128);
+    validateRequirement(this.id, vertexCount <= 128, 'polygon vertices must total at most 128');
     if (props.output.compactIntervals) {
       const count = props.output.compactIntervals.length;
-      assert(
-        props.output.compactPositions &&
-          props.output.compactSources &&
-          props.output.compactStatus &&
-          props.output.compactSummary
+      validateRequirement(
+        this.id,
+        Boolean(
+          props.output.compactPositions &&
+            props.output.compactSources &&
+            props.output.compactStatus &&
+            props.output.compactSummary
+        ),
+        'compact outputs need compactPositions, compactSources, compactStatus and compactSummary'
       );
       validatePackedView(props.output.compactIntervals, ['float32x2'], this.id);
-      validatePackedView(props.output.compactPositions, ['float32x4'], this.id);
-      validatePackedView(props.output.compactSources, ['uint32x2'], this.id);
-      validatePackedView(props.output.compactStatus, ['uint32'], this.id);
-      validatePackedView(props.output.compactSummary, ['uint32'], this.id);
-      assert(
-        props.output.compactPositions.length === count &&
-          props.output.compactSources.length === count &&
-          props.output.compactStatus.length === count &&
-          props.output.compactSummary.length === 3
+      validatePackedView(props.output.compactPositions!, ['float32x4'], this.id);
+      validatePackedView(props.output.compactSources!, ['uint32x2'], this.id);
+      validatePackedView(props.output.compactStatus!, ['uint32'], this.id);
+      validatePackedView(props.output.compactSummary!, ['uint32'], this.id);
+      validateRequirement(
+        this.id,
+        props.output.compactPositions!.length === count &&
+          props.output.compactSources!.length === count &&
+          props.output.compactStatus!.length === count &&
+          props.output.compactSummary!.length === 3,
+        'compact outputs need the length of compactIntervals and a 3-row compactSummary'
       );
     } else {
-      assert(
+      validateRequirement(
+        this.id,
         !props.output.compactPositions &&
           !props.output.compactSources &&
           !props.output.compactStatus &&
           !props.output.compactSummary &&
-          !props.mergeIntervals
+          !props.mergeIntervals,
+        'compact outputs are absent unless compactIntervals is given, and mergeIntervals needs them'
       );
     }
-    if (props.pairwiseTracks) {
-      assert(
+    validateRequirement(
+      this.id,
+      !(props.pairwiseTracks && props.pairs),
+      'takes pairwiseTracks or pairs'
+    );
+    if (props.pairs) {
+      for (const view of [props.pairs.first, props.pairs.second, props.pairs.count])
+        if (view) validatePackedView(view, ['uint32'], this.id);
+      validateRequirement(
+        this.id,
+        props.pairs.first.length === props.pairs.second.length,
+        'pairs.first and pairs.second must have the same length'
+      );
+      validateRequirement(
+        this.id,
+        !props.pairs.count || props.pairs.count.length >= 1,
+        'pairs.count must hold at least one row'
+      );
+    }
+    if (props.pairwiseTracks || props.pairs) {
+      validateRequirement(
+        this.id,
         !props.polygonRingVertexCounts &&
           !props.output.compactIntervals &&
-          props.intervalsPerSegment === undefined
+          props.intervalsPerSegment === undefined,
+        'pairwise mode excludes polygons, compact outputs and intervalsPerSegment'
       );
-      assert(
+      validateRequirement(
+        this.id,
         Number.isInteger(props.intervalsPerPair) &&
           props.intervalsPerPair! > 0 &&
-          props.intervalsPerPair! <= 65536
+          props.intervalsPerPair! <= 65536,
+        'intervalsPerPair must be an integer in [1, 65536]'
       );
-      assert(
-        props.pairwiseTracks.length <= 4096 &&
-          props.pairwiseTracks.every(pair =>
+      validateRequirement(
+        this.id,
+        (props.pairwiseTracks ?? []).length <= 4096 &&
+          (props.pairwiseTracks ?? []).every(pair =>
             pair.every(
               track => Number.isInteger(track) && track >= 0 && track < props.offsets.length - 1
             )
-          )
+          ),
+        'pairwiseTracks must hold at most 4096 pairs of track indices below the track count'
       );
     } else {
-      assert(props.intervalsPerPair === undefined);
+      validateRequirement(
+        this.id,
+        props.intervalsPerPair === undefined,
+        'intervalsPerPair needs pairwise mode'
+      );
     }
-    const intervalRows = props.pairwiseTracks
-      ? props.pairwiseTracks.length * props.intervalsPerPair!
-      : props.positions.length * slots;
-    assert(
+    const pairCapacity = props.pairs?.first.length ?? props.pairwiseTracks?.length;
+    const intervalRows =
+      pairCapacity !== undefined
+        ? pairCapacity * props.intervalsPerPair!
+        : props.positions.length * slots;
+    validateRequirement(
+      this.id,
       props.offsets.length >= 1 &&
         props.parameters.length === 7 + 2 * vertexCount &&
         props.times.length === props.positions.length &&
         props.output.intervals.length === intervalRows &&
         props.output.positions.length === intervalRows &&
         props.output.status.length === intervalRows &&
-        props.output.relationships.length ===
-          (props.pairwiseTracks?.length ?? props.offsets.length - 1)
+        props.output.relationships.length === (pairCapacity ?? props.offsets.length - 1),
+      'view lengths must match the observation, track, parameter and interval counts'
     );
     // Separate passes cannot preserve independently named outputs in overlapping storage.
     const outputs = Object.values(props.output).filter(
       (view): view is NonNullable<typeof view> => view !== undefined
     );
     for (const [index, output] of outputs.entries()) {
-      assert(!outputs.slice(0, index).some(previous => doGraphDataViewsOverlap(previous, output)));
+      validateRequirement(
+        this.id,
+        !outputs.slice(0, index).some(previous => doGraphDataViewsOverlap(previous, output)),
+        'output views must not overlap'
+      );
     }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.times,
       props.offsets,
-      props.parameters
+      props.parameters,
+      props.timeOrigin,
+      props.pairs?.first,
+      props.pairs?.second,
+      props.pairs?.count
     ]);
   }
   getCommandNodes<Parameters>(
@@ -180,9 +302,31 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
       props.times,
       props.offsets,
       props.parameters,
+      props.timeOrigin,
+      props.pairs?.first,
+      props.pairs?.second,
+      props.pairs?.count,
       ...Object.values(props.output)
     ]);
-    if (props.pairwiseTracks) return createTrajectoryPairwiseNodes(graph, id, props);
+    const wordTime =
+      props.times.format === 'uint32x2'
+        ? createRestrictionWordTimeNodes(graph, id, props)
+        : undefined;
+    const timeTable = wordTime?.timeTable;
+    const prefix = wordTime?.nodes ?? [];
+    if (props.pairwiseTracks || props.pairs)
+      return [
+        ...prefix,
+        ...createTrajectoryPairwiseMergeNodes(
+          graph,
+          id,
+          props,
+          props.pairs
+            ? {...props.pairs, capacity: props.pairs.first.length}
+            : {staticPairs: props.pairwiseTracks, capacity: props.pairwiseTracks!.length},
+          timeTable
+        )
+      ];
     if (
       props.polygonRingVertexCounts ||
       props.timeBoundary ||
@@ -190,17 +334,19 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
       props.intervalsPerSegment ||
       props.output.compactIntervals
     )
-      return createTrajectoryRestrictionNodes(graph, id, props);
+      return [...prefix, ...createTrajectoryRestrictionNodes(graph, id, props, timeTable)];
+    const time = getRestrictionTimeSource(props, timeTable);
     return [
+      ...prefix,
       createWGSLKernelNode<Parameters>(graph, {
         id,
         operation: 'GPUTrajectoryRestriction',
-        variant: 'closed-planar-rectangle',
+        variant: `closed-planar-rectangle${time.suffix}`,
         invocationCount: props.offsets.length - 1,
         workgroupSize: 32,
         bindings: [
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-          {name: 'times', view: props.times, type: 'f32', access: 'read'},
+          ...time.bindings,
           {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'intervals', view: props.output.intervals, type: 'f32', access: 'read_write'},
@@ -214,11 +360,12 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
           }
         ],
         declarations: `const OBSERVATION_COUNT: u32 = ${props.positions.length}u;
+${time.source}
 fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
 fn loadPosition(row: u32) -> vec2<f32> { return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]); }`,
         body: `let start = min(offsets[offsetsOffset + index], OBSERVATION_COUNT); let end = min(offsets[offsetsOffset + index + 1u], OBSERVATION_COUNT);
 let minimumTime = parameters[parametersOffset]; let maximumTime = parameters[parametersOffset + 1u];
-let minimum = vec2<f32>(parameters[parametersOffset + 2u], parameters[parametersOffset + 3u]); let maximum = vec2<f32>(parameters[parametersOffset + 4u], parameters[parametersOffset + 5u]); let maximumGap = parameters[parametersOffset + 6u];
+let minimum = vec2<f32>(parameters[parametersOffset + 2u], parameters[parametersOffset + 3u]); let maximum = vec2<f32>(parameters[parametersOffset + 4u], parameters[parametersOffset + 5u]); let maximumGap = ${getEffectiveMaximumGapWGSL('parameters[parametersOffset + 6u]')};
 var parametersValid = finite(minimumTime) && finite(maximumTime) && minimumTime <= maximumTime && all(minimum <= maximum) && maximumGap > 0.0;
 for (var parameter = 2u; parameter < 6u; parameter++) { parametersValid = parametersValid && finite(parameters[parametersOffset + parameter]); }
 var nanBits = 0x7fc00000u; let missing = bitcast<f32>(nanBits);
@@ -228,7 +375,7 @@ for (var row = start; row < end; row++) {
   for (var component = 0u; component < 4u; component++) { clipped[clippedOffset + 4u * row + component] = missing; }
   status[statusOffset + row] = 0u;
   let next = min(row + 1u, end - 1u); let first = loadPosition(row); let second = loadPosition(next);
-  let firstTime = times[timesOffset + row]; let secondTime = times[timesOffset + next]; let duration = secondTime - firstTime;
+  let firstTime = rowTime(row); let secondTime = rowTime(next); let duration = rowElapsed(next, row);
   if (!parametersValid || !finite(firstTime) || !finite(secondTime) || duration < 0.0 || !finite(first.x) || !finite(first.y) || !finite(second.x) || !finite(second.y) || (duration == 0.0 && any(first != second))) { status[statusOffset + row] = 4u; unknownCount++; continue; }
   if (secondTime < minimumTime || firstTime > maximumTime) { continue; }
   if (duration > maximumGap) {

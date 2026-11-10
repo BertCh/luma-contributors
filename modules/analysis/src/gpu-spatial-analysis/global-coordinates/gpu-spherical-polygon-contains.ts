@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {assertUnitVector} from './assert-unit-vector';
 import {
   createTransientView,
@@ -18,12 +17,36 @@ import {
 import {getReadPoint3WGSL} from '../shared/spatial-wgsl-point-helpers';
 import {
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+  GPU_SPHERICAL_MAXIMUM_TOLERANCE,
+  GPU_SPHERICAL_MINIMUM_TOLERANCE,
+  GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT,
+  validateAngularTolerance
+} from './spherical-limits';
+
+/** Status of one query: inside or outside the polygon (or its complement). */
+export const GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_VALID = 0;
+/** Status: invalid query, polygon index or ring (including an edge shorter than `tolerance`). */
+export const GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_INVALID = 1;
+/** Status: the query lies on the boundary within `tolerance`; `contains` follows `boundary`. */
+export const GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_BOUNDARY = 2;
 
 export type GPUSphericalPolygonContainsProps = {
   id?: string;
+  /**
+   * Coordinate space of the unit vectors: longitude-latitude (their embedding on the sphere) with
+   * great-circle edges. Planar contexts are rejected. Defaults to longitude-latitude, no metric.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Unit xyz, simple CCW minor-arc rings, with no repeated closing vertex. */
   positions: GraphDataView<'float32x3'>;
   ringOffsets: GraphDataView<'uint32'>;
@@ -36,7 +59,16 @@ export type GPUSphericalPolygonContainsProps = {
   tolerance?: number;
   /** Optional common hemisphere pole. Omitted: each ring uses its normalized vertex mean. */
   hemisphereCenter?: readonly [number, number, number];
-  output: {contains: GraphDataView<'uint32'>; status: GraphDataView<'uint32'>};
+  output: {
+    /** 0 outside, 1 inside (after `complement`); read it together with `status`. */
+    contains: GraphDataView<'uint32'>;
+    /**
+     * Per query: {@link GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_VALID} (0),
+     * {@link GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_INVALID} (1) or
+     * {@link GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_BOUNDARY} (2).
+     */
+    status: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -53,9 +85,17 @@ export type GPUSphericalPolygonContainsProps = {
  */
 export class GPUSphericalPolygonContains implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Validated coordinate space of the unit vectors. */
+  readonly spatialContext: GPUSpatialContext;
   constructor(readonly props: GPUSphericalPolygonContainsProps) {
     this.id = props.id ?? 'spherical-polygon-contains';
-    if (props.hemisphereCenter) assertUnitVector(props.hemisphereCenter);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+      GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
+    );
+    if (props.hemisphereCenter)
+      assertUnitVector(props.hemisphereCenter, this.id, 'hemisphereCenter');
     for (const view of [props.positions, props.queries])
       validatePackedView(view, ['float32x3'], this.id);
     for (const view of [
@@ -65,17 +105,23 @@ export class GPUSphericalPolygonContains implements GPUCommandNodeProducer {
       ...Object.values(props.output)
     ])
       validatePackedView(view, ['uint32'], this.id);
-    assert(
-      props.ringOffsets.length >= 1 &&
-        props.polygonOffsets.length >= 1 &&
-        props.queries.length === props.polygonIndices.length &&
-        props.output.contains.length === props.queries.length &&
-        props.output.status.length === props.queries.length
+    validateRequirement(
+      this.id,
+      props.ringOffsets.length >= 1 && props.polygonOffsets.length >= 1,
+      'ringOffsets and polygonOffsets must hold at least one entry'
     );
-    assert(
-      Number.isFinite(props.tolerance ?? 1e-6) &&
-        (props.tolerance ?? 1e-6) >= 1e-7 &&
-        (props.tolerance ?? 1e-6) <= 1e-2
+    validateRequirement(
+      this.id,
+      props.queries.length === props.polygonIndices.length &&
+        props.output.contains.length === props.queries.length &&
+        props.output.status.length === props.queries.length,
+      'polygonIndices, output.contains and output.status must hold one entry per query'
+    );
+    validateAngularTolerance(
+      this.id,
+      props.tolerance ?? 1e-6,
+      GPU_SPHERICAL_MINIMUM_TOLERANCE,
+      GPU_SPHERICAL_MAXIMUM_TOLERANCE
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,

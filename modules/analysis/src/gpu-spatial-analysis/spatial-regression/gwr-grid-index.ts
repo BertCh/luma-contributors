@@ -5,12 +5,12 @@
 import {
   createTransientView,
   GPUGridIndex,
-  GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
 import {BIN_INDEX_WGSL} from '../shared/bin-index-wgsl';
 import {IS_FINITE_BITS_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -61,10 +61,6 @@ export function createGridIndexNodes<Parameters>(
   const cellOffsets = transient('cell-offsets', 'uint32', cellCount + 1);
   const objectIds = transient('object-ids', 'uint32', rowCount);
   const sortedIds = transient('sorted-ids', 'uint32', rowCount + 4);
-  const cellKeys = transient('cell-keys', 'uint32', rowCount);
-  const rowIds = transient('row-ids', 'uint32', rowCount);
-  const sortedKeys = transient('sorted-keys', 'uint32', rowCount);
-  const sortedRows = transient('sorted-rows', 'uint32', rowCount);
   const indexCount = transient('index-count', 'uint32', 1);
   const indexOverflow = transient('index-overflow', 'uint32', 1);
   const common = `const ROW_COUNT: u32 = ${rowCount}u;
@@ -72,6 +68,18 @@ const TILE_ROWS: u32 = ${BOUNDS_TILE_ROWS}u;
 const TILE_COUNT: u32 = ${tileCount}u;
 const SENTINEL: f32 = 3.0e38;
 ${IS_FINITE_BITS_WGSL}`;
+  // The grid index scatters IDs with atomics, so in-cell order varies between runs. A stable sort
+  // of the rows by cell restores ascending row order inside every cell in O(rows) work, however
+  // many rows share a cell; rows the index excluded sort last.
+  const cellRowOrder = createGridCellRowOrderNodes(graph, {
+    id: `${id}-cell-row-order`,
+    operation,
+    cellOffsets,
+    objectIds,
+    indexCount,
+    rowCount
+  });
+  const sortedRows = cellRowOrder.sortedRows;
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-tile-bounds`,
@@ -155,41 +163,7 @@ ${IS_FINITE_BITS_WGSL}`;
       count: indexCount,
       overflow: indexOverflow
     }).getCommandNodes(graph),
-    // The grid index scatters IDs with atomics, so in-cell order varies between runs. A stable
-    // radix sort of the rows by cell key restores ascending row order inside every cell in
-    // O(rows) work, however many rows share a cell; excluded rows get the last key.
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-cell-keys`,
-      operation,
-      variant: 'cell-keys',
-      bindings: [
-        {name: 'unitPositions', view: unitPositions, type: 'f32', access: 'read'},
-        {name: 'cellKeys', view: cellKeys, type: 'u32', access: 'read_write'},
-        {name: 'rowIds', view: rowIds, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: rowCount,
-      declarations: `const INDEX_WIDTH: u32 = ${gridSize[0]}u;
-const INDEX_HEIGHT: u32 = ${gridSize[1]}u;
-const INDEX_CELL_COUNT: u32 = ${cellCount}u;
-${IS_FINITE_VALUE_WGSL}${BIN_INDEX_WGSL}`,
-      body: `let x = unitPositions[unitPositionsOffset + 2u * index];
-  let y = unitPositions[unitPositionsOffset + 2u * index + 1u];
-  var key = INDEX_CELL_COUNT;
-  // Same unit-domain mapping as the published grid index, so keys agree with its cell offsets.
-  if (isFiniteValue(x) && isFiniteValue(y)) {
-    key = getBinIndex(y, 0.0, 1.0, INDEX_HEIGHT) * INDEX_WIDTH + getBinIndex(x, 0.0, 1.0, INDEX_WIDTH);
-  }
-  cellKeys[cellKeysOffset + index] = key;
-  rowIds[rowIdsOffset + index] = index;`
-    }),
-    ...new GPUSort({
-      id: `${id}-sort-rows`,
-      keys: cellKeys,
-      values: rowIds,
-      outputKeys: sortedKeys,
-      outputValues: sortedRows,
-      keyBits: Math.max(1, Math.ceil(Math.log2(cellCount + 1)))
-    }).getCommandNodes(graph),
+    ...cellRowOrder.nodes,
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-publish-sorted-ids`,
       operation,

@@ -1,9 +1,37 @@
 # Landscape ecology recipes
 
 All recipes append GPU kernels to a caller-owned command graph without hidden CPU computation or
-readback. Inputs remain caller-owned. Outputs are graph-owned transient views. Export results through
-a graph copy when CPU readback is needed. The current bounded implementations prioritize explicit
+readback. Inputs remain caller-owned. Outputs are graph-owned transient views unless the caller passes
+an `output` prop (see below); export transient results through a graph copy when CPU readback is
+needed. The current bounded implementations prioritize explicit
 numerical definitions, provenance and failure evidence over large-domain performance claims.
+
+## Caller-owned outputs and limits
+
+Each recipe takes an optional `output` prop. Every entry is a view the caller created in the same
+graph, with the format and length of the recipe's transient view of that name; an absent entry is a
+graph-owned transient view, as before. The `outputs` of the result are the views actually used.
+
+| Recipe | `output` entries |
+| --- | --- |
+| `addLandscapeMetricsRecipe` | `patchMetrics`, `classMetrics`, `classAdjacency`, `aggregation`, `landscape`, `landscapeAggregation`, `landscapeCohesion`, and with `reconcilePatches` `reconciledPatches`, `patchParents` |
+| `addPatchProximityRecipe` | `core`, `distances`, `metrics`, `horizontal`, `fields`, and with `reconcilePatches` `reconciledPatches`, `patchParents` |
+| `addResistanceConnectivityRecipe` | `potentials`, `currents`, `diagnostics`, `status` |
+| `addSparseResistanceConnectivityRecipe` | `potentials`, `currents`, `vertexCurrents`, `diagnostics`, `status` |
+| `addSegregationDecompositionRecipe` | `indices`, `validity`, `decomposition`, and with `randomization` `distribution`, `inference` |
+| `addSegregationCounterfactualRecipe` | the decomposition entries, `compositionOnly`, `spatialOnly` |
+| `addPopulationSupportAlignmentRecipe` | `populations`, `validity`, `status` |
+
+Limits are named constants and are rejected with a message that starts with the recipe ID and names
+the prop: 256 classes (landscape metrics), 256 vertices, 65,536 edges and 4,096 iterations (dense
+resistance), 65,536 replicates (decomposition) and 2,048 units (counterfactual). Patch proximity
+checks its patches-times-cells distance fields against the device storage binding size.
+
+The landscape and segregation totals are reductions (`GPUReduction`) over per-patch or per-unit
+terms, so the sums are tree sums rather than a serial loop and can differ from the former results in
+the last float32 digits. Still serial by design: patch reconciliation (one thread unions the raster),
+the counterfactual quantile mapping (bounded at 2,048 units) and the class and patch summary
+kernels, which scan every cell or patch once per row.
 
 ## `addLandscapeMetricsRecipe` — EC01
 
@@ -87,7 +115,10 @@ domain boundary. The pinned package has no proximity-index function (`lsm_p_prox
 proximity fixture explicitly composes its direct patch area and ENN for exactly two patches as
 `otherArea / ENN²`. This composed evidence is distinguished from direct upstream core/ENN calls.
 
-## `addResistanceConnectivityRecipe` — EC03
+## `addResistanceConnectivityRecipe` — EC03 (deprecated)
+
+Deprecated: use `addSparseResistanceConnectivityRecipe`. This recipe solves the whole system in one
+GPU thread. It stays exported unchanged for existing callers.
 
 Supply an undirected `edges` list (each edge once), nonnegative finite `conductances`, `vertexCount`,
 and a source/sink pair. Parallel conductances add, self edges carry no net current, and zero
@@ -125,7 +156,11 @@ Props: `edges` (`uint32x2`, each undirected edge once; 1 to 2,097,152 rows), `co
 (`float32`, one finite nonnegative value per edge), `vertexCount` (2 to 1,048,576), `source`, `sink`,
 `maximumIterations` (1 to 4,096, default 1,024, compile-time), `tolerance` (absolute maximum
 current-conservation residual, default 1e-4) and `connectivityIterations` (1 to 1,024, default 128,
-compile-time). Parallel conductances add, zero conductance is a barrier and self edges carry no
+compile-time). The unrolled iterations set the command node count, which the result reports as
+`estimatedCommandNodeCount` (an upper bound: a fixed allowance of 64 for the sort, CSR assembly and
+setup, which the published sort and scan grow with the edge count up to 55 at the largest input,
+plus 5 per PCG iteration and 2 per connectivity round, at most about 22,700) and checks against the default budget of 32,768 nodes before any node is added. Parallel
+conductances add, zero conductance is a barrier and self edges carry no
 current. An endpoint at or beyond `vertexCount`, or a non-finite or negative conductance, makes the
 edge invalid: invalid edges are counted in `status.w` and nothing is solved.
 

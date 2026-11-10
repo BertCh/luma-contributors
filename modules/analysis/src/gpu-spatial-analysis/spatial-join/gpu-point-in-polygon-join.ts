@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts/index';
+import type {
+  GPUCandidateStatusPort,
+  GPULonLatPolygonStatusPort
+} from '../../analysis-core/contracts/index';
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
@@ -128,22 +131,36 @@ export type GPUPointInPolygonJoinOutput = {
   /** Optional compact stable IDs of points that joined a feature (unspecified order). */
   matches?: GPUCompactOutput;
   /**
+   * Optional per-point-row flag (one `uint32` per point, in row order across chunks), 1 when that
+   * point lost candidates because the candidate total exceeded `candidateCapacity`. Candidates are
+   * laid out in point-row order and the slots past the capacity are dropped, so the flagged points
+   * are the point whose candidates cross the capacity (it keeps its first ones) and every later
+   * point that had a candidate (it keeps none); earlier points are complete. A flagged point may
+   * show `GPU_SPATIAL_JOIN_NO_FEATURE` although a feature contains it. Rows lost to a BVH overflow
+   * are not flagged. See `status.candidateOverflow`.
+   */
+  candidateTruncated?: GraphDataView<'uint32'>;
+  /**
    * Completeness scalars. Optional `antimeridianUncertainCount` counts unprepared crossing rings;
    * optional `poleUncertainCount` counts unprepared pole-enclosing rings. Prepare these polygons
    * with `GPULonLatPolygonPreparation`. Both fields are left untouched in planar contexts.
    */
-  status: GPULonLatPolygonStatusPort & {
-    /** One-row flag: 1 when BVH leaf, candidate, or `matches` capacity overflowed. */
-    overflow: GraphDataView<'uint32'>;
-    /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
-    candidateCount?: GraphDataView<'uint32'>;
-    /**
-     * Optional one-row count of refined (point, feature) candidates classified `uncertain`.
-     * Uncertain pairs are never assigned: a point whose only candidates were uncertain gets no
-     * feature, so a nonzero value means the assignments and `featureCounts` may be incomplete.
-     */
-    uncertainCount?: GraphDataView<'uint32'>;
-  };
+  status: GPULonLatPolygonStatusPort &
+    GPUCandidateStatusPort & {
+      /**
+       * One-row flag: 1 when BVH leaf, candidate, or `matches` capacity overflowed. Its meaning is
+       * unchanged; `candidateOverflow` isolates the candidate capacity.
+       */
+      overflow: GraphDataView<'uint32'>;
+      /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
+      candidateCount?: GraphDataView<'uint32'>;
+      /**
+       * Optional one-row count of refined (point, feature) candidates classified `uncertain`.
+       * Uncertain pairs are never assigned: a point whose only candidates were uncertain gets no
+       * feature, so a nonzero value means the assignments and `featureCounts` may be incomplete.
+       */
+      uncertainCount?: GraphDataView<'uint32'>;
+    };
 };
 
 /**
@@ -361,6 +378,12 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       }
     }
     validateStatusScalars(id, status);
+    if (output.candidateTruncated) {
+      validatePackedView(output.candidateTruncated, ['uint32'], `${id} output.candidateTruncated`);
+      if (output.candidateTruncated.length !== points.positions.length) {
+        throw new Error(`${id} output.candidateTruncated needs one row per point`);
+      }
+    }
     if (output.matches) {
       validateCompactOutput(id, output.matches);
     }
@@ -557,7 +580,9 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
         packedCandidates: useSlabs,
         pointRowScale: 1,
         pointRowOffset: 0,
-        querySort: this.querySort
+        querySort: this.querySort,
+        candidateTruncated: output.candidateTruncated,
+        candidateOverflow: output.status.candidateOverflow
       })
     );
     const candidateDispatch = createWGSLActiveCountDispatch(graph, {
@@ -900,7 +925,9 @@ function getOutputs(
   return [
     output.pointFeatureIds,
     output.featureCounts,
+    output.candidateTruncated,
     status.overflow,
+    status.candidateOverflow,
     status.candidateCount,
     status.uncertainCount,
     status.antimeridianUncertainCount,

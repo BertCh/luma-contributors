@@ -79,7 +79,18 @@ it('geospatial statistical expansion generates parseable kernels within eight st
     new GPULocalSpatialHeteroscedasticity(local),
     new GPUMultivariateLocalGeary({...local, values: view('float32', 16), variableCount: 2}),
     new GPUCrossVariogram(variogram),
-    new GPUSpaceTimeVariogram({...variogram, times: view('float32', 8), temporalLagCount: 1}),
+    new GPUSpaceTimeVariogram({
+      ...variogram,
+      times: view('float32', 8),
+      parameters: view('float32', 8),
+      gridSize: [4, 4],
+      temporalLagCount: 1,
+      output: {
+        semivariances: view('float32', 6),
+        pairCounts: view('uint32', 6),
+        status: view('uint32', 6)
+      }
+    }),
     new GPUMarkedPointStatistics({
       positions: view('float32x2', 8),
       parameters: view('float32', 6),

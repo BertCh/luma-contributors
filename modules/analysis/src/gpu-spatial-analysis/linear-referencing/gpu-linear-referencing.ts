@@ -34,6 +34,7 @@ import {
   getNextPowerOfTwo,
   getSortedFeatureBVHNodes
 } from '../spatial-join/spatial-join-passes';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createLinePrefixNode} from '../line-segmentize/line-segmentize-kernels';
 import {
   createPackedScatterNodes,
@@ -62,7 +63,8 @@ const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 export type GPULinearReferencingCoordinateSystem = 'planar' | 'spherical';
 
 /**
- * Outputs of {@link GPULinearReferencing}; each column optional, `queryPositions.length` rows. Points with
+ * Outputs of {@link GPULinearReferencing}; each column optional, `queryPositions.length` rows. There
+ * is no `status.count`: every row is one query point, never a variable number of rows. Points with
  * no line within the radius get `GPU_LINE_NO_SOURCE` indices, NaN fractions, foot points, measures,
  * normalized measures and signed offsets, distance `-1` and side `0`.
  *
@@ -98,8 +100,15 @@ export type GPULinearReferencingOutput = {
   status: {
     /** One-row flag: 1 when the BVH leaf or candidate capacity overflowed. */
     overflow: GraphDataView<'uint32'>;
-    /** Optional one-row unclamped candidate count. */
+    /**
+     * Optional one-row unclamped candidate count (planar; 0 for a great-circle context).
+     *
+     * @deprecated Not part of the shared status vocabulary. Use `requiredCount`, which receives the
+     * same value.
+     */
     candidateCount?: GraphDataView<'uint32'>;
+    /** Optional one-row unclamped candidate count: the same value as `candidateCount`. */
+    requiredCount?: GraphDataView<'uint32'>;
   };
 };
 
@@ -300,9 +309,12 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       throw new Error(`${id} requires at least one output column`);
     }
     validatePackedView(status.overflow, ['uint32'], `${id} output.status.overflow`);
+    if (status.requiredCount) {
+      validatePackedView(status.requiredCount, ['uint32'], `${id} output.status.requiredCount`);
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [...Object.values(columns), status.overflow, status.candidateCount],
+      [...Object.values(columns), status.overflow, status.candidateCount, status.requiredCount],
       [props.queryPositions, props.positions, props.lineOffsets, props.radius]
     );
   }
@@ -324,6 +336,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       props.radius,
       status.overflow,
       status.candidateCount,
+      status.requiredCount,
       ...Object.values(columns)
     ]);
     validateMaximumCount(
@@ -369,6 +382,34 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       results,
       columns: getPointProjectionScatterColumns(columns as PointProjectionColumns)
     });
+    // `requiredCount` carries the same value as the deprecated `candidateCount`, so the join writes
+    // one candidate count and a final one-invocation node copies it.
+    const candidateCount =
+      status.candidateCount ??
+      (status.requiredCount
+        ? createTransientView(graph, `${id}-candidate-count`, 'uint32', 1)
+        : undefined);
+    const requiredCountNodes =
+      status.requiredCount && candidateCount
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-required-count`,
+              operation: OPERATION,
+              variant: 'required-count',
+              bindings: [
+                {name: 'candidateCount', view: candidateCount, type: 'u32', access: 'read'},
+                {
+                  name: 'requiredCount',
+                  view: status.requiredCount,
+                  type: 'u32',
+                  access: 'read_write'
+                }
+              ],
+              invocationCount: 1,
+              body: 'requiredCount[requiredCountOffset] = candidateCount[candidateCountOffset];'
+            })
+          ]
+        : [];
     if (spherical) {
       const table = createTransientView(
         graph,
@@ -402,7 +443,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
           lineOffsets: props.lineOffsets,
           table,
           overflow: status.overflow,
-          candidateCount: status.candidateCount
+          candidateCount
         }),
         createSphericalArcBoundsNode<Parameters>(graph, {
           id: `${id}-arc-bounds`,
@@ -441,7 +482,8 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
           levelCount: bvh.levelCount,
           results
         }),
-        ...scatterNodes
+        ...scatterNodes,
+        ...requiredCountNodes
       ];
     }
     const segmentStarts = createTransientView(graph, `${id}-segment-starts`, 'float32x2', rowCount);
@@ -472,7 +514,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
         spatialSort: props.spatialSort,
         output: {
           nearestFeatureIds: nearestSegments,
-          status: {overflow: status.overflow, candidateCount: status.candidateCount}
+          status: {overflow: status.overflow, candidateCount}
         }
       }).getCommandNodes(graph),
       createPointProjectionNode<Parameters>(graph, {
@@ -485,7 +527,8 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
         vertexMeasures,
         results
       }),
-      ...scatterNodes
+      ...scatterNodes,
+      ...requiredCountNodes
     ];
   }
 }

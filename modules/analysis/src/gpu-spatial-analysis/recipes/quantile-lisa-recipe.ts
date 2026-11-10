@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -10,7 +9,11 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validatePackedView,
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUColumnQuantiles} from '../../dataframe-analysis/column-classification/gpu-column-quantiles';
 import {
   GPULocalPermutationTest,
@@ -86,14 +89,18 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
     for (const key of ['membership', 'classes', 'validCount', 'invalidQuantile'] as const)
       validatePackedView(props.output[key], ['uint32'], this.id);
     validatePackedView(props.output.boundaries, ['float32'], this.id);
-    // Quantile settings hold exactly the two resident control words.
-    assert(props.quantileParameters.format === 'uint32' && props.quantileParameters.length === 2);
-    assert(props.values.length > 2);
-    assert(!props.mask || props.mask.length === props.values.length);
+    // Quantile settings hold exactly the two resident control words (count, selected quantile).
+    validateViewLength(this.id, 'quantileParameters', props.quantileParameters, 2);
+    // Quantile boundaries need at least three rows to be defined.
+    validateRequirement(this.id, props.values.length > 2, 'values must have more than 2 rows');
     const rows = props.values.length;
-    for (const key of ['membership', 'classes'] as const) assert(props.output[key].length === rows);
-    assert(props.output.boundaries.length === 2);
-    assert(props.output.validCount.length === 1 && props.output.invalidQuantile.length === 1);
+    if (props.mask) validateViewLength(this.id, 'mask', props.mask, rows);
+    for (const key of ['membership', 'classes'] as const)
+      validateViewLength(this.id, `output.${key}`, props.output[key], rows);
+    // Boundaries hold the lower and upper bound of the selected quantile.
+    validateViewLength(this.id, 'output.boundaries', props.output.boundaries, 2);
+    validateViewLength(this.id, 'output.validCount', props.output.validCount, 1);
+    validateViewLength(this.id, 'output.invalidQuantile', props.output.invalidQuantile, 1);
   }
 
   getCommandNodes<Parameters>(

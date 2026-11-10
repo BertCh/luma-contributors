@@ -4,7 +4,8 @@
 
 export {
   GPUSpatialWeightsMinimumSpanningTree,
-  GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS
+  GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS,
+  GPU_MINIMUM_SPANNING_TREE_STATUS
 } from './gpu-spatial-weights-minimum-spanning-tree';
 export type {
   GPUSpatialWeightsMinimumSpanningTreeOutput,

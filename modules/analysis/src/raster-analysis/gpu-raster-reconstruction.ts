@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGraphOutputViews} from '../analysis-core/kernels/gpu-contributor-utils';
-import {assert} from '@luma.gl/core';
+import {
+  getGraphOutputViews,
+  validateCommandNodeBudget,
+  validateRequirement
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -15,10 +18,16 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
+  createRasterJacobiLoopNodes,
+  getRasterJacobiLoopNodeCount,
   requireRasterLength,
   validateRasterExpansionGraph,
-  validateRasterExpansionViews
+  validateRasterExpansionViews,
+  type RasterIterationStatusOutputs
 } from './raster-expansion-utils';
+
+/** Default number of reconstruction rounds, each spreading the marker by one cell. */
+const DEFAULT_MAXIMUM_ITERATIONS = 64;
 
 export type GPURasterReconstructionProps = {
   id?: string;
@@ -28,31 +37,60 @@ export type GPURasterReconstructionProps = {
   mask: GraphDataView<'float32'>;
   method?: 'dilation' | 'erosion';
   connectivity?: 4 | 8;
+  /** Rounds before the run stops unconverged. Default 64; at most 26,209 (the command node budget). */
   maximumIterations?: number;
   output: {
     values: GraphDataView<'float32'>;
     validity: GraphDataView<'uint32'>;
-    status: {converged: GraphDataView<'uint32'>};
+    /**
+     * `converged` is 1 when a round changed nothing before the iteration limit. The optional
+     * `iterationLimitReached` and `iterationCount` words are published when present.
+     */
+    status: RasterIterationStatusOutputs;
   };
 };
 
-/** Geodesic reconstruction under an explicit mask, using synchronous bounded GPU rounds. */
+/**
+ * Geodesic reconstruction under an explicit mask, using synchronous bounded GPU rounds. Rounds
+ * after convergence dispatch no work, and the current values are always published; check
+ * `status.converged` to know whether they are final.
+ */
 export class GPURasterReconstruction implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURasterReconstructionProps;
+  /** Command nodes `getCommandNodes` returns; checked against the node budget. */
+  readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterReconstructionProps) {
     this.id = props.id ?? 'raster-reconstruction';
     this.props = props;
+    const {id} = this;
     const count = validateRasterExpansionViews(
-      this.id,
+      id,
       props.grid,
       [props.marker, props.mask],
       getGraphOutputViews(props.output)
     );
-    for (const view of [props.marker, props.mask, props.output.values, props.output.validity])
-      requireRasterLength(view, count);
-    requireRasterLength(props.output.status.converged, 1);
-    assert(Number.isInteger(props.maximumIterations ?? 64) && (props.maximumIterations ?? 64) > 0);
+    requireRasterLength(props.marker, count, id, 'marker');
+    requireRasterLength(props.mask, count, id, 'mask');
+    requireRasterLength(props.output.values, count, id, 'output.values');
+    requireRasterLength(props.output.validity, count, id, 'output.validity');
+    requireRasterLength(props.output.status.converged, 1, id, 'output.status.converged');
+    requireRasterLength(
+      props.output.status.iterationLimitReached,
+      1,
+      id,
+      'output.status.iterationLimitReached'
+    );
+    requireRasterLength(props.output.status.iterationCount, 1, id, 'output.status.iterationCount');
+    const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
+    validateRequirement(
+      id,
+      Number.isInteger(maximumIterations) && maximumIterations > 0,
+      'maximumIterations must be a positive integer'
+    );
+    // Initialization and publish, plus the gated rounds.
+    this.estimatedCommandNodeCount = 2 + getRasterJacobiLoopNodeCount(maximumIterations + 1);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -68,7 +106,6 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
     ]);
     const first = createTransientView(graph, `${id}-first`, 'float32', count);
     const second = createTransientView(graph, `${id}-second`, 'float32', count);
-    const changed = createTransientView(graph, `${id}-changed`, 'uint32', count);
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode(graph, {
         id: `${id}-init`,
@@ -80,49 +117,69 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
           {name: 'values', view: first, type: 'f32', access: 'read_write'}
         ],
         declarations: IS_FINITE_VALUE_WGSL,
-        body: `let markerValue=marker[markerOffset+index];let maskValue=mask[maskOffset+index];let valid=isFiniteValue(markerValue)&&isFiniteValue(maskValue)&&markerValue ${dilation ? '<=' : '>='} maskValue;values[valuesOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),markerValue,valid);`
+        body: `let markerValue = marker[markerOffset + index];
+  let maskValue = mask[maskOffset + index];
+  let valid = isFiniteValue(markerValue) && isFiniteValue(maskValue)
+    && markerValue ${dilation ? '<=' : '>='} maskValue;
+  values[valuesOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), markerValue, valid);`
       })
     ];
     let previous = first;
     let next = second;
+    const connectivityWGSL =
+      props.connectivity === 8 ? '' : 'if (abs(rowOffset) + abs(columnOffset) > 1) { continue; }';
     // One extra round tests whether the final iterate is a true fixed point.
-    for (let iteration = 0; iteration <= (props.maximumIterations ?? 64); iteration++) {
-      nodes.push(
-        createWGSLKernelNode(graph, {
-          id: `${id}-round-${iteration}`,
-          operation: 'GPURasterReconstruction',
-          invocationCount: count,
-          bindings: [
-            {name: 'previous', view: previous, type: 'f32', access: 'read'},
-            {name: 'mask', view: props.mask, type: 'f32', access: 'read'},
-            {name: 'next', view: next, type: 'f32', access: 'read_write'},
-            {name: 'changed', view: changed, type: 'u32', access: 'read_write'}
-          ],
-          declarations: IS_FINITE_VALUE_WGSL,
-          body: `let original=previous[previousOffset+index];var value=original;
-if(isFiniteValue(original)){
- for(var rowOffset=-1;rowOffset<=1;rowOffset++){for(var columnOffset=-1;columnOffset<=1;columnOffset++){
-  ${props.connectivity === 8 ? '' : 'if(abs(rowOffset)+abs(columnOffset)>1){continue;}'}
-  let column=i32(index%${grid.width}u)+columnOffset;let row=i32(index/${grid.width}u)+rowOffset;
-  if(column<0||row<0||column>=${grid.width}||row>=${grid.height}){continue;}
-  let neighbor=previous[previousOffset+u32(row)*${grid.width}u+u32(column)];if(isFiniteValue(neighbor)){value=${dilation ? 'max' : 'min'}(value,neighbor);}
- }}value=${dilation ? 'min' : 'max'}(value,mask[maskOffset+index]);
-}
-next[nextOffset+index]=value;changed[changedOffset+index]=u32(isFiniteValue(original)&&value!=original);`
-        })
-      );
-      [previous, next] = [next, previous];
-    }
     nodes.push(
-      createWGSLKernelNode(graph, {
-        id: `${id}-status`,
+      ...createRasterJacobiLoopNodes(graph, {
+        id: `${id}-iterate`,
         operation: 'GPURasterReconstruction',
-        invocationCount: 1,
-        bindings: [
-          {name: 'changed', view: changed, type: 'u32', access: 'read'},
-          {name: 'converged', view: output.status.converged, type: 'u32', access: 'read_write'}
-        ],
-        body: `var complete=1u;for(var cell=0u;cell<${count}u;cell++){complete &= 1u-changed[changedOffset+cell];}converged[convergedOffset]=complete;`
+        invocationCount: count,
+        roundCount: (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) + 1,
+        status: output.status,
+        createRound: (
+          {nodeId, slotBinding, markChangedWGSL, condition, extraResources},
+          status
+        ) => {
+          const round = createWGSLKernelNode(graph, {
+            id: nodeId,
+            operation: 'GPURasterReconstruction',
+            variant: 'reconstruction-round',
+            invocationCount: count,
+            bindings: [
+              {name: 'previous', view: previous, type: 'f32', access: 'read'},
+              {name: 'mask', view: props.mask, type: 'f32', access: 'read'},
+              {name: 'next', view: next, type: 'f32', access: 'read_write'},
+              {name: 'status', view: status, type: 'atomic<u32>', access: 'read_write'},
+              slotBinding
+            ],
+            declarations: `${IS_FINITE_VALUE_WGSL}
+const WIDTH: u32 = ${grid.width}u;
+const HEIGHT: u32 = ${grid.height}u;`,
+            body: `let original = previous[previousOffset + index];
+  var value = original;
+  if (isFiniteValue(original)) {
+    let column = i32(index % WIDTH);
+    let row = i32(index / WIDTH);
+    for (var rowOffset = -1; rowOffset <= 1; rowOffset++) {
+      for (var columnOffset = -1; columnOffset <= 1; columnOffset++) {
+        ${connectivityWGSL}
+        let neighborColumn = column + columnOffset;
+        let neighborRow = row + rowOffset;
+        if (neighborColumn < 0 || neighborRow < 0 || neighborColumn >= i32(WIDTH) || neighborRow >= i32(HEIGHT)) { continue; }
+        let neighbor = previous[previousOffset + u32(neighborRow) * WIDTH + u32(neighborColumn)];
+        if (isFiniteValue(neighbor)) { value = ${dilation ? 'max' : 'min'}(value, neighbor); }
+      }
+    }
+    value = ${dilation ? 'min' : 'max'}(value, mask[maskOffset + index]);
+  }
+  next[nextOffset + index] = value;
+  if (isFiniteValue(original) && value != original) { ${markChangedWGSL} }`,
+            condition,
+            extraResources
+          });
+          [previous, next] = [next, previous];
+          return round;
+        }
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-publish`,
@@ -130,12 +187,15 @@ next[nextOffset+index]=value;changed[changedOffset+index]=u32(isFiniteValue(orig
         invocationCount: count,
         bindings: [
           {name: 'previous', view: previous, type: 'f32', access: 'read'},
-          {name: 'converged', view: output.status.converged, type: 'u32', access: 'read'},
           {name: 'values', view: output.values, type: 'f32', access: 'read_write'},
           {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'}
         ],
         declarations: IS_FINITE_VALUE_WGSL,
-        body: `let value=previous[previousOffset+index];let valid=converged[convergedOffset]!=0u&&isFiniteValue(value);values[valuesOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),value,valid);validity[validityOffset+index]=u32(valid);`
+        body: `// The current iterate is always published; status.converged says whether it is final.
+  let value = previous[previousOffset + index];
+  let valid = isFiniteValue(value);
+  values[valuesOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), value, valid);
+  validity[validityOffset + index] = u32(valid);`
       })
     );
     return nodes;
@@ -147,25 +207,49 @@ export type GPURasterFillHolesProps = {
   grid: GPURasterMetadata;
   input: GraphDataView<'uint32'>;
   connectivity?: 4 | 8;
+  /** Reconstruction rounds before the run stops unconverged. Default 64; at most 26,207 (the command node budget). */
   maximumIterations?: number;
-  output: {values: GraphDataView<'uint32'>; status: {converged: GraphDataView<'uint32'>}};
+  output: {values: GraphDataView<'uint32'>; status: RasterIterationStatusOutputs};
 };
-/** Fills background components not connected to the boundary, using the selected background connectivity. */
+/**
+ * Fills background components not connected to the boundary, using the selected background
+ * connectivity. The current fill is always published. When `status.converged` is 0, background
+ * the boundary flood has not reached yet is still reported as a hole.
+ */
 export class GPURasterFillHoles implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURasterFillHolesProps;
+  /** Command nodes `getCommandNodes` returns; checked against the node budget. */
+  readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterFillHolesProps) {
     this.id = props.id ?? 'raster-fill-holes';
     this.props = props;
+    const {id} = this;
     const count = validateRasterExpansionViews(
-      this.id,
+      id,
       props.grid,
       [props.input],
       getGraphOutputViews(props.output)
     );
-    requireRasterLength(props.input, count);
-    requireRasterLength(props.output.values, count);
-    requireRasterLength(props.output.status.converged, 1);
+    requireRasterLength(props.input, count, id, 'input');
+    requireRasterLength(props.output.values, count, id, 'output.values');
+    requireRasterLength(props.output.status.converged, 1, id, 'output.status.converged');
+    requireRasterLength(
+      props.output.status.iterationLimitReached,
+      1,
+      id,
+      'output.status.iterationLimitReached'
+    );
+    requireRasterLength(props.output.status.iterationCount, 1, id, 'output.status.iterationCount');
+    const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
+    validateRequirement(
+      id,
+      Number.isInteger(maximumIterations) && maximumIterations > 0,
+      'maximumIterations must be a positive integer'
+    );
+    // Prepare and publish, plus the reconstruction.
+    this.estimatedCommandNodeCount = 2 + getRasterJacobiLoopNodeCount(maximumIterations + 1) + 2;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -199,7 +283,7 @@ export class GPURasterFillHoles implements GPUCommandNodeProducer {
         output: {
           values: reconstructed,
           validity,
-          status: {converged: props.output.status.converged}
+          status: props.output.status
         }
       }).getCommandNodes(graph),
       createWGSLKernelNode(graph, {

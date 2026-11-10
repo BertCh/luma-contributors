@@ -22,7 +22,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL, GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
-import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
+import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
 import {
   GPUMultipleTestingAdjustment,

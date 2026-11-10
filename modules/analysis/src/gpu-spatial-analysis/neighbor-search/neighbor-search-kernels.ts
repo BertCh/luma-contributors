@@ -5,6 +5,57 @@
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {NEIGHBOR_SEARCH_FLOAT_WGSL} from './neighbor-search-wgsl';
 
+/** Word of the packed parameters holding `timeRadius`, followed by `minimumTime` and `maximumTime`. @internal */
+export const GPU_NEIGHBOR_SEARCH_TIME_RADIUS_WORD = 12;
+
+/**
+ * Time axis of the search kernels. Present when rows carry a relative time: target records gain a
+ * fourth word and every candidate must satisfy `|t_target - t_query| <= timeRadius`. With more than
+ * one bucket the targets are also indexed by time, so the walk visits only the buckets the time
+ * window reaches. Requires locals `queryTime` and `cellSlot` where the condition is used.
+ *
+ * @internal
+ */
+export type NeighborSearchTimeAxis = {bucketCount: number};
+
+/** WGSL fragments that add the time predicate and, when bucketed, the bucket loop to a cell walk. */
+function getTimeLoopWGSL(timeAxis?: NeighborSearchTimeAxis): {
+  preamble: string;
+  open: string;
+  close: string;
+  condition: string;
+  rowBase: (row: string) => string;
+} {
+  if (!timeAxis) {
+    return {
+      preamble: '',
+      open: '',
+      close: '',
+      condition: '',
+      rowBase: row => `${row} * COLUMNS`
+    };
+  }
+  const condition = ` && abs(bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 3u]) - queryTime) <= lattice.timeRadius`;
+  if (timeAxis.bucketCount <= 1) {
+    return {
+      preamble: '',
+      open: '',
+      close: '',
+      condition,
+      rowBase: row => `${row} * COLUMNS`
+    };
+  }
+  return {
+    preamble: `let timeSlack = getTimeBucketSlack(lattice);
+  let firstTimeBucket = getTimeBucket(lattice, queryTime - lattice.timeRadius - timeSlack);
+  let lastTimeBucket = getTimeBucket(lattice, queryTime + lattice.timeRadius + timeSlack);`,
+    open: 'for (var timeBucket = firstTimeBucket; timeBucket <= lastTimeBucket; timeBucket++) {',
+    close: '}',
+    condition,
+    rowBase: row => `(timeBucket * ROWS + ${row}) * COLUMNS`
+  };
+}
+
 /**
  * WGSL shared by the neighbor-search kernels that read `parameters`: the per-frame lattice,
  * point validity and cell lookup. Kernels that include it must bind `parameters` as `array<f32>`.
@@ -23,9 +74,11 @@ import {NEIGHBOR_SEARCH_FLOAT_WGSL} from './neighbor-search-wgsl';
 export function getNeighborSearchLatticeWGSL(
   mode: 'knn' | 'radius',
   gridSize: readonly [number, number],
-  sphereRadius?: number
+  sphereRadius?: number,
+  timeAxis?: NeighborSearchTimeAxis
 ): string {
   const geodesic = sphereRadius !== undefined;
+  const timeBucketCount = timeAxis?.bucketCount ?? 1;
   const geodesicCellSizeWGSL = `let radiusDegrees = min(degrees(radius / SPHERE_RADIUS) * CELL_MARGIN + 0.0001, 360.0);
   lattice.valid = lattice.valid && isFiniteFloat(radius) && isFiniteFloat(radiusDegrees) && radius > 0.0;
   if (!lattice.valid) {
@@ -68,6 +121,8 @@ const COLUMNS: u32 = ${gridSize[0]}u;
 const ROWS: u32 = ${gridSize[1]}u;
 const CELL_COUNT: u32 = ${gridSize[0] * gridSize[1]}u;
 const CELL_MARGIN: f32 = 1.0009765625;
+const TARGET_WORDS: u32 = ${timeAxis ? 4 : 3}u;
+${timeAxis ? `const TIME_BUCKETS: u32 = ${timeBucketCount}u;` : ''}
 ${geodesic ? `const SPHERE_RADIUS: f32 = ${Number(sphereRadius).toPrecision(17)};` : ''}
 
 struct Lattice {
@@ -84,7 +139,15 @@ struct Lattice {
   radius: f32,
   radiusSquared: f32,
   radiusDegrees: f32,
-  periodic: bool
+  periodic: bool${
+    timeAxis
+      ? `,
+  timeRadius: f32,
+  minimumTime: f32,
+  maximumTime: f32,
+  timeBucketWidth: f32`
+      : ''
+  }
 }
 
 fn readParameter(slot: u32) -> f32 {
@@ -119,6 +182,21 @@ fn readLattice() -> Lattice {
     isFiniteFloat(maximumY) && isFiniteFloat(width) && isFiniteFloat(height) &&
     width >= 0.0 && height >= 0.0;
   ${
+    timeAxis
+      ? `let timeRadius = readParameter(${GPU_NEIGHBOR_SEARCH_TIME_RADIUS_WORD}u);
+  let minimumTime = readParameter(${GPU_NEIGHBOR_SEARCH_TIME_RADIUS_WORD + 1}u);
+  let maximumTime = readParameter(${GPU_NEIGHBOR_SEARCH_TIME_RADIUS_WORD + 2}u);
+  let timeSpan = maximumTime - minimumTime;
+  lattice.timeRadius = timeRadius;
+  lattice.minimumTime = minimumTime;
+  lattice.maximumTime = maximumTime;
+  lattice.timeBucketWidth = select(1.0, timeSpan / f32(TIME_BUCKETS), timeSpan > 0.0);
+  lattice.valid = lattice.valid && isFiniteFloat(timeRadius) && timeRadius > 0.0 &&
+    isFiniteFloat(minimumTime) && isFiniteFloat(maximumTime) && isFiniteFloat(timeSpan) &&
+    timeSpan >= 0.0;`
+      : ''
+  }
+  ${
     geodesic
       ? `lattice.valid = lattice.valid && width <= 360.001;
   lattice.periodic = lattice.valid && abs(width - 360.0) <= 0.001;`
@@ -140,6 +218,28 @@ fn isPointInBounds(lattice: Lattice, x: f32, y: f32) -> bool {
 
 fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
   return lattice.valid && isPointInBounds(lattice, x, y);
+}
+${
+  timeAxis
+    ? `
+// Finite and inside the per-frame time bounds, independent of whether the lattice is usable.
+fn isTimeInBounds(lattice: Lattice, time: f32) -> bool {
+  return isFiniteFloat(time) && time >= lattice.minimumTime && time <= lattice.maximumTime;
+}
+
+// A rounding margin for bucket lookups: a target whose bucket rounds one way and a query whose
+// range rounds the other must still meet.
+fn getTimeBucketSlack(lattice: Lattice) -> f32 {
+  return lattice.timeBucketWidth * 0.0009765625 +
+    (abs(lattice.minimumTime) + abs(lattice.maximumTime)) * 0.00000095367431640625;
+}
+
+fn getTimeBucket(lattice: Lattice, time: f32) -> u32 {
+  let bucket = floor((time - lattice.minimumTime) / lattice.timeBucketWidth);
+  return u32(clamp(bucket, 0.0, f32(TIME_BUCKETS - 1u)));
+}
+`
+    : ''
 }
 
 fn getCellColumn(lattice: Lattice, x: f32) -> u32 {
@@ -180,8 +280,13 @@ ${geodesic ? GEODESIC_WGSL + GEODESIC_WRAPPED_LONGITUDE_BOUND_WGSL : ''}
  *
  * @internal
  */
-export function getRadiusNeighborLoopWGSL(action: string): string {
+export function getRadiusNeighborLoopWGSL(
+  action: string,
+  timeAxis?: NeighborSearchTimeAxis
+): string {
+  const time = getTimeLoopWGSL(timeAxis);
   return /* wgsl */ `
+  ${time.preamble}
   let column = getCellColumn(lattice, x);
   let row = getCellRow(lattice, y);
   let firstColumn = max(column, 1u) - 1u;
@@ -193,10 +298,11 @@ export function getRadiusNeighborLoopWGSL(action: string): string {
     // distance lower bound before touching its target range.
     let slack = (lattice.cellWidth + lattice.cellHeight) * 0.0009765625 +
       (abs(lattice.minimumX) + abs(lattice.maximumX) + abs(lattice.minimumY) + abs(lattice.maximumY)) * 0.00000095367431640625;
+    ${time.open}
     for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
       let rowGap = max(getAxisGap(y, lattice.minimumY, lattice.cellHeight, i32(row), i32(cellRow)) - slack, 0.0);
       let rowGapSquared = rowGap * rowGap;
-      let rowBase = cellRow * COLUMNS;
+      let rowBase = ${time.rowBase('cellRow')};
       for (var cellColumn = firstColumn; cellColumn <= lastColumn; cellColumn++) {
         let columnGap = max(getAxisGap(x, lattice.minimumX, lattice.cellWidth, i32(column), i32(cellColumn)) - slack, 0.0);
         if (columnGap * columnGap + rowGapSquared <= lattice.radiusSquared) {
@@ -204,33 +310,36 @@ export function getRadiusNeighborLoopWGSL(action: string): string {
           let cellBegin = cellOffsets[cellOffsetsOffset + cell];
           let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
           for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
-            let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
-            let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]) - x;
-            let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]) - y;
+            let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 2u];
+            let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS]) - x;
+            let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 1u]) - y;
             let distanceSquared = deltaX * deltaX + deltaY * deltaY;
-            if (distanceSquared <= lattice.radiusSquared) {
+            if (distanceSquared <= lattice.radiusSquared${time.condition}) {
               ${action}
             }
           }
         }
       }
     }
+    ${time.close}
   } else {
     // Fine grids already have radius-sized cells. Preserve contiguous reads across each row.
+    ${time.open}
     for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
-      let rowBase = cellRow * COLUMNS;
+      let rowBase = ${time.rowBase('cellRow')};
       let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
       let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
       for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
-        let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
-        let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]) - x;
-        let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]) - y;
+        let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 2u];
+        let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS]) - x;
+        let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 1u]) - y;
         let distanceSquared = deltaX * deltaX + deltaY * deltaY;
-        if (distanceSquared <= lattice.radiusSquared) {
+        if (distanceSquared <= lattice.radiusSquared${time.condition}) {
           ${action}
         }
       }
     }
+    ${time.close}
   }`;
 }
 
@@ -250,22 +359,27 @@ export function getRadiusNeighborLoopWGSL(action: string): string {
  *
  * @internal
  */
-export function getNearestNeighborSearchWGSL(selfCondition: string): string {
+export function getNearestNeighborSearchWGSL(
+  selfCondition: string,
+  timeAxis?: NeighborSearchTimeAxis
+): string {
+  const time = getTimeLoopWGSL(timeAxis);
   const visit = (
     begin: string,
     end: string
   ) => `for (var cellSlot = ${begin}; cellSlot < ${end}; cellSlot++) {
-          let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
+          let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 2u];
           if (${selfCondition}) {
-            let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]) - x;
-            let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]) - y;
+            let deltaX = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS]) - x;
+            let deltaY = bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 1u]) - y;
             let distanceSquared = deltaX * deltaX + deltaY * deltaY;
-            if (!lattice.bounded || distanceSquared <= lattice.radiusSquared) {
+            if ((!lattice.bounded || distanceSquared <= lattice.radiusSquared)${time.condition}) {
               insertNeighbor(&bestDistances, &bestIds, &found, distanceSquared, neighbor);
             }
           }
         }`;
   return /* wgsl */ `
+  ${time.preamble}
   let queryColumn = i32(getCellColumn(lattice, x));
   let queryRow = i32(getCellRow(lattice, y));
   let lastColumn = i32(lattice.columns) - 1;
@@ -279,8 +393,9 @@ export function getNearestNeighborSearchWGSL(selfCondition: string): string {
     let endColumn = min(queryColumn + ring, lastColumn);
     let firstRow = max(queryRow - ring, 0);
     let endRow = min(queryRow + ring, lastRow);
+    ${time.open}
     for (var cellRow = firstRow; cellRow <= endRow; cellRow++) {
-      let rowBase = u32(cellRow) * COLUMNS;
+      let rowBase = ${time.rowBase('u32(cellRow)')};
       // Cell-level pruning once K candidates are held: a cell whose near edges are farther than
       // the k-th best cannot contribute (strict test, so k-th distance ties are still visited).
       let rowGap = max(getAxisGap(y, lattice.minimumY, lattice.cellHeight, queryRow, cellRow) - slack, 0.0);
@@ -325,6 +440,7 @@ export function getNearestNeighborSearchWGSL(selfCondition: string): string {
         }
       }
     }
+    ${time.close}
     // Clearance of the visited box on each side; a side at the lattice edge has nothing beyond it.
     var clearance = 3.0e38;
     var open = false;
@@ -457,8 +573,13 @@ fn getNeighborWeight(distance: f32, bandwidth: f32) -> f32 {
  *
  * @internal
  */
-export function getGeodesicRadiusNeighborLoopWGSL(action: string): string {
+export function getGeodesicRadiusNeighborLoopWGSL(
+  action: string,
+  timeAxis?: NeighborSearchTimeAxis
+): string {
+  const time = getTimeLoopWGSL(timeAxis);
   return /* wgsl */ `
+  ${time.preamble}
   let reach = lattice.radiusDegrees;
   let firstRow = getCellRow(lattice, max(y - reach, lattice.minimumY));
   let lastRow = getCellRow(lattice, min(y + reach, lattice.maximumY));
@@ -468,8 +589,9 @@ export function getGeodesicRadiusNeighborLoopWGSL(action: string): string {
     reachLongitude = min(degrees(asin(ratio)) * CELL_MARGIN + 0.0001, 180.0);
   }
   let queryPoint = vec2<f32>(x, y);
+  ${time.open}
   for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
-    let rowBase = cellRow * COLUMNS;
+    let rowBase = ${time.rowBase('cellRow')};
     var nextColumn = 0u;
     for (var shiftIndex = 0u; shiftIndex < 3u; shiftIndex++) {
       var lowLongitude = lattice.minimumX;
@@ -493,17 +615,18 @@ export function getGeodesicRadiusNeighborLoopWGSL(action: string): string {
       let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
       let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
       for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
-        let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
+        let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 2u];
         let targetPoint = vec2<f32>(
-          bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]),
-          bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]));
+          bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS]),
+          bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 1u]));
         let distance = geodesicHaversineDistance(queryPoint, targetPoint, SPHERE_RADIUS);
-        if (distance <= lattice.radius) {
+        if (distance <= lattice.radius${time.condition}) {
           ${action}
         }
       }
     }
-  }`;
+  }
+  ${time.close}`;
 }
 
 /**
@@ -534,8 +657,13 @@ export function getGeodesicRadiusNeighborLoopWGSL(action: string): string {
  *
  * @internal
  */
-export function getGeodesicNearestNeighborSearchWGSL(selfCondition: string): string {
+export function getGeodesicNearestNeighborSearchWGSL(
+  selfCondition: string,
+  timeAxis?: NeighborSearchTimeAxis
+): string {
+  const time = getTimeLoopWGSL(timeAxis);
   return /* wgsl */ `
+  ${time.preamble}
   let queryColumn = i32(getCellColumn(lattice, x));
   let queryRow = i32(getCellRow(lattice, y));
   let columnCount = i32(lattice.columns);
@@ -555,8 +683,9 @@ export function getGeodesicNearestNeighborSearchWGSL(selfCondition: string): str
     let highExtent = min(ring, highReach);
     let firstRow = max(queryRow - ring, 0);
     let endRow = min(queryRow + ring, lastRow);
+    ${time.open}
     for (var cellRow = firstRow; cellRow <= endRow; cellRow++) {
-      let rowBase = u32(cellRow) * COLUMNS;
+      let rowBase = ${time.rowBase('u32(cellRow)')};
       let fullRow = abs(cellRow - queryRow) == ring;
       // Full rows of the ring visit every column of the box; other rows only its two sides
       // (a non-full row has ring > 0), each only while it still holds a column not seen before.
@@ -575,19 +704,20 @@ export function getGeodesicNearestNeighborSearchWGSL(selfCondition: string): str
         let cellBegin = cellOffsets[cellOffsetsOffset + cell];
         let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
         for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
-          let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
+          let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 2u];
           if (${selfCondition}) {
             let targetPoint = vec2<f32>(
-              bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]),
-              bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]));
+              bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS]),
+              bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * TARGET_WORDS + 1u]));
             let distance = geodesicHaversineDistance(queryPoint, targetPoint, SPHERE_RADIUS);
-            if (!lattice.bounded || distance <= lattice.radius) {
+            if ((!lattice.bounded || distance <= lattice.radius)${time.condition}) {
               insertNeighbor(&bestDistances, &bestIds, &found, distance, neighbor);
             }
           }
         }
       }
     }
+    ${time.close}
     // The visited box: rows [firstRow, endRow], virtual columns [queryColumn - lowExtent, queryColumn + highExtent].
     let hasSouth = firstRow > 0;
     let hasNorth = endRow < lastRow;

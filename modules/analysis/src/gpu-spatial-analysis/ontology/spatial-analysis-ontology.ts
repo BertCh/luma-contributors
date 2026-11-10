@@ -10,6 +10,7 @@ export const GPU_SPATIAL_ANALYSIS_DATA_KINDS = [
   'lines',
   'polygons',
   'trajectories',
+  'time-series',
   'cells',
   'spatial-weights',
   'pairs',
@@ -51,7 +52,13 @@ export const GPU_SPATIAL_ANALYSIS_DOMAINS = [
   'spatial-statistics',
   'spatial-models',
   'movement',
-  'workflow'
+  'workflow',
+  // Added for the operators of the entry points other than `gpu-spatial-analysis`.
+  'network-analysis',
+  'raster-analysis',
+  'terrain-analysis',
+  'point-cloud-analysis',
+  'dataframe-analysis'
 ] as const;
 
 /** A subject area within the spatial-analysis ontology. */
@@ -150,6 +157,12 @@ export const GPU_SPATIAL_ANALYSIS_DATA_ONTOLOGY: readonly GPUSpatialAnalysisData
     id: 'trajectories',
     title: 'Trajectories',
     description: 'Ordered positions with track offsets and, when needed, a shared time coordinate.'
+  },
+  {
+    id: 'time-series',
+    title: 'Time series and space-time cubes',
+    description:
+      'Values indexed by a time coordinate or calendar period: per-entity series, event times, and dense cell by period cubes in either layout.'
   },
   {
     id: 'cells',
@@ -265,6 +278,33 @@ export type GPUSpatialAnalysisStatusKind =
   | 'iterationLimitReached'
   | 'approximation';
 
+/** The nine public entry points whose contributors the operator catalog covers. */
+export type GPUAnalysisPackage =
+  | '@luma-contributors/analysis/computation-record'
+  | '@luma-contributors/analysis/gpu-spatial-analysis'
+  | '@luma-contributors/analysis/gpu-network'
+  | '@luma-contributors/analysis/gpu-terrain'
+  | '@luma-contributors/analysis/raster-analysis'
+  | '@luma-contributors/analysis/dataframe-analysis'
+  | '@luma-contributors/analysis/pointcloud-analysis'
+  | '@luma-contributors/analysis/geospatial-analysis'
+  | '@luma-contributors/analysis/analysis-core';
+
+/** Whether an operator is built for GPU-scale inputs or is a size-limited reference implementation. */
+export type GPUAnalysisTier = 'scale' | 'reference';
+
+/** One enforced maximum size of an operator. */
+export type GPUAnalysisLimit = {
+  /** The prop or quantity that is bounded, for example `nodeCount`. */
+  name: string;
+  /** Largest accepted value (inclusive). */
+  maximum: number;
+  /** Why the limit exists, for example the size of a per-invocation array. */
+  reason: string;
+  /** Repository-relative source file where the check lives. */
+  source?: string;
+};
+
 /** Operator-level descriptor used for discovery and generated audits. */
 export type GPUSpatialAnalysisOperator = {
   /** Public export name. Constructors are deliberately not stored here. */
@@ -273,12 +313,10 @@ export type GPUSpatialAnalysisOperator = {
   primaryCapability: string;
   /** Additional capability IDs that describe secondary roles. */
   tags: readonly string[];
-  package:
-    | '@luma-contributors/analysis/gpu-spatial-analysis'
-    | '@luma-contributors/analysis/gpu-terrain';
+  package: GPUAnalysisPackage;
   inputs: readonly GPUSpatialAnalysisDataKind[];
   outputs: readonly GPUSpatialAnalysisDataKind[];
-  dimensionality: '2d' | '2d+time' | 'topology' | 'mixed' | 'unspecified';
+  dimensionality: '2d' | '2d+time' | '3d' | 'topology' | 'mixed' | 'unspecified';
   coordinateModels: readonly (GPUSpatialAnalysisCoordinateModel | 'unspecified')[];
   topology: GPUSpatialAnalysisTopology;
   cardinality: GPUSpatialAnalysisOutputBound | 'unspecified';
@@ -286,6 +324,22 @@ export type GPUSpatialAnalysisOperator = {
   deterministic: boolean | 'order-dependent' | 'unspecified';
   status: readonly GPUSpatialAnalysisStatusKind[];
   readback: GPUSpatialAnalysisReadback;
+  /** One-line summary, taken from the class documentation. Present on operators added later. */
+  summary?: string;
+  /**
+   * `'operator'` (the default when absent) is a contributor or recipe. `'helper'` is an exported
+   * building block that is listed so that its ID stays stable but is not an analysis operation.
+   */
+  role?: 'operator' | 'helper';
+  /**
+   * `'scale'`: the kernels are parallel over the data and sized by device limits.
+   * `'reference'`: a single-invocation, exhaustive or small-dense design with a hard maximum size.
+   */
+  tier?: GPUAnalysisTier;
+  /** Hard maximum sizes enforced at construction. Only limits confirmed in the source are listed. */
+  limits?: readonly GPUAnalysisLimit[];
+  /** A boundary on the size or cost that is not a numeric maximum, for example a serial step. */
+  limitation?: string;
   evidence: {
     status: GPUSpatialAnalysisEvidenceStatus;
     /** Repository-relative test root or focused specification. */
@@ -316,6 +370,34 @@ export type GPUSpatialAnalysisOperatorQuery = {
   search?: string;
 };
 
+/** Filters accepted by `queryGPUAnalysisOperators`, which also covers the other entry points. */
+export type GPUAnalysisOperatorQuery = GPUSpatialAnalysisOperatorQuery & {
+  package?: GPUAnalysisPackage;
+  tier?: GPUAnalysisTier;
+  /** Matches `dimensionality`. */
+  dimensionality?: GPUSpatialAnalysisOperator['dimensionality'];
+  /** Includes helpers when true; they are left out of operator counts by default. */
+  includeHelpers?: boolean;
+};
+
+/**
+ * An operator of any entry point. Operators added after the first catalog do not carry the
+ * family-scale evidence figures (`representativeSourceRows` and the like), which were measured
+ * per family for the original capabilities; their `evidence` records tests and documentation only.
+ */
+export type GPUAnalysisOperator = Omit<GPUSpatialAnalysisOperator, 'evidence'> & {
+  evidence: Omit<
+    GPUSpatialAnalysisOperator['evidence'],
+    'representativeSourceRows' | 'transientMemory' | 'dispatch' | 'correctnessOracle'
+  > &
+    Partial<
+      Pick<
+        GPUSpatialAnalysisOperator['evidence'],
+        'representativeSourceRows' | 'transientMemory' | 'dispatch' | 'correctnessOracle'
+      >
+    >;
+};
+
 /** Generated, machine-readable baseline for the public spatial-analysis surface. */
 export type GPUSpatialAnalysisAudit = {
   capabilityFamilyCount: number;
@@ -326,4 +408,8 @@ export type GPUSpatialAnalysisAudit = {
   partialOperatorCount: number;
   fullySpecifiedCapabilityFamilyCount: number;
   operatorsByCapability: Readonly<Record<string, number>>;
+  /** Operators with `role: 'helper'`, included in `operatorCount` so that counts stay stable. */
+  helperOperatorCount?: number;
+  /** Operators with `tier: 'reference'`. */
+  referenceOperatorCount?: number;
 };

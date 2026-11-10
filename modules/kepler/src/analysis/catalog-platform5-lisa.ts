@@ -210,6 +210,7 @@ async function runLocalLisaVariants(
       const pseudo = session.output('pseudo-p-values', 'float32', rowCount);
       const exceedances = session.output('exceedances', 'uint32', rowCount);
       const overflow = session.output('overflow', 'uint32', 1);
+      const invalidCount = session.output('invalid-count', 'uint32', 1);
       session.graph.add(
         new GPULocalPermutationTest({
           id: 'catalog-local-lisa',
@@ -236,11 +237,16 @@ async function runLocalLisaVariants(
             exceedances: exceedances.view,
             pseudoPValues: pseudo.view,
             observed: observed.view,
-            status: {overflow: overflow.view}
+            status: {overflow: overflow.view, invalidCount: invalidCount.view}
           }
         })
       );
       session.run();
+      // G and G* are defined for non-negative data; the test then tests no row and also sets overflow.
+      if ((await session.readScalar(invalidCount)) !== 0)
+        throw new CatalogGpuUnsupportedError(
+          'Getis-Ord local G requires non-negative values (the value property has negative values)'
+        );
       if ((await session.readScalar(overflow)) !== 0)
         throw new CatalogGpuUnsupportedError('Permutation test incomplete');
       return {
@@ -351,7 +357,8 @@ const LOCAL_LISA_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     'G and G* and the bivariate Moran use row-standardized weights; local join counts use binary weights and need a 0/1 property.',
     'p-values are two-sided conditional-permutation pseudo p-values from GPULocalPermutationTest (a Philox stream keyed by seed), with no multiple-testing correction; rows with more than 32 neighbors fall back (the operation then fails: there is no CPU engine).',
-    'Islands stay in the moments and are not tested (null p-value).'
+    'Islands stay in the moments and are not tested (null p-value).',
+    'Local G and G* need non-negative values; a negative value fails the operation with a CatalogGpuUnsupportedError (there is no CPU engine to fall back to).'
   ],
   limitation:
     'GPU only (no CPU engine; the specs check the statistics against independent CPU formulas). Float32 statistics; at most 3,000 features.',

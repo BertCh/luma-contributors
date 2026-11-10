@@ -94,10 +94,48 @@ export type {
 } from './ripley-distance-parameters';
 
 export type {GPUPairStatisticsBounds} from './pair-statistics-parameters';
-export {GPUCrossVariogram, GPUSpaceTimeVariogram} from './gpu-cross-variogram';
-export type {GPUCrossVariogramProps, GPUSpaceTimeVariogramProps} from './gpu-cross-variogram';
+export {GPUCrossVariogram} from './gpu-cross-variogram';
+export type {GPUCrossVariogramProps} from './gpu-cross-variogram';
+export {
+  GPUSpaceTimeVariogram,
+  GPU_SPACE_TIME_VARIOGRAM_PARAMETER_LENGTH,
+  getGPUSpaceTimeVariogramParameterValues
+} from './gpu-space-time-variogram';
+export type {
+  GPUSpaceTimeVariogramProps,
+  GPUSpaceTimeVariogramSettings
+} from './gpu-space-time-variogram';
 export {
   GPUMarkedPointStatistics,
   GPU_MARKED_POINT_STATISTICS_COLUMNS
 } from './gpu-marked-point-statistics';
 export type {GPUMarkedPointStatisticsProps} from './gpu-marked-point-statistics';
+export {GPUSpaceTimeKFunction} from './gpu-space-time-k-function';
+export type {
+  GPUSpaceTimeKFunctionOutput,
+  GPUSpaceTimeKFunctionProps
+} from './gpu-space-time-k-function';
+export {
+  getGPUSpaceTimeKFunctionParameterValues,
+  GPU_SPACE_TIME_K_FUNCTION_PARAMETER_LENGTH,
+  GPU_SPACE_TIME_K_MAXIMUM_CLASS_COUNT,
+  GPU_SPACE_TIME_K_MAXIMUM_LOCAL_BINS
+} from './space-time-k-function-nodes';
+export type {
+  GPUSpaceTimeKEdgeCorrection,
+  GPUSpaceTimeKFunctionSettings,
+  GPUSpaceTimePairCorrelationKernel
+} from './space-time-k-function-nodes';
+export {GPU_SPACE_TIME_K_WEIGHT_CAP} from './space-time-k-function-wgsl';
+export {
+  getGPUSpaceTimeDiggleRandomParameterValues,
+  GPUSpaceTimeDiggleTest,
+  GPU_SPACE_TIME_DIGGLE_MAXIMUM_PERMUTATIONS,
+  GPU_SPACE_TIME_DIGGLE_RANDOM_PARAMETER_LENGTH,
+  GPU_SPACE_TIME_DIGGLE_SUMMARY,
+  GPU_SPACE_TIME_DIGGLE_SUMMARY_LENGTH
+} from './gpu-space-time-diggle-test';
+export type {
+  GPUSpaceTimeDiggleTestOutput,
+  GPUSpaceTimeDiggleTestProps
+} from './gpu-space-time-diggle-test';

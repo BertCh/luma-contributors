@@ -14,6 +14,13 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  resolveGPUTemporalContext,
+  type GPUTemporalContext,
+  type GPUTemporalContextSupport
+} from '../../analysis-core/contracts/temporal-context';
+import type {ArrowAnalyticsTimeUnit} from '../../analysis-core/graph-support/arrow-analytics-normalization';
+import {
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validatePackedView
@@ -27,6 +34,11 @@ import {
 const OPERATION = 'GPUCalendarBuckets';
 /** Storage bindings a kernel may use on the WebGPU default limit. */
 const MAXIMUM_BINDINGS = 8;
+/** The decode reads Int64 words and turns them into civil dates, so it needs a Unix-epoch count. */
+const TEMPORAL_CONTEXT_SUPPORT: GPUTemporalContextSupport = Object.freeze({
+  encodings: Object.freeze(['int64-words'] as const),
+  unixEpoch: true
+});
 
 /**
  * Caller-owned output columns of {@link GPUCalendarBuckets}. Each is optional and which ones are
@@ -85,17 +97,32 @@ export type GPUCalendarBucketsTimeZone = {
  * Properties for {@link GPUCalendarBuckets}.
  *
  * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Topology
- * (needs a new graph): the row count, which outputs are present, and whether `mask`,
+ * (needs a new graph): the row count, the unit, which outputs are present, and whether `mask`,
  * `utcOffsets` and `timeZone` are present, and the length of the `timeZone` table.
  */
 export type GPUCalendarBucketsProps = {
   /** Prefix for generated node IDs. Defaults to `'calendar-buckets'`. */
   id?: string;
   /**
-   * Epoch milliseconds as signed 64-bit two's complement words, one `uint32x2` `(low, high)` row
-   * per row (for example from `getInt64TimeWords`). Times before 1970 are negative.
+   * Epoch times as signed 64-bit two's complement words, one `uint32x2` `(low, high)` row per row
+   * (for example from `getInt64TimeWords`), in the unit given by `unit`. Times before 1970 are
+   * negative.
    */
   timestamps: GraphDataView<'uint32x2'>;
+  /**
+   * Unit of `timestamps`: `'second'`, `'millisecond'`, `'microsecond'` or `'nanosecond'`, the unit
+   * of an Arrow timestamp column. Defaults to `'millisecond'`. Compile-time (a new graph). Times
+   * are floored to whole milliseconds before the calendar decode, so a negative sub-millisecond
+   * time lands in the earlier millisecond. The time zone `transitions` stay epoch milliseconds.
+   */
+  unit?: ArrowAnalyticsTimeUnit;
+  /**
+   * Temporal context of `timestamps`, for example the `temporalContext` of an Arrow upload. Supplies
+   * the unit. It must be `'int64-words'` counted from the Unix epoch, and an explicit `unit` must
+   * agree with it. Its `timeZone` is not applied: local time comes from `parameters`, `utcOffsets`
+   * or `timeZone` below.
+   */
+  temporalContext?: GPUTemporalContext;
   /** Optional packed `uint32` row mask; zero makes the row invalid. */
   mask?: GraphDataView<'uint32'>;
   /**
@@ -147,7 +174,7 @@ const COLUMN_OUTPUTS: readonly {
 ];
 
 /**
- * Decodes epoch-millisecond timestamps into calendar columns (year, month, day, hour, minute,
+ * Decodes epoch timestamps (milliseconds by default, see `unit`) into calendar columns (year, month, day, hour, minute,
  * weekday, day of year, ISO week, ISO week-year, quarter) and an hour by weekday count matrix, so
  * time-of-day and weekday charts and calendar bucket keys need no per-row `Date` on the CPU.
  *
@@ -179,12 +206,15 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
   readonly props: GPUCalendarBucketsProps;
   /** Number of input rows. */
   readonly rowCount: number;
+  /** Unit of `timestamps`, from `temporalContext` or `unit`. */
+  readonly unit: ArrowAnalyticsTimeUnit;
 
   constructor(props: GPUCalendarBucketsProps) {
     this.id = props.id ?? 'calendar-buckets';
     this.props = props;
     const id = this.id;
     const {output} = props;
+    this.unit = resolveCalendarUnit(id, props);
     validatePackedView(props.timestamps, ['uint32x2'], `${id} timestamps`);
     this.rowCount = props.timestamps.length;
     if (this.rowCount < 1) {
@@ -256,9 +286,18 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, rowCount} = this;
+    const {props, id, rowCount, unit} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    // The Int64 timestamps are the widest row-proportional binding (8 bytes a row; the decoded
+    // columns are 4 bytes a row), about 16.7 million rows on a default device.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'timestamps',
+      rowCount * props.timestamps.rowByteLength,
+      'reduce timestamps.length or process the rows in several calls'
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
     const specs: OutputSpec[] = [];
     for (const column of COLUMN_OUTPUTS) {
@@ -332,10 +371,8 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
             )
           ],
           invocationCount: rowCount,
-          declarations: props.timeZone
-            ? `const TRANSITION_COUNT: u32 = ${props.timeZone.transitions.length}u;\n${CALENDAR_WGSL}${ZONE_WGSL}`
-            : CALENDAR_WGSL,
-          body: `let time = vec2<u32>(timestamps[timestampsOffset + 2u * index], timestamps[timestampsOffset + 2u * index + 1u]);
+          declarations: `${props.timeZone ? `const TRANSITION_COUNT: u32 = ${props.timeZone.transitions.length}u;\n` : ''}${CALENDAR_WGSL}${UNIT_WGSL[unit]}${props.timeZone ? ZONE_WGSL : ''}`,
+          body: `let time = toEpochMilliseconds(vec2<u32>(timestamps[timestampsOffset + 2u * index], timestamps[timestampsOffset + 2u * index + 1u]));
   let offsetMilliseconds = ${
     props.timeZone
       ? 'getZoneOffsetMilliseconds(time)'
@@ -366,6 +403,20 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
   private getOutputViews(): GraphDataView[] {
     return Object.values(this.props.output).filter(view => Boolean(view)) as GraphDataView[];
   }
+}
+
+function resolveCalendarUnit(
+  id: string,
+  {unit, temporalContext}: GPUCalendarBucketsProps
+): ArrowAnalyticsTimeUnit {
+  if (!temporalContext) {
+    return unit ?? 'millisecond';
+  }
+  const contextUnit = resolveGPUTemporalContext(id, temporalContext, TEMPORAL_CONTEXT_SUPPORT).unit;
+  if (unit !== undefined && unit !== contextUnit) {
+    throw new Error(`${id} unit ${unit} contradicts temporalContext unit ${contextUnit}`);
+  }
+  return contextUnit;
 }
 
 const CALENDAR_WGSL = /* wgsl */ `
@@ -494,6 +545,57 @@ fn decodeCalendar(time: vec2<u32>, offsetMilliseconds: i32, firstDay: u32) -> Ca
   return fields;
 }
 `;
+
+const NEGATE_INT64_WGSL = /* wgsl */ `
+fn negateInt64(value: vec2<u32>) -> vec2<u32> {
+  let low = ~value.x + 1u;
+  return vec2<u32>(low, ~value.y + select(0u, 1u, low == 0u));
+}
+`;
+
+// Floor division of an Int64 by 1000 or 1,000,000 in unsigned magnitude words, so negative times
+// round toward the earlier millisecond.
+const divideToMilliseconds = (divisor: string) => /* wgsl */ `${NEGATE_INT64_WGSL}
+fn toEpochMilliseconds(time: vec2<u32>) -> vec2<u32> {
+  let isNegative = (time.y >> 31u) != 0u;
+  let magnitude = select(time, negateInt64(time), isNegative);
+  let division = divideUnsigned64(magnitude, ${divisor}u);
+  var quotient = vec2<u32>(division.quotientLow, division.quotientHigh);
+  if (isNegative && division.remainder != 0u) {
+    quotient = vec2<u32>(quotient.x + 1u, quotient.y + select(0u, 1u, quotient.x == 0xffffffffu));
+  }
+  return select(quotient, negateInt64(quotient), isNegative);
+}
+`;
+
+/** Per-unit `toEpochMilliseconds(time)`: converts Int64 words of that unit to epoch milliseconds. */
+const UNIT_WGSL: Record<ArrowAnalyticsTimeUnit, string> = {
+  millisecond: /* wgsl */ `
+fn toEpochMilliseconds(time: vec2<u32>) -> vec2<u32> {
+  return time;
+}
+`,
+  microsecond: divideToMilliseconds('1000'),
+  nanosecond: divideToMilliseconds('1000000'),
+  // Seconds times 1000. A magnitude of 2^52 seconds or more is far beyond the +-1e9 day range, so
+  // it saturates to the Int64 extreme, which the decode rejects as out of range.
+  second: /* wgsl */ `${NEGATE_INT64_WGSL}
+fn toEpochMilliseconds(time: vec2<u32>) -> vec2<u32> {
+  let isNegative = (time.y >> 31u) != 0u;
+  let magnitude = select(time, negateInt64(time), isNegative);
+  if (magnitude.y >= 0x100000u) {
+    return select(vec2<u32>(0xffffffffu, 0x7fffffffu), vec2<u32>(0u, 0x80000000u), isNegative);
+  }
+  let lowPart = (magnitude.x & 0xffffu) * 1000u;
+  let highPart = (magnitude.x >> 16u) * 1000u;
+  let shifted = highPart << 16u;
+  let low = shifted + lowPart;
+  let high = magnitude.y * 1000u + (highPart >> 16u) + select(0u, 1u, low < shifted);
+  let product = vec2<u32>(low, high);
+  return select(product, negateInt64(product), isNegative);
+}
+`
+};
 
 const ZONE_WGSL = /* wgsl */ `
 // Signed 64-bit a <= b on (low, high) words.

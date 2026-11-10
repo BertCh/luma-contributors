@@ -5,6 +5,8 @@
 import {GPU_SPATIAL_ANALYSIS_CAPABILITIES} from './spatial-analysis-catalog';
 import {KEPLER_ANALYSIS_OPERATOR_OVERRIDES} from './kepler-analysis-catalog';
 import {COVERAGE_EXPANSION_OPERATOR_OVERRIDES} from './coverage-expansion-catalog';
+import {OPERATOR_ANNOTATIONS} from './all-entry-points/operator-annotations';
+import {SPATIOTEMPORAL_OPERATOR_NAMES} from './spatiotemporal-review-catalog';
 import {NESTED_VALIDATION_OPERATOR_OVERRIDE} from '../spatial-validation/spatial-validation-descriptors';
 import type {
   GPUSpatialAnalysisAudit,
@@ -827,6 +829,7 @@ function makeOperator(
   exportName: string
 ): GPUSpatialAnalysisOperator {
   const override = OPERATOR_OVERRIDES[exportName] ?? {};
+  const annotation = OPERATOR_ANNOTATIONS[exportName] ?? {};
   const capabilityEvidence = capability.evidence;
   if (!capabilityEvidence) {
     throw new Error(`available capability ${capability.id} needs execution evidence`);
@@ -838,7 +841,9 @@ function makeOperator(
     package: override.package ?? '@luma-contributors/analysis/gpu-spatial-analysis',
     inputs: override.inputs ?? [],
     outputs: override.outputs ?? [],
-    dimensionality: override.dimensionality ?? 'unspecified',
+    dimensionality: SPATIOTEMPORAL_OPERATOR_NAMES.has(exportName)
+      ? '2d+time'
+      : (override.dimensionality ?? 'unspecified'),
     coordinateModels: override.coordinateModels ?? ['unspecified'],
     topology: override.topology ?? 'unspecified',
     cardinality: override.cardinality ?? 'unspecified',
@@ -846,6 +851,10 @@ function makeOperator(
     deterministic: override.deterministic ?? 'unspecified',
     status: override.status ?? [],
     readback: override.readback ?? 'none',
+    role: annotation.role ?? 'operator',
+    tier: annotation.tier ?? 'scale',
+    ...(annotation.limits ? {limits: annotation.limits} : {}),
+    ...(annotation.limitation ? {limitation: annotation.limitation} : {}),
     evidence: {
       status: override.evidence ?? 'partial',
       tests: override.tests ?? TEST_ROOT,
@@ -929,6 +938,11 @@ export const GPU_SPATIAL_ANALYSIS_AUDIT: GPUSpatialAnalysisAudit = {
   ).length,
   partialOperatorCount: GPU_SPATIAL_ANALYSIS_OPERATORS.filter(
     operator => operator.evidence.status === 'partial'
+  ).length,
+  helperOperatorCount: GPU_SPATIAL_ANALYSIS_OPERATORS.filter(operator => operator.role === 'helper')
+    .length,
+  referenceOperatorCount: GPU_SPATIAL_ANALYSIS_OPERATORS.filter(
+    operator => operator.tier === 'reference'
   ).length,
   fullySpecifiedCapabilityFamilyCount: GPU_SPATIAL_ANALYSIS_CAPABILITIES.filter(
     capability => capability.status === 'available' && capability.evidence

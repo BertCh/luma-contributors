@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {clamp} from '@math.gl/core';
-import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -17,10 +16,26 @@ import {
   FACILITY_SCORE_ORDER_WGSL
 } from '../../gpu-spatial-analysis/location-allocation/facility-score-reduction';
 import {
+  validateCapacity,
+  validateMaximumCount,
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Largest facility count: the exhaustive search enumerates 2^F subsets (65,536 at 16). */
+const MAXIMUM_FACILITY_COUNT = 16;
+/** Largest demand row count of any operation; capacitated p-median is limited far lower by the candidate count. */
+const MAXIMUM_DEMAND_COUNT = 64;
+/**
+ * Largest candidate count, 2^20: 2^F subsets, or F^D assignments of D demand rows to F facilities
+ * for capacitated p-median. It bounds the work to 16 batches of 65,536 candidates, and it is the
+ * real limit on demand rows of capacitated p-median (20 rows at 2 facilities, 10 at 4).
+ */
+const MAXIMUM_CANDIDATE_COUNT = 1048576;
+/** Words of the `status` view: valid, feasible incumbent, enumeration complete, examined count. */
+const STATUS_WORD_COUNT = 4;
 
 export type GPUNetworkFacilityOptimizationProps = {
   id?: string;
@@ -48,6 +63,15 @@ export type GPUNetworkFacilityOptimizationProps = {
  * Exhaustive facility candidates evaluated independently in fixed-size GPU batches.
  * Per-candidate sums and capacities retain input row order; hierarchical reductions preserve the
  * lowest candidate on ties. Incomplete enumeration never certifies infeasibility/optimality.
+ *
+ * Reference tier (contributor contract rule 2): an exact exhaustive search. Candidates are
+ * row-parallel in batches of 65,536, with at most 16 batches, but the number of candidates grows
+ * exponentially: 2^facilityCount subsets for backup coverage and p-dispersion, and
+ * facilityCount^demandRows assignments for capacitated p-median. The real limit, enforced at
+ * construction, is `candidateCount <= 2^20` (1,048,576) with at most 16 facilities. For capacitated
+ * p-median that means demand rows are limited by the facilities, not by the 64-row ceiling that
+ * applies to every operation: 20 rows at 2 facilities, 10 at 4, 5 at 16. For larger problems use
+ * `GPULocationAllocation` (greedy with swap improvement).
  */
 export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
   readonly id: string;
@@ -56,26 +80,42 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkFacilityOptimizationProps) {
     this.id = props.id ?? 'network-facility-optimization';
     this.props = props;
-    assert(
-      Number.isInteger(props.facilityCount) && props.facilityCount >= 1 && props.facilityCount <= 16
-    );
-    assert(
-      props.selectCount === undefined
-        ? props.operation === 'backup-coverage'
-        : Number.isInteger(props.selectCount) &&
-            props.selectCount >= (props.operation === 'p-dispersion' ? 2 : 1) &&
-            props.selectCount <= props.facilityCount
-    );
-    assert(props.demand.length <= 64);
+    const {id} = this;
+    validateCapacity(id, 'facilityCount', props.facilityCount, 1, MAXIMUM_FACILITY_COUNT);
+    if (props.selectCount === undefined) {
+      validateRequirement(
+        id,
+        props.operation === 'backup-coverage',
+        'selectCount may be omitted only for backup-coverage'
+      );
+    } else {
+      validateCapacity(
+        id,
+        'selectCount',
+        props.selectCount,
+        props.operation === 'p-dispersion' ? 2 : 1,
+        props.facilityCount
+      );
+    }
+    validateMaximumCount(id, 'demand rows', props.demand.length, MAXIMUM_DEMAND_COUNT);
     this.candidateCount =
       props.operation === 'capacitated-p-median'
         ? props.facilityCount ** props.demand.length
         : 2 ** props.facilityCount;
-    assert(Number.isSafeInteger(this.candidateCount) && this.candidateCount <= 1048576);
-    assert(
-      Number.isInteger(props.maximumCandidates ?? this.candidateCount) &&
-        (props.maximumCandidates ?? this.candidateCount) >= 0 &&
-        (props.maximumCandidates ?? this.candidateCount) <= 1048576
+    // Exhaustive enumeration: facilityCount ** demand rows for capacitated-p-median, otherwise
+    // 2 ** facilityCount. The product, not the demand row count, is the real limit.
+    validateMaximumCount(
+      id,
+      'candidate count (facilityCount ** demand rows for capacitated-p-median, else 2 ** facilityCount)',
+      this.candidateCount,
+      MAXIMUM_CANDIDATE_COUNT
+    );
+    validateCapacity(
+      id,
+      'maximumCandidates',
+      props.maximumCandidates ?? this.candidateCount,
+      0,
+      MAXIMUM_CANDIDATE_COUNT
     );
     for (const view of [
       props.costs,
@@ -91,16 +131,38 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
       props.output.status
     ])
       validatePackedView(view, ['uint32'], this.id);
-    assert(
+    validateRequirement(
+      id,
       props.costs.length ===
         props.facilityCount *
-          (props.operation === 'p-dispersion' ? props.facilityCount : props.demand.length) &&
-        props.capacities.length === props.facilityCount &&
-        props.threshold.length === 1 &&
-        props.output.selectedFacilities.length === props.facilityCount &&
-        props.output.assignments.length === props.demand.length &&
-        props.output.objective.length === 1 &&
-        props.output.status.length === 4
+          (props.operation === 'p-dispersion' ? props.facilityCount : props.demand.length),
+      'costs must hold facilityCount times demand rows (facilityCount squared for p-dispersion)'
+    );
+    validateRequirement(
+      id,
+      props.capacities.length === props.facilityCount,
+      'capacities must hold facilityCount rows'
+    );
+    validateRequirement(id, props.threshold.length === 1, 'threshold must hold one row');
+    validateRequirement(
+      id,
+      props.output.selectedFacilities.length === props.facilityCount,
+      'output.selectedFacilities must hold facilityCount rows'
+    );
+    validateRequirement(
+      id,
+      props.output.assignments.length === props.demand.length,
+      'output.assignments must hold one row per demand row'
+    );
+    validateRequirement(
+      id,
+      props.output.objective.length === 1,
+      'output.objective must hold one row'
+    );
+    validateRequirement(
+      id,
+      props.output.status.length === STATUS_WORD_COUNT,
+      `output.status must hold ${STATUS_WORD_COUNT} rows`
     );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.costs,

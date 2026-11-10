@@ -6,6 +6,7 @@ import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/grap
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {TIME_WORDS_WGSL} from '../time-window-filter/time-words';
+import {TEMPORAL_REDUCTION_WORD_DIVISION_WGSL} from './temporal-reduction-word-division';
 
 /** Properties for {@link createTemporalReductionRangeNode}. @internal */
 export type TemporalReductionRangeProps = {
@@ -27,8 +28,8 @@ export type TemporalReductionRangeProps = {
  * Float times: a row is below the range when `d = time - origin` is negative and above it when
  * `d >= bucketCount * width` (one f32 product, the same correctly rounded product the bucket
  * correction step uses). Word times: below when the exact signed comparison with the origin is
- * negative, above when the exact 64-bit by 32-bit quotient reaches `bucketCount`. Invalid
- * parameters (NaN, non-positive or infinite width, zero word width) give an empty range.
+ * negative, above when the exact 64-bit by 64-bit quotient reaches `bucketCount`. Invalid
+ * parameters (NaN, non-positive or infinite width, zero 64-bit word width) give an empty range.
  *
  * @internal
  */
@@ -40,6 +41,7 @@ export function createTemporalReductionRangeNode<Parameters>(
   const rows = props.timestamps.length;
   const declarations = isWordMode
     ? /* wgsl */ `${TIME_WORDS_WGSL}
+${TEMPORAL_REDUCTION_WORD_DIVISION_WGSL}
 override BUCKET_COUNT: u32;
 override ROW_COUNT: u32;
 
@@ -47,20 +49,9 @@ fn getRowTime(row: u32) -> vec2<u32> {
   return vec2<u32>(rowTimes[rowTimesOffset + 2u * row], rowTimes[rowTimesOffset + 2u * row + 1u]);
 }
 
-// Same exact division as the bucket kernel: high word first, then the low word bit by bit.
-fn isQuotientAtLeastBucketCount(difference: vec2<u32>, width: u32) -> bool {
-  let quotientHigh = difference.y / width;
-  var remainder = difference.y % width;
-  var quotientLow = 0u;
-  for (var bit = 31i; bit >= 0i; bit = bit - 1i) {
-    let carry = remainder >> 31u;
-    remainder = (remainder << 1u) | ((difference.x >> u32(bit)) & 1u);
-    if (carry != 0u || remainder >= width) {
-      remainder = remainder - width;
-      quotientLow = quotientLow | (1u << u32(bit));
-    }
-  }
-  return quotientHigh != 0u || quotientLow >= BUCKET_COUNT;
+fn isQuotientAtLeastBucketCount(difference: vec2<u32>, width: vec2<u32>) -> bool {
+  let division = divideTimeDifference(difference, width);
+  return division.overflow || division.quotient >= BUCKET_COUNT;
 }
 
 fn isRowBelowRange(row: u32, origin: vec2<u32>) -> bool {
@@ -68,7 +59,7 @@ fn isRowBelowRange(row: u32, origin: vec2<u32>) -> bool {
 }
 
 // Only called for rows at or after the lower bound, which are not before the origin.
-fn isRowAboveRange(row: u32, origin: vec2<u32>, width: u32) -> bool {
+fn isRowAboveRange(row: u32, origin: vec2<u32>, width: vec2<u32>) -> bool {
   return isQuotientAtLeastBucketCount(timeWordsSubtract(getRowTime(row), origin), width);
 }`
     : /* wgsl */ `${IS_NAN_BITS_WGSL}
@@ -84,8 +75,8 @@ fn isRowAboveRange(row: u32, origin: f32, limit: f32) -> bool {
 }`;
   const parameterBody = isWordMode
     ? /* wgsl */ `let origin = vec2<u32>(params[paramsOffset], params[paramsOffset + 1u]);
-  let width = params[paramsOffset + 2u];
-  let isValid = width != 0u;`
+  let width = vec2<u32>(params[paramsOffset + 2u], params[paramsOffset + 3u]);
+  let isValid = width.x != 0u || width.y != 0u;`
     : /* wgsl */ `let origin = params[paramsOffset];
   let width = params[paramsOffset + 1u];
   let isValid = !isNanBits(origin) && !isNanBits(width) && width > 0.0 &&

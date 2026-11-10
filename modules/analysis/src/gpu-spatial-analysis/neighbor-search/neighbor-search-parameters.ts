@@ -12,6 +12,12 @@ import {defineGPUSpatialParameterSchema} from '../../analysis-core/contracts/ind
 /** Number of float32 elements in a {@link GPUNeighborSearch} parameter view. */
 export const GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH = 12;
 
+/**
+ * Words of a {@link GPUNeighborSearch} parameter view with `times`: the base layout, then
+ * `timeRadius`, `minimumTime` and `maximumTime`.
+ */
+export const GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH = 15;
+
 /** Declarative layout of the packed neighbor-search view. */
 export const GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
   id: 'neighbor-search',
@@ -121,6 +127,18 @@ export type GPUNeighborSearchSettings = {
   kernel?: GPUNeighborSearchKernel;
   /** Divides each row's weights by their sum (zero-sum rows stay zero). Defaults to false. */
   rowStandardize?: boolean;
+  /**
+   * Time window of a space-time search, in the `temporalContext` unit: a neighbor satisfies
+   * `|t_target - t_query| <= timeRadius`. Non-positive or non-finite makes every row empty.
+   * Required with `times`, and selects the
+   * {@link GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH}-word layout.
+   */
+  timeRadius?: number;
+  /**
+   * `[minimumTime, maximumTime]` covered by the index. Rows outside it are invalid, like rows
+   * outside `bounds`. Required with `timeRadius`.
+   */
+  timeBounds?: readonly [number, number];
 };
 
 /**
@@ -145,12 +163,25 @@ export function getGPUNeighborSearchWeightTransform(
  * Packs {@link GPUNeighborSearchSettings} into the float32 layout read by the kernels.
  *
  * Layout: `[minX, minY, maxX, maxY, radius, weightKind, power, distanceFloor, kernel,
- * rowStandardize, 0, 0]`.
+ * rowStandardize, 0, 0]`, followed by `[timeRadius, minimumTime, maximumTime]` when `timeRadius`
+ * is given.
  */
 export function getGPUNeighborSearchParameterValues(
   settings: GPUNeighborSearchSettings
 ): Float32Array {
-  const values = new Float32Array(GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH);
+  if ((settings.timeRadius === undefined) !== (settings.timeBounds === undefined)) {
+    throw new Error('GPUNeighborSearch timeRadius and timeBounds must be given together');
+  }
+  const values = new Float32Array(
+    settings.timeRadius === undefined
+      ? GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
+      : GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH
+  );
+  if (settings.timeRadius !== undefined && settings.timeBounds) {
+    values[12] = settings.timeRadius;
+    values[13] = settings.timeBounds[0];
+    values[14] = settings.timeBounds[1];
+  }
   const [minimumX, minimumY, maximumX, maximumY] = settings.bounds;
   const weightKind = settings.weightKind ?? 'binary';
   const kernel = settings.kernel ?? 'triangular';

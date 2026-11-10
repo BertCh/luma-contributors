@@ -19,6 +19,13 @@ export const GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS = 32;
 /** Sentinel written to an optional `lastValidSlice` output for a cell with no finite slice. */
 export const GPU_EMERGING_HOT_SPOTS_NO_SLICE = 0xffffffff;
 
+/**
+ * Largest `sliceCount` of an autocorrelation-corrected trend (`trendAutocorrelationCorrection`):
+ * detrending takes the Sen slope, the median of `n (n - 1) / 2` pairwise slopes per cell, and the
+ * correction runs in the single-invocation Mann-Kendall path used below 64 slices.
+ */
+export const GPU_EMERGING_HOT_SPOTS_MAXIMUM_CORRECTED_TREND_SLICE_COUNT = 63;
+
 /** Default `minimumTrendSliceCount`: ESRI advises at least 10 time steps for Mann-Kendall. */
 export const GPU_EMERGING_HOT_SPOTS_DEFAULT_MINIMUM_TREND_SLICE_COUNT = 10;
 
@@ -47,7 +54,11 @@ export const GPU_EMERGING_HOT_SPOTS_CATEGORIES = {
   PERSISTENT_HOT: 4,
   /** Hot for at least 90% of slices including the final one, with a significant downward trend. */
   DIMINISHING_HOT: 5,
-  /** On-again off-again hot spot that was never a cold spot, under 90% hot. */
+  /**
+   * On-again off-again hot spot with a significant hot final slice that was never a cold spot,
+   * under 90% hot. With `sporadicRequiresFinalSlice: false` a non-significant final slice also
+   * qualifies.
+   */
   SPORADIC_HOT: 6,
   /** Hot in the final slice with some earlier cold slice, under 90% hot. */
   OSCILLATING_HOT: 7,
@@ -63,7 +74,11 @@ export const GPU_EMERGING_HOT_SPOTS_CATEGORIES = {
   PERSISTENT_COLD: 12,
   /** Cold for at least 90% of slices including the final one, with a significant upward trend. */
   DIMINISHING_COLD: 13,
-  /** On-again off-again cold spot that was never a hot spot, under 90% cold. */
+  /**
+   * On-again off-again cold spot with a significant cold final slice that was never a hot spot,
+   * under 90% cold. With `sporadicRequiresFinalSlice: false` a non-significant final slice also
+   * qualifies.
+   */
   SPORADIC_COLD: 14,
   /** Cold in the final slice with some earlier hot slice, under 90% cold. */
   OSCILLATING_COLD: 15,
@@ -137,6 +152,14 @@ export type GPUEmergingHotSpotsSettings = {
   minimumTrendSliceCount?: number;
   /** Fraction of slices that makes a spot persistent or historical, in `(0.5, 1]`. Default `0.9`. */
   persistentFraction?: number;
+  /**
+   * Whether Sporadic hot and cold need a statistically significant hot (cold) final slice, as
+   * current ArcGIS Pro defines them. Defaults to `true`. `false` restores the older rule that also
+   * labels a cell with a non-significant final slice Sporadic when it has only hot (cold) history,
+   * so results computed before the change can be reproduced. Only that neutral-final case changes;
+   * a location that fails the new test is `NO_PATTERN`.
+   */
+  sporadicRequiresFinalSlice?: boolean;
 };
 
 /**
@@ -144,8 +167,9 @@ export type GPUEmergingHotSpotsSettings = {
  * `GPUEmergingHotSpots`.
  *
  * Layout: `[radius, temporalWindow, criticalZ, trendSignificanceLevel, persistentFraction,
- * minimumTrendSliceCount, significanceLevel, 0]`, where `significanceLevel = 1 - confidenceLevel`
- * and `criticalZ` is only read with `multipleTesting: 'none'`.
+ * minimumTrendSliceCount, significanceLevel, usesLegacySporadic]`, where `usesLegacySporadic` is
+ * `1` for `sporadicRequiresFinalSlice: false` and `0` otherwise, `significanceLevel = 1 -
+ * confidenceLevel` and `criticalZ` is only read with `multipleTesting: 'none'`.
  *
  * @param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
@@ -212,7 +236,7 @@ export function getGPUEmergingHotSpotsParameterValues(
     persistentFraction,
     minimumTrendSliceCount,
     1 - confidenceLevel,
-    0
+    settings.sporadicRequiresFinalSlice === false ? 1 : 0
   ]);
   return target;
 }

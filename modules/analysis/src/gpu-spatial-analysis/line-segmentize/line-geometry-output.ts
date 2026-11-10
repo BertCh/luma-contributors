@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
-import {validatePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validatePackedView,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPULineGeometryOutput} from './line-segmentize-types';
 
 /** Returns every view of a line output, for aliasing and graph-membership checks. @internal */
@@ -17,6 +20,7 @@ export function getLineGeometryOutputViews(
     output.status.overflow,
     output.status.requiredCount,
     output.status.lineCount,
+    output.status.approximation,
     output.sourceLineIndices,
     output.sourceRows,
     output.measures
@@ -29,13 +33,23 @@ export function getLineGeometryOutputViews(
  * @param id Contributor ID for error messages.
  * @param output Output to validate.
  * @param lineCapacity Required number of output lines (`lineOffsets.length - 1`).
+ * @param writesApproximation Whether the contributor writes `status.approximation`; when false a
+ * view for it is rejected, because it would be left unwritten.
  * @internal
  */
 export function validateLineGeometryOutput(
   id: string,
   output: GPULineGeometryOutput,
-  lineCapacity: number
+  lineCapacity: number,
+  writesApproximation = false
 ): void {
+  // An unwritten status view would read as stale data, so contributors that never flag an
+  // approximation refuse one.
+  validateRequirement(
+    id,
+    writesApproximation || output.status.approximation === undefined,
+    'output.status.approximation is written only by GPULineSegmentize and GPUGreatCircleArcs'
+  );
   validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
   if (output.positions.length < 1) {
     throw new Error(`${id} output.positions must hold at least one row`);
@@ -49,7 +63,8 @@ export function validateLineGeometryOutput(
     ['count', output.status.count],
     ['overflow', output.status.overflow],
     ['requiredCount', output.status.requiredCount],
-    ['lineCount', output.status.lineCount]
+    ['lineCount', output.status.lineCount],
+    ['approximation', output.status.approximation]
   ] as const) {
     if (scalar) {
       validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert} from '@luma.gl/core';
 import {vec3} from '@math.gl/core';
 import {assertUnitVector} from './assert-unit-vector';
 import {
@@ -20,15 +19,36 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validatePackedView,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+  GPU_SPHERICAL_OVERLAY_MINIMUM_COSINE,
+  GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
+} from './spherical-limits';
+
+/** Value of `output.complement` when the result is the polygon region itself. */
+export const GPU_SPHERICAL_POLYGON_OVERLAY_COMPLEMENT_NONE = 0;
+/** Value of `output.complement` when the result is the sphere minus the assembled polygon region. */
+export const GPU_SPHERICAL_POLYGON_OVERLAY_COMPLEMENT_SPHERE = 1;
 
 export type GPUSphericalPolygonOperand = Omit<GPUPolygonOverlayProps['left'], 'positions'> & {
   positions: GraphDataView<'float32x3'>;
 };
 export type GPUSphericalPolygonOverlayProps = {
   id?: string;
+  /**
+   * Coordinate space of the unit vectors: longitude-latitude (their embedding on the sphere) with
+   * great-circle edges. Planar contexts are rejected. Defaults to longitude-latitude, no metric.
+   * The planar overlay inside the chart is an implementation detail and takes no context.
+   */
+  spatialContext?: GPUSpatialContext;
   left: GPUSphericalPolygonOperand;
   right: GPUSphericalPolygonOperand;
   operation: 'intersection' | 'union' | 'difference' | 'symmetric-difference';
@@ -45,7 +65,11 @@ export type GPUSphericalPolygonOverlayProps = {
     geometry: Omit<GPUPolygonOverlayOutput['geometry'], 'positions'> & {
       positions: GraphDataView<'float32x3'>;
     };
-    /** One GPU word: 1 means the sphere minus the assembled polygon region. */
+    /**
+     * One GPU word: {@link GPU_SPHERICAL_POLYGON_OVERLAY_COMPLEMENT_SPHERE} (1) means the sphere
+     * minus the assembled polygon region, {@link GPU_SPHERICAL_POLYGON_OVERLAY_COMPLEMENT_NONE} (0)
+     * the region itself.
+     */
     complement: GraphDataView<'uint32'>;
   };
 };
@@ -58,6 +82,8 @@ export type GPUSphericalPolygonOverlayProps = {
  */
 export class GPUSphericalPolygonOverlay implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Validated coordinate space of the unit vectors. */
+  readonly spatialContext: GPUSpatialContext;
   readonly complement: boolean;
   private readonly planarOperation: GPUPolygonOverlayProps['operation'];
   private readonly swap: boolean;
@@ -65,11 +91,18 @@ export class GPUSphericalPolygonOverlay implements GPUCommandNodeProducer {
   private readonly vertical: number[];
   constructor(readonly props: GPUSphericalPolygonOverlayProps) {
     this.id = props.id ?? 'spherical-polygon-overlay';
-    assertUnitVector(props.chartCenter);
-    assert(
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
+      GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
+    );
+    assertUnitVector(props.chartCenter, this.id, 'chartCenter');
+    validateRequirement(
+      this.id,
       Number.isFinite(props.minimumCosine ?? 0.01) &&
-        (props.minimumCosine ?? 0.01) >= 1e-3 &&
-        (props.minimumCosine ?? 0.01) < 1
+        (props.minimumCosine ?? 0.01) >= GPU_SPHERICAL_OVERLAY_MINIMUM_COSINE &&
+        (props.minimumCosine ?? 0.01) < 1,
+      `minimumCosine must be a finite number in [${GPU_SPHERICAL_OVERLAY_MINIMUM_COSINE}, 1)`
     );
     for (const view of [
       props.left.positions,
@@ -78,7 +111,11 @@ export class GPUSphericalPolygonOverlay implements GPUCommandNodeProducer {
     ])
       validatePackedView(view, ['float32x3'], this.id);
     validatePackedView(props.output.complement, ['uint32'], this.id);
-    assert(props.output.complement.length === 1);
+    validateRequirement(
+      this.id,
+      props.output.complement.length === 1,
+      'output.complement must hold one entry'
+    );
     const geometry = props.output.geometry;
     const outputs = [
       geometry.positions,

@@ -124,6 +124,50 @@ it('invalid regional change cutoff is unknown rather than zero changed area', as
   }
 });
 
+it('track quality point-centred speed test flags the outlier fix and not the fix after it', async () => {
+  const run = async (positions: number[], speedOutlierMode?: 'step' | 'point-centred') => {
+    const setup = await fixture('review-point-centred');
+    try {
+      const count = positions.length / 2;
+      const result = addTrackQualityRecipe(setup.graph, {
+        speedOutlierMode,
+        trajectory: {
+          positions: setup.input('positions', Float32Array.from(positions), 'float32x2', count),
+          timestamps: setup.input(
+            'times',
+            Float32Array.from({length: count}, (_, row) => row),
+            'float32',
+            count
+          ),
+          trackOffsets: setup.input('offsets', new Uint32Array([0, count]), 'uint32', 2)
+        },
+        thresholds: setup.input('thresholds', new Float32Array([5, 100]), 'float32', 2)
+      });
+      const flags = publish(setup, 'flags-out', result.outputs.flags);
+      setup.run();
+      return await setup.readUint32(flags, count);
+    } finally {
+      setup.destroy();
+    }
+  };
+  const speed = GPU_TRACK_QUALITY_FLAGS.excessiveSpeed;
+  const interiorOutlier = [0, 0, 1, 0, 502, 0, 3, 0, 4, 0];
+  // The documented default stays step-based: the row after the outlier is flagged too.
+  expect(await run(interiorOutlier)).toEqual([0, 0, speed, speed, 0]);
+  expect(await run(interiorOutlier, 'step')).toEqual([0, 0, speed, speed, 0]);
+  // Point-centred: only the row whose both adjacent steps are excessive.
+  expect(await run(interiorOutlier, 'point-centred')).toEqual([0, 0, speed, 0, 0]);
+  // An outlier first row is visible without blaming the fix after it.
+  expect(await run([500, 0, 1, 0, 2, 0, 3, 0], 'point-centred')).toEqual([speed, 0, 0, 0]);
+  // The track-start fix is not flagged for the outlier next to it.
+  expect(await run([0, 0, 500, 0, 2, 0, 3, 0], 'point-centred')).toEqual([0, speed, 0, 0]);
+  // An outlier last row, and a valid last fix after an interior outlier.
+  expect(await run([0, 0, 1, 0, 2, 0, 900, 0], 'point-centred')).toEqual([0, 0, 0, speed]);
+  expect(await run([0, 0, 1, 0, 900, 0, 3, 0], 'point-centred')).toEqual([0, 0, speed, 0]);
+  // A single fast step cannot say which end is wrong: both ends are flagged.
+  expect(await run([0, 0, 500, 0], 'point-centred')).toEqual([speed, speed]);
+});
+
 it('track quality reports invalid initial timestamps and invalid thresholds', async () => {
   const setup = await fixture('review-track');
   try {

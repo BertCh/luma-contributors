@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGraphOutputViews} from '../analysis-core/kernels/gpu-contributor-utils';
-import {assert} from '@luma.gl/core';
+import {
+  getGraphOutputViews,
+  validateCapacity,
+  validateMaximumCount,
+  validateRequirement
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -23,6 +27,15 @@ import {
   validateRasterExpansionViews,
   validateRasterExpansionGraph
 } from './raster-expansion-utils';
+
+/** FIFO queue cells: one thread runs a binary heap over every cell, so larger grids are rejected. */
+const MAXIMUM_FIFO_CELLS = 16384;
+
+/** Forest edge IDs use four canonical edges per cell below the reserved uint32 sentinel. */
+const MAXIMUM_FOREST_CELLS = 0x3fffffff;
+
+/** Forest contraction rounds; each round at least halves the unseeded components. */
+const MAXIMUM_FOREST_ITERATIONS = 32;
 
 export type GPURasterWatershedSegmentationProps = {
   id?: string;
@@ -74,24 +87,41 @@ export class GPURasterWatershedSegmentation implements GPUCommandNodeProducer {
       getGraphOutputViews(props.output)
     );
     // Method-specific work budgets must not silently change their units.
-    assert(
-      props.method === undefined || ['fifo', 'minimum-spanning-forest'].includes(props.method)
+    validateRequirement(
+      this.id,
+      props.method === undefined || ['fifo', 'minimum-spanning-forest'].includes(props.method),
+      "method must be 'fifo' or 'minimum-spanning-forest'"
     );
-    assert(
-      props.connectivity === undefined || props.connectivity === 4 || props.connectivity === 8
+    validateRequirement(
+      this.id,
+      props.connectivity === undefined || props.connectivity === 4 || props.connectivity === 8,
+      'connectivity must be 4 or 8'
     );
     if (props.method === 'minimum-spanning-forest') {
-      // Four canonical grid-edge IDs per pixel fit below the reserved uint32 sentinel.
-      assert(count <= 0x3fffffff && props.maximumSteps === undefined);
+      validateMaximumCount(this.id, 'grid cells', count, MAXIMUM_FOREST_CELLS);
+      validateRequirement(
+        this.id,
+        props.maximumSteps === undefined,
+        'maximumSteps applies to the fifo method only'
+      );
       const iterations = props.maximumIterations ?? Math.ceil(Math.log2(count)) + 1;
-      assert(Number.isInteger(iterations) && iterations >= 1 && iterations <= 32);
+      validateCapacity(this.id, 'maximumIterations', iterations, 1, MAXIMUM_FOREST_ITERATIONS);
     } else {
-      assert(count <= 16384 && props.maximumIterations === undefined);
+      validateMaximumCount(this.id, 'fifo grid cells', count, MAXIMUM_FIFO_CELLS);
+      validateRequirement(
+        this.id,
+        props.maximumIterations === undefined,
+        'maximumIterations applies to the minimum-spanning-forest method only'
+      );
     }
-    requireRasterLength(props.markers, count);
-    requireRasterLength(props.output.labels, count);
-    requireRasterLength(props.output.status.converged, 1);
-    assert(Number.isInteger(props.maximumSteps ?? count) && (props.maximumSteps ?? count) > 0);
+    requireRasterLength(props.markers, count, this.id, 'markers');
+    requireRasterLength(props.output.labels, count, this.id, 'output.labels');
+    requireRasterLength(props.output.status.converged, 1, this.id, 'output.status.converged');
+    validateRequirement(
+      this.id,
+      Number.isInteger(props.maximumSteps ?? count) && (props.maximumSteps ?? count) > 0,
+      'maximumSteps must be a positive integer'
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>

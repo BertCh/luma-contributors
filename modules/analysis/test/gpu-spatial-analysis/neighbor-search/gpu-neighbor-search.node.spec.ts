@@ -33,7 +33,10 @@ import {
   computeNeighborSearchBVHModel,
   computeNeighborSearchOccupancy
 } from './neighbor-search-bvh-model';
-import {GPU_NEIGHBOR_SEARCH_BVH_OCCUPANCY_THRESHOLD} from '../../../src/gpu-spatial-analysis/neighbor-search/index';
+import {
+  GPU_NEIGHBOR_SEARCH_BVH_OCCUPANCY_THRESHOLD,
+  GPU_NEIGHBOR_SEARCH_MAXIMUM_K
+} from '../../../src/gpu-spatial-analysis/neighbor-search/index';
 
 let serial = 0;
 
@@ -68,7 +71,7 @@ it('GPUNeighborSearch validates modes, k, grid, weights and lengths', () => {
   expect(
     () => new GPUNeighborSearch(createProps(graph, {mode: 'radius', k: undefined}))
   ).not.toThrow();
-  for (const k of [0, 33, 2.5, undefined]) {
+  for (const k of [0, GPU_NEIGHBOR_SEARCH_MAXIMUM_K + 1, 2.5, undefined]) {
     expect(() => new GPUNeighborSearch(createProps(graph, {k})), `k ${k}`).toThrow(/k must/);
   }
   expect(() => new GPUNeighborSearch(createProps(graph, {gridSize: [0, 4]}))).toThrow(/gridSize/);

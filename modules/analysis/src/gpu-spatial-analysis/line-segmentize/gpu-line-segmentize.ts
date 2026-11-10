@@ -23,6 +23,7 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
+  createApproximationClearNode,
   createIdentitySourceLineIndicesNode,
   createLineOffsetsPublishNode,
   createLinePrefixNode,
@@ -84,7 +85,12 @@ export type GPULineSegmentizeProps = {
    * written with `getGPULineSegmentizeParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
-  /** Densified lines, one output line per input line. */
+  /**
+   * Densified lines, one output line per input line. `output.status.count` counts output vertices
+   * (`output.status.lineCount` counts lines). The optional `output.status.approximation` receives
+   * `1` when an edge needed more than `maximumPieceCount` pieces, so its output segments are longer
+   * than the requested maximum; otherwise `0`.
+   */
   output: GPULineGeometryOutput;
 };
 
@@ -163,7 +169,7 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         `${id} parameters must hold ${GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} float32 values`
       );
     }
-    validateLineGeometryOutput(id, props.output, props.lineOffsets.length - 1);
+    validateLineGeometryOutput(id, props.output, props.lineOffsets.length - 1, true);
     validateGraphOutputsDisjointFromInputs(id, getLineGeometryOutputViews(props.output), [
       props.positions,
       props.lineOffsets,
@@ -217,6 +223,15 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         })
       );
     }
+    if (output.status.approximation) {
+      nodes.push(
+        createApproximationClearNode<Parameters>(graph, {
+          id: `${id}-clear-approximation`,
+          operation: OPERATION,
+          approximation: output.status.approximation
+        })
+      );
+    }
     nodes.push(
       createSegmentizeCountNode<Parameters>(graph, {
         id: `${id}-count`,
@@ -227,6 +242,7 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         coordinateSystem,
         radius,
         maximumPieceCount: this.maximumPieceCount,
+        approximation: output.status.approximation,
         counts,
         closedLines: props.closedLines
       }),

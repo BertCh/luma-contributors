@@ -9,6 +9,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
+import {POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL} from '../shared/point-neighbor-grid-index';
 
 const OPERATION = 'GPUSpatialClustering';
 
@@ -25,6 +26,11 @@ export type SpatialClusteringGridViews = {
   gridCount: GraphDataView<'uint32'>;
   /** `cellCount + 1` exclusive offsets from `GPUGridIndex` over the full `COLUMNS x ROWS` lattice. */
   cellOffsets: GraphDataView<'uint32'>;
+  /**
+   * Relative times in grid-cell order (slot `s` is row `sortedRows[s]`). Present only for
+   * space-time clustering (ST-DBSCAN): a neighbor must also satisfy `|dt| <= timeEpsilon`.
+   */
+  cellTimes?: GraphDataView<'float32'>;
 };
 
 /**
@@ -48,7 +54,8 @@ export type SpatialClusteringGridViews = {
 export function getSpatialClusteringSharedWGSL(
   columns: number,
   rows: number,
-  geographicRadius?: number
+  geographicRadius?: number,
+  temporal: boolean = false
 ): string {
   const geographic = geographicRadius !== undefined;
   const radiusLiteral = geographic ? String(Math.fround(geographicRadius)) : '1';
@@ -79,7 +86,7 @@ struct Lattice {
   columns: u32,
   rows: u32,
   epsilonSquared: f32,
-  minimumPoints: u32
+  minimumPoints: u32${temporal ? ',\n  timeEpsilon: f32' : ''}
 }
 
 ${IS_FINITE_FLOAT_WGSL}
@@ -91,7 +98,7 @@ fn readLattice() -> Lattice {
   lattice.columns = 1u;
   lattice.rows = 1u;
   lattice.epsilonSquared = 0.0;
-  lattice.minimumPoints = 1u;
+  lattice.minimumPoints = 1u;${temporal ? '\n  lattice.timeEpsilon = 0.0;\n  let timeEpsilon = parameters[parametersOffset + 6u];' : ''}
   let minimumX = parameters[parametersOffset];
   let minimumY = parameters[parametersOffset + 1u];
   let maximumX = parameters[parametersOffset + 2u];
@@ -122,7 +129,7 @@ fn readLattice() -> Lattice {
     isFiniteFloat(maximumY) && isFiniteFloat(epsilon) && isFiniteFloat(minimumPointsValue) &&
     isFiniteFloat(width) && isFiniteFloat(height) && isFiniteFloat(epsilonSquared) &&
     isFiniteFloat(cellStepX) && isFiniteFloat(cellStepY) && epsilon > 0.0 && width >= 0.0 &&
-    height >= 0.0;
+    height >= 0.0${temporal ? ' &&\n    isFiniteFloat(timeEpsilon) && timeEpsilon > 0.0' : ''};
   if (!lattice.valid) {
     return lattice;
   }
@@ -135,10 +142,21 @@ fn readLattice() -> Lattice {
   lattice.columns = min(COLUMNS - 1u, u32(floor(width / lattice.cellWidth))) + 1u;
   lattice.rows = min(ROWS - 1u, u32(floor(height / lattice.cellHeight))) + 1u;
   lattice.epsilonSquared = epsilonSquared;
-  lattice.minimumPoints = u32(max(minimumPointsValue, 0.0));
+  lattice.minimumPoints = u32(max(minimumPointsValue, 0.0));${temporal ? '\n  lattice.timeEpsilon = timeEpsilon;' : ''}
   return lattice;
 }
-
+${
+  temporal
+    ? `
+// Time filter of ST-DBSCAN: two points are related only when their relative times differ by at
+// most the temporal epsilon. A non-finite time compares false, so such a point has no neighbor,
+// not even itself, and ends as noise.
+fn isWithinTime(lattice: Lattice, ta: f32, tb: f32) -> bool {
+  return abs(tb - ta) <= lattice.timeEpsilon;
+}
+`
+    : ''
+}
 fn isWithinEpsilon(lattice: Lattice, ax: f32, ay: f32, bx: f32, by: f32) -> bool {
   ${withinEpsilonBody}
 }
@@ -166,7 +184,11 @@ fn getCellRow(lattice: Lattice, y: f32) -> u32 {
  * one cell are consecutive words. Requires bindings `cellPositions`, `sortedRows`, `cellOffsets`
  * and a `lattice` local. `keepGoing` is an extra loop condition that lets the caller stop early.
  */
-function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string {
+function getNeighborLoopWGSL(
+  action: string,
+  keepGoing: string = 'true',
+  temporal: boolean = false
+): string {
   return /* wgsl */ `
   let column = getCellColumn(lattice, x);
   let row = getCellRow(lattice, y);
@@ -181,7 +203,7 @@ function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string
       let end = cellOffsets[cellOffsetsOffset + cell + 1u];
       for (var slot = start; slot < end && ${keepGoing}; slot++) {
         if (isWithinEpsilon(lattice, x, y, cellPositions[cellPositionsOffset + slot * 2u],
-            cellPositions[cellPositionsOffset + slot * 2u + 1u])) {
+            cellPositions[cellPositionsOffset + slot * 2u + 1u])${temporal ? ' &&\n            isWithinTime(lattice, time, cellTimes[cellTimesOffset + slot])' : ''}) {
           let neighbor = sortedRows[sortedRowsOffset + slot];
           ${action}
         }
@@ -204,13 +226,25 @@ const THREAD_TO_POINT_WGSL = `if (index >= gridCount[gridCountOffset]) {
   let x = cellPositions[cellPositionsOffset + index * 2u];
   let y = cellPositions[cellPositionsOffset + index * 2u + 1u];`;
 
+/** {@link THREAD_TO_POINT_WGSL} plus `time`, the point's relative time from the cell-ordered copy. */
+function getThreadToPointWGSL(temporal: boolean): string {
+  return temporal
+    ? `${THREAD_TO_POINT_WGSL}
+  let time = cellTimes[cellTimesOffset + index];`
+    : THREAD_TO_POINT_WGSL;
+}
+
 function getGridBindings(views: SpatialClusteringGridViews): WGSLKernelBinding[] {
+  const cellTimes: WGSLKernelBinding[] = views.cellTimes
+    ? [{name: 'cellTimes', view: views.cellTimes, type: 'f32', access: 'read'}]
+    : [];
   return [
     {name: 'cellPositions', view: views.cellPositions, type: 'f32', access: 'read'},
     {name: 'parameters', view: views.parameters, type: 'f32', access: 'read'},
     {name: 'sortedRows', view: views.sortedRows, type: 'u32', access: 'read'},
     {name: 'cellOffsets', view: views.cellOffsets, type: 'u32', access: 'read'},
-    {name: 'gridCount', view: views.gridCount, type: 'u32', access: 'read'}
+    {name: 'gridCount', view: views.gridCount, type: 'u32', access: 'read'},
+    ...cellTimes
   ];
 }
 
@@ -243,22 +277,20 @@ export function createSpatialClusteringGridPositionsNode<Parameters>(
       {name: 'rowIds', view: props.rowIds, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
-    declarations: getSpatialClusteringSharedWGSL(
+    declarations: `${getSpatialClusteringSharedWGSL(
       props.gridSize[0],
       props.gridSize[1],
       props.geographicRadius
-    ),
+    )}
+${POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL}`,
     body: `let lattice = readLattice();
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
   let valid = isPointValid(lattice, x, y);
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  // The published grid index takes a literal [0, 1] domain, so positions are normalized onto the
-  // lattice extended to COLUMNS x ROWS whole cells.
-  let width = max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)) - lattice.minimumX;
-  let height = max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)) - lattice.minimumY;
-  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, (x - lattice.minimumX) / width, valid);
-  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, (y - lattice.minimumY) / height, valid);
+  let unit = getGridUnitPosition(lattice, x, y);
+  gridPositions[gridPositionsOffset + index * 2u] = select(invalid, unit.x, valid);
+  gridPositions[gridPositionsOffset + index * 2u + 1u] = select(invalid, unit.y, valid);
   rowIds[rowIdsOffset + index] = index;`
   });
 }
@@ -274,15 +306,15 @@ export function createSpatialClusteringCellGatherNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    variant: 'cell-positions' | 'cell-core-flags';
-    values: GraphDataView<'float32x2'> | GraphDataView<'uint32'>;
+    variant: 'cell-positions' | 'cell-core-flags' | 'cell-times';
+    values: GraphDataView<'float32x2'> | GraphDataView<'uint32'> | GraphDataView<'float32'>;
     sortedRows: GraphDataView<'uint32'>;
     gridCount: GraphDataView<'uint32'>;
-    cellValues: GraphDataView<'float32x2'> | GraphDataView<'uint32'>;
+    cellValues: GraphDataView<'float32x2'> | GraphDataView<'uint32'> | GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
   const isPositions = props.variant === 'cell-positions';
-  const type = isPositions ? 'f32' : 'u32';
+  const type = props.variant === 'cell-core-flags' ? 'u32' : 'f32';
   const copy = isPositions
     ? `cellValues[cellValuesOffset + index * 2u] = values[valuesOffset + row * 2u];
   cellValues[cellValuesOffset + index * 2u + 1u] = values[valuesOffset + row * 2u + 1u];`
@@ -323,10 +355,11 @@ export function createSpatialClusteringCoreNode<Parameters>(
   }
 ): GPUCommandNode<Parameters> {
   const {boxCounts} = props;
+  const temporal = Boolean(props.cellTimes);
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: boxCounts ? 'core-dense-box' : 'core',
+    variant: `${boxCounts ? 'core-dense-box' : 'core'}${temporal ? '-time' : ''}`,
     bindings: [
       ...getGridBindings(props),
       {name: 'coreFlags', view: props.coreFlags, type: 'u32', access: 'read_write'},
@@ -338,9 +371,10 @@ export function createSpatialClusteringCoreNode<Parameters>(
     declarations: getSpatialClusteringSharedWGSL(
       props.gridSize[0],
       props.gridSize[1],
-      props.geographicRadius
+      props.geographicRadius,
+      temporal
     ),
-    body: `${THREAD_TO_POINT_WGSL}
+    body: `${getThreadToPointWGSL(temporal)}
   let lattice = readLattice();
   var isCore = 0u;
   if (isPointValid(lattice, x, y)) {
@@ -352,7 +386,7 @@ export function createSpatialClusteringCoreNode<Parameters>(
         : '{'
     }
       var neighborCount = 0u;
-      ${getNeighborLoopWGSL('neighborCount++;', 'neighborCount < lattice.minimumPoints')}
+      ${getNeighborLoopWGSL('neighborCount++;', 'neighborCount < lattice.minimumPoints', temporal)}
       isCore = select(0u, 1u, neighborCount >= lattice.minimumPoints);
     }
   }
@@ -480,17 +514,18 @@ export function createSpatialClusteringUnionNode<Parameters>(
     parents: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
+  const temporal = Boolean(props.cellTimes);
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'union',
+    variant: temporal ? 'union-time' : 'union',
     bindings: [
       ...getGridBindings(props),
       {name: 'cellCoreFlags', view: props.cellCoreFlags, type: 'u32', access: 'read'},
       {name: 'parents', view: props.parents, type: 'atomic<u32>', access: 'read_write'}
     ],
     invocationCount: props.cellPositions.length,
-    declarations: `${getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1], props.geographicRadius)}
+    declarations: `${getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1], props.geographicRadius, temporal)}
 // Path halving: a visited node is a non-root forever, so any ancestor is a valid parent for it.
 fn findRoot(start: u32) -> u32 {
   var current = start;
@@ -526,14 +561,18 @@ fn unite(first: u32, second: u32) {
     b = findRoot(high);
   }
 }`,
-    body: `${THREAD_TO_POINT_WGSL}
+    body: `${getThreadToPointWGSL(temporal)}
   if (cellCoreFlags[cellCoreFlagsOffset + index] == 0u) {
     return;
   }
   let lattice = readLattice();
-  ${getNeighborLoopWGSL(`if (neighbor < point && cellCoreFlags[cellCoreFlagsOffset + slot] != 0u) {
+  ${getNeighborLoopWGSL(
+    `if (neighbor < point && cellCoreFlags[cellCoreFlagsOffset + slot] != 0u) {
             unite(point, neighbor);
-          }`)}`
+          }`,
+    'true',
+    temporal
+  )}`
   });
 }
 
@@ -590,10 +629,11 @@ export function createSpatialClusteringBorderNode<Parameters>(
     rootLabels: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
+  const temporal = Boolean(props.cellTimes);
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'border',
+    variant: temporal ? 'border-time' : 'border',
     bindings: [
       ...getGridBindings(props),
       {name: 'cellCoreFlags', view: props.cellCoreFlags, type: 'u32', access: 'read'},
@@ -603,9 +643,10 @@ export function createSpatialClusteringBorderNode<Parameters>(
     declarations: getSpatialClusteringSharedWGSL(
       props.gridSize[0],
       props.gridSize[1],
-      props.geographicRadius
+      props.geographicRadius,
+      temporal
     ),
-    body: `${THREAD_TO_POINT_WGSL}
+    body: `${getThreadToPointWGSL(temporal)}
   if (cellCoreFlags[cellCoreFlagsOffset + index] != 0u) {
     return;
   }
@@ -614,9 +655,13 @@ export function createSpatialClusteringBorderNode<Parameters>(
     return;
   }
   var bestRoot = NOISE;
-  ${getNeighborLoopWGSL(`if (cellCoreFlags[cellCoreFlagsOffset + slot] != 0u) {
+  ${getNeighborLoopWGSL(
+    `if (cellCoreFlags[cellCoreFlagsOffset + slot] != 0u) {
             bestRoot = min(bestRoot, rootLabels[rootLabelsOffset + neighbor]);
-          }`)}
+          }`,
+    'true',
+    temporal
+  )}
   rootLabels[rootLabelsOffset + point] = bestRoot;`
   });
 }

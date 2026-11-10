@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE} from './ordinary-least-squares-parameters';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {getGridLookupWGSL} from './gwr-grid-index';
 
@@ -59,7 +60,9 @@ fn getLocalKernelWeight(distance: f32, bandwidth: f32, isBisquare: bool) -> f32 
  * sqrt(A_ii)`) makes the factorization insensitive to the scale of each design column.
  *
  * - `factorEquilibrated_size(a, scale) -> bool` fills `scale` and factors `S A S`; false when a
- *   diagonal is not positive and finite or the Cholesky pivot fails.
+ *   diagonal is not positive and finite or a Cholesky pivot of the unit-diagonal matrix is below
+ *   `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` (the OLS limit: a column within `1 - 1e-6` of
+ *   the span of the earlier ones, so GWR reports `SINGULAR` where OLS reports status 1).
  * - `solveEquilibrated_size(a, scale, vector)` solves `A x = vector` in place.
  * - `inverseDiagonalEquilibrated_size(a, scale, column) -> f32` is `(A^-1)[column][column]`.
  *
@@ -80,7 +83,16 @@ fn factorEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scal
       (*a)[row * ${size}u + column] = (*a)[row * ${size}u + column] * (*scale)[row] * (*scale)[column];
     }
   }
-  return choleskyFactor_${size}(a);
+  if (!choleskyFactor_${size}(a)) {
+    return false;
+  }
+  // Pivots are measured on the unit-diagonal (correlation) matrix, as in OLS.
+  for (var column = 0u; column < ${size}u; column++) {
+    if (!((*a)[column * ${size}u + column] >= ${getWGSLFloatLiteral(GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE)})) {
+      return false;
+    }
+  }
+  return true;
 }
 
 fn solveEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>, vector: ptr<function, array<f32, ${size}>>) {

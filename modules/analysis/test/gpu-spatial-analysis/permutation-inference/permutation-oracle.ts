@@ -9,11 +9,11 @@ import type {
 } from '../../../src/analysis-core/contracts/index';
 import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing/index';
 import {getPermutationPValue} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-alternative';
-import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 import {
   getSwapOrNotPermutationIndex,
   getSwapOrNotRounds
-} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
+} from '../../../src/analysis-core/kernels/permutation-shuffle';
 import {
   GPU_LOCAL_GEARY_CLASS,
   getLocalStatisticSpec,

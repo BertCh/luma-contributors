@@ -52,13 +52,108 @@ function isDroppedScenario(scenario: string | undefined): boolean {
 // Resume lists for the next round: element → what is still missing (from the stream handoffs).
 // Element → what is missing, as `<stream>: <parts>`. Generated from the failing checks and cross-checked with the
 // stream handoffs (2026-10-14); 'docs card' means scenario and pack exist but the doc section lacks lenses.
-const GPU_DATAFRAME_PENDING: Readonly<Record<string, string>> = {};
+/** Contributors of the spatiotemporal review: documented with an empty slot, lenses not yet authored. */
+const SPATIOTEMPORAL_REVIEW_PENDING =
+  'lenses: pack operator, formula, scenario, directives and records (spatiotemporal review follow-up)';
+const GPU_DATAFRAME_PENDING: Readonly<Record<string, string>> = {
+  GPUCubeLayoutTranspose: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUPeriodIndex: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTimeWordsRelative: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUCellPeriodKeys: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpaceTimeDiggleTest: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpaceTimeKFunction: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUValueCube: SPATIOTEMPORAL_REVIEW_PENDING
+};
 const GPU_SPATIAL_ANALYSIS_PENDING: Readonly<Record<string, string>> = {
   addSparseResistanceConnectivityRecipe:
-    'lenses: pack operator, formula, scenario, directives and records (EC03 follow-up)'
+    'lenses: pack operator, formula, scenario, directives and records (EC03 follow-up)',
+  GPUEnsembleScores: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUGaussianPredictiveScores: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUJacquezTest: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPULocalKnox: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUMobilityIndicators: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUModalSplit: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUNearRepeatKnox: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpaceTimeCrossCorrelation: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpaceTimeKriging: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpaceTimeLocalMoran: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectoryHampel: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectoryLocations: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectoryOutlierFlags: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectorySegments: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectorySplit: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectoryStaypoints: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectoryThinning: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectoryTrackRelativeTimes: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUAdaptiveBandwidthKernelDensity: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUAreaOfApplicability: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUBrownianBridgeUtilization: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUCategoryPairCounts: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUColocationQuotient: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUConformalPredictionIntervals: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUExpectationBasedSpaceTimeScan: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUGeoConformalPredictionIntervals: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUGeographicalDetector: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUGeographicallyTemporallyWeightedRegression: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUHealpixCellAggregation: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUHealpixPointToCell: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPULocalCategoryDependence: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPULocationChangePoints: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUMultiscaleGeographicallyTemporallyWeightedRegression: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUPettittTest: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterFalseDiscoveryRateMask: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURedcapSingleLinkage: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSinkhornDivergence: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpaceTimeHawkes: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpaceTimeKernelDensity: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpaceTimeRelativeRisk: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUSpatialEntropy: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUTrajectoryRecursions: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUUtilizationVolumeIsopleths: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUVecchiaFisherScoring: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUVecchiaLogLikelihood: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUVecchiaSpaceTimeLogLikelihood: SPATIOTEMPORAL_REVIEW_PENDING,
+  addContiguityOrderCorrelogramRecipe: SPATIOTEMPORAL_REVIEW_PENDING
 };
-const GPU_NETWORK_PENDING: Readonly<Record<string, string>> = {};
-const GPU_RASTER_PENDING: Readonly<Record<string, string>> = {};
+const GPU_NETWORK_PENDING: Readonly<Record<string, string>> = {
+  GPUKernelFlowSmoothing: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUMapMatchedEdgeVolumes: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUNetworkPotentialPathArea: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPUNetworkTravelTimePercentiles: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURadiationFlowModel: SPATIOTEMPORAL_REVIEW_PENDING
+};
+const GPU_RASTER_PENDING: Readonly<Record<string, string>> = {
+  GPUFiniteTimeLyapunovExponent: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPULagrangianFlowMap: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterBFASTMonitor: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterBestAvailablePixel: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterCOLDMonitor: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterClimateAnomaly: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterClimateRunAccumulator: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEOFProjection: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingChange: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingCovariance: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingDequantize: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingKNearestClassifier: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingLinearProbe: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingProjection: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingPyramidLevel: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingSimilarity: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterEmbeddingZoneMean: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterGeometricMedianComposite: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterHANTS: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterHarmonicRegression: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterLaggedCorrelation: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterMedoidComposite: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterPhenologyMetrics: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterRollingMean: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterSnapshotCovariance: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterStandardizedIndex: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterStandardizedIndexCalibration: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterStreamingAccumulator: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterTemporalResample: SPATIOTEMPORAL_REVIEW_PENDING,
+  GPURasterWhittakerSmoother: SPATIOTEMPORAL_REVIEW_PENDING
+};
 const GPU_TERRAIN_PENDING: Readonly<Record<string, string>> = {};
 
 /**

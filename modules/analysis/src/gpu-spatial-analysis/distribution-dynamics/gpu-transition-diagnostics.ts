@@ -22,7 +22,7 @@ import {
   validateGPUStatusPort,
   type GPUIterationStatusPort
 } from '../../analysis-core/contracts/index';
-import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from './incomplete-gamma-wgsl';
+import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../analysis-core/kernels/incomplete-gamma-wgsl';
 
 const OPERATION = 'GPUTransitionDiagnostics';
 const MAXIMUM_CLASS_COUNT = 64;

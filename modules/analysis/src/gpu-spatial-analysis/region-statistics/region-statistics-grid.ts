@@ -14,7 +14,7 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import type {GPUFloat32Positions} from '../../analysis-core/kernels/gpu-contributor-types';
+import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPURegionMask} from './gpu-region-mask';
 import type {

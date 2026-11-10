@@ -548,6 +548,50 @@ fn getPosition(row: u32) -> vec2<f32> {
   });
 }
 
+/**
+ * Sample times of the clock mode (`k * step`, 0 for an empty track) in their own small pass when a
+ * gap limit is bound, so the per-sample kernel stays inside the core binding limit. @internal
+ */
+export function createTrajectoryClockTimesNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    trackOffsets: GraphDataView<'uint32'>;
+    clock: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+    sampleTimes: GraphDataView<'float32'>;
+    isWordMode: boolean;
+    rowCount: number;
+    trackCount: number;
+    sampleCount: number;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: RESAMPLE_OPERATION,
+    variant: 'clock-times',
+    bindings: [
+      {name: 'trackOffsets', view: props.trackOffsets, type: 'u32', access: 'read'},
+      {
+        name: 'clockParameters',
+        view: props.clock,
+        type: props.isWordMode ? 'u32' : 'f32',
+        access: 'read'
+      },
+      {name: 'sampleTimes', view: props.sampleTimes, type: 'f32', access: 'read_write'}
+    ],
+    invocationCount: props.trackCount * props.sampleCount,
+    declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
+const SAMPLE_COUNT: u32 = ${props.sampleCount}u;
+fn getClockStep() -> f32 {
+  return ${props.isWordMode ? 'bitcast<f32>(clockParameters[clockParametersOffset + 3u])' : 'clockParameters[clockParametersOffset + 1u]'};
+}`,
+    body: /* wgsl */ `let track = index / SAMPLE_COUNT;
+  let sampleIndex = index - track * SAMPLE_COUNT;
+  ${TRACK_RANGE_SOURCE}
+  sampleTimes[sampleTimesOffset + index] = select(0.0, f32(sampleIndex) * getClockStep(), trackEnd > trackStart);`
+  });
+}
+
 /** Properties for {@link createTrajectoryResampleNode}. @internal */
 export type TrajectoryResampleNodeProps = {
   id: string;
@@ -565,6 +609,8 @@ export type TrajectoryResampleNodeProps = {
    * `[startLow, startHigh, startFraction, stepBits]` for word timestamps.
    */
   clock?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  /** Clock and time modes: one f32 row, the largest interval that is still interpolated (0 disables). */
+  maximumGap?: GraphDataView<'float32'>;
   /** Sphere radius in the context's length unit for great-circle interpolation; omitted for planar. */
   geodesicRadius?: TrajectoryInterpolationRadius;
   rowCount: number;
@@ -607,6 +653,9 @@ export function createTrajectoryResampleNode<Parameters>(
       type: isWordMode ? 'u32' : 'f32',
       access: 'read'
     });
+  }
+  if (props.maximumGap) {
+    bindings.push({name: 'maximumGap', view: props.maximumGap, type: 'f32', access: 'read'});
   }
   if (props.cumulativeLengths) {
     bindings.push({
@@ -667,7 +716,13 @@ export function createTrajectoryResampleNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: RESAMPLE_OPERATION,
-    variant: isClock ? (isWordMode ? 'clock-words' : 'clock') : isArcLength ? 'arc-length' : 'time',
+    variant: isClock
+      ? `${isWordMode ? 'clock-words' : 'clock'}${props.maximumGap ? '-gap' : ''}`
+      : isArcLength
+        ? 'arc-length'
+        : props.maximumGap
+          ? 'time-gap'
+          : 'time',
     bindings,
     invocationCount: props.trackCount * props.sampleCount,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
@@ -685,7 +740,7 @@ fn getPosition(row: u32) -> vec2<f32> {
   var position = vec2<f32>(0.0, 0.0);
   var elevation = 0.0;
   var time = 0.0;
-  ${isClock ? 'let clockStep = getClockStep();\n  var isAbsent = trackEnd <= trackStart;' : ''}
+  ${isClock ? 'let clockStep = getClockStep();\n  var isAbsent = trackEnd <= trackStart;' : props.maximumGap ? 'var isAbsent = false;' : ''}
   if (trackEnd > trackStart) {
     let lastRow = trackEnd - 1u;
     let total = getProgress(lastRow, trackStart);
@@ -730,6 +785,15 @@ fn getPosition(row: u32) -> vec2<f32> {
         0.0,
         1.0
       );
+      ${
+        props.maximumGap
+          ? `// Strictly inside a bracketing interval longer than the limit: absent (the fixes are kept).
+      let gapLimit = maximumGap[maximumGapOffset];
+      if (gapLimit > 0.0 && getRowTimeDifference(row1, row0) > gapLimit && targetProgress > startProgress) {
+        isAbsent = true;
+      }`
+          : ''
+      }
     }
     let startPosition = getPosition(row0);
     let endPosition = getPosition(row1);
@@ -748,7 +812,7 @@ fn getPosition(row: u32) -> vec2<f32> {
     ${timeSource}
   }
   ${
-    isClock
+    isClock || props.maximumGap
       ? `if (isAbsent) {
     // A runtime expression keeps the quiet-NaN bit pattern out of const evaluation.
     position = vec2<f32>(bitcast<f32>(0x7fc00000u | (index & 0u)));

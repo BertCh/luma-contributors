@@ -35,7 +35,7 @@ the corner rings with the result on the left, sorted; maximal straight runs, so 
 of the same boundary after merging collinear chains) and `rawEdges` (same for `rings`).
 
 Usage, from the repository root:
-  <venv>/bin/python -I modules/graph/test/oracles/geometry-overlay-snap-rounding.py
+  <venv>/bin/python -I modules/analysis/test/oracles/geometry-overlay-snap-rounding.py
 Writes test/gpu-spatial-analysis/polygon-overlay/fixtures/overlay-snap-rounding.json.
 """
 import json
@@ -54,7 +54,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.join(
     HERE, '..', 'gpu-spatial-analysis', 'polygon-overlay', 'fixtures', 'overlay-snap-rounding.json'
 )
-GENERATOR = 'modules/graph/test/oracles/geometry-overlay-snap-rounding.py'
+GENERATOR = 'modules/analysis/test/oracles/geometry-overlay-snap-rounding.py'
 SEED = 20261014
 GRIDS = [0.25, 1.0, 1.0 / 64.0]
 OPERATIONS = ['intersection', 'union', 'difference', 'symmetric-difference']

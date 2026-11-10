@@ -176,16 +176,9 @@ status[statusOffset + index] = select(select(2u, 0u, isFiniteBits(value)), 1u, c
   }
 }
 
-/** Space-time semivariogram, with an optional second field for signed cross-semivariance. */
-export type GPUSpaceTimeVariogramProps = GPUCrossVariogramProps & {
-  times: GraphDataView<'float32'>;
-  temporalLagCount: number;
-};
-export class GPUSpaceTimeVariogram extends GPUCrossVariogram {
-  constructor(props: GPUSpaceTimeVariogramProps) {
-    super({...props, id: props.id ?? 'space-time-variogram'});
-  }
-}
+export {GPUSpaceTimeVariogram} from './gpu-space-time-variogram';
+export type {GPUSpaceTimeVariogramProps} from './gpu-space-time-variogram';
+
 function getBindings(props: GPUCrossVariogramProps): WGSLKernelBinding[] {
   return [
     {name: 'positions', view: props.positions, type: 'f32', access: 'read'},

@@ -2,12 +2,58 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assert, type VertexFormat} from '@luma.gl/core';
-import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {VertexFormat} from '@luma.gl/core';
+import {
+  createTransientView,
+  GPUReduction,
+  GPUScan,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {GPUPolygonOverlay, type GPUPolygonOverlayOutput} from '../polygon-overlay/index';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
+
+/** Most buildings: each one adds a `GPUPolygonOverlay` dissolve (and a clip) to the graph. */
+export const BUILDING_TESSELLATION_MAXIMUM_BUILDING_COUNT = 64;
+
+/** Most enclosure vertices: each sample clips a thread-private polygon that starts as the enclosure. */
+export const BUILDING_TESSELLATION_MAXIMUM_ENCLOSURE_VERTEX_COUNT = 32;
+
+/**
+ * Most boundary samples: every sample is clipped against every other one by its own thread, and
+ * the fragment table holds samples times (samples + enclosure vertices) points.
+ */
+export const BUILDING_TESSELLATION_MAXIMUM_SAMPLE_CAPACITY = 128;
+
+/** Most samples one boundary segment may ask for: exact float32 integer row counts (2^24). */
+const BUILDING_TESSELLATION_MAXIMUM_SAMPLES_PER_SEGMENT = 16777216;
+
+export type GPUBuildingTessellationOutput = {
+  /**
+   * One overlay output per building, holding the final polygons: the dissolved cells, or their
+   * intersection with the enclosure in 'simple' mode. Each entry is the `output` of a
+   * `GPUPolygonOverlay` with the recipe's `capacity`.
+   */
+  overlays: readonly (GPUPolygonOverlayOutput | undefined)[];
+  /** `float32x2`, `sampleCapacity` rows: boundary sample positions. */
+  samples: GraphDataView<'float32x2'>;
+  /** `uint32`, `sampleCapacity` rows: building row of each sample, or 0xffffffff. */
+  owners: GraphDataView<'uint32'>;
+  /** `float32x2`, `sampleCapacity * (sampleCapacity + enclosure.length)` rows: clipped Voronoi cells. */
+  fragments: GraphDataView<'float32x2'>;
+  /** `uint32`, `sampleCapacity` rows: vertices of each cell, or 0xffffffff when invalid. */
+  fragmentCounts: GraphDataView<'uint32'>;
+  /** `uint32x4`, one row: `[count, requiredCount, overflow, invalid]` of the boundary sampling. */
+  samplingStatus: GraphDataView<'uint32x4'>;
+  /** `uint32`, one row per building: one when its tessellation is complete. */
+  complete: GraphDataView<'uint32'>;
+};
 
 export type GPUBuildingTessellationProps = {
   id?: string;
@@ -26,6 +72,11 @@ export type GPUBuildingTessellationProps = {
   /** Overlay lattice tolerance; all resulting building cells are dissolved on this common grid. */
   vertexTolerance: number;
   capacity: {intersections: number; nodedSegments: number; vertices: number; rings: number};
+  /**
+   * Caller-owned result views. Any view that is absent is a graph-owned transient view, as before.
+   * Formats and lengths are those of {@link GPUBuildingTessellationOutput}.
+   */
+  output?: Partial<GPUBuildingTessellationOutput>;
 };
 
 /** Boundary-sampled, enclosure-clipped Voronoi fragments dissolved into stable building-owned polygons. */
@@ -39,28 +90,77 @@ export function addBuildingTessellationRecipe<Parameters>(
   const simpleEnclosure = props.enclosureMode === 'simple';
   const sampleCapacity = props.sampleCapacity;
   const vertexCapacity = sampleCapacity + enclosureCount;
-  assert(segmentCount > 0 && props.segmentBuildingIds.length === segmentCount);
-  assert(
-    Number.isSafeInteger(props.buildingCount) &&
-      props.buildingCount > 0 &&
-      props.buildingCount <= 64
+  validateRequirement(
+    id,
+    segmentCount > 0 && props.segmentBuildingIds.length === segmentCount,
+    'segments must have at least 1 row and segmentBuildingIds one row per segment'
   );
-  assert(enclosureCount >= 3 && enclosureCount <= 32);
-  assert(Number.isSafeInteger(sampleCapacity) && sampleCapacity > 0 && sampleCapacity <= 128);
-  assert(Number.isFinite(props.sampleSpacing) && props.sampleSpacing > 0);
-  assert(Number.isFinite(props.vertexTolerance) && props.vertexTolerance > 0);
-  assert(Object.values(props.capacity).every(value => Number.isSafeInteger(value) && value > 0));
+  validateCapacity(
+    id,
+    'buildingCount',
+    props.buildingCount,
+    1,
+    BUILDING_TESSELLATION_MAXIMUM_BUILDING_COUNT
+  );
+  validateRequirement(
+    id,
+    enclosureCount >= 3 && enclosureCount <= BUILDING_TESSELLATION_MAXIMUM_ENCLOSURE_VERTEX_COUNT,
+    `enclosure must have between 3 and ${BUILDING_TESSELLATION_MAXIMUM_ENCLOSURE_VERTEX_COUNT} rows`
+  );
+  validateCapacity(
+    id,
+    'sampleCapacity',
+    sampleCapacity,
+    1,
+    BUILDING_TESSELLATION_MAXIMUM_SAMPLE_CAPACITY
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(props.sampleSpacing) && props.sampleSpacing > 0,
+    'sampleSpacing must be a positive finite number'
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(props.vertexTolerance) && props.vertexTolerance > 0,
+    'vertexTolerance must be a positive finite number'
+  );
+  validateRequirement(
+    id,
+    Object.values(props.capacity).every(value => Number.isSafeInteger(value) && value > 0),
+    'capacity entries (intersections, nodedSegments, vertices, rings) must be positive integers'
+  );
   const view = <Format extends VertexFormat>(name: string, format: Format, length: number) =>
     getRecipeView(graph, `${id}-${name}`, format, length);
-  const samples = view('samples', 'float32x2', sampleCapacity);
-  const owners = view('owners', 'uint32', sampleCapacity);
-  const samplingStatus = view('sampling-status', 'uint32x4', 1);
-  const fragments = view('fragments', 'float32x2', sampleCapacity * vertexCapacity);
+  const output = props.output;
+  const samples = getRecipeView(
+    graph,
+    `${id}-samples`,
+    'float32x2',
+    sampleCapacity,
+    output?.samples
+  );
+  const owners = getRecipeView(graph, `${id}-owners`, 'uint32', sampleCapacity, output?.owners);
+  const samplingStatus = getRecipeView(
+    graph,
+    `${id}-sampling-status`,
+    'uint32x4',
+    1,
+    output?.samplingStatus
+  );
+  const fragments = getRecipeView(
+    graph,
+    `${id}-fragments`,
+    'float32x2',
+    sampleCapacity * vertexCapacity,
+    output?.fragments
+  );
   const enclosureOffsets = view('enclosure-offsets', 'uint32', 2);
   const enclosureIndices = view('enclosure-indices', 'uint32', 2);
   const enclosurePolygons = view('enclosure-polygons', 'uint32', 2);
-  assert(
-    !props.enclosureRingOffsets || (simpleEnclosure && props.enclosureRingOffsets.length >= 2)
+  validateRequirement(
+    id,
+    !props.enclosureRingOffsets || (simpleEnclosure && props.enclosureRingOffsets.length >= 2),
+    "enclosureRingOffsets needs enclosureMode 'simple' and at least 2 rows"
   );
   if (simpleEnclosure)
     graph.add(
@@ -76,29 +176,135 @@ export function addBuildingTessellationRecipe<Parameters>(
         body: `offsets[offsetsOffset]=0u;offsets[offsetsOffset+1u]=${enclosureCount}u;indices[indicesOffset]=0u;indices[indicesOffset+1u]=1u;polygons[polygonsOffset]=0u;polygons[polygonsOffset+1u]=${props.enclosureRingOffsets ? props.enclosureRingOffsets.length - 1 : 1}u;`
       })
     );
-  const fragmentCounts = view('fragment-counts', 'uint32', sampleCapacity);
+  const fragmentCounts = getRecipeView(
+    graph,
+    `${id}-fragment-counts`,
+    'uint32',
+    sampleCapacity,
+    output?.fragmentCounts
+  );
+  // Boundary sampling is segment parallel: sample counts per segment, an exclusive scan for the
+  // first sample of each segment, then one thread per segment writes its samples.
+  const sampleCounts = createTransientView(graph, `${id}-sample-counts`, 'uint32', segmentCount);
+  const sampleOffsets = createTransientView(graph, `${id}-sample-offsets`, 'uint32', segmentCount);
+  const invalidSegments = createTransientView(
+    graph,
+    `${id}-invalid-segments`,
+    'uint32',
+    segmentCount
+  );
+  const requiredSamples = createTransientView(graph, `${id}-required-samples`, 'uint32', 1);
+  const invalidCount = createTransientView(graph, `${id}-invalid-segment-count`, 'uint32', 1);
   graph.add(
     createRecipeKernelNode(graph, {
-      id: `${id}-sample-boundaries`,
+      id: `${id}-sample-counts`,
       operation: id,
-      invocationCount: 1,
+      invocationCount: segmentCount,
       declarations: IS_FINITE_VALUE_WGSL,
       bindings: [
         {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
         {name: 'buildingIds', view: props.segmentBuildingIds, type: 'u32', access: 'read'},
+        {name: 'counts', view: sampleCounts, type: 'u32', access: 'read_write'},
+        {name: 'invalidFlags', view: invalidSegments, type: 'u32', access: 'read_write'}
+      ],
+      body: `let base=segmentsOffset+4u*index;
+let start=vec2<f32>(segments[base],segments[base+1u]);
+let end=vec2<f32>(segments[base+2u],segments[base+3u]);
+let owner=buildingIds[buildingIdsOffset+index];
+let length=distance(start,end);
+var count=0u;
+var invalid=!isFiniteValue(start.x)||!isFiniteValue(start.y)||!isFiniteValue(end.x)||!isFiniteValue(end.y)||!isFiniteValue(length)||owner>=${props.buildingCount}u||length==0.0;
+if(!invalid){
+  let countValue=ceil(length/${props.sampleSpacing});
+  if(!isFiniteValue(countValue)||countValue>${BUILDING_TESSELLATION_MAXIMUM_SAMPLES_PER_SEGMENT}.0){invalid=true;}else{count=u32(countValue);}
+}
+counts[countsOffset+index]=count;
+invalidFlags[invalidFlagsOffset+index]=u32(invalid);`
+    })
+  );
+  graph.add(
+    new GPUScan({
+      id: `${id}-sample-scan`,
+      input: sampleCounts,
+      output: sampleOffsets
+    }).getCommandNodes(graph)
+  );
+  graph.add(
+    createSaturatedScanTotalNodes(graph, {
+      id: `${id}-sample-total`,
+      operation: id,
+      counts: sampleCounts,
+      offsets: sampleOffsets,
+      rowCount: segmentCount,
+      total: requiredSamples
+    })
+  );
+  graph.add(
+    new GPUReduction({
+      id: `${id}-invalid-segment-total`,
+      input: invalidSegments,
+      output: invalidCount,
+      operation: 'sum'
+    }).getCommandNodes(graph)
+  );
+  graph.add(
+    createRecipeKernelNode(graph, {
+      id: `${id}-clear-samples`,
+      operation: id,
+      invocationCount: sampleCapacity,
+      bindings: [
         {name: 'samples', view: samples, type: 'f32', access: 'read_write'},
-        {name: 'owners', view: owners, type: 'u32', access: 'read_write'},
+        {name: 'owners', view: owners, type: 'u32', access: 'read_write'}
+      ],
+      body: `owners[ownersOffset+index]=0xffffffffu;
+samples[samplesOffset+2u*index]=0.0;
+samples[samplesOffset+2u*index+1u]=0.0;`
+    })
+  );
+  // Each thread writes at most sampleCapacity samples: the loop is over a capacity.
+  graph.add(
+    createRecipeKernelNode(graph, {
+      id: `${id}-write-samples`,
+      operation: id,
+      invocationCount: segmentCount,
+      bindings: [
+        {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
+        {name: 'buildingIds', view: props.segmentBuildingIds, type: 'u32', access: 'read'},
+        {name: 'counts', view: sampleCounts, type: 'u32', access: 'read'},
+        {name: 'offsets', view: sampleOffsets, type: 'u32', access: 'read'},
+        {name: 'samples', view: samples, type: 'f32', access: 'read_write'},
+        {name: 'owners', view: owners, type: 'u32', access: 'read_write'}
+      ],
+      body: `let count=counts[countsOffset+index];
+let first=offsets[offsetsOffset+index];
+let base=segmentsOffset+4u*index;
+let start=vec2<f32>(segments[base],segments[base+1u]);
+let end=vec2<f32>(segments[base+2u],segments[base+3u]);
+for(var part=0u;part<min(count,${sampleCapacity}u);part++){
+  if(first>=${sampleCapacity}u||part>=${sampleCapacity}u-first){break;}
+  let position=mix(start,end,f32(part)/f32(count));
+  let sample=first+part;
+  samples[samplesOffset+2u*sample]=position.x;
+  samples[samplesOffset+2u*sample+1u]=position.y;
+  owners[ownersOffset+sample]=buildingIds[buildingIdsOffset+index];
+}`
+    })
+  );
+  graph.add(
+    createRecipeKernelNode(graph, {
+      id: `${id}-sampling-status`,
+      operation: id,
+      invocationCount: 1,
+      bindings: [
+        {name: 'required', view: requiredSamples, type: 'u32', access: 'read'},
+        {name: 'invalid', view: invalidCount, type: 'u32', access: 'read'},
         {name: 'status', view: samplingStatus, type: 'u32', access: 'read_write'}
       ],
-      body: `var required=0u;var invalid=0u;for(var sample=0u;sample<${sampleCapacity}u;sample++){owners[ownersOffset+sample]=0xffffffffu;samples[samplesOffset+2u*sample]=0.0;samples[samplesOffset+2u*sample+1u]=0.0;}
-for(var segment=0u;segment<${segmentCount}u;segment++){
- let base=segmentsOffset+4u*segment;let start=vec2<f32>(segments[base],segments[base+1u]);let end=vec2<f32>(segments[base+2u],segments[base+3u]);let owner=buildingIds[buildingIdsOffset+segment];let length=distance(start,end);
- if(!isFiniteValue(start.x)||!isFiniteValue(start.y)||!isFiniteValue(end.x)||!isFiniteValue(end.y)||!isFiniteValue(length)||owner>=${props.buildingCount}u||length==0.0){invalid++;continue;}
- let countValue=ceil(length/${props.sampleSpacing});if(!isFiniteValue(countValue)||countValue>16777216.0){invalid++;continue;}let count=u32(countValue);
- for(var part=0u;part<min(count,${sampleCapacity}u);part++){if(required+part>=${sampleCapacity}u){break;}let position=mix(start,end,f32(part)/f32(count));let sample=required+part;samples[samplesOffset+2u*sample]=position.x;samples[samplesOffset+2u*sample+1u]=position.y;owners[ownersOffset+sample]=owner;}
- required=min(0xffffffffu-count,required)+count;
-}
-status[statusOffset]=min(required,${sampleCapacity}u);status[statusOffset+1u]=required;status[statusOffset+2u]=u32(required>${sampleCapacity}u);status[statusOffset+3u]=invalid;`
+      body: `let requiredTotal=required[requiredOffset];
+status[statusOffset]=min(requiredTotal,${sampleCapacity}u);
+status[statusOffset+1u]=requiredTotal;
+status[statusOffset+2u]=u32(requiredTotal>${sampleCapacity}u);
+status[statusOffset+3u]=invalid[invalidOffset];`
     })
   );
   graph.add(
@@ -147,8 +353,16 @@ if(size<3u){size=0u;}counts[countsOffset+index]=size;
 for(var vertex=0u;vertex<size;vertex++){let destination=fragmentsOffset+2u*(index*${vertexCapacity}u+vertex);fragments[destination]=polygon[vertex].x;fragments[destination+1u]=polygon[vertex].y;}`
     })
   );
-  const complete = view('complete', 'uint32', props.buildingCount);
+  const complete = getRecipeView(
+    graph,
+    `${id}-complete`,
+    'uint32',
+    props.buildingCount,
+    output?.complete
+  );
   const outputs: GPUPolygonOverlayOutput[] = [];
+  // Each building's pack and evidence kernel is one thread looping over sampleCapacity (at most
+  // BUILDING_TESSELLATION_MAXIMUM_SAMPLE_CAPACITY) samples and their cell vertices.
   for (let building = 0; building < props.buildingCount; building++) {
     const prefix = `building-${building}`;
     const positions = view(
@@ -182,27 +396,31 @@ for(var sample=0u;sample<${sampleCapacity}u;sample++){if(valid&&owners[ownersOff
       overflow: view(`${prefix}-${name}-overflow`, 'uint32', 1),
       candidateOverflow: view(`${prefix}-${name}-candidates`, 'uint32', 1)
     });
-    let output: GPUPolygonOverlayOutput = {
+    // Transient overlay result views; `infix` is '' for the dissolve and 'clip-' for the clip.
+    const makeOverlayOutput = (infix: string): GPUPolygonOverlayOutput => ({
       geometry: {
         kind: 'polygons',
-        positions: view(`${prefix}-positions`, 'float32x2', props.capacity.vertices),
-        featureOffsets: view(`${prefix}-features`, 'uint32', props.capacity.rings + 1),
-        polygonOffsets: view(`${prefix}-polygons`, 'uint32', props.capacity.rings + 1),
-        ringOffsets: view(`${prefix}-rings`, 'uint32', props.capacity.rings + 1),
-        sourceIds: view(`${prefix}-sources`, 'uint32', props.capacity.rings)
+        positions: view(`${prefix}-${infix}positions`, 'float32x2', props.capacity.vertices),
+        featureOffsets: view(`${prefix}-${infix}features`, 'uint32', props.capacity.rings + 1),
+        polygonOffsets: view(`${prefix}-${infix}polygons`, 'uint32', props.capacity.rings + 1),
+        ringOffsets: view(`${prefix}-${infix}rings`, 'uint32', props.capacity.rings + 1),
+        sourceIds: view(`${prefix}-${infix}sources`, 'uint32', props.capacity.rings)
       },
-      status: makeStatus('geometry'),
+      status: makeStatus(`${infix}geometry`),
       boundary: {
-        endpoints: view(`${prefix}-boundary`, 'float32x4', props.capacity.nodedSegments),
-        operandIds: view(`${prefix}-operands`, 'uint32', props.capacity.nodedSegments),
+        endpoints: view(`${prefix}-${infix}boundary`, 'float32x4', props.capacity.nodedSegments),
+        operandIds: view(`${prefix}-${infix}operands`, 'uint32', props.capacity.nodedSegments),
         sourceFeatureIds: view(
-          `${prefix}-boundary-sources`,
+          `${prefix}-${infix}boundary-sources`,
           'uint32',
           props.capacity.nodedSegments
         ),
-        status: makeStatus('boundary')
+        status: makeStatus(`${infix}boundary`)
       }
-    };
+    });
+    const providedOverlay = output?.overlays?.[building];
+    let overlay: GPUPolygonOverlayOutput =
+      !simpleEnclosure && providedOverlay ? providedOverlay : makeOverlayOutput('');
 
     graph.add(
       new GPUPolygonOverlay({
@@ -217,32 +435,12 @@ for(var sample=0u;sample<${sampleCapacity}u;sample++){if(valid&&owners[ownersOff
         operation: 'dissolve',
         capacity: props.capacity,
         vertexTolerance: props.vertexTolerance,
-        output
+        output: overlay
       })
     );
-    const dissolvedOutput = output;
+    const dissolvedOutput = overlay;
     if (simpleEnclosure) {
-      output = {
-        geometry: {
-          kind: 'polygons',
-          positions: view(`${prefix}-clip-positions`, 'float32x2', props.capacity.vertices),
-          featureOffsets: view(`${prefix}-clip-features`, 'uint32', props.capacity.rings + 1),
-          polygonOffsets: view(`${prefix}-clip-polygons`, 'uint32', props.capacity.rings + 1),
-          ringOffsets: view(`${prefix}-clip-rings`, 'uint32', props.capacity.rings + 1),
-          sourceIds: view(`${prefix}-clip-sources`, 'uint32', props.capacity.rings)
-        },
-        status: makeStatus('clip-geometry'),
-        boundary: {
-          endpoints: view(`${prefix}-clip-boundary`, 'float32x4', props.capacity.nodedSegments),
-          operandIds: view(`${prefix}-clip-operands`, 'uint32', props.capacity.nodedSegments),
-          sourceFeatureIds: view(
-            `${prefix}-clip-boundary-sources`,
-            'uint32',
-            props.capacity.nodedSegments
-          ),
-          status: makeStatus('clip-boundary')
-        }
-      };
+      overlay = providedOverlay ?? makeOverlayOutput('clip-');
       graph.add(
         new GPUPolygonOverlay({
           id: `${id}-${prefix}-clip-enclosure`,
@@ -257,19 +455,25 @@ for(var sample=0u;sample<${sampleCapacity}u;sample++){if(valid&&owners[ownersOff
           operation: 'intersection',
           capacity: props.capacity,
           vertexTolerance: props.vertexTolerance,
-          output
+          output: overlay
         })
       );
     }
-    outputs.push(output);
+    const finalOverlay = overlay;
+    outputs.push(finalOverlay);
     graph.add(
       createRecipeKernelNode(graph, {
         id: `${id}-${prefix}-building-identity`,
         operation: id,
         invocationCount: props.capacity.rings,
         bindings: [
-          {name: 'count', view: output.status.count, type: 'u32', access: 'read'},
-          {name: 'sourceIds', view: output.geometry.sourceIds, type: 'u32', access: 'read_write'}
+          {name: 'count', view: finalOverlay.status.count, type: 'u32', access: 'read'},
+          {
+            name: 'sourceIds',
+            view: finalOverlay.geometry.sourceIds,
+            type: 'u32',
+            access: 'read_write'
+          }
         ],
         body: `sourceIds[sourceIdsOffset+index]=select(0xffffffffu,${building}u,index<count[countOffset]);`
       })
@@ -282,10 +486,10 @@ for(var sample=0u;sample<${sampleCapacity}u;sample++){if(valid&&owners[ownersOff
         bindings: [
           {name: 'sampling', view: samplingStatus, type: 'u32', access: 'read'},
           {name: 'counts', view: fragmentCounts, type: 'u32', access: 'read'},
-          {name: 'overflow', view: output.status.overflow!, type: 'u32', access: 'read'},
+          {name: 'overflow', view: finalOverlay.status.overflow!, type: 'u32', access: 'read'},
           {
             name: 'candidateOverflow',
-            view: output.status.candidateOverflow,
+            view: finalOverlay.status.candidateOverflow,
             type: 'u32',
             access: 'read'
           },
