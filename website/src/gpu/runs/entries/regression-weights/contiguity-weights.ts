@@ -7,25 +7,37 @@
 
 import {GPUContiguityWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findPolygonAt} from '../../pick';
 import {parameters} from './contiguity-weights.parameters';
 import {
   addCardinality,
   addLinkSegments,
   allocateWeights,
-  createQuadTiles,
+  createTractTiles,
   createSeededRandom,
   drawLinks,
+  getRingGlyph,
+  getRowLinkGlyphs,
+  getRowPositions,
+  peekRow,
   uploadTileMesh
 } from './shared/weights';
 
 export default defineOperationRun({
   parameters,
-  caption: 'Tiles colored by neighbor count; links are the weights the operation wrote.',
+  caption:
+    'Chicago tract adjacency under rook or queen contact with adjustable boundary tolerance.',
   createInputs: ({seed, world}) => ({seed, world}),
+  // The pointer picks a tract; the CSR row the operation wrote for it is outlined and linked.
   build(builder, {seed, world}, values) {
-    const tiles = createQuadTiles(createSeededRandom(seed), world, 9, 6, values.gap, 0.08);
+    const tiles = createTractTiles(createSeededRandom(seed), world, values.gap);
     const mesh = uploadTileMesh(builder, tiles);
-    const weights = allocateWeights(builder, 'contiguity', tiles.count, tiles.count * 9);
+    const weights = allocateWeights(
+      builder,
+      'contiguity',
+      tiles.count,
+      tiles.count * (tiles.count - 1)
+    );
     builder.graph.add(
       new GPUContiguityWeights({
         criterion: values.criterion === 0 ? 'queen' : 'rook',
@@ -42,7 +54,7 @@ export default defineOperationRun({
     );
     const cardinality = addCardinality(builder, 'contiguity', weights);
     const links = addLinkSegments(builder, 'contiguity', weights, mesh.centers);
-    return {outputs: {tiles, mesh, cardinality, links}};
+    return {outputs: {tiles, mesh, weights, cardinality, links}};
   },
   draw: ({outputs}) => [
     {
@@ -52,7 +64,7 @@ export default defineOperationRun({
       owners: outputs.mesh.owners,
       values: outputs.cardinality,
       triangleCount: outputs.tiles.triangleIndices.length / 3,
-      range: [0, 8],
+      range: [0, 10],
       alpha: 0.85
     },
     {layer: 'lines', context: true, segments: outputs.mesh.outline},
@@ -64,5 +76,35 @@ export default defineOperationRun({
       radius: 3
     }
   ],
-  rebuildOn: ['criterion', 'snapTolerance', 'gap']
+  rebuildOn: ['criterion', 'snapTolerance', 'gap'],
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    rest: [0.5, 0.5],
+    resolve(pointer, {outputs, values, peek}) {
+      const {tiles} = outputs;
+      const tract = findPolygonAt(
+        tiles.meshVertices,
+        tiles.triangleIndices,
+        tiles.triangleOwners,
+        pointer.x,
+        pointer.y
+      );
+      if (tract < 0) return {};
+      const neighbors = peekRow(peek, outputs.weights, tract);
+      if (!neighbors) return {};
+      const center = [tiles.centers[tract * 2], tiles.centers[tract * 2 + 1]] as const;
+      return {
+        focus: tract,
+        glyphs: [
+          getRingGlyph(tiles.positions, tiles.ringOffsets, tract),
+          ...Array.from(neighbors, row =>
+            getRingGlyph(tiles.positions, tiles.ringOffsets, row, true)
+          ),
+          ...getRowLinkGlyphs(center, getRowPositions(tiles.centers, neighbors))
+        ],
+        readout: `tract ${tract} · ${neighbors.length} neighbors · snapTolerance ${values.snapTolerance}`
+      };
+    }
+  }
 });

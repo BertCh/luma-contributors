@@ -11,7 +11,14 @@ import {
 } from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {uploadNetworkTopology} from '../../inputs';
-import {createRoads, getRoadContext, uploadRoads} from './shared/roads';
+import {chooseSticky} from '../../pick';
+import {
+  createNodeIndex,
+  createRoads,
+  getEndpointMarkers,
+  getRoadContext,
+  uploadRoads
+} from './shared/roads';
 import {parameters} from './network-isochrones.parameters';
 
 const BREAK_COUNT = 4;
@@ -24,10 +31,13 @@ export default defineOperationRun({
   caption: 'Travel-time bands around the origin, from the isoband triangles.',
   createInputs: ({random, world}) => {
     const network = createRoads(random, world, 16);
+    const defaultOrigin = network.findNearestNode(world.width * 0.5, 0.5);
     return {
       network,
       world,
-      origin: network.findNearestNode(world.width * 0.5, 0.5),
+      defaultOrigin,
+      origin: defaultOrigin,
+      index: createNodeIndex(network),
       costs: new Float32Array(network.slotCount)
     };
   },
@@ -44,11 +54,13 @@ export default defineOperationRun({
     const requiredCount = builder.allocate('required-count', 'uint32', 1);
     const overflow = builder.allocate('overflow', 'uint32', 1);
     const converged = builder.allocate('converged', 'uint32', 1);
+    const startNodes = builder.allocate('start-nodes', 'uint32', 1);
+    const originPosition = builder.allocate('origin-position', 'float32x2', 1);
     builder.graph.add(
       new GPUNetworkIsochrones({
         topology: {...topology, nodePositions: nodePositions.view},
         costs: nodeCosts.view,
-        startNodes: builder.upload('start-nodes', 'uint32', Uint32Array.of(inputs.origin)).view,
+        startNodes: startNodes.view,
         maximumIterations: 64,
         localIterations: 16,
         costBreaks: breaks.view,
@@ -73,10 +85,15 @@ export default defineOperationRun({
         ...uploadRoads(builder, network),
         triangles,
         triangleBands,
+        originPosition,
         indices: builder.upload('indices', 'uint32', indices),
         owners: builder.upload('owners', 'uint32', owners)
       },
       update: values => {
+        startNodes.write(Uint32Array.of(inputs.origin));
+        originPosition.write(
+          Float32Array.of(network.nodes[inputs.origin * 2], network.nodes[inputs.origin * 2 + 1])
+        );
         network.fillWeights(inputs.costs, values.congestion);
         weights.write(inputs.costs);
         triangles.write(new Float32Array(TRIANGLE_CAPACITY * 6));
@@ -93,7 +110,32 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({outputs}) => [
+  // The pointer places the origin on the nearest intersection; the bands re-form around it.
+  interaction: {
+    kind: 'place',
+    hint: 'place the origin',
+    rest: ({inputs, toUnit}) =>
+      toUnit([
+        inputs.network.nodes[inputs.defaultOrigin * 2],
+        inputs.network.nodes[inputs.defaultOrigin * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, values}) {
+      const node = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.origin);
+      const changed = node !== inputs.origin;
+      inputs.origin = node;
+      return {
+        rerun: changed,
+        glyphs: [
+          {
+            shape: 'crosshair',
+            at: [inputs.network.nodes[node * 2], inputs.network.nodes[node * 2 + 1]]
+          }
+        ],
+        readout: `origin node ${node} · bands ${values.breakWidth.toFixed(2)} wide`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     getRoadContext(outputs),
     {
       layer: 'polygons',
@@ -105,6 +147,7 @@ export default defineOperationRun({
       ramp: 'sequential',
       range: [-1, 5],
       alpha: 0.8
-    }
+    },
+    ...getEndpointMarkers(outputs.originPosition, theme)
   ]
 });

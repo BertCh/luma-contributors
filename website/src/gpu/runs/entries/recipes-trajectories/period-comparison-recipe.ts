@@ -10,13 +10,14 @@ import {
   packGPUColor
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {addPeriodComparisonRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {earthquakeEvents, getEventDots, getEventPosition} from './lib/earthquakes';
 import {defineOperationRun} from '../../define-run';
+import {clamp} from '../../interaction';
 import {addCellFill} from './lib/cells';
 import {parameters} from './period-comparison-recipe.parameters';
 
 const TABLE_CAPACITY = 1024;
 const UNION_CAPACITY = 2048;
-const POINTS_PER_PERIOD = 700;
 const PALETTE = [
   packGPUColor(33, 102, 172),
   packGPUColor(146, 197, 222),
@@ -24,23 +25,25 @@ const PALETTE = [
   packGPUColor(244, 165, 130),
   packGPUColor(178, 24, 43)
 ];
+const QUARTERS = ['Jan-Mar', 'Apr-Jun', 'Jul-Sep', 'Oct-Dec'];
 const EDGES = [-1e6, -8, -2, 2, 8, 1e6];
 
 export default defineOperationRun({
   parameters,
-  caption: 'Change per cell between two periods: gains red, losses blue.',
-  createInputs: ({random, world}) => ({
-    world,
-    background: Float32Array.from(
-      {length: POINTS_PER_PERIOD * 2},
-      (_, index) => random() * (index % 2 === 0 ? world.width : world.height)
-    ),
-    jitterX: Float32Array.from({length: POINTS_PER_PERIOD}, () => random() + random() - 1),
-    jitterY: Float32Array.from({length: POINTS_PER_PERIOD}, () => random() + random() - 1)
+  buildCache: 3,
+  caption: 'Earthquake counts in one quarter of 2023 compared with the next.',
+  createInputs: ({world}) => ({
+    dots: getEventDots(world.width, world.height),
+    positions: earthquakeEvents.map(event => getEventPosition(event, world.width, world.height)),
+    months: earthquakeEvents.map(event => new Date(event[2] * 1000).getUTCMonth())
   }),
-  build(builder, {world, background, jitterX, jitterY}, values) {
-    const before = builder.allocate('before-positions', 'float32x2', POINTS_PER_PERIOD * 2);
-    const after = builder.allocate('after-positions', 'float32x2', POINTS_PER_PERIOD * 2);
+  build(builder, {positions, months, dots}, values) {
+    const select = (start: number) =>
+      Float32Array.from(
+        positions.filter((_, index) => months[index] >= start && months[index] < start + 3).flat()
+      );
+    const before = builder.upload('before-positions', 'float32x2', select(values.quarter * 3));
+    const after = builder.upload('after-positions', 'float32x2', select(values.quarter * 3 + 3));
     const cells = builder.allocate('union-cells', 'uint32x2', UNION_CAPACITY);
     const delta = builder.allocate('delta', 'float32', UNION_CAPACITY);
     const zScore = builder.allocate('z-score', 'float32', UNION_CAPACITY);
@@ -96,31 +99,46 @@ export default defineOperationRun({
     });
     return {
       outputs: {
+        count,
+        delta,
+        events: builder.upload('events', 'float32x2', dots),
         shown: variable === 'delta' ? delta : variable === 'zScore' ? zScore : percentChange,
         fill: addCellFill(builder, 'quadbin', cells)
-      },
-      update: current => {
-        // Half the points are background in both periods; the rest form a cluster that moves.
-        const first = new Float32Array(POINTS_PER_PERIOD * 4);
-        const second = new Float32Array(POINTS_PER_PERIOD * 4);
-        for (let index = 0; index < POINTS_PER_PERIOD; index++) {
-          first.set([background[index * 2], background[index * 2 + 1]], index * 2);
-          second.set([background[index * 2], background[index * 2 + 1]], index * 2);
-          const wobbleX = jitterX[index] * 0.22;
-          const wobbleY = jitterY[index] * 0.22;
-          first.set([0.25 * world.width + wobbleX, 0.5 + wobbleY], (POINTS_PER_PERIOD + index) * 2);
-          second.set(
-            [(0.25 + 0.5 * current.shift) * world.width + wobbleX, 0.5 + wobbleY],
-            (POINTS_PER_PERIOD + index) * 2
-          );
-        }
-        before.write(first);
-        after.write(second);
       }
     };
   },
-  rebuildOn: ['resolution', 'classify'],
+  rebuildOn: ['resolution', 'classify', 'quarter'],
+  // x chooses the pair of consecutive quarters; the compile-time quarter settles when the pointer rests.
+  interaction: {
+    kind: 'time',
+    hint: 'choose the quarters',
+    rest: [1 / 6, 0.5],
+    resolve(pointer, {outputs, peek, world}) {
+      const quarter = clamp(Math.floor(pointer.unitX * 3), 0, 2);
+      const count = peek(outputs.count);
+      const delta = peek(outputs.delta);
+      let lost = 0;
+      let gained = 0;
+      if (count && delta) {
+        for (let cell = 0; cell < Math.min(count[0], delta.length); cell++) {
+          if (delta[cell] < 0) lost++;
+          if (delta[cell] > 0) gained++;
+        }
+      }
+      const stripX = (tick: number) => world.width * (0.1 + 0.8 * (tick / 4));
+      return {
+        settle: {quarter},
+        glyphs: [
+          {shape: 'line', from: [stripX(0), 0.03], to: [stripX(4), 0.03]},
+          {shape: 'line', from: [stripX(quarter), 0.03], to: [stripX(quarter + 2), 0.03]},
+          {shape: 'crosshair', at: [stripX(quarter + 1), 0.03], size: 5}
+        ],
+        readout: `${QUARTERS[quarter]} -> ${QUARTERS[quarter + 1]} · ${lost} lost, ${gained} gained`
+      };
+    }
+  },
   draw: ({outputs}) => [
+    {layer: 'dots', context: true, positions: outputs.events, radius: 2.2},
     {
       layer: 'polygons',
       positions: outputs.fill.boundaries,

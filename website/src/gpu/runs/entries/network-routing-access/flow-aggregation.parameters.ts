@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// gridSize and excludeSelfFlows are compile-time props; spread moves the origins and destinations.
+// gridSize and excludeSelfFlows are compile-time props; minimumJobs filters the observed flows.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'gridSize',
@@ -23,5 +23,12 @@ export const parameters: GpuSceneParameter[] = [
     default: 1,
     options: ['false', 'true']
   },
-  {id: 'spread', label: 'Data: spread', min: 0.3, max: 2, step: 0.1, default: 1}
+  {
+    id: 'minimumJobs',
+    label: 'Data: minimum workers per flow',
+    min: 25,
+    max: 400,
+    step: 5,
+    default: 25
+  }
 ];

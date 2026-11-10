@@ -16,9 +16,11 @@ export default defineOperationRun({
   caption: 'Points inside the lasso polygon, marked by the mask output.',
   createInputs: ({random, world}) => ({
     world,
-    points: createUniformPoints(random, world, 3000, 0.2)
+    points: createUniformPoints(random, world, 3000, 0.2),
+    // The lasso center is owned by the pointer; it rests at the middle of the picture.
+    center: [0.5 * world.width, 0.5] as [number, number]
   }),
-  build(builder, {world, points}) {
+  build(builder, {points, center}) {
     const vertices = builder.allocate('vertices', 'float32x2', POINT_COUNT * 2);
     const mask = builder.allocate('mask', 'uint32', points.count);
     builder.graph.add(
@@ -45,7 +47,7 @@ export default defineOperationRun({
           const angle = values.rotation + (index / (POINT_COUNT * 2)) * Math.PI * 2;
           const radius = values.size * (index % 2 === 0 ? 1 : values.notch);
           ring.set(
-            [0.5 * world.width + Math.cos(angle) * radius, 0.5 + Math.sin(angle) * radius],
+            [center[0] + Math.cos(angle) * radius, center[1] + Math.sin(angle) * radius],
             index * 2
           );
         }
@@ -62,8 +64,26 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer carries the lasso; the mask follows it point by point.
+  interaction: {
+    kind: 'window',
+    hint: 'carry the lasso',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.center[0] = pointer.x;
+      inputs.center[1] = pointer.y;
+      const mask = peek(outputs.mask);
+      let insideCount = 0;
+      if (mask) for (const flag of mask) insideCount += flag;
+      return {
+        rerun: true,
+        glyphs: [{shape: 'crosshair', at: inputs.center, size: 7}],
+        readout: `region size ${values.size.toFixed(2)} · ${mask ? `${insideCount} points inside` : 'selecting'}`
+      };
+    }
+  },
   draw: ({outputs}) => [
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 1.6, alpha: 0.5},
+    {layer: 'dots', context: true, positions: outputs.positions, radius: 2.2, alpha: 1},
     {
       layer: 'dots',
       positions: outputs.positions,

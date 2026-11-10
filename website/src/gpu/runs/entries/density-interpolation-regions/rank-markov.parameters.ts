@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPURankMarkov's `mode` and `tieOrder`; the period only chooses which map is shown.
+// Bound to GPURankMarkov's `mode`; the period only chooses which map is shown.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'mode',

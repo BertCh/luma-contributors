@@ -8,6 +8,8 @@
 
 import {addBuildingTessellationRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {clamp} from '../../interaction';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {getViewBuffer} from './shared/kernel';
 import {addPolygonDrawing} from './shared/polygons';
 import {createCityLayout, getBuildings} from './shared/urban';
@@ -26,28 +28,28 @@ export default defineOperationRun({
   parameters,
   caption:
     'Each building gets the territory closest to it; colored outlines are those territories.',
-  createInputs: ({random, world}) => ({
-    layout: createCityLayout(random, world, 3, 2, 0.06),
-    world
-  }),
+  createInputs: ({world}) => {
+    const layout = createCityLayout(world, 10, true);
+    return {
+      layout,
+      world,
+      index: createPointIndex(Float32Array.from(layout.centers.flat())),
+      carried: {building: -1, offset: [0, 0] as [number, number]}
+    };
+  },
   build(builder, inputs, values) {
     const buildings = getBuildings(inputs.layout, values.fill);
     const segments = builder.upload('walls', 'float32x4', buildings.segments);
     const owners = builder.upload('wall-owners', 'uint32', buildings.segmentBuildingIds);
-    const margin = 0.02;
+    const all = inputs.layout.rings.flat();
+    const left = Math.min(...all.map(point => point[0])) - 0.07;
+    const right = Math.max(...all.map(point => point[0])) + 0.07;
+    const bottom = Math.min(...all.map(point => point[1])) - 0.07;
+    const top = Math.max(...all.map(point => point[1])) + 0.07;
     const enclosure = builder.upload(
       'enclosure',
       'float32x2',
-      Float32Array.of(
-        margin,
-        margin,
-        inputs.world.width - margin,
-        margin,
-        inputs.world.width - margin,
-        1 - margin,
-        margin,
-        1 - margin
-      )
+      Float32Array.of(left, bottom, right, bottom, right, top, left, top)
     );
     const result = addBuildingTessellationRecipe(builder.graph, {
       segments: segments.view,
@@ -77,13 +79,50 @@ export default defineOperationRun({
     return {
       outputs: {walls, territories},
       update: current => {
-        const next = getBuildings(inputs.layout, current.fill);
+        const next = getBuildings(inputs.layout, current.fill, 0, inputs.carried);
         segments.write(next.segments);
         walls.write(next.segments);
       }
     };
   },
   rebuildOn: ['sampleSpacing'],
+  // The pointer carries the nearest building (it leans toward the cursor and lets go at a distance);
+  // the territories are recomputed around it each frame.
+  interaction: {
+    kind: 'drag',
+    hint: 'move a building',
+    rest: ({inputs, toUnit}) => toUnit(inputs.layout.centers[0]),
+    resolve(pointer, {inputs}) {
+      const building = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.carried.building);
+      if (building < 0) return {};
+      const [centerX, centerY] = inputs.layout.centers[building];
+      const deltaX = pointer.x - centerX;
+      const deltaY = pointer.y - centerY;
+      const weight = clamp((0.3 - Math.hypot(deltaX, deltaY)) / 0.22, 0, 1);
+      const offset: [number, number] = [deltaX * weight, deltaY * weight];
+      const changed =
+        building !== inputs.carried.building ||
+        offset[0] !== inputs.carried.offset[0] ||
+        offset[1] !== inputs.carried.offset[1];
+      inputs.carried.building = building;
+      inputs.carried.offset = offset;
+      return {
+        rerun: changed,
+        glyphs: [
+          {
+            shape: 'polyline',
+            points: inputs.layout.rings[building].flatMap(([x, y]) => [
+              x + offset[0],
+              y + offset[1]
+            ]),
+            closed: true
+          },
+          {shape: 'crosshair', at: [pointer.x, pointer.y]}
+        ],
+        readout: `building ${building} · territories re-form`
+      };
+    }
+  },
   draw: ({outputs}) => [
     ...outputs.territories.map((territory, building) => ({
       layer: 'lines' as const,

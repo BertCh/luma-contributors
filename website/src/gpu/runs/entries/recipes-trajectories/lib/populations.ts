@@ -4,6 +4,7 @@
 // Focal and complement populations per unit for two periods, and the two counterfactuals between
 // them, for the segregation runs.
 
+import {getCensusPopulation} from './census-tracts';
 import type {QuadZones} from './quads';
 
 export type PopulationScenarios = {
@@ -15,12 +16,11 @@ export type PopulationScenarios = {
 };
 
 /**
- * `sorting` (0-1) is how strongly the focal group concentrates in the high end of the smooth field
- * in the final period, `growth` scales the focal group's overall size.
+ * `sorting` (0–1) amplifies the baseline spatial concentration of the focal group
+ * in the modeled period. `growth` changes its share within each tract.
  */
 export function getPopulationScenarios(
   zones: QuadZones,
-  draws: Float32Array,
   sorting: number,
   growth: number
 ): PopulationScenarios {
@@ -30,20 +30,14 @@ export function getPopulationScenarios(
   const baselineShare = new Float32Array(count);
   const finalShare = new Float32Array(count);
   for (let unit = 0; unit < count; unit++) {
-    const total = 800 + 600 * draws[unit];
-    const field = zones.values[unit];
-    const baseShare = 0.3 + 0.1 * (field - 0.5) + 0.04 * (draws[(unit * 7) % count] - 0.5);
-    const finalFocal = Math.min(
-      0.95,
-      Math.max(
-        0.02,
-        0.3 +
-          0.1 * growth +
-          sorting * 0.7 * (field - 0.5) +
-          0.04 * (draws[(unit * 5) % count] - 0.5)
-      )
+    const [focal, complement] = getCensusPopulation(unit);
+    const total = focal + complement;
+    const baseShare = focal / total;
+    const finalFocal = Math.max(
+      0.01,
+      Math.min(0.99, baseShare + growth * 0.1 + sorting * (baseShare - 0.3) * 0.4)
     );
-    baseline.set([total * baseShare, total * (1 - baseShare)], unit * 2);
+    baseline.set([focal, complement], unit * 2);
     final.set([total * finalFocal, total * (1 - finalFocal)], unit * 2);
     baselineShare[unit] = baseShare;
     finalShare[unit] = finalFocal;

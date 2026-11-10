@@ -23,12 +23,25 @@ import {
   getDiagramLayers,
   ShapeBatch
 } from '../../record-demo';
+import {findBoxAt, getBoxGlyph, getCenter, type Box} from './_lib/record-probe';
 import {parameters} from './computation-record.parameters';
+
+/** What the last run drew, for the pointer: the node boxes and the lifetime rows. */
+type Latest = {
+  boxes: ReturnType<typeof createDiagram>['layout']['boxes'];
+  order: string[];
+  lifetimes: {box: Box; first: number; last: number}[];
+};
 
 export default defineOperationRun({
   parameters,
   caption: 'graphs[0] of the record, its resource lifetimes and what the record kept.',
-  createInputs: ({random, world}) => ({tracts: createRecordTracts(random), world}),
+  createInputs: ({random, world}) => ({
+    tracts: createRecordTracts(random),
+    world,
+    latest: null as Latest | null,
+    focus: {id: ''}
+  }),
   build(builder, {tracts}, values) {
     const recorder = new GPUComputationRecorder({sourceText: true});
     buildRelaxation(builder, tracts, {
@@ -37,8 +50,11 @@ export default defineOperationRun({
       deviation: true,
       scope: iteration => ({namespace: `iteration-${iteration}`, op: 'GPUSpatialLag'})
     });
-    return {outputs: {recorder}};
+    // The extra source and formula refs only change the record, which `afterRun` rebuilds, so the
+    // graph is not rebuilt when they move.
+    return {outputs: {recorder}, update: () => undefined};
   },
+  rebuildOn: ['iterations'],
   afterRun({compiled, device, outputs, inputs, values, upload}) {
     const {width} = inputs.world;
     const described = describeGPUCommandGraph(compiled, {recorder: outputs.recorder});
@@ -95,20 +111,25 @@ export default defineOperationRun({
     );
     const area = {x0: 0.05 * width, x1: 0.6 * width, y0: 0.06, y1: 0.46};
     const rowHeight = (area.y1 - area.y0) / Math.max(resources.length, 1);
+    const lifetimeRows: Latest['lifetimes'] = [];
     resources.forEach((resource, row) => {
       const first = order.get(resource.firstNode ?? '') ?? 0;
       const last = order.get(resource.lastNode ?? '') ?? first;
       const span = Math.max(graph.nodes.length, 1);
-      lifetimes.addRectangle(
-        {
-          x0: area.x0 + ((area.x1 - area.x0) * first) / span,
-          x1: area.x0 + ((area.x1 - area.x0) * (last + 1)) / span,
-          y1: area.y1 - row * rowHeight,
-          y0: area.y1 - (row + 0.78) * rowHeight
-        },
-        resource.ownership === 'transient' ? 2 : 1
-      );
+      const rectangle = {
+        x0: area.x0 + ((area.x1 - area.x0) * first) / span,
+        x1: area.x0 + ((area.x1 - area.x0) * (last + 1)) / span,
+        y1: area.y1 - row * rowHeight,
+        y0: area.y1 - (row + 0.78) * rowHeight
+      };
+      lifetimeRows.push({box: rectangle, first, last});
+      lifetimes.addRectangle(rectangle, resource.ownership === 'transient' ? 2 : 1);
     });
+    inputs.latest = {
+      boxes: diagram.layout.boxes,
+      order: graph.nodes.map(node => node.id),
+      lifetimes: lifetimeRows
+    };
     const marker = new ShapeBatch();
     marker.addRectangle(
       {x0: 0.94 * width, y0: 0.965, x1: 0.97 * width, y1: 0.995},
@@ -126,13 +147,44 @@ export default defineOperationRun({
       ],
       count => Math.log2(1 + count)
     );
+    // The sources passed (index 3) and the sources kept (index 4) stand out from the other counts.
+    const dedup = Float32Array.from(counts, (count, index) =>
+      index === 3 || index === 4 ? count : 0
+    );
     return {
+      dedup: upload('dedup', 'float32', dedup),
       diagram,
       lifetimes: lifetimes.uploadShapes(upload, 'lifetimes'),
       marker: marker.uploadShapes(upload, 'valid'),
       counts: upload('counts', 'float32', counts),
       maximum: Math.max(...counts, 1)
     };
+  },
+  // The pointer is a node of the recorded graph: it is outlined, and the resources alive at that
+  // node are outlined in the lifetime rows below.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a node',
+    rest: ({inputs}) => {
+      const box = inputs.latest?.boxes[0];
+      if (!box) return [0.2, 0.3];
+      const [x, y] = getCenter(box);
+      return [x / inputs.world.width, 1 - y];
+    },
+    resolve(pointer, {inputs}) {
+      const latest = inputs.latest;
+      if (!latest || latest.boxes.length === 0) return {readout: 'hover a node'};
+      const under = findBoxAt(latest.boxes, pointer.x, pointer.y);
+      if (under) inputs.focus.id = under.node.id;
+      const box =
+        latest.boxes.find(candidate => candidate.node.id === inputs.focus.id) ?? latest.boxes[0];
+      const position = latest.order.indexOf(box.node.id);
+      const live = latest.lifetimes.filter(row => row.first <= position && position <= row.last);
+      return {
+        glyphs: [getBoxGlyph(box), ...live.map(row => getBoxGlyph(row.box, true))],
+        readout: `${box.node.id} · source ${box.node.source?.slice(0, 16) ?? 'none'} · ${live.length} resources live`
+      };
+    }
   },
   draw: ({extra, theme}) => [
     ...getDiagramLayers(extra.diagram, {categories: [theme.muted, ...theme.categories]}),
@@ -152,6 +204,14 @@ export default defineOperationRun({
       range: [0, extra.maximum],
       rectangle: [0.66, 0.06, 0.97, 0.46],
       color: [...theme.categories[6], 1]
+    },
+    {
+      layer: 'chart',
+      kind: 'bars',
+      values: extra.dedup,
+      range: [0, extra.maximum],
+      rectangle: [0.66, 0.06, 0.97, 0.46],
+      color: [...theme.categories[1], 1]
     },
     {
       layer: 'polygons',

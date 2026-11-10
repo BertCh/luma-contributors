@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUNeighborSearch feeding GPUHotSpotAnalysis (Getis-Ord Gi*). Noisy points carry a few hidden
-// hot and cold patches; the GPU's z-scores light them up. A hot patch follows the pointer, and
-// sliders set the neighbor radius and the strength of the hidden pattern.
+// Getis-Ord Gi* at rain gauges around the Carolinas during Hurricane Helene.
+// Changing day changes the observed totals; changing radius recomputes the spatial weights.
 
 import {
   getGPUNeighborSearchParameterValues,
@@ -13,6 +12,10 @@ import {
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getRainStations, getRainNeighborCapacity} from '../data/point-observations';
+import type {RunGlyph} from '../runs/interaction';
+import {chooseSticky, createPointIndex} from '../runs/pick';
+import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
 import {HOT_SPOTS_PARAMETERS, readParameterValues} from './parameters';
 import {
@@ -23,7 +26,6 @@ import {
   DrawScheduler,
   drawLayers,
   getDemoTheme,
-  getWorldPosition,
   GraphRunner,
   importBufferView,
   makeRandom,
@@ -32,8 +34,7 @@ import {
 
 export const parameters = HOT_SPOTS_PARAMETERS;
 
-const POINT_COUNT = 1400;
-const SLOTS_PER_POINT = 48;
+const POINT_COUNT = 720;
 
 const scene: GpuScene = async context => {
   const {device} = context;
@@ -45,42 +46,20 @@ const scene: GpuScene = async context => {
   const random = makeRandom(context.seed);
   const bounds = [0, 0, worldWidth, 1] as const;
 
-  const positions = new Float32Array(POINT_COUNT * 2);
-  const noise = new Float32Array(POINT_COUNT);
-  for (let index = 0; index < POINT_COUNT; index++) {
-    positions[index * 2] = random() * worldWidth;
-    positions[index * 2 + 1] = random();
-    noise[index] = random() - 0.5;
-  }
-  // Hidden patches: center x (fraction of width), center y, radius, signed amplitude.
-  const patches = [
-    [0.22, 0.65, 0.14, 1],
-    [0.7, 0.3, 0.12, 1],
-    [0.5, 0.75, 0.1, -1],
-    [0.86, 0.78, 0.1, -1],
-    [0.34, 0.22, 0.09, -1]
-  ] as const;
-  let pointer: [number, number] | null = null;
-  const fieldValues = new Float32Array(POINT_COUNT);
-  const writeValues = () => {
-    for (let index = 0; index < POINT_COUNT; index++) {
-      const x = positions[index * 2];
-      const y = positions[index * 2 + 1];
-      let value = noise[index] * 1.6;
-      for (const [centerX, centerY, radius, sign] of patches) {
-        const distance = Math.hypot(x - centerX * worldWidth, y - centerY) / radius;
-        value += sign * settings.strength * 2.2 * Math.exp(-distance * distance);
-      }
-      if (pointer) {
-        const distance = Math.hypot(x - pointer[0], y - pointer[1]) / 0.1;
-        value += 2.6 * Math.exp(-distance * distance);
-      }
-      fieldValues[index] = value;
-    }
-    valueBuffer.write(fieldValues);
-  };
+  const {positions, rain, previousRain} = getRainStations(
+    random,
+    {width: worldWidth, height: 1},
+    POINT_COUNT,
+    true
+  );
+  const pointIndex = createPointIndex(positions);
+  let selected = -1;
+  let zValues = new Float32Array(POINT_COUNT);
+  let hasZValues = false;
+  let readToken = 0;
+  let isDestroyed = false;
 
-  const slotCount = POINT_COUNT * SLOTS_PER_POINT;
+  const slotCount = getRainNeighborCapacity(positions, parameters[0].max / 100);
   const positionBuffer = createStorageBuffer(device, positions);
   const valueBuffer = createEmptyStorageBuffer(device, POINT_COUNT);
   const neighborParameters = createEmptyStorageBuffer(device, GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH);
@@ -141,7 +120,7 @@ const scene: GpuScene = async context => {
   const draw = () => {
     if (isDirty) {
       isDirty = false;
-      writeValues();
+      valueBuffer.write(settings.day === 0 ? previousRain : rain);
       neighborParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds,
@@ -151,10 +130,20 @@ const scene: GpuScene = async context => {
       );
       statisticParameters.write(getGPUSpatialAutocorrelationParameterValues({}));
       runner.run();
+      const token = ++readToken;
+      zScores
+        .readAsync()
+        .then(bytes => {
+          if (token !== readToken || isDestroyed) return;
+          zValues = new Float32Array(bytes.slice().buffer);
+          hasZValues = true;
+          driver.refresh();
+        })
+        .catch(() => {});
     }
     halo.update(view, theme, {
       mode: 1,
-      range: [-3, 3],
+      range: [0, 180],
       radius: 10,
       alpha: 0.12,
       ramp: theme.diverging
@@ -166,32 +155,74 @@ const scene: GpuScene = async context => {
       ramp: theme.diverging,
       solid: [...theme.muted, 0.4]
     });
-    drawLayers(device, theme, [halo, hotSpots]);
+    drawLayers(device, theme, [halo, hotSpots, ...driver.getLayers()]);
   };
   const scheduler = new DrawScheduler(draw);
 
+  const driver = createPointerDriver({
+    device,
+    view,
+    theme,
+    reducedMotion: context.reducedMotion,
+    kind: 'probe',
+    hint: 'hover a gauge',
+    rest: [0.5, 0.5],
+    reportReadout: context.reportReadout,
+    requestDraw: () => scheduler.request(),
+    resolve(pointer) {
+      selected = chooseSticky(pointIndex, pointer.x, pointer.y, selected);
+      if (selected < 0) return {};
+      const at = [positions[selected * 2], positions[selected * 2 + 1]] as const;
+      const radius = settings.radius / 100;
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at, radius, dashed: true},
+        {shape: 'dot', at}
+      ];
+      const inside = pointIndex.within(at[0], at[1], radius).filter(index => index !== selected);
+      for (const index of inside) {
+        glyphs.push({
+          shape: 'line',
+          from: at,
+          to: [positions[index * 2], positions[index * 2 + 1]]
+        });
+      }
+      const rainfall = (settings.day === 0 ? previousRain : rain)[selected];
+      const z = zValues[selected];
+      const statistic =
+        hasZValues && Number.isFinite(z)
+          ? ` · Gi* z ${z >= 0 ? '+' : '\u2212'}${Math.abs(z).toFixed(1)}`
+          : '';
+      return {
+        glyphs,
+        readout: `${rainfall.toFixed(0)} mm · ${inside.length} neighbors${statistic}`
+      };
+    }
+  });
+
   return {
-    render() {
+    gesture: driver.gesture,
+    render(time) {
+      driver.advance(time);
       scheduler.flush();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      driver.refresh();
       scheduler.request();
     },
-    setPointer(position) {
-      if (!position) return;
-      pointer = getWorldPosition(view, position);
-      isDirty = true;
-      scheduler.request();
-    },
+    setPointer: driver.setPointer,
+    resetPointer: driver.resetPointer,
     setParameters(update) {
       Object.assign(settings, update);
       isDirty = true;
+      driver.refresh();
       scheduler.request();
     },
     destroy() {
+      isDestroyed = true;
       scheduler.cancel();
+      driver.destroy();
       halo.destroy();
       hotSpots.destroy();
       runner.destroy();

@@ -11,24 +11,32 @@ import {
 import {defineOperationRun} from '../../define-run';
 import {createTracts} from '../../inputs';
 import {parameters} from './dot-density.parameters';
-import {getPackedPolygons, uploadPackedPolygons, uploadTractMesh} from './support/geometry';
+import {
+  createTractGlyph,
+  findMiddleTract,
+  findTractAt,
+  getPackedPolygons,
+  uploadPackedPolygons,
+  uploadTractMesh
+} from './support/geometry';
 
 const CAPACITY = 18000;
 
 export default defineOperationRun({
   parameters,
-  caption: 'One dot per population unit, colored by category, placed inside each tract.',
-  createInputs: ({random, world}) => createTracts(random, world, 8, 0.3),
-  build(builder, tracts, values) {
+  caption: 'Chicago residents aged 65+ and under 65, sampled inside each Census tract.',
+  createInputs: ({random, world}) => {
+    const tracts = createTracts(random, world, 8, 0.3);
+    return {tracts, world, focus: {row: findMiddleTract(tracts, world)}};
+  },
+  build(builder, {tracts}, values) {
+    // One input unit represents ten residents. At the default density, one dot represents 100 residents.
     const categoryValues = new Float32Array(tracts.count * 2);
     for (let tract = 0; tract < tracts.count; tract++) {
-      categoryValues[tract * 2] = tracts.values[tract] * 700;
-      categoryValues[tract * 2 + 1] = (1 - tracts.values[tract]) * 400;
+      categoryValues[tract * 2] = tracts.age65[tract] / 10;
+      categoryValues[tract * 2 + 1] = (tracts.population[tract] - tracts.age65[tract]) / 10;
     }
     const parameterBuffer = builder.allocate('parameters', 'uint32', 8);
-    parameterBuffer.write(
-      getGPUDotDensityParameterValues({seed: values.seed, dotsPerUnit: values.dotsPerUnit})
-    );
     const dotPositions = builder.allocate('dot-positions', 'float32x2', CAPACITY);
     const categories = builder.allocate('categories', 'uint32', CAPACITY);
     const ids = builder.allocate('ids', 'uint32', CAPACITY);
@@ -47,14 +55,42 @@ export default defineOperationRun({
         }
       })
     );
-    return {outputs: {dotPositions, categories, ...uploadTractMesh(builder, tracts)}};
+    return {
+      outputs: {dotPositions, categories, ...uploadTractMesh(builder, tracts)},
+      // dotsPerUnit and the seed are per-frame parameters.
+      update: current =>
+        parameterBuffer.write(
+          getGPUDotDensityParameterValues({seed: current.seed, dotsPerUnit: current.dotsPerUnit})
+        )
+    };
+  },
+  // The hovered tract is outlined and its two categories are read out.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    rest: ({inputs, toUnit}) =>
+      toUnit([
+        inputs.tracts.centers[inputs.focus.row * 2],
+        inputs.tracts.centers[inputs.focus.row * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, values}) {
+      const row = findTractAt(inputs.tracts, pointer.x, pointer.y);
+      inputs.focus.row = row < 0 ? inputs.focus.row : row;
+      const {tracts} = inputs;
+      const residentsPerDot = Math.round(10 / values.dotsPerUnit);
+      return {
+        focus: inputs.focus.row,
+        glyphs: [createTractGlyph(tracts, inputs.focus.row)],
+        readout: `65+ ${Math.round(tracts.age65[inputs.focus.row]).toLocaleString('en-US')} · under 65 ${Math.round(tracts.population[inputs.focus.row] - tracts.age65[inputs.focus.row]).toLocaleString('en-US')} · 1 dot = ${residentsPerDot}`
+      };
+    }
   },
   draw: ({inputs, outputs, theme}) => [
     {
       layer: 'lines',
       context: true,
       segments: outputs.outline,
-      count: inputs.outlineCount,
+      count: inputs.tracts.outlineCount,
       radius: 1.6,
       color: [...theme.muted, 0.9]
     },
@@ -62,7 +98,7 @@ export default defineOperationRun({
       layer: 'dots',
       positions: outputs.dotPositions,
       values: outputs.categories,
-      radius: 3.2
+      radius: 2.6
     }
   ]
 });

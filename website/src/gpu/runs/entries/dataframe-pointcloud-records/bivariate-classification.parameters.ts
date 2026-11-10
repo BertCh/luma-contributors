@@ -8,11 +8,11 @@ import type {RunLegendItem} from '../../legend';
 export const parameters: GpuSceneParameter[] = [
   {id: 'classCountX', label: 'classCountX', min: 2, max: 4, step: 1, default: 3},
   {id: 'classCountY', label: 'classCountY', min: 2, max: 4, step: 1, default: 3},
-  {id: 'maskShare', label: 'mask', min: 20, max: 100, step: 10, default: 100, unit: '% of rows'}
+  {id: 'maskShare', label: 'mask', min: 20, max: 100, step: 10, default: 100, unit: '% of map'}
 ];
 
 export const legend: RunLegendItem[] = [
   {label: 'x class rises: more blue', color: '#4a8fc4'},
   {label: 'y class rises: more orange', color: '#d9873f'},
-  {label: 'top matrix: key; lower matrix: rows per class', color: '#7a6a8a'}
+  {label: 'key squares: joint class, size = rows in it', color: '#7a6a8a'}
 ];

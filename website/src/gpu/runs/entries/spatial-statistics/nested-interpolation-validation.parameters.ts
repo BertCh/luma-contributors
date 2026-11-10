@@ -8,5 +8,5 @@ import type {GpuSceneParameter} from '../../../types';
 export const parameters: GpuSceneParameter[] = [
   {id: 'foldCount', label: 'foldCount', min: 2, max: 5, step: 1, default: 3},
   {id: 'neighborCount', label: 'neighborCount', min: 8, max: 32, step: 4, default: 16},
-  {id: 'noise', label: 'Data: noise', min: 0, max: 0.4, step: 0.02, default: 0.08}
+  {id: 'noise', label: 'Data: noise', min: 0, max: 0.4, step: 0.02, default: 0}
 ];

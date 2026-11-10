@@ -12,6 +12,7 @@ import {
   getGPUGeographicallyWeightedRegressionParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
 import {parameters} from './geographically-weighted-regression.parameters';
 import {
   createRegressionInputs,
@@ -21,6 +22,7 @@ import {
   getDriftingCoefficients,
   uploadRegressionMap
 } from './shared/regression';
+import {findTractUnder, getKernelWeight, getTractCenter, getTractOutline} from './shared/probes';
 import {addTableColumn} from './shared/weights';
 
 const LADDER_CAPACITY = 4;
@@ -28,8 +30,7 @@ const LADDER_CAPACITY = 4;
 export default defineOperationRun({
   parameters,
   caption: 'Local slope of the first predictor (left) and local R2 (right).',
-  createInputs: ({random, world}) =>
-    createRegressionInputs(random, world, 10, DUAL_MAP_SHARE, true),
+  createInputs: ({random, world}) => createRegressionInputs(random, world, 10, DUAL_MAP_SHARE),
   build(builder, inputs) {
     const rowCount = inputs.tracts.count;
     const positions = builder.upload('positions', 'float32x2', inputs.tracts.centers);
@@ -91,6 +92,57 @@ export default defineOperationRun({
         );
       }
     };
+  },
+  // The pointer picks a tract on either map: the regression point. The ring is its kernel footprint at the
+  // bandwidth, and the tracts that carry most of the kernel weight are outlined.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    rest: [0.25, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const offsetX = inputs.mapWidth * 1.14;
+      const onRight = pointer.x > offsetX - 0.02;
+      const tract = findTractUnder(inputs.tracts, pointer.x, pointer.y, onRight ? offsetX : 0);
+      const slope = peek(outputs.slope);
+      const localR2 = peek(outputs.localR2);
+      if (tract < 0 || !slope || !localR2) return {};
+      const center = getTractCenter(inputs.tracts, tract);
+      const kernel = values.kernel === 0 ? 'gaussian' : 'bisquare';
+      const heavy: {tract: number; weight: number}[] = [];
+      for (let other = 0; other < inputs.tracts.count; other++) {
+        if (other === tract) continue;
+        const weight = getKernelWeight(
+          kernel,
+          Math.hypot(
+            inputs.tracts.centers[other * 2] - center[0],
+            inputs.tracts.centers[other * 2 + 1] - center[1]
+          ),
+          values.bandwidth
+        );
+        if (weight > 0.5) heavy.push({tract: other, weight});
+      }
+      heavy.sort((first, second) => second.weight - first.weight);
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at: center, radius: values.bandwidth, dashed: true},
+        {
+          shape: 'ring',
+          at: getTractCenter(inputs.tracts, tract, offsetX),
+          radius: values.bandwidth,
+          dashed: true
+        },
+        getTractOutline(inputs.tracts, tract),
+        getTractOutline(inputs.tracts, tract, offsetX),
+        ...heavy
+          .slice(0, 12)
+          .map(({tract: other}) => getTractOutline(inputs.tracts, other, 0, true))
+      ];
+      const trueSlope = 0.5 + values.drift * (center[0] / inputs.mapWidth);
+      return {
+        focus: tract,
+        glyphs,
+        readout: `slope ${slope[tract].toFixed(1)} (true ${trueSlope.toFixed(1)}) · R2 ${localR2[tract].toFixed(2)} · bw ${values.bandwidth}`
+      };
+    }
   },
   draw: ({inputs, outputs}) => [
     ...drawTractMap(inputs, outputs.meshes[0], outputs.slope, {

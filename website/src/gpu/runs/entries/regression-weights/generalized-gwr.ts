@@ -7,6 +7,7 @@
 
 import {GPUGeneralizedGeographicallyWeightedRegression} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
 import {parameters} from './generalized-gwr.parameters';
 import {
   createRegressionInputs,
@@ -14,6 +15,7 @@ import {
   DUAL_MAP_SHARE,
   uploadRegressionMap
 } from './shared/regression';
+import {findTractUnder, getKernelWeight, getTractCenter, getTractOutline} from './shared/probes';
 import {addTableColumn} from './shared/weights';
 
 /** Samples a Poisson count by inversion with a fixed uniform draw. */
@@ -32,8 +34,7 @@ function samplePoisson(mean: number, uniform: number): number {
 export default defineOperationRun({
   parameters,
   caption: 'Local slope of the first predictor (left) and fitted mean or probability (right).',
-  createInputs: ({random, world}) =>
-    createRegressionInputs(random, world, 10, DUAL_MAP_SHARE, true),
+  createInputs: ({random, world}) => createRegressionInputs(random, world, 10, DUAL_MAP_SHARE),
   build(builder, inputs, values) {
     const rowCount = inputs.tracts.count;
     const isPoisson = values.family === 0;
@@ -70,7 +71,8 @@ export default defineOperationRun({
           uploadRegressionMap(builder, inputs, inputs.mapWidth * 1.14)
         ],
         slope: addTableColumn(builder, 'local-slope', coefficients, 3, 1, rowCount),
-        fitted
+        fitted,
+        response
       },
       update: current => {
         response.write(
@@ -93,8 +95,72 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['family', 'kernel'],
-  draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.meshes[0], outputs.slope, {ramp: 'sequential'}),
-    ...drawTractMap(inputs, outputs.meshes[1], outputs.fitted, {ramp: 'sequential'})
-  ]
+  // The pointer picks a tract on either map: the regression point, its kernel footprint at the bandwidth
+  // and the tracts that carry most of the kernel weight.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    rest: [0.25, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const offsetX = inputs.mapWidth * 1.14;
+      const onRight = pointer.x > offsetX - 0.02;
+      const tract = findTractUnder(inputs.tracts, pointer.x, pointer.y, onRight ? offsetX : 0);
+      const slope = peek(outputs.slope);
+      const fitted = peek(outputs.fitted);
+      if (tract < 0 || !slope || !fitted) return {};
+      const center = getTractCenter(inputs.tracts, tract);
+      const kernel = values.kernel === 0 ? 'gaussian' : 'bisquare';
+      const heavy: {tract: number; weight: number}[] = [];
+      for (let other = 0; other < inputs.tracts.count; other++) {
+        if (other === tract) continue;
+        const weight = getKernelWeight(
+          kernel,
+          Math.hypot(
+            inputs.tracts.centers[other * 2] - center[0],
+            inputs.tracts.centers[other * 2 + 1] - center[1]
+          ),
+          values.bandwidth
+        );
+        if (weight > 0.5) heavy.push({tract: other, weight});
+      }
+      heavy.sort((first, second) => second.weight - first.weight);
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at: center, radius: values.bandwidth, dashed: true},
+        getTractOutline(inputs.tracts, tract),
+        getTractOutline(inputs.tracts, tract, offsetX),
+        ...heavy
+          .slice(0, 12)
+          .map(({tract: other}) => getTractOutline(inputs.tracts, other, 0, true))
+      ];
+      return {
+        focus: tract,
+        glyphs,
+        readout: `slope ${slope[tract].toFixed(1)} · ${values.family === 0 ? 'mean' : 'p'} ${fitted[tract].toFixed(2)} · bw ${values.bandwidth}`
+      };
+    }
+  },
+  draw: ({inputs, outputs, values}) => {
+    const isPoisson = values.family === 0;
+    const slopeRange = isPoisson ? ([0, 2] as const) : ([0, 4] as const);
+    const fittedRange = isPoisson ? ([0, 6] as const) : ([0, 1] as const);
+    return [
+      ...drawTractMap(inputs, outputs.meshes[0], outputs.slope, {
+        ramp: 'sequential',
+        range: slopeRange
+      }),
+      ...drawTractMap(inputs, outputs.meshes[1], outputs.fitted, {
+        ramp: 'sequential',
+        range: fittedRange
+      }),
+      // The observed counts or 0/1 outcomes at the tract centers, on the fitted scale.
+      {
+        layer: 'dots',
+        positions: outputs.meshes[1].centers,
+        values: outputs.response,
+        ramp: 'sequential',
+        range: fittedRange,
+        radius: 3
+      }
+    ];
+  }
 });

@@ -6,15 +6,32 @@
 
 import {GPUTrajectoryRestriction} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {clamp} from '../../interaction';
 import {createFleet} from './lib/fleet';
 import {parameters} from './trajectory-restriction.parameters';
+
+const BOX_START_X = 0.45;
+const BOX_HALF_HEIGHT = 0.3;
+
+/** The restriction rectangle: centered on the pointer-owned center, `maximumX` sets its width. */
+function getBox(fleet: {worldWidth: number; center: readonly [number, number]}, maximumX: number) {
+  const halfWidth = ((maximumX - 0.2) / 2) * fleet.worldWidth;
+  return {
+    minimumX: fleet.center[0] - halfWidth,
+    maximumX: fleet.center[0] + halfWidth,
+    minimumY: fleet.center[1] - BOX_HALF_HEIGHT,
+    maximumY: fleet.center[1] + BOX_HALF_HEIGHT
+  };
+}
 
 export default defineOperationRun({
   parameters,
   caption: 'Track parts inside the box and the time window.',
-  createInputs: ({random, world}) =>
-    createFleet(random, world, {trackCount: 14, minimumFixes: 22, maximumFixes: 34}),
-  build(builder, fleet, _values) {
+  createInputs: ({world}) => {
+    const fleet = createFleet(world, {trackCount: 14, minimumFixes: 22, maximumFixes: 34});
+    return {...fleet, center: [BOX_START_X * fleet.worldWidth, 0.5] as [number, number]};
+  },
+  build(builder, fleet) {
     const parameterBuffer = builder.allocate('parameters', 'float32', 7);
     const intervals = builder.allocate('intervals', 'float32x2', fleet.rowCount);
     const clipped = builder.allocate('clipped', 'float32x4', fleet.rowCount);
@@ -42,29 +59,73 @@ export default defineOperationRun({
         segments: builder.upload('segments', 'float32x4', fleet.segments)
       },
       update: current => {
-        const minimumX = 0.2 * fleet.worldWidth;
-        const maximumX = current.maximumX * fleet.worldWidth;
+        const {minimumX, maximumX, minimumY, maximumY} = getBox(fleet, current.maximumX);
         parameterBuffer.write(
           Float32Array.of(
             current.minimumTime,
             current.maximumTime,
             minimumX,
-            0.2,
+            minimumY,
             maximumX,
-            0.8,
+            maximumY,
             1000
           )
         );
         rectangle.write(
           Float32Array.of(
-            ...[minimumX, 0.2, maximumX, 0.2],
-            ...[maximumX, 0.2, maximumX, 0.8],
-            ...[maximumX, 0.8, minimumX, 0.8],
-            ...[minimumX, 0.8, minimumX, 0.2]
+            ...[minimumX, minimumY, maximumX, minimumY],
+            ...[maximumX, minimumY, maximumX, maximumY],
+            ...[maximumX, maximumY, minimumX, maximumY],
+            ...[minimumX, maximumY, minimumX, minimumY]
           )
         );
       }
     };
+  },
+  // The pointer is the center of the box: parts of tracks inside it during the window survive.
+  interaction: {
+    kind: 'window',
+    hint: 'move the box',
+    rest: ({toUnit, inputs}) => toUnit(inputs.center),
+    resolve(pointer, {inputs, values}) {
+      const center: [number, number] = [
+        clamp(Math.round(pointer.x * 50) / 50, 0, inputs.worldWidth),
+        clamp(Math.round(pointer.y * 50) / 50, 0.1, 0.9)
+      ];
+      inputs.center = center;
+      const box = getBox(inputs, values.maximumX);
+      let trackCount = 0;
+      for (let track = 0; track < inputs.trackCount; track++) {
+        for (let row = inputs.trackOffsets[track]; row < inputs.trackOffsets[track + 1]; row++) {
+          const x = inputs.positions[row * 2];
+          const y = inputs.positions[row * 2 + 1];
+          const time = inputs.timestamps[row];
+          if (
+            x >= box.minimumX &&
+            x <= box.maximumX &&
+            y >= box.minimumY &&
+            y <= box.maximumY &&
+            time >= values.minimumTime &&
+            time <= values.maximumTime
+          ) {
+            trackCount++;
+            break;
+          }
+        }
+      }
+      return {
+        rerun: true,
+        glyphs: [
+          {
+            shape: 'box',
+            minimum: [box.minimumX, box.minimumY],
+            maximum: [box.maximumX, box.maximumY],
+            dashed: true
+          }
+        ],
+        readout: `box (${center[0].toFixed(2)}, ${center[1].toFixed(2)}) · ${trackCount} tracks inside`
+      };
+    }
   },
   draw: ({inputs, outputs}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},

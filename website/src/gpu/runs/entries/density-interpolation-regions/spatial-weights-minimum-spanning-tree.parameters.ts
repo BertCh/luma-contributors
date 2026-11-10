@@ -15,5 +15,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 1,
     options: ['false', 'true']
   },
-  {id: 'tractRows', label: 'Data: tractRows', min: 5, max: 10, step: 1, default: 7}
+  {id: 'tractRows', label: 'Data: tract window size', min: 5, max: 10, step: 1, default: 7}
 ];

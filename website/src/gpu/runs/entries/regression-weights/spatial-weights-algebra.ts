@@ -7,15 +7,26 @@
 import {GPUSpatialWeightsAlgebra} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createDistanceBandWeights, createKnnWeights, createUniformPoints} from '../../inputs';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {parameters} from './spatial-weights-algebra.parameters';
-import {addLinkSegments, allocateWeights, uploadWeightsBuffers} from './shared/weights';
+import {
+  addLinkSegments,
+  allocateWeights,
+  getRowLinkGlyphs,
+  getSegmentTargets,
+  uploadWeightsBuffers,
+  stretchPoints
+} from './shared/weights';
 
 const OPERATIONS = ['union', 'intersection', 'difference', 'symmetricDifference'] as const;
 
 export default defineOperationRun({
   parameters,
   caption: 'Left (blue) and right (green) weights, and their combination (orange).',
-  createInputs: ({random, world}) => createUniformPoints(random, world, 70, 0.1),
+  createInputs: ({random, world}) => {
+    const points = stretchPoints(createUniformPoints(random, world, 70, 0.1), world);
+    return {...points, index: createPointIndex(points.positions), focus: {row: -1}};
+  },
   build(builder, points, values) {
     const positions = builder.upload('positions', 'float32x2', points.positions);
     const left = uploadWeightsBuffers(
@@ -51,23 +62,47 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer picks a point: its band (ring), its kNN links (dashed) and the combined links it keeps.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a point',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const row = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.focus.row);
+      inputs.focus.row = row;
+      if (row < 0) return {};
+      const from = [inputs.positions[row * 2], inputs.positions[row * 2 + 1]] as const;
+      const kept = getSegmentTargets(peek(outputs.combinedLinks), from);
+      const nearest = getSegmentTargets(peek(outputs.leftLinks), from);
+      const band = getSegmentTargets(peek(outputs.rightLinks), from);
+      return {
+        focus: row,
+        glyphs: [
+          {shape: 'ring', at: from, radius: values.radius, dashed: true},
+          ...getRowLinkGlyphs(from, nearest, {dashed: true, dots: false}),
+          ...getRowLinkGlyphs(from, kept)
+        ],
+        readout: `${OPERATIONS[values.operation]} · kNN ${nearest.length}, band ${band.length} → ${kept.length}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {
       layer: 'lines',
       segments: outputs.combinedLinks,
-      color: [1, 0.55, 0.2, 0.9],
-      radius: 3.2
+      color: [1, 0.55, 0.2, 0.8],
+      radius: 3
     },
     {
       layer: 'lines',
       segments: outputs.leftLinks,
-      color: [0.35, 0.6, 1, 0.9],
+      color: [0.35, 0.6, 1, 0.4],
       radius: 1
     },
     {
       layer: 'lines',
       segments: outputs.rightLinks,
-      color: [0.35, 0.85, 0.5, 0.9],
+      color: [0.35, 0.85, 0.5, 0.4],
       radius: 1
     },
     {layer: 'dots', context: true, positions: outputs.positions, radius: 3}

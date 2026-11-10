@@ -12,16 +12,37 @@ import {
   GPUParameterBuffer
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createQuadZones, getPolygonPort, getQuadFill, uploadQuadZones} from './lib/quads';
+import {createBuiltUpZones} from './lib/built-up-zones';
+import {getPolygonPort, getQuadFill, uploadQuadZones} from './lib/quads';
+import {
+  findZoneAt,
+  getNeighborhoodGlyphs,
+  getNeighborsOf,
+  getZoneNeighbors
+} from './lib/zone-lookup';
 import {createRateDraws, getRateCounts} from './lib/tracts';
 import {parameters} from './rate-cluster-map-recipe.parameters';
+
+const QUADRANTS = ['not significant', 'HH', 'LH', 'LL', 'HL'];
+/** The palette the recipe is given, in the same order: gray, red, light blue, blue, orange. */
+const QUADRANT_COLORS = [
+  [0.78, 0.78, 0.78],
+  [0.84, 0.1, 0.11],
+  [0.67, 0.85, 0.91],
+  [0.17, 0.48, 0.71],
+  [0.99, 0.68, 0.38]
+] as const;
 
 export default defineOperationRun({
   parameters,
   caption: 'Significant high and low rate clusters (local Moran quadrants).',
   createInputs: ({random, world}) => {
-    const zones = createQuadZones(random, world);
-    return {zones, draws: createRateDraws(random, zones.count)};
+    const zones = createBuiltUpZones(random, world);
+    return {
+      zones,
+      neighbors: getZoneNeighbors(zones),
+      draws: createRateDraws(random, zones.count)
+    };
   },
   build(builder, {zones, draws}, values) {
     const events = builder.allocate('events', 'float32', zones.count);
@@ -71,8 +92,24 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['analyze'],
+  // The pointer picks a zone: its rook neighbors, and the local Moran quadrant it fell in.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a zone',
+    rest: ({toUnit, inputs}) =>
+      toUnit([inputs.zones.centers[2 * 70], inputs.zones.centers[2 * 70 + 1]]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const zone = findZoneAt(inputs.zones, pointer.x, pointer.y);
+      const around = getNeighborsOf(inputs.neighbors, zone);
+      const quadrants = peek(outputs.quadrants);
+      return {
+        glyphs: getNeighborhoodGlyphs(inputs.zones, zone, around),
+        readout: `${quadrants ? (QUADRANTS[quadrants[zone]] ?? 'n.s.') : '...'} · alpha ${values.significanceLevel} · ${around.length} neighbors`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
-    getQuadFill(outputs.mesh, inputs.zones, outputs.quadrants),
+    getQuadFill(outputs.mesh, inputs.zones, outputs.quadrants, {categories: QUADRANT_COLORS}),
     {
       layer: 'lines',
       context: true,

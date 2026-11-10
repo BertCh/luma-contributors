@@ -424,3 +424,108 @@ export function addHighWordField(
   });
   return result;
 }
+
+/**
+ * The level (0 to 30) of 64-bit S2 cell ids (`uint32x2`, `(low, high)`) as a float: the lowest set
+ * bit of an id sits at position `2 * (30 - level)`. Empty rows (key 0) read -1.
+ */
+export function addS2Levels(
+  builder: RunBuilder,
+  id: string,
+  cells: RunBuffer<'uint32x2'>
+): RunBuffer<'float32'> {
+  const levels = builder.allocate(`${id}-levels`, 'float32', cells.length);
+  addKernel(builder, {
+    id: `${id}-s2-levels`,
+    invocationCount: cells.length,
+    bindings: [
+      {name: 'cells', buffer: cells, access: 'read'},
+      {name: 'levels', buffer: levels, access: 'read_write'}
+    ],
+    body: `let base = cellsOffset + index * 2u;
+  let low = cells[base];
+  let high = cells[base + 1u];
+  let zeros = select(countTrailingZeros(low), 32u + countTrailingZeros(high), low == 0u);
+  levels[levelsOffset + index] = select(f32(30u - zeros / 2u), -1.0, low == 0u && high == 0u);`
+  });
+  return levels;
+}
+
+/**
+ * The zone each left row was paired with (the first pair that names it), or 0xffffffff when the row
+ * has no pair: lets matched points be colored by zone.
+ */
+export function addPairedRightIds(
+  builder: RunBuilder,
+  id: string,
+  options: {
+    rowCount: number;
+    leftIds: RunBuffer<'uint32'>;
+    rightIds: RunBuffer<'uint32'>;
+    count: RunBuffer<'uint32'>;
+  }
+): RunBuffer<'uint32'> {
+  const zoneIds = builder.allocate(`${id}-paired-ids`, 'uint32', options.rowCount);
+  addKernel(builder, {
+    id: `${id}-paired-ids`,
+    invocationCount: options.rowCount,
+    bindings: [
+      {name: 'leftIds', buffer: options.leftIds, access: 'read'},
+      {name: 'rightIds', buffer: options.rightIds, access: 'read'},
+      {name: 'count', buffer: options.count, access: 'read'},
+      {name: 'zoneIds', buffer: zoneIds, access: 'read_write'}
+    ],
+    body: `var zone = 0xffffffffu;
+  let total = min(count[countOffset], ${options.leftIds.length}u);
+  for (var pair = 0u; pair < total; pair++) {
+    if (leftIds[leftIdsOffset + pair] == index) {
+      zone = rightIds[rightIdsOffset + pair];
+      break;
+    }
+  }
+  zoneIds[zoneIdsOffset + index] = zone;`
+  });
+  return zoneIds;
+}
+
+/**
+ * A `columns` x `rows` raster (row 0 at the top) over a longitude/latitude window: 1 where the cell
+ * center is inside the closed rings given as (x0, y0, x1, y1) segments (even-odd, so holes stay
+ * empty), 1e30 (drawn as invalid) elsewhere. Parked segments far away never cross a ray.
+ */
+export function addSegmentFill(
+  builder: RunBuilder,
+  id: string,
+  segments: RunBuffer<'float32x4'>,
+  window: readonly [number, number, number, number],
+  columns: number,
+  rows: number
+): RunBuffer<'float32'> {
+  const [west, south, east, north] = window;
+  const fill = builder.allocate(`${id}-fill`, 'float32', columns * rows);
+  addKernel(builder, {
+    id: `${id}-segment-fill`,
+    invocationCount: columns * rows,
+    bindings: [
+      {name: 'segments', buffer: segments, access: 'read'},
+      {name: 'fill', buffer: fill, access: 'read_write'}
+    ],
+    body: `let column = index % ${columns}u;
+  let row = index / ${columns}u;
+  let x = ${west} + (f32(column) + 0.5) / ${columns}.0 * ${east - west};
+  let y = ${north} - (f32(row) + 0.5) / ${rows}.0 * ${north - south};
+  var isInside = false;
+  for (var segment = 0u; segment < ${segments.length}u; segment++) {
+    let base = segmentsOffset + segment * 4u;
+    let x0 = segments[base];
+    let y0 = segments[base + 1u];
+    let x1 = segments[base + 2u];
+    let y1 = segments[base + 3u];
+    if ((y0 > y) != (y1 > y) && x < (x1 - x0) * (y - y0) / (y1 - y0) + x0) {
+      isInside = !isInside;
+    }
+  }
+  fill[fillOffset + index] = select(1.0e30, 1.0, isInside);`
+  });
+  return fill;
+}

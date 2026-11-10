@@ -14,6 +14,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 2,
     options: ['gini', 'theilT', 'atkinson', 'hoover']
   },
-  {id: 'epsilon', label: 'epsilon', min: 0.1, max: 4, step: 0.1, default: 1},
-  {id: 'spread', label: 'Data: income spread', min: 0.4, max: 1.8, step: 0.05, default: 1}
+  {id: 'epsilon', label: 'epsilon', min: 0.1, max: 4, step: 0.1, default: 1}
 ];

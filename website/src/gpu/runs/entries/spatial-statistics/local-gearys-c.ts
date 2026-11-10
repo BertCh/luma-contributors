@@ -11,13 +11,19 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {uploadSpatialWeights} from '../../inputs';
-import {createBandGraph, createPointField, mixNoise} from './shared/point-field';
+import {
+  createBandGraph,
+  createPointField,
+  createProbeInputs,
+  mixNoise,
+  probeNeighbors
+} from './shared/point-field';
 import {parameters} from './local-gearys-c.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'Local Geary per point: low where neighbors agree, high where they differ.',
-  createInputs: ({random, world}) => createPointField(random, world, 700, false),
+  createInputs: ({random, world}) => createProbeInputs(createPointField(random, world, 700, 0)),
   build(builder, points, values) {
     const graph = createBandGraph(points.positions, values.radius);
     const valueBuffer = builder.allocate('values', 'float32', points.count);
@@ -39,6 +45,7 @@ export default defineOperationRun({
     return {
       outputs: {
         statistic,
+        graph,
         positions: builder.upload('positions', 'float32x2', points.positions)
       },
       update: current => {
@@ -48,6 +55,24 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['islands', 'radius'],
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a point',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const probe = probeNeighbors(inputs, pointer, outputs.graph.weights, values.radius);
+      if (probe.row < 0) return {};
+      const statistic = peek(outputs.statistic)?.[probe.row];
+      if (probe.neighborCount === 0) {
+        return {glyphs: probe.glyphs, readout: `no neighbors within radius ${values.radius}`};
+      }
+      const meaning = statistic === undefined ? '' : statistic < 1 ? 'agree' : 'differ';
+      return {
+        glyphs: probe.glyphs,
+        readout: `c ${statistic === undefined ? '…' : statistic.toFixed(2)} · ${probe.neighborCount} neighbors ${meaning}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {layer: 'dots', context: true, positions: outputs.positions, radius: 2},
     {
@@ -55,7 +80,7 @@ export default defineOperationRun({
       positions: outputs.positions,
       values: outputs.statistic,
       radius: 4.5,
-      range: [0, 9]
+      range: [0, 4]
     }
   ]
 });

@@ -9,29 +9,44 @@
 import {GPUGeometryValidity} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {
   createFeatureOfVertex,
   createPolygonSet,
+  getShellRows,
   injectDefects,
   uploadPolygonSet
 } from './shared/polygon-set';
+import {findRingCrossings} from './shared/pointer-support';
 import {addFeatureValues, addKernel} from './shared/shape-segments';
 import {parameters} from './geometry-validity.parameters';
 
 const ORIENTATIONS = ['counter-clockwise-shell', 'clockwise-shell', 'ignore'] as const;
+const DEFECT_KINDS = ['bow-tie', 'hole-outside', 'repeated-vertex'] as const;
+const BIT_NAMES: ReadonlyArray<[number, string]> = [
+  [1, 'nonFinite'],
+  [2, 'unclosedRing'],
+  [4, 'shortRing'],
+  [8, 'repeatedVertex'],
+  [16, 'selfIntersection'],
+  [32, 'crossingRings'],
+  [64, 'holeOutsideShell'],
+  [128, 'badOrientation']
+];
 
 export default defineOperationRun({
   parameters,
   caption:
     'Polygon edges colored by validity class: valid, self-intersecting, hole outside, orientation.',
-  createInputs: ({seed, world}) => ({
-    set: createPolygonSet(makeRandom(seed), world, {
+  createInputs: ({seed, world}) => {
+    const set = createPolygonSet(makeRandom(seed), world, {
       hasHoles: true,
       rows: 3,
       columns: 5,
       mixedWinding: true
-    })
-  }),
+    });
+    return {set, index: createPointIndex(set.centers), focus: {feature: -1}};
+  },
   build(builder, {set}, values) {
     const polygons = uploadPolygonSet(builder, set);
     const mask = builder.allocate('mask', 'uint32', set.count);
@@ -78,21 +93,57 @@ export default defineOperationRun({
     return {
       outputs: {
         ...polygons,
+        mask,
         vertexMasks: addFeatureValues(builder, 'class', classes, featureOfVertex)
       },
-      update: current =>
-        polygons.positions.write(
-          injectDefects(set, current.defects, ['bow-tie', 'hole-outside', 'repeated-vertex'])
-        )
+      update: current => polygons.positions.write(injectDefects(set, current.defects, DEFECT_KINDS))
     };
   },
   rebuildOn: ['orientation'],
+  // The pointer picks a polygon; its bitmask is decoded and the crossing is marked.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a polygon',
+    rest: ({inputs, toUnit}) => toUnit([inputs.set.centers[6], inputs.set.centers[7]]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const feature = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.focus.feature);
+      inputs.focus.feature = feature;
+      if (feature < 0) return {};
+      const {set} = inputs;
+      const positions = injectDefects(set, values.defects, DEFECT_KINDS);
+      const {first, count} = getShellRows(set, feature);
+      const bits = peek(outputs.mask)?.[feature];
+      const names =
+        bits === undefined
+          ? ['...']
+          : BIT_NAMES.filter(([bit]) => (bits & bit) !== 0).map(([, name]) => name);
+      return {
+        focus: feature,
+        glyphs: [
+          {
+            shape: 'polyline',
+            points: positions.subarray(first * 2, (first + count) * 2),
+            closed: true
+          },
+          ...findRingCrossings(positions, first, count).map(at => ({shape: 'dot' as const, at}))
+        ],
+        readout: bits === 0 ? 'valid' : names.join(' · ')
+      };
+    }
+  },
   draw: ({outputs}) => [
     {
       layer: 'segments',
       nodes: outputs.positions,
       edges: outputs.edges,
       values: outputs.vertexMasks,
+      categories: [
+        [0.435, 0.545, 0.722],
+        [1, 0.42, 0.42],
+        [0.96, 0.835, 0.28],
+        [0.31, 0.82, 0.77],
+        [0.78, 0.57, 0.92]
+      ],
       radius: 2.4
     }
   ]

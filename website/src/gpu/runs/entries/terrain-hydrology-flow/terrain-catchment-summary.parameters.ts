@@ -7,5 +7,12 @@ import type {GpuSceneParameter} from '../../../types';
 // delineates for it to summarize.
 export const parameters: GpuSceneParameter[] = [
   {id: 'histogramBins', label: 'histogramBins', min: 4, max: 24, step: 2, default: 12},
-  {id: 'pourPointCount', label: 'Data: pourPoints', min: 2, max: 8, step: 1, default: 5}
+  {
+    id: 'pourPointCount',
+    label: 'GPUTerrainWatersheds: pourPoints',
+    min: 2,
+    max: 8,
+    step: 1,
+    default: 6
+  }
 ];

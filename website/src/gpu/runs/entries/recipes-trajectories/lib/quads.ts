@@ -9,8 +9,6 @@ import type {RunBuffer, RunBuilder, PolygonsRunLayer} from '../../../define-run'
 
 export type QuadZones = {
   count: number;
-  columns: number;
-  rows: number;
   /** Four ring vertices per zone (x, y). Also the drawing mesh vertices. */
   positions: Float32Array;
   /** Feature, polygon and ring offsets (one ring per zone). */
@@ -24,8 +22,6 @@ export type QuadZones = {
   outline: Float32Array;
   outlineCount: number;
   centers: Float32Array;
-  /** Smooth spatial field in [0, 1] per zone. */
-  values: Float32Array;
 };
 
 /** Zones tiling the world; `columns * rows` of them with jittered shared corners. */
@@ -49,15 +45,12 @@ export function createQuadZones(
       cornerY[index] = (row + (random() - 0.5) * jitter) * stepY;
     }
   }
-  const phaseX = random() * 6;
-  const phaseY = random() * 6;
   const count = columns * rows;
   const positions = new Float32Array(count * 8);
   const triangleIndices = new Uint32Array(count * 6);
   const triangleOwners = new Uint32Array(count * 2);
   const outline: number[] = [];
   const centers = new Float32Array(count * 2);
-  const values = new Float32Array(count);
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
       const zone = row * columns + column;
@@ -98,18 +91,10 @@ export function createQuadZones(
       triangleOwners[zone * 2 + 1] = zone;
       centers[zone * 2] = sumX;
       centers[zone * 2 + 1] = sumY;
-      const u = sumX / world.height;
-      const v = sumY / world.height;
-      values[zone] = Math.min(
-        1,
-        Math.max(0, 0.5 + 0.3 * Math.sin(u * 3.1 + phaseX) + 0.25 * Math.cos(v * 4.3 + phaseY))
-      );
     }
   }
   return {
     count,
-    columns,
-    rows,
     positions,
     featureOffsets: Uint32Array.from({length: count + 1}, (_, index) => index),
     ringOffsets: Uint32Array.from({length: count + 1}, (_, index) => index * 4),
@@ -118,8 +103,7 @@ export function createQuadZones(
     triangleCount: count * 2,
     outline: Float32Array.from(outline),
     outlineCount: count * 4,
-    centers,
-    values
+    centers
   };
 }
 

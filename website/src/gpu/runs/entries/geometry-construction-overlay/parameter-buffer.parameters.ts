@@ -4,5 +4,5 @@
 import type {GpuSceneParameter} from '../../../types';
 
 export const parameters: GpuSceneParameter[] = [
-  {id: 'tolerance', label: 'tolerance', min: 0, max: 0.05, step: 0.0005, default: 0.02}
+  {id: 'tolerance', label: 'tolerance', min: 0, max: 0.1, step: 0.0005, default: 0.02}
 ];

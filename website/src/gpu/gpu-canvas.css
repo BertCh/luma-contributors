@@ -29,7 +29,15 @@
   transition: opacity 200ms ease;
 }
 
-.gpu-canvas[data-interactive='true']:hover .gpu-canvas-hint {
+.gpu-canvas-hint[data-card] {
+  max-width: calc(100% - 20px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+
+.gpu-canvas[data-interactive='true']:hover .gpu-canvas-hint:not([data-card]) {
   opacity: 0;
 }
 

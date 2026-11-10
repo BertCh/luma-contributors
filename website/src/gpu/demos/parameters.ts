@@ -22,7 +22,7 @@ export const KERNEL_DENSITY_PARAMETERS: GpuSceneParameter[] = [
 export const LOCAL_MORANS_I_PARAMETERS: GpuSceneParameter[] = [
   {id: 'radius', label: 'Neighbor radius', min: 2, max: 9, step: 0.25, default: 5.5, unit: '%'},
   {id: 'significance', label: 'Significance', min: 0.001, max: 0.3, step: 0.001, default: 0.05},
-  {id: 'noise', label: 'Data: noise', min: 0, max: 2, step: 0.05, default: 1.1}
+  {id: 'noise', label: 'Simulated noise', min: 0, max: 200, step: 5, default: 0, unit: 'mm'}
 ];
 
 export const DBSCAN_PARAMETERS: GpuSceneParameter[] = [
@@ -42,7 +42,7 @@ export const IDW_PARAMETERS: GpuSceneParameter[] = [
 
 export const DELAUNAY_VORONOI_PARAMETERS: GpuSceneParameter[] = [
   {id: 'sites', label: 'Data: sites', min: 16, max: 96, step: 16, default: 96},
-  {id: 'wander', label: 'Data: drift', min: 0, max: 8, step: 0.25, default: 3.5, unit: '%'}
+  {id: 'wander', label: 'Simulated site drift', min: 0, max: 8, step: 0.25, default: 0, unit: '%'}
 ];
 
 export const TERRAIN_HYDROLOGY_PARAMETERS: GpuSceneParameter[] = [
@@ -76,5 +76,13 @@ export const SHORTEST_PATH_PARAMETERS: GpuSceneParameter[] = [
 
 export const HOT_SPOTS_PARAMETERS: GpuSceneParameter[] = [
   {id: 'radius', label: 'Neighbor radius', min: 2, max: 9, step: 0.25, default: 5, unit: '%'},
-  {id: 'strength', label: 'Data: pattern', min: 0, max: 2, step: 0.05, default: 1}
+  {
+    id: 'day',
+    label: 'Observation day',
+    min: 0,
+    max: 1,
+    step: 1,
+    default: 1,
+    options: ['Sep 26', 'Sep 27']
+  }
 ];

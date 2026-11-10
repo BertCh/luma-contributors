@@ -7,24 +7,35 @@
 import {GPUMakeValid} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
-import {createPolygonSet, injectDefects, uploadPolygonSet} from './shared/polygon-set';
+import {
+  applyVertexDrag,
+  createPolygonSet,
+  getDraggedShell,
+  injectDefects,
+  uploadPolygonSet
+} from './shared/polygon-set';
+import {
+  carryNearestVertex,
+  chooseHeroVertex,
+  findRingCrossings,
+  getHeroRest
+} from './shared/pointer-support';
 import {addOutputEdges, addRingCategories} from './shared/shape-segments';
 import {createTopologyBuffers} from './shared/topology-output';
+import type {VertexDrag} from './shared/polygon-set';
 import {parameters} from './make-valid.parameters';
+
+const OPTIONS = {rows: 2, columns: 4, vertexCount: 8, irregularity: 0.25, closeRings: true};
 
 export default defineOperationRun({
   parameters,
   caption: 'Bow-tied polygons split into valid rings.',
-  createInputs: ({seed, world}) => ({
-    set: createPolygonSet(makeRandom(seed), world, {
-      rows: 2,
-      columns: 4,
-      vertexCount: 8,
-      irregularity: 0.25,
-      closeRings: true
-    })
-  }),
-  build(builder, {set}) {
+  createInputs: ({seed, world}) => {
+    const set = createPolygonSet(makeRandom(seed), world, OPTIONS);
+    return {seed, world, set, drag: null as VertexDrag | null, hero: chooseHeroVertex(set, 5)};
+  },
+  build(builder, inputs) {
+    const {set} = inputs;
     const polygons = uploadPolygonSet(builder, set);
     const topology = createTopologyBuffers(builder, {segments: 512, rings: 64, vertices: 1024});
     builder.graph.add(
@@ -44,6 +55,7 @@ export default defineOperationRun({
     return {
       outputs: {
         ...polygons,
+        ringOffsets: topology.ringOffsets,
         valid: topology.positions,
         validEdges: addOutputEdges(
           builder,
@@ -59,8 +71,33 @@ export default defineOperationRun({
           topology.vertexCapacity
         )
       },
-      update: values => polygons.positions.write(injectDefects(set, values.defects, ['bow-tie']))
+      update: values => {
+        const next = createPolygonSet(makeRandom(inputs.seed), inputs.world, OPTIONS);
+        applyVertexDrag(next, inputs.drag);
+        inputs.set = next;
+        polygons.positions.write(injectDefects(next, values.defects, ['bow-tie']));
+      }
     };
+  },
+  // The pointer pushes the nearest shell vertex; dragged across the ring it makes a bow-tie.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag a vertex across the ring',
+    rest: ({inputs, toUnit}) => toUnit(getHeroRest(inputs)),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const carried = carryNearestVertex(inputs, pointer, 0, 0.45);
+      const crossings = inputs.drag
+        ? findRingCrossings(getDraggedShell(inputs.set, inputs.drag), 0, OPTIONS.vertexCount)
+        : [];
+      const offsets = peek(outputs.ringOffsets);
+      let ringCount = 0;
+      while (offsets && offsets[ringCount + 1] > offsets[ringCount]) ringCount++;
+      return {
+        rerun: true,
+        glyphs: [...carried.glyphs, ...crossings.map(at => ({shape: 'dot' as const, at}))],
+        readout: `${crossings.length} bow-tie crossings · ${offsets ? ringCount : '...'} valid rings`
+      };
+    }
   },
   draw: ({outputs}) => [
     {layer: 'segments', context: true, nodes: outputs.positions, edges: outputs.edges},

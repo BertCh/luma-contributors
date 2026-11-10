@@ -3,12 +3,13 @@
 
 // A categorical landscape raster with its connected patches, for the landscape recipes.
 
-import {createSmoothField} from '../../../inputs';
+import {getCoverClass} from './land-cover';
 
 export type Landscape = {
   columns: number;
   rows: number;
   classCount: number;
+  cellSizeMeters: number;
   /** Class id per cell. */
   classes: Uint32Array;
   /** Patch id per cell (4-connected components of equal class). */
@@ -18,22 +19,28 @@ export type Landscape = {
   patchCount: number;
 };
 
-/** Classes from thresholds of a smooth field; `frequency` controls how fragmented the patches are. */
+/** Four-connected components of a generalized WorldCover land-cover map. */
 export function createLandscape(
-  random: () => number,
   columns: number,
   rows: number,
-  frequency: number,
+  grain: number,
   classCount = 4
 ): Landscape {
-  const field = createSmoothField(random, 3, Math.max(2, Math.round(frequency)));
+  // Merge land-cover classes into a selectable number of groups. Coarsen the sampling
+  // grain before finding connected components so the same landscape can be inspected at scale.
+  const groupCodes = [50, 80, 10, 30, 60];
   const classes = new Uint32Array(columns * rows);
   for (let cell = 0; cell < classes.length; cell++) {
-    const value = field(
-      ((cell % columns) + 0.5) / columns,
-      (Math.floor(cell / columns) + 0.5) / rows
+    const column = Math.floor((cell % columns) / grain) * grain;
+    const row = Math.floor(Math.floor(cell / columns) / grain) * grain;
+    // The native source window is approximately 4 × 4 km. Center-crop to preserve
+    // square cells at the wider display aspect.
+    const code = getCoverClass(
+      (column + grain / 2) / columns,
+      0.5 + (rows / 2 - row - grain / 2) / columns
     );
-    classes[cell] = Math.min(classCount - 1, Math.floor(value * classCount));
+    const category = groupCodes.indexOf(code);
+    classes[cell] = Math.min(classCount - 1, category < 0 ? groupCodes.length : category);
   }
   const patches = new Uint32Array(columns * rows).fill(0xffffffff);
   const patchClasses: number[] = [];
@@ -68,21 +75,10 @@ export function createLandscape(
     columns,
     rows,
     classCount,
+    cellSizeMeters: 4000 / columns,
     classes,
     patches,
     patchClasses: Uint32Array.from(patchClasses),
     patchCount: patchClasses.length
-  };
-}
-
-/** A small seeded generator, so a rebuild with the same seed makes the same landscape. */
-export function createSeededRandom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let value = state;
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
   };
 }

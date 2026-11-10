@@ -15,5 +15,5 @@ export const parameters: GpuSceneParameter[] = [
     options: ['default (cell)', 'bilinear', 'idw']
   },
   {id: 'cellSize', label: 'grid.cellSize', min: 0.02, max: 0.1, step: 0.01, default: 0.05},
-  {id: 'noise', label: 'Data: jitter', min: 0, max: 0.03, step: 0.002, default: 0.004}
+  {id: 'noise', label: 'Data: jitter', min: 0, max: 0.03, step: 0.002, default: 0}
 ];

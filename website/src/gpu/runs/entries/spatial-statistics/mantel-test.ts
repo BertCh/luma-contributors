@@ -2,23 +2,37 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUMantelTest: correlation between spatial closeness and time difference over event pairs. The
-// dots on the left are the statistic of each shuffle (the reference distribution); the bars are
-// the GPU summary, whose first bar is the observed statistic. Events are colored by time.
+// bars are a histogram of the statistic of each shuffle (the reference distribution) with the
+// observed statistic marked on it (solid line) and the shuffled mean (dashed). Events are colored by
+// time; hovering one links it to its spatial neighbors, solid when also within a week in time.
 
 import {
   getGPUSpaceTimeParameterValues,
   GPUMantelTest,
   GPU_SPACE_TIME_PARAMETER_LENGTH,
+  GPU_SPACE_TIME_SUMMARY,
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {uploadSpatialWeights} from '../../inputs';
-import {createBandGraph, createSpaceTimeEvents, getEventTimes} from './shared/point-field';
+import {drawReferenceHistogram} from './shared/permutation-chart';
+import {
+  createBandGraph,
+  createSpaceTimeEvents,
+  createTimedNeighborGlyphs,
+  getEventTimes,
+  pickProbeRow
+} from './shared/point-field';
 import {parameters} from './mantel-test.parameters';
+
+const MAXIMUM_PERMUTATIONS = 499;
+const HISTOGRAM_BINS = 24;
+const CHART = [0.08, 0.04, 0.92, 0.22] as const;
+const TIME_WINDOW = 7;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Mantel test: spatial closeness against time difference, with the shuffled reference.',
+  caption: 'Space and time differences among Kīlauea earthquakes, with a shuffled reference.',
   createInputs: ({random, world}) => createSpaceTimeEvents(random, world),
   build(builder, events, values) {
     const graph = createBandGraph(events.positions, values.radius);
@@ -28,14 +42,14 @@ export default defineOperationRun({
       'uint32',
       GPU_SPACE_TIME_PARAMETER_LENGTH
     );
-    const statistics = builder.allocate('statistics', 'float32', values.permutationCount + 1);
+    const statistics = builder.allocate('statistics', 'float32', MAXIMUM_PERMUTATIONS + 1);
     const summary = builder.allocate('summary', 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
     builder.graph.add(
       new GPUMantelTest({
         pairs: uploadSpatialWeights(builder, graph.weights),
         times: times.view,
         parameters: parameterBuffer.view,
-        maximumPermutations: values.permutationCount,
+        maximumPermutations: MAXIMUM_PERMUTATIONS,
         output: {statistics: statistics.view, summary: summary.view}
       })
     );
@@ -44,12 +58,9 @@ export default defineOperationRun({
         times,
         statistics,
         summary,
-        indices: builder.upload(
-          'indices',
-          'float32',
-          Float32Array.from({length: values.permutationCount + 1}, (_, index) => index)
-        ),
-        positions: builder.upload('positions', 'float32x2', events.positions)
+        graph,
+        bins: builder.allocate('bins', 'float32', HISTOGRAM_BINS),
+        positions: builder.upload('positions', 'float32x2', events.drawnPositions)
       },
       update: current => {
         times.write(getEventTimes(events, current.clustering));
@@ -62,8 +73,43 @@ export default defineOperationRun({
       }
     };
   },
-  rebuildOn: ['radius', 'permutationCount'],
-  draw: ({outputs, values}) => [
+  rebuildOn: ['radius'],
+  interaction: {
+    kind: 'probe',
+    hint: 'hover an event',
+    rest: [0.5, 0.4],
+    resolve(pointer, {inputs, outputs, values, world, peek}) {
+      const summary = peek(outputs.summary);
+      const observed = summary?.[GPU_SPACE_TIME_SUMMARY.observed] ?? NaN;
+      const {glyphs: chartGlyphs} = drawReferenceHistogram({
+        histogram: outputs.bins,
+        samples: peek(outputs.statistics),
+        start: 1,
+        sampleCount: values.permutationCount,
+        observed,
+        rectangle: CHART,
+        world
+      });
+      const pseudoP = summary?.[GPU_SPACE_TIME_SUMMARY.pseudoPGreater];
+      const summaryText = `Mantel r ${Number.isFinite(observed) ? observed.toFixed(2) : '…'} · p ${
+        pseudoP === undefined ? '…' : pseudoP.toFixed(3)
+      }`;
+      const row = pickProbeRow(inputs, pointer);
+      if (row < 0) return {glyphs: chartGlyphs, readout: summaryText};
+      const probe = createTimedNeighborGlyphs(
+        inputs.drawnPositions,
+        outputs.graph.weights,
+        row,
+        getEventTimes(inputs, values.clustering),
+        TIME_WINDOW
+      );
+      return {
+        glyphs: [...chartGlyphs, ...probe.glyphs],
+        readout: `${probe.neighborCount} neighbors within ${values.radius} km, mean Δ ${probe.meanDifference.toFixed(1)} days · ${summaryText}`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     {
       layer: 'dots',
       positions: outputs.positions,
@@ -73,22 +119,11 @@ export default defineOperationRun({
     },
     {
       layer: 'chart',
-      kind: 'scatter',
-      values: outputs.statistics,
-      xValues: outputs.indices,
-      xRange: [0, values.permutationCount],
-      color: [0.4, 0.68, 1, 0.8],
-      radius: 2,
-      range: [-0.05, 0.1],
-      rectangle: [0.04, 0.04, 0.62, 0.32]
-    },
-    {
-      layer: 'chart',
       kind: 'bars',
-      values: outputs.summary,
-      ramp: 'diverging',
-      range: [-0.05, 0.1],
-      rectangle: [0.7, 0.04, 0.96, 0.32]
+      values: outputs.bins,
+      range: [0, 1],
+      rectangle: CHART,
+      color: [...theme.categories[0], 0.9]
     }
   ]
 });

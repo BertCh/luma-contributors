@@ -14,6 +14,6 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['undefined', 'own-rate']
   },
-  {id: 'islandCount', label: 'Data: islandCount', min: 0, max: 60, step: 4, default: 24},
+  {id: 'islandCount', label: 'islandCount', min: 0, max: 60, step: 4, default: 24},
   {id: 'smallShare', label: 'Data: smallTractShare', min: 0, max: 0.8, step: 0.05, default: 0.4}
 ];

@@ -10,8 +10,9 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
+import {clamp} from '../../interaction';
 import {createPolygonSet, createRingOfVertex, uploadPolygonSet} from './shared/polygon-set';
-import {addKernel} from './shared/shape-segments';
+import {addKernel, addRingArrows} from './shared/shape-segments';
 import {parameters} from './geometry-orientation.parameters';
 
 export default defineOperationRun({
@@ -55,7 +56,26 @@ export default defineOperationRun({
       body: 'flags[flagsOffset + index] = rings[ringsOffset + ringOfVertex[ringOfVertexOffset + index]];'
     });
     return {
-      outputs: {...polygons, oriented, reversedVertices},
+      outputs: {
+        ...polygons,
+        oriented,
+        reversedRings,
+        reversedVertices,
+        inputArrows: addRingArrows(
+          builder,
+          'input',
+          polygons.positions,
+          polygons.ringOffsets,
+          ringCount
+        ),
+        orientedArrows: addRingArrows(
+          builder,
+          'oriented',
+          oriented,
+          polygons.ringOffsets,
+          ringCount
+        )
+      },
       update: values =>
         parameterBuffer.write(
           getGPUGeometryOrientationParameterValues({
@@ -64,14 +84,58 @@ export default defineOperationRun({
         )
     };
   },
-  draw: ({inputs, outputs}) => [
-    {layer: 'lines', context: true, segments: outputs.outline, count: inputs.set.outlineCount},
-    {
-      layer: 'segments',
-      nodes: outputs.oriented,
-      edges: outputs.edges,
-      values: outputs.reversedVertices,
-      radius: 2.4
+  // The curtain splits the picture: the input rings and their winding to the left, the oriented output to the right.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe input to output',
+    rest: [0.5, 0.5],
+    resolve(pointer, {world, outputs, values, peek}) {
+      const curtain = clamp(pointer.x, 0, world.width);
+      const reversed = peek(outputs.reversedRings);
+      let reversedCount = 0;
+      if (reversed) for (const flag of reversed) reversedCount += flag;
+      return {
+        curtain,
+        glyphs: [{shape: 'curtain', x: curtain}],
+        readout: `exteriorClockwise ${values.exteriorClockwise === 1} · ${reversed ? reversedCount : '...'} rings reversed`
+      };
     }
-  ]
+  },
+  draw: ({inputs, outputs, interaction, world}) => {
+    const curtain = interaction.curtain ?? world.width / 2;
+    return [
+      {
+        layer: 'lines',
+        context: true,
+        segments: outputs.outline,
+        count: inputs.set.outlineCount,
+        radius: 1.4,
+        clip: {side: 'left', x: curtain}
+      },
+      {
+        layer: 'lines',
+        context: true,
+        segments: outputs.inputArrows,
+        clip: {side: 'left', x: curtain}
+      },
+      {
+        layer: 'segments',
+        nodes: outputs.oriented,
+        edges: outputs.edges,
+        values: outputs.reversedVertices,
+        categories: [
+          [0.45, 0.55, 0.72],
+          [1, 0.55, 0.25]
+        ],
+        radius: 2.4,
+        clip: {side: 'right', x: curtain}
+      },
+      {
+        layer: 'lines',
+        segments: outputs.orientedArrows,
+        radius: 1.6,
+        clip: {side: 'right', x: curtain}
+      }
+    ];
+  }
 });

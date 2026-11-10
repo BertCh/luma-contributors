@@ -3,34 +3,33 @@
 
 // addSpatialRegressionRecipe: OLS, diagnostics, residual local Moran and geographically weighted
 // fits chained on tracts. Fill is the local R-squared of the weighted fit; dots are the OLS
-// residuals (clusters of one color mean the errors are spatially dependent).
+// residuals of an illustrative response to two observed Chicago tract covariates.
 
 import {
   addSpatialRegressionRecipe,
   getGPUGeographicallyWeightedRegressionParameterValues,
-  getGPUSpatialAutocorrelationParameterValues,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPUParameterBuffer
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createTracts} from '../../inputs';
+import {findParameter, snapToParameter} from '../../interaction';
+import {createRegressionInputs, createResponse} from '../regression-weights/shared/regression';
 import {getTractFill, uploadTractMesh} from './lib/tracts';
+import {findZoneAt, getTractGeometry} from './lib/zone-lookup';
 import {parameters} from './spatial-regression-recipe.parameters';
 
 const PREDICTOR_COUNT = 2;
 const LADDER_CAPACITY = 4;
+/** The tract near the middle of the map that anchors the kernel ring. */
+const ANCHOR_TRACT = 50;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Local fit quality (fill) and OLS residuals (dots).',
-  createInputs: ({random, world}) => {
-    const tracts = createTracts(random, world, 11);
-    const draw = () => Float32Array.from({length: tracts.count}, () => random() * 2 - 1);
-    return {tracts, world, firstPredictor: draw(), secondPredictor: draw(), noise: draw()};
-  },
+  caption: 'Local fit quality of a modeled response on Chicago census tracts, by kernel bandwidth.',
+  createInputs: ({random, world}) => createRegressionInputs(random, world, 11, 1),
   build(builder, inputs, values) {
-    const {tracts} = inputs;
-    const predictors = builder.allocate('predictors', 'float32', tracts.count * PREDICTOR_COUNT);
+    const {tracts, weights} = inputs;
+    const predictors = builder.upload('predictors', 'float32', inputs.predictors);
     const response = builder.allocate('response', 'float32', tracts.count);
     const residuals = builder.allocate('residuals', 'float32', tracts.count);
     const coefficients = builder.allocate('coefficients', 'float32', PREDICTOR_COUNT + 1);
@@ -41,38 +40,28 @@ export default defineOperationRun({
       tracts.count * (PREDICTOR_COUNT + 1)
     );
     const localR2 = builder.allocate('local-r2', 'float32', tracts.count);
-    // Row-standardized contiguity weights.
-    const rowWeights = new Float32Array(tracts.contiguity.neighbors.length);
-    for (let row = 0; row < tracts.count; row++) {
-      const first = tracts.contiguity.offsets[row];
-      const last = tracts.contiguity.offsets[row + 1];
-      rowWeights.fill(1 / Math.max(1, last - first), first, last);
-    }
     const ladder = (scale: number) => [0.6 * scale, scale, 1.6 * scale];
     const gwrValues = getGPUGeographicallyWeightedRegressionParameterValues(
       {kernel: 'bisquare', bandwidthMode: 'fixed', bandwidths: ladder(values.bandwidth)},
       LADDER_CAPACITY
     );
     const gwrParameters = builder.allocate('gwr-parameters', 'float32', gwrValues.length);
-    const autocorrelation = builder.allocate(
-      'autocorrelation',
-      'float32',
-      GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
-    );
     addSpatialRegressionRecipe(builder.graph, {
       predictors: predictors.view,
       response: response.view,
       predictorCount: PREDICTOR_COUNT,
       weights: {
-        offsets: builder.upload('weights-offsets', 'uint32', tracts.contiguity.offsets).view,
-        neighbors: builder.upload('weights-neighbors', 'uint32', tracts.contiguity.neighbors).view,
-        weights: builder.upload('weights-values', 'float32', rowWeights).view
+        offsets: builder.upload('weights-offsets', 'uint32', weights.offsets).view,
+        neighbors: builder.upload('weights-neighbors', 'uint32', weights.neighbors).view,
+        weights: builder.upload('weights-values', 'float32', weights.weights).view
       },
-      parameters: new GPUParameterBuffer(builder.device, {
-        id: 'regression-parameters',
-        format: 'float32',
-        length: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
-      }),
+      parameters: builder.own(
+        new GPUParameterBuffer(builder.device, {
+          id: 'regression-parameters',
+          format: 'float32',
+          length: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+        })
+      ),
       outputs: {
         ols: {
           coefficients: coefficients.view,
@@ -88,36 +77,18 @@ export default defineOperationRun({
       }
     });
     return {
-      outputs: {localR2, residuals, mesh: uploadTractMesh(builder, tracts)},
+      outputs: {localR2, mesh: uploadTractMesh(builder, tracts)},
       update: current => {
-        const rows = tracts.count;
-        const stacked = new Float32Array(rows * PREDICTOR_COUNT);
-        const responses = new Float32Array(rows);
-        // Errors smoothed over the contiguity graph, so they are spatially dependent.
-        let errors = Float32Array.from(inputs.noise);
-        for (let pass = 0; pass < 4; pass++) {
-          errors = Float32Array.from(inputs.noise, (own, row) => {
-            let sum = 0;
-            const first = tracts.contiguity.offsets[row];
-            const last = tracts.contiguity.offsets[row + 1];
-            for (let slot = first; slot < last; slot++)
-              sum += errors[tracts.contiguity.neighbors[slot]];
-            return (
-              own * (1 - current.dependence) +
-              (current.dependence * sum) / Math.max(1, last - first)
-            );
-          });
-        }
-        for (let row = 0; row < rows; row++) {
-          const x = tracts.centers[row * 2] / inputs.world.width;
-          stacked[row * 2] = 3 + 4 * inputs.firstPredictor[row];
-          stacked[row * 2 + 1] = inputs.secondPredictor[row];
-          const slope = 2 + current.variation * (x - 0.5) * 3;
-          responses[row] = 1 + slope * stacked[row * 2] - stacked[row * 2 + 1] + errors[row] * 8;
-        }
-        predictors.write(stacked);
-        response.write(responses);
-        autocorrelation.write(getGPUSpatialAutocorrelationParameterValues());
+        response.write(
+          createResponse(inputs, {
+            noise: 0.3,
+            errorLambda: current.dependence,
+            coefficients: tract => {
+              const east = tracts.centers[tract * 2] / inputs.mapWidth;
+              return [1, 2 + current.variation * (east - 0.5) * 3, -1.5];
+            }
+          })
+        );
         gwrParameters.write(
           getGPUGeographicallyWeightedRegressionParameterValues(
             {kernel: 'bisquare', bandwidthMode: 'fixed', bandwidths: ladder(current.bandwidth)},
@@ -127,20 +98,44 @@ export default defineOperationRun({
       }
     };
   },
+  // The distance from the anchor tract to the pointer is the kernel bandwidth: the ring is its reach.
+  interaction: {
+    kind: 'reach',
+    hint: 'stretch the kernel',
+    rest: ({toUnit, inputs}) =>
+      toUnit([
+        inputs.tracts.centers[ANCHOR_TRACT * 2] + parameters[0].default,
+        inputs.tracts.centers[ANCHOR_TRACT * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const anchor: [number, number] = [
+        inputs.tracts.centers[ANCHOR_TRACT * 2],
+        inputs.tracts.centers[ANCHOR_TRACT * 2 + 1]
+      ];
+      const bandwidth = snapToParameter(
+        findParameter(parameters, 'bandwidth'),
+        Math.hypot(pointer.x - anchor[0], pointer.y - anchor[1])
+      );
+      const localR2 = peek(outputs.localR2);
+      const tract = findZoneAt(getTractGeometry(inputs.tracts), anchor[0], anchor[1]);
+      return {
+        values: {bandwidth},
+        glyphs: [
+          {shape: 'ring', at: anchor, radius: bandwidth},
+          {shape: 'ring', at: anchor, radius: bandwidth * 1.6, dashed: true},
+          {shape: 'dot', at: anchor}
+        ],
+        readout: `bandwidth ${bandwidth.toFixed(2)} · local R2 ${localR2 ? localR2[tract].toFixed(2) : '...'}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
-    getTractFill(outputs.mesh, inputs.tracts, outputs.localR2),
+    getTractFill(outputs.mesh, inputs.tracts, outputs.localR2, {range: [0, 1]}),
     {
       layer: 'lines',
       context: true,
       segments: outputs.mesh.outline,
       count: inputs.tracts.outlineCount
-    },
-    {
-      layer: 'dots',
-      positions: outputs.mesh.centers,
-      values: outputs.residuals,
-      ramp: 'diverging',
-      radius: 4
     }
   ]
 });

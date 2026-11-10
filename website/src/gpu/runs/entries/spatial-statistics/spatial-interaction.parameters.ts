@@ -11,9 +11,8 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 3,
     step: 1,
-    default: 3,
+    default: 1,
     options: ['unconstrained', 'origin', 'destination', 'doubly']
   },
-  {id: 'distanceDecay', label: 'Data: distanceDecay', min: 0.5, max: 3, step: 0.1, default: 1.5},
-  {id: 'noise', label: 'Data: noise', min: 0, max: 1, step: 0.05, default: 0.3}
+  {id: 'decayScale', label: 'Coefficient search scale', min: 0.2, max: 3, step: 0.2, default: 1}
 ];

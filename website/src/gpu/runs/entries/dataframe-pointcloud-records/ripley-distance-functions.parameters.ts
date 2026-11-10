@@ -24,5 +24,5 @@ export const parameters: GpuSceneParameter[] = [
     options: ['none', 'border', 'kaplan-meier', 'hanisch']
   },
   {id: 'radiusCount', label: 'radiusCount', min: 8, max: 40, step: 4, default: 24},
-  {id: 'clustering', label: 'Data: clustering', min: 0, max: 1, step: 0.05, default: 0.5}
+  {id: 'clustering', label: 'Data: observed flash share', min: 0, max: 1, step: 0.05, default: 1}
 ];

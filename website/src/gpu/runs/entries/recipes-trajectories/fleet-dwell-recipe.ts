@@ -9,9 +9,14 @@ import {
   getGPUTrajectoryMetricsParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
 import {createFleet} from './lib/fleet';
 import {
+  chooseZoneCenters,
   createZoneRectangles,
+  dragNearestZone,
+  getZoneHalfSize,
+  type ZoneCenter,
   createZoneTriangles,
   ZONE_COUNT,
   ZONE_FEATURE_OFFSETS,
@@ -25,16 +30,13 @@ const STOP_CAPACITY = 128;
 export default defineOperationRun({
   parameters,
   caption: 'Stops per zone: total dwell time fills each zone.',
-  createInputs: ({random, world}) => ({
-    fleet: createFleet(random, world, {
-      trackCount: 18,
-      stops: true,
-      minimumFixes: 26,
-      maximumFixes: 40
-    }),
-    world
-  }),
-  build(builder, {fleet}) {
+  createInputs: ({world}) => {
+    const fleet = createFleet(world, {trackCount: 18, minimumFixes: 26, maximumFixes: 40});
+    const homes = chooseZoneCenters(fleet);
+    return {fleet, world, homes, centers: homes as readonly ZoneCenter[]};
+  },
+  build(builder, inputs) {
+    const {fleet} = inputs;
     const parameterBuffer = builder.allocate('parameters', 'float32', 4);
     const zonePositions = builder.allocate('zone-positions', 'float32x2', ZONE_COUNT * 4);
     const zoneOutline = builder.allocate('zone-outline', 'float32x4', ZONE_COUNT * 4);
@@ -76,7 +78,7 @@ export default defineOperationRun({
         segments: builder.upload('segments', 'float32x4', fleet.segments)
       },
       update: current => {
-        const zones = createZoneRectangles({width: fleet.worldWidth, height: 1}, current.zoneSize);
+        const zones = createZoneRectangles(inputs.world, current.zoneSize, inputs.centers);
         zonePositions.write(zones.positions);
         zoneOutline.write(zones.outline);
         parameterBuffer.write(
@@ -87,6 +89,49 @@ export default defineOperationRun({
         );
       }
     };
+  },
+  // The pointer carries the nearest zone: stops that fall inside it add to its dwell fill.
+  interaction: {
+    kind: 'drag',
+    hint: 'move a zone',
+    rest: ({toUnit, inputs}) => toUnit(inputs.homes[0]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const {centers, zone} = dragNearestZone(inputs.homes, pointer);
+      inputs.centers = centers;
+      const [halfWidth, halfHeight] = getZoneHalfSize(inputs.world, values.zoneSize);
+      const [centerX, centerY] = centers[zone];
+      const totals = peek(outputs.zoneTotals);
+      const centroids = peek(outputs.centroids);
+      const durations = peek(outputs.durations);
+      const glyphs: RunGlyph[] = [
+        {
+          shape: 'box',
+          minimum: [centerX - halfWidth, centerY - halfHeight],
+          maximum: [centerX + halfWidth, centerY + halfHeight]
+        }
+      ];
+      let stopCount = 0;
+      if (centroids && durations) {
+        for (let stop = 0; stop < durations.length; stop++) {
+          const x = centroids[stop * 2];
+          const y = centroids[stop * 2 + 1];
+          if (
+            durations[stop] > 0 &&
+            Math.abs(x - centerX) <= halfWidth &&
+            Math.abs(y - centerY) <= halfHeight
+          ) {
+            stopCount++;
+            glyphs.push({shape: 'dot', at: [x, y]});
+          }
+        }
+      }
+      const dwell = totals ? Math.round(totals[zone]) : 0;
+      return {
+        rerun: true,
+        glyphs,
+        readout: `zone ${'ABC'[zone]} · ${stopCount} stops · dwell ${dwell} s`
+      };
+    }
   },
   draw: ({inputs, outputs}) => [
     {

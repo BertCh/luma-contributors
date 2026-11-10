@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // Shared pieces of the weights runs: output CSR buffers, a kernel that turns a CSR into drawable
-// link segments, and a seeded layout of quadrilateral tiles.
+// link segments, and a tract boundaries with controlled registration errors.
 
 import type {
   GPUChunkedSpatialWeights,
@@ -10,7 +10,8 @@ import type {
   GPUSpatialWeightsOutput
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {RunBuffer, RunBuilder, RunLayer} from '../../../define-run';
-import type {CsrWeights} from '../../../inputs';
+import {createTracts, type CsrWeights} from '../../../inputs';
+import type {Point, RunGlyph, RunPeek} from '../../../interaction';
 import {addKernelPass} from './kernel';
 
 /** A CSR the operation writes, with every buffer kept for drawing. */
@@ -182,85 +183,46 @@ export type TileLayout = {
   outline: Float32Array;
 };
 
-/**
- * A jittered grid of closed quadrilaterals. Neighboring tiles share corner vertices exactly,
- * unless `gap` shrinks each tile toward its center, which opens slivers between them. A share of
- * tiles (`skippedShare`) is left out.
- */
-export function createQuadTiles(
+/** Apply a uniform contraction about each Census tract center to model digitization slivers. */
+export function createTractTiles(
   random: () => number,
   world: {width: number; height: number},
-  columns: number,
-  rows: number,
-  gap = 0,
-  skippedShare = 0
+  inset: number
 ): TileLayout {
-  const stepX = (world.width * 0.9) / columns;
-  const stepY = (world.height * 0.9) / rows;
-  const originX = world.width * 0.05;
-  const originY = world.height * 0.05;
-  const corners: [number, number][] = [];
-  for (let row = 0; row <= rows; row++) {
-    for (let column = 0; column <= columns; column++) {
-      const isBorder = row === 0 || column === 0 || row === rows || column === columns;
-      const jitter = isBorder ? 0.08 : 0.3;
-      corners.push([
-        originX + (column + (random() - 0.5) * jitter) * stepX,
-        originY + (row + (random() - 0.5) * jitter) * stepY
-      ]);
-    }
-  }
-  const kept: number[] = [];
-  for (let tile = 0; tile < columns * rows; tile++) {
-    if (random() >= skippedShare) kept.push(tile);
-  }
-  const positionList: number[] = [];
-  const centerList: number[] = [];
-  const indexList: number[] = [];
-  const ownerList: number[] = [];
+  const tracts = createTracts(random, world, 6);
+  const positions: number[] = [];
+  const meshVertices = tracts.vertices.slice();
   const outline: number[] = [];
-  const meshVertices: number[] = [];
   const ringOffsets = [0];
-  kept.forEach((tile, owner) => {
-    const row = Math.floor(tile / columns);
-    const column = tile % columns;
-    const ring = [
-      corners[row * (columns + 1) + column],
-      corners[row * (columns + 1) + column + 1],
-      corners[(row + 1) * (columns + 1) + column + 1],
-      corners[(row + 1) * (columns + 1) + column]
-    ];
-    const centerX = ring.reduce((sum, corner) => sum + corner[0], 0) / 4;
-    const centerY = ring.reduce((sum, corner) => sum + corner[1], 0) / 4;
-    const shrunk = ring.map(([x, y]): [number, number] => {
-      const length = Math.hypot(x - centerX, y - centerY) || 1;
-      const factor = Math.max(0, 1 - gap / length);
-      return [centerX + (x - centerX) * factor, centerY + (y - centerY) * factor];
-    });
-    for (const [x, y] of [...shrunk, shrunk[0]]) positionList.push(x, y);
-    ringOffsets.push(positionList.length / 2);
-    centerList.push(centerX, centerY);
-    const base = meshVertices.length / 2;
-    for (const [x, y] of shrunk) meshVertices.push(x, y);
-    indexList.push(base, base + 1, base + 2, base, base + 2, base + 3);
-    ownerList.push(owner, owner);
-    for (let side = 0; side < 4; side++) {
-      const from = shrunk[side];
-      const to = shrunk[(side + 1) % 4];
-      outline.push(from[0], from[1], to[0], to[1]);
+  for (let tract = 0; tract < tracts.count; tract++) {
+    const start = tracts.ringOffsets[tract];
+    const end = tracts.ringOffsets[tract + 1];
+    const centerX = tracts.centers[tract * 2];
+    const centerY = tracts.centers[tract * 2 + 1];
+    for (let vertex = start; vertex < end; vertex++) {
+      meshVertices[vertex * 2] += (centerX - meshVertices[vertex * 2]) * inset;
+      meshVertices[vertex * 2 + 1] += (centerY - meshVertices[vertex * 2 + 1]) * inset;
     }
-  });
-  const count = kept.length;
+    for (let vertex = start; vertex < end; vertex++) {
+      const next = vertex + 1 === end ? start : vertex + 1;
+      const x = meshVertices[vertex * 2];
+      const y = meshVertices[vertex * 2 + 1];
+      positions.push(x, y);
+      outline.push(x, y, meshVertices[next * 2], meshVertices[next * 2 + 1]);
+    }
+    positions.push(meshVertices[start * 2], meshVertices[start * 2 + 1]);
+    ringOffsets.push(positions.length / 2);
+  }
   return {
-    count,
-    positions: Float32Array.from(positionList),
+    count: tracts.count,
+    positions: Float32Array.from(positions),
     ringOffsets: Uint32Array.from(ringOffsets),
-    polygonOffsets: Uint32Array.from({length: count + 1}, (_, index) => index),
-    featureOffsets: Uint32Array.from({length: count + 1}, (_, index) => index),
-    centers: Float32Array.from(centerList),
-    meshVertices: Float32Array.from(meshVertices),
-    triangleIndices: Uint32Array.from(indexList),
-    triangleOwners: Uint32Array.from(ownerList),
+    polygonOffsets: Uint32Array.from({length: tracts.count + 1}, (_, row) => row),
+    featureOffsets: Uint32Array.from({length: tracts.count + 1}, (_, row) => row),
+    centers: tracts.centers,
+    meshVertices,
+    triangleIndices: tracts.triangleIndices,
+    triangleOwners: tracts.triangleOwners,
     outline: Float32Array.from(outline)
   };
 }
@@ -369,7 +331,7 @@ export function uploadWeightsBuffers(
 export function addLogCounts(
   builder: RunBuilder,
   id: string,
-  counts: RunBuffer<'uint32'>
+  counts: RunBuffer<'uint32'> | RunBuffer<'float32'>
 ): RunBuffer<'float32'> {
   const logged = builder.allocate(`${id}-log-counts`, 'float32', counts.length);
   addKernelPass(builder, {
@@ -448,4 +410,116 @@ export function sortPointsByX(positions: Float32Array, values: Float32Array) {
     ),
     values: Float32Array.from(order, index => values[index])
   };
+}
+
+/** The neighbor ids of one row of a CSR the operation wrote, or null until its readback arrives. */
+export function peekRow(
+  peek: RunPeek,
+  weights: Pick<WeightsBuffers, 'offsets' | 'neighbors'>,
+  row: number
+): Uint32Array | null {
+  const offsets = peek(weights.offsets);
+  const neighbors = peek(weights.neighbors);
+  if (!offsets || !neighbors || row < 0 || row + 1 >= offsets.length) return null;
+  return (neighbors as Uint32Array).subarray(offsets[row], offsets[row + 1]);
+}
+
+/** Link lines from a focus row to its neighbors, with a dot on each neighbor. */
+export function getRowLinkGlyphs(
+  from: Point,
+  targets: readonly Point[],
+  options: {dashed?: boolean; dots?: boolean} = {}
+): RunGlyph[] {
+  return targets.flatMap(to => [
+    {shape: 'line' as const, from, to, dashed: options.dashed},
+    ...(options.dots === false ? [] : [{shape: 'dot' as const, at: to}])
+  ]);
+}
+
+/** The positions of the given rows out of packed (x, y) pairs. */
+export function getRowPositions(positions: ArrayLike<number>, rows: ArrayLike<number>): Point[] {
+  return Array.from(rows, row => [positions[row * 2], positions[row * 2 + 1]] as const);
+}
+
+/** The ring of one polygon row as a closed outline glyph (rings in packed (x, y) pairs). */
+export function getRingGlyph(
+  positions: Float32Array,
+  ringOffsets: Uint32Array,
+  row: number,
+  dashed = false
+): RunGlyph {
+  return {
+    shape: 'polyline',
+    points: positions.subarray(ringOffsets[row] * 2, ringOffsets[row + 1] * 2),
+    closed: true,
+    dashed
+  };
+}
+
+/** The far ends of the link segments (x0, y0, x1, y1) that start at `from`, or end there. */
+export function getSegmentTargets(
+  segments: ArrayLike<number> | null,
+  from: Point,
+  end: 'start' | 'end' = 'start'
+): Point[] {
+  const targets: Point[] = [];
+  if (!segments) return targets;
+  const near = end === 'start' ? 0 : 2;
+  const far = 2 - near;
+  for (let slot = 0; slot + 3 < segments.length; slot += 4) {
+    if (segments[slot + near] === from[0] && segments[slot + near + 1] === from[1]) {
+      targets.push([segments[slot + far], segments[slot + far + 1]]);
+    }
+  }
+  return targets;
+}
+
+/** Vertical rules (one float32x4 segment each) between chunks of x-sorted rows, for a `lines` layer. */
+export function uploadChunkBoundaries(
+  builder: RunBuilder,
+  positions: Float32Array,
+  chunkStarts: readonly number[]
+): RunBuffer<'float32x4'> {
+  const rules = chunkStarts.slice(1).flatMap(start => {
+    const x = (positions[start * 2 - 2] + positions[start * 2]) / 2;
+    return [x, 0, x, 1];
+  });
+  return builder.upload('chunk-boundaries', 'float32x4', Float32Array.of(...rules, 0, 0, 0, 0));
+}
+
+/** One-based chunk of a row, given the first row of every chunk. */
+export function getChunkNumber(chunkStarts: readonly number[], row: number): number {
+  return chunkStarts.filter(start => start <= row).length;
+}
+
+/** Rescales points so they fill the drawing world (with a margin), keeping their layout. */
+export function stretchToWorld(
+  positions: Float32Array,
+  world: {width: number; height: number},
+  margin = 0.06
+): Float32Array {
+  let minimumX = Infinity;
+  let maximumX = -Infinity;
+  let minimumY = Infinity;
+  let maximumY = -Infinity;
+  for (let index = 0; index < positions.length; index += 2) {
+    minimumX = Math.min(minimumX, positions[index]);
+    maximumX = Math.max(maximumX, positions[index]);
+    minimumY = Math.min(minimumY, positions[index + 1]);
+    maximumY = Math.max(maximumY, positions[index + 1]);
+  }
+  const scaleX = (world.width - 2 * margin) / Math.max(maximumX - minimumX, 1e-9);
+  const scaleY = (world.height - 2 * margin) / Math.max(maximumY - minimumY, 1e-9);
+  return Float32Array.from(positions, (value, index) =>
+    index % 2 === 0 ? margin + (value - minimumX) * scaleX : margin + (value - minimumY) * scaleY
+  );
+}
+
+/** The same points with their positions stretched to fill the drawing world. */
+export function stretchPoints<Points extends {positions: Float32Array}>(
+  points: Points,
+  world: {width: number; height: number},
+  margin?: number
+): Points {
+  return {...points, positions: stretchToWorld(points.positions, world, margin)};
 }

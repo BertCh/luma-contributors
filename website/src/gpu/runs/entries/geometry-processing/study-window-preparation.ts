@@ -8,7 +8,13 @@
 import {GPUStudyWindowPreparation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
-import {createPolygonSet, uploadPolygonSet} from './shared/polygon-set';
+import {
+  applyVertexDrag,
+  createPolygonSet,
+  uploadPolygonSet,
+  writePolygonSet
+} from './shared/polygon-set';
+import {carryNearestVertex, createDragFields, getHeroRest} from './shared/pointer-support';
 import {addBoxSegmentsOfRows, addKernel} from './shared/shape-segments';
 import {parameters} from './study-window-preparation.parameters';
 
@@ -19,11 +25,8 @@ export default defineOperationRun({
   caption: 'The window polygon, its summary bounds, and its area and perimeter.',
   createInputs: ({seed, world}) => {
     const panel = {width: world.width * 0.55, height: 1};
-    return {
-      seed,
-      panel,
-      set: createPolygonSet(makeRandom(seed), panel, {...WINDOW_OPTIONS, irregularity: 0.4})
-    };
+    const set = createPolygonSet(makeRandom(seed), panel, {...WINDOW_OPTIONS, irregularity: 0.4});
+    return {seed, panel, set, ...createDragFields(set, 0)};
   },
   build(builder, inputs) {
     const polygons = uploadPolygonSet(builder, inputs.set);
@@ -35,11 +38,14 @@ export default defineOperationRun({
         polygonOffsets: polygons.polygonOffsets.view,
         ringOffsets: polygons.ringOffsets.view,
         samplingGrid: [64, 64],
+        // The window is rebuilt only on request; its polygon changes on every frame here.
+        rebuildWhen: () => true,
         output: {summary: summary.view}
       })
     );
-    // Bars for area (scaled by ten, to share an axis with the perimeter) and perimeter.
-    const measures = builder.allocate('measures', 'float32', 2);
+    // Bars for area (scaled by ten, to share an axis with the perimeter), perimeter and, as a reference,
+    // the area of the summary bounds box (also scaled by ten): the gap to the first bar is the empty space.
+    const measures = builder.allocate('measures', 'float32', 3);
     addKernel(builder, {
       id: 'summary-measures',
       invocationCount: 1,
@@ -48,35 +54,45 @@ export default defineOperationRun({
         {name: 'measures', buffer: measures, access: 'read_write'}
       ],
       body: `measures[measuresOffset] = summary[summaryOffset + 4u] * 10.0;
-  measures[measuresOffset + 1u] = summary[summaryOffset + 5u];`
+  measures[measuresOffset + 1u] = summary[summaryOffset + 5u];
+  measures[measuresOffset + 2u] = (summary[summaryOffset + 2u] - summary[summaryOffset]) * (summary[summaryOffset + 3u] - summary[summaryOffset + 1u]) * 10.0;`
     });
     return {
       outputs: {
         ...polygons,
         measures,
+        summary,
         boxSegments: addBoxSegmentsOfRows(builder, 'summary-bounds', summary, 1)
       },
       update: values => {
-        const set = createPolygonSet(makeRandom(inputs.seed), inputs.panel, {
+        // `fill` sizes the window around its cell center, so the radius slider scales the polygon.
+        const next = createPolygonSet(makeRandom(inputs.seed), inputs.panel, {
           ...WINDOW_OPTIONS,
-          irregularity: values.irregularity
+          irregularity: values.irregularity,
+          fill: 0.78 * values.radius
         });
-        // Scale the polygon about its center to change the window's size.
-        const center = [inputs.panel.width / 2, 0.5];
-        for (let index = 0; index < set.positions.length; index += 2) {
-          set.positions[index] = center[0] + (set.positions[index] - center[0]) * values.radius;
-          set.positions[index + 1] =
-            center[1] + (set.positions[index + 1] - center[1]) * values.radius;
-        }
-        polygons.positions.write(set.positions);
-        polygons.outline.write(
-          Float32Array.from({length: set.outline.length}, (_, component) => {
-            const axis = component % 2;
-            return center[axis] + (set.outline[component] - center[axis]) * values.radius;
-          })
-        );
+        applyVertexDrag(next, inputs.drag);
+        inputs.set = next;
+        writePolygonSet(polygons, next);
       }
     };
+  },
+  // The pointer carries a window vertex with its neighbors; the summary box and bars follow.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag the window outline',
+    rest: ({inputs, toUnit}) => toUnit(getHeroRest(inputs)),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const carried = carryNearestVertex(inputs, pointer, 1, 0.3);
+      const summary = peek(outputs.summary);
+      return {
+        rerun: true,
+        glyphs: carried.glyphs,
+        readout: summary
+          ? `area ${summary[4].toFixed(3)} · perimeter ${summary[5].toFixed(2)}`
+          : 'area ... · perimeter ...'
+      };
+    }
   },
   draw: ({inputs, outputs}) => [
     {layer: 'lines', context: true, segments: outputs.outline, count: inputs.set.outlineCount},

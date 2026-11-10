@@ -7,7 +7,14 @@
 import {GPUAlternativeRoutes} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {uploadNetworkTopology} from '../../inputs';
-import {createRoads, getRoadContext, uploadRoads} from './shared/roads';
+import {chooseSticky} from '../../pick';
+import {
+  createNodeIndex,
+  createRoads,
+  getEndpointMarkers,
+  getRoadContext,
+  uploadRoads
+} from './shared/roads';
 import {addVertexSegments} from './shared/display';
 import {parameters} from './alternative-routes.parameters';
 
@@ -24,10 +31,13 @@ export default defineOperationRun({
   caption: 'The k cheapest simple routes between two intersections, one color per route.',
   createInputs: ({random, world}) => {
     const network = createRoads(random, world, 7);
+    const target = network.findNearestNode(world.width * 0.7, 0.75);
     return {
       network,
       source: network.findNearestNode(world.width * 0.3, 0.25),
-      target: network.findNearestNode(world.width * 0.7, 0.75),
+      defaultTarget: target,
+      target,
+      index: createNodeIndex(network),
       costs: new Float32Array(network.slotCount)
     };
   },
@@ -41,11 +51,13 @@ export default defineOperationRun({
     const costs = builder.allocate('costs', 'float32', routeCount);
     const counts = builder.allocate('counts', 'uint32', 1);
     const complete = builder.allocate('complete', 'uint32', 1);
+    const targetNodes = builder.allocate('targets', 'uint32', 1);
+    const outputsTarget = builder.allocate('target-position', 'float32x2', 1);
     builder.graph.add(
       new GPUAlternativeRoutes({
         topology,
         sources: builder.upload('sources', 'uint32', Uint32Array.of(inputs.source)).view,
-        targets: builder.upload('targets', 'uint32', Uint32Array.of(inputs.target)).view,
+        targets: targetNodes.view,
         routeCount,
         maximumExpansions: 1000000,
         maximumFrontierSize: 8192,
@@ -73,25 +85,58 @@ export default defineOperationRun({
       outputs: {
         ...uploadRoads(builder, network),
         routes,
-        endpoints: builder.upload(
-          'endpoints',
+        costs,
+        source: builder.upload(
+          'source-position',
           'float32x2',
-          Float32Array.of(
-            network.nodes[inputs.source * 2],
-            network.nodes[inputs.source * 2 + 1],
-            network.nodes[inputs.target * 2],
-            network.nodes[inputs.target * 2 + 1]
-          )
-        )
+          Float32Array.of(network.nodes[inputs.source * 2], network.nodes[inputs.source * 2 + 1])
+        ),
+        target: outputsTarget
       },
       update: current => {
+        targetNodes.write(Uint32Array.of(inputs.target));
+        outputsTarget.write(
+          Float32Array.of(network.nodes[inputs.target * 2], network.nodes[inputs.target * 2 + 1])
+        );
         network.fillWeights(inputs.costs, current.congestion);
         weights.write(inputs.costs);
       }
     };
   },
   rebuildOn: ['routeCount'],
-  draw: ({inputs, outputs}) => [
+  // The pointer places the target on the nearest intersection; the source stays put.
+  interaction: {
+    kind: 'place',
+    hint: 'place the target',
+    rest: ({inputs, toUnit}) =>
+      toUnit([
+        inputs.network.nodes[inputs.defaultTarget * 2],
+        inputs.network.nodes[inputs.defaultTarget * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const node = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.target);
+      const changed = node !== inputs.target;
+      inputs.target = node;
+      const costs = peek(outputs.costs);
+      const costText = costs
+        ? Array.from(costs.subarray(0, Math.round(values.routeCount)), cost =>
+            Number.isFinite(cost) && cost < 1e20 ? cost.toFixed(2) : '-'
+          ).join(' / ')
+        : '';
+      return {
+        rerun: changed,
+        glyphs: [
+          {
+            shape: 'crosshair',
+            at: [inputs.network.nodes[node * 2], inputs.network.nodes[node * 2 + 1]],
+            size: 14
+          }
+        ],
+        readout: `routes ${Math.round(values.routeCount)} · costs ${costText}`
+      };
+    }
+  },
+  draw: ({inputs, outputs, theme}) => [
     getRoadContext(outputs),
     ...outputs.routes
       .map((segments, routeIndex) => ({
@@ -102,6 +147,7 @@ export default defineOperationRun({
         color: ROUTE_COLORS[routeIndex]
       }))
       .reverse(),
-    {layer: 'dots', positions: outputs.endpoints, radius: 8, color: [1, 1, 1, 1]}
+    ...getEndpointMarkers(outputs.source, theme, {colorIndex: 4}),
+    ...getEndpointMarkers(outputs.target, theme, {colorIndex: 2})
   ]
 });

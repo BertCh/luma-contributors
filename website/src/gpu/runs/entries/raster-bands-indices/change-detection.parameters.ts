@@ -20,7 +20,7 @@ export const parameters: GpuSceneParameter[] = [
       'significance'
     ]
   },
-  {id: 'splitSlice', label: 'splitSlice', min: 3, max: 9, step: 1, default: 6},
+  {id: 'splitSlice', label: 'splitSlice', min: 3, max: 9, step: 1, default: 8},
   {id: 'alpha', label: 'alpha', min: 0.001, max: 0.3, step: 0.001, default: 0.05},
-  {id: 'magnitude', label: 'Data: change', min: 0, max: 0.4, step: 0.02, default: 0.2}
+  {id: 'magnitude', label: 'Post-fire change multiplier', min: 0, max: 2, step: 0.1, default: 1}
 ];

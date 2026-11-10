@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUSolarIrradiance on a synthetic DEM: a sun table for one day is stepped through every cell's
+// GPUSolarIrradiance on a Grand Canyon DEM: a sun table for one day is stepped through every cell's
 // precomputed horizon, so each cell accumulates the hours of direct sun and the energy received
 // (shadow, slope and aspect included). The table is a per-frame input, so the latitude and the
 // month change it without recompiling.
@@ -11,18 +11,58 @@ import {
   getGPUSolarIrradianceSunTable,
   GPUSolarIrradiance
 } from '@luma-contributors/analysis/gpu-terrain';
-import {defineOperationRun} from '../../define-run';
+import {defineOperationRun, type RunBuffer} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {addTerrainHorizon, addTerrainSlopeAspect} from './support/horizon';
+
 import {createTerrainInput, drawElevationContext, drawGrid, uploadTerrain} from './support/terrain';
 import {parameters} from './solar-irradiance.parameters';
 
 const DIRECTION_COUNT = 16;
 const SAMPLE_COUNT = 96;
+// The Grand Canyon tile: about 36.1 degrees north, 112.1 degrees west.
+const LONGITUDE = -112.1;
+const MONTH_NAMES = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec'
+];
+
+const INSOLATION_RANGE = [0, 7000] as const;
+
+const axes = bindAxes<unknown, {sunHours: RunBuffer}>(parameters, {
+  kind: 'pad',
+  hint: 'month and latitude',
+  x: 'month',
+  y: 'latitude',
+  decorate: (values, pointer, {outputs, peek}) => {
+    const sunHours = peek(outputs.sunHours);
+    let mean = '';
+    if (sunHours) {
+      let sum = 0;
+      for (const hours of sunHours) sum += hours;
+      mean = ` · mean ${(sum / sunHours.length).toFixed(1)} h sun`;
+    }
+    return {
+      glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
+      readout: `21 ${MONTH_NAMES[values.month - 1]} · ${values.latitude}°${mean}`
+    };
+  }
+});
 
 export default defineOperationRun({
   parameters,
   caption: 'Elevation and a day of sun positions in; hours of sun and received energy out.',
-  createInputs: ({random, world}) => createTerrainInput(random, world, 48),
+  createInputs: ({world}) => createTerrainInput(world, 48),
   build(builder, terrain) {
     const uploaded = uploadTerrain(builder, terrain);
     const {grid, elevation, cellCount} = uploaded;
@@ -56,10 +96,13 @@ export default defineOperationRun({
     return {
       outputs: {elevation, sunHours, insolation},
       update: current => {
-        const start = new Date(Date.UTC(2026, current.month - 1, 21));
+        // One local day: it starts at local solar midnight, which is 12 hours before noon there.
+        const start = new Date(
+          Date.UTC(2026, current.month - 1, 21) + (-LONGITUDE / 15) * 3600 * 1000
+        );
         sunTable.write(
           getGPUSolarIrradianceSunTable({
-            longitude: 7.9,
+            longitude: LONGITUDE,
             latitude: current.latitude,
             start,
             end: new Date(start.getTime() + 24 * 3600 * 1000),
@@ -69,10 +112,12 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer picks the sun: x is the month (21st of it), y the latitude of the sun table.
+  interaction: axes,
   draw: ({inputs, outputs, values}) => [
     drawElevationContext(inputs, outputs.elevation),
     drawGrid(inputs, values.output === 0 ? outputs.sunHours : outputs.insolation, {
-      range: values.output === 0 ? [0, 14] : 'auto',
+      range: values.output === 0 ? [0, 12] : INSOLATION_RANGE,
       smoothing: true
     })
   ]

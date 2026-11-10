@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// GPUGeodesicPairs has no per-frame prop; the slider changes how far apart the pairs are.
+// GPUGeodesicPairs has no per-frame prop; the slider changes how many cities measure to the target.
 export const parameters: GpuSceneParameter[] = [
-  {id: 'spread', label: 'Data: spread', min: 0.2, max: 1, step: 0.05, default: 0.8}
+  {id: 'cityCount', label: 'Data: cities', min: 3, max: 18, step: 1, default: 12}
 ];

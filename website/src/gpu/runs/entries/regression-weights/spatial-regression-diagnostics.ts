@@ -16,12 +16,19 @@ import {parameters} from './spatial-regression-diagnostics.parameters';
 import {
   createRegressionInputs,
   createResponse,
-  drawTractMap,
+  drawResidualMap,
   MAP_SHARE,
   uploadRegressionMap,
   uploadStandardizedWeights
 } from './shared/regression';
+import {addKernelPass} from './shared/kernel';
 import {addTableColumn} from './shared/weights';
+
+const TEST_NAMES = ['LM lag', 'LM error', 'robust lag', 'robust error', 'SARMA', 'Moran z'];
+const TEST_RECTANGLE = [MAP_SHARE + 0.08, 0.14, 0.97, 0.86] as const;
+const TEST_LIMIT = 12;
+/** The 5% critical value of a chi-square with one degree of freedom. */
+const CRITICAL_VALUE = 3.84;
 
 export default defineOperationRun({
   parameters,
@@ -79,10 +86,24 @@ export default defineOperationRun({
         }
       })
     );
+    // Tracts left out of the fit draw transparent instead of as zero residuals.
+    const shown = builder.allocate('shown-residuals', 'float32', rowCount);
+    addKernelPass(builder, {
+      id: 'masked-residuals',
+      invocationCount: rowCount,
+      bindings: [
+        {name: 'residuals', buffer: residuals, access: 'read'},
+        {name: 'mask', buffer: mask, access: 'read'},
+        {name: 'shown', buffer: shown, access: 'read_write'}
+      ],
+      body: `var nanBits = 0x7fc00000u;
+  shown[shownOffset + index] = select(bitcast<f32>(nanBits), residuals[residualsOffset + index], mask[maskOffset + index] != 0u);`
+    });
     return {
       outputs: {
         mesh: uploadRegressionMap(builder, inputs),
-        residuals,
+        residuals: shown,
+        critical: builder.upload('critical', 'float32', new Float32Array(64).fill(CRITICAL_VALUE)),
         statistics: addTableColumn(builder, 'tests', tests, 3, 0, 6)
       },
       update: current =>
@@ -96,15 +117,53 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['restandardizeRows'],
+  // The pointer along x picks one of the six tests: its bar is boxed and read against the 5% critical value.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a test',
+    rest: [0.3, 0.5],
+    resolve(pointer, {outputs, world, peek}) {
+      const statistics = peek(outputs.statistics);
+      if (!statistics) return {};
+      const test = Math.min(
+        TEST_NAMES.length - 1,
+        Math.max(0, Math.floor(((pointer.unitX - 0.05) / 0.9) * TEST_NAMES.length))
+      );
+      const [left, bottom, right, top] = TEST_RECTANGLE;
+      const slot = ((right - left) * world.width) / TEST_NAMES.length;
+      const x = left * world.width + test * slot;
+      return {
+        focus: test,
+        glyphs: [
+          {
+            shape: 'box',
+            minimum: [x, bottom * world.height],
+            maximum: [x + slot, top * world.height],
+            dashed: true
+          }
+        ],
+        readout: `${TEST_NAMES[test]} ${statistics[test].toFixed(1)} · critical ${CRITICAL_VALUE} (${statistics[test] > CRITICAL_VALUE ? 'reject' : 'keep'})`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.residuals),
+    ...drawResidualMap(inputs, outputs.mesh, outputs.residuals),
     {
       layer: 'chart',
       kind: 'bars',
       values: outputs.statistics,
-      ramp: 'sequential',
-      range: [0, 40],
-      rectangle: [MAP_SHARE + 0.08, 0.14, 0.97, 0.86]
+      color: [0.55, 0.65, 0.95, 0.9],
+      range: [0, TEST_LIMIT],
+      rectangle: TEST_RECTANGLE
+    },
+    {
+      layer: 'chart',
+      kind: 'line',
+      values: outputs.critical,
+      range: [0, TEST_LIMIT],
+      color: [1, 0.55, 0.3, 0.9],
+      radius: 1,
+      rectangle: TEST_RECTANGLE
     }
   ]
 });

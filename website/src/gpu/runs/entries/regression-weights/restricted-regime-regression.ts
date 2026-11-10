@@ -12,17 +12,25 @@ import {parameters} from './restricted-regime-regression.parameters';
 import {
   createRegressionInputs,
   createResponse,
+  drawSignedBars,
   drawTractMap,
+  drawZeroLine,
   MAP_SHARE,
   TRUE_COEFFICIENTS,
   uploadRegressionMap
 } from './shared/regression';
 import {addTableColumn} from './shared/weights';
 
+const COEFFICIENT_RECTANGLE = [MAP_SHARE + 0.08, 0.42, 0.97, 0.9] as const;
+
 export default defineOperationRun({
   parameters,
   caption: 'Restricted regimes: coefficients (right), Chow F below, fitted map (left).',
-  createInputs: ({random, world}) => createRegressionInputs(random, world),
+  createInputs: ({random, world}) => {
+    const inputs = createRegressionInputs(random, world);
+    // The west-east break the model assumes; the data's true break is at the middle of the map.
+    return {...inputs, boundary: inputs.mapWidth / 2};
+  },
   build(builder, inputs, values) {
     const rowCount = inputs.tracts.count;
     const common = [
@@ -33,7 +41,7 @@ export default defineOperationRun({
     const coefficientCount = common.reduce((total, isCommon) => total + (isCommon ? 1 : 2), 0);
     const predictors = builder.upload('predictors', 'float32', inputs.predictors);
     const response = builder.allocate('response', 'float32', rowCount);
-    const regimes = builder.upload('regimes', 'uint32', inputs.regimes);
+    const regimes = builder.allocate('regimes', 'uint32', rowCount);
     const coefficients = builder.allocate('coefficients', 'float32', coefficientCount);
     const fitted = builder.allocate('fitted', 'float32', rowCount);
     const chow = builder.allocate('chow', 'float32', 3);
@@ -59,9 +67,16 @@ export default defineOperationRun({
         mesh: uploadRegressionMap(builder, inputs),
         fitted,
         coefficients,
+        regimes,
+        zeros: builder.upload('zeros', 'float32', new Float32Array(64)),
         chowStatistic: addTableColumn(builder, 'chow', chow, 3, 0, 1)
       },
-      update: current =>
+      update: current => {
+        regimes.write(
+          Uint32Array.from({length: rowCount}, (_, tract) =>
+            inputs.tracts.centers[tract * 2] < inputs.boundary ? 0 : 1
+          )
+        );
         response.write(
           createResponse(inputs, {
             noise: 0.4,
@@ -74,20 +89,44 @@ export default defineOperationRun({
                     TRUE_COEFFICIENTS[2] + 0.9 * current.contrast
                   ]
           })
-        )
+        );
+      }
     };
   },
   rebuildOn: ['commonIntercept', 'commonFirst', 'commonSecond'],
+  // The pointer along x moves the west-east break the model assumes; the Chow F peaks where it meets the true break.
+  interaction: {
+    kind: 'level',
+    hint: 'move the regime break',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, peek}) {
+      // The canvas width spans the allowed breaks, so every position moves the line.
+      const boundary = Math.round((0.15 + 0.7 * pointer.unitX) * inputs.mapWidth * 50) / 50;
+      const changed = boundary !== inputs.boundary;
+      inputs.boundary = boundary;
+      const chow = peek(outputs.chowStatistic);
+      return {
+        rerun: changed,
+        glyphs: [{shape: 'curtain', x: boundary}],
+        readout: `break at x ${(boundary / inputs.mapWidth).toFixed(2)} · Chow F ${chow ? chow[0].toFixed(0) : '-'}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential'}),
+    ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [-2, 4]}),
+    // The two regimes the model assumes, tinted over the fitted values; the tint follows the break.
     {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.coefficients,
-      ramp: 'diverging',
-      range: [-3, 3],
-      rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]
+      layer: 'polygons',
+      positions: outputs.mesh.vertices,
+      indices: outputs.mesh.indices,
+      owners: outputs.mesh.owners,
+      values: outputs.regimes,
+      triangleCount: inputs.tracts.triangleCount,
+      ramp: 'categorical',
+      alpha: 0.4
     },
+    ...drawSignedBars(outputs.coefficients, COEFFICIENT_RECTANGLE, 3),
+    drawZeroLine(outputs.zeros, COEFFICIENT_RECTANGLE),
     {
       layer: 'chart',
       kind: 'bars',

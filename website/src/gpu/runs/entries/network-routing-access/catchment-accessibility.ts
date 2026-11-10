@@ -7,18 +7,31 @@
 import {getGPUNetworkCostWeightsParameterValues} from '@luma-contributors/analysis/gpu-network';
 import {GPUCatchmentAccessibility} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {addCostMatrix, addCostWeights, createAccessScene, uploadSearch} from './shared/access';
+import {
+  addCostMatrix,
+  addCostWeights,
+  createAccessScene,
+  createFacilityDrag,
+  getFacilityMarkers,
+  moveFacility,
+  uploadSearch
+} from './shared/access';
 import {getRoadContext, uploadRoads} from './shared/roads';
 import {parameters} from './catchment-accessibility.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'Supply-to-demand access per demand location, from network catchments.',
-  createInputs: ({random, world}) => createAccessScene(random, world, 8, 240),
+  createInputs: ({random, world}) => {
+    const scene = createAccessScene(random, world, 8, 120);
+    return {...scene, drag: createFacilityDrag(scene)};
+  },
   build(builder, scene, values) {
     const {network} = scene;
     const search = uploadSearch(builder, network);
-    const matrix = addCostMatrix(builder, search, scene.facilityNodes, network.nodeCount);
+    const facilityNodes = builder.upload('facility-nodes', 'uint32', scene.facilityNodes);
+    const facilities = builder.upload('facilities', 'float32x2', scene.facilityPositions);
+    const matrix = addCostMatrix(builder, search, facilityNodes, network.nodeCount);
     const parameterBuffer = builder.allocate('parameters', 'float32', 4);
     const facilityCount = scene.facilityNodes.length;
     const facilityWeights = addCostWeights(
@@ -54,9 +67,11 @@ export default defineOperationRun({
         ...uploadRoads(builder, network),
         accessibility,
         demands: builder.upload('demands', 'float32x2', scene.demandPositions),
-        facilities: builder.upload('facilities', 'float32x2', scene.facilityPositions)
+        facilities
       },
       update: current => {
+        facilityNodes.write(scene.facilityNodes);
+        facilities.write(scene.facilityPositions);
         search.costLimit.write(Float32Array.of(2));
         parameterBuffer.write(
           getGPUNetworkCostWeightsParameterValues({
@@ -68,9 +83,36 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['method'],
-  draw: ({outputs}) => [
+  interaction: {
+    kind: 'drag',
+    hint: 'drag a facility',
+    rest: ({inputs, toUnit}) =>
+      toUnit([inputs.drag.defaultPositions[0], inputs.drag.defaultPositions[1]]),
+    resolve(pointer, {inputs, values, peek, outputs}) {
+      const move = moveFacility(inputs, inputs.drag, pointer.x, pointer.y);
+      const at: [number, number] = [
+        inputs.network.nodes[move.node * 2],
+        inputs.network.nodes[move.node * 2 + 1]
+      ];
+      return {
+        rerun: move.changed,
+        glyphs: [
+          {shape: 'ring', at, radius: values.costLimit, dashed: true},
+          {shape: 'crosshair', at, size: 14}
+        ],
+        readout: `facility ${move.facility + 1} · costLimit ${values.costLimit.toFixed(2)}`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     getRoadContext(outputs),
-    {layer: 'dots', positions: outputs.demands, values: outputs.accessibility, radius: 5},
-    {layer: 'dots', positions: outputs.facilities, radius: 8, color: [1, 1, 1, 1]}
+    {
+      layer: 'dots',
+      positions: outputs.demands,
+      values: outputs.accessibility,
+      range: [0, 0.05],
+      radius: 6
+    },
+    ...getFacilityMarkers(outputs.facilities, theme, {radius: 8})
   ]
 });

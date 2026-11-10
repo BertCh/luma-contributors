@@ -7,16 +7,30 @@
 
 import {GPUSpatialWeightsMinimumSpanningTree} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {createTracts} from '../../inputs';
 import {makeRandom} from '../../../demos/kit';
 import {uploadSpatialWeights} from '../../inputs';
 import {parameters} from './spatial-weights-minimum-spanning-tree.parameters';
 import {asPairs, createAdjacencyEdges, createRegionScene} from './support/regions';
-import {uploadTractMesh} from './support/geometry';
+import {createTractGlyph, findMiddleTract, findTractAt, uploadTractMesh} from './support/geometry';
+import type {RunGlyph} from '../../interaction';
 
 export default defineOperationRun({
   parameters,
   caption: 'Minimum spanning tree over tract adjacency; edge cost is attribute dissimilarity.',
-  createInputs: ({random, world}) => ({random, world}),
+  createInputs: ({random, world}) => {
+    // Only the default window, to place the poster's probe on a middle tract.
+    const tracts = createTracts(random, world, 7);
+    return {
+      random,
+      world,
+      focus: {tract: findMiddleTract(tracts, world)},
+      restCenter: [
+        tracts.centers[findMiddleTract(tracts, world) * 2],
+        tracts.centers[findMiddleTract(tracts, world) * 2 + 1]
+      ] as const
+    };
+  },
   build(builder, {world}, current) {
     const scene = createRegionScene(makeRandom(7), world, current.tractRows, 2);
     const {tracts} = scene;
@@ -55,6 +69,7 @@ export default defineOperationRun({
     return {
       outputs: {
         tracts,
+        endpoints,
         treeEdges: asPairs(endpoints),
         adjacency: builder.upload('adjacency', 'uint32x2', createAdjacencyEdges(tracts)),
         attribute: builder.upload(
@@ -65,6 +80,43 @@ export default defineOperationRun({
         ...uploadTractMesh(builder, tracts)
       }
     };
+  },
+  // The hovered tract shows which of its adjacencies the tree kept (solid) and which it skipped
+  // (dashed): the tree joins the most similar neighbors only.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    rest: ({inputs, toUnit}) => toUnit(inputs.restCenter),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const {tracts} = outputs;
+      const tract = findTractAt(tracts, pointer.x, pointer.y);
+      inputs.focus.tract = tract;
+      const endpoints = peek(outputs.endpoints);
+      const kept = new Set<number>();
+      if (endpoints) {
+        for (let edge = 0; edge < endpoints.length; edge += 2) {
+          const [first, second] = [endpoints[edge], endpoints[edge + 1]];
+          if (first === second) continue;
+          if (first === tract) kept.add(second);
+          if (second === tract) kept.add(first);
+        }
+      }
+      const from: [number, number] = [tracts.centers[tract * 2], tracts.centers[tract * 2 + 1]];
+      const glyphs: RunGlyph[] = [createTractGlyph(tracts, tract)];
+      const {offsets, neighbors} = tracts.contiguity;
+      for (let slot = offsets[tract]; slot < offsets[tract + 1]; slot++) {
+        const to: [number, number] = [
+          tracts.centers[neighbors[slot] * 2],
+          tracts.centers[neighbors[slot] * 2 + 1]
+        ];
+        glyphs.push({shape: 'line', from, to, dashed: !kept.has(neighbors[slot])});
+      }
+      return {
+        focus: tract,
+        glyphs,
+        readout: `tract ${tract} · ${kept.size} tree edges of ${offsets[tract + 1] - offsets[tract]} neighbors`
+      };
+    }
   },
   draw: ({outputs}) => [
     {

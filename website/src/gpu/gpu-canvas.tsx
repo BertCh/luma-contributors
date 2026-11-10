@@ -17,6 +17,7 @@ import {
   type ReactNode
 } from 'react';
 import type {Device} from '@luma.gl/core';
+import {bindCanvasPointer} from './canvas-pointer';
 import type {
   GpuSceneInstance,
   GpuSceneLoader,
@@ -37,6 +38,8 @@ export type GpuCanvasProps = {
   /** Width over height. */
   aspectRatio?: number;
   className?: string;
+  /** Force a theme when the containing panel has a fixed palette. */
+  theme?: GpuTheme;
   /** Forward pointer position to the scene. */
   interactive?: boolean;
   /**
@@ -88,10 +91,16 @@ export function GpuCanvas({
   controls = false,
   parameters,
   pointerSurface = 'canvas',
+  theme,
   hint = true
 }: GpuCanvasProps): ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasHostRef = useRef<HTMLDivElement>(null);
+  const [readout, setReadout] = useState<string | null>(null);
+  // The scene's own pointer gesture: its hint, whether the reader has moved yet, and pinning.
+  const [gesture, setGesture] = useState<{hint?: string; hasMoved?: boolean; isPinned?: boolean}>(
+    {}
+  );
   const [isReady, setIsReady] = useState(false);
   // Bumped when a canvas is released offscreen, so the next start gets a fresh element.
   const [generation, setGeneration] = useState(0);
@@ -103,279 +112,211 @@ export function GpuCanvas({
   // Current slider values: read by the effect when it creates an instance, so they survive rebuilds.
   const valuesRef = useRef<ParameterValues>(values);
   const applyParametersRef = useRef<((changed: ParameterValues) => void) | null>(null);
+  const resetPointerRef = useRef<(() => void) | null>(null);
   const forwardsPointer = interactive || controls;
 
   useEffect(() => {
+    if (!containerRef.current || !canvasHostRef.current) return undefined;
     const container = containerRef.current;
-    if (!container || !canvasRef.current) return undefined;
-    let canvas = canvasRef.current;
-    let releaseSlot: (() => void) | null = null;
-
-    let isDestroyed = false;
-    let isVisible = false;
-    let isStarting = false;
-    let frameHandle = 0;
-    let instance: GpuSceneInstance | null = null;
-    let device: Awaited<ReturnType<typeof import('./device.ts').createGpuDevice>> = null;
-    let sceneFunction: Awaited<ReturnType<GpuSceneLoader>>['default'] | null = null;
+    // In-flight builds may outlive their React effect. Each device gets an exclusive canvas
+    // so releasing an older device cannot unconfigure the replacement's presentation context.
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'display:block;width:100%;height:100%';
+    canvasHostRef.current.replaceChildren(canvas);
     const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let visible = false;
+    let disposed = false;
+    let starting = false;
+    let attempted = false;
+    let frame = 0;
+    let device: Device | null = null;
+    let instance: GpuSceneInstance | null = null;
+    let releaseSlot: (() => void) | undefined;
+    setIsReady(false);
+    setBackend(null);
+    setReadout(null);
+    setGesture({});
 
-    const releaseResources = () => {
+    function disposeResources() {
       instance?.destroy();
       instance = null;
       device?.destroy();
       device = null;
       releaseSlot?.();
-      releaseSlot = null;
-    };
+      releaseSlot = undefined;
+    }
 
-    const getSize = (): [number, number] => {
-      const ratio = window.devicePixelRatio || 1;
-      return [
-        Math.round(container.clientWidth * ratio),
-        Math.round(container.clientHeight * ratio)
-      ];
-    };
+    function fail(error: unknown) {
+      if (!disposed) {
+        // biome-ignore lint/suspicious/noConsole: diagnostic output
+        console.warn('GpuCanvas could not draw, keeping the static fallback', error);
+        setIsReady(false);
+      }
+      cancelAnimationFrame(frame);
+      pointer?.destroy();
+      disposeResources();
+    }
 
-    applyParametersRef.current = changed => {
-      instance?.setParameters?.(changed);
-      // A still frame (reduced motion) has no loop to show the change.
-      if (instance && isVisible && motionQuery.matches) renderFrame(0);
-    };
-
-    const renderFrame = (time: number) => {
+    function draw(time: number) {
       try {
         instance?.render(time);
       } catch (error) {
-        // biome-ignore lint/suspicious/noConsole: diagnostic output
-        console.warn('GpuCanvas render failed', error);
-        stopLoop();
-        instance = null;
-        setIsReady(false);
+        fail(error);
       }
+    }
+
+    function tick(time: number) {
+      if (disposed || !visible || !instance) return;
+      draw(time);
+      if (instance && !motionQuery.matches) frame = requestAnimationFrame(tick);
+    }
+
+    function drawStill() {
+      if (visible && !starting && motionQuery.matches) draw(0);
+    }
+
+    const pointer = forwardsPointer
+      ? bindCanvasPointer(
+          container,
+          pointerSurface === 'card',
+          drawStill,
+          (parameter, value) => {
+            const label = parameter.label.replace(/^Data: /, '');
+            const formatted =
+              parameter.options?.[Math.round(value)] ?? formatValue(parameter, value);
+            setReadout(`${label} ${formatted}`);
+          },
+          state => setGesture(previous => ({...previous, ...state}))
+        )
+      : null;
+
+    applyParametersRef.current = changed => {
+      instance?.setParameters?.(changed);
+      drawStill();
+    };
+    resetPointerRef.current = () => {
+      instance?.resetPointer?.();
+      drawStill();
     };
 
-    const stopLoop = () => {
-      cancelAnimationFrame(frameHandle);
-      frameHandle = 0;
-    };
+    function getSize(): [number, number] {
+      const ratio = window.devicePixelRatio || 1;
+      return [
+        Math.max(1, Math.round(container.clientWidth * ratio)),
+        Math.max(1, Math.round(container.clientHeight * ratio))
+      ];
+    }
 
-    const tick = (time: number) => {
-      frameHandle = 0;
-      if (isDestroyed || !isVisible || !instance) return;
-      renderFrame(time);
-      if (!motionQuery.matches) frameHandle = requestAnimationFrame(tick);
-    };
-
-    const startLoop = () => {
-      if (frameHandle || !instance || !isVisible) return;
-      frameHandle = requestAnimationFrame(tick);
-    };
-
-    const createInstance = async () => {
-      if (!device || !sceneFunction) return;
-      instance?.destroy();
-      instance = null;
-      const [width, height] = getSize();
-      const created = await sceneFunction({
-        device,
-        canvas,
-        width,
-        height,
-        theme: getTheme(),
-        reducedMotion: motionQuery.matches,
-        seed,
-        parameters: {...valuesRef.current}
-      });
-      if (isDestroyed) {
-        created.destroy();
-        return;
-      }
-      instance = created;
-    };
-
-    const start = async () => {
-      if (isStarting || device) return;
-      isStarting = true;
+    async function start() {
+      if (attempted || starting || disposed) return;
+      attempted = true;
+      starting = true;
       try {
         const [{createGpuDevice, acquireGpuSlot}, loaded] = await Promise.all([
           import('./device.ts'),
           scene()
         ]);
-        const release = await acquireGpuSlot();
-        if (isDestroyed || !isVisible) {
-          release();
-          return;
-        }
-        releaseSlot = release;
-        canvas = canvasRef.current ?? canvas;
+        if (disposed || !visible) return;
+        releaseSlot = await acquireGpuSlot();
+        if (disposed || !visible) return;
         device = await createGpuDevice(canvas);
-        if (!device) {
-          releaseResources();
-          return;
-        }
-        setBackend(device.type === 'webgpu' ? 'WebGPU' : 'WebGL2');
-        if (isDestroyed) {
-          releaseResources();
-          return;
-        }
-        const canvasContext = device.getDefaultCanvasContext();
-        await canvasContext.initialized;
-        const [initialWidth, initialHeight] = getSize();
-        canvasContext.setDrawingBufferSize(Math.max(initialWidth, 1), Math.max(initialHeight, 1));
-        sceneFunction = loaded.default;
+        if (disposed || !visible || !device) return;
+        const context = device.getDefaultCanvasContext();
+        await context.initialized;
+        if (disposed || !visible) return;
+        const [width, height] = getSize();
+        context.setDrawingBufferSize(width, height);
         if (loaded.parameters) {
           valuesRef.current = {...getDefaultValues(loaded.parameters), ...valuesRef.current};
           setValues(valuesRef.current);
           setModuleParameters(loaded.parameters);
         }
-        await createInstance();
-        if (isDestroyed || !instance) return;
-        if (!isVisible) {
-          releaseResources();
-          setGeneration(value => value + 1);
-          return;
-        }
-        // Some adapters (software or blocklisted GPUs) accept the device but cannot present to the
-        // canvas. Validate the first frame so those keep the static fallback instead of a blank canvas.
-        const isFirstFrameValid = await renderValidatedFrame(device, () => renderFrame(0));
-        if (!isFirstFrameValid) {
-          // biome-ignore lint/suspicious/noConsole: diagnostic output
-          console.warn(
-            'GpuCanvas: the GPU could not present this canvas, keeping the static fallback'
-          );
-          releaseResources();
-          return;
-        }
-        if (isDestroyed || !instance) return;
-        requestAnimationFrame(() => {
-          if (!isDestroyed && instance) setIsReady(true);
-        });
-        startLoop();
-      } catch (error) {
-        // biome-ignore lint/suspicious/noConsole: diagnostic output
-        console.warn('GpuCanvas could not start, keeping the static fallback', error);
-        setIsReady(false);
-        releaseResources();
-      } finally {
-        isStarting = false;
-      }
-    };
-
-    const intersectionObserver = new IntersectionObserver(
-      entries => {
-        isVisible = entries.some(entry => entry.isIntersecting);
-        if (isVisible) {
-          if (device) startLoop();
-          else void start();
-        } else {
-          stopLoop();
-          if (device) {
-            releaseResources();
-            setIsReady(false);
-            setGeneration(value => value + 1);
+        instance = await loaded.default({
+          device,
+          canvas,
+          width,
+          height,
+          theme: theme ?? getTheme(),
+          reducedMotion: motionQuery.matches,
+          seed,
+          parameters: {...valuesRef.current},
+          reportReadout: text => {
+            if (!disposed) setReadout(text);
+          },
+          // Values the pointer gesture wrote: keep the sliders on them.
+          reportParameters: changed => {
+            if (disposed) return;
+            valuesRef.current = {...valuesRef.current, ...changed};
+            setValues(valuesRef.current);
           }
-        }
-      },
-      {rootMargin: '120px'}
-    );
-    intersectionObserver.observe(container);
-
-    const resizeObserver = new ResizeObserver(() => {
-      if (!instance) return;
-      const [width, height] = getSize();
-      instance.resize?.(width, height);
-      if (motionQuery.matches && isVisible) renderFrame(0);
-    });
-    resizeObserver.observe(container);
-
-    const rebuild = () => {
-      if (!device) return;
-      void createInstance().then(() => {
-        if (instance && isVisible) {
-          renderFrame(0);
-          startLoop();
-        }
-      });
-    };
-    const themeObserver = new MutationObserver(rebuild);
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['data-theme']
-    });
-    motionQuery.addEventListener('change', rebuild);
-
-    // A still frame (reduced motion) has no loop, so a pointer change schedules one frame.
-    let pointerFrameHandle = 0;
-    const sendPointer = (position: [number, number] | null) => {
-      if (!instance?.setPointer) return;
-      instance.setPointer(position);
-      if (motionQuery.matches && isVisible && !pointerFrameHandle) {
-        pointerFrameHandle = requestAnimationFrame(() => {
-          pointerFrameHandle = 0;
-          if (!isDestroyed && isVisible) renderFrame(0);
         });
-      }
-    };
-
-    const isCardSurface = pointerSurface === 'card';
-    const surface: HTMLElement = isCardSurface
-      ? (container.closest<HTMLElement>('.card') ?? container)
-      : container;
-
-    const handlePointerMove = (event: PointerEvent) => {
-      if (isCardSurface && event.pointerType === 'touch') return;
-      const bounds = container.getBoundingClientRect();
-      const ratio = window.devicePixelRatio || 1;
-      const x = event.clientX - bounds.left;
-      const y = event.clientY - bounds.top;
-      if (isCardSurface && (x < 0 || y < 0 || x > bounds.width || y > bounds.height)) {
-        sendPointer(null);
-        return;
-      }
-      sendPointer([x * ratio, y * ratio]);
-    };
-    const handlePointerLeave = () => sendPointer(null);
-    // Keyboard users get the effect at the canvas center when the card's link takes visible focus.
-    const handleFocusIn = (event: FocusEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (!target?.matches(':focus-visible')) return;
-      const [width, height] = getSize();
-      sendPointer([width / 2, height / 2]);
-    };
-    const handleFocusOut = () => sendPointer(null);
-    if (forwardsPointer) {
-      surface.addEventListener('pointermove', handlePointerMove);
-      surface.addEventListener('pointerdown', handlePointerMove);
-      surface.addEventListener('pointerleave', handlePointerLeave);
-      if (isCardSurface) {
-        surface.addEventListener('focusin', handleFocusIn);
-        surface.addEventListener('focusout', handleFocusOut);
+        if (disposed || !visible) return;
+        if (!(await renderValidatedFrame(device, () => instance?.render(0)))) {
+          throw new Error('First frame failed GPU validation');
+        }
+        if (disposed || !visible) return;
+        const activeDevice = device;
+        void activeDevice.lost.then(info => {
+          if (!disposed && device === activeDevice) fail(info);
+        });
+        pointer?.attach(instance, loaded.parameters ?? []);
+        setBackend(device.type === 'webgpu' ? 'WebGPU' : 'WebGL2');
+        setIsReady(true);
+        if (!motionQuery.matches) frame = requestAnimationFrame(tick);
+      } catch (error) {
+        if (!disposed) fail(error);
+      } finally {
+        starting = false;
+        // Async device creation/compilation must finish before destroying its device.
+        if (disposed || !visible || !instance) disposeResources();
       }
     }
 
+    // A fresh canvas is needed when changing themes or when a released scene becomes visible again.
+    function restart() {
+      if (disposed) return;
+      setIsReady(false);
+      setGeneration(value => value + 1);
+    }
+
+    const intersectionObserver = new IntersectionObserver(
+      entries => {
+        const wasVisible = visible;
+        visible = entries.some(entry => entry.isIntersecting);
+        if (visible) void start();
+        else if (wasVisible && attempted) restart();
+      },
+      {rootMargin: pointerSurface === 'card' ? '0px' : '120px'}
+    );
+    intersectionObserver.observe(container);
+    const resizeObserver = new ResizeObserver(() => {
+      if (!instance || starting) return;
+      instance.resize?.(...getSize());
+      drawStill();
+    });
+    resizeObserver.observe(container);
+    const themeObserver = new MutationObserver(restart);
+    if (!theme)
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme']
+      });
+    motionQuery.addEventListener('change', restart);
+
     return () => {
-      isDestroyed = true;
-      stopLoop();
-      cancelAnimationFrame(pointerFrameHandle);
+      disposed = true;
+      cancelAnimationFrame(frame);
+      pointer?.destroy();
       intersectionObserver.disconnect();
       resizeObserver.disconnect();
       themeObserver.disconnect();
-      motionQuery.removeEventListener('change', rebuild);
-      surface.removeEventListener('pointermove', handlePointerMove);
-      surface.removeEventListener('pointerdown', handlePointerMove);
-      surface.removeEventListener('pointerleave', handlePointerLeave);
-      surface.removeEventListener('focusin', handleFocusIn);
-      surface.removeEventListener('focusout', handleFocusOut);
+      motionQuery.removeEventListener('change', restart);
       applyParametersRef.current = null;
-      releaseResources();
+      resetPointerRef.current = null;
+      canvas.remove();
+      if (!starting) disposeResources();
     };
-  }, [scene, seed, forwardsPointer, pointerSurface]);
-
-  // The backend label only makes sense while the canvas is live.
-  useEffect(() => {
-    if (!isReady) setBackend(null);
-  }, [isReady]);
+  }, [scene, seed, forwardsPointer, pointerSurface, theme, generation]);
 
   const changeParameter = (id: string, value: number) => {
     valuesRef.current = {...valuesRef.current, [id]: value};
@@ -388,14 +329,18 @@ export function GpuCanvas({
     valuesRef.current = {...valuesRef.current, ...defaults};
     setValues(valuesRef.current);
     applyParametersRef.current?.(defaults);
+    resetPointerRef.current?.();
   };
+
+  // Before the reader's first move the chip names the gesture; after it, the scene's readout.
+  const chipText = gesture.hint && !gesture.hasMoved ? gesture.hint : readout;
 
   const canvasBlock = (
     <div
       ref={containerRef}
       className={className ? `gpu-canvas ${className}` : 'gpu-canvas'}
       role="img"
-      aria-label={label}
+      aria-label={readout && isReady ? `${label}. ${readout}.` : label}
       data-ready={isReady ? 'true' : 'false'}
       data-interactive={forwardsPointer ? 'true' : undefined}
       style={{
@@ -409,9 +354,8 @@ export function GpuCanvas({
       <div style={{position: 'absolute', inset: 0, opacity: isReady ? 0 : 1, ...FADE}}>
         {fallback}
       </div>
-      <canvas
-        key={generation}
-        ref={canvasRef}
+      <div
+        ref={canvasHostRef}
         aria-hidden="true"
         style={{
           position: 'absolute',
@@ -423,8 +367,22 @@ export function GpuCanvas({
         }}
       />
       {forwardsPointer && hint && isReady ? (
-        <span className="gpu-canvas-hint" aria-hidden="true">
-          move pointer
+        <span
+          className="gpu-canvas-hint"
+          data-card={pointerSurface === 'card' || Boolean(gesture.hint) || undefined}
+          data-gesture={gesture.hint ? 'true' : undefined}
+          aria-hidden="true"
+        >
+          {pointerSurface === 'card'
+            ? // Once the reader is steering, the whole chip belongs to the readout.
+              (gesture.hasMoved && chipText ? [chipText] : [backend, chipText])
+                .filter(Boolean)
+                .join(' · ')
+            : gesture.hint
+              ? [chipText, gesture.isPinned ? 'pinned, click to release' : null]
+                  .filter(Boolean)
+                  .join(' · ')
+              : 'move pointer'}
         </span>
       ) : null}
     </div>
@@ -565,7 +523,11 @@ async function renderValidatedFrame(device: Device, renderFrame: () => void): Pr
     return true;
   }
   gpuDevice.pushErrorScope('validation');
-  renderFrame();
-  const error = await gpuDevice.popErrorScope();
+  let error: GPUError | null;
+  try {
+    renderFrame();
+  } finally {
+    error = await gpuDevice.popErrorScope();
+  }
   return error === null;
 }

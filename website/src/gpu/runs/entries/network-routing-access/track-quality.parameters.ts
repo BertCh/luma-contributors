@@ -8,10 +8,10 @@ export const parameters: GpuSceneParameter[] = [
   {
     id: 'maximumSpeed',
     label: 'thresholds (maximum speed)',
-    min: 0.02,
-    max: 0.4,
-    step: 0.01,
-    default: 0.07
+    min: 0.1,
+    max: 1.5,
+    step: 0.05,
+    default: 0.5
   },
   {id: 'maximumGap', label: 'thresholds (maximum gap)', min: 1, max: 10, step: 0.5, default: 4},
   {id: 'glitchRate', label: 'Data: glitch rate', min: 0, max: 0.2, step: 0.01, default: 0.08}

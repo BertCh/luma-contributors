@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Shared helpers for the terrain, relief and light runs: a seeded elevation tile in meters, the
+// Shared helpers for the terrain, relief and light runs: the Grand Canyon elevation tile in meters, the
 // grid and band the operations take, and drawing helpers that place cells in the run's world.
 
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -10,10 +10,8 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import type {RasterRunLayer, RunBuffer, RunBuilder} from '../../../define-run';
-import {createSmoothField, type RasterInput, type Random, type World} from '../../../inputs';
-
-/** Ground size of one cell in meters. */
-export const TERRAIN_CELL_SIZE = 30;
+import type {RasterInput, World} from '../../../inputs';
+import {normalizeElevation, sampleElevation} from '../../../../data/elevation';
 
 export type TerrainInput = RasterInput & {
   /** Elevation in meters, row 0 at the top. */
@@ -22,56 +20,11 @@ export type TerrainInput = RasterInput & {
   world: World;
 };
 
-/** Fractal terrain in meters with a few added summits so peak operations have something to find. */
-export function createTerrainInput(
-  random: Random,
-  world: World,
-  rows = 64,
-  reliefMeters = 700
-): TerrainInput {
-  const columns = Math.max(16, Math.round(rows * world.width));
-  const field = createSmoothField(random, 4, 3);
-  const raster: RasterInput = {
-    columns,
-    rows,
-    cellSize: TERRAIN_CELL_SIZE,
-    // Isotropic features: the unit square of the field is cropped vertically to the aspect ratio.
-    values: Float32Array.from({length: columns * rows}, (_, index) =>
-      field(
-        ((index % columns) + 0.5) / columns,
-        (Math.floor(index / columns) + 0.5) / (rows * world.width)
-      )
-    )
-  };
-  let low = Infinity;
-  let high = -Infinity;
-  for (const value of raster.values) {
-    low = Math.min(low, value);
-    high = Math.max(high, value);
-  }
-  for (let index = 0; index < raster.values.length; index++) {
-    raster.values[index] = (raster.values[index] - low) / (high - low);
-  }
-  const summits = Array.from({length: 5}, () => ({
-    x: 0.1 + 0.8 * random(),
-    y: 0.1 + 0.8 * random(),
-    height: 150 + 200 * random(),
-    spread: 0.04 + 0.04 * random()
-  }));
-  const elevation = new Float32Array(raster.values.length);
-  for (let index = 0; index < elevation.length; index++) {
-    const x = ((index % raster.columns) + 0.5) / raster.columns;
-    const y = (Math.floor(index / raster.columns) + 0.5) / raster.rows;
-    let height = raster.values[index] * reliefMeters;
-    for (const summit of summits) {
-      const distance =
-        ((x * world.width - summit.x * world.width) ** 2 + (y - summit.y) ** 2) /
-        summit.spread ** 2;
-      height += summit.height * Math.exp(-distance);
-    }
-    elevation[index] = height;
-  }
-  return {...raster, cellSize: TERRAIN_CELL_SIZE, elevation, world};
+/** Measured elevation and projected ground spacing of the centered Grand Canyon crop. */
+export function createTerrainInput(world: World, rows = 64): TerrainInput {
+  const columns = Math.max(16, Math.round((rows * world.width) / world.height));
+  const {elevation, cellSize} = sampleElevation(columns, rows);
+  return {columns, rows, cellSize, elevation, values: normalizeElevation(elevation), world};
 }
 
 /**
@@ -80,7 +33,7 @@ export function createTerrainInput(
  * vertices, snapped peaks) are directly in the run's drawing world.
  */
 export function makeTerrainGrid(terrain: RasterInput, worldHeight?: number): GPURasterMetadata {
-  const cellSize = worldHeight === undefined ? TERRAIN_CELL_SIZE : worldHeight / terrain.rows;
+  const cellSize = worldHeight === undefined ? terrain.cellSize : worldHeight / terrain.rows;
   return makeGPURasterMetadata({
     width: terrain.columns,
     height: terrain.rows,
@@ -121,7 +74,7 @@ export function uploadTerrain(
     elevation,
     cellCount: terrain.elevation.length,
     cellSize:
-      options.worldHeight === undefined ? TERRAIN_CELL_SIZE : options.worldHeight / terrain.rows
+      options.worldHeight === undefined ? terrain.cellSize : options.worldHeight / terrain.rows
   };
 }
 
@@ -217,3 +170,59 @@ export function getCellOfPercentage(
     Math.round((rowPercentage / 100) * (terrain.rows - 1))
   ];
 }
+
+/** The cell under a world position, clamped to the raster; the inverse of getCellWorldPosition. */
+export function getCellOfWorldPosition(
+  terrain: RasterInput,
+  world: World,
+  x: number,
+  y: number
+): [number, number] {
+  return [
+    Math.min(terrain.columns - 1, Math.max(0, Math.floor((x / world.width) * terrain.columns))),
+    Math.min(terrain.rows - 1, Math.max(0, Math.floor((1 - y / world.height) * terrain.rows)))
+  ];
+}
+
+/** World units per meter of ground: one world height spans rows times the cell size. */
+export function getWorldPerMeter(terrain: RasterInput, world: World): number {
+  return world.height / (terrain.rows * terrain.cellSize);
+}
+
+/** World units spanned by a number of cells. */
+export function getWorldPerCell(terrain: RasterInput, world: World): number {
+  return world.height / terrain.rows;
+}
+
+/**
+ * Local maxima spread over the frame: the highest first, each at least `minimumSpacingCells`
+ * (Chebyshev distance) from every one already kept.
+ */
+export function findSpreadLocalMaxima(
+  terrain: TerrainInput,
+  count: number,
+  minimumSpacingCells: number
+): number[] {
+  const kept: number[] = [];
+  for (const index of findLocalMaxima(terrain, terrain.elevation.length)) {
+    const column = index % terrain.columns;
+    const row = Math.floor(index / terrain.columns);
+    const isSpread = kept.every(
+      other =>
+        Math.max(
+          Math.abs((other % terrain.columns) - column),
+          Math.abs(Math.floor(other / terrain.columns) - row)
+        ) >= minimumSpacingCells
+    );
+    if (isSpread) kept.push(index);
+    if (kept.length === count) break;
+  }
+  return kept;
+}
+
+/** Visibility codes of the sight-line operations: hidden, visible, outOfRange (clear). */
+export const VISIBILITY_COLORS = [
+  [0.27, 0.1, 0.4, 1],
+  [0.2, 0.85, 0.4, 1],
+  [0, 0, 0, 0]
+] as const;

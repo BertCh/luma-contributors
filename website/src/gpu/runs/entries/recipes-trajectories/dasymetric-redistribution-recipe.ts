@@ -6,31 +6,52 @@
 // the ancillary raster shows through the fill.
 
 import {addDasymetricRedistributionRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getBuiltFraction} from './lib/land-cover';
 import {defineOperationRun} from '../../define-run';
+import {createBuiltUpZones} from './lib/built-up-zones';
 import {createQuadZones, getQuadFill, uploadQuadZones} from './lib/quads';
 import {createWorldGrid, getCellCenter, rasterizeZones} from './lib/rasterize';
 import {parameters} from './dasymetric-redistribution-recipe.parameters';
+
+/** The most built-up point of the map: the default center of the ancillary surface. */
+function findBuiltUpPeak(world: {width: number; height: number}): [number, number] {
+  let best: [number, number] = [world.width / 2, 0.5];
+  let bestValue = -1;
+  for (let row = 0; row < 32; row++) {
+    for (let column = 0; column < 32; column++) {
+      const x = (column + 0.5) / 32;
+      const y = (row + 0.5) / 32;
+      const value = getBuiltFraction(x, y);
+      if (value > bestValue) {
+        bestValue = value;
+        best = [Math.round(x * world.width * 50) / 50, Math.round(y * 50) / 50];
+      }
+    }
+  }
+  return best;
+}
+
+/** Radius (world units) of the bump the pointer adds to the ancillary surface. */
+const BUMP_RADIUS = 0.16;
 
 export default defineOperationRun({
   parameters,
   caption: 'Zone totals pushed down to target zones where the ancillary raster is bright.',
   createInputs: ({random, world}) => {
     const grid = createWorldGrid(world);
-    const source = createQuadZones(random, world, 4, 3);
+    const source = createBuiltUpZones(random, world, 4, 3);
     const target = createQuadZones(random, world, 9, 5, 0.16);
     return {
       world,
       grid,
       source,
       target,
-      targetZones: rasterizeZones(target.positions, target.count, 4, grid),
-      centers: [
-        [(0.25 + 0.3 * random()) * world.width, 0.3 + 0.4 * random()],
-        [(0.55 + 0.3 * random()) * world.width, 0.3 + 0.4 * random()]
-      ]
+      peak: findBuiltUpPeak(world),
+      targetZones: rasterizeZones(target.positions, target.count, 4, grid)
     };
   },
-  build(builder, {grid, source, target, targetZones, centers}, values) {
+  build(builder, inputs, values) {
+    const {grid, source, target, targetZones, world} = inputs;
     const cellCount = grid.width * grid.height;
     const sourceMesh = uploadQuadZones(builder, source, 'source');
     const targetMesh = uploadQuadZones(builder, target, 'target');
@@ -62,7 +83,7 @@ export default defineOperationRun({
       outputs: {targetTotals: targetTotals.view}
     });
     return {
-      outputs: {targetTotals, ancillary, targetMesh},
+      outputs: {targetTotals, ancillary, targetMesh, sourceMesh},
       update: current => {
         sourceTotals.write(
           Float32Array.from(source.values, value => 1000 * (0.3 + current.totals * value))
@@ -70,18 +91,40 @@ export default defineOperationRun({
         ancillary.write(
           Float32Array.from({length: cellCount}, (_, index) => {
             const [x, y] = getCellCenter(grid, index);
-            const core = centers.reduce(
-              (sum, [centerX, centerY]) =>
-                sum + Math.exp(-(((x - centerX) / 0.18) ** 2 + ((y - centerY) / 0.2) ** 2)),
-              0
+            // The built-up land, plus a bump the pointer places on the ancillary surface.
+            const bump = Math.exp(
+              -(((x - inputs.peak[0]) ** 2 + (y - inputs.peak[1]) ** 2) / BUMP_RADIUS ** 2)
             );
-            return 0.05 + current.core * core + 0.02 * Math.sin(x * 40 + y * 30) ** 2;
+            return (
+              0.05 +
+              current.core * Math.max(getBuiltFraction(x / world.width, y / world.height), bump)
+            );
           })
         );
       }
     };
   },
   rebuildOn: ['denominator'],
+  // The pointer places the center of the built-up peak on the ancillary surface; the totals flow
+  // toward the cells under it.
+  interaction: {
+    kind: 'drag',
+    hint: 'move the built-up peak',
+    rest: ({toUnit, inputs}) => toUnit(inputs.peak),
+    resolve(pointer, {inputs, outputs, peek}) {
+      inputs.peak = [Math.round(pointer.x * 50) / 50, Math.round(pointer.y * 50) / 50];
+      const totals = peek(outputs.targetTotals);
+      const largest = totals ? Math.max(0, ...Array.from(totals).filter(Number.isFinite)) : 0;
+      return {
+        rerun: true,
+        glyphs: [
+          {shape: 'ring', at: inputs.peak, radius: BUMP_RADIUS},
+          {shape: 'crosshair', at: inputs.peak, size: 5}
+        ],
+        readout: `peak (${inputs.peak[0].toFixed(2)}, ${inputs.peak[1].toFixed(2)}) · largest target ${Math.round(largest)}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     {
       layer: 'raster',
@@ -100,6 +143,13 @@ export default defineOperationRun({
       context: true,
       segments: outputs.targetMesh.outline,
       count: inputs.target.outlineCount
+    },
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.sourceMesh.outline,
+      count: inputs.source.outlineCount,
+      radius: 2.5
     }
   ]
 });

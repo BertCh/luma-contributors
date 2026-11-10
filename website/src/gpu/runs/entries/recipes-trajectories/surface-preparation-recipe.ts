@@ -6,6 +6,7 @@
 // surface.
 
 import {addSurfacePreparationRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getVegetationIndex} from './lib/ndvi';
 import {defineOperationRun} from '../../define-run';
 import {createSmoothField} from '../../inputs';
 import {createWorldGrid, getCellCenter} from './lib/rasterize';
@@ -15,19 +16,18 @@ const NO_DATA = -9999;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Holes filled and speckle filtered: the prepared surface.',
+  caption: 'Gap filling and rank filtering on a July 2021 Sentinel-2 NDVI scene.',
   createInputs: ({random, world}) => {
     const grid = createWorldGrid(world);
     const cellCount = grid.width * grid.height;
     return {
       world,
       grid,
-      surface: createSmoothField(random, 4, 3),
       gapField: createSmoothField(random, 4, 5),
       speckle: Float32Array.from({length: cellCount}, () => random() - 0.5)
     };
   },
-  build(builder, {world, grid, surface, gapField, speckle}, values) {
+  build(builder, {world, grid, gapField, speckle}, values) {
     const cellCount = grid.width * grid.height;
     const input = builder.allocate('input', 'float32', cellCount);
     const shown = builder.allocate('shown', 'float32', cellCount);
@@ -71,7 +71,8 @@ export default defineOperationRun({
         const holed = Float32Array.from({length: cellCount}, (_, index) => {
           const [x, y] = getCellCenter(grid, index);
           if (gapField(x / world.width, y / world.height) > current.gaps) return NO_DATA;
-          return surface(x / world.width, y / world.height) + speckle[index] * 0.25;
+          const value = getVegetationIndex(x / world.width, y / world.height, 0);
+          return Number.isFinite(value) ? value + speckle[index] * 0.1 : NO_DATA;
         });
         input.write(holed);
         shown.write(holed.map(value => (value === NO_DATA ? Number.NaN : value)));
@@ -79,22 +80,37 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['maximumDistance', 'radius', 'quantile'],
-  draw: ({inputs, outputs}) => [
-    {
-      layer: 'raster',
-      context: true,
-      values: outputs.shown,
-      columns: inputs.grid.width,
-      rows: inputs.grid.height,
-      range: [0, 1]
-    },
-    {
-      layer: 'raster',
-      values: outputs.result,
-      columns: inputs.grid.width,
-      rows: inputs.grid.height,
-      range: [0, 1],
-      smoothing: true
-    }
-  ]
+  // A curtain between the holed input (left) and the prepared surface (right).
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe input and prepared',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {values}) => ({
+      curtain: pointer.x,
+      glyphs: [{shape: 'curtain', x: pointer.x}],
+      readout: `input | prepared · fill ${values.maximumDistance} cells, rank r ${values.radius} q ${values.quantile}`
+    })
+  },
+  draw: ({inputs, outputs, interaction, world}) => {
+    const curtain = interaction.curtain ?? world.width / 2;
+    return [
+      {
+        layer: 'raster',
+        values: outputs.shown,
+        columns: inputs.grid.width,
+        rows: inputs.grid.height,
+        range: [0, 1],
+        clip: {side: 'left', x: curtain}
+      },
+      {
+        layer: 'raster',
+        values: outputs.result,
+        columns: inputs.grid.width,
+        rows: inputs.grid.height,
+        range: [0, 1],
+        smoothing: true,
+        clip: {side: 'right', x: curtain}
+      }
+    ];
+  }
 });

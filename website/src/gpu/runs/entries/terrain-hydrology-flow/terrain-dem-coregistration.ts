@@ -4,12 +4,14 @@
 // GPUTerrainDEMCoregistration between a reference DEM and a second epoch that is the same terrain
 // plus a constant vertical bias, plus real change (a thinning glacier) on unstable ground. The
 // median shift is fitted on the stable mask only, and the corrected difference is drawn: the bias
-// is gone, the glacier loss remains. The inset bar is the fitted shift. (The output interleaves difference and standard deviation, so
-// each cell is two pixels wide: difference left, uncertainty right.)
+// is gone, the glacier loss remains. A curtain swipes between the raw difference of the epochs
+// (bias and glacier) and the corrected one. The inset bars are the fitted shift and the true bias.
+// (The operation interleaves difference and standard deviation; the difference is copied out.)
 
 import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import {GPUTerrainDEMCoregistration} from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
+import {formatNumber} from '../../interaction';
 import {parameters} from './terrain-dem-coregistration.parameters';
 import {createTerrainInputs, getTerrainContextLayer} from './shared/terrain';
 
@@ -33,7 +35,13 @@ export default defineOperationRun({
       unstable[cell] = glacier > 0.1 ? 1 : 0;
       noise[cell] = (context.random() - 0.5) * 2 * NOISE_STANDARD_DEVIATION;
     }
-    return {...terrain, stableMask: unstable.map(value => 1 - value), glacierChange, noise};
+    return {
+      ...terrain,
+      stableMask: unstable.map(value => 1 - value),
+      glacierChange,
+      noise,
+      trueBias: parameters[0].default
+    };
   },
   build(builder, terrain) {
     const reference = builder.upload('reference', 'float32', terrain.elevation);
@@ -46,8 +54,11 @@ export default defineOperationRun({
     );
     const fit = builder.allocate('fit', 'float32', 4);
     // The fitted vertical shift (fit row 0), copied so it can be drawn as one bar.
-    const shift = builder.allocate('shift', 'float32', 1);
+    // Row 0 is the fitted shift (written by the kernel below), row 1 the bias that was applied.
+    const shift = builder.allocate('shift', 'float32', 2);
     const differences = builder.allocate('differences', 'float32', terrain.cellCount * 2);
+    const corrected = builder.allocate('corrected', 'float32', terrain.cellCount);
+    const raw = builder.allocate('raw-difference', 'float32', terrain.cellCount);
     builder.graph.add(
       new GPUTerrainDEMCoregistration({
         grid: terrain.grid,
@@ -74,42 +85,82 @@ export default defineOperationRun({
           ],
           invocationCount: 1,
           body: 'shiftTarget[shiftTargetOffset] = fitSource[fitSourceOffset];'
+        }),
+        // The operation interleaves difference and standard deviation: keep the difference.
+        createWGSLKernelNode(graph, {
+          id: 'corrected-difference',
+          operation: 'corrected-difference',
+          bindings: [
+            {name: 'interleaved', view: differences.view, type: 'f32', access: 'read'},
+            {name: 'difference', view: corrected.view, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: terrain.cellCount,
+          body: 'difference[differenceOffset + index] = interleaved[interleavedOffset + index * 2u];'
         })
       ]
     });
     return {
-      outputs: {reference, differences, shift},
+      outputs: {reference, corrected, raw, shift},
       update: current => {
         const epoch = new Float32Array(terrain.cellCount);
+        const rawDifference = new Float32Array(terrain.cellCount);
         for (let cell = 0; cell < terrain.cellCount; cell++) {
-          epoch[cell] =
-            terrain.elevation[cell] +
-            current.bias +
-            current.thinning * terrain.glacierChange[cell] +
-            terrain.noise[cell];
+          rawDifference[cell] =
+            current.bias + current.thinning * terrain.glacierChange[cell] + terrain.noise[cell];
+          epoch[cell] = terrain.elevation[cell] + rawDifference[cell];
         }
         moving.write(epoch);
+        // What the bars compare: the shift the fit finds (row 0, overwritten by the GPU) and the bias.
+        terrain.trueBias = current.bias;
+        shift.write(Float32Array.of(0, current.bias));
+        raw.write(rawDifference);
       }
     };
   },
-  draw: ({inputs, outputs}) => [
+  // x draws the curtain: the raw difference of the two epochs on the left, the corrected one on the
+  // right, both on one color range.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe raw | corrected',
+    rest: [0.5, 0.5],
+    resolve(pointer, {outputs, inputs, peek}) {
+      const shift = peek(outputs.shift);
+      return {
+        curtain: pointer.x,
+        glyphs: [{shape: 'curtain', x: pointer.x}],
+        readout: `raw | corrected · fitted shift ${shift ? formatNumber(shift[0], 3) : '...'} · true bias ${formatNumber(inputs.trueBias, 3)}`
+      };
+    }
+  },
+  draw: ({inputs, outputs, interaction}) => [
     getTerrainContextLayer(inputs, outputs.reference),
     {
       layer: 'raster',
-      values: outputs.differences,
-      columns: inputs.columns * 2,
+      clip: {side: 'left', x: interaction.curtain ?? 0},
+      values: outputs.raw,
+      columns: inputs.columns,
       rows: inputs.rows,
       ramp: 'diverging',
       range: [-0.1, 0.1],
-      alpha: 0.95
+      alpha: 0.85
     },
     {
-      // The median shift the operation fitted on stable ground: it follows the bias slider.
+      layer: 'raster',
+      clip: {side: 'right', x: interaction.curtain ?? 0},
+      values: outputs.corrected,
+      columns: inputs.columns,
+      rows: inputs.rows,
+      ramp: 'diverging',
+      range: [-0.1, 0.1],
+      alpha: 0.85
+    },
+    {
+      // The shift the operation fitted on stable ground, beside the bias that was applied.
       layer: 'chart',
       kind: 'bars',
       values: outputs.shift,
       range: [-0.12, 0.12],
-      rectangle: [0.84, 0.04, 0.97, 0.24],
+      rectangle: [0.8, 0.04, 0.97, 0.24],
       ramp: 'diverging'
     }
   ]

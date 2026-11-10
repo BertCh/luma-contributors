@@ -22,6 +22,10 @@ export type GpuSceneContext = {
   seed: number;
   /** Initial values of the scene's declared parameters, keyed by parameter id. */
   parameters: Record<string, number>;
+  /** The scene calls this when its pointer readout line changes (null clears it). */
+  reportReadout?(text: string | null): void;
+  /** The scene calls this with parameter values its pointer gesture wrote, so sliders can follow. */
+  reportParameters?(values: Record<string, number>): void;
 };
 
 /**
@@ -36,6 +40,8 @@ export type GpuSceneParameter = {
   max: number;
   step: number;
   default: number;
+  /** Prefer this control when scrubbing a catalog card with the pointer or arrow keys. */
+  cardScrub?: boolean;
   /** Optional unit shown after the value, for example `px` or `%`. */
   unit?: string;
   /**
@@ -51,6 +57,17 @@ export type GpuSceneInstance = {
   resize?(width: number, height: number): void;
   /** Pointer position in canvas pixels, or null when the pointer leaves. */
   setPointer?(position: [number, number] | null): void;
+  /** The scene's own pointer gesture: its kind and a two or three word hint for the chip. */
+  gesture?: {
+    kind: string;
+    hint: string;
+    /** Where the gesture rests (0 to 1 across the canvas, y down); arrow keys start from here. */
+    rest?: readonly [number, number];
+  };
+  /** Returns the pointer gesture to its rest state, the picture of the static poster. */
+  resetPointer?(): void;
+  /** Preferred parameter for horizontal card scrubbing when there is no native pointer interaction. */
+  scrubParameter?: GpuSceneParameter;
   /** New parameter values from the controls; only changed ids need to be present. */
   setParameters?(values: Record<string, number>): void;
   destroy(): void;

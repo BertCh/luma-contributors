@@ -11,19 +11,25 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createClusteredPoints} from '../../inputs';
+import {findParameter, snapToParameter} from '../../interaction';
+import {findNearestSamples} from './support/interpolation';
 import {parameters} from './inhomogeneous-point-pattern.parameters';
 
 const RADII = Float32Array.from({length: 24}, (_, index) => 0.01 + index * 0.01);
-const INSET = [0.6, 0.06, 0.97, 0.42] as const;
+const INSET = [0.04, 0.08, 0.4, 0.44] as const;
+// The bandwidths the pointer can settle on; the default is the middle one.
+const BANDWIDTHS = [0.04, 0.1, 0.16, 0.24, 0.4] as const;
 
 export default defineOperationRun({
   parameters,
   caption:
     'Event intensity (color) and the K function (inset) against complete spatial randomness.',
-  createInputs: ({random, world}) => ({
-    world,
-    events: createClusteredPoints(random, world, 260, 3, 0.25)
-  }),
+  createInputs: ({random, world}) => {
+    const events = createClusteredPoints(random, world, 260, 3, 0.25);
+    // The event nearest the middle of the right half anchors the bandwidth ring.
+    const [anchor] = findNearestSamples(events.positions, world.width * 0.7, 0.5, 1);
+    return {world, events, anchor};
+  },
   build(builder, {world, events}, values) {
     const window = new GPUStudyWindowPreparation({
       positions: builder.upload(
@@ -58,6 +64,33 @@ export default defineOperationRun({
     );
     const random = Float32Array.from(RADII, radius => Math.PI * radius * radius);
     return {outputs: {positions, intensity, k, random: builder.upload('csr', 'float32', random)}};
+  },
+  buildCache: 5,
+  rebuildOn: ['bandwidth', 'edgeCorrection', 'selfContribution'],
+  // The distance from the anchor event to the pointer is the kernel bandwidth; the intensity
+  // estimate is rebuilt once the pointer rests on one of five bandwidths.
+  interaction: {
+    kind: 'reach',
+    hint: 'stretch the bandwidth',
+    rest: ({inputs, toUnit}) => {
+      const {positions} = inputs.events;
+      return toUnit([positions[inputs.anchor * 2] + 0.25, positions[inputs.anchor * 2 + 1]]);
+    },
+    resolve(pointer, {inputs}) {
+      const {positions} = inputs.events;
+      const at: [number, number] = [positions[inputs.anchor * 2], positions[inputs.anchor * 2 + 1]];
+      const distance = Math.hypot(pointer.x - at[0], pointer.y - at[1]);
+      // Pointer distance 0 to 0.5 in five bands of 0.1.
+      const bandwidth = BANDWIDTHS[Math.min(BANDWIDTHS.length - 1, Math.floor(distance / 0.1))];
+      return {
+        settle: {bandwidth: snapToParameter(findParameter(parameters, 'bandwidth'), bandwidth)},
+        glyphs: [
+          {shape: 'ring', at, radius: bandwidth},
+          {shape: 'dot', at}
+        ],
+        readout: `bandwidth ${bandwidth.toFixed(2)}`
+      };
+    }
   },
   draw: ({outputs}) => [
     {layer: 'dots', positions: outputs.positions, values: outputs.intensity, radius: 4},

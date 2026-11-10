@@ -13,5 +13,5 @@ export const parameters: GpuSceneParameter[] = [
     step: 0.005,
     default: 0.035
   },
-  {id: 'stretch', label: 'Data: stretch', min: 0, max: 0.8, step: 0.05, default: 0.4}
+  {id: 'stretch', label: 'Data: stretch', min: 0, max: 0.8, step: 0.05, default: 0.2}
 ];

@@ -11,7 +11,15 @@ import {
   GPUOutlineGeometry
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createLineSet, createPackedSegments, OUTPUT_COLOR} from './shared/lines';
+import {findParameter, snapToParameter} from '../../interaction';
+import {
+  createLineSet,
+  createPackedSegments,
+  findNearestLine,
+  findNearestVertex,
+  findRestAround,
+  OUTPUT_COLOR
+} from './shared/lines';
 import {
   createBlobSet,
   createRingSegments,
@@ -31,8 +39,9 @@ export default defineOperationRun({
       index % 2 === 0 ? (0.08 + 0.84 * random()) * world.width : 0.08 + 0.84 * random()
     );
     return {
+      world,
       points,
-      lines: createLineSet(random, world, 3, 5, 2.5),
+      lines: createLineSet(random, world, 3, 5),
       blobs: createBlobSet(random, world, {
         rows: 1,
         columns: 3,
@@ -101,6 +110,46 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['geometryType'],
+  // The distance from the pointer to the nearest input element (point, line or ring) is the
+  // outline distance, so the edge of the outline passes under the cursor.
+  interaction: {
+    kind: 'reach',
+    hint: 'move off the input',
+    rest: ({inputs, toUnit}) =>
+      toUnit(
+        findRestAround(
+          [inputs.points[0], inputs.points[1]],
+          findParameter(parameters, 'distance').default,
+          (x, y) => findNearestVertex(inputs.points, x, y)?.distance ?? 0,
+          inputs.world
+        )
+      ),
+    resolve(pointer, {inputs, values}) {
+      const geometryType = values.geometryType;
+      const hit =
+        geometryType === 0
+          ? findNearestVertex(inputs.points, pointer.x, pointer.y)
+          : findNearestLine(
+              geometryType === 1
+                ? inputs.lines
+                : {positions: inputs.blobs.positions, lineOffsets: inputs.blobs.ringOffsets},
+              pointer.x,
+              pointer.y,
+              geometryType === 2
+            );
+      if (!hit) return {};
+      const distance = snapToParameter(findParameter(parameters, 'distance'), hit.distance);
+      return {
+        values: {distance},
+        glyphs: [
+          {shape: 'ring', at: hit.point, radius: distance, dashed: true},
+          {shape: 'line', from: hit.point, to: [pointer.x, pointer.y], dashed: true},
+          {shape: 'dot', at: hit.point}
+        ],
+        readout: `distance ${distance.toFixed(3)} · ${['points', 'lines', 'polygons'][geometryType]}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {
       layer: 'polygons',

@@ -9,7 +9,13 @@ import {
   GPUBufferSurface
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createPackedSegments, createZigzagLines} from './shared/lines';
+import {findParameter, snapToParameter} from '../../interaction';
+import {
+  createBendSet,
+  createPackedSegments,
+  findNearestLine,
+  findRestBesideLines
+} from './shared/lines';
 import {
   addPolygonDrawing,
   allocateOverlayOutput,
@@ -26,7 +32,8 @@ export default defineOperationRun({
   parameters,
   caption: 'Buffer polygons of a given distance around lines or polygons (input muted).',
   createInputs: ({random, world}) => ({
-    lines: createZigzagLines(random, world, 2, 8, 0.13),
+    world,
+    lines: createBendSet(world, 2, 16),
     blobs: createBlobSet(random, world, {
       rows: 1,
       columns: 3,
@@ -75,6 +82,45 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['joinStyle', 'geometry'],
+  // The distance from the pointer to the nearest input line or ring is the buffer distance, so the
+  // edge of the merged surface passes under the cursor.
+  interaction: {
+    kind: 'reach',
+    hint: 'move off the line',
+    rest: ({inputs, toUnit}) => {
+      const distance = findParameter(parameters, 'distance').default;
+      return toUnit(
+        findRestBesideLines(
+          inputs.lines,
+          distance,
+          (x, y) => findNearestLine(inputs.lines, x, y)?.distance ?? 0,
+          inputs.world
+        )
+      );
+    },
+    resolve(pointer, {inputs, values}) {
+      const isLines = values.geometry === 0;
+      const hit = findNearestLine(
+        isLines
+          ? inputs.lines
+          : {positions: inputs.blobs.positions, lineOffsets: inputs.blobs.ringOffsets},
+        pointer.x,
+        pointer.y,
+        !isLines
+      );
+      if (!hit) return {};
+      const distance = snapToParameter(findParameter(parameters, 'distance'), hit.distance);
+      return {
+        values: {distance},
+        glyphs: [
+          {shape: 'ring', at: hit.point, radius: distance, dashed: true},
+          {shape: 'line', from: hit.point, to: [pointer.x, pointer.y]},
+          {shape: 'dot', at: hit.point}
+        ],
+        readout: `distance ${distance.toFixed(3)} · ${JOIN_STYLES[values.joinStyle]} joins`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {
       layer: 'segments',

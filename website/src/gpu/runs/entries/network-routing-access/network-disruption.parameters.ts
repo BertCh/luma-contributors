@@ -5,6 +5,13 @@ import type {GpuSceneParameter} from '../../../types';
 
 // closures rewrites the recipe's edgeMask each frame; threshold is its accessibility parameter word.
 export const parameters: GpuSceneParameter[] = [
-  {id: 'closures', label: 'edgeMask (closed)', min: 0, max: 0.5, step: 0.02, default: 0.2},
+  {
+    id: 'closureRadius',
+    label: 'edgeMask (closure radius)',
+    min: 0.03,
+    max: 0.3,
+    step: 0.01,
+    default: 0.1
+  },
   {id: 'threshold', label: 'threshold', min: 0.2, max: 1.5, step: 0.05, default: 0.7}
 ];

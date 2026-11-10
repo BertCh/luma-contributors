@@ -15,5 +15,5 @@ export const parameters: GpuSceneParameter[] = [
     step: 0.05,
     default: 0.4
   },
-  {id: 'correlation', label: 'Data: correlation', min: -1, max: 1, step: 0.1, default: 0.8}
+  {id: 'mix', label: 'Data: energy added to area', min: -1, max: 1, step: 0.1, default: 0.6}
 ];

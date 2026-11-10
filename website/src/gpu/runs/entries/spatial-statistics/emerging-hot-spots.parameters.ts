@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to the per-frame settings of GPUEmergingHotSpots (`radius`, `temporalWindow`), plus how fast the planted hot spots grow and fade.
+// Bound to the per-frame settings of GPUEmergingHotSpots (`radius`, `temporalWindow`), plus the share of observed temporal contrast.
 export const parameters: GpuSceneParameter[] = [
   {id: 'radius', label: 'radius', min: 1, max: 3, step: 1, default: 1, unit: ' cells'},
   {
@@ -15,5 +15,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 1,
     unit: ' slices'
   },
-  {id: 'trend', label: 'Data: trend', min: 0, max: 1, step: 0.05, default: 0.8}
+  {id: 'trend', label: 'Data: temporal contrast', min: 0, max: 1, step: 0.05, default: 1}
 ];

@@ -8,7 +8,9 @@
 import {GPUNetworkKernelDensity} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {addCostMatrix, uploadSearch} from './shared/access';
+import {chooseSticky} from '../../pick';
 import {
+  createNodeIndex,
   createRoads,
   getRoadContext,
   getRoadValues,
@@ -40,12 +42,22 @@ export default defineOperationRun({
             )
           : network.findNearestNode(random() * world.width, random())
       );
+    const uniform = pick(false);
+    const clustered = pick(true);
+    const defaultClustering =
+      parameters.find(parameter => parameter.id === 'clustering')?.default ?? 0;
+    const lastIndex = EVENT_COUNT - 1;
     return {
       network,
       quadratureLengths,
-      uniform: pick(false),
-      clustered: pick(true),
-      events: new Uint32Array(EVENT_COUNT)
+      uniform,
+      clustered,
+      events: new Uint32Array(EVENT_COUNT),
+      index: createNodeIndex(network),
+      // The last event follows the pointer; it starts at the node the clustering slider gives it.
+      defaultLast:
+        lastIndex / EVENT_COUNT < defaultClustering ? clustered[lastIndex] : uniform[lastIndex],
+      dragNode: -1
     };
   },
   build(builder, inputs, values) {
@@ -83,6 +95,7 @@ export default defineOperationRun({
         const mix = Uint32Array.from(inputs.uniform, (uniformNode, index) =>
           index / EVENT_COUNT < current.clustering ? inputs.clustered[index] : uniformNode
         );
+        if (inputs.dragNode >= 0) mix[EVENT_COUNT - 1] = inputs.dragNode;
         eventNodes.write(mix);
         events.write(gatherPositions(network.nodes, mix));
         search.costLimit.write(Float32Array.of(4));
@@ -90,9 +103,38 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['bandwidth'],
+  // The pointer carries one event along the roads; the intensity re-forms around it.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag an event',
+    rest: ({inputs, toUnit}) =>
+      toUnit([
+        inputs.network.nodes[inputs.defaultLast * 2],
+        inputs.network.nodes[inputs.defaultLast * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const previous = inputs.dragNode >= 0 ? inputs.dragNode : inputs.defaultLast;
+      const node = chooseSticky(inputs.index, pointer.x, pointer.y, previous);
+      const changed = node !== inputs.dragNode;
+      inputs.dragNode = node;
+      const intensity = peek(outputs.intensity);
+      let peak = 0;
+      if (intensity)
+        for (const value of intensity) if (Number.isFinite(value)) peak = Math.max(peak, value);
+      const at: [number, number] = [
+        inputs.network.nodes[node * 2],
+        inputs.network.nodes[node * 2 + 1]
+      ];
+      return {
+        rerun: changed,
+        glyphs: [{shape: 'ring', at, radius: values.bandwidth, dashed: true}],
+        readout: `event at node ${node} · bandwidth ${values.bandwidth.toFixed(2)} · peak ${peak.toFixed(1)}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     getRoadContext(outputs),
-    getRoadValues(outputs, outputs.intensity, {radius: 2.4}),
+    getRoadValues(outputs, outputs.intensity, {radius: 2.4, range: [0, 12]}),
     {layer: 'dots', positions: outputs.events, radius: 5, color: [1, 1, 1, 1]}
   ]
 });

@@ -11,7 +11,7 @@ import {createTrajectories} from '../../inputs';
 import {addUint32Copy} from './shared/display';
 import {parameters} from './track-quality.parameters';
 
-const TRACK_COUNT = 14;
+const TRACK_COUNT = 7;
 const STEP_COUNT = 40;
 
 export default defineOperationRun({
@@ -20,12 +20,19 @@ export default defineOperationRun({
   createInputs: ({random, world}) => {
     const tracks = createTrajectories(random, world, TRACK_COUNT, STEP_COUNT);
     const fixCount = tracks.points.length / 2;
+    const jumpChances = Float32Array.from({length: fixCount}, () => random());
     return {
       tracks,
-      jumpChance: Float32Array.from({length: fixCount}, () => random()),
+      jumpChance: jumpChances,
       jumpOffset: Float32Array.from({length: fixCount * 2}, () => (random() - 0.5) * 0.5),
       // Each fix that follows a gap waits 1.5 to 10.5 time units, so `maximumGap` sorts them.
       gapChance: Float32Array.from({length: fixCount}, () => random()),
+      // The fix the pointer drags (-1: none) and where it holds it.
+      drag: {index: -1, x: 0, y: 0},
+      // A fix that no default glitch moves, so the rest pointer reproduces the default picture.
+      restFix: Array.from({length: fixCount}, (_, fix) => fix).find(
+        fix => fix > 60 && !tracks.trackOffsets.includes(fix) && jumpChances[fix] >= 0.25
+      ) as number,
       points: new Float32Array(fixCount * 2),
       timestamps: new Float32Array(fixCount),
       segments: new Float32Array((fixCount - TRACK_COUNT) * 4)
@@ -71,6 +78,10 @@ export default defineOperationRun({
           }
           inputs.timestamps[fix] = tracks.timestamps[fix] + elapsedExtra;
         }
+        if (inputs.drag.index >= 0) {
+          inputs.points[inputs.drag.index * 2] = inputs.drag.x;
+          inputs.points[inputs.drag.index * 2 + 1] = inputs.drag.y;
+        }
         let segment = 0;
         for (let fix = 0; fix < fixCount - 1; fix++) {
           if (tracks.trackOffsets.includes(fix + 1)) continue;
@@ -91,8 +102,68 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({outputs}) => [
+  // Drag: the fix nearest the pointer follows it; a fix pulled off its track breaks the speed limit.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag a fix',
+    rest: ({inputs, toUnit}) =>
+      toUnit([
+        inputs.tracks.points[inputs.restFix * 2],
+        inputs.tracks.points[inputs.restFix * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      let fix = inputs.drag.index;
+      let nearest = Infinity;
+      const distanceTo = (candidate: number) =>
+        Math.hypot(
+          inputs.tracks.points[candidate * 2] - pointer.x,
+          inputs.tracks.points[candidate * 2 + 1] - pointer.y
+        );
+      for (let candidate = 0; candidate < inputs.tracks.points.length / 2; candidate++) {
+        if (inputs.tracks.trackOffsets.includes(candidate)) continue;
+        const distance = distanceTo(candidate);
+        if (distance < nearest) {
+          nearest = distance;
+          fix = candidate;
+        }
+      }
+      if (inputs.drag.index >= 0 && distanceTo(fix) > distanceTo(inputs.drag.index) * 0.85) {
+        fix = inputs.drag.index;
+      }
+      const changed =
+        fix !== inputs.drag.index || pointer.x !== inputs.drag.x || pointer.y !== inputs.drag.y;
+      inputs.drag = {index: fix, x: pointer.x, y: pointer.y};
+      const flags = peek(outputs.flags);
+      let flagged = 0;
+      if (flags) for (const flag of flags) if (flag !== 0) flagged++;
+      return {
+        rerun: changed,
+        glyphs: [
+          {
+            shape: 'line',
+            from: [inputs.tracks.points[fix * 2], inputs.tracks.points[fix * 2 + 1]],
+            to: [pointer.x, pointer.y],
+            dashed: true
+          },
+          {shape: 'crosshair', at: [pointer.x, pointer.y], size: 12}
+        ],
+        readout: `fix ${fix} · maximumSpeed ${values.maximumSpeed.toFixed(2)} · flagged ${flagged}`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     {layer: 'lines', context: true, segments: outputs.lines, radius: 1},
-    {layer: 'dots', positions: outputs.positions, values: outputs.flags, radius: 5}
+    // Clean fixes muted, flagged fixes bright with an ink ring.
+    {
+      layer: 'dots',
+      positions: outputs.positions,
+      values: outputs.flags,
+      ramp: 'categorical',
+      categories: [
+        [...theme.muted, 0.35],
+        ...theme.categories.slice(0, 4).map(color => [...color, 1] as const)
+      ],
+      radius: 6
+    }
   ]
 });

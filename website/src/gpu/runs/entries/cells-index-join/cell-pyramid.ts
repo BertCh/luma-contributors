@@ -6,14 +6,17 @@
 
 import {GPUCellPyramid} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createClusteredPoints} from '../../inputs';
+import type {RunGlyph} from '../../interaction';
+import {getHonshuEvents, HONSHU_WINDOW} from '../../../data/point-observations';
 import {
   addCellFill,
+  addPointerCell,
   addPointKeys,
   allocateCellTable,
   getCellFamily,
   getCellTableViews
 } from './support/cells';
+import {findKeyRows, getWindowCenter, readPointerCell} from './support/pointer';
 import {parameters} from './cell-pyramid.parameters';
 
 const LEVEL_COUNT = 4;
@@ -21,8 +24,12 @@ const LEVEL_CAPACITY = 2048;
 
 export default defineOperationRun({
   parameters,
+  geographicWindow: HONSHU_WINDOW,
   caption: 'One aggregation pass, four zoom levels: finest first.',
-  createInputs: ({random, world}) => createClusteredPoints(random, world, 900, 4, 0.12),
+  createInputs: ({random}) => ({
+    ...getHonshuEvents(random, 900),
+    pointer: [...getWindowCenter(HONSHU_WINDOW)] as [number, number]
+  }),
   build(builder, points, values) {
     const family = getCellFamily(values.family);
     const resolutions = family === 'h3' ? [6, 5, 4, 3] : [11, 10, 9, 8];
@@ -43,17 +50,48 @@ export default defineOperationRun({
         output: {levels: levels.map(getCellTableViews), levelCounts: levelCounts.view}
       })
     );
+    const pointer = builder.allocate('pointer', 'float32x2', 1);
     return {
       outputs: {
         levels,
+        // The pointer keyed at every level of the pyramid by the same GPUPointToCell.
+        pointerCells: resolutions.map((resolution, level) =>
+          addPointerCell(builder, family, resolution, pointer, `pointer-${level}`)
+        ),
         levelFills: levels.map((level, index) =>
           addCellFill(builder, family, level.cells, `fill-${index}`)
         )
       },
-      update: () => undefined
+      update: () => pointer.write(Float32Array.from(points.pointer))
     };
   },
   rebuildOn: ['family'],
+  // The cell under the pointer at all four levels, nested, with each level's sum from its table.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a cell',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, peek}) {
+      inputs.pointer = [pointer.x, pointer.y];
+      const glyphs: RunGlyph[] = [];
+      const sums: string[] = [];
+      outputs.pointerCells.forEach((pointerCell, level) => {
+        const cell = readPointerCell(peek, pointerCell);
+        if (cell.outline) glyphs.push(cell.outline);
+        const table = outputs.levels[level];
+        const keys = peek(table.cells);
+        const count = peek(table.count);
+        const tableSums = peek(table.sumValues);
+        let sum = '…';
+        if (cell.keys && keys && count && tableSums) {
+          const [row] = findKeyRows(keys, count[0], cell.keys);
+          sum = row === undefined ? '0' : tableSums[row].toFixed(0);
+        }
+        sums.push(`L${level} ${sum}`);
+      });
+      return {rerun: true, glyphs, readout: `sum ${sums.join(' · ')}`};
+    }
+  },
   draw: ({outputs, values}) => {
     const fill = outputs.levelFills[values.level];
     return [

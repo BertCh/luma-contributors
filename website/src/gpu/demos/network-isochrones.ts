@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUNetworkReachability. Least travel cost over a jittered street grid. The pointer picks
+// Demo: GPUNetworkReachability. Least travel cost over streets around Market Street, San Francisco. The pointer picks
 // the origin, sliders set the travel budget (cost limit) and congestion (road costs). Roads are
 // colored by the GPU's cost buffer, banded into time rings.
 
 import {GPUNetworkReachability} from '@luma-contributors/analysis/gpu-network';
 import {createStreetNetwork} from './street-network';
+import type {RunGlyph} from '../runs/interaction';
+import {chooseSticky, createPointIndex} from '../runs/pick';
+import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
 import {NETWORK_ISOCHRONES_PARAMETERS, readParameterValues} from './parameters';
 import {
@@ -17,17 +20,15 @@ import {
   DrawScheduler,
   drawLayers,
   getDemoTheme,
-  getWorldPosition,
   GraphRunner,
   importBufferView,
-  makeRandom,
   SegmentLayer,
   type DemoView
 } from './kit';
 
 export const parameters = NETWORK_ISOCHRONES_PARAMETERS;
 
-const ROWS = 20;
+const MAXIMUM_NODES = 640;
 
 const scene: GpuScene = async context => {
   const {device} = context;
@@ -36,9 +37,8 @@ const scene: GpuScene = async context => {
   const parameterValues = readParameterValues(parameters, context.parameters);
   const worldWidth = context.width / context.height;
   const view: DemoView = {worldWidth, worldHeight: 1, width: context.width, height: context.height};
-  const random = makeRandom(context.seed);
 
-  const network = createStreetNetwork(random, worldWidth, ROWS);
+  const network = createStreetNetwork(worldWidth, MAXIMUM_NODES);
   const {nodes, nodeCount, edgeCount, slotCount, findNearestNode} = network;
   const weights = new Float32Array(slotCount);
   const fillWeights = () => network.fillWeights(weights, parameterValues.congestion);
@@ -98,35 +98,64 @@ const scene: GpuScene = async context => {
       solid: [muted[0], muted[1], muted[2], 0.35]
     });
     origin.update(view, theme, {mode: -1, radius: 7, solid: [...theme.ink, 1], hillshade: 1});
-    drawLayers(device, theme, [roads, origin]);
+    drawLayers(device, theme, [roads, origin, ...driver.getLayers()]);
   };
   const scheduler = new DrawScheduler(draw);
 
+  const nodeIndex = createPointIndex(nodes, nodeCount);
+  const driver = createPointerDriver({
+    device,
+    view,
+    theme,
+    reducedMotion: context.reducedMotion,
+    kind: 'place',
+    hint: 'move the origin',
+    rest: pointerContext => pointerContext.toUnit([nodes[startNode * 2], nodes[startNode * 2 + 1]]),
+    reportReadout: context.reportReadout,
+    requestDraw: () => scheduler.request(),
+    resolve(pointer) {
+      const nextStart = chooseSticky(nodeIndex, pointer.x, pointer.y, startNode);
+      if (nextStart !== startNode) {
+        startNode = nextStart;
+        isDirty = true;
+        scheduler.request();
+      }
+      const snapped: [number, number] = [nodes[startNode * 2], nodes[startNode * 2 + 1]];
+      const glyphs: RunGlyph[] = [
+        {shape: 'line', from: [pointer.x, pointer.y], to: snapped, dashed: true},
+        {shape: 'crosshair', at: snapped, size: 12},
+        {shape: 'dot', at: snapped}
+      ];
+      return {
+        glyphs,
+        readout: `origin node ${startNode} · budget ${parameterValues.costLimit.toFixed(2)}`
+      };
+    }
+  });
+
   return {
-    render() {
+    gesture: driver.gesture,
+    render(time) {
+      driver.advance(time);
       scheduler.flush();
     },
     setParameters(update) {
       Object.assign(parameterValues, update);
       isDirty = true;
+      driver.refresh();
       scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      driver.refresh();
       scheduler.request();
     },
-    setPointer(position) {
-      if (!position) return;
-      const [x, y] = getWorldPosition(view, position);
-      const nextStart = findNearestNode(x, y);
-      if (nextStart === startNode) return;
-      startNode = nextStart;
-      isDirty = true;
-      scheduler.request();
-    },
+    setPointer: driver.setPointer,
+    resetPointer: driver.resetPointer,
     destroy() {
       scheduler.cancel();
+      driver.destroy();
       roads.destroy();
       origin.destroy();
       runner.destroy();

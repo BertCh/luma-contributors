@@ -26,14 +26,28 @@ import {
   groupCapturesBySlot,
   ShapeBatch
 } from '../../record-demo';
+import {createDimShape, getBoxGlyph, getColumnAt, getDimLayer, type Box} from './_lib/record-probe';
 import {parameters} from './computation-captures.parameters';
 
-const MAXIMUM_SNAPSHOTS = 6;
+/** What the last run drew, for the pointer: its grid, the rounds of its frames, how many settled. */
+type Latest = {
+  gridArea: Box;
+  columns: number;
+  rounds: number[];
+  settledByRound: number[];
+  tractCount: number;
+};
+// The grid of captured frames spans these fractions of the picture's width.
+const GRID_FRACTIONS = [0.03, 0.66] as const;
 
 export default defineOperationRun({
   parameters,
   caption: 'The captures sidecar: snapshots, a settledAt stamp and how many of each it holds.',
-  createInputs: ({random, world}) => ({tracts: createRecordTracts(random), world}),
+  createInputs: ({random, world}) => ({
+    tracts: createRecordTracts(random),
+    world,
+    latest: null as Latest | null
+  }),
   build(builder, {tracts}, values) {
     const recorder = new GPUComputationRecorder();
     const arena = builder.own(
@@ -106,7 +120,13 @@ export default defineOperationRun({
       validateGPUComputationSidecars(record, {captures}).valid;
 
     // Draw the sidecar: snapshots as columns, the stamp as a map, the array lengths as bars.
-    const gridArea = {x0: 0.03 * world.width, x1: 0.66 * world.width, y0: 0.3, y1: 0.97};
+    const gridArea = {
+      x0: GRID_FRACTIONS[0] * world.width,
+      x1: GRID_FRACTIONS[1] * world.width,
+      y0: 0.3,
+      y1: 0.97
+    };
+    const columns = values.snapshots;
     const outlines = new ShapeBatch();
     const state = new ShapeBatch();
     const residual = new ShapeBatch();
@@ -116,9 +136,9 @@ export default defineOperationRun({
       for (const value of Array.from(frame.values))
         maximumResidual = Math.max(maximumResidual, value);
     }
-    for (let column = 0; column < MAXIMUM_SNAPSHOTS; column++) {
+    for (let column = 0; column < columns; column++) {
       for (const [row, batch] of [state, residual].entries()) {
-        const cell = getGridCell(gridArea, MAXIMUM_SNAPSHOTS, 2, column, row);
+        const cell = getGridCell(gridArea, columns, 2, column, row);
         outlines.addOutline(cell);
         const frame = bySlot.get(row === 0 ? 'state' : 'residual')?.[column];
         if (frame) batch.addTractMap(tracts, cell, frame.values);
@@ -138,7 +158,19 @@ export default defineOperationRun({
       captures.stamps.length,
       captures.replays.length
     );
+    const settledByRound = Array.from(
+      {length: values.iterations + 1},
+      (_, round) => settledAt.filter(settled => settled <= round).length
+    );
+    inputs.latest = {
+      gridArea,
+      columns,
+      rounds: [...chosen].sort((first, second) => first - second).map(index => index + 1),
+      settledByRound,
+      tractCount: tracts.count
+    };
     return {
+      dim: createDimShape(upload, 'dim', gridArea),
       outlines: outlines.uploadSegments(upload, 'outlines'),
       outlineCount: outlines.segmentCount,
       state: state.uploadShapes(upload, 'state'),
@@ -149,7 +181,36 @@ export default defineOperationRun({
       maximumResidual
     };
   },
-  draw: ({extra, theme}) => [
+  // The pointer is a playhead over the captured frames: frames to its right are dimmed, and the
+  // settledAt map shows only the tracts that had settled by the playhead's round.
+  interaction: {
+    kind: 'time',
+    hint: 'scrub the frames',
+    rest: [GRID_FRACTIONS[1], 0.5],
+    resolve(pointer, {inputs}) {
+      const latest = inputs.latest;
+      if (!latest) return {readout: 'scrub the frames'};
+      const {gridArea, columns} = latest;
+      const column = getColumnAt(gridArea.x0, gridArea.x1, columns, pointer.x);
+      const width = (gridArea.x1 - gridArea.x0) / columns;
+      const round = latest.rounds[column] ?? latest.rounds[latest.rounds.length - 1] ?? 1;
+      const settled = latest.settledByRound[Math.min(round, latest.settledByRound.length - 1)];
+      return {
+        curtain: gridArea.x0 + (column + 1) * width,
+        focus: round,
+        glyphs: [
+          getBoxGlyph({
+            x0: gridArea.x0 + column * width,
+            x1: gridArea.x0 + (column + 1) * width,
+            y0: gridArea.y0,
+            y1: gridArea.y1
+          })
+        ],
+        readout: `snapshot ${column + 1} of ${columns} · round ${round} · ${settled} of ${latest.tractCount} tracts settled`
+      };
+    }
+  },
+  draw: ({extra, theme, interaction}) => [
     {layer: 'lines', context: true, segments: extra.outlines, count: extra.outlineCount, radius: 1},
     {
       layer: 'polygons',
@@ -174,16 +235,23 @@ export default defineOperationRun({
       positions: extra.stampMap.positions,
       indices: extra.stampMap.indices,
       owners: extra.stampMap.owners,
-      // The settle round is a label: one color per round, muted for tracts that never settled.
+      // The settle round is a label: one color per round; rounds after the playhead are muted.
       values: extra.stampMap.categories,
       triangleCount: extra.stampMap.triangleCount,
-      categories: [theme.muted, ...theme.categories]
+      categories: [theme.muted, ...theme.categories].map((color, round) =>
+        round === 0 || typeof interaction.focus !== 'number' || round <= interaction.focus
+          ? color
+          : theme.muted
+      )
     },
+    ...(interaction.curtain === undefined
+      ? []
+      : [getDimLayer(extra.dim, theme.background, interaction.curtain)]),
     {
       layer: 'chart',
       kind: 'bars',
       values: extra.counts,
-      range: [0, MAXIMUM_SNAPSHOTS * 2],
+      range: [0, 12],
       rectangle: [0.05, 0.04, 0.5, 0.24],
       color: [...theme.categories[6], 1]
     },

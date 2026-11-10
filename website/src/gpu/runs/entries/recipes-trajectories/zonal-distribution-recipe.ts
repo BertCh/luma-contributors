@@ -6,8 +6,10 @@
 
 import {addZonalDistributionRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, getFractionOf, getParameterAt} from '../../interaction';
 import {createClusteredPoints} from '../../inputs';
 import {createQuadZones, getPolygonPort, getQuadFill, uploadQuadZones} from './lib/quads';
+import {findZoneAt, getZoneRing} from './lib/zone-lookup';
 import {parameters} from './zonal-distribution-recipe.parameters';
 
 const POINT_COUNT = 2500;
@@ -17,8 +19,8 @@ export default defineOperationRun({
   caption: 'Quantile of the point values inside each zone.',
   createInputs: ({random, world}) => ({
     world,
-    zones: createQuadZones(random, world),
-    points: createClusteredPoints(random, world, POINT_COUNT, 3, 0.25),
+    zones: createQuadZones(random, world, 12, 7),
+    points: createClusteredPoints(random, world, POINT_COUNT, 4, 0.2),
     draws: Float32Array.from({length: POINT_COUNT}, () => random() + random() - 1)
   }),
   build(builder, {zones, points, world, draws}) {
@@ -55,8 +57,30 @@ export default defineOperationRun({
       }
     };
   },
+  // x is the probability of the quantile; the zone under the pointer reports its own value.
+  interaction: {
+    kind: 'level',
+    hint: 'slide the quantile',
+    rest: ({toUnit, inputs}) => [
+      getFractionOf(findParameter(parameters, 'probability'), parameters[0].default),
+      toUnit([inputs.zones.centers[0], inputs.zones.centers[1]])[1]
+    ],
+    resolve(pointer, {inputs, outputs, peek}) {
+      const probability = getParameterAt(findParameter(parameters, 'probability'), pointer.unitX);
+      const zone = findZoneAt(inputs.zones, pointer.x, pointer.y);
+      const quantiles = peek(outputs.quantiles);
+      return {
+        values: {probability},
+        glyphs: [{shape: 'polyline', points: getZoneRing(inputs.zones, zone), closed: true}],
+        readout: `probabilities ${probability.toFixed(2)} · zone ${zone} q = ${quantiles && Number.isFinite(quantiles[zone]) ? quantiles[zone].toFixed(1) : 'no points'}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
-    getQuadFill(outputs.mesh, inputs.zones, outputs.quantiles, {ramp: 'sequential'}),
+    getQuadFill(outputs.mesh, inputs.zones, outputs.quantiles, {
+      ramp: 'sequential',
+      range: [0, 12]
+    }),
     {
       layer: 'lines',
       context: true,

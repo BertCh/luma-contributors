@@ -5,7 +5,7 @@
 // slows the walker (Tobler's hiking function or GRASS-style coefficients) and a friction raster
 // (a river band here) slows them further. The cost surface is published once the relaxation has
 // converged; too few `maximumIterations` leave it blank. Model, friction weight and iterations are
-// construction props; the source cell is rewritten per frame.
+// construction props; the source cell is rewritten per frame and placed by the pointer.
 
 import {
   GPURasterWalkingCost,
@@ -13,33 +13,41 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createFractalRaster} from '../../inputs';
+import {normalizeElevation, sampleElevation} from '../../../data/elevation';
+import {clamp, findParameter} from '../../interaction';
 import {parameters} from './walking-cost.parameters';
 import {drawRaster} from './support/bands';
+import {getCellAt, getCellBox, getCellCenter} from './support/gestures';
 
-const CELL_SIZE = 30;
+const SOURCE_X = findParameter(parameters, 'sourceX');
 
 export default defineOperationRun({
   parameters,
   rebuildOn: ['model', 'frictionWeight', 'maximumIterations'],
   caption: 'Terrain, friction and a source in; the walking time to every cell out.',
-  createInputs: ({random, world}) => {
-    const raster = createFractalRaster(random, world, 44, 5);
-    // Elevation in meters, and a river band (friction 4) crossing the map.
-    const elevation = raster.values.map(value => value * 700);
-    const friction = Float32Array.from(raster.values, (_, index) => {
-      const column = (index % raster.columns) / raster.columns;
-      const row = Math.floor(index / raster.columns) / raster.rows;
-      return Math.abs(row - (0.5 + 0.18 * Math.sin(column * 7))) < 0.04 ? 4 : 1;
-    });
-    return {...raster, elevation, friction};
+  createInputs: ({world}) => {
+    const rows = 44;
+    const columns = Math.round((rows * world.width) / world.height);
+    const {elevation, cellSize} = sampleElevation(columns, rows);
+    // A valley-floor travel penalty illustrates the additional friction near the Colorado River.
+    const friction = elevation.map(height => (height < 790 ? 4 : 1));
+    return {
+      columns,
+      rows,
+      cellSize,
+      elevation,
+      values: normalizeElevation(elevation),
+      friction,
+      // The source row is a pointer-owned input; the column is the sourceX parameter.
+      sourceRow: Math.floor(rows / 2)
+    };
   },
   build(builder, inputs, values) {
     const cellCount = inputs.values.length;
     const grid = makeGPURasterMetadata({
       width: inputs.columns,
       height: inputs.rows,
-      cellSize: CELL_SIZE
+      cellSize: inputs.cellSize
     });
     const elevation = builder.upload('elevation', 'float32', inputs.elevation);
     const friction = builder.upload('friction', 'float32', inputs.friction);
@@ -68,13 +76,43 @@ export default defineOperationRun({
       update: current => {
         const data = new Uint32Array(cellCount);
         const column = Math.round(current.sourceX * (inputs.columns - 1));
-        data[Math.floor(inputs.rows / 2) * inputs.columns + column] = 1;
+        data[inputs.sourceRow * inputs.columns + column] = 1;
         sources.write(data);
       }
     };
   },
+  interaction: {
+    kind: 'place',
+    hint: 'place the walker',
+    rest: ({inputs}) => [
+      (Math.round(SOURCE_X.default * (inputs.columns - 1)) + 0.5) / inputs.columns,
+      (Math.floor(inputs.rows / 2) + 0.5) / inputs.rows
+    ],
+    resolve: (pointer, {inputs, outputs, world, peek}) => {
+      const {column, row} = getCellAt(inputs, world, pointer);
+      inputs.sourceRow = row;
+      const costs = peek(outputs.costs);
+      let farthest = 0;
+      if (costs)
+        for (const cost of costs) if (Number.isFinite(cost)) farthest = Math.max(farthest, cost);
+      return {
+        values: {sourceX: clamp(column / (inputs.columns - 1), SOURCE_X.min, SOURCE_X.max)},
+        rerun: true,
+        glyphs: [
+          getCellBox(inputs, world, column, row, 1),
+          {shape: 'crosshair', at: getCellCenter(inputs, world, column, row)}
+        ],
+        readout: `source [${column}, ${row}] | farthest ${(farthest / 3600).toFixed(1)} h`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     drawRaster(inputs, outputs.terrain, {context: true, range: [0, 1]}),
-    drawRaster(inputs, outputs.costs, {ramp: 'sequential', bands: 12, alpha: 0.9})
+    drawRaster(inputs, outputs.costs, {
+      ramp: 'sequential',
+      range: [0, 28800],
+      bands: 12,
+      alpha: 0.9
+    })
   ]
 });

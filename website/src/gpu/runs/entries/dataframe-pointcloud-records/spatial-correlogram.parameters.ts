@@ -24,5 +24,5 @@ export const parameters: GpuSceneParameter[] = [
     step: 0.05,
     default: 0.4
   },
-  {id: 'noise', label: 'Data: noise', min: 0, max: 3, step: 0.1, default: 0.8}
+  {id: 'noise', label: 'Data: noise', min: 0, max: 3, step: 0.1, default: 0}
 ];

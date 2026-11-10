@@ -11,15 +11,19 @@ import {
   GPUAZPRegions
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
 import {makeRandom} from '../../../demos/kit';
 import {uploadSpatialWeights} from '../../inputs';
 import {parameters} from './azp-regions.parameters';
 import {uploadTractMesh} from './support/geometry';
-import {createRegionScene, drawLabels} from './support/regions';
+import {createPartitionBorders, createRegionScene, drawLabels} from './support/regions';
+
+// The iteration limits the pointer can settle on; the default is the last.
+const ITERATIONS = [1, 3, 5, 9, 31] as const;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Starting partition improved by moving border tracts.',
+  caption: 'Starting partition (white borders) improved by moving border tracts.',
   createInputs: ({world}) => createRegionScene(makeRandom(7), world, 8, 2),
   build(builder, scene, current) {
     const {tracts, attributes, columnCount} = scene;
@@ -65,7 +69,50 @@ export default defineOperationRun({
         }
       })
     );
-    return {outputs: {labels, ...uploadTractMesh(builder, tracts)}};
+    // Borders of the starting partition, to see which tracts the iterations moved.
+    const startBorders = createPartitionBorders(scene, initialLabels);
+    return {
+      outputs: {
+        labels,
+        startBorders: builder.upload('start-borders', 'float32x4', startBorders),
+        startBorderCount: startBorders.length / 4,
+        ...uploadTractMesh(builder, tracts)
+      }
+    };
   },
-  draw: ({inputs, outputs}) => drawLabels(inputs, outputs, outputs.labels)
+  buildCache: 5,
+  rebuildOn: ['regionCapacity', 'maximumIterations', 'seed'],
+  // x gives the search more iterations: the regions are rebuilt once the pointer rests on a
+  // limit, and the borders of the starting partition stay drawn for comparison.
+  interaction: {
+    kind: 'time',
+    hint: 'allow more iterations',
+    rest: [0.9, 0.5],
+    resolve(pointer, {world}) {
+      const index = Math.min(ITERATIONS.length - 1, Math.floor(pointer.unitX * ITERATIONS.length));
+      const glyphs: RunGlyph[] = ITERATIONS.map((_, stop) => ({
+        shape: 'dot',
+        at: [((stop + 0.5) / ITERATIONS.length) * world.width, 0.03]
+      }));
+      glyphs.push({
+        shape: 'crosshair',
+        at: [((index + 0.5) / ITERATIONS.length) * world.width, 0.03]
+      });
+      return {
+        settle: {maximumIterations: ITERATIONS[index]},
+        glyphs,
+        readout: `maximumIterations ${ITERATIONS[index]}`
+      };
+    }
+  },
+  draw: ({inputs, outputs}) => [
+    ...drawLabels(inputs, outputs, outputs.labels),
+    {
+      layer: 'lines',
+      segments: outputs.startBorders,
+      count: outputs.startBorderCount,
+      radius: 1.6,
+      color: [1, 1, 1, 0.9]
+    }
+  ]
 });

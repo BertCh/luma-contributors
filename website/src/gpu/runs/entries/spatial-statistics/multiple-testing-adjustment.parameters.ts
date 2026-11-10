@@ -3,7 +3,8 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPUMultipleTestingAdjustment's `method`, plus the p-values it adjusts.
+// Bound to GPUMultipleTestingAdjustment's `method`, the significance level the adjusted p-values
+// are read against, and the p-values it adjusts.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'method',
@@ -14,6 +15,6 @@ export const parameters: GpuSceneParameter[] = [
     default: 3,
     options: ['none', 'bonferroni', 'holm', 'benjamini-hochberg', 'benjamini-yekutieli']
   },
-  {id: 'signalShare', label: 'Data: signalShare', min: 0, max: 0.6, step: 0.05, default: 0.25},
-  {id: 'testCount', label: 'Data: testCount', min: 20, max: 400, step: 20, default: 200}
+  {id: 'alpha', label: 'Show: alpha', min: 0.01, max: 0.2, step: 0.01, default: 0.05},
+  {id: 'testCount', label: 'Data: tract count', min: 20, max: 150, step: 10, default: 120}
 ];

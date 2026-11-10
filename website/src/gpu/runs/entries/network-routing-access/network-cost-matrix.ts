@@ -8,6 +8,7 @@ import {GPUNetworkCostMatrix} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {uploadNetworkTopology} from '../../inputs';
 import {createRoads, pickNodes} from './shared/roads';
+import {getRasterCell, getRasterCellCenter} from '../../pick';
 import {parameters} from './network-cost-matrix.parameters';
 
 export default defineOperationRun({
@@ -54,6 +55,48 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['startNodes', 'targetNodes'],
+  // Probe: the cell under the pointer is one origin-destination pair; its row and column are outlined.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a cell',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, world, peek}) {
+      const columns = Math.round(values.targetNodes);
+      const rows = Math.round(values.startNodes);
+      const bounds = [0, 0, world.width, 1] as const;
+      const cell = getRasterCell(columns, rows, bounds, pointer.x, pointer.y);
+      const [centerX, centerY] = getRasterCellCenter(columns, rows, bounds, cell.column, cell.row);
+      const halfWidth = world.width / columns / 2;
+      const halfHeight = 1 / rows / 2;
+      const costs = peek(outputs.matrix);
+      const cost = costs ? costs[cell.index] : Number.NaN;
+      return {
+        spotlight: null,
+        glyphs: [
+          {
+            shape: 'box',
+            minimum: [0, centerY - halfHeight],
+            maximum: [world.width, centerY + halfHeight],
+            dashed: true
+          },
+          {
+            shape: 'box',
+            minimum: [centerX - halfWidth, 0],
+            maximum: [centerX + halfWidth, 1],
+            dashed: true
+          },
+          {
+            shape: 'box',
+            minimum: [centerX - halfWidth, centerY - halfHeight],
+            maximum: [centerX + halfWidth, centerY + halfHeight]
+          }
+        ],
+        readout: `origin ${inputs.origins[cell.row]} to destination ${inputs.destinations[cell.column]} · ${
+          Number.isFinite(cost) && cost < 1e20 ? `cost ${cost.toFixed(2)}` : 'beyond costLimit'
+        }`
+      };
+    }
+  },
   draw: ({outputs, values}) => [
     {
       layer: 'raster',

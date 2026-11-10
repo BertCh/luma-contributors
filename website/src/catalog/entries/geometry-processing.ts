@@ -117,7 +117,7 @@ export const entries: CatalogEntry[] = [
     preview: {
       kind: 'polygons',
       seed: 4201,
-      caption: 'Area and perimeter of each parcel, in one dispatch.'
+      caption: 'Area and perimeter of generalized shoreline profiles.'
     },
     related: ['shape-descriptors', 'label-point', 'minimum-bounds'],
     lensScenario: 'gpu-spatial-analysis.geometry-measures',
@@ -1085,7 +1085,7 @@ export const entries: CatalogEntry[] = [
       ['positions, referencePositions, parameters,', 'output: {positions: snapped, referenceRows}'],
       ['// parameters: getGPUVertexSnapParameterValues({tolerance: 50})']
     ),
-    preview: {kind: 'lines', seed: 4218, caption: 'Park corners jump onto neighbor corners.'},
+    preview: {kind: 'lines', seed: 4218, caption: 'Nearby shoreline vertices snap together.'},
     related: ['segment-snap', 'geometry-cleanup'],
     lensScenario: 'gpu-spatial-analysis.vertex-snap',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -1333,7 +1333,11 @@ export const entries: CatalogEntry[] = [
       'intersectionCapacity: 4096, segmentCapacity: 4096,',
       'output // positions, components, ...'
     ]),
-    preview: {kind: 'buffers', seed: 4223, caption: 'A street offset 20 m to one side.'},
+    preview: {
+      kind: 'buffers',
+      seed: 4223,
+      caption: 'A one-sided offset follows a meander of the Ohio River.'
+    },
     related: ['line-loop-removal', 'line-noding'],
     lensScenario: 'gpu-spatial-analysis.offset-curve-components',
     reference: 'api/gpu-geometry-refinement',
@@ -1559,7 +1563,11 @@ export const entries: CatalogEntry[] = [
       `method: 'convex', maximumVertices: 16,`,
       'output // positions, pieces, ...'
     ]),
-    preview: {kind: 'tessellation', seed: 4228, caption: 'One coastline, many convex pieces.'},
+    preview: {
+      kind: 'tessellation',
+      seed: 4228,
+      caption: 'Generalized shore outlines subdivided into smaller pieces.'
+    },
     related: ['convex-straight-skeleton', 'vector-straight-skeleton'],
     lensScenario: 'gpu-spatial-analysis.subdivide-polygons',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1607,7 +1615,7 @@ export const entries: CatalogEntry[] = [
     preview: {
       kind: 'point-clusters',
       seed: 4229,
-      caption: 'The hull hugs the cluster at ratio 0.3.'
+      caption: 'A concave hull follows Japanese earthquake epicenters.'
     },
     related: ['minimum-bounds', 'subdivide-polygons'],
     lensScenario: 'gpu-spatial-analysis.ratio-concave-hull',
@@ -1669,7 +1677,7 @@ export const entries: CatalogEntry[] = [
     preview: {
       kind: 'tessellation',
       seed: 4230,
-      caption: 'Skeleton arcs run down the middle of a block.'
+      caption: 'Skeleton arcs trace the interior of shoreline profiles.'
     },
     related: ['convex-straight-skeleton', 'maximum-inscribed-circle'],
     lensScenario: 'gpu-spatial-analysis.vector-straight-skeleton',
@@ -1727,7 +1735,11 @@ export const entries: CatalogEntry[] = [
       'offsetDistance: 5,',
       'output // segments, sourceEdges, ...'
     ]),
-    preview: {kind: 'tessellation', seed: 4231, caption: 'A convex lot shrinks to a ridge.'},
+    preview: {
+      kind: 'tessellation',
+      seed: 4231,
+      caption: 'Convex hulls of Great Lakes shores shrink to interior ridges.'
+    },
     related: ['vector-straight-skeleton', 'subdivide-polygons'],
     lensScenario: 'gpu-spatial-analysis.convex-straight-skeleton',
     reference: 'api/gpu-spatial-analysis/geometry-refinement-lenses',
@@ -1771,7 +1783,11 @@ export const entries: CatalogEntry[] = [
       'origins, targets,',
       'output: {distances, initialBearings, midpoints}'
     ]),
-    preview: {kind: 'flows', seed: 4232, caption: 'Great-circle arcs between city pairs.'},
+    preview: {
+      kind: 'flows',
+      seed: 4232,
+      caption: 'Distances and geodesic midpoints between mapped city pairs.'
+    },
     related: ['geodesic-destination', 'local-frame-projection', 'geometry-measures'],
     lensScenario: 'gpu-spatial-analysis.geodesic-pairs',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1820,7 +1836,7 @@ export const entries: CatalogEntry[] = [
     preview: {
       kind: 'buffers',
       seed: 4233,
-      caption: 'A 50 km range ring, one destination per bearing.'
+      caption: 'Destinations at selected bearings and distances from six cities.'
     },
     related: ['geodesic-pairs', 'local-frame-projection'],
     lensScenario: 'gpu-spatial-analysis.geodesic-destination',
@@ -1880,7 +1896,11 @@ export const entries: CatalogEntry[] = [
       ],
       [`const frame = createGPULocalFrame({origin: [-87.7, 41.9]});`]
     ),
-    preview: {kind: 'points', seed: 4234, caption: 'Degrees in, meters out, no CPU round trip.'},
+    preview: {
+      kind: 'points',
+      seed: 4234,
+      caption: 'Coastlines projected from degrees into a local meter frame.'
+    },
     related: ['geodesic-pairs', 'geometry-measures', 'lon-lat-polygon-preparation'],
     lensScenario: 'gpu-spatial-analysis.local-frame-projection',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -1960,7 +1980,7 @@ export const entries: CatalogEntry[] = [
     preview: {
       kind: 'polygons',
       seed: 4235,
-      caption: 'A polygon across the date line splits in two.'
+      caption: 'Greenland, a modeled Bering Sea window and a polar survey ring.'
     },
     related: ['rectangle-clip', 'local-frame-projection'],
     lensScenario: 'gpu-spatial-analysis.lon-lat-polygon-preparation',

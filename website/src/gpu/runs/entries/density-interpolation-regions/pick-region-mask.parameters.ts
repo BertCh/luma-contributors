@@ -7,7 +7,7 @@ import type {RunLegendItem} from '../../legend';
 // Bound to GPUPickRegionMask's `batchIndex`; the pick radius varies which objects were picked.
 export const parameters: GpuSceneParameter[] = [
   {id: 'batchIndex', label: 'batchIndex', min: 0, max: 2, step: 1, default: 1},
-  {id: 'pickRadius', label: 'Data: pick radius', min: 0.05, max: 0.4, step: 0.01, default: 0.22}
+  {id: 'pickRadius', label: 'pick radius', min: 0.05, max: 0.4, step: 0.01, default: 0.22}
 ];
 
 export const legend: RunLegendItem[] = [

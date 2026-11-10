@@ -16,11 +16,18 @@ import {
   createBreaks,
   createDynamics,
   createMatrixMesh,
+  createMoveLabels,
+  getMatrixCell,
+  getMatrixCellBox,
+  getTractMove,
   getPeriodOwners,
   PERIOD_COUNT,
   uploadMatrixMesh
 } from './support/dynamics';
-import {uploadTractMesh} from './support/geometry';
+import {createTractGlyph, findTractAt, uploadTractMesh} from './support/geometry';
+import {allocateRegionOutline, drawRegionOutline, writeRegionOutline} from './support/regions';
+
+const MATRIX = (width: number) => [width * 0.56, 0.3, width * 0.97, 0.92] as const;
 
 export default defineOperationRun({
   parameters,
@@ -59,16 +66,13 @@ export default defineOperationRun({
         }
       })
     );
-    const matrix = createMatrixMesh(classCount, classCount, [
-      world.width * 0.56,
-      0.3,
-      world.width * 0.97,
-      0.92
-    ]);
+    const matrix = createMatrixMesh(classCount, classCount, MATRIX(world.width));
     const mesh = uploadTractMesh(builder, tracts);
-    mesh.owners.write(getPeriodOwners(tracts.triangleOwners, tracts.count, current.period));
     return {
+      update: values =>
+        mesh.owners.write(getPeriodOwners(tracts.triangleOwners, tracts.count, values.period)),
       outputs: {
+        highlight: allocateRegionOutline(builder, {tracts}),
         classes,
         probabilities,
         steadyStates,
@@ -79,6 +83,60 @@ export default defineOperationRun({
         ...mesh
       }
     };
+  },
+  rebuildOn: ['classCount', 'periodLag', 'minimumTransitions'],
+  // The hovered matrix cell (from class, to class) outlines the tracts that made that move.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a matrix cell',
+    rest: ({inputs, values, toUnit}) => {
+      const middle = Math.floor(values.classCount / 2);
+      const box = getMatrixCellBox(
+        MATRIX(inputs.world.width),
+        values.classCount,
+        values.classCount,
+        {
+          row: middle,
+          column: middle
+        }
+      );
+      return toUnit([(box.minimum[0] + box.maximum[0]) / 2, (box.minimum[1] + box.maximum[1]) / 2]);
+    },
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const rectangle = MATRIX(inputs.world.width);
+      const classes = peek(outputs.classes);
+      if (!classes) return {};
+      // Over the matrix the cell is the pointer's; over the map it is the move of the nearest tract.
+      const tract = findTractAt(inputs.tracts, pointer.x, pointer.y);
+      const hovered = getMatrixCell(
+        rectangle,
+        values.classCount,
+        values.classCount,
+        pointer.x,
+        pointer.y
+      );
+      const cell =
+        hovered ??
+        getTractMove(classes, inputs.tracts.count, values.period, values.periodLag, tract);
+      const {labels, moveCount} = createMoveLabels(
+        classes,
+        inputs.tracts.count,
+        values.period,
+        values.periodLag,
+        cell.row,
+        cell.column
+      );
+      writeRegionOutline(inputs, labels, 1, outputs.highlight);
+      const probability = peek(outputs.probabilities)?.[cell.row * values.classCount + cell.column];
+      return {
+        focus: cell.row * values.classCount + cell.column,
+        glyphs: [
+          ...(hovered ? [] : [createTractGlyph(inputs.tracts, tract)]),
+          {shape: 'box', ...getMatrixCellBox(rectangle, values.classCount, values.classCount, cell)}
+        ],
+        readout: `class ${cell.row + 1} to ${cell.column + 1} · ${moveCount} moves · p ${probability?.toFixed(2) ?? '...'}`
+      };
+    }
   },
   draw: ({inputs, outputs, values}) => [
     {
@@ -91,6 +149,7 @@ export default defineOperationRun({
       ramp: 'sequential',
       range: [0, values.classCount - 1]
     },
+    drawRegionOutline(inputs, outputs.highlight),
     {
       layer: 'polygons',
       positions: outputs.matrixMesh.vertices,

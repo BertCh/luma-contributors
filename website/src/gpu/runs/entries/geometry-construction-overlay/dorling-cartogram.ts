@@ -8,10 +8,13 @@
 import {GPUDorlingCartogram} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createTracts} from '../../inputs';
+import {clamp} from '../../interaction';
 import {addKernelPass} from './shared/kernel';
 import {parameters} from './dorling-cartogram.parameters';
 
 const CIRCLE_SEGMENTS = 28;
+// The playhead snaps to these iteration counts; each is a pre-built graph (buildCache).
+const ITERATION_STEPS = [0, 5, 20, 50, 100];
 
 export default defineOperationRun({
   parameters,
@@ -20,7 +23,13 @@ export default defineOperationRun({
     const tracts = createTracts(random, world, 6);
     // Circle areas in world units squared: 0.012 to 0.042.
     const areas = Float32Array.from(tracts.values, value => 0.012 + 0.03 * value);
-    return {count: tracts.count, centers: tracts.centers, areas};
+    return {
+      count: tracts.count,
+      centers: tracts.centers,
+      areas,
+      outline: tracts.outline,
+      outlineCount: tracts.outline.length / 4
+    };
   },
   build(builder, inputs, values) {
     const positions = builder.upload('centroids', 'float32x2', inputs.centers);
@@ -78,10 +87,54 @@ export default defineOperationRun({
   nodes[nodesOffset + index] = centers[centersOffset + circle] + radius * vec2f(cos(angle), sin(angle));
   nodeValues[nodeValuesOffset + index] = radius;`
     });
-    return {outputs: {positions, nodes, nodeValues, edges}};
+    // One displacement line from every centroid to its relaxed circle center.
+    const links = builder.allocate('links', 'float32x4', inputs.count);
+    addKernelPass(builder, {
+      id: 'link-pass',
+      invocationCount: inputs.count,
+      bindings: [
+        {name: 'start', buffer: positions, access: 'read'},
+        {name: 'end', buffer: outputPositions, access: 'read'},
+        {name: 'links', buffer: links, access: 'read_write'}
+      ],
+      body: /* wgsl */ `
+  links[linksOffset + index] = vec4f(start[startOffset + index], end[endOffset + index]);`
+    });
+    const outline = builder.upload('outline', 'float32x4', inputs.outline);
+    return {outputs: {positions, nodes, nodeValues, edges, links, outline}};
   },
   rebuildOn: ['maximumIterations', 'areaScale', 'attraction'],
-  draw: ({outputs}) => [
+  buildCache: 5,
+  // The pointer's x is a playhead over the relaxation: it settles on one of five pre-built
+  // iteration counts, and the dashed links show how far each circle has moved from its centroid.
+  interaction: {
+    kind: 'time',
+    hint: 'scrub the relaxation',
+    rest: [0.9, 0.5],
+    resolve(pointer, {inputs}) {
+      const step = clamp(
+        Math.floor(pointer.unitX * ITERATION_STEPS.length),
+        0,
+        ITERATION_STEPS.length - 1
+      );
+      const maximumIterations = ITERATION_STEPS[step];
+      return {
+        settle: {maximumIterations},
+        glyphs: [{shape: 'curtain', x: pointer.x}],
+        readout: `maximumIterations ${maximumIterations} · ${inputs.count} circles`
+      };
+    }
+  },
+  draw: ({inputs, outputs}) => [
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.outline,
+      count: inputs.outlineCount,
+      radius: 1,
+      alpha: 0.5
+    },
+    {layer: 'lines', segments: outputs.links, color: [0.8, 0.8, 0.85, 0.35], radius: 1},
     {layer: 'dots', context: true, positions: outputs.positions, radius: 3},
     {
       layer: 'segments',

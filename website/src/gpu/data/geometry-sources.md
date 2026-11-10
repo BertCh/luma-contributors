@@ -1,0 +1,25 @@
+# Geometry samples
+
+Made with Natural Earth. The website uses about 32 KB of local samples extracted from the version 5.1.2 vector release. Natural Earth places its vector data in the public domain. [Release](https://github.com/nvkelso/natural-earth-vector/releases/tag/v5.1.2) · [Terms](https://www.naturalearthdata.com/about/terms-of-use/)
+
+| Input | Preparation | What the operation receives |
+| --- | --- | --- |
+| Great Lakes shells | Select Superior, Michigan, Huron, Erie and Ontario from the 1:10m lake polygons. Retain each exterior, simplify with a 0.055° tolerance and round coordinates to five decimal places. | The five open shore rings have 259 vertices in all. Spatial joins use their shared local equirectangular frame with uniform scale and simulated sample positions. Islands are omitted. Moving or scaling a layer changes the scenario. |
+| Shore profiles | For Erie, Ontario, Tahoe, Okeechobee, Winnebago, Winnipeg, Nipissing and Claire, take the distance from an interior pole to the nearest shoreline on each of 64 rays in a local equirectangular projection. Normalize to the longest ray. | Triangulation, polygon edits and cell covering sample those radii to the operation's vertex budget. Each outline is a simplified shape in a comparison panel. Irregularity blends the profile with a regular polygon. Hole insertion, scale, stretch, shifts and edits are modeled. |
+| River centerlines | Select the longest line component by angular length tagged Missouri, Ohio, Columbia, Snake, Mississippi or Mackenzie from the 1:10m rivers and lake centerlines layer. Simplify to 0.018° and round to five decimal places. | The six reaches have 480 vertices in all. Runs project each reach locally, rotate it horizontally, uniformly scale it into its own panel and sample along its length. Crossing tests rotate and scale the lines into intersecting groups. Shared paths, loops, clipping and snap candidates introduce modeled edits. Offset examples use short meanders of the Missouri and Ohio. |
+| Coastlines | Simplify the 1:110m shorelines spanning at least 4° to 0.9° tolerance, rounding to 0.1°. | A muted equirectangular map provides geographic context beside the geodesic results. Greenland provides a mapped shell for edge densification. |
+| City positions | Retain representative points of 18 named cities from Natural Earth's 1:110m populated places. | Geodesic pairs, great-circle arcs and the bearings exercise start at mapped city coordinates. Pairs and bearing fans are illustrative. |
+
+[Lake polygons](https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-lakes/) · [Rivers](https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-rivers-lake-centerlines/) · [Populated places](https://www.naturalearthdata.com/downloads/110m-cultural-vectors/110m-populated-places/)
+
+The straight skeleton starts from the convex hull of each mapped Great Lake shoreline. Removing the vertex with the least triangle area until six remain gives the operation six strictly convex CCW vertices. The fixed count comes from the GPU output layout. Panel rotation and optional stretch are controlled edits.
+
+The spherical examples intersect Lake Superior with a modeled survey corridor and optional circular exclusion. The convex-intersection run first convexifies the shoreline. GOES Midwest flash detections are tested against Lake Michigan with a movable modeled exclusion. Japanese earthquake epicenters are tested against an adjustable geodesic radius off Honshu. The operations receive unit-sphere coordinates and the displays project their outputs back to the same geographic window.
+
+The projection run sends the Natural Earth coastline and graticule vertices through the same GPU operation, comparing equirectangular degrees with local projected meters at the selected latitude. Longitude/latitude preparation densifies Greenland's coast alongside modeled survey windows in the Bering Sea and around the North Pole. The windows deliberately require antimeridian splitting and pole capping. The geometry collection combines sampled river and lake profiles with constructed point leaves, then permutes their storage order.
+
+Coverage simplification, validity, dissolve and segment-ring assembly use connected windows of Chicago Census tract shells. District labels grow over measured shared-edge adjacency. Shrinking tracts, jittering endpoints and merging groups are editable scenarios. [Chicago tract preparation](./area-sources.md)
+
+Nearest-feature joins and weights use distinct samples of measured Carolina rain-gauge locations. The ratio concave hull and clustered cell aggregations use measured Japanese earthquake locations. [Point observations](./point-sources.md)
+
+Run `python website/scripts/prepare-geometry-data.py` with Python 3 and Shapely 2 to regenerate `natural-earth-geometry.json` and `world-coastline.json`. The direct geometry fixtures live in the private website.

@@ -3,7 +3,8 @@
 
 // GPURasterFractionalZonalStatistics behind GPURasterFractionalCoverage: each polygon aggregates
 // the raster cells it overlaps, weighted by the exact covered fraction of every cell
-// (extensive quantity, so totals scale with coverage).
+// (extensive quantity, so totals scale with coverage). The pointer probes a tract: the cells it
+// overlaps are shaded by covered fraction over the grid, edge cells partial.
 
 import {
   GPURasterFractionalZonalStatistics,
@@ -14,11 +15,23 @@ import {parameters} from './fractional-zonal-statistics.parameters';
 import {drawRaster} from './support/bands';
 import {
   addFractionalCoverage,
+  createGridLines,
   createZoneInputs,
   drawZones,
+  getTractAt,
+  getTractRing,
+  readZoneCoverage,
   sampleField,
   uploadZoneMesh
 } from './support/zones';
+import {readFloat32, readUint32} from './support/labels';
+
+const RANGES = {
+  means: [0, 1],
+  totals: [0, 0.1],
+  coveredArea: [0, 0.05],
+  validArea: [0, 0.05]
+} as const;
 
 const STATISTICS = ['means', 'totals', 'coveredArea', 'validArea'] as const;
 
@@ -63,17 +76,76 @@ export default defineOperationRun({
       outputs: {
         ...output,
         cellValues,
+        zoneIds: result.coverage.zoneIds,
+        cellIds: result.coverage.cellIds,
+        fractions: result.coverage.fractions,
+        tupleCount: result.coverage.count,
+        hover: builder.allocate('hover', 'float32', result.cellCount),
+        grid: builder.upload(
+          'grid-lines',
+          'float32x4',
+          createGridLines(inputs.world, result.columns, result.rows)
+        ),
+        cellArea: result.cellSize[0] * result.cellSize[1],
         columns: result.columns,
         rows: result.rows,
         mesh: uploadZoneMesh(builder, features)
       }
     };
   },
-  draw: ({inputs, outputs, values, theme}) => [
-    drawRaster(outputs, outputs.cellValues, {context: true}),
-    drawZones(inputs.features, outputs.mesh, outputs[STATISTICS[Math.round(values.statistic)]], {
-      ramp: 'sequential'
-    }),
-    {layer: 'lines', context: true, segments: outputs.mesh.outline, color: [...theme.ink, 0.8]}
-  ]
+  // A rebuild clears the highlight buffer; rewrite it from the last probed tract.
+  async afterRun({inputs, outputs}) {
+    if (inputs.focus.tract < 0) return;
+    const hover = new Float32Array(outputs.hover.length);
+    const [zoneIds, cellIds, fractions, count] = await Promise.all([
+      readUint32(outputs.zoneIds),
+      readUint32(outputs.cellIds),
+      readFloat32(outputs.fractions),
+      readUint32(outputs.tupleCount)
+    ]);
+    readZoneCoverage(hover, {zoneIds, cellIds, fractions, count}, inputs.focus.tract);
+    outputs.hover.write(hover);
+  },
+  interaction: {
+    kind: 'probe',
+    hint: 'probe a tract',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {inputs, outputs, peek}) => {
+      const tract = getTractAt(inputs.features, pointer.x, pointer.y);
+      inputs.focus.tract = tract;
+      const hover = new Float32Array(outputs.hover.length);
+      readZoneCoverage(
+        hover,
+        {
+          zoneIds: peek(outputs.zoneIds),
+          cellIds: peek(outputs.cellIds),
+          fractions: peek(outputs.fractions),
+          count: peek(outputs.tupleCount)
+        },
+        tract
+      );
+      outputs.hover.write(hover);
+      if (tract < 0) return {readout: 'outside the tracts'};
+      const means = peek(outputs.means);
+      const covered = peek(outputs.coveredArea);
+      return {
+        glyphs: [{shape: 'polyline', closed: true, points: getTractRing(inputs.features, tract)}],
+        readout: `tract ${inputs.features.geoids[tract].slice(-6)} | mean ${means ? means[tract].toFixed(2) : '-'} | ${covered ? (covered[tract] / outputs.cellArea).toFixed(1) : '-'} cells`
+      };
+    }
+  },
+  draw: ({inputs, outputs, values, theme}) => {
+    const statistic = STATISTICS[Math.round(values.statistic)];
+    return [
+      drawRaster(outputs, outputs.cellValues, {context: true}),
+      drawZones(inputs.features, outputs.mesh, outputs[statistic], {
+        ramp: 'sequential',
+        range: RANGES[statistic],
+        alpha: 0.8
+      }),
+      {layer: 'lines', context: true, segments: outputs.grid, color: [...theme.ink, 0.25]},
+      {layer: 'lines', context: true, segments: outputs.mesh.outline, color: [...theme.ink, 0.8]},
+      drawRaster(outputs, outputs.hover, {ramp: 'sequential', range: [0, 1], fade: true})
+    ];
+  }
 });

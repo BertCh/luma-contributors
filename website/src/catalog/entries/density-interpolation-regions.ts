@@ -197,7 +197,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'density-surface',
       seed: 9202,
-      caption: 'Smooth intensity surface from scattered events.'
+      caption: 'Smoothed density of earthquake epicenters around Japan.'
     },
     related: ['point-density', 'inhomogeneous-point-pattern', 'line-density'],
     lensScenario: 'gpu-spatial-analysis.kernel-density',
@@ -609,7 +609,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'interpolation',
       seed: 9208,
-      caption: 'A continuous surface through scattered stations.'
+      caption: 'IDW of measured daily rainfall during Hurricane Helene.'
     },
     related: ['kriging', 'natural-neighbor', 'local-rbf'],
     lensScenario: 'gpu-spatial-analysis.inverse-distance-weighting',

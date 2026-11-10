@@ -8,17 +8,27 @@
 import {GPUMultivariateLocalGearyPermutationTest} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {uploadSpatialWeights} from '../../inputs';
-import {createNeighborGraph, createPointField} from './shared/point-field';
+import {
+  createInterleavedValues,
+  createNeighborGraph,
+  createPointField,
+  createProbeInputs,
+  probeNeighbors
+} from './shared/point-field';
 import {parameters} from './multivariate-local-geary-permutation-test.parameters';
 
+const CLASS_NAMES = ['not significant', 'cluster', 'negative association'];
 const TAILS = ['equal-tail', 'esda-min-tail'] as const;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Multivariate local Geary classes: high-high, low-low, negative, not significant.',
-  createInputs: ({random, world}) => createPointField(random, world, 240, false),
+  caption: 'Multivariate local Geary classes: cluster, negative association, not significant.',
+  createInputs: ({random, world}) => {
+    const points = createPointField(random, world, 240, 0);
+    return {...createProbeInputs(points), graph: createNeighborGraph(points.positions, 6)};
+  },
   build(builder, points, values) {
-    const graph = createNeighborGraph(points.positions, 6);
+    const {graph} = points;
     const variableCount = values.variableCount;
     const valueBuffer = builder.allocate('values', 'float32', points.count * variableCount);
     const statistic = builder.allocate('statistic', 'float32', points.count);
@@ -38,30 +48,41 @@ export default defineOperationRun({
     return {
       outputs: {
         classes,
+        statistic,
+        pValues,
         positions: builder.upload('positions', 'float32x2', points.positions)
       },
-      update: current => {
-        const interleaved = new Float32Array(points.count * variableCount);
-        for (let row = 0; row < points.count; row++) {
-          for (let variable = 0; variable < variableCount; variable++) {
-            const jitter = Math.sin((row * 7 + variable * 131) * 12.9898) * 43758.5453;
-            const noise = jitter - Math.floor(jitter);
-            interleaved[row * variableCount + variable] =
-              points.field[row] * (1 - current.noise) + noise * current.noise;
-          }
-        }
-        valueBuffer.write(interleaved);
-      }
+      update: current =>
+        valueBuffer.write(createInterleavedValues(points.field, variableCount, current.noise))
     };
   },
   rebuildOn: ['variableCount', 'tail', 'maximumPermutations'],
-  draw: ({outputs}) => [
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a point',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const probe = probeNeighbors(inputs, pointer, inputs.graph.weights);
+      if (probe.row < 0) return {};
+      const pValue = peek(outputs.pValues)?.[probe.row];
+      const classCode = peek(outputs.classes)?.[probe.row];
+      return {
+        glyphs: probe.glyphs,
+        readout: `${classCode === undefined ? '…' : (CLASS_NAMES[classCode] ?? `class ${classCode}`)} · p ${
+          pValue === undefined ? '…' : pValue.toFixed(3)
+        } · ${values.variableCount} variables`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     {layer: 'dots', context: true, positions: outputs.positions, radius: 2},
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.classes,
       ramp: 'categorical',
+      // Class 0 (not significant) is muted so only the significant classes stand out.
+      categories: [theme.muted, theme.categories[1], theme.categories[0]],
       radius: 6
     }
   ]

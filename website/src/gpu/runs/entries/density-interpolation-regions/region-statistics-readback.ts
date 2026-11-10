@@ -4,7 +4,7 @@
 // GPURegionStatisticsReadback draining a real GPURegionStatistics summary to the CPU. The region
 // (left) is summarized on the GPU. After each run `encodeRead` copies the summary into a free slot
 // of the readback ring `reads` times, the tickets are read and decoded, and the CPU numbers are
-// drawn beside the region: the histogram as bars, mean, minimum and maximum as lines, the share of
+// drawn beside the region: the histogram as bars, mean, minimum and maximum as lines, the
 // selected points as a bar, and the ring's slots, with the calls that found it full in red.
 
 import {
@@ -12,9 +12,9 @@ import {
   GPURegionStatisticsReadback
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createUniformPoints} from '../../inputs';
 import {ShapeBatch} from '../../record-demo';
 import {parameters} from './region-statistics-readback.parameters';
+import {createStretchedSamples} from './support/interpolation';
 
 const HEADER_LENGTH = 8;
 const CIRCLE_SEGMENTS = 64;
@@ -29,10 +29,12 @@ export default defineOperationRun({
     return {
       world,
       pointsWorld,
-      points: createUniformPoints(random, pointsWorld, 3000, 0.2)
+      points: createStretchedSamples(random, pointsWorld, 3000, 0.2),
+      // The region center is owned by the pointer; it rests at the middle of the left square.
+      center: [pointsWorld.width * 0.5, 0.5] as [number, number]
     };
   },
-  build(builder, {pointsWorld, points}, values) {
+  build(builder, {points, center}, values) {
     const summary = builder.allocate('summary', 'uint32', HEADER_LENGTH + values.binCount);
     const mask = builder.allocate('mask', 'uint32', points.count);
     const region = builder.allocate('region', 'float32', 3);
@@ -61,17 +63,17 @@ export default defineOperationRun({
         outline
       },
       update: current => {
-        const centerX = pointsWorld.width * 0.5;
-        region.write(Float32Array.of(centerX, 0.5, current.size));
+        const [centerX, centerY] = center;
+        region.write(Float32Array.of(centerX, centerY, current.size));
         const segments = new Float32Array(CIRCLE_SEGMENTS * 4);
         for (let index = 0; index < CIRCLE_SEGMENTS; index++) {
           const angles = [index, index + 1].map(step => (step / CIRCLE_SEGMENTS) * Math.PI * 2);
           segments.set(
             [
               centerX + Math.cos(angles[0]) * current.size,
-              0.5 + Math.sin(angles[0]) * current.size,
+              centerY + Math.sin(angles[0]) * current.size,
               centerX + Math.cos(angles[1]) * current.size,
-              0.5 + Math.sin(angles[1]) * current.size
+              centerY + Math.sin(angles[1]) * current.size
             ],
             index * 4
           );
@@ -81,9 +83,35 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['binCount', 'slotCount'],
+  // The pointer carries the region over the left square; the ring reads its summary back.
+  interaction: {
+    kind: 'window',
+    hint: 'move the region',
+    rest: ({inputs, toUnit}) => toUnit([inputs.pointsWorld.width * 0.5, 0.5]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.center[0] = Math.min(inputs.pointsWorld.width, Math.max(0, pointer.x));
+      inputs.center[1] = Math.min(1, Math.max(0, pointer.y));
+      const mask = peek(outputs.mask);
+      let selectedCount = 0;
+      let sum = 0;
+      if (mask) {
+        mask.forEach((flag, row) => {
+          selectedCount += flag;
+          if (flag) sum += inputs.points.values[row];
+        });
+      }
+      return {
+        rerun: true,
+        glyphs: [{shape: 'crosshair', at: inputs.center, size: 7}],
+        readout: mask
+          ? `size ${values.size.toFixed(2)} · selected ${selectedCount} · mean ${(sum / Math.max(1, selectedCount)).toFixed(2)}`
+          : `region size ${values.size.toFixed(2)}`
+      };
+    }
+  },
   async afterRun({device, outputs, inputs, values, upload}) {
     const {readback} = outputs;
-    const {world, pointsWorld, points} = inputs;
+    const {world, pointsWorld} = inputs;
     // Ask for `reads` copies before reading any: the ring has only `slotCount` slots.
     const encoder = device.createCommandEncoder({id: 'region-readback'});
     const tickets = [];
@@ -133,19 +161,6 @@ export default defineOperationRun({
         2
       );
     }
-    // The share of points the region selected, as a bar under the chart.
-    const share = new ShapeBatch();
-    share.addRectangle(
-      {
-        x0: chart.x0,
-        x1: chart.x0 + ((chart.x1 - chart.x0) * statistics.selectedCount) / points.count,
-        y0: 0.06,
-        y1: 0.11
-      },
-      1
-    );
-    const outline = new ShapeBatch();
-    outline.addOutline({x0: chart.x0, x1: chart.x1, y0: 0.06, y1: 0.11});
     const histogram = Float32Array.from(statistics.histogram);
     return {
       histogram: upload('histogram', 'float32', histogram.length ? histogram : new Float32Array(1)),
@@ -153,14 +168,11 @@ export default defineOperationRun({
       chartRectangle: [chart.x0 / world.width, chart.y0, chart.x1 / world.width, chart.y1] as const,
       lines: lines.uploadSegments(upload, 'statistics'),
       lineCount: lines.segmentCount,
-      ring: ring.uploadShapes(upload, 'ring'),
-      share: share.uploadShapes(upload, 'share'),
-      shareOutline: outline.uploadSegments(upload, 'share-outline'),
-      shareOutlineCount: outline.segmentCount
+      ring: ring.uploadShapes(upload, 'ring')
     };
   },
   draw: ({outputs, extra, theme}) => [
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 1.6, alpha: 0.5},
+    {layer: 'dots', context: true, positions: outputs.positions, radius: 2.2, alpha: 1},
     {
       layer: 'dots',
       positions: outputs.positions,
@@ -194,22 +206,6 @@ export default defineOperationRun({
       values: extra.ring.categories,
       triangleCount: extra.ring.triangleCount,
       categories: [theme.muted, theme.categories[3], theme.categories[2]]
-    },
-    {
-      layer: 'polygons',
-      positions: extra.share.positions,
-      indices: extra.share.indices,
-      owners: extra.share.owners,
-      values: extra.share.categories,
-      triangleCount: extra.share.triangleCount,
-      categories: [theme.muted, theme.categories[4]]
-    },
-    {
-      layer: 'lines',
-      context: true,
-      segments: extra.shareOutline,
-      count: extra.shareOutlineCount,
-      radius: 1
     }
   ]
 });

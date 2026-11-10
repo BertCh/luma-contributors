@@ -10,6 +10,7 @@ import {
 } from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {uploadNetworkTopology} from '../../inputs';
+import {addPairSegments} from './shared/display';
 import {createRoads, getRoadContext, uploadRoads} from './shared/roads';
 import {parameters} from './map-matching.parameters';
 
@@ -49,7 +50,22 @@ export default defineOperationRun({
       {length: TRACK_COUNT + 1},
       (_, index) => index * STEP_COUNT
     );
-    return {network, truth, noise, trackOffsets, fixes: new Float32Array(POINT_COUNT * 2), world};
+    const defaultNoise = parameters.find(parameter => parameter.id === 'noise')?.default ?? 0;
+    const defaultFixes = Float32Array.from(
+      truth,
+      (value, index) => value + noise[index] * defaultNoise
+    );
+    return {
+      network,
+      truth,
+      noise,
+      trackOffsets,
+      fixes: new Float32Array(POINT_COUNT * 2),
+      world,
+      defaultFixes,
+      restFix: Math.floor(POINT_COUNT / 2),
+      drag: {index: -1, x: 0, y: 0}
+    };
   },
   build(builder, inputs) {
     const {network, truth, noise, fixes, trackOffsets, world} = inputs;
@@ -84,11 +100,16 @@ export default defineOperationRun({
         positions,
         snapDistances,
         snappedPositions,
-        polylines
+        polylines,
+        connectors: addPairSegments(builder, {id: 'match', from: positions, to: snappedPositions})
       },
       update: values => {
         for (let index = 0; index < fixes.length; index++)
           fixes[index] = truth[index] + noise[index] * values.noise;
+        if (inputs.drag.index >= 0) {
+          fixes[inputs.drag.index * 2] = inputs.drag.x;
+          fixes[inputs.drag.index * 2 + 1] = inputs.drag.y;
+        }
         positions.write(fixes);
         let segment = 0;
         for (let point = 0; point < POINT_COUNT - 1; point++) {
@@ -110,8 +131,50 @@ export default defineOperationRun({
       }
     };
   },
+  // Drag: the GPS fix nearest the pointer follows it; the matcher re-snaps it within searchRadius.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag a GPS fix',
+    rest: ({inputs, toUnit}) =>
+      toUnit([
+        inputs.defaultFixes[inputs.restFix * 2],
+        inputs.defaultFixes[inputs.restFix * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const distanceTo = (fix: number) =>
+        Math.hypot(
+          inputs.defaultFixes[fix * 2] - pointer.x,
+          inputs.defaultFixes[fix * 2 + 1] - pointer.y
+        );
+      let fix = 0;
+      for (let candidate = 1; candidate < POINT_COUNT; candidate++) {
+        if (distanceTo(candidate) < distanceTo(fix)) fix = candidate;
+      }
+      if (inputs.drag.index >= 0 && distanceTo(fix) > distanceTo(inputs.drag.index) * 0.85) {
+        fix = inputs.drag.index;
+      }
+      const changed =
+        fix !== inputs.drag.index || pointer.x !== inputs.drag.x || pointer.y !== inputs.drag.y;
+      inputs.drag = {index: fix, x: pointer.x, y: pointer.y};
+      const distances = peek(outputs.snapDistances);
+      const snap = distances ? distances[fix] : Number.NaN;
+      return {
+        rerun: changed,
+        glyphs: [
+          {shape: 'ring', at: [pointer.x, pointer.y], radius: values.searchRadius, dashed: true},
+          {shape: 'crosshair', at: [pointer.x, pointer.y], size: 10}
+        ],
+        readout: `fix ${fix} · searchRadius ${values.searchRadius.toFixed(3)} · ${
+          Number.isFinite(snap) && snap >= 0 && snap < 1
+            ? `snapped ${snap.toFixed(3)}`
+            : 'unmatched'
+        }`
+      };
+    }
+  },
   draw: ({outputs, theme}) => [
     getRoadContext(outputs),
+    {layer: 'lines', segments: outputs.connectors, radius: 1, color: [...theme.ink, 0.5]},
     // Raw GPS: a muted track, drawn thicker so the zigzag off the roads is visible.
     {
       layer: 'lines',

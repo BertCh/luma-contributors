@@ -10,7 +10,7 @@ export const parameters: GpuSceneParameter[] = [
     label: 'wind (direction)',
     min: 0,
     max: 360,
-    step: 15,
+    step: 5,
     default: 20,
     unit: ' deg'
   },

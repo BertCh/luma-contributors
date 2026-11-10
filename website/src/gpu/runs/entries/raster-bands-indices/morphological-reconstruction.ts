@@ -9,15 +9,19 @@
 
 import {GPURasterReconstruction} from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createFractalRaster} from '../../inputs';
+import {createElevationRaster} from '../../inputs';
+import {bindAxes, formatNumber} from '../../interaction';
 import {parameters} from './morphological-reconstruction.parameters';
 import {drawRaster, makeGridOfRaster} from './support/bands';
+import {addArithmetic} from './support/indices';
+
+const PAD = bindAxes(parameters, {kind: 'level', hint: 'lower the marker', x: 'height'});
 
 export default defineOperationRun({
   parameters,
   rebuildOn: ['method', 'maximumIterations'],
   caption: 'A mask and a marker in; the marker reconstructed under the mask out.',
-  createInputs: ({random, world}) => createFractalRaster(random, world, 36, 6),
+  createInputs: ({world}) => createElevationRaster(world, 36),
   build(builder, inputs, values) {
     const cellCount = inputs.values.length;
     const mask = builder.upload('mask', 'float32', inputs.values);
@@ -37,16 +41,35 @@ export default defineOperationRun({
         output: {values: result.view, validity: validity.view, status: {converged: converged.view}}
       })
     );
+    const removed = addArithmetic(builder, 'removed', 'absoluteDifference', mask, result);
     return {
-      outputs: {mask, marker, result},
+      outputs: {mask, marker, result, removed},
       update: current =>
         marker.write(
           inputs.values.map(value => (erosion ? value + current.height : value - current.height))
         )
     };
   },
+  // The pointer is the marker offset (x): the further right, the lower the marker sits under the
+  // mask and the taller the domes that are cut flat.
+  interaction: {
+    ...PAD,
+    resolve: (pointer, state) => {
+      const base = PAD.resolve(pointer, state);
+      const current = {...state.values, ...base.values};
+      const {inputs, outputs, peek} = state;
+      const removed = peek(outputs.removed);
+      let cut = 0;
+      if (removed) for (const value of removed) if (value > 0.005) cut++;
+      return {
+        ...base,
+        glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
+        readout: `height ${current.height.toFixed(2)} | ${formatNumber((100 * cut) / inputs.values.length, 0)}% of cells cut`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
-    drawRaster(inputs, outputs.mask, {context: true, range: [0, 1]}),
-    drawRaster(inputs, outputs.result, {range: [0, 1], hillshade: 0.6, elevation: 1.5})
+    drawRaster(inputs, outputs.result, {range: [0, 1], hillshade: 0.6, elevation: 1.5}),
+    drawRaster(inputs, outputs.removed, {ramp: 'sequential', range: [0, 0.5], fade: true})
   ]
 });

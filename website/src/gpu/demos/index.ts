@@ -45,7 +45,8 @@ export const DEMOS: readonly DemoDescriptor[] = [
   {
     id: 'kernel-density',
     title: 'Kernel density',
-    caption: 'Drag the hotspot; bandwidth and kernel re-evaluate the surface on the GPU.',
+    caption:
+      'Move across the map to size the kernel: the ring is the bandwidth of Japanese earthquake density.',
     symbols: ['GPUKernelDensity'],
     entryIds: ['kernel-density'],
     interactive: true,
@@ -56,10 +57,11 @@ export const DEMOS: readonly DemoDescriptor[] = [
   {
     id: 'local-morans-i',
     title: "Local Moran's I",
-    caption: 'Neighbor search, then hot (red) and cold (blue) clusters of a drifting field.',
+    caption:
+      'Local Moran clusters of wet and dry gauges around the Carolinas on September 27, 2024. Hover a gauge to see its neighbors and its class.',
     symbols: ['GPULocalMoran', 'GPUNeighborSearch'],
     entryIds: ['local-morans-i'],
-    interactive: false,
+    interactive: true,
     parameters: LOCAL_MORANS_I_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./local-morans-i')
@@ -67,10 +69,11 @@ export const DEMOS: readonly DemoDescriptor[] = [
   {
     id: 'dbscan',
     title: 'DBSCAN',
-    caption: 'Epsilon sweeps; clusters merge, split and shed noise on the GPU.',
+    caption:
+      'Hover an epicenter: the ring is epsilon, and the neighbors inside it decide core, border or noise.',
     symbols: ['GPUSpatialClustering'],
     entryIds: ['dbscan-clustering'],
-    interactive: false,
+    interactive: true,
     parameters: DBSCAN_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./dbscan')
@@ -78,10 +81,11 @@ export const DEMOS: readonly DemoDescriptor[] = [
   {
     id: 'k-means',
     title: 'K-means',
-    caption: 'Lloyd iterations replayed one to twelve, then a new seed.',
+    caption:
+      'Five centers converge on 820 earthquake epicenters around Japan. Hover one to see its cluster and its distance to the center.',
     symbols: ['GPUKMeans'],
     entryIds: ['k-means-clustering'],
-    interactive: false,
+    interactive: true,
     parameters: K_MEANS_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./k-means')
@@ -89,7 +93,8 @@ export const DEMOS: readonly DemoDescriptor[] = [
   {
     id: 'idw',
     title: 'Inverse distance weighting',
-    caption: 'Samples become a surface; power sweeps, and one sample follows the pointer.',
+    caption:
+      'Point at a place: the rain gauges that carry its IDW estimate link to it. Hurricane Helene rainfall in millimeters.',
     symbols: ['GPUInverseDistanceWeighting'],
     entryIds: ['inverse-distance-weighting'],
     interactive: true,
@@ -101,7 +106,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     id: 'delaunay-voronoi',
     title: 'Delaunay and Voronoi',
     caption:
-      'Drifting sites are re-triangulated every frame; Voronoi cells come from the triangles.',
+      'Rain gauge sites define the triangles and Voronoi cells. Move one site to test a relocation.',
     symbols: ['GPUDelaunayTessellation', 'GPUVoronoiDiagram'],
     entryIds: ['delaunay-tessellation', 'voronoi-diagram'],
     interactive: true,
@@ -112,10 +117,11 @@ export const DEMOS: readonly DemoDescriptor[] = [
   {
     id: 'terrain-hydrology',
     title: 'Hillshade and streams',
-    caption: 'A circling sun (Horn hillshade) and a stream network from depression-filled D8 flow.',
+    caption:
+      'Aim the sun: Horn hillshade follows it, over a stream network from depression-filled D8 flow.',
     symbols: ['GPUTerrainDerivatives', 'GPUTerrainFlow'],
     entryIds: ['terrain-flow'],
-    interactive: false,
+    interactive: true,
     parameters: TERRAIN_HYDROLOGY_PARAMETERS,
     aspectRatio: 16 / 9,
     loader: () => import('./terrain-hydrology')
@@ -136,7 +142,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     id: 'hot-spots',
     title: 'Hot spots (Getis-Ord Gi*)',
     caption:
-      'Noisy points hide hot and cold patches; Gi* z-scores reveal them. A patch follows the pointer.',
+      'Compare rainfall clusters on September 26 and 27, 2024. Hover a gauge to see the neighborhood behind its Gi* score.',
     symbols: ['GPUHotSpotAnalysis'],
     entryIds: ['hot-spot-analysis-gi-star', 'hot-spot-analysis'],
     interactive: true,

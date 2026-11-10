@@ -7,7 +7,7 @@
 
 import {GPURasterFillNoData} from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createFractalRaster, createSmoothField} from '../../inputs';
+import {createElevationRaster, createSmoothField} from '../../inputs';
 import {parameters} from './fill-nodata.parameters';
 import {drawRaster, makeGridOfRaster, uploadBand} from './support/bands';
 
@@ -19,7 +19,7 @@ export default defineOperationRun({
   rebuildOn: ['method', 'maximumDistance'],
   caption: 'A raster with gaps in; the gaps interpolated from nearby valid cells out.',
   createInputs: ({random, world}) => {
-    const raster = createFractalRaster(random, world, 64, 4);
+    const raster = createElevationRaster(world, 64);
     const gapField = createSmoothField(random, 4, 5);
     const gap = Float32Array.from(raster.values, (_, index) =>
       gapField(
@@ -62,8 +62,26 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({inputs, outputs}) => [
-    drawRaster(inputs, outputs.source, {context: true, range: [0, 1]}),
-    drawRaster(inputs, outputs.result, {range: [0, 1], smoothing: true})
-  ]
+  // The pointer is a curtain: the raster with its gaps on the left, the filled result on the right.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe gaps and fill',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {values}) => ({
+      curtain: pointer.x,
+      glyphs: [{shape: 'curtain', x: pointer.x}],
+      readout: `gaps | filled within ${values.maximumDistance} cells`
+    })
+  },
+  draw: ({inputs, outputs, interaction, world}) => {
+    const curtain = interaction.curtain ?? world.width / 2;
+    return [
+      drawRaster(inputs, outputs.source, {range: [0, 1], clip: {side: 'left', x: curtain}}),
+      drawRaster(inputs, outputs.result, {
+        range: [0, 1],
+        smoothing: true,
+        clip: {side: 'right', x: curtain}
+      })
+    ];
+  }
 });

@@ -7,39 +7,30 @@
 
 import {GPUFlowAggregation} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
+import {getRasterCell} from '../../pick';
 import {addEdgePairs} from './shared/display';
+import {fitPositions} from './shared/graphs';
 import {parameters} from './flow-aggregation.parameters';
+import {COMMUTE_FLOWS, getCommutePositions} from '../../../data/commute-flows';
 
-const RECORD_COUNT = 1200;
 const TOP_COUNT = 160;
 const COLUMN_OPTIONS = [8, 12, 16];
-const HUBS = [
-  [0.22, 0.3],
-  [0.7, 0.72],
-  [0.5, 0.35],
-  [0.85, 0.25]
-] as const;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Outgoing flow per zone (grid) and the heaviest zone-to-zone flows (lines).',
-  createInputs: ({random, world}) => {
-    // Each record starts at one hub and ends at another, with a spread around both.
-    const hubs = Float32Array.from({length: RECORD_COUNT * 2}, () =>
-      Math.floor(random() * HUBS.length)
-    );
-    const jitter = Float32Array.from(
-      {length: RECORD_COUNT * 4},
-      () => (random() + random() + random() - 1.5) * 0.12
-    );
-    const weights = Float32Array.from({length: RECORD_COUNT}, () => 1 + Math.floor(random() * 4));
+  caption: 'Chicago home-to-work job counts, summed by zone and linked to workplace zones.',
+  createInputs: ({world}) => {
+    const positions = fitPositions(getCommutePositions(world), world);
+    // Raster row zero draws at the north edge. Convert north-up positions to raster y.
+    const endpoint = (tract: number) => [positions[tract * 2], 1 - positions[tract * 2 + 1]];
     return {
       world,
-      hubs,
-      jitter,
-      weights,
-      origins: new Float32Array(RECORD_COUNT * 2),
-      destinations: new Float32Array(RECORD_COUNT * 2)
+      zoneMaximums: new Map<string, number>(),
+      origins: Float32Array.from(COMMUTE_FLOWS.flatMap(([origin]) => endpoint(origin))),
+      destinations: Float32Array.from(
+        COMMUTE_FLOWS.flatMap(([, destination]) => endpoint(destination))
+      )
     };
   },
   build(builder, inputs, values) {
@@ -47,8 +38,9 @@ export default defineOperationRun({
     const rows = Math.max(2, Math.round((columns * 9) / 16));
     const zoneCount = columns * rows;
     const {world} = inputs;
-    const origins = builder.allocate('origins', 'float32x2', RECORD_COUNT);
-    const destinations = builder.allocate('destinations', 'float32x2', RECORD_COUNT);
+    const origins = builder.upload('origins', 'float32x2', inputs.origins);
+    const destinations = builder.upload('destinations', 'float32x2', inputs.destinations);
+    const weights = builder.allocate('workers', 'float32', COMMUTE_FLOWS.length);
     const ids = builder.allocate('ids', 'uint32', TOP_COUNT);
     const count = builder.allocate('count', 'uint32', 1);
     const overflow = builder.allocate('overflow', 'uint32', 1);
@@ -63,7 +55,7 @@ export default defineOperationRun({
         zones: {kind: 'grid', bounds: [0, 0, world.width, 1], gridSize: [columns, rows]},
         origins: origins.view,
         destinations: destinations.view,
-        weights: builder.upload('weights', 'float32', inputs.weights).view,
+        weights: weights.view,
         excludeSelfFlows: values.excludeSelfFlows === 1,
         pairCapacity: 4096,
         output: {
@@ -86,6 +78,7 @@ export default defineOperationRun({
     return {
       outputs: {
         zoneOutWeights,
+        flowWeights,
         centers: builder.upload('centers', 'float32x2', centers),
         flows: addEdgePairs(builder, {
           id: 'flows',
@@ -97,44 +90,105 @@ export default defineOperationRun({
         destinationZones
       },
       update: current => {
-        for (let record = 0; record < RECORD_COUNT; record++) {
-          const origin = HUBS[inputs.hubs[record * 2]];
-          const destination = HUBS[inputs.hubs[record * 2 + 1]];
-          // The grid's row 0 is the lowest y; world y is flipped so row 0 draws at the top.
-          inputs.origins[record * 2] =
-            (origin[0] + inputs.jitter[record * 4] * current.spread) * world.width;
-          inputs.origins[record * 2 + 1] =
-            1 - (origin[1] + inputs.jitter[record * 4 + 1] * current.spread);
-          inputs.destinations[record * 2] =
-            (destination[0] + inputs.jitter[record * 4 + 2] * current.spread) * world.width;
-          inputs.destinations[record * 2 + 1] =
-            1 - (destination[1] + inputs.jitter[record * 4 + 3] * current.spread);
-        }
-        origins.write(inputs.origins);
-        destinations.write(inputs.destinations);
+        weights.write(
+          Float32Array.from(COMMUTE_FLOWS, ([, , jobs]) => (jobs >= current.minimumJobs ? jobs : 0))
+        );
         originZones.write(new Uint32Array(TOP_COUNT).fill(0xffffffff));
         destinationZones.write(new Uint32Array(TOP_COUNT).fill(0xffffffff));
       }
     };
   },
   rebuildOn: ['gridSize', 'excludeSelfFlows'],
-  draw: ({outputs, values}) => {
+  // Probe: the hovered zone, the flows leaving it and the zones they reach.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a zone',
+    rest: [0.5, 0.5],
+    resolve(pointer, {outputs, values, world, peek}) {
+      const columns = COLUMN_OPTIONS[values.gridSize];
+      const rows = Math.max(2, Math.round((columns * 9) / 16));
+      const cell = getRasterCell(columns, rows, [0, 0, world.width, 1], pointer.x, pointer.y);
+      const zone = cell.index;
+      const center = (index: number): [number, number] => [
+        ((index % columns) + 0.5) * (world.width / columns),
+        1 - (Math.floor(index / columns) + 0.5) / rows
+      ];
+      const origins = peek(outputs.originZones);
+      const destinations = peek(outputs.destinationZones);
+      const weights = peek(outputs.flowWeights);
+      const totals = peek(outputs.zoneOutWeights);
+      const glyphs: RunGlyph[] = [
+        {
+          shape: 'box',
+          minimum: [cell.column * (world.width / columns), 1 - (cell.row + 1) / rows],
+          maximum: [(cell.column + 1) * (world.width / columns), 1 - cell.row / rows]
+        }
+      ];
+      let flowCount = 0;
+      let strongest = 0;
+      if (origins && destinations) {
+        for (let flow = 0; flow < origins.length; flow++) {
+          if (origins[flow] !== zone) continue;
+          flowCount++;
+          if (weights) strongest = Math.max(strongest, weights[flow]);
+          glyphs.push({shape: 'arrow', from: center(zone), to: center(destinations[flow])});
+        }
+      }
+      return {
+        spotlight: null,
+        glyphs,
+        readout: `zone ${zone} · out ${totals ? Math.round(totals[zone]) : 0} jobs · ${flowCount} flows${strongest ? ` · top ${Math.round(strongest)}` : ''}`
+      };
+    }
+  },
+  draw: ({inputs, outputs, values}) => {
     const columns = COLUMN_OPTIONS[values.gridSize];
+    const rows = Math.max(2, Math.round((columns * 9) / 16));
     return [
       {
         layer: 'raster',
         values: outputs.zoneOutWeights,
         columns,
-        rows: Math.max(2, Math.round((columns * 9) / 16)),
-        ramp: 'sequential'
+        rows,
+        ramp: 'sequential',
+        range: [0, getZoneMaximum(inputs, columns, rows, values.excludeSelfFlows === 1)]
       },
       {
         layer: 'segments',
         nodes: outputs.centers,
         edges: outputs.flows,
-        radius: 1.4,
-        color: [1, 1, 1, 0.5]
+        radius: 1.2,
+        color: [1, 1, 1, 0.25]
       }
     ];
   }
 });
+
+/** Largest zone outflow before the minimum-workers filter, so the filter visibly lowers the totals. */
+function getZoneMaximum(
+  inputs: {
+    origins: Float32Array;
+    destinations: Float32Array;
+    world: {width: number};
+    zoneMaximums: Map<string, number>;
+  },
+  columns: number,
+  rows: number,
+  excludeSelf: boolean
+): number {
+  const key = `${columns}:${excludeSelf}`;
+  const known = inputs.zoneMaximums.get(key);
+  if (known !== undefined) return known;
+  const totals = new Float64Array(columns * rows);
+  const getZone = (x: number, y: number) =>
+    Math.min(columns - 1, Math.floor((x / inputs.world.width) * columns)) +
+    Math.min(rows - 1, Math.floor(y * rows)) * columns;
+  COMMUTE_FLOWS.forEach(([, , jobs], flow) => {
+    const origin = getZone(inputs.origins[flow * 2], inputs.origins[flow * 2 + 1]);
+    const destination = getZone(inputs.destinations[flow * 2], inputs.destinations[flow * 2 + 1]);
+    if (!excludeSelf || origin !== destination) totals[origin] += jobs;
+  });
+  const maximum = Math.max(...totals);
+  inputs.zoneMaximums.set(key, maximum);
+  return maximum;
+}

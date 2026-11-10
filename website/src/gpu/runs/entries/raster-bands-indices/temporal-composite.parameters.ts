@@ -13,5 +13,12 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['mean', 'minimum', 'maximum', 'median']
   },
-  {id: 'cloudCover', label: 'Data: cloud cover', min: 0, max: 0.8, step: 0.05, default: 0.4}
+  {
+    id: 'cloudCover',
+    label: 'Data: missing observations',
+    min: 0,
+    max: 0.8,
+    step: 0.05,
+    default: 0.4
+  }
 ];

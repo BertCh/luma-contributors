@@ -7,35 +7,35 @@
 
 import {GPUSphericalPolygonOverlay} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {addRingOffsetSegments, addUnitVectorsToLonLat} from './support/kernels';
+import {findParameter, snapToParameter} from '../../interaction';
+import {addRingOffsetSegments, addSegmentFill, addUnitVectorsToLonLat} from './support/kernels';
 import {getUnitVector, packUnitVectors} from './support/polygons';
+import {
+  getLakeShore,
+  getRingSegments,
+  getSurveySwath,
+  SUPERIOR_WINDOW,
+  getSurveyRing
+} from './support/spherical-surveys';
 import {parameters} from './spherical-polygon-overlay.parameters';
 
 const OPERATIONS = ['intersection', 'union', 'difference', 'symmetric-difference'] as const;
 const OUTPUT_VERTICES = 256;
 const OUTPUT_OFFSETS = 33;
-
-function createStar(center: [number, number], radius: number, points: number) {
-  return Array.from({length: points * 2}, (_, index) => {
-    const angle = (Math.PI * index) / points + 0.2;
-    const length = index % 2 === 0 ? radius : radius * 0.55;
-    return [center[0] + length * Math.cos(angle), center[1] + length * Math.sin(angle)];
-  });
-}
-
-function createCircle(center: [number, number], radius: number, count: number) {
-  return Array.from({length: count}, (_, index) => {
-    const angle = (2 * Math.PI * index) / count + 0.6;
-    return [center[0] + radius * Math.cos(angle), center[1] + radius * Math.sin(angle)];
-  });
-}
+const FILL_COLUMNS = 160;
+const FILL_ROWS = 90;
+const LONGITUDE_PARAMETER = findParameter(parameters, 'shift');
+const LATITUDE_PARAMETER = findParameter(parameters, 'shiftLatitude');
 
 export default defineOperationRun({
   parameters,
-  caption: 'Boolean overlay of a star with a hole and a circle on the sphere.',
-  createInputs: ({world}) => ({center: [world.width / 2, 0.5] as [number, number]}),
-  build(builder, inputs, values) {
-    const leftRings = [createStar(inputs.center, 0.4, 5), createCircle(inputs.center, 0.1, 8)];
+  geographicWindow: SUPERIOR_WINDOW,
+  caption:
+    'Lake Superior with a modeled survey exclusion, clipped against a movable survey corridor.',
+  createInputs: () => ({
+    rings: [getLakeShore('Lake Superior'), getSurveyRing(-87.7, 47.6, 17, 12).reverse()]
+  }),
+  build(builder, {rings: leftRings}, values) {
     const leftOffsets = [0, leftRings[0].length, leftRings[0].length + leftRings[1].length];
     const left = {
       kind: 'polygons' as const,
@@ -44,7 +44,7 @@ export default defineOperationRun({
       polygonOffsets: builder.upload('left-polygons', 'uint32', Uint32Array.of(0, 2)),
       featureOffsets: builder.upload('left-features', 'uint32', Uint32Array.of(0, 1))
     };
-    const rightVertexCount = 24;
+    const rightVertexCount = 4;
     const rightPositions = builder.allocate('right-positions', 'float32x3', rightVertexCount);
     const right = {
       kind: 'polygons' as const,
@@ -81,7 +81,7 @@ export default defineOperationRun({
           featureOffsets: right.featureOffsets.view
         },
         operation: OPERATIONS[values.operation],
-        chartCenter: getUnitVector(inputs.center[0], inputs.center[1]),
+        chartCenter: getUnitVector(-88.2, 47.7),
         vertexTolerance: 2 ** -18,
         capacity: {intersections: 256, nodedSegments: 512},
         output: {
@@ -123,24 +123,63 @@ export default defineOperationRun({
       count
     });
     const operandOutlines = [
-      builder.upload('left-outline', 'float32x4', ringsToSegments(leftRings)),
+      builder.upload('left-outline', 'float32x4', getRingSegments(leftRings)),
       builder.allocate('right-outline', 'float32x4', rightVertexCount)
     ];
     return {
-      outputs: {result, operandOutlines},
+      outputs: {
+        result,
+        fill: addSegmentFill(builder, 'result', result, SUPERIOR_WINDOW, FILL_COLUMNS, FILL_ROWS),
+        operandOutlines,
+        count,
+        featureOffsets,
+        polygonOffsets,
+        ringOffsets
+      },
       update: current => {
-        const ring = createCircle(
-          [inputs.center[0] + current.shift, inputs.center[1] + 0.05],
-          0.3,
-          rightVertexCount
-        );
+        const ring = getSurveySwath(current.shift, current.shiftLatitude);
         rightPositions.write(packUnitVectors([ring]));
-        operandOutlines[1].write(ringsToSegments([ring]));
+        operandOutlines[1].write(getRingSegments([ring]));
       }
     };
   },
   rebuildOn: ['operation'],
-  draw: ({outputs}) => [
+  // Drag: the survey corridor is centered on the pointer's longitude and latitude.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag the corridor',
+    rest: ({toUnit}) => toUnit([LONGITUDE_PARAMETER.default, LATITUDE_PARAMETER.default]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const shift = snapToParameter(LONGITUDE_PARAMETER, pointer.x);
+      const shiftLatitude = snapToParameter(LATITUDE_PARAMETER, pointer.y);
+      const count = peek(outputs.count);
+      const featureOffsets = peek(outputs.featureOffsets);
+      const polygonOffsets = peek(outputs.polygonOffsets);
+      let shape = '…';
+      if (count && featureOffsets && polygonOffsets) {
+        const polygons = featureOffsets[count[0]];
+        const rings = polygonOffsets[polygons];
+        const holes = rings - polygons;
+        shape = `${rings} ring${rings === 1 ? '' : 's'} (${holes} hole${holes === 1 ? '' : 's'})`;
+      }
+      return {
+        values: {shift, shiftLatitude},
+        glyphs: [{shape: 'crosshair', at: [shift, shiftLatitude]}],
+        readout: `${OPERATIONS[values.operation]} · ${shape}`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
+    // The result as an area: the hole and the cut-away corridor stay empty.
+    {
+      layer: 'raster',
+      values: outputs.fill,
+      columns: FILL_COLUMNS,
+      rows: FILL_ROWS,
+      ramp: 'sequential',
+      range: [0, 1],
+      alpha: 0.4
+    },
     {
       layer: 'lines',
       context: true,
@@ -155,14 +194,6 @@ export default defineOperationRun({
       radius: 1.2,
       color: [1, 0.6, 0.35, 0.85]
     },
-    {layer: 'lines', segments: outputs.result, radius: 3, color: [1, 1, 1, 1]}
+    {layer: 'lines', segments: outputs.result, radius: 3, color: [...theme.ink, 1]}
   ]
 });
-
-function ringsToSegments(rings: number[][][]): Float32Array {
-  return Float32Array.from(
-    rings.flatMap(ring =>
-      ring.flatMap(([x, y], index) => [x, y, ...ring[(index + 1) % ring.length]])
-    )
-  );
-}

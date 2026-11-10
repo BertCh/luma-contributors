@@ -6,24 +6,21 @@
 // the dissolved districts.
 
 import {GPUCoverageDissolve} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createTractCoverage, groupNeighborTracts} from './shared/tract-coverage';
 import {defineOperationRun} from '../../define-run';
 import {addPackedSegments} from './shared/lines';
-import {
-  createCoverage,
-  createRingSegments,
-  getPolygonFields,
-  uploadPolygonSet
-} from './shared/polygons';
+import type {RunGlyph} from '../../interaction';
+import {isInsideRing} from '../../pick';
+import {createRingSegments, getPolygonFields, uploadPolygonSet} from './shared/polygons';
 import {parameters} from './coverage-dissolve.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'Cells merged by district label; internal boundaries disappear.',
-  createInputs: ({random, world}) =>
-    createCoverage(random, world, {rows: 4, columns: 6, edgeVertexCount: 3, wiggle: 0.08}),
+  createInputs: ({random, world}) => createTractCoverage(random, world, 5),
   build(builder, coverage, values) {
     const polygons = uploadPolygonSet(builder, 'coverage', coverage);
-    const labels = builder.upload('labels', 'uint32', coverage.labels);
+    const labels = builder.allocate('labels', 'uint32', coverage.featureCount);
     const ringCapacity = coverage.ringOffsets.length;
     const vertexCapacity = coverage.positions.length / 2 + ringCapacity;
     const ringOffsets = builder.allocate('dissolved-ring-offsets', 'uint32', ringCapacity + 1);
@@ -55,16 +52,55 @@ export default defineOperationRun({
     return {
       outputs: {original, ...drawing},
       update: current => {
-        const size = current.districtSize;
-        labels.write(
-          Uint32Array.from(coverage.labels, (_, cell) => {
-            const row = Math.floor(cell / coverage.columns);
-            const column = cell % coverage.columns;
-            return Math.floor(row / size) * 3 + Math.floor(column / size);
-          })
-        );
+        labels.write(groupNeighborTracts(coverage.contiguity, current.districtSize));
       }
     };
+  },
+  // The pointer picks a tract: its district's member tracts are outlined (their shared edges are
+  // the internal boundaries the operation drops) and the hovered tract is solid.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    resolve(pointer, {inputs, values}) {
+      let row = -1;
+      for (let feature = 0; feature < inputs.featureCount && row < 0; feature++) {
+        const first = inputs.ringOffsets[feature];
+        const count = inputs.ringOffsets[feature + 1] - first;
+        if (isInsideRing(inputs.positions, pointer.x, pointer.y, first, count)) row = feature;
+      }
+      if (row < 0) return {};
+      const labels = groupNeighborTracts(inputs.contiguity, values.districtSize);
+      const glyphs: RunGlyph[] = [];
+      let memberCount = 0;
+      let internalEdgeCount = 0;
+      for (let feature = 0; feature < inputs.featureCount; feature++) {
+        if (labels[feature] !== labels[row]) continue;
+        memberCount++;
+        glyphs.push({
+          shape: 'polyline',
+          points: Array.from(
+            inputs.positions.subarray(
+              inputs.ringOffsets[feature] * 2,
+              inputs.ringOffsets[feature + 1] * 2
+            )
+          ),
+          closed: true,
+          dashed: feature !== row
+        });
+        for (
+          let slot = inputs.contiguity.offsets[feature];
+          slot < inputs.contiguity.offsets[feature + 1];
+          slot++
+        ) {
+          if (labels[inputs.contiguity.neighbors[slot]] === labels[row]) internalEdgeCount++;
+        }
+      }
+      return {
+        focus: row,
+        glyphs,
+        readout: `district ${labels[row]} · ${memberCount} tracts · ${internalEdgeCount / 2} borders dropped`
+      };
+    }
   },
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.original, radius: 1.5},
@@ -73,7 +109,7 @@ export default defineOperationRun({
       nodes: outputs.points,
       edges: outputs.edges,
       values: outputs.lineIds,
-      radius: 3
+      radius: 4
     }
   ]
 });

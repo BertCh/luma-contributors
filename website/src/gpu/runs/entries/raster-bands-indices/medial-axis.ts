@@ -11,14 +11,17 @@ import {
   GPURasterMedialAxis
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createFractalRaster} from '../../inputs';
+import {formatNumber} from '../../interaction';
 import {parameters} from './medial-axis.parameters';
 import {drawRaster, makeGridOfRaster} from './support/bands';
+import {getCellAt, getCellCenter} from './support/gestures';
+import {createShapeRaster} from './support/shapes';
 
 export default defineOperationRun({
   parameters,
   caption: 'A binary shape in; the medial axis and its disc radius out.',
-  createInputs: ({random, world}) => createFractalRaster(random, world, 72, 3),
+  createInputs: ({random, world}) =>
+    createShapeRaster(random, world, 72, {fieldWeight: 0.62, stretch: 1.35}),
   build(builder, inputs) {
     const cellCount = inputs.values.length;
     const shape = builder.allocate('shape', 'uint32', cellCount);
@@ -56,8 +59,45 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer probes the axis: the nearest axis cell's maximal inscribed disc, read from the
+  // radius the operation wrote.
+  interaction: {
+    kind: 'probe',
+    hint: 'probe the axis',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {inputs, outputs, world, peek}) => {
+      const radius = peek(outputs.axisRadius);
+      if (!radius) return {readout: 'medial axis'};
+      const cellWidth = world.width / inputs.columns;
+      const cellHeight = world.height / inputs.rows;
+      const center = getCellAt(inputs, world, pointer);
+      let best = -1;
+      let bestDistance = Infinity;
+      for (let index = 0; index < radius.length; index++) {
+        if (!Number.isFinite(radius[index])) continue;
+        const dx = ((index % inputs.columns) - center.column) * cellWidth;
+        const dy = (Math.floor(index / inputs.columns) - center.row) * cellHeight;
+        const distance = dx * dx + dy * dy;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = index;
+        }
+      }
+      if (best < 0) return {readout: 'no axis'};
+      const column = best % inputs.columns;
+      const row = Math.floor(best / inputs.columns);
+      const at = getCellCenter(inputs, world, column, row);
+      return {
+        glyphs: [
+          {shape: 'dot', at},
+          {shape: 'ring', at, radius: radius[best] * cellHeight}
+        ],
+        readout: `axis [${column}, ${row}] | radius ${formatNumber(radius[best], 1)} cells`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     drawRaster(inputs, outputs.shapeValues, {context: true, range: [0, 1]}),
-    drawRaster(inputs, outputs.axisRadius, {ramp: 'sequential'})
+    drawRaster(inputs, outputs.axisRadius, {ramp: 'sequential', range: [0, 14]})
   ]
 });

@@ -8,7 +8,13 @@
 import {GPUSubdividePolygons} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
-import {createPolygonSet, uploadPolygonSet, writePolygonSet} from './shared/polygon-set';
+import {
+  applyVertexDrag,
+  createPolygonSet,
+  uploadPolygonSet,
+  writePolygonSet
+} from './shared/polygon-set';
+import {carryNearestVertex, createDragFields, getHeroRest} from './shared/pointer-support';
 import {addKernel} from './shared/shape-segments';
 import {parameters} from './subdivide-polygons.parameters';
 
@@ -18,11 +24,10 @@ const OPTIONS = {vertexCount: 12, rows: 2, columns: 4};
 export default defineOperationRun({
   parameters,
   caption: 'Each star split into convex pieces, one color per piece.',
-  createInputs: ({seed, world}) => ({
-    seed,
-    world,
-    set: createPolygonSet(makeRandom(seed), world, {...OPTIONS, irregularity: 0.45})
-  }),
+  createInputs: ({seed, world}) => {
+    const set = createPolygonSet(makeRandom(seed), world, {...OPTIONS, irregularity: 0.45});
+    return {seed, world, set, ...createDragFields(set, 2)};
+  },
   build(builder, inputs, values) {
     const polygons = uploadPolygonSet(builder, inputs.set);
     const maximumVertices = values.maximumVertices;
@@ -65,16 +70,39 @@ export default defineOperationRun({
   categories[categoriesOffset + index] = select(0xffffffffu, piece, isWritten);`
     });
     return {
-      outputs: {...polygons, pieceVertices, edges, categories},
-      update: current =>
-        writePolygonSet(
-          polygons,
-          createPolygonSet(makeRandom(inputs.seed), inputs.world, {
-            ...OPTIONS,
-            irregularity: current.irregularity
-          })
-        )
+      outputs: {...polygons, pieceVertices, edges, categories, pieces},
+      update: current => {
+        const next = createPolygonSet(makeRandom(inputs.seed), inputs.world, {
+          ...OPTIONS,
+          irregularity: current.irregularity
+        });
+        applyVertexDrag(next, inputs.drag);
+        inputs.set = next;
+        writePolygonSet(polygons, next);
+      }
     };
+  },
+  // The pointer pushes a vertex inward to make a reflex corner; convex pieces re-form around it.
+  interaction: {
+    kind: 'drag',
+    hint: 'push a vertex inward',
+    rest: ({inputs, toUnit}) => toUnit(getHeroRest(inputs)),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const carried = carryNearestVertex(inputs, pointer, 0, 0.4);
+      const feature = inputs.drag?.feature ?? 0;
+      const pieces = peek(outputs.pieces);
+      let pieceCount = 0;
+      if (pieces) {
+        for (let row = 0; row < pieces.length; row += 4) {
+          if (pieces[row] > 0 && pieces[row + 1] === feature) pieceCount++;
+        }
+      }
+      return {
+        rerun: true,
+        glyphs: carried.glyphs,
+        readout: `maximumVertices ${values.maximumVertices} · ${pieces ? pieceCount : '...'} pieces`
+      };
+    }
   },
   rebuildOn: ['maximumVertices'],
   draw: ({inputs, outputs}) => [

@@ -24,5 +24,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['[1, 0]', '[0, 1]', '[1, 1]', '[-1, 1]']
   },
-  {id: 'roughness', label: 'Data: roughness', min: 0, max: 1, step: 0.05, default: 0.6}
+  {id: 'roughness', label: 'Data: noise', min: 0, max: 1, step: 0.05, default: 0.6}
 ];

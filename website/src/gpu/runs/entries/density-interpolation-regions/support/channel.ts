@@ -33,3 +33,34 @@ export function addChannel(
   });
   return target;
 }
+
+/**
+ * Adds a node copying replicate `replicateIndex[0]` of a stacked float32 buffer (`cellCount` rows
+ * per replicate) into a scalar buffer. Write the returned `index` buffer per frame to play the
+ * stored replicates back without rerunning the simulation.
+ */
+export function addReplicateSelect(
+  builder: RunBuilder,
+  stacked: RunBuffer<'float32'>,
+  cellCount: number,
+  id: string
+): {selected: RunBuffer<'float32'>; index: RunBuffer<'uint32'>} {
+  const selected = builder.allocate(id, 'float32', cellCount);
+  const index = builder.allocate(`${id}-index`, 'uint32', 1);
+  builder.graph.add({
+    getCommandNodes: graph => [
+      createWGSLKernelNode(graph, {
+        id,
+        operation: 'replicate-select',
+        bindings: [
+          {name: 'stackedSource', view: stacked.view, type: 'f32', access: 'read'},
+          {name: 'replicateRow', view: index.view, type: 'u32', access: 'read'},
+          {name: 'selectedTarget', view: selected.view, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: cellCount,
+        body: `selectedTarget[selectedTargetOffset + index] = stackedSource[stackedSourceOffset + replicateRow[replicateRowOffset] * ${cellCount}u + index];`
+      })
+    ]
+  });
+  return {selected, index};
+}

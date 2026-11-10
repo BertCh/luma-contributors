@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Helpers shared by the cells-index-join runs. The drawing world doubles as a longitude/latitude
-// window in degrees (x is longitude, y is latitude near the equator), so cell boundaries that the
-// operations write in degrees can be drawn directly.
+// Cells consume and return longitude/latitude. Geographic runs set their camera bounds
+// to the same window as their input coordinates.
 
 import type {RunBuffer, RunBuilder} from '../../../define-run';
 import {GPUCellGeometry, GPUPointToCell} from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -150,6 +149,10 @@ export function getCountTableViews(table: CellTableBuffers) {
 
 export type CellFillBuffers = {
   boundaries: RunBuffer<'float32x2'>;
+  centers: RunBuffer<'float32x2'>;
+  /** Boundary slots per cell, and the number of them that are corners. */
+  stride: number;
+  vertexCount: number;
   indices: RunBuffer<'uint32'>;
   owners: RunBuffer<'uint32'>;
   triangleCount: number;
@@ -182,6 +185,9 @@ export function addCellFill(
   const wireframe = createCellWireframe(cells.length, geometry.stride, geometry.vertexCount);
   return {
     boundaries: geometry.boundaries,
+    centers: geometry.centers,
+    stride: geometry.stride,
+    vertexCount: geometry.vertexCount,
     indices: builder.upload(`${prefix}-indices`, 'uint32', mesh.indices),
     owners: builder.upload(`${prefix}-owners`, 'uint32', mesh.owners),
     triangleCount: mesh.triangleCount,
@@ -209,4 +215,82 @@ export function addPointKeys(
     })
   );
   return cells;
+}
+
+export type PointerCell = {
+  /** The cell key of the pointer position, decoded by the same two operations as the data. */
+  cells: RunBuffer<'uint32x2'>;
+  centers: RunBuffer<'float32x2'>;
+  boundaries: RunBuffer<'float32x2'>;
+  vertexCounts: RunBuffer<'uint32'>;
+  stride: number;
+  vertexCount: number;
+  /** Fan triangles over the one cell, for a bright fill. */
+  indices: RunBuffer<'uint32'>;
+  owners: RunBuffer<'uint32'>;
+  triangleCount: number;
+};
+
+/** The polygons layer that fills the cell under the pointer. */
+export function drawPointerCell(
+  pointerCell: PointerCell,
+  color: readonly [number, number, number, number] = [1, 0.82, 0.3, 0.55]
+) {
+  return {
+    layer: 'polygons' as const,
+    positions: pointerCell.boundaries,
+    indices: pointerCell.indices,
+    owners: pointerCell.owners,
+    values: pointerCell.owners,
+    triangleCount: pointerCell.triangleCount,
+    color
+  };
+}
+
+/**
+ * Keys a one-row pointer position with GPUPointToCell and decodes it with GPUCellGeometry, so the
+ * cell under the cursor is answered by the same operations that key the data (no CPU cell library).
+ */
+export function addPointerCell(
+  builder: RunBuilder,
+  family: CellFamily | 's2',
+  resolution: number,
+  position: RunBuffer<'float32x2'>,
+  prefix = 'pointer'
+): PointerCell {
+  const cells = addPointKeys(builder, family, resolution, position, prefix);
+  const stride = family === 'h3' ? H3_BOUNDARY_STRIDE : 4;
+  const centers = builder.allocate(`${prefix}-centers`, 'float32x2', position.length);
+  const boundaries = builder.allocate(
+    `${prefix}-boundaries`,
+    'float32x2',
+    position.length * stride
+  );
+  const vertexCounts = builder.allocate(`${prefix}-vertex-counts`, 'uint32', position.length);
+  builder.graph.add(
+    new GPUCellGeometry({
+      id: `${prefix}-geometry`,
+      family,
+      cells: cells.view,
+      maximumVertexCount: stride,
+      output: {
+        centers: centers.view,
+        boundaries: boundaries.view,
+        vertexCounts: vertexCounts.view
+      }
+    })
+  );
+  const vertexCount = family === 'h3' ? 6 : 4;
+  const mesh = createCellFanMesh(position.length, stride, vertexCount);
+  return {
+    cells,
+    centers,
+    boundaries,
+    vertexCounts,
+    stride,
+    vertexCount,
+    indices: builder.upload(`${prefix}-fill-indices`, 'uint32', mesh.indices),
+    owners: builder.upload(`${prefix}-fill-owners`, 'uint32', mesh.owners),
+    triangleCount: mesh.triangleCount
+  };
 }

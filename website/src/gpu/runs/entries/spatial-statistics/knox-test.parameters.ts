@@ -16,6 +16,6 @@ export const parameters: GpuSceneParameter[] = [
     unit: ' days'
   },
   {id: 'permutationCount', label: 'permutationCount', min: 19, max: 499, step: 20, default: 199},
-  {id: 'radius', label: 'Data: radius', min: 0.03, max: 0.12, step: 0.005, default: 0.06},
-  {id: 'clustering', label: 'Data: clustering', min: 0, max: 1, step: 0.05, default: 0.7}
+  {id: 'radius', label: 'radius', min: 0.5, max: 8, step: 0.5, default: 1, unit: ' km'},
+  {id: 'clustering', label: 'Observed time share', min: 0, max: 1, step: 0.05, default: 1}
 ];

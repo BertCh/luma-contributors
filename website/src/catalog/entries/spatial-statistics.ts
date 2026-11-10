@@ -166,7 +166,11 @@ graph.add(new GPULocalMoran({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'hotspots', caption: 'HH and LL clusters stand out from the noise.', seed: 501},
+    preview: {
+      kind: 'hotspots',
+      caption: 'Local Moran clusters of September 27 rainfall.',
+      seed: 501
+    },
     related: [
       'hot-spot-analysis-gi-star',
       'local-permutation-test',
@@ -295,7 +299,11 @@ graph.add(new GPUHotSpotAnalysis({
   multipleTesting: 'benjamini-hochberg',
   output: {zScores, bins}
 }));`,
-    preview: {kind: 'hotspots', caption: 'Red and blue bins mark hot and cold spots.', seed: 503},
+    preview: {
+      kind: 'hotspots',
+      caption: 'Unusually wet and dry gauge neighborhoods during Helene.',
+      seed: 503
+    },
     related: ['local-morans-i', 'emerging-hot-spots', 'multiple-testing-adjustment'],
     lensScenario: 'gpu-spatial-analysis.hot-spot-analysis',
     reference: REFERENCE,
@@ -1651,7 +1659,7 @@ graph.add(new GPUSpatialClustering({
 }));`,
     preview: {
       kind: 'point-clusters',
-      caption: 'Dense groups found; scattered points are noise.',
+      caption: 'Density-connected Japanese earthquake epicenters.',
       seed: 521
     },
     related: ['hdbscan-clustering', 'optics-clustering', 'k-means-clustering'],
@@ -1909,7 +1917,7 @@ graph.add(new GPUKMeans({
 }));`,
     preview: {
       kind: 'point-clusters',
-      caption: 'Eight centers, each owning its nearest points.',
+      caption: 'Five centers among Japanese earthquake epicenters.',
       seed: 524
     },
     related: ['dbscan-clustering', 'hdbscan-clustering'],

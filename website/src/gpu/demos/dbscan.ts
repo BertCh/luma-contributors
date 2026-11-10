@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUSpatialClustering (DBSCAN). Blobs, two moons and scattered noise; the epsilon and
+// Demo: GPUSpatialClustering (DBSCAN) of Japanese earthquake epicenters. The epsilon and
 // minimum-points sliders relabel every point on the GPU, so clusters merge, split and shed noise.
 
 import {
@@ -9,14 +9,18 @@ import {
   GPUSpatialClustering,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getEarthquakes} from '../data/point-observations';
+import type {RunGlyph} from '../runs/interaction';
+import {chooseSticky, createPointIndex} from '../runs/pick';
+import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
+import {createJapanCoast} from './japan-coast';
 import {DBSCAN_PARAMETERS, readParameterValues} from './parameters';
 import {
   assertWebGPU,
   createEmptyStorageBuffer,
   createStorageBuffer,
   DotLayer,
-  drawGaussianCluster,
   DrawScheduler,
   drawLayers,
   getDemoTheme,
@@ -38,41 +42,15 @@ const scene: GpuScene = async context => {
   const random = makeRandom(context.seed);
   const bounds = [0, 0, worldWidth, 1] as const;
 
-  const positions: number[] = [];
-  const addBlob = (centerX: number, centerY: number, spread: number, count: number) => {
-    for (let index = 0; index < count; index++) {
-      positions.push(...drawGaussianCluster(random, centerX * worldWidth, centerY, spread));
-    }
-  };
-  const addMoon = (
-    centerX: number,
-    centerY: number,
-    radius: number,
-    flip: number,
-    count: number
-  ) => {
-    for (let index = 0; index < count; index++) {
-      const angle = Math.PI * random();
-      const [x, y] = drawGaussianCluster(
-        random,
-        centerX * worldWidth + Math.cos(angle) * radius,
-        centerY + flip * Math.sin(angle) * radius,
-        0.008
-      );
-      positions.push(x, y);
-    }
-  };
-  addBlob(0.17, 0.3, 0.035, 150);
-  addBlob(0.2, 0.78, 0.03, 120);
-  addMoon(0.55, 0.45, 0.2, 1, 220);
-  addMoon(0.67, 0.55, 0.2, -1, 220);
-  addBlob(0.9, 0.3, 0.04, 110);
-  for (let index = 0; index < 70; index++) {
-    positions.push(random() * worldWidth, random());
-  }
-  const pointCount = positions.length / 2;
+  const {positions, count: pointCount} = getEarthquakes(
+    random,
+    {width: worldWidth, height: 1},
+    820
+  );
 
-  const positionBuffer = createStorageBuffer(device, Float32Array.from(positions));
+  const pointIndex = createPointIndex(positions, pointCount);
+  let selected = -1;
+  const positionBuffer = createStorageBuffer(device, positions);
   const parameterBuffer = createEmptyStorageBuffer(device, GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH);
   const labels = createEmptyStorageBuffer(device, pointCount);
   const clusterCount = createEmptyStorageBuffer(device, 1);
@@ -97,6 +75,7 @@ const scene: GpuScene = async context => {
     );
   });
 
+  const coast = createJapanCoast(device, worldWidth);
   const dots = new DotLayer(device, positionBuffer, labels, pointCount, 'uint32');
   let isDirty = true;
 
@@ -118,26 +97,73 @@ const scene: GpuScene = async context => {
       solid: [...theme.muted, 0.55],
       hillshade: 0.4
     });
-    drawLayers(device, theme, [dots]);
+    coast.layer.update(view, theme, {radius: 0.7, solid: [...theme.muted, 0.8]});
+    drawLayers(device, theme, [coast.layer, dots, ...driver.getLayers()]);
   };
   const scheduler = new DrawScheduler(draw);
 
+  const driver = createPointerDriver({
+    device,
+    view,
+    theme,
+    reducedMotion: context.reducedMotion,
+    kind: 'probe',
+    hint: 'hover an epicenter',
+    rest: [0.5, 0.5],
+    reportReadout: context.reportReadout,
+    requestDraw: () => scheduler.request(),
+    resolve(pointer) {
+      selected = chooseSticky(pointIndex, pointer.x, pointer.y, selected);
+      if (selected < 0) return {};
+      const at = [positions[selected * 2], positions[selected * 2 + 1]] as const;
+      const epsilon = values.epsilon / 100;
+      const inside = pointIndex.within(at[0], at[1], epsilon).filter(index => index !== selected);
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at, radius: epsilon},
+        {shape: 'dot', at}
+      ];
+      for (const index of inside) {
+        glyphs.push({
+          shape: 'line',
+          from: at,
+          to: [positions[index * 2], positions[index * 2 + 1]]
+        });
+      }
+      // A point counts itself toward minimumPoints; a border point is within epsilon of a core point.
+      const minimumPoints = Math.round(values.minimumPoints);
+      const isCore = (index: number) =>
+        pointIndex.within(positions[index * 2], positions[index * 2 + 1], epsilon).length >=
+        minimumPoints;
+      const role =
+        inside.length + 1 >= minimumPoints ? 'core' : inside.some(isCore) ? 'border' : 'noise';
+      return {glyphs, readout: `${inside.length} within epsilon \u00b7 ${role}`};
+    }
+  });
+
   return {
-    render() {
+    gesture: driver.gesture,
+    render(time) {
+      driver.advance(time);
       scheduler.flush();
     },
     setParameters(update) {
       Object.assign(values, update);
       isDirty = true;
+      driver.refresh();
       scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      driver.refresh();
       scheduler.request();
     },
+    setPointer: driver.setPointer,
+    resetPointer: driver.resetPointer,
     destroy() {
       scheduler.cancel();
+      driver.destroy();
+      coast.destroy();
       dots.destroy();
       runner.destroy();
       for (const buffer of [positionBuffer, parameterBuffer, labels, clusterCount]) {

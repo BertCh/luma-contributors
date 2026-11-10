@@ -9,6 +9,9 @@ import {
   GPUNetworkPathExtraction,
   GPUNetworkReachability
 } from '@luma-contributors/analysis/gpu-network';
+import type {RunGlyph} from '../runs/interaction';
+import {chooseSticky, createPointIndex} from '../runs/pick';
+import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
 import {readParameterValues, SHORTEST_PATH_PARAMETERS} from './parameters';
 import {createStreetNetwork} from './street-network';
@@ -20,10 +23,8 @@ import {
   DrawScheduler,
   drawLayers,
   getDemoTheme,
-  getWorldPosition,
   GraphRunner,
   importBufferView,
-  makeRandom,
   PathLayer,
   SegmentLayer,
   type DemoView
@@ -31,7 +32,7 @@ import {
 
 export const parameters = SHORTEST_PATH_PARAMETERS;
 
-const ROWS = 20;
+const MAXIMUM_NODES = 640;
 const MAXIMUM_PATH_LENGTH = 256;
 
 const scene: GpuScene = async context => {
@@ -41,7 +42,7 @@ const scene: GpuScene = async context => {
   const values = readParameterValues(parameters, context.parameters);
   const worldWidth = context.width / context.height;
   const view: DemoView = {worldWidth, worldHeight: 1, width: context.width, height: context.height};
-  const network = createStreetNetwork(makeRandom(context.seed), worldWidth, ROWS);
+  const network = createStreetNetwork(worldWidth, MAXIMUM_NODES);
   const {nodes, nodeCount, edgeCount, slotCount} = network;
   const weights = new Float32Array(slotCount);
   network.fillWeights(weights, values.congestion);
@@ -138,28 +139,53 @@ const scene: GpuScene = async context => {
     });
     route.update(view, theme, {radius: 3.2, solid: [accent[0], accent[1], accent[2], 1]});
     endpoints.update(view, theme, {mode: -1, radius: 7, solid: [...theme.ink, 1], hillshade: 1});
-    drawLayers(device, theme, [roads, route, endpoints]);
+    drawLayers(device, theme, [roads, route, endpoints, ...driver.getLayers()]);
   };
   const scheduler = new DrawScheduler(draw);
 
+  const nodeIndex = createPointIndex(nodes, nodeCount);
+  const driver = createPointerDriver({
+    device,
+    view,
+    theme,
+    reducedMotion: context.reducedMotion,
+    kind: 'place',
+    hint: 'move the destination',
+    rest: pointerContext =>
+      pointerContext.toUnit([nodes[targetNode * 2], nodes[targetNode * 2 + 1]]),
+    reportReadout: context.reportReadout,
+    requestDraw: () => scheduler.request(),
+    resolve(pointer) {
+      const nextTarget = chooseSticky(nodeIndex, pointer.x, pointer.y, targetNode);
+      if (nextTarget !== targetNode) {
+        targetNode = nextTarget;
+        isDirty = true;
+        scheduler.request();
+      }
+      const snapped: [number, number] = [nodes[targetNode * 2], nodes[targetNode * 2 + 1]];
+      const glyphs: RunGlyph[] = [
+        {shape: 'line', from: [pointer.x, pointer.y], to: snapped, dashed: true},
+        {shape: 'crosshair', at: snapped, size: 12},
+        {shape: 'dot', at: snapped}
+      ];
+      return {glyphs, readout: `destination node ${targetNode}`};
+    }
+  });
+
   return {
-    render() {
+    gesture: driver.gesture,
+    render(time) {
+      driver.advance(time);
       scheduler.flush();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      driver.refresh();
       scheduler.request();
     },
-    setPointer(position) {
-      if (!position) return;
-      const [x, y] = getWorldPosition(view, position);
-      const nextTarget = network.findNearestNode(x, y);
-      if (nextTarget === targetNode) return;
-      targetNode = nextTarget;
-      isDirty = true;
-      scheduler.request();
-    },
+    setPointer: driver.setPointer,
+    resetPointer: driver.resetPointer,
     setParameters(update) {
       Object.assign(values, update);
       isDirty = true;
@@ -167,6 +193,7 @@ const scene: GpuScene = async context => {
     },
     destroy() {
       scheduler.cancel();
+      driver.destroy();
       roads.destroy();
       route.destroy();
       endpoints.destroy();

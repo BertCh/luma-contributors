@@ -12,8 +12,8 @@ export const parameters: GpuSceneParameter[] = [
     max: 2,
     step: 1,
     default: 2,
-    options: ['1 (all points)', '2 (ground)']
+    options: ['1 (unclassified)', '2 (ground)']
   },
   {id: 'cellSize', label: 'grid.cellSize', min: 0.02, max: 0.1, step: 0.01, default: 0.04},
-  {id: 'noise', label: 'Data: jitter', min: 0, max: 0.03, step: 0.002, default: 0.004}
+  {id: 'noise', label: 'Data: jitter', min: 0, max: 0.03, step: 0.002, default: 0}
 ];

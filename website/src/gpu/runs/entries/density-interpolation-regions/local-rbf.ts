@@ -6,9 +6,15 @@
 
 import {GPULocalRBF} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {getRasterCell, getRasterCellCenter} from '../../pick';
 import {parameters} from './local-rbf.parameters';
 import {addChannel} from './support/channel';
-import {createInterpolationInputs} from './support/interpolation';
+import {
+  createInterpolationInputs,
+  createNeighborhoodGlyphs,
+  findNearestSamples,
+  drawSampleDots
+} from './support/interpolation';
 
 const KERNELS = ['thin-plate-spline', 'cubic', 'gaussian', 'linear', 'quintic'] as const;
 
@@ -35,9 +41,42 @@ export default defineOperationRun({
     return {
       outputs: {
         prediction: addChannel(builder, results, 0, 'prediction'),
-        positions: builder.upload('sample-positions', 'float32x2', samples.positions)
+        positions: builder.upload('sample-positions', 'float32x2', samples.positions),
+        sampleValues: builder.upload('sample-values', 'float32', samples.values)
       }
     };
+  },
+  rebuildOn: ['kernel', 'smoothing', 'neighborCount'],
+  // The hovered cell shows the neighborCount samples its radial basis function was fitted to.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a cell',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const {grid, samples} = inputs;
+      const cell = getRasterCell(grid.columns, grid.rows, grid.window, pointer.x, pointer.y);
+      const at = getRasterCellCenter(grid.columns, grid.rows, grid.window, cell.column, cell.row);
+      const prediction = peek(outputs.prediction)?.[cell.index];
+      const kernel = KERNELS[values.kernel];
+      // The fit reaches as far as its farthest neighbor.
+      const farthestRow =
+        findNearestSamples(samples.positions, at[0], at[1], values.neighborCount).at(-1) ?? 0;
+      const farthest = Math.hypot(
+        samples.positions[farthestRow * 2] - at[0],
+        samples.positions[farthestRow * 2 + 1] - at[1]
+      );
+      return {
+        glyphs: [
+          ...createNeighborhoodGlyphs(samples.positions, at, values.neighborCount, true),
+          {shape: 'ring', at, radius: farthest, dashed: true},
+          {shape: 'crosshair', at}
+        ],
+        readout:
+          prediction === undefined
+            ? `${kernel} · ${values.neighborCount} neighbors`
+            : `${kernel} · ${values.neighborCount} neighbors · ${prediction.toFixed(2)}`
+      };
+    }
   },
   draw: ({inputs, outputs}) => [
     {
@@ -48,6 +87,6 @@ export default defineOperationRun({
       range: [0, 1],
       smoothing: true
     },
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 2.5, color: [1, 1, 1, 0.9]}
+    ...drawSampleDots(outputs.positions, outputs.sampleValues)
   ]
 });

@@ -12,19 +12,29 @@ import {
   createRoadNetwork,
   createRoads,
   getRoadContext,
+  getRoadValues,
   uploadRoads,
   uploadRoadTopology
 } from './shared/roads';
+import type {RunGlyph} from '../../interaction';
+import {findParameter} from '../../interaction';
 import {parameters} from './network-coarsening.parameters';
 
-const GROUP_CAPACITY = 64;
+const CELL_SIZE = findParameter(parameters, 'cellSize');
+
+const GROUP_CAPACITY = 128;
 const EDGE_CAPACITY = 256;
 
 export default defineOperationRun({
   parameters,
   caption: 'Group centroids and superedges after labelling nodes by spatial cell.',
-  createInputs: ({random, world}) => ({base: createRoads(random, world, 12), world}),
-  build(builder, {base, world}, values) {
+  createInputs: ({random, world}) => ({
+    base: createRoads(random, world, 12),
+    world,
+    offset: [0, 0] as [number, number]
+  }),
+  build(builder, inputs, values) {
+    const {base, world} = inputs;
     const network = createRoadNetwork(base, values.closures);
     const {topology} = uploadRoadTopology(builder, network);
     const nodePositions = builder.upload('node-positions', 'float32x2', network.nodes);
@@ -53,6 +63,8 @@ export default defineOperationRun({
     return {
       outputs: {
         ...uploadRoads(builder, network),
+        labels,
+        edgeCount,
         groupNodeCount,
         groupCentroid,
         superedges: addEdgePairs(builder, {
@@ -63,22 +75,59 @@ export default defineOperationRun({
         })
       },
       update: current => {
-        const columns = Math.ceil(world.width / current.cellSize);
+        // The pointer slides the label grid; cells are numbered from the cell left of and below it.
+        const columns = Math.ceil(world.width / current.cellSize) + 2;
         labels.write(
           Uint32Array.from({length: network.nodeCount}, (_, node) => {
-            const column = Math.min(
-              columns - 1,
-              Math.floor(network.nodes[node * 2] / current.cellSize)
+            const column = Math.floor(
+              (network.nodes[node * 2] - inputs.offset[0]) / current.cellSize
             );
-            return column + Math.floor(network.nodes[node * 2 + 1] / current.cellSize) * columns;
+            const row = Math.floor(
+              (network.nodes[node * 2 + 1] - inputs.offset[1]) / current.cellSize
+            );
+            return (
+              Math.min(GROUP_CAPACITY - 2, column + 1 + (row + 1) * columns) % (GROUP_CAPACITY - 1)
+            );
           })
         );
       }
     };
   },
   rebuildOn: ['closures'],
+  // Window: the pointer slides the label grid, so the cell under it lines up with its corner.
+  interaction: {
+    kind: 'window',
+    hint: 'slide the grid',
+    rest: ({world, toUnit}) => {
+      const cell = CELL_SIZE.default;
+      return toUnit([cell * Math.floor(world.width / 2 / cell), cell * Math.floor(0.5 / cell)]);
+    },
+    resolve(pointer, {inputs, outputs, values, world, peek}) {
+      const cell = values.cellSize;
+      const offset: [number, number] = [pointer.x % cell, pointer.y % cell];
+      const changed = offset[0] !== inputs.offset[0] || offset[1] !== inputs.offset[1];
+      inputs.offset = offset;
+      const glyphs: RunGlyph[] = [];
+      for (let x = offset[0]; x <= world.width; x += cell) {
+        glyphs.push({shape: 'line', from: [x, 0], to: [x, 1], dashed: true});
+      }
+      for (let y = offset[1]; y <= 1; y += cell) {
+        glyphs.push({shape: 'line', from: [0, y], to: [world.width, y], dashed: true});
+      }
+      const groups = peek(outputs.groupNodeCount);
+      const superedges = peek(outputs.edgeCount);
+      let groupCount = 0;
+      if (groups) for (const count of groups) if (count > 0) groupCount++;
+      return {
+        rerun: changed,
+        glyphs,
+        readout: `cellSize ${cell.toFixed(2)} · ${groupCount} groups · ${superedges ? superedges[0] : 0} superedges`
+      };
+    }
+  },
   draw: ({outputs}) => [
     getRoadContext(outputs),
+    getRoadValues(outputs, outputs.labels, {radius: 1.8}),
     {
       layer: 'segments',
       nodes: outputs.groupCentroid,

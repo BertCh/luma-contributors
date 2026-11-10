@@ -4,7 +4,7 @@
 import type {GpuSceneParameter} from '../../../types';
 
 // Bound to GPUSpatialScanStatistic's `maximumWindowZones` and its per-frame `parameters`
-// (rate direction, maximum population fraction), plus the planted excess rate.
+// (rate direction, maximum population fraction), plus birth-rate contrast.
 export const parameters: GpuSceneParameter[] = [
   {id: 'maximumWindowZones', label: 'maximumWindowZones', min: 4, max: 36, step: 4, default: 16},
   {
@@ -24,5 +24,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['both', 'high', 'low']
   },
-  {id: 'excessRate', label: 'Data: excessRate', min: 0.05, max: 0.3, step: 0.01, default: 0.15}
+  {id: 'contrast', label: 'Data: rate contrast', min: 0, max: 2, step: 0.1, default: 1}
 ];

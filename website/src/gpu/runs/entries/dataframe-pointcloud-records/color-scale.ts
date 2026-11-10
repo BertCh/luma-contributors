@@ -11,25 +11,78 @@ import {
   getGPUClassBreaksParameterValues,
   getGPUColorScaleParameterValues
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {defineOperationRun} from '../../define-run';
-import {createUniformPoints} from '../../inputs';
+import {defineOperationRun, type RunBuffer} from '../../define-run';
+import {bindAxes} from '../../interaction';
+import {sampleFlashes} from '../../../data/lightning';
 import {addIntegerToFloat} from './_lib/convert';
-import {createRecordColumn} from './_lib/helpers';
 import {parameters} from './color-scale.parameters';
 
 const ROW_COUNT = 2000;
 const MAXIMUM_CLASS_COUNT = 8;
 const SCALES = ['quantize', 'threshold', 'quantile'] as const;
+const MAP_BOTTOM = 0.3;
+const SWATCH_RECTANGLE = [0.07, 0.08, 0.55, 0.2] as const;
+const COUNT_RECTANGLE = [0.62, 0.05, 0.97, 0.24] as const;
+// A categorical palette of eight distinguishable colors, the scale's output range.
+const PALETTE: readonly (readonly [number, number, number])[] = [
+  [0.27, 0.55, 0.85],
+  [0.95, 0.6, 0.2],
+  [0.35, 0.72, 0.4],
+  [0.85, 0.35, 0.55],
+  [0.6, 0.45, 0.85],
+  [0.9, 0.8, 0.3],
+  [0.25, 0.75, 0.75],
+  [0.8, 0.3, 0.25]
+];
 
-export default defineOperationRun({
+function packColor(color: readonly [number, number, number]): number {
+  const [red, green, blue] = color.map(channel => Math.round(channel * 255));
+  return (0xff000000 | (blue << 16) | (green << 8) | red) >>> 0;
+}
+
+/** One square swatch per palette color along the legend strip; unused slots collapse. */
+function getSwatchPositions(world: {width: number; height: number}, paletteCount: number) {
+  const positions = new Float32Array(MAXIMUM_CLASS_COUNT * 8);
+  const left = SWATCH_RECTANGLE[0] * world.width;
+  const width = ((SWATCH_RECTANGLE[2] - SWATCH_RECTANGLE[0]) * world.width) / MAXIMUM_CLASS_COUNT;
+  const bottom = SWATCH_RECTANGLE[1] * world.height;
+  const top = SWATCH_RECTANGLE[3] * world.height;
+  for (let swatch = 0; swatch < MAXIMUM_CLASS_COUNT; swatch++) {
+    const size = swatch < paletteCount ? 0.9 : 0;
+    const x = left + swatch * width;
+    positions.set([x, bottom, x + width * size, bottom, x + width * size, top, x, top], swatch * 8);
+  }
+  return positions;
+}
+
+type Inputs = {
+  world: {width: number; height: number};
+  points: ReturnType<typeof sampleFlashes>;
+  column: Float32Array;
+};
+type Outputs = {
+  column: RunBuffer;
+  positions: RunBuffer;
+  classIndices: RunBuffer;
+  classSizes: RunBuffer;
+  swatches: RunBuffer;
+  swatchIndices: RunBuffer;
+  swatchOwners: RunBuffer;
+  swatchClasses: RunBuffer;
+};
+
+export default defineOperationRun<Inputs, Outputs>({
   parameters,
-  caption: 'Palette class per record from the scale; bars count rows per class.',
-  createInputs: ({random, world}) => {
-    const points = createUniformPoints(random, world, ROW_COUNT, 0.15);
-    return {points, column: createRecordColumn(points.values)};
+  caption:
+    'Flash energies mapped to palette classes: the legend strip is the scale’s palette, the bars count rows per class.',
+  createInputs: ({world}) => {
+    const points = sampleFlashes({width: world.width, height: 1 - MAP_BOTTOM}, ROW_COUNT);
+    for (let row = 0; row < ROW_COUNT; row++) points.positions[row * 2 + 1] += MAP_BOTTOM;
+    // Log energy keeps the classes balanced: raw energies put nearly every flash in class 0.
+    return {world, points, column: Float32Array.from(points.energy, Math.log1p)};
   },
   build(builder, inputs) {
-    const column = builder.upload('fare', 'float32', inputs.column);
+    const column = builder.upload('flash-energy', 'float32', inputs.column);
     const positions = builder.upload('positions', 'float32x2', inputs.points.positions);
     const breakParameters = builder.allocate(
       'break-parameters',
@@ -64,8 +117,36 @@ export default defineOperationRun({
       })
     );
     const classSizes = addIntegerToFloat(builder, 'class-sizes', classCounts);
+    const swatches = builder.allocate('swatches', 'float32x2', MAXIMUM_CLASS_COUNT * 4);
+    const swatchIndices = builder.upload(
+      'swatch-indices',
+      'uint32',
+      Uint32Array.from({length: MAXIMUM_CLASS_COUNT * 6}, (_, index) => {
+        const corner = [0, 1, 2, 0, 2, 3][index % 6];
+        return Math.floor(index / 6) * 4 + corner;
+      })
+    );
+    const swatchOwners = builder.upload(
+      'swatch-owners',
+      'uint32',
+      Uint32Array.from({length: MAXIMUM_CLASS_COUNT * 2}, (_, index) => index >> 1)
+    );
+    const swatchClasses = builder.upload(
+      'swatch-classes',
+      'uint32',
+      Uint32Array.from({length: MAXIMUM_CLASS_COUNT}, (_, index) => index)
+    );
     return {
-      outputs: {column, positions, classIndices, classSizes},
+      outputs: {
+        column,
+        positions,
+        classIndices,
+        classSizes,
+        swatches,
+        swatchIndices,
+        swatchOwners,
+        swatchClasses
+      },
       update: current => {
         breakParameters.write(
           getGPUClassBreaksParameterValues(
@@ -73,9 +154,8 @@ export default defineOperationRun({
             MAXIMUM_CLASS_COUNT
           )
         );
-        palette.write(
-          Uint32Array.from({length: MAXIMUM_CLASS_COUNT}, (_, index) => 0xff000000 | (index * 30))
-        );
+        palette.write(Uint32Array.from(PALETTE, packColor));
+        swatches.write(getSwatchPositions(inputs.world, current.paletteCount));
         scaleParameters.write(
           getGPUColorScaleParameterValues({
             scale: SCALES[current.scale],
@@ -88,22 +168,53 @@ export default defineOperationRun({
     };
   },
   rebuildOn: [],
-  draw: ({outputs, values}) => [
+  // The pointer is a pad on two real props of the scale: x is paletteCount, y is the scale type.
+  interaction: bindAxes<Inputs, Outputs>(parameters, {
+    kind: 'pad',
+    hint: 'colors across, scale up',
+    x: 'paletteCount',
+    y: 'scale',
+    decorate: (values, _pointer, {outputs, peek}) => {
+      const sizes = peek(outputs.classSizes);
+      let largest = 0;
+      let total = 0;
+      for (let index = 0; sizes && index < values.paletteCount; index++) {
+        largest = Math.max(largest, sizes[index]);
+        total += sizes[index];
+      }
+      return {
+        readout: `${SCALES[values.scale]} · ${values.paletteCount} colors${
+          total > 0 ? ` · biggest class ${Math.round((100 * largest) / total)}%` : ''
+        }`
+      };
+    }
+  }),
+  draw: ({outputs}) => [
     {
       layer: 'dots',
       context: true,
       positions: outputs.positions,
       values: outputs.column,
-      range: [0, 50],
+      range: [0, 6],
       radius: 3
     },
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.classIndices,
-      ramp: 'sequential',
-      range: [0, Math.max(values.paletteCount - 1, 1)],
+      ramp: 'categorical',
+      categories: PALETTE,
       radius: 3
+    },
+    {
+      layer: 'polygons',
+      positions: outputs.swatches,
+      indices: outputs.swatchIndices,
+      owners: outputs.swatchOwners,
+      values: outputs.swatchClasses,
+      triangleCount: MAXIMUM_CLASS_COUNT * 2,
+      ramp: 'categorical',
+      categories: PALETTE
     },
     {
       layer: 'chart',
@@ -111,7 +222,7 @@ export default defineOperationRun({
       color: [0.2, 0.55, 0.9, 1],
       values: outputs.classSizes,
       range: [0, ROW_COUNT / 2],
-      rectangle: [0.62, 0.06, 0.97, 0.4]
+      rectangle: COUNT_RECTANGLE
     }
   ]
 });

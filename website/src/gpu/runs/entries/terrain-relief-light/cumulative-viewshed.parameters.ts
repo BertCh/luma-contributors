@@ -21,7 +21,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 300,
     max: 5000,
     step: 100,
-    default: 2000,
+    default: 3000,
     unit: ' m'
   }
 ];

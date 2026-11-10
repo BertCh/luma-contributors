@@ -7,9 +7,10 @@
 
 import {GPUConditionalGaussianSimulation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {parameters} from './conditional-gaussian-simulation.parameters';
-import {addChannel} from './support/channel';
-import {createInterpolationInputs} from './support/interpolation';
+import {addChannel, addReplicateSelect} from './support/channel';
+import {createInterpolationInputs, drawSampleDots} from './support/interpolation';
 
 const REPLICATE_COUNT = 16;
 
@@ -37,24 +38,37 @@ export default defineOperationRun({
         }
       })
     );
+    const {selected, index} = addReplicateSelect(builder, realizations, cellCount, 'realization');
     return {
+      update: current => index.write(Uint32Array.of(current.replicate)),
       outputs: {
-        realizations,
+        realization: selected,
         mean: addChannel(builder, moments, 0, 'mean', 2),
         spread: addChannel(builder, moments, 1, 'spread', 2),
-        positions: builder.upload('sample-positions', 'float32x2', samples.positions)
+        positions: builder.upload('sample-positions', 'float32x2', samples.positions),
+        sampleValues: builder.upload('sample-values', 'float32', samples.values)
       }
     };
   },
+  rebuildOn: ['seed', 'range'],
+  // All 16 replicates are in one run; the pointer plays them back in order.
+  interaction: bindAxes(parameters, {
+    kind: 'time',
+    hint: 'play the replicates',
+    x: 'replicate',
+    decorate: values => ({
+      readout: `replicate ${values.replicate + 1} of ${REPLICATE_COUNT} · seed ${values.seed}`
+    })
+  }),
   draw: ({inputs, outputs, values}) => [
     {
       layer: 'raster',
-      values: [outputs.realizations, outputs.mean, outputs.spread][values.output],
+      values: [outputs.realization, outputs.mean, outputs.spread][values.output],
       columns: inputs.grid.columns,
       rows: inputs.grid.rows,
       range: values.output === 2 ? 'auto' : [0, 1],
       smoothing: true
     },
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 2.5, color: [1, 1, 1, 0.9]}
+    ...drawSampleDots(outputs.positions, outputs.sampleValues)
   ]
 });

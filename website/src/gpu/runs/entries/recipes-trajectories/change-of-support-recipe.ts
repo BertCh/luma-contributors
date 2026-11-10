@@ -7,15 +7,18 @@
 
 import {addChangeOfSupportRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
+import {createBuiltUpZones} from './lib/built-up-zones';
 import {createQuadZones, getPolygonPort, getQuadFill, uploadQuadZones} from './lib/quads';
 import {createWorldGrid} from './lib/rasterize';
+import {findZoneAt, getZoneRing} from './lib/zone-lookup';
 import {parameters} from './change-of-support-recipe.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'Source zone values redistributed to target zones by overlapping area.',
   createInputs: ({random, world}) => ({
-    source: createQuadZones(random, world, 5, 3),
+    source: createBuiltUpZones(random, world, 5, 3),
     target: createQuadZones(random, world, 9, 5, 0.14),
     grid: createWorldGrid(world)
   }),
@@ -56,6 +59,9 @@ export default defineOperationRun({
     return {
       outputs: {
         sourceValues,
+        offsets,
+        neighbors,
+        weights,
         shown: values.show === 1 ? intensiveValues : extensiveValues,
         sourceMesh,
         targetMesh
@@ -67,6 +73,51 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['denominator', 'show'],
+  // The pointer picks a target zone: the source zones it overlaps are outlined, joined by their weight.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a target zone',
+    rest: ({toUnit, inputs}) =>
+      toUnit([inputs.target.centers[2 * 22], inputs.target.centers[2 * 22 + 1]]),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const zone = findZoneAt(inputs.target, pointer.x, pointer.y);
+      const glyphs: RunGlyph[] = [
+        {shape: 'polyline', points: getZoneRing(inputs.target, zone), closed: true}
+      ];
+      const offsets = peek(outputs.offsets);
+      const neighbors = peek(outputs.neighbors);
+      const weights = peek(outputs.weights);
+      const shown = peek(outputs.shown);
+      let sourceCount = 0;
+      if (offsets && neighbors && weights) {
+        const center: [number, number] = [
+          inputs.target.centers[zone * 2],
+          inputs.target.centers[zone * 2 + 1]
+        ];
+        for (let slot = offsets[zone]; slot < offsets[zone + 1]; slot++) {
+          const source = neighbors[slot];
+          sourceCount++;
+          glyphs.push(
+            {
+              shape: 'polyline',
+              points: getZoneRing(inputs.source, source),
+              closed: true,
+              dashed: true
+            },
+            {
+              shape: 'line',
+              from: center,
+              to: [inputs.source.centers[source * 2], inputs.source.centers[source * 2 + 1]]
+            }
+          );
+        }
+      }
+      return {
+        glyphs,
+        readout: `target ${zone} · from ${sourceCount} sources · value ${shown ? shown[zone].toFixed(0) : '...'}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     getQuadFill(outputs.targetMesh, inputs.target, outputs.shown, {ramp: 'sequential'}),
     {

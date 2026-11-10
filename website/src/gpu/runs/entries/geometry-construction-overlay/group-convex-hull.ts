@@ -8,13 +8,17 @@
 import {GPUGroupConvexHull} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createClusteredPoints} from '../../inputs';
+import {createPointCarry, getCarriedPositions, updatePointCarry} from './shared/carry';
 import {addPackedSegments} from './shared/lines';
 import {parameters} from './group-convex-hull.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'Convex hull per label group; each ring has its group color.',
-  createInputs: ({random, world}) => createClusteredPoints(random, world, 320, 4, 0.1),
+  createInputs: ({random, world}) => {
+    const points = createClusteredPoints(random, world, 320, 4, 0.1);
+    return {...points, carry: createPointCarry(points.positions)};
+  },
   build(builder, points, values) {
     const groupCount = values.groupCount;
     const maximumVertices = values.maximumVerticesPerGroup;
@@ -44,9 +48,37 @@ export default defineOperationRun({
       })
     );
     const drawing = addPackedSegments(builder, 'hull', vertexPositions, offsets, {closed: true});
-    return {outputs: {positions, labels, ...drawing}};
+    return {
+      outputs: {positions, labels, counts, ...drawing},
+      update: () => positions.write(getCarriedPositions(points.positions, points.carry))
+    };
   },
   rebuildOn: ['maximumVerticesPerGroup', 'groupCount'],
+  // The pointer carries the nearest point: its group's convex hull stretches to include it.
+  interaction: {
+    kind: 'drag',
+    hint: 'carry a point',
+    rest: ({inputs, toUnit}) => toUnit([inputs.positions[0], inputs.positions[1]]),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const carried = updatePointCarry(
+        inputs.carry,
+        inputs.positions,
+        [pointer.x, pointer.y],
+        0.15,
+        0.45
+      );
+      const group = carried.row >= 0 ? inputs.labels[carried.row] : 0;
+      const hullVertices = peek(outputs.counts)?.[group];
+      return {
+        rerun: carried.changed,
+        glyphs: [
+          {shape: 'ring', at: carried.at, radius: 0.025},
+          {shape: 'dot', at: carried.at}
+        ],
+        readout: `group ${group}${hullVertices === undefined ? '' : ` · ${hullVertices} hull vertices`}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {layer: 'dots', positions: outputs.positions, values: outputs.labels, context: true, radius: 3},
     {

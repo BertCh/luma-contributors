@@ -12,7 +12,13 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {uploadSpatialWeights} from '../../inputs';
-import {createNeighborGraph, createPointField, mixNoise} from './shared/point-field';
+import {
+  createNeighborGraph,
+  createPointField,
+  createProbeInputs,
+  mixNoise,
+  probeNeighbors
+} from './shared/point-field';
 import {parameters} from './local-permutation-test.parameters';
 
 const STATISTICS = ['localMoran', 'localGeary', 'localG', 'localGStar'] as const;
@@ -22,9 +28,12 @@ const MAXIMUM_PERMUTATIONS = 499;
 export default defineOperationRun({
   parameters,
   caption: 'Points whose local statistic beats the shuffled neighbors are significant.',
-  createInputs: ({random, world}) => createPointField(random, world, 600, false),
+  createInputs: ({random, world}) => {
+    const points = createPointField(random, world, 600, 0);
+    return {...createProbeInputs(points), graph: createNeighborGraph(points.positions, 6)};
+  },
   build(builder, points, values) {
-    const graph = createNeighborGraph(points.positions, 6);
+    const {graph} = points;
     const valueBuffer = builder.allocate('values', 'float32', points.count);
     const parameterBuffer = builder.allocate(
       'permutation',
@@ -69,14 +78,34 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['statistic', 'alternative'],
-  draw: ({outputs}) => [
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 2},
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a point',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const probe = probeNeighbors(inputs, pointer, inputs.graph.weights);
+      if (probe.row < 0) return {};
+      const pseudoP = peek(outputs.pseudoPValues)?.[probe.row];
+      const isSignificant = peek(outputs.significant)?.[probe.row] === 1;
+      return {
+        glyphs: probe.glyphs,
+        readout: `${STATISTICS[values.statistic]} · p ${
+          pseudoP === undefined ? '…' : pseudoP.toFixed(3)
+        } (${values.permutationCount} shuffles)${isSignificant ? ' · significant' : ''}`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
+    {layer: 'dots', positions: outputs.positions, color: [...theme.ink, 0.4], radius: 2.5},
+    // Only significant points are drawn in color: the faded mask hides the rest.
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.significant,
-      ramp: 'categorical',
-      radius: 6.5
+      ramp: 'sequential',
+      range: [0, 1],
+      fade: true,
+      radius: 6
     }
   ]
 });

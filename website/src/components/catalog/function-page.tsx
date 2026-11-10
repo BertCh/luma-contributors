@@ -12,6 +12,7 @@ import {OutputTable, ParamTable} from '../ui/param-table';
 import {Section} from '../ui/section';
 import {DataFlow} from './data-flow';
 import {EntryGrid} from './entry-grid';
+import {getDemoData} from '../../gpu/data/provenance';
 import {getRunLegend} from '../../gpu/runs/registry';
 import {EntryPreview, hasOwnPicture} from './entry-preview';
 
@@ -72,6 +73,8 @@ export function FunctionPage({
       : "Illustrative scene, not this function's output.";
 
   const legend = getRunLegend(entry.id);
+  const {sources, scenario, caption: sceneCaption} = getDemoData(entry.id);
+  const caption = sceneCaption ?? entry.preview.caption;
 
   return (
     <main className="page function-page">
@@ -104,12 +107,36 @@ export function FunctionPage({
             ))}
           </ul>
         ) : null}
-        {entry.preview.caption || illustrativeNote ? (
+        {caption || illustrativeNote ? (
           <p className="function-caption">
-            {entry.preview.caption}
-            {entry.preview.caption && illustrativeNote ? ' ' : null}
+            {caption}
+            {caption && illustrativeNote ? ' ' : null}
             {illustrativeNote ? <span className="function-hint">{illustrativeNote}</span> : null}
           </p>
+        ) : null}
+        {scenario || sources.length > 0 ? (
+          <div className="function-caption demo-data">
+            {scenario ? <p>{scenario}</p> : null}
+            {sources.length > 0 ? (
+              <details>
+                <summary>Data · {sources.map(source => source.label).join(' · ')}</summary>
+                <ul>
+                  {sources.map(source => (
+                    <li key={source.id}>
+                      {source.credit} ·{' '}
+                      {source.termsUrl ? (
+                        <a href={source.termsUrl}>{source.terms}</a>
+                      ) : (
+                        source.terms
+                      )}
+                      {' · '}
+                      <a href={source.url}>{source.label}</a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </div>
         ) : null}
       </div>
 

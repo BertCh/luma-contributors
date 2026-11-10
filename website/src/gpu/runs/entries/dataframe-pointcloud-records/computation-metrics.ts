@@ -17,14 +17,26 @@ import {
 } from '@luma-contributors/analysis/computation-record';
 import {defineOperationRun} from '../../define-run';
 import {buildRelaxation, createRecordTracts, ShapeBatch} from '../../record-demo';
+import {getBoxGlyph, type Box} from './_lib/record-probe';
 import {parameters} from './computation-metrics.parameters';
 
 const ENCODE_COUNT = 400;
 
+/** What the last run drew, for the pointer: one row per node, with its bar's extent. */
+type Latest = {
+  area: Box;
+  rowHeight: number;
+  rows: {id: string; pass: number | undefined; milliseconds: number; x1: number}[];
+};
+
 export default defineOperationRun({
   parameters,
   caption: 'Per-node timing of a real encoding, colored by the pass each node ran in.',
-  createInputs: ({random, world}) => ({tracts: createRecordTracts(random), world}),
+  createInputs: ({random, world}) => ({
+    tracts: createRecordTracts(random),
+    world,
+    latest: null as Latest | null
+  }),
   build(builder, {tracts}, values) {
     // Taps copy into an arena that is never read here; it has room for every repeated encoding.
     const arena = builder.own(
@@ -100,6 +112,19 @@ export default defineOperationRun({
         passTotals.set(span.pass, (passTotals.get(span.pass) ?? 0) + span.end - span.begin);
       }
     });
+    inputs.latest = {
+      area,
+      rowHeight,
+      rows: rows.map(({id, node}, row) => ({
+        id,
+        pass: node.passIndex,
+        milliseconds: node.cpuEncodeMs,
+        x1: Math.max(
+          area.x0 + ((area.x1 - area.x0) * spans[row].end) / total,
+          area.x0 + 0.004 * width
+        )
+      }))
+    };
     const passes = [...passTotals.entries()].sort((first, second) => first[0] - second[0]);
     const passBars = Float32Array.from(passes.length ? passes.map(([, time]) => time) : [0]);
     const passColors = new ShapeBatch();
@@ -122,6 +147,45 @@ export default defineOperationRun({
       passMaximum: Math.max(...passBars, 1e-6),
       swatches: passColors.uploadShapes(upload, 'pass-swatches')
     };
+  },
+  // The pointer is a node: its bar and the bars of the nodes in the same pass are outlined, and
+  // the readout gives its pass and encode time.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a node',
+    rest: ({inputs}) => {
+      const latest = inputs.latest;
+      if (!latest) return [0.3, 0.2];
+      return [0.3, 1 - (latest.area.y1 - latest.rowHeight * 0.4)];
+    },
+    resolve(pointer, {inputs}) {
+      const latest = inputs.latest;
+      if (!latest || latest.rows.length === 0) return {readout: 'hover a node'};
+      const row = Math.min(
+        latest.rows.length - 1,
+        Math.max(0, Math.floor((latest.area.y1 - pointer.y) / latest.rowHeight))
+      );
+      const hovered = latest.rows[row];
+      const barBox = (index: number): Box => ({
+        x0: latest.area.x0,
+        x1: latest.rows[index].x1,
+        y1: latest.area.y1 - index * latest.rowHeight,
+        y0: latest.area.y1 - (index + 0.8) * latest.rowHeight
+      });
+      const glyphs = latest.rows.flatMap((other, index) =>
+        index !== row && hovered.pass !== undefined && other.pass === hovered.pass
+          ? [getBoxGlyph(barBox(index), true)]
+          : []
+      );
+      const members = latest.rows.filter(other => other.pass === hovered.pass).length;
+      return {
+        spotlight: null,
+        glyphs: [getBoxGlyph(barBox(row)), ...glyphs],
+        readout: `${hovered.id} · ${
+          hovered.pass === undefined ? 'copy, no pass' : `pass ${hovered.pass} (${members} nodes)`
+        } · ${hovered.milliseconds.toFixed(4)} ms`
+      };
+    }
   },
   draw: ({extra, theme}) => [
     {

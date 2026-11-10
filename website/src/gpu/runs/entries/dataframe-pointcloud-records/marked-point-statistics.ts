@@ -8,11 +8,25 @@
 import {GPUMarkedPointStatistics} from '@luma-contributors/analysis/dataframe-analysis';
 import {defineOperationRun} from '../../define-run';
 import {addFloatCopy} from './_lib/convert';
-import {drawNormal} from './_lib/helpers';
+import {sampleFlashes} from '../../../data/lightning';
+import {
+  DISTANCE_PLOT,
+  RING_HIGHLIGHT_LIMIT,
+  createRuleSegments,
+  getAxisFraction,
+  getAxisPointer,
+  getBinBox,
+  getBinIndex,
+  getHighlightCount
+} from './_lib/distance-probe';
 import {parameters} from './marked-point-statistics.parameters';
 
 const POINT_COUNT = 500;
-const PLOT = [0.58, 0.12, 0.96, 0.88] as const;
+const PLOT = DISTANCE_PLOT;
+const MAXIMUM_DISTANCE = 0.2;
+const CORRELATION_RANGE = [0, 3] as const;
+const ANCHOR_COUNT = 6;
+const REST_FRACTION = 0.3;
 const TYPE_PAIRS = [
   [0, 1],
   [0, 0],
@@ -21,22 +35,16 @@ const TYPE_PAIRS = [
 
 export default defineOperationRun({
   parameters,
-  caption: 'Cross K, pair correlation and mark correlation of two point types.',
-  createInputs: ({random, world}) => {
+  caption:
+    'Cross K (cyan), pair correlation (orange) and mark correlation (white) of two flash size classes; the faint rule is 1, no interaction.',
+  createInputs: ({world}) => {
     const windowWidth = world.width * 0.5;
-    const parents = Float32Array.from({length: 24}, () => random());
-    return {
-      windowWidth,
-      membership: Float32Array.from({length: POINT_COUNT}, () => random()),
-      uniform: Float32Array.from({length: POINT_COUNT * 2}, () => random()),
-      normals: Float32Array.from({length: POINT_COUNT * 2}, () => drawNormal(random)),
-      parents,
-      marks: Float32Array.from({length: POINT_COUNT}, () => 0.5 + random())
-    };
+    const flashes = sampleFlashes({width: windowWidth, height: 1}, POINT_COUNT);
+    return {windowWidth, flashes, world};
   },
   build(builder, inputs, values) {
     const radiusCount = values.radiusCount;
-    const positions = builder.allocate('positions', 'float32x2', POINT_COUNT);
+    const positions = builder.upload('positions', 'float32x2', inputs.flashes.positions);
     const types = builder.allocate('types', 'uint32', POINT_COUNT);
     const parameterBuffer = builder.allocate('parameters', 'float32', 6);
     const statistics = builder.allocate('statistics', 'float32', radiusCount * 4);
@@ -45,7 +53,7 @@ export default defineOperationRun({
         positions: positions.view,
         types: types.view,
         typePair: TYPE_PAIRS[values.typePair],
-        marks: builder.upload('marks', 'float32', inputs.marks).view,
+        marks: builder.upload('marks', 'float32', inputs.flashes.energy).view,
         parameters: parameterBuffer.view,
         radiusCount,
         output: {
@@ -55,8 +63,16 @@ export default defineOperationRun({
         }
       })
     );
+    const highlight = builder.allocate('highlight', 'float32x2', RING_HIGHLIGHT_LIMIT);
+    const unity = builder.upload(
+      'unity',
+      'float32x4',
+      createRuleSegments(PLOT, inputs.world, CORRELATION_RANGE, [1])
+    );
     return {
       outputs: {
+        highlight,
+        unity,
         positions,
         types,
         crossK: addFloatCopy(builder, 'cross-k', statistics, radiusCount, {stride: 4}),
@@ -70,39 +86,79 @@ export default defineOperationRun({
         })
       },
       update: current => {
-        const coordinates = new Float32Array(POINT_COUNT * 2);
-        const typeValues = new Uint32Array(POINT_COUNT);
-        for (let index = 0; index < POINT_COUNT; index++) {
-          // First half are type 0 (random); type 1 points follow a type 0 point with `attraction`.
-          const isSecond = index >= POINT_COUNT / 2;
-          typeValues[index] = isSecond ? 1 : 0;
-          let x = inputs.uniform[index * 2];
-          let y = inputs.uniform[index * 2 + 1];
-          if (isSecond && inputs.membership[index] < current.attraction) {
-            const anchor = index - POINT_COUNT / 2;
-            x = inputs.uniform[anchor * 2] + inputs.normals[index * 2] * 0.02;
-            y = inputs.uniform[anchor * 2 + 1] + inputs.normals[index * 2 + 1] * 0.02;
-          }
-          coordinates[index * 2] = Math.min(1, Math.max(0, x)) * inputs.windowWidth;
-          coordinates[index * 2 + 1] = Math.min(1, Math.max(0, y));
-        }
-        positions.write(coordinates);
-        types.write(typeValues);
+        types.write(
+          Uint32Array.from(inputs.flashes.area, area => Number(area >= current.areaThreshold))
+        );
         parameterBuffer.write(Float32Array.of(0, 0, inputs.windowWidth, 1, 0.2, 0.000001));
       }
     };
   },
   rebuildOn: ['typePair', 'radiusCount'],
-  draw: ({outputs}) => [
+  // The pointer is a radius on the chart's distance axis: rings of that radius around a few points
+  // of the first type, and the points of the second type inside them are brightened.
+  interaction: {
+    kind: 'reach',
+    hint: 'hover a radius',
+    rest: [getAxisPointer(REST_FRACTION), 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const radiusCount = values.radiusCount;
+      const bin = getBinIndex(getAxisFraction(pointer.unitX), radiusCount);
+      const radius = (MAXIMUM_DISTANCE * (bin + 1)) / radiusCount;
+      const [firstType, secondType] = TYPE_PAIRS[values.typePair];
+      const {positions, area} = inputs.flashes;
+      const typeOf = (row: number) => Number(area[row] >= values.areaThreshold);
+      const firstRows: number[] = [];
+      for (let row = 0; row < POINT_COUNT; row++)
+        if (typeOf(row) === firstType) firstRows.push(row);
+      const anchors = Array.from(
+        {length: Math.min(ANCHOR_COUNT, firstRows.length)},
+        (_, index) => firstRows[Math.floor(((index + 0.5) * firstRows.length) / ANCHOR_COUNT)]
+      );
+      const brightened = new Float32Array(RING_HIGHLIGHT_LIMIT * 2).fill(-10);
+      let found = 0;
+      for (let row = 0; row < POINT_COUNT && found < RING_HIGHLIGHT_LIMIT; row++) {
+        if (typeOf(row) !== secondType || anchors.includes(row)) continue;
+        const isInside = anchors.some(
+          anchor =>
+            Math.hypot(
+              positions[row * 2] - positions[anchor * 2],
+              positions[row * 2 + 1] - positions[anchor * 2 + 1]
+            ) <= radius
+        );
+        if (!isInside) continue;
+        brightened.set([positions[row * 2], positions[row * 2 + 1]], found * 2);
+        found++;
+      }
+      outputs.highlight.write(brightened);
+      const text = (buffer: typeof outputs.crossK, digits: number) => {
+        const value = peek(buffer)?.[bin];
+        return value === undefined ? '…' : value.toFixed(digits);
+      };
+      return {
+        spotlight: null,
+        focus: found,
+        glyphs: [
+          getBinBox(PLOT, inputs.world, bin, radiusCount),
+          ...anchors.map(anchor => ({
+            shape: 'ring' as const,
+            at: [positions[anchor * 2], positions[anchor * 2 + 1]] as const,
+            radius
+          }))
+        ],
+        readout: `r ${radius.toFixed(2)} · K ${text(outputs.crossK, 3)} · g ${text(outputs.pairCorrelation, 1)} · mark ${text(outputs.markCorrelation, 1)}`
+      };
+    }
+  },
+  draw: ({outputs, interaction}) => [
     {layer: 'dots', positions: outputs.positions, values: outputs.types, radius: 2.8},
     {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.crossK,
-      range: [0, 0.14],
-      rectangle: PLOT,
-      color: [0.3, 0.75, 1, 0.3]
+      layer: 'dots',
+      positions: outputs.highlight,
+      count: getHighlightCount(interaction.focus),
+      radius: 4.2,
+      color: [1, 1, 1, 0.95]
     },
+    {layer: 'lines', context: true, segments: outputs.unity, count: 1, color: [1, 1, 1, 0.5]},
     {
       layer: 'chart',
       kind: 'line',
@@ -116,7 +172,7 @@ export default defineOperationRun({
       layer: 'chart',
       kind: 'line',
       values: outputs.pairCorrelation,
-      range: [0, 4],
+      range: CORRELATION_RANGE,
       rectangle: PLOT,
       radius: 2.2,
       color: [1, 0.6, 0.2, 1]
@@ -125,7 +181,7 @@ export default defineOperationRun({
       layer: 'chart',
       kind: 'line',
       values: outputs.markCorrelation,
-      range: [0, 2],
+      range: CORRELATION_RANGE,
       rectangle: PLOT,
       radius: 1.4,
       color: [1, 1, 1, 0.8]

@@ -5,5 +5,6 @@ import type {GpuSceneParameter} from '../../../types';
 
 // `strength` varies the spatial error of the generated panel; the estimates follow it.
 export const parameters: GpuSceneParameter[] = [
-  {id: 'strength', label: 'Data: spatial error lambda', min: 0, max: 0.7, step: 0.05, default: 0.5}
+  {id: 'strength', label: 'Data: spatial error lambda', min: 0, max: 0.7, step: 0.05, default: 0.5},
+  {id: 'period', label: 'period shown', min: 1, max: 6, step: 1, default: 1}
 ];

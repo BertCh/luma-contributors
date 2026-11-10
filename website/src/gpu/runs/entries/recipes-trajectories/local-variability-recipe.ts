@@ -12,6 +12,7 @@ import {
 import {defineOperationRun} from '../../define-run';
 import {createTracts, uploadSpatialWeights} from '../../inputs';
 import {getTractFill, uploadTractMesh} from './lib/tracts';
+import {findZoneAt, getNeighborhoodGlyphs, getTractGeometry} from './lib/zone-lookup';
 import {parameters} from './local-variability-recipe.parameters';
 
 export default defineOperationRun({
@@ -56,6 +57,23 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['residualPower'],
+  // The pointer picks a tract: its contiguity neighbors are the values whose scatter LOSH measures.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    rest: ({toUnit, inputs}) => toUnit([inputs.tracts.centers[40], inputs.tracts.centers[41]]),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const geometry = getTractGeometry(inputs.tracts);
+      const tract = findZoneAt(geometry, pointer.x, pointer.y);
+      const {offsets, neighbors} = inputs.tracts.contiguity;
+      const around = neighbors.subarray(offsets[tract], offsets[tract + 1]);
+      const losh = peek(outputs.losh);
+      return {
+        glyphs: getNeighborhoodGlyphs(geometry, tract, around),
+        readout: `tract ${tract} · LOSH ${losh ? losh[tract].toFixed(2) : '...'} · ${around.length} neighbors`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     getTractFill(outputs.mesh, inputs.tracts, outputs.losh, {ramp: 'sequential'}),
     {
@@ -64,6 +82,12 @@ export default defineOperationRun({
       segments: outputs.mesh.outline,
       count: inputs.tracts.outlineCount
     },
-    {layer: 'dots', positions: outputs.mesh.centers, values: outputs.quadrants, radius: 4}
+    {
+      layer: 'dots',
+      positions: outputs.mesh.centers,
+      values: outputs.quadrants,
+      radius: 2.5,
+      alpha: 0.7
+    }
   ]
 });

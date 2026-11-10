@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Shared pieces of the regression runs: a seeded tract map with two predictors, a response that
+// Shared pieces of the regression runs: Chicago tracts with two observed demographic predictors, a response that
 // carries chosen spatial dependence, and the two panels every run draws (a tract map of a per-row
 // output on the left, coefficient bars with the true values on the right).
 
@@ -32,25 +32,25 @@ export type RegressionInputs = {
   regimes: Uint32Array;
 };
 
-/** Seeded tracts in the map panel with two smooth predictors. */
+/** Chicago tract predictors scaled to the panel range so the coefficient experiments share a scale. */
 export function createRegressionInputs(
   random: () => number,
   world: {width: number; height: number},
   rows = 10,
-  share = MAP_SHARE,
-  independent = false
+  share = MAP_SHARE
 ): RegressionInputs {
   const tracts = createTracts(random, {width: world.width * share, height: world.height}, rows);
   const count = tracts.count;
   const predictors = new Float32Array(count * 2);
+  const olderShare = Float32Array.from(
+    tracts.age65,
+    (older, tract) => older / tracts.population[tract]
+  );
+  const minimum = Math.min(...olderShare);
+  const range = Math.max(...olderShare) - minimum;
   for (let tract = 0; tract < count; tract++) {
-    const x = tracts.centers[tract * 2] / (world.width * share);
-    const y = tracts.centers[tract * 2 + 1];
-    // Independent predictors keep local fits well conditioned; smooth ones are spatially collinear.
-    predictors[tract * 2] = independent ? random() : tracts.values[tract];
-    predictors[tract * 2 + 1] = independent
-      ? random()
-      : 0.5 + 0.5 * Math.sin(5 * x + 1) * Math.cos(4 * y);
+    predictors[tract * 2] = tracts.values[tract];
+    predictors[tract * 2 + 1] = range > 0 ? (olderShare[tract] - minimum) / range : 0;
   }
   const normals = Float32Array.from({length: count}, () => {
     let sum = 0;
@@ -209,6 +209,8 @@ export type CoefficientPanel = {
   standardErrors?: RunBuffer<'float32'>;
   truth: RunBuffer<'float32'>;
   positions: RunBuffer<'float32'>;
+  /** Zeros for the zero line of the chart. */
+  zeros: RunBuffer<'float32'>;
 };
 
 /**
@@ -232,28 +234,79 @@ export function createCoefficientPanel(
       'coefficient-positions',
       'float32',
       Float32Array.from(truth, (_, index) => (index + 0.5) / truth.length)
-    )
+    ),
+    zeros: builder.upload('coefficient-zeros', 'float32', new Float32Array(64))
   };
 }
 
 /** The shared range of the coefficient chart. */
 export const COEFFICIENT_RANGE = [-3, 3] as const;
 
-/** Coefficient bars (estimates) with the true values as dots, and standard errors below them. */
-export function drawCoefficientPanel(panel: CoefficientPanel): RunLayer[] {
-  const left = MAP_SHARE + 0.08;
-  const rectangle = panel.standardErrors
-    ? ([left, 0.42, 0.97, 0.9] as const)
-    : ([left, 0.14, 0.97, 0.86] as const);
-  const layers: RunLayer[] = [
+const POSITIVE_BAR_COLOR = [0.4, 0.68, 0.98, 0.95] as const;
+const NEGATIVE_BAR_COLOR = [0.98, 0.55, 0.32, 0.95] as const;
+
+type ChartRectangle = readonly [number, number, number, number];
+
+/**
+ * Signed bars that grow from the zero line: positive estimates up (blue), negative ones down
+ * (orange). The bars layer always grows from the bottom of its rectangle, so each half is its own
+ * layer, the lower one on a flipped rectangle.
+ */
+export function drawSignedBars(
+  values: RunBuffer,
+  rectangle: ChartRectangle,
+  limit: number,
+  color?: readonly [number, number, number, number]
+): RunLayer[] {
+  const [left, bottom, right, top] = rectangle;
+  const zero = (bottom + top) / 2;
+  return [
     {
       layer: 'chart',
       kind: 'bars',
-      values: panel.estimates,
-      ramp: 'sequential',
-      range: COEFFICIENT_RANGE,
-      rectangle
+      values,
+      color: color ?? POSITIVE_BAR_COLOR,
+      range: [0, limit],
+      rectangle: [left, zero, right, top]
     },
+    {
+      layer: 'chart',
+      kind: 'bars',
+      values,
+      color: color ?? NEGATIVE_BAR_COLOR,
+      range: [0, -limit],
+      rectangle: [left, zero, right, bottom]
+    }
+  ];
+}
+
+/** A horizontal reference line at zero across a chart rectangle whose y range is symmetric. */
+export function drawZeroLine(zeros: RunBuffer, rectangle: ChartRectangle): RunLayer {
+  return {
+    layer: 'chart',
+    kind: 'line',
+    values: zeros,
+    range: COEFFICIENT_RANGE,
+    color: [1, 1, 1, 0.4],
+    radius: 0.9,
+    rectangle
+  };
+}
+
+/** Coefficient bars (estimates) with the true values as dots, and standard errors below them. */
+export function drawCoefficientPanel(
+  panel: CoefficientPanel,
+  options: {rectangle?: ChartRectangle} = {}
+): RunLayer[] {
+  const left = MAP_SHARE + 0.08;
+  const rectangle =
+    options.rectangle ??
+    (panel.standardErrors
+      ? ([left, 0.42, 0.97, 0.9] as const)
+      : ([left, 0.14, 0.97, 0.86] as const));
+  const layers: RunLayer[] = [
+    ...drawSignedBars(panel.estimates, rectangle, COEFFICIENT_RANGE[1]),
+    drawZeroLine(panel.zeros, rectangle),
     {
       layer: 'chart',
       kind: 'scatter',
@@ -280,6 +333,9 @@ export function drawCoefficientPanel(panel: CoefficientPanel): RunLayer[] {
   return layers;
 }
 
+/** The symmetric range of the residual maps, so noise and strength change what the map shows. */
+export const RESIDUAL_RANGE = [-1.5, 1.5] as const;
+
 /** True coefficients that drift from west to east: the slope of the first predictor varies. */
 export function getDriftingCoefficients(
   inputs: RegressionInputs,
@@ -294,3 +350,12 @@ export function getDriftingCoefficients(
 
 /** Two maps side by side (each half the width) for the local regression runs. */
 export const DUAL_MAP_SHARE = 0.44;
+
+/** A tract map of residuals on the fixed symmetric range. */
+export function drawResidualMap(
+  inputs: RegressionInputs,
+  mesh: ReturnType<typeof uploadRegressionMap>,
+  residuals: RunBuffer
+): RunLayer[] {
+  return drawTractMap(inputs, mesh, residuals, {ramp: 'diverging', range: RESIDUAL_RANGE});
+}

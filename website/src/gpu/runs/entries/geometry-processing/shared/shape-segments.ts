@@ -6,6 +6,7 @@
 // command graph, so the picture still reads the buffers the operation wrote on the GPU.
 
 import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
+import {GPUGeodesicDestination} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
 import type {RunBuffer, RunBuilder} from '../../../define-run';
 
@@ -374,4 +375,161 @@ export function addPanel(
   placed[placedOffset + index * 2u + 1u] = positions[positionsOffset + index * 2u + 1u] * ${panel.scaleY} + ${panel.offsetY};`
   });
   return placed;
+}
+
+const LATTICE_CAPACITY = 640;
+
+/**
+ * The precision lattice as full-length grid lines (x0, y0, x1, y1) at multiples of `gridSize`,
+ * padded to a fixed row count with parked rows so a per-frame `gridSize` can be written into the
+ * same buffer. Lattices denser than the capacity keep every n-th line.
+ */
+export function createLatticeSegments(
+  gridSize: number,
+  world: {width: number; height: number}
+): Float32Array {
+  const segments = new Float32Array(LATTICE_CAPACITY * 4).fill(FAR_AWAY);
+  const columns = Math.floor(world.width / gridSize);
+  const rows = Math.floor(world.height / gridSize);
+  const stride = Math.max(1, Math.ceil((columns + rows + 2) / LATTICE_CAPACITY));
+  let row = 0;
+  for (let column = 0; column <= columns && row < LATTICE_CAPACITY; column += stride) {
+    segments.set([column * gridSize, 0, column * gridSize, world.height], row++ * 4);
+  }
+  for (let line = 0; line <= rows && row < LATTICE_CAPACITY; line += stride) {
+    segments.set([0, line * gridSize, world.width, line * gridSize], row++ * 4);
+  }
+  return segments;
+}
+
+/** A buffer of lattice lines for the `lines` layer; rewrite it with `write(createLatticeSegments(...))`. */
+export function allocateLattice(
+  builder: RunBuilder,
+  id: string,
+  gridSize: number,
+  world: {width: number; height: number}
+): RunBuffer<'float32x4'> {
+  return builder.upload(id, 'float32x4', createLatticeSegments(gridSize, world));
+}
+
+/**
+ * Great-circle arcs from the real GPUGeodesicDestination: every row (origin, bearing, distance) is
+ * sampled at k/steps of its distance, and the samples are joined into world-space segments for the
+ * `lines` layer. Segments that wrap across the date line are parked outside the view.
+ */
+export function addGeodesicArcs(
+  builder: RunBuilder,
+  id: string,
+  options: {
+    origins: RunBuffer<'float32x2'>;
+    bearings: RunBuffer<'float32'>;
+    distances: RunBuffer<'float32'>;
+    rowCount: number;
+    steps: number;
+    world: {width: number; height: number};
+  }
+): RunBuffer<'float32x4'> {
+  const {origins, bearings, distances, rowCount, steps, world} = options;
+  const sampleCount = rowCount * steps;
+  const sampleOrigins = builder.allocate(`${id}-sample-origins`, 'float32x2', sampleCount);
+  const sampleBearings = builder.allocate(`${id}-sample-bearings`, 'float32', sampleCount);
+  const sampleDistances = builder.allocate(`${id}-sample-distances`, 'float32', sampleCount);
+  addKernel(builder, {
+    id: `${id}-arc-samples`,
+    invocationCount: sampleCount,
+    bindings: [
+      {name: 'origins', buffer: origins, access: 'read'},
+      {name: 'bearings', buffer: bearings, access: 'read'},
+      {name: 'distances', buffer: distances, access: 'read'},
+      {name: 'sampleOrigins', buffer: sampleOrigins, access: 'read_write'},
+      {name: 'sampleBearings', buffer: sampleBearings, access: 'read_write'},
+      {name: 'sampleDistances', buffer: sampleDistances, access: 'read_write'}
+    ],
+    body: `let row = index / ${steps}u;
+  let step = index % ${steps}u;
+  sampleOrigins[sampleOriginsOffset + index * 2u] = origins[originsOffset + row * 2u];
+  sampleOrigins[sampleOriginsOffset + index * 2u + 1u] = origins[originsOffset + row * 2u + 1u];
+  sampleBearings[sampleBearingsOffset + index] = bearings[bearingsOffset + row];
+  sampleDistances[sampleDistancesOffset + index] = distances[distancesOffset + row] * f32(step + 1u) / ${steps}.0;`
+  });
+  const samples = builder.allocate(`${id}-samples`, 'float32x2', sampleCount);
+  builder.graph.add(
+    new GPUGeodesicDestination({
+      id: `${id}-geodesic`,
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'ellipsoidal',
+        units: 'meters'
+      },
+      origins: sampleOrigins.view,
+      bearings: sampleBearings.view,
+      distances: sampleDistances.view,
+      output: {
+        destinations: samples.view,
+        finalBearings: builder.allocate(`${id}-sample-final-bearings`, 'float32', sampleCount).view
+      }
+    })
+  );
+  const segments = builder.allocate(`${id}-arc-segments`, 'float32x4', sampleCount);
+  addKernel(builder, {
+    id: `${id}-arc-segments`,
+    invocationCount: sampleCount,
+    bindings: [
+      {name: 'origins', buffer: origins, access: 'read'},
+      {name: 'samples', buffer: samples, access: 'read'},
+      {name: 'segments', buffer: segments, access: 'read_write'}
+    ],
+    body: `let row = index / ${steps}u;
+  let step = index % ${steps}u;
+  var startPoint = vec2<f32>(origins[originsOffset + row * 2u], origins[originsOffset + row * 2u + 1u]);
+  if (step > 0u) {
+    startPoint = vec2<f32>(samples[samplesOffset + (index - 1u) * 2u], samples[samplesOffset + (index - 1u) * 2u + 1u]);
+  }
+  let endPoint = vec2<f32>(samples[samplesOffset + index * 2u], samples[samplesOffset + index * 2u + 1u]);
+  let isWrapped = abs(startPoint.x - endPoint.x) > 180.0;
+  let base = segmentsOffset + index * 4u;
+  segments[base] = select(${world.width * 0.04} + (startPoint.x + 180.0) / 360.0 * ${world.width * 0.92}, ${FAR_AWAY}, isWrapped);
+  segments[base + 1u] = select(0.04 + (startPoint.y + 90.0) / 180.0 * 0.92, ${FAR_AWAY}, isWrapped);
+  segments[base + 2u] = select(${world.width * 0.04} + (endPoint.x + 180.0) / 360.0 * ${world.width * 0.92}, ${FAR_AWAY}, isWrapped);
+  segments[base + 3u] = select(0.04 + (endPoint.y + 90.0) / 180.0 * 0.92, ${FAR_AWAY}, isWrapped);`
+  });
+  return segments;
+}
+
+/**
+ * A small arrow on the first edge of every ring (three segments each: shaft and two wings), so
+ * the winding direction can be read. `positions` holds the rings that `ringOffsets` delimits.
+ */
+export function addRingArrows(
+  builder: RunBuilder,
+  id: string,
+  positions: RunBuffer<'float32x2'>,
+  ringOffsets: RunBuffer<'uint32'>,
+  ringCount: number
+): RunBuffer<'float32x4'> {
+  const segments = builder.allocate(`${id}-arrows`, 'float32x4', ringCount * 3);
+  addKernel(builder, {
+    id: `${id}-ring-arrows`,
+    invocationCount: ringCount,
+    bindings: [
+      {name: 'positions', buffer: positions, access: 'read'},
+      {name: 'offsets', buffer: ringOffsets, access: 'read'},
+      {name: 'segments', buffer: segments, access: 'read_write'}
+    ],
+    body: `let first = offsets[offsetsOffset + index];
+  let start = vec2<f32>(positions[positionsOffset + first * 2u], positions[positionsOffset + first * 2u + 1u]);
+  let end = vec2<f32>(positions[positionsOffset + first * 2u + 2u], positions[positionsOffset + first * 2u + 3u]);
+  let direction = normalize(end - start + vec2<f32>(1e-9, 0.0));
+  let normal = vec2<f32>(-direction.y, direction.x);
+  let middle = (start + end) * 0.5;
+  let tip = middle + direction * 0.024;
+  let tail = middle - direction * 0.024;
+  let wingA = tip - direction * 0.022 + normal * 0.013;
+  let wingB = tip - direction * 0.022 - normal * 0.013;
+  let base = segmentsOffset + index * 12u;
+  segments[base] = tail.x; segments[base + 1u] = tail.y; segments[base + 2u] = tip.x; segments[base + 3u] = tip.y;
+  segments[base + 4u] = tip.x; segments[base + 5u] = tip.y; segments[base + 6u] = wingA.x; segments[base + 7u] = wingA.y;
+  segments[base + 8u] = tip.x; segments[base + 9u] = tip.y; segments[base + 10u] = wingB.x; segments[base + 11u] = wingB.y;`
+  });
+  return segments;
 }

@@ -7,6 +7,7 @@
 
 import {GPUTrajectoryKalman} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {createFleet} from './lib/fleet';
 import {parameters} from './trajectory-kalman.parameters';
 
@@ -25,7 +26,7 @@ export default defineOperationRun({
   parameters,
   caption: 'Noisy fixes, forward Kalman estimate and smoothed track.',
   createInputs: ({random, world}) => {
-    const fleet = createFleet(random, world, {trackCount: 8, minimumFixes: 26, maximumFixes: 36});
+    const fleet = createFleet(world, {trackCount: 8, minimumFixes: 26, maximumFixes: 36});
     const unitNoise = Float32Array.from(
       {length: fleet.rowCount * 2},
       () => random() + random() - 1
@@ -81,6 +82,17 @@ export default defineOperationRun({
       }
     };
   },
+  // x trusts the motion model (accelerationDensity), y trusts the fixes (measurementVariance).
+  interaction: bindAxes(parameters, {
+    kind: 'pad',
+    hint: 'model vs fixes',
+    x: {parameter: 'accelerationDensity', scale: 'logarithmic'},
+    y: {parameter: 'measurementVariance', scale: 'logarithmic'},
+    decorate: (values, pointer) => ({
+      glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
+      readout: `q ${values.accelerationDensity}e-9 · r ${values.measurementVariance}e-6`
+    })
+  }),
   draw: ({inputs, outputs}) => [
     {layer: 'lines', context: true, segments: outputs.truth, count: inputs.segmentCount},
     {layer: 'dots', context: true, positions: outputs.noisy, radius: 3.5},

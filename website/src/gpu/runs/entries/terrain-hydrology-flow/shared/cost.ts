@@ -11,7 +11,8 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import type {ParameterValues, RunBuffer, RunBuilder, RunInputContext} from '../../../define-run';
-import {createFractalRaster} from '../../../inputs';
+import {createElevationRaster} from '../../../inputs';
+import {getRasterCell} from '../../../pick';
 
 type RasterGrid = ReturnType<typeof makeGPURasterMetadata>;
 
@@ -25,15 +26,21 @@ export type CostInputs = {
   grid: RasterGrid;
   /** Cost per world unit for a contrast (1 plus contrast times roughness); NaN is the wall. */
   getFriction(contrast: number): Float32Array;
-  /** Source cell indices, the first one in the middle of the left edge. */
+  /** Source cell indices, the first one in the middle of the left edge. Runs may overwrite entries. */
   sources: Uint32Array;
+  /** The cells of the initial sources, to restore the poster. */
+  defaultSources: Uint32Array;
+  /** 1 for the wall cells, whose friction is NaN. */
+  isWallCell: Uint8Array;
+  /** World extent covered by the raster: `[minimumX, minimumY, maximumX, maximumY]`. */
+  bounds: readonly [number, number, number, number];
   /** Drawing-world position of every cell center. */
   cellCenters: Float32Array;
 };
 
 export function createCostInputs(context: RunInputContext, rows = 48): CostInputs {
-  const {random, world} = context;
-  const field = createFractalRaster(random, world, rows, 4);
+  const {world} = context;
+  const field = createElevationRaster(world, rows);
   const {columns, cellSize} = field;
   const cellCount = columns * rows;
   const roughness = new Float32Array(cellCount);
@@ -81,8 +88,16 @@ export function createCostInputs(context: RunInputContext, rows = 48): CostInput
         isWallCell[cell] ? Number.NaN : 1 + contrast * value
       ),
     sources,
+    defaultSources: Uint32Array.from(sources),
+    isWallCell,
+    bounds: [0, 0, columns * cellSize, rows * cellSize],
     cellCenters
   };
+}
+
+/** The raster cell under a drawing-world position. */
+export function getCostCell(inputs: CostInputs, x: number, y: number) {
+  return getRasterCell(inputs.columns, inputs.rows, inputs.bounds, x, y);
 }
 
 export type CostDistanceBuffers = {
@@ -119,17 +134,21 @@ export function addCostDistance(builder: RunBuilder, inputs: CostInputs): CostDi
       }
     })
   );
-  const sourcePositions = new Float32Array(SOURCE_CAPACITY * 2);
-  inputs.sources.forEach((cell, index) => {
-    sourcePositions[index * 2] = inputs.cellCenters[cell * 2];
-    sourcePositions[index * 2 + 1] = inputs.cellCenters[cell * 2 + 1];
-  });
+  const sourcePositions = builder.allocate('source-positions', 'float32x2', SOURCE_CAPACITY);
   return {
     friction,
     costs,
     backLinks,
-    sources: builder.upload('source-positions', 'float32x2', sourcePositions),
+    sources: sourcePositions,
     writeSettings: values => {
+      // The sources are inputs.sources, which a pointer may move between runs.
+      sources.write(inputs.sources);
+      sourcePositions.write(
+        Float32Array.from({length: SOURCE_CAPACITY * 2}, (_, index) => {
+          const cell = inputs.sources[index >> 1];
+          return inputs.cellCenters[cell * 2 + (index & 1)];
+        })
+      );
       if (values.contrast !== undefined) friction.write(inputs.getFriction(values.contrast));
       frictionParameters.write(Float32Array.of(values.frictionScale ?? 1, 0));
       parameters.write(

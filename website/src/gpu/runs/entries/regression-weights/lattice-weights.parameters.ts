@@ -16,11 +16,12 @@ export const parameters: GpuSceneParameter[] = [
   },
   {id: 'radius', label: 'radius', min: 1, max: 2, step: 1, default: 1},
   {
-    id: 'holes',
-    label: 'mask: holes',
-    min: 0,
-    max: 0.4,
-    step: 0.02,
-    default: 0.12
+    id: 'minimumElevation',
+    label: 'Mask: minimum elevation',
+    min: 700,
+    max: 2000,
+    step: 50,
+    default: 1000,
+    unit: ' m'
   }
 ];

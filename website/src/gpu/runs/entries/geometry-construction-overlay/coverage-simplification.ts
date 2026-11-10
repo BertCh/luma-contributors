@@ -9,27 +9,20 @@ import {
   getGPULineSimplificationParameterValues,
   GPUCoverageSimplification
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {findParameter, snapToParameter} from '../../interaction';
+import {createWigglyCoverage} from './shared/tract-coverage';
 import {defineOperationRun} from '../../define-run';
-import {addPackedSegments} from './shared/lines';
-import {
-  createCoverage,
-  createRingSegments,
-  getPolygonFields,
-  uploadPolygonSet
-} from './shared/polygons';
+import {addPackedSegments, findNearestLine, findRestBesideLines} from './shared/lines';
+import {createRingSegments, getPolygonFields, uploadPolygonSet} from './shared/polygons';
 import {parameters} from './coverage-simplification.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'A jagged coverage simplified along shared boundaries; no gaps open between neighbors.',
-  createInputs: ({random, world}) =>
-    createCoverage(random, world, {
-      rows: 3,
-      columns: 4,
-      edgeVertexCount: 10,
-      wiggle: 0.1,
-      wiggleBoundary: true
-    }),
+  createInputs: ({world}) => ({
+    ...createWigglyCoverage(world, Math.max(3, Math.round(world.width * 2.5)), 3, 0.03),
+    world
+  }),
   build(builder, coverage, values) {
     const polygons = uploadPolygonSet(builder, 'coverage', coverage);
     const outputPositions = builder.allocate(
@@ -69,14 +62,51 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['simplifyBoundary'],
+  // The distance from the pointer to the nearest original boundary is the tolerance: boundaries
+  // that deviate less than that from a straight run are simplified away.
+  interaction: {
+    kind: 'reach',
+    hint: 'move off a boundary',
+    rest: ({inputs, toUnit}) => {
+      const lines = {positions: inputs.positions, lineOffsets: inputs.ringOffsets};
+      return toUnit(
+        findRestBesideLines(
+          lines,
+          findParameter(parameters, 'tolerance').default,
+          (x, y) => findNearestLine(lines, x, y, true)?.distance ?? 0,
+          inputs.world,
+          1e-3
+        )
+      );
+    },
+    resolve(pointer, {inputs, values}) {
+      const hit = findNearestLine(
+        {positions: inputs.positions, lineOffsets: inputs.ringOffsets},
+        pointer.x,
+        pointer.y,
+        true
+      );
+      if (!hit) return {};
+      const tolerance = snapToParameter(findParameter(parameters, 'tolerance'), hit.distance);
+      return {
+        values: {tolerance},
+        glyphs: [
+          {shape: 'ring', at: hit.point, radius: tolerance, dashed: true},
+          {shape: 'line', from: hit.point, to: [pointer.x, pointer.y]},
+          {shape: 'dot', at: hit.point}
+        ],
+        readout: `tolerance ${tolerance.toFixed(3)} · boundary ${values.simplifyBoundary === 1 ? 'simplified' : 'kept'}`
+      };
+    }
+  },
   draw: ({outputs}) => [
-    {layer: 'lines', context: true, segments: outputs.original, radius: 3},
+    {layer: 'lines', context: true, segments: outputs.original, radius: 2},
     {
       layer: 'segments',
       nodes: outputs.points,
       edges: outputs.edges,
       values: outputs.lineIds,
-      radius: 1.8
+      radius: 2.6
     }
   ]
 });

@@ -11,7 +11,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 3,
     step: 1,
-    default: 0,
+    default: 1,
     options: ['union', 'intersection', 'difference', 'symmetricDifference']
   },
   {id: 'chunkCount', label: 'Data: chunks', min: 1, max: 4, step: 1, default: 3}

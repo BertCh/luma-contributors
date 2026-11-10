@@ -2,13 +2,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // Demo: GPUInverseDistanceWeighting. Scattered samples become a surface; power and search
-// radius are sliders, and one sample follows the pointer so you can pull the surface around.
+// radius are sliders. The pointer is a query location: the gauges that carry its estimate are
+// linked to it, so the reader sees what "inverse distance weighting" weighs.
 
 import {
   getGPUInverseDistanceWeightingParameterValues,
   GPUInverseDistanceWeighting
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {getRainStations} from '../data/point-observations';
+import type {RunGlyph} from '../runs/interaction';
+import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
 import {IDW_PARAMETERS, readParameterValues} from './parameters';
 import {
@@ -19,7 +23,6 @@ import {
   DrawScheduler,
   drawLayers,
   getDemoTheme,
-  getWorldPosition,
   GraphRunner,
   importBufferView,
   makeRandom,
@@ -31,6 +34,8 @@ export const parameters = IDW_PARAMETERS;
 
 const ROWS = 90;
 const SAMPLE_COUNT = 64;
+/** Gauges that carry at least this share of the estimate are linked to the query point. */
+const LINKED_SHARE = 0.04;
 
 const scene: GpuScene = async context => {
   const {device} = context;
@@ -45,23 +50,12 @@ const scene: GpuScene = async context => {
   const window = [0, 0, worldWidth, 1] as const;
   const grid = makeGPURasterMetadata({width: columns, height: ROWS, cellSize, origin: [0, 1]});
 
-  // Sample 0 is the pointer; the rest sit on a jittered lattice so every cell has neighbors.
-  const homes = new Float32Array(SAMPLE_COUNT * 2);
-  for (let index = 1; index < SAMPLE_COUNT; index++) {
-    const column = (index - 1) % 9;
-    const row = Math.floor((index - 1) / 9);
-    homes[index * 2] = ((column + 0.5 + (random() - 0.5) * 0.8) / 9) * worldWidth;
-    homes[index * 2 + 1] = (row + 0.5 + (random() - 0.5) * 0.8) / 7;
-  }
-  const positions = Float32Array.from(homes);
-  const values = new Float32Array(SAMPLE_COUNT);
-  for (let index = 1; index < SAMPLE_COUNT; index++) {
-    const x = homes[index * 2] / worldWidth;
-    const y = homes[index * 2 + 1];
-    values[index] = 0.5 + 0.35 * Math.sin(x * 6.5) * Math.cos(y * 5) + 0.25 * (random() - 0.5);
-  }
-  values[0] = 1.15;
-
+  const {positions, rain: values} = getRainStations(
+    random,
+    {width: worldWidth, height: 1},
+    SAMPLE_COUNT,
+    true
+  );
   const positionBuffer = createStorageBuffer(device, positions);
   const valueBuffer = createStorageBuffer(device, values);
   const parameterBuffer = createEmptyStorageBuffer(device, 9);
@@ -83,60 +77,105 @@ const scene: GpuScene = async context => {
 
   const raster = new RasterLayer(device, surface, columns, ROWS);
   const dots = new DotLayer(device, positionBuffer, valueBuffer, SAMPLE_COUNT);
-  let pointer: [number, number] | null = null;
-
-  let timeSeconds = context.reducedMotion ? 3 : 0;
+  let isDirty = true;
   const draw = () => {
-    const seconds = timeSeconds;
-    for (let index = 1; index < SAMPLE_COUNT; index++) {
-      positions[index * 2] = homes[index * 2] + Math.sin(seconds * 0.5 + index) * 0.012;
-      positions[index * 2 + 1] =
-        homes[index * 2 + 1] + Math.cos(seconds * 0.45 + index * 1.7) * 0.012;
+    if (isDirty) {
+      isDirty = false;
+      parameterBuffer.write(
+        getGPUInverseDistanceWeightingParameterValues(
+          {
+            searchRadius: parameterValues.searchRadius / 100,
+            power: parameterValues.power,
+            minimumNeighborCount: 1
+          },
+          grid
+        )
+      );
+      runner.run();
     }
-    const [x, y] = pointer ?? [
-      worldWidth * (0.5 + 0.38 * Math.cos(seconds * 0.35)),
-      0.5 + 0.34 * Math.sin(seconds * 0.5)
-    ];
-    positions[0] = x;
-    positions[1] = y;
-    positionBuffer.write(positions);
-    parameterBuffer.write(
-      getGPUInverseDistanceWeightingParameterValues(
-        {
-          searchRadius: parameterValues.searchRadius / 100,
-          power: parameterValues.power,
-          minimumNeighborCount: 1
-        },
-        grid
-      )
-    );
-    runner.run();
-    raster.update(view, theme, {range: [0, 1.15], smoothing: true});
+    raster.update(view, theme, {range: [0, 180], smoothing: true});
     dots.update(view, theme, {mode: -1, radius: 3.4, solid: [...theme.ink, 0.95], hillshade: 1});
-    drawLayers(device, theme, [raster, dots]);
+    drawLayers(device, theme, [raster, dots, ...driver.getLayers()]);
   };
   const scheduler = new DrawScheduler(draw);
 
+  // The same weighting the operation applies to every cell, for the one location under the pointer.
+  const driver = createPointerDriver({
+    device,
+    view,
+    theme,
+    reducedMotion: context.reducedMotion,
+    kind: 'place',
+    hint: 'move the query point',
+    rest: [0.5, 0.5],
+    reportReadout: context.reportReadout,
+    requestDraw: () => scheduler.request(),
+    resolve(pointer) {
+      const searchRadius = parameterValues.searchRadius / 100;
+      const weights: {index: number; weight: number}[] = [];
+      let weightSum = 0;
+      let weightedRain = 0;
+      for (let index = 0; index < SAMPLE_COUNT; index++) {
+        const distance = Math.hypot(
+          positions[index * 2] - pointer.x,
+          positions[index * 2 + 1] - pointer.y
+        );
+        if (distance > searchRadius) continue;
+        const weight = 1 / Math.pow(Math.max(distance, 1e-4), parameterValues.power);
+        weights.push({index, weight});
+        weightSum += weight;
+        weightedRain += weight * values[index];
+      }
+      const query = [pointer.x, pointer.y] as const;
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at: query, radius: searchRadius, dashed: true},
+        {shape: 'crosshair', at: query}
+      ];
+      let linkedCount = 0;
+      for (const {index, weight} of weights) {
+        if (weight / weightSum < LINKED_SHARE) continue;
+        glyphs.push({
+          shape: 'line',
+          from: query,
+          to: [positions[index * 2], positions[index * 2 + 1]]
+        });
+        linkedCount++;
+      }
+      return {
+        glyphs,
+        readout:
+          weights.length > 0
+            ? `${(weightedRain / weightSum).toFixed(0)} mm · ${linkedCount} of ${weights.length} gauges carry it`
+            : 'no gauge within the search radius'
+      };
+    }
+  });
+
   return {
-    render(timeMilliseconds) {
-      if (!context.reducedMotion) timeSeconds = timeMilliseconds / 1000;
+    gesture: driver.gesture,
+    render(time) {
+      driver.advance(time);
       scheduler.flush();
     },
     setParameters(update) {
       Object.assign(parameterValues, update);
+      isDirty = true;
+      // The links and the estimate depend on power and search radius.
+      driver.refresh();
       scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      isDirty = true;
+      driver.refresh();
       scheduler.request();
     },
-    setPointer(position) {
-      pointer = position ? getWorldPosition(view, position) : null;
-      scheduler.request();
-    },
+    setPointer: driver.setPointer,
+    resetPointer: driver.resetPointer,
     destroy() {
       scheduler.cancel();
+      driver.destroy();
       raster.destroy();
       dots.destroy();
       runner.destroy();

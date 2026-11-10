@@ -11,26 +11,38 @@ import {
   GPUOffsetCurveComponents
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findNearestOnPolyline} from '../../pick';
+import {createRiverBend} from '../../../data/hydrography';
 import {createIdentityIds} from './shared/polygon-set';
+import {findPointAtDistance, getNearestValue} from './shared/pointer-support';
 import {addKernel} from './shared/shape-segments';
 import {parameters} from './offset-curve-components.parameters';
 
 const JOIN_STYLES = ['round', 'mitre', 'bevel'] as const;
 const QUAD_SEGMENTS = 8;
 const OUTPUT_VERTICES = 1024;
+/** distance is a constructor prop: the pointer settles on one of these prebuilt values. */
+const DISTANCES = [0.01, 0.025, 0.04, 0.06, 0.08];
+/** The offset distance is this fraction of the pointer's distance from the river. */
+const DISTANCE_SCALE = 0.5;
 const COMPONENT_CAPACITY = 128;
 
 export default defineOperationRun({
   parameters,
-  caption: 'The raw offset of a zigzag line, cleaned into valid components.',
-  createInputs: ({random, world}) => {
-    const vertexCount = 9;
-    const positions = new Float32Array(vertexCount * 2);
-    for (let vertex = 0; vertex < vertexCount; vertex++) {
-      positions[vertex * 2] = (0.12 + (0.76 * vertex) / (vertexCount - 1)) * world.width;
-      positions[vertex * 2 + 1] = 0.5 + (vertex % 2 === 0 ? -1 : 1) * (0.16 + 0.1 * random());
-    }
-    return {positions, vertexCount};
+  caption: 'The raw offset of a river reach, cleaned into valid components.',
+  buildCache: 5,
+  createInputs: ({world}) => {
+    const vertexCount = 24;
+    const positions = Float32Array.from(createRiverBend(1, vertexCount, world).flat());
+    return {
+      positions,
+      vertexCount,
+      restPoint: findPointAtDistance(
+        (x, y) => findNearestOnPolyline(positions, x, y)?.distance ?? null,
+        0.04 / DISTANCE_SCALE,
+        world
+      )
+    };
   },
   build(builder, {positions, vertexCount}, values) {
     const joinStyle = JOIN_STYLES[values.joinStyle];
@@ -118,14 +130,37 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['distance', 'joinStyle'],
+  // The pointer's distance from the river (halved) is the offset distance; its ring is drawn at the nearest river point.
+  interaction: {
+    kind: 'reach',
+    hint: 'move away from the river',
+    rest: ({inputs, toUnit}) => toUnit(inputs.restPoint),
+    resolve(pointer, {inputs, values}) {
+      const hit = findNearestOnPolyline(inputs.positions, pointer.x, pointer.y);
+      const distance = getNearestValue(DISTANCES, (hit?.distance ?? 0) * DISTANCE_SCALE);
+      return {
+        settle: {distance},
+        glyphs: hit
+          ? [
+              {shape: 'ring', at: hit.point, radius: distance, dashed: true},
+              {shape: 'line', from: [pointer.x, pointer.y], to: hit.point, dashed: true}
+            ]
+          : [],
+        readout:
+          distance === values.distance
+            ? `distance ${distance.toFixed(3)} · ${values.joinStyle === 0 ? 'round' : values.joinStyle === 1 ? 'mitre' : 'bevel'} joins`
+            : `distance ${values.distance.toFixed(3)} -> ${distance.toFixed(3)}`
+      };
+    }
+  },
   draw: ({outputs, inputs, theme}) => [
     {
       layer: 'paths',
-      nodes: outputs.original,
-      ids: outputs.originalIds,
-      count: inputs.vertexCount,
-      color: [...theme.ink, 1],
-      radius: 1.4
+      context: true,
+      nodes: outputs.raw,
+      ids: outputs.rawIds,
+      count: outputs.rawIds.length,
+      radius: 1.2
     },
     {
       layer: 'segments',
@@ -136,10 +171,11 @@ export default defineOperationRun({
     },
     {
       layer: 'paths',
-      context: true,
-      nodes: outputs.raw,
-      ids: outputs.rawIds,
-      count: outputs.rawIds.length
+      nodes: outputs.original,
+      ids: outputs.originalIds,
+      count: inputs.vertexCount,
+      color: [...theme.ink, 1],
+      radius: 1.4
     }
   ]
 });

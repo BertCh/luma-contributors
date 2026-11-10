@@ -3,19 +3,13 @@
 
 // Seeded zones and points shared by the spatial-join runs.
 
+import {createGreatLakeRings} from '../../../../data/hydrography';
 import type {RunBuffer, RunBuilder} from '../../../define-run';
-import {createStarRing, packPolygonRings, type PackedPolygons} from './polygons';
+import {packPolygonRings, type PackedPolygons} from './polygons';
 
-/** Five star-shaped zones spread over the world. */
-export function createZones(random: () => number, world: {width: number; height: number}) {
-  const centers: [number, number][] = [
-    [world.width * 0.16, 0.7],
-    [world.width * 0.4, 0.34],
-    [world.width * 0.5, 0.78],
-    [world.width * 0.72, 0.36],
-    [world.width * 0.86, 0.72]
-  ];
-  return packPolygonRings(centers.map(center => createStarRing(random, center, 0.22, 9, 0.45)));
+/** Simplified Great Lakes shores retain their relative positions and areas. */
+export function createZones(world: {width: number; height: number}) {
+  return packPolygonRings(createGreatLakeRings(world));
 }
 
 export type UploadedZones = {
@@ -98,4 +92,59 @@ export function scaleZones(
       return center + (value - center) * size;
     })
   };
+}
+
+export type Bounds = {minimumX: number; minimumY: number; maximumX: number; maximumY: number};
+
+/** The bounding box of every zone ring, from packed (x, y) `positions` (scaled or not). */
+export function getZoneBounds(zones: PackedPolygons, positions: ArrayLike<number>): Bounds[] {
+  return Array.from({length: zones.featureCount}, (_, ring) => {
+    const bounds = {
+      minimumX: Infinity,
+      minimumY: Infinity,
+      maximumX: -Infinity,
+      maximumY: -Infinity
+    };
+    for (let vertex = zones.ringOffsets[ring]; vertex < zones.ringOffsets[ring + 1]; vertex++) {
+      bounds.minimumX = Math.min(bounds.minimumX, positions[vertex * 2]);
+      bounds.maximumX = Math.max(bounds.maximumX, positions[vertex * 2]);
+      bounds.minimumY = Math.min(bounds.minimumY, positions[vertex * 2 + 1]);
+      bounds.maximumY = Math.max(bounds.maximumY, positions[vertex * 2 + 1]);
+    }
+    return bounds;
+  });
+}
+
+/** Box outlines as (x0, y0, x1, y1) segments, each box grown by `distance` on every side. */
+export function createBoundsSegments(bounds: readonly Bounds[], distance = 0): Float32Array {
+  const segments = new Float32Array(bounds.length * 16);
+  bounds.forEach((box, index) => {
+    const x0 = box.minimumX - distance;
+    const y0 = box.minimumY - distance;
+    const x1 = box.maximumX + distance;
+    const y1 = box.maximumY + distance;
+    segments.set([x0, y0, x1, y0, x1, y0, x1, y1, x1, y1, x0, y1, x0, y1, x0, y0], index * 16);
+  });
+  return segments;
+}
+
+/** Distance from (x, y) to a box, and the closest point of the box. */
+export function getBoundsDistance(
+  box: Bounds,
+  x: number,
+  y: number
+): {distance: number; point: [number, number]} {
+  const pointX = Math.min(box.maximumX, Math.max(box.minimumX, x));
+  const pointY = Math.min(box.maximumY, Math.max(box.minimumY, y));
+  return {distance: Math.hypot(x - pointX, y - pointY), point: [pointX, pointY]};
+}
+
+/** The nearest box to (x, y). */
+export function findNearestBounds(bounds: readonly Bounds[], x: number, y: number) {
+  let best = {...getBoundsDistance(bounds[0], x, y), index: 0};
+  bounds.forEach((box, index) => {
+    const hit = getBoundsDistance(box, x, y);
+    if (hit.distance < best.distance) best = {...hit, index};
+  });
+  return best;
 }

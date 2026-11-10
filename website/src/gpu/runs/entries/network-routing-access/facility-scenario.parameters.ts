@@ -13,7 +13,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 1,
     step: 1,
-    default: 1,
+    default: 0,
     options: ['nearestFacilities', 'accessibility']
   }
 ];

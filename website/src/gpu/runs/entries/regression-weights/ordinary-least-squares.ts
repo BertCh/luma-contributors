@@ -12,13 +12,15 @@ import {
   getGPUOrdinaryLeastSquaresParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {parameters} from './ordinary-least-squares.parameters';
 import {
+  type CoefficientPanel,
   createCoefficientPanel,
   createRegressionInputs,
   createResponse,
   drawCoefficientPanel,
-  drawTractMap,
+  drawResidualMap,
   TRUE_COEFFICIENTS,
   uploadRegressionMap
 } from './shared/regression';
@@ -74,8 +76,20 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer sets the ridge penalty: the slope bars shrink toward zero while the dots stay at the truth.
+  interaction: bindAxes<unknown, {panel: CoefficientPanel}>(parameters, {
+    kind: 'level',
+    hint: 'set ridgeLambda',
+    x: 'ridgeLambda',
+    decorate: (values, _pointer, {outputs, peek}) => {
+      const estimates = peek(outputs.panel.estimates);
+      return {
+        readout: `ridgeLambda ${values.ridgeLambda.toFixed(1)} · x1 ${estimates ? estimates[1].toFixed(2) : '-'} (true ${TRUE_COEFFICIENTS[1]}) · x2 ${estimates ? estimates[2].toFixed(2) : '-'} (true ${TRUE_COEFFICIENTS[2]})`
+      };
+    }
+  }),
   draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.residuals),
+    ...drawResidualMap(inputs, outputs.mesh, outputs.residuals),
     ...drawCoefficientPanel(outputs.panel)
   ]
 });

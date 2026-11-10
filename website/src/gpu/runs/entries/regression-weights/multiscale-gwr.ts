@@ -8,6 +8,7 @@
 
 import {GPUMultiscaleGeographicallyWeightedRegression} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {parameters} from './multiscale-gwr.parameters';
 import {
   createRegressionInputs,
@@ -23,7 +24,7 @@ export default defineOperationRun({
   parameters,
   caption:
     'Two coefficient surfaces fitted at their own scales: drifting slope and constant slope.',
-  createInputs: ({random, world}) => createRegressionInputs(random, world, 8, DUAL_MAP_SHARE, true),
+  createInputs: ({random, world}) => createRegressionInputs(random, world, 8, DUAL_MAP_SHARE),
   build(builder, inputs) {
     const rowCount = inputs.tracts.count;
     const positions = builder.upload('positions', 'float32x2', inputs.tracts.centers);
@@ -77,14 +78,26 @@ export default defineOperationRun({
       }
     };
   },
+  // x sets the bandwidth of the drifting slope, y the bandwidth of the constant one.
+  interaction: bindAxes(parameters, {
+    kind: 'pad',
+    hint: 'x1 and x2 bandwidth',
+    x: 'firstBandwidth',
+    y: 'secondBandwidth',
+    decorate: (values, pointer) => ({
+      glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
+      readout: `x1 bandwidth ${values.firstBandwidth} · x2 bandwidth ${values.secondBandwidth}`
+    })
+  }),
+  // Both surfaces on one scale: the drifting slope spans it, the constant slope stays one shade.
   draw: ({inputs, outputs}) => [
     ...drawTractMap(inputs, outputs.meshes[0], outputs.first, {
       ramp: 'sequential',
-      range: [0, 3.2]
+      range: [-2, 3]
     }),
     ...drawTractMap(inputs, outputs.meshes[1], outputs.second, {
-      ramp: 'diverging',
-      range: [-3, 0]
+      ramp: 'sequential',
+      range: [-2, 3]
     })
   ]
 });

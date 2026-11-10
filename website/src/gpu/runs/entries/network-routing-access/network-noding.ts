@@ -8,7 +8,14 @@
 import {GPUNetworkNoding} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {addEdgePairs} from './shared/display';
+import {findParameter, snapToParameter} from '../../interaction';
+import {findReachPoint} from './shared/roads';
 import {parameters} from './network-noding.parameters';
+
+const TOLERANCE = findParameter(parameters, 'tolerance');
+const DEFAULT_LINE_COUNT = findParameter(parameters, 'lineCount').default;
+import streets from '../../../data/sf-market-streets.json';
+import {fitLocalMap} from '../../../data/fit-local-map';
 
 const NODE_CAPACITY = 512;
 const PIECE_CAPACITY = 512;
@@ -18,22 +25,10 @@ const VERTEX_COUNT = 9;
 export default defineOperationRun({
   parameters,
   caption: 'Lines cut at crossings: noded edges and the nodes they snap to.',
-  createInputs: ({random, world}) => {
-    // Streets from one random point to another, with a little wobble, so they cross.
-    const vertices = new Float32Array(16 * VERTEX_COUNT * 2);
-    for (let line = 0; line < 16; line++) {
-      const startX = random() * world.width;
-      const startY = random();
-      const endX = random() * world.width;
-      const endY = random();
-      for (let vertex = 0; vertex < VERTEX_COUNT; vertex++) {
-        const amount = vertex / (VERTEX_COUNT - 1);
-        const index = (line * VERTEX_COUNT + vertex) * 2;
-        vertices[index] = startX + (endX - startX) * amount + (random() - 0.5) * 0.04;
-        vertices[index + 1] = startY + (endY - startY) * amount + (random() - 0.5) * 0.04;
-      }
-    }
-    return {vertices};
+  createInputs: ({world}) => {
+    const points = streets.lines.flat();
+    const project = fitLocalMap(points, world);
+    return {vertices: Float32Array.from(points.flatMap(([x, y]) => project(x, y)))};
   },
   build(builder, lines, values) {
     const lineCount = Math.round(values.lineCount);
@@ -96,6 +91,13 @@ export default defineOperationRun({
     return {
       outputs: {
         nodePositions,
+        nodeCount,
+        pieceCount,
+        nodeIds: builder.upload(
+          'node-ids',
+          'uint32',
+          Uint32Array.from({length: NODE_CAPACITY}, (_, index) => index)
+        ),
         edges: addEdgePairs(builder, {
           id: 'noded',
           from: fromNodes,
@@ -112,9 +114,58 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['lineCount'],
-  draw: ({outputs}) => [
+  // Reach: the distance from the nearest input vertex to the pointer is the snapping tolerance.
+  interaction: {
+    kind: 'reach',
+    hint: 'reach to merge nodes',
+    rest: ({inputs, world, toUnit}) =>
+      toUnit(
+        findReachPoint(
+          inputs.vertices.subarray(0, DEFAULT_LINE_COUNT * VERTEX_COUNT * 2),
+          TOLERANCE.default,
+          world
+        )
+      ),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const vertexCount = Math.round(values.lineCount) * VERTEX_COUNT;
+      let nearest = 0;
+      let nearestDistance = Infinity;
+      for (let vertex = 0; vertex < vertexCount; vertex++) {
+        const distance = Math.hypot(
+          inputs.vertices[vertex * 2] - pointer.x,
+          inputs.vertices[vertex * 2 + 1] - pointer.y
+        );
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearest = vertex;
+        }
+      }
+      const tolerance = snapToParameter(TOLERANCE, nearestDistance);
+      const nodes = peek(outputs.nodeCount);
+      const pieces = peek(outputs.pieceCount);
+      return {
+        values: {tolerance},
+        glyphs: [
+          {
+            shape: 'ring',
+            at: [inputs.vertices[nearest * 2], inputs.vertices[nearest * 2 + 1]],
+            radius: tolerance,
+            dashed: true
+          }
+        ],
+        readout: `tolerance ${tolerance.toFixed(2)} · ${nodes ? nodes[0] : 0} nodes · ${pieces ? pieces[0] : 0} pieces`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     {layer: 'lines', context: true, segments: outputs.inputLines, radius: 1.2},
-    {layer: 'segments', nodes: outputs.nodePositions, edges: outputs.edges, radius: 2},
-    {layer: 'dots', positions: outputs.nodePositions, radius: 4.5, color: [1, 1, 1, 1]}
+    {
+      layer: 'segments',
+      nodes: outputs.nodePositions,
+      edges: outputs.edges,
+      values: outputs.nodeIds,
+      radius: 3
+    },
+    {layer: 'dots', positions: outputs.nodePositions, radius: 6, color: [...theme.ink, 1]}
   ]
 });

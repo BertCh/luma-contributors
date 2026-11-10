@@ -11,7 +11,9 @@ import {
 import {addPointsInPolygonsChoroplethRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createClusteredPoints} from '../../inputs';
+import {isInsideRing} from '../../pick';
 import {createQuadZones, getPolygonPort, getQuadFill, uploadQuadZones} from './lib/quads';
+import {findZoneAt, getZoneRing} from './lib/zone-lookup';
 import {parameters} from './points-in-polygons-choropleth-recipe.parameters';
 
 const MAXIMUM_CLASSES = 6;
@@ -23,7 +25,8 @@ export default defineOperationRun({
   createInputs: ({random, world}) => ({
     world,
     zones: createQuadZones(random, world),
-    points: createClusteredPoints(random, world, POINT_COUNT, 3, 0.25)
+    points: createClusteredPoints(random, world, POINT_COUNT, 3, 0.25),
+    focus: {zone: -1}
   }),
   build(builder, {zones, points, world}, values) {
     const mesh = uploadQuadZones(builder, zones);
@@ -82,9 +85,26 @@ export default defineOperationRun({
         maximumPaletteCount: MAXIMUM_CLASSES
       }
     });
+    const highlight = builder.allocate('highlight', 'float32', POINT_COUNT);
+    const legendPositions = builder.upload(
+      'legend-positions',
+      'float32x2',
+      Float32Array.from({length: MAXIMUM_CLASSES * 2}, (_, index) =>
+        index % 2 === 0 ? (0.05 + 0.04 * (index / 2)) * world.width : 0.04
+      )
+    );
+    const legendValues = builder.upload(
+      'legend-values',
+      'float32',
+      Float32Array.from({length: MAXIMUM_CLASSES}, (_, index) => index)
+    );
     return {
       outputs: {
         classIndices,
+        featureValues,
+        highlight,
+        legendPositions,
+        legendValues,
         mesh,
         points: builder.upload('point-positions', 'float32x2', points.positions)
       },
@@ -106,6 +126,42 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['statistic'],
+  // The pointer picks a zone: the points joined to it light up, with its statistic and class.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a zone',
+    rest: ({toUnit, inputs}) =>
+      toUnit([inputs.zones.centers[2 * 70], inputs.zones.centers[2 * 70 + 1]]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const zone = findZoneAt(inputs.zones, pointer.x, pointer.y);
+      if (zone !== inputs.focus.zone) {
+        inputs.focus.zone = zone;
+        const ring = getZoneRing(inputs.zones, zone);
+        // 1 for the points inside the zone; the dots layer fades the rest out.
+        const padded = new Float32Array(POINT_COUNT);
+        for (let point = 0; point < POINT_COUNT; point++) {
+          padded[point] = isInsideRing(
+            ring,
+            inputs.points.positions[point * 2],
+            inputs.points.positions[point * 2 + 1]
+          )
+            ? 1
+            : 0;
+        }
+        outputs.highlight.write(padded);
+      }
+      const classes = peek(outputs.classIndices);
+      const statistics = peek(outputs.featureValues);
+      const name = ['mean', 'sum', 'maximum'][values.statistic];
+      const hasPoints = classes && statistics && classes[zone] < values.classCount;
+      return {
+        glyphs: [{shape: 'polyline', points: getZoneRing(inputs.zones, zone), closed: true}],
+        readout: hasPoints
+          ? `zone ${zone} · ${name} ${statistics[zone].toFixed(1)} · class ${classes[zone] + 1} of ${values.classCount}`
+          : `zone ${zone} · no points`
+      };
+    }
+  },
   draw: ({inputs, outputs, values}) => [
     getQuadFill(outputs.mesh, inputs.zones, outputs.classIndices, {
       ramp: 'sequential',
@@ -117,6 +173,26 @@ export default defineOperationRun({
       segments: outputs.mesh.outline,
       count: inputs.zones.outlineCount
     },
-    {layer: 'dots', context: true, positions: outputs.points, radius: 1.5}
+    {layer: 'dots', context: true, positions: outputs.points, radius: 1.5},
+    {
+      layer: 'dots',
+      positions: outputs.points,
+      values: outputs.highlight,
+      ramp: 'grey',
+      range: [0, 1],
+      fade: true,
+      count: POINT_COUNT,
+      radius: 3
+    },
+    // Legend row: one dot per class, from the lowest to the highest.
+    {
+      layer: 'dots',
+      positions: outputs.legendPositions,
+      values: outputs.legendValues,
+      ramp: 'sequential',
+      range: [0, values.classCount - 1],
+      count: values.classCount,
+      radius: 9
+    }
   ]
 });

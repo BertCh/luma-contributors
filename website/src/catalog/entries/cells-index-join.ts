@@ -230,7 +230,11 @@ graph.add(new GPUCellMeasures({
   family: 'h3', cells, units: 'kilometers', output: {areas, pentagons}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 9003, caption: 'Hexagons differ in area; pentagons stand out.'},
+    preview: {
+      kind: 'cells',
+      seed: 9003,
+      caption: 'Area and perimeter of H3 cells containing Honshu epicenters.'
+    },
     related: ['s2-cell-measures', 'cell-geometry'],
     lensScenario: 'gpu-spatial-analysis.cell-measures',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -285,7 +289,11 @@ const edges = graph.importGPUData('edges', edgeData); // GPUData<'uint32x2'>, 6 
 
 graph.add(new GPUH3CellIdentities({cells, operation: 'directed-edges', output: edges}));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 9004, caption: 'Six directed edges leave every hexagon.'},
+    preview: {
+      kind: 'cells',
+      seed: 9004,
+      caption: 'Directed edge and vertex IDs of H3 cells at Honshu epicenters.'
+    },
     related: ['cell-topology', 'cell-grid-path'],
     lensScenario: 'gpu-spatial-analysis.h3-cell-identities',
     reference: 'api/gpu-spatial-analysis/expansion-lenses',
@@ -751,7 +759,11 @@ graph.add(new GPUCellTopology({
   family: 'h3', operation: {type: 'disk', k: 2}, cells, output: {cells: disk, counts}
 }));
 const compiled = await graph.compileAsync();`,
-    preview: {kind: 'cells', seed: 9010, caption: 'A disk of radius two around the chosen cell.'},
+    preview: {
+      kind: 'cells',
+      seed: 9010,
+      caption: 'Rings and disks around three Honshu earthquake epicenters.'
+    },
     related: ['cell-compaction', 'cell-grid-path', 'cell-cover', 's2-cell-hierarchy'],
     lensScenario: 'gpu-spatial-analysis.cell-topology',
     reference: 'api/gpu-spatial-analysis/operators-cells',
@@ -826,7 +838,7 @@ const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'tessellation',
       seed: 9011,
-      caption: 'Complete sibling groups merge into larger cells.'
+      caption: 'Compact cells around the March 2022 M7.3 Honshu epicenter.'
     },
     related: ['cell-topology', 'cell-cover', 's2-cell-hierarchy'],
     lensScenario: 'gpu-spatial-analysis.cell-compaction',
@@ -891,7 +903,7 @@ const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'shortest-path',
       seed: 9012,
-      caption: 'A chain of cells joins origin and destination.'
+      caption: 'Cell paths between selected Honshu earthquake epicenters.'
     },
     related: ['cell-topology', 'h3-cell-identities'],
     lensScenario: 'gpu-spatial-analysis.cell-grid-path',
@@ -1205,7 +1217,7 @@ const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'cells',
       seed: 9016,
-      caption: 'Area and perimeter of each S2 cell on the sphere.'
+      caption: 'Area and perimeter of S2 cells occupied by Honshu epicenters.'
     },
     related: ['s2-cell-hierarchy', 'cell-measures'],
     lensScenario: 'gpu-spatial-analysis.s2-cell-measures',
@@ -1285,7 +1297,7 @@ const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'buffers',
       seed: 9017,
-      caption: 'A circular cap on the sphere, covered by cells.'
+      caption: 'S2 search areas around three observed Honshu epicenters.'
     },
     related: ['s2-polygon-covering', 's2-cell-hierarchy', 'spherical-convex-contains'],
     lensScenario: 'gpu-spatial-analysis.s2-cap-covering',
@@ -2040,7 +2052,7 @@ const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'polygon-overlay',
       seed: 9025,
-      caption: 'Parks matched to the tracts they intersect.'
+      caption: 'Sample points matched to the Great Lakes using a spatial predicate.'
     },
     related: [
       'point-in-polygon-join',
@@ -2144,7 +2156,7 @@ const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'polygons',
       seed: 9026,
-      caption: 'Points take the color of the zone that contains them.'
+      caption: 'Sample points colored by their containing Great Lake.'
     },
     related: ['spatial-predicate-join', 'spatial-join-prepared', 'buffer-selection'],
     lensScenario: 'gpu-spatial-analysis.point-in-polygon-join',
@@ -2373,7 +2385,7 @@ const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'spatial-weights',
       seed: 9029,
-      caption: 'Each query reaches for its closest feature.'
+      caption: 'Rain-gauge sites linked to the nearest selected Carolina stations.'
     },
     related: ['nearest-feature-weights', 'buffer-selection', 'spatial-predicate-join'],
     lensScenario: 'gpu-spatial-analysis.nearest-feature-join',
@@ -2454,7 +2466,7 @@ const compiled = await graph.compileAsync();`,
     preview: {
       kind: 'spatial-weights',
       seed: 9030,
-      caption: 'Each point links to its k nearest neighbors.'
+      caption: 'Each Carolina rain gauge links to its k nearest neighbors.'
     },
     related: ['nearest-feature-join', 'buffer-selection'],
     lensScenario: 'gpu-spatial-analysis.nearest-feature-weights',
@@ -2541,7 +2553,7 @@ distance.write(Float32Array.of(250)); // drag the slider: no recompile`,
     preview: {
       kind: 'buffers',
       seed: 9031,
-      caption: 'Points inside the distance band stay selected.'
+      caption: 'Sample sites selected within a buffer of the Missouri River.'
     },
     related: ['nearest-feature-join', 'point-in-polygon-join', 'spatial-predicate-join'],
     lensScenario: 'gpu-spatial-analysis.buffer-selection',

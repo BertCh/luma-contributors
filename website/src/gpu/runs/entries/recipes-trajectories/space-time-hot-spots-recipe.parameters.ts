@@ -3,8 +3,6 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// radius and temporalWindow are per-frame settings of addSpaceTimeHotSpotsRecipe; the growth
-// slider changes the events (and so rebuilds).
 export const parameters: GpuSceneParameter[] = [
   {id: 'radius', label: 'radius', min: 1, max: 3, step: 0.5, default: 1.5, unit: 'cells'},
   {
@@ -16,5 +14,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 1,
     unit: 'slices'
   },
-  {id: 'growth', label: 'Data: monthlyGrowth', min: 0, max: 4, step: 1, default: 1}
+  {id: 'minimumMagnitude', label: 'Data: minimumMagnitude', min: 4, max: 5, step: 0.1, default: 4}
 ];

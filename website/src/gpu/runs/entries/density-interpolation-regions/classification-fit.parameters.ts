@@ -8,7 +8,7 @@ export const parameters: GpuSceneParameter[] = [
   {id: 'classCount', label: 'classCount', min: 2, max: 8, step: 1, default: 5},
   {
     id: 'quantile',
-    label: 'Data: breaks',
+    label: 'breaks',
     min: 0,
     max: 1,
     step: 1,

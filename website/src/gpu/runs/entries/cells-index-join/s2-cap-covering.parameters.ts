@@ -16,5 +16,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['exterior', 'interior']
   },
-  {id: 'radius', label: 'Data: radius', min: 0.15, max: 0.8, step: 0.05, default: 0.35, unit: '°'}
+  {id: 'radius', label: 'cap radius', min: 0.15, max: 0.8, step: 0.05, default: 0.35, unit: '°'}
 ];

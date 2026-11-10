@@ -7,7 +7,7 @@ import type {RunLegendItem} from '../../legend';
 // `capacity` and `slots` are GPUSnapshotArena props. `iterations` is the length of the relaxation
 // being watched: when it exceeds `capacity` the taps decimate (every n-th iteration) so frames fit.
 export const parameters: GpuSceneParameter[] = [
-  {id: 'capacity', label: 'capacity', min: 1, max: 8, step: 1, default: 7, unit: ' frames'},
+  {id: 'capacity', label: 'capacity', min: 1, max: 8, step: 1, default: 5, unit: ' frames'},
   {id: 'slots', label: 'slots', min: 1, max: 3, step: 1, default: 3, unit: ' per frame'},
   {id: 'iterations', label: 'Data: iterations', min: 2, max: 12, step: 1, default: 5}
 ];

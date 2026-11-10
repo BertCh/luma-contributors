@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUNeighborSearch feeding GPULocalMoran. A drifting spatial field with noise, neighbors
-// within a radius, and the HH, LL, LH and HL clusters the GPU finds above a significance level.
+// Local Moran clusters of measured rainfall at southeastern US gauges during Hurricane Helene.
 
 import {
   getGPUNeighborSearchParameterValues,
@@ -12,6 +11,10 @@ import {
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getRainStations, getRainNeighborCapacity} from '../data/point-observations';
+import type {RunGlyph} from '../runs/interaction';
+import {chooseSticky, createPointIndex} from '../runs/pick';
+import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
 import {LOCAL_MORANS_I_PARAMETERS, readParameterValues} from './parameters';
 import {
@@ -30,8 +33,7 @@ import {
 
 export const parameters = LOCAL_MORANS_I_PARAMETERS;
 
-const POINT_COUNT = 1100;
-const SLOTS_PER_POINT = 48;
+const POINT_COUNT = 720;
 
 const scene: GpuScene = async context => {
   const {device} = context;
@@ -43,27 +45,20 @@ const scene: GpuScene = async context => {
   const random = makeRandom(context.seed);
   const bounds = [0, 0, worldWidth, 1] as const;
 
-  const positions = new Float32Array(POINT_COUNT * 2);
-  const noise = new Float32Array(POINT_COUNT);
-  for (let index = 0; index < POINT_COUNT; index++) {
-    positions[index * 2] = random() * worldWidth;
-    positions[index * 2 + 1] = random();
-    noise[index] = random() - 0.5;
-  }
-  const fieldValues = new Float32Array(POINT_COUNT);
-  const writeValues = (phase: number) => {
-    for (let index = 0; index < POINT_COUNT; index++) {
-      const x = positions[index * 2] / worldWidth;
-      const y = positions[index * 2 + 1];
-      fieldValues[index] =
-        Math.sin(x * 7 + phase) * Math.cos(y * 5 - phase * 0.7) +
-        0.35 * Math.sin(x * 19 - y * 13) +
-        noise[index] * values.noise;
-    }
-    valueBuffer.write(fieldValues);
-  };
-
-  const slotCount = POINT_COUNT * SLOTS_PER_POINT;
+  const {positions, rain} = getRainStations(
+    random,
+    {width: worldWidth, height: 1},
+    POINT_COUNT,
+    true
+  );
+  const pointIndex = createPointIndex(positions);
+  let selected = -1;
+  let currentValues = Float32Array.from(rain);
+  let clusterClasses: Uint32Array | null = null;
+  let readToken = 0;
+  let isDestroyed = false;
+  const noise = Float32Array.from({length: POINT_COUNT}, () => random() - 0.5);
+  const slotCount = getRainNeighborCapacity(positions, parameters[0].max / 100);
   const positionBuffer = createStorageBuffer(device, positions);
   const valueBuffer = createEmptyStorageBuffer(device, POINT_COUNT);
   const neighborParameters = createEmptyStorageBuffer(device, GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH);
@@ -151,12 +146,14 @@ const scene: GpuScene = async context => {
   const field = new DotLayer(device, positionBuffer, valueBuffer, POINT_COUNT);
   const clusters = new DotLayer(device, positionBuffer, quadrants, POINT_COUNT, 'uint32');
   let isDirty = true;
-  let seconds = context.reducedMotion ? 2 : 0;
 
   const draw = () => {
     if (isDirty) {
       isDirty = false;
-      writeValues(seconds * 0.45);
+      currentValues = Float32Array.from(rain, (value, row) =>
+        Math.max(0, value + noise[row] * values.noise)
+      );
+      valueBuffer.write(currentValues);
       neighborParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds,
@@ -168,10 +165,19 @@ const scene: GpuScene = async context => {
         getGPUSpatialAutocorrelationParameterValues({significanceLevel: values.significance})
       );
       runner.run();
+      const token = ++readToken;
+      quadrants
+        .readAsync()
+        .then(bytes => {
+          if (token !== readToken || isDestroyed) return;
+          clusterClasses = new Uint32Array(bytes.slice().buffer);
+          driver.refresh();
+        })
+        .catch(() => {});
     }
     field.update(view, theme, {
       mode: 1,
-      range: [-1.6, 1.6],
+      range: [0, 180],
       radius: 11,
       alpha: 0.2,
       ramp: theme.diverging
@@ -182,34 +188,70 @@ const scene: GpuScene = async context => {
       radius: 4,
       solid: [...theme.muted, 0.4]
     });
-    drawLayers(device, theme, [field, clusters]);
+    drawLayers(device, theme, [field, clusters, ...driver.getLayers()]);
   };
   const scheduler = new DrawScheduler(draw);
 
-  return {
-    render(timeMilliseconds) {
-      if (!context.reducedMotion) {
-        // The field drifts slowly; recompute when it has moved a visible step.
-        const nextSeconds = timeMilliseconds / 1000;
-        if (Math.abs(nextSeconds - seconds) > 0.03) {
-          seconds = nextSeconds;
-          isDirty = true;
-        }
+  const clusterNames = ['not significant', 'high-high', 'low-high', 'low-low', 'high-low'];
+  const driver = createPointerDriver({
+    device,
+    view,
+    theme,
+    reducedMotion: context.reducedMotion,
+    kind: 'probe',
+    hint: 'hover a gauge',
+    rest: [0.5, 0.5],
+    reportReadout: context.reportReadout,
+    requestDraw: () => scheduler.request(),
+    resolve(pointer) {
+      selected = chooseSticky(pointIndex, pointer.x, pointer.y, selected);
+      if (selected < 0) return {};
+      const at = [positions[selected * 2], positions[selected * 2 + 1]] as const;
+      const radius = values.radius / 100;
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at, radius, dashed: true},
+        {shape: 'dot', at}
+      ];
+      const inside = pointIndex.within(at[0], at[1], radius).filter(index => index !== selected);
+      for (const index of inside) {
+        glyphs.push({
+          shape: 'line',
+          from: at,
+          to: [positions[index * 2], positions[index * 2 + 1]]
+        });
       }
+      const label = clusterClasses ? (clusterNames[clusterClasses[selected]] ?? '') : '';
+      return {
+        glyphs,
+        readout: `${currentValues[selected].toFixed(0)} mm · ${label || `${inside.length} neighbors`}`
+      };
+    }
+  });
+
+  return {
+    gesture: driver.gesture,
+    render(time) {
+      driver.advance(time);
       scheduler.flush();
     },
     setParameters(update) {
       Object.assign(values, update);
       isDirty = true;
+      driver.refresh();
       scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      driver.refresh();
       scheduler.request();
     },
+    setPointer: driver.setPointer,
+    resetPointer: driver.resetPointer,
     destroy() {
+      isDestroyed = true;
       scheduler.cancel();
+      driver.destroy();
       field.destroy();
       clusters.destroy();
       runner.destroy();

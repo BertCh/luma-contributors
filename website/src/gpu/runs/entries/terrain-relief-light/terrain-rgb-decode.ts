@@ -36,7 +36,7 @@ export default defineOperationRun({
   rebuildOn: ['alphaNoData', 'validMaximum'],
   caption: 'An RGBA elevation tile in; heights in meters, with missing data marked, out.',
   createInputs: ({random, world}) => {
-    const terrain = createTerrainInput(random, world, 48);
+    const terrain = createTerrainInput(world, 48);
     // Transparent holes: pixels the service had no data for, left holding a wrong height of 0.
     const holes = Array.from({length: 4}, () => ({
       column: Math.floor(random() * (terrain.columns - 10)),
@@ -83,8 +83,28 @@ export default defineOperationRun({
     );
     return {outputs: {storedRed, decoded}};
   },
-  draw: ({inputs, outputs}) => [
-    drawGrid(inputs, outputs.storedRed, {context: true}),
-    drawGrid(inputs, outputs.decoded, {hillshade: 0.5, elevation: 60})
-  ]
+  // The pointer is a curtain: the red byte as stored on the left, the decoded meters on the right.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe tile and meters',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {values}) => ({
+      curtain: pointer.x,
+      glyphs: [{shape: 'curtain', x: pointer.x}],
+      readout: `RGBA tile | metres up to ${values.validMaximum} m`
+    })
+  },
+  draw: ({inputs, outputs, interaction, world}) => {
+    const curtain = interaction.curtain ?? world.width / 2;
+    return [
+      // Terrarium's red byte steps once per 256 m, so the stored picture is terraced.
+      drawGrid(inputs, outputs.storedRed, {range: [128, 138], clip: {side: 'left', x: curtain}}),
+      drawGrid(inputs, outputs.decoded, {
+        range: [650, 2300],
+        hillshade: 0.5,
+        elevation: 60,
+        clip: {side: 'right', x: curtain}
+      })
+    ];
+  }
 });

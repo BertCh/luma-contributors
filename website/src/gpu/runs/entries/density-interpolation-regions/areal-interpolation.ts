@@ -13,44 +13,43 @@ import {defineOperationRun} from '../../define-run';
 import {parameters} from './areal-interpolation.parameters';
 import {createRunGrid} from './support/grid';
 import {makeRandom} from '../../../demos/kit';
-import {addZoneGather, createVoronoiZones} from './support/zones';
-
-const SOURCE_ZONE_COUNT = 18;
+import {createTracts} from '../../inputs';
+import {
+  addTractZones,
+  addZoneGather,
+  countTractCells,
+  countZoneCells,
+  createVoronoiZones
+} from './support/zones';
 
 export default defineOperationRun({
   parameters,
-  caption: 'Source-zone values moved onto the target zones by overlap area.',
+  caption:
+    'Chicago tract populations or poverty shares transferred to illustrative service areas by overlap.',
   createInputs: ({random, world}) => {
-    const grid = createRunGrid(world, 36);
-    const source = createVoronoiZones(random, grid, world, SOURCE_ZONE_COUNT);
-    const values = Float32Array.from({length: SOURCE_ZONE_COUNT}, (_, zone) => {
-      const x = source.sites[zone * 2] / world.width;
-      const y = source.sites[zone * 2 + 1];
-      return 60 + 140 * (0.5 + 0.5 * Math.sin(x * 5) * Math.cos(y * 4)) + random() * 20;
-    });
-    return {grid, source, values, world};
+    const grid = createRunGrid(world, 64);
+    const tracts = createTracts(random, world, 8);
+    return {grid, tracts, world, tractCells: countTractCells(grid, tracts)};
   },
-  build(builder, {grid, source, values, world}, current) {
+  build(builder, {grid, tracts, world, tractCells}, current) {
     const target = createVoronoiZones(
       makeRandom(100 + current.targetZoneCount),
       grid,
       world,
       current.targetZoneCount
     );
-    // The target excludes a disc (a lake): cells there belong to no target zone.
-    grid.centers.forEach((_, index) => {
-      if (index % 2 === 1) return;
-      const cell = index / 2;
-      const distance = Math.hypot(
-        grid.centers[index] - 0.5 * world.width,
-        grid.centers[index + 1] - 0.5
-      );
-      if (distance < 0.22) target.zones[cell] = 0xffffffff;
-    });
-    const capacity = Math.min(source.zoneCount * target.zoneCount, grid.columns * grid.rows);
-    const sourceZones = builder.upload('source-zones', 'uint32', source.zones);
+    // The service area stops partway across the tract window, making partial coverage explicit.
+    for (let cell = 0; cell < target.zones.length; cell++) {
+      if (grid.centers[cell * 2] < world.width * 0.4) target.zones[cell] = 0xffffffff;
+    }
+    const capacity = Math.min(tracts.count * target.zoneCount, grid.columns * grid.rows);
+    const sourceZones = addTractZones(builder, grid, tracts);
     const targetZones = builder.upload('target-zones', 'uint32', target.zones);
-    const sourceValues = builder.upload('source-values', 'float32', values);
+    const sourceValues = builder.upload(
+      'source-values',
+      'float32',
+      current.mode === 0 ? tracts.population : tracts.povertyShare
+    );
     const weights = {
       offsets: builder.allocate('offsets', 'uint32', target.zoneCount + 1),
       neighbors: builder.allocate('neighbors', 'uint32', capacity),
@@ -62,7 +61,7 @@ export default defineOperationRun({
         grid: grid.grid,
         sourceZones: sourceZones.view,
         targetZones: targetZones.view,
-        sourceZoneCount: source.zoneCount,
+        sourceZoneCount: tracts.count,
         targetZoneCount: target.zoneCount,
         mode: current.mode === 0 ? 'extensive' : 'intensive',
         denominator: current.denominator === 0 ? 'zone' : 'overlap',
@@ -87,32 +86,79 @@ export default defineOperationRun({
         output: targetValues.view
       })
     );
-    // The source as a raster is only an input picture; the result is gathered on the GPU.
-    const sourceRaster = Float32Array.from(source.zones, zone => values[zone]);
+    // Extensive totals are compared per cell, so a big zone does not look brighter than a small one;
+    // both rasters then share one range, up to the densest source tract.
+    const isExtensive = current.mode === 0;
+    const sourceValueArray = isExtensive ? tracts.population : tracts.povertyShare;
+    const sourceDivisors = builder.upload('source-cells', 'float32', tractCells);
+    const targetDivisors = builder.upload(
+      'target-cells',
+      'float32',
+      countZoneCells(target.zones, target.zoneCount)
+    );
+    let rangeMaximum = 0;
+    sourceValueArray.forEach((value, tract) => {
+      rangeMaximum = Math.max(
+        rangeMaximum,
+        isExtensive ? value / Math.max(1, tractCells[tract]) : value
+      );
+    });
     return {
       outputs: {
-        sourceRaster: builder.upload('source-raster', 'float32', sourceRaster),
-        resultRaster: addZoneGather(builder, targetZones, targetValues, 'result-raster')
+        sourceRaster: addZoneGather(
+          builder,
+          sourceZones,
+          sourceValues,
+          'source-raster',
+          isExtensive ? sourceDivisors : undefined
+        ),
+        resultRaster: addZoneGather(
+          builder,
+          targetZones,
+          targetValues,
+          'result-raster',
+          isExtensive ? targetDivisors : undefined
+        ),
+        rangeMaximum
       }
     };
   },
-  draw: ({inputs, outputs, values}) => [
-    {
-      layer: 'raster',
-      context: true,
-      values: outputs.sourceRaster,
-      columns: inputs.grid.columns,
-      rows: inputs.grid.rows
-    },
-    ...(values.show === 1
-      ? [
-          {
-            layer: 'raster' as const,
-            values: outputs.resultRaster,
-            columns: inputs.grid.columns,
-            rows: inputs.grid.rows
-          }
-        ]
-      : [])
-  ]
+  // A curtain: the tract values on the left, the service-area result of the same operation on
+  // the right, on one range.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe tracts and areas',
+    rest: [0.4, 0.5],
+    resolve: (pointer, {values}) => ({
+      curtain: pointer.x,
+      glyphs: [{shape: 'curtain', x: pointer.x}],
+      readout: `tracts | ${parameters[0].options?.[values.mode]} over ${values.targetZoneCount} zones`
+    })
+  },
+  draw: ({inputs, outputs, values, interaction, world}) => {
+    const curtain = values.show === 1 ? (interaction.curtain ?? world.width * 0.4) : world.width;
+    const range = [0, outputs.rangeMaximum * 0.5] as const;
+    return [
+      {
+        layer: 'raster' as const,
+        values: outputs.sourceRaster,
+        columns: inputs.grid.columns,
+        rows: inputs.grid.rows,
+        range,
+        clip: {side: 'left' as const, x: curtain}
+      },
+      ...(values.show === 1
+        ? [
+            {
+              layer: 'raster' as const,
+              values: outputs.resultRaster,
+              columns: inputs.grid.columns,
+              rows: inputs.grid.rows,
+              range,
+              clip: {side: 'right' as const, x: curtain}
+            }
+          ]
+        : [])
+    ];
+  }
 });

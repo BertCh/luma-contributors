@@ -7,37 +7,21 @@
 
 import {addVisibilityGraphRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {addKernelPass, getViewBuffer} from './shared/kernel';
-import {createCityLayout, getBuildings} from './shared/urban';
+import {createCityLayout, getBuildings, sampleOpenSpace} from './shared/urban';
 import {parameters} from './visibility-graph-recipe.parameters';
 
 const EDGE_CAPACITY = 6000;
-const MAXIMUM_POINTS = 256;
 
 export default defineOperationRun({
   parameters,
   caption: 'Visible pairs of street points, colored by how many shortest routes pass through them.',
-  createInputs: ({random, world}) => {
-    const layout = createCityLayout(random, world, 6, 3);
-    // Street points: a fine grid, kept only where it lies outside the largest possible buildings.
-    const largest = getBuildings(layout, 0.9);
-    const points: number[] = [];
-    const columns = 32;
-    const rows = 18;
-    for (let row = 0; row < rows; row++) {
-      for (let column = 0; column < columns; column++) {
-        const x = ((column + 0.5) / columns) * world.width;
-        const y = (row + 0.5) / rows;
-        const isFree = Array.from({length: largest.count}, (_, building) => building).every(
-          building => {
-            const [x0, y0, x1, y1] = largest.rectangles.subarray(building * 4, building * 4 + 4);
-            return x < x0 - 0.01 || x > x1 + 0.01 || y < y0 - 0.01 || y > y1 + 0.01;
-          }
-        );
-        if (isFree && points.length < MAXIMUM_POINTS * 2) points.push(x, y);
-      }
-    }
-    return {layout, points: Float32Array.from(points)};
+  createInputs: ({world}) => {
+    const layout = createCityLayout(world, 22);
+    const points = sampleOpenSpace(layout, world);
+    return {layout, points, index: createPointIndex(points), focus: {row: -1}};
   },
   build(builder, inputs, values) {
     const buildings = getBuildings(inputs.layout, values.fill);
@@ -85,15 +69,53 @@ export default defineOperationRun({
     return {outputs: {walls, nodes, nodeValues, edges}};
   },
   rebuildOn: ['maximumDistance', 'fill'],
+  // The pointer picks a node; the visible pairs the recipe wrote for it are drawn bright.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a point',
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const row = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.focus.row);
+      inputs.focus.row = row;
+      if (row < 0) return {};
+      const x = inputs.points[row * 2];
+      const y = inputs.points[row * 2 + 1];
+      const pairs = peek(outputs.edges);
+      const choice = peek(outputs.nodeValues);
+      const pointCount = inputs.points.length / 2;
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at: [x, y], radius: values.maximumDistance, dashed: true},
+        {shape: 'dot', at: [x, y]}
+      ];
+      let visibleCount = 0;
+      if (pairs) {
+        for (let slot = 0; slot < pairs.length; slot += 2) {
+          const other =
+            pairs[slot] === row ? pairs[slot + 1] : pairs[slot + 1] === row ? pairs[slot] : -1;
+          if (other < 0 || other >= pointCount) continue;
+          visibleCount++;
+          glyphs.push({
+            shape: 'line',
+            from: [x, y],
+            to: [inputs.points[other * 2], inputs.points[other * 2 + 1]]
+          });
+        }
+      }
+      return {
+        focus: row,
+        glyphs,
+        readout: `node ${row} · ${visibleCount} visible${choice && Number.isFinite(choice[row]) ? ` · choice ${choice[row].toFixed(2)}` : ''}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.walls, radius: 2.5},
     {
       layer: 'segments',
       nodes: outputs.nodes,
       edges: outputs.edges,
-      alpha: 0.35,
+      alpha: 0.12,
       color: [0.38, 0.68, 1, 1],
-      radius: 0.8
+      radius: 0.7
     },
     {layer: 'dots', positions: outputs.nodes, values: outputs.nodeValues, radius: 4, range: 'auto'}
   ]

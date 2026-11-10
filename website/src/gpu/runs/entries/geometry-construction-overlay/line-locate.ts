@@ -11,25 +11,35 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {addKernelPass} from './shared/kernel';
-import {createLineSet, createPackedSegments, HIGHLIGHT_COLOR, OUTPUT_COLOR} from './shared/lines';
+import {findParameter, snapToParameter} from '../../interaction';
+import {
+  createLineSet,
+  createPackedSegments,
+  createTickGlyph,
+  findNearestLine,
+  getPointAtMeasure,
+  HIGHLIGHT_COLOR
+} from './shared/lines';
 import {parameters} from './line-locate.parameters';
 
 const LINE_COUNT = 4;
 const EVENTS_PER_LINE = 6;
 const EVENT_COUNT = LINE_COUNT * EVENTS_PER_LINE;
+const EVENT_SPACING = 0.07;
 
 export default defineOperationRun({
   parameters,
   caption: 'Events located at a distance along their route; ticks show the direction.',
   createInputs: ({random, world}) => ({
-    lines: createLineSet(random, world, LINE_COUNT, 8, 1),
+    lines: createLineSet(random, world, LINE_COUNT, 8),
     eventLineIndices: Uint32Array.from({length: EVENT_COUNT}, (_, event) =>
       Math.floor(event / EVENTS_PER_LINE)
     ),
     eventMeasures: Float32Array.from(
       {length: EVENT_COUNT},
-      (_, event) => (event % EVENTS_PER_LINE) * 0.12
-    )
+      (_, event) => (event % EVENTS_PER_LINE) * EVENT_SPACING
+    ),
+    eventIndices: Float32Array.from({length: EVENT_COUNT}, (_, event) => event % EVENTS_PER_LINE)
   }),
   build(builder, inputs) {
     const positions = builder.upload('positions', 'float32x2', inputs.lines.positions);
@@ -50,6 +60,7 @@ export default defineOperationRun({
         output: {positions: eventPositions.view, tangents: tangents.view, statuses: statuses.view}
       })
     );
+    const eventIndices = builder.upload('event-indices', 'float32', inputs.eventIndices);
     const ticks = builder.allocate('ticks', 'float32x4', EVENT_COUNT);
     addKernelPass(builder, {
       id: 'tick-pass',
@@ -70,7 +81,7 @@ export default defineOperationRun({
       createPackedSegments(inputs.lines.positions, inputs.lines.lineOffsets, false)
     );
     return {
-      outputs: {original, eventPositions, ticks},
+      outputs: {original, eventPositions, eventIndices, ticks},
       update: current =>
         parameterBuffer.write(
           getGPULineLocateParameterValues({
@@ -80,9 +91,42 @@ export default defineOperationRun({
         )
     };
   },
+  // The pointer is a location on a route: its measure (distance along the nearest route from the
+  // start) becomes measureOffset, so event 0 of that route sits under the cursor.
+  interaction: {
+    kind: 'place',
+    hint: 'move along a route',
+    rest: ({inputs, toUnit}) =>
+      toUnit(
+        getPointAtMeasure(inputs.lines, 0, findParameter(parameters, 'measureOffset').default).point
+      ),
+    resolve(pointer, {inputs, values}) {
+      const hit = findNearestLine(inputs.lines, pointer.x, pointer.y);
+      if (!hit) return {};
+      const measureOffset = snapToParameter(
+        findParameter(parameters, 'measureOffset'),
+        hit.measure
+      );
+      return {
+        values: {measureOffset},
+        glyphs: [
+          createTickGlyph(inputs.lines.positions, hit.row, hit.point, 0.035),
+          {shape: 'ring', at: hit.point, radius: 0.025}
+        ],
+        readout: `measureOffset ${measureOffset.toFixed(2)} · scale ${values.measureScale.toFixed(2)}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.original, radius: 3},
     {layer: 'lines', segments: outputs.ticks, color: HIGHLIGHT_COLOR, radius: 3},
-    {layer: 'dots', positions: outputs.eventPositions, color: OUTPUT_COLOR, radius: 9}
+    {
+      layer: 'dots',
+      positions: outputs.eventPositions,
+      values: outputs.eventIndices,
+      ramp: 'sequential',
+      range: [0, EVENTS_PER_LINE - 1],
+      radius: 9
+    }
   ]
 });

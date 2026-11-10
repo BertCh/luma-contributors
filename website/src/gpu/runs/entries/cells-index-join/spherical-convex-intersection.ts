@@ -1,110 +1,115 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUSphericalConvexIntersection clips pairs of convex spherical polygons against each other. The
-// thin outlines are the two inputs of each pair; the bright ring is the intersection polygon the
-// operation wrote (unit vectors converted to longitude/latitude to draw them).
-
 import {GPUSphericalConvexIntersection} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
 import {addGroupedRingSegments, addUnitVectorsToLonLat} from './support/kernels';
 import {packUnitVectors} from './support/polygons';
+import {
+  getConvexShore,
+  getLakeShore,
+  getRingSegments,
+  getSurveyRing,
+  SUPERIOR_WINDOW
+} from './support/spherical-surveys';
 import {parameters} from './spherical-convex-intersection.parameters';
 
-const CAPACITY = 16;
-const PAIR_COUNT = 3;
-
-function createRing(center: [number, number], radius: number, sides: number, turn: number) {
-  return Array.from({length: sides}, (_, index) => {
-    const angle = (2 * Math.PI * index) / sides + turn;
-    return [center[0] + radius * Math.cos(angle), center[1] + radius * Math.sin(angle)];
-  });
-}
+const CAPACITY = 32;
+const LONGITUDE_PARAMETER = findParameter(parameters, 'separation');
+const LATITUDE_PARAMETER = findParameter(parameters, 'surveyLatitude');
 
 export default defineOperationRun({
   parameters,
-  caption: 'Intersection of each polygon pair on the sphere.',
-  createInputs: ({world}) => ({
-    centers: [
-      [world.width * 0.2, 0.5],
-      [world.width * 0.5, 0.5],
-      [world.width * 0.8, 0.5]
-    ] as [number, number][]
-  }),
-  build(builder, inputs, values) {
+  geographicWindow: SUPERIOR_WINDOW,
+  caption:
+    'A modeled survey footprint intersects the convex envelope of Lake Superior. The mapped shoreline provides context.',
+  createInputs: () => {
+    const shore = getLakeShore('Lake Superior');
+    return {shore, hull: getConvexShore(shore)};
+  },
+  build(builder, {shore, hull}, values) {
     const sides = values.sides;
-    const first = builder.allocate('first-positions', 'float32x3', PAIR_COUNT * sides);
-    const second = builder.allocate('second-positions', 'float32x3', PAIR_COUNT * sides);
-    const offsets = Uint32Array.from({length: PAIR_COUNT + 1}, (_, index) => index * sides);
-    const intersection = builder.allocate('intersection', 'float32x3', PAIR_COUNT * CAPACITY);
-    const counts = builder.allocate('counts', 'uint32x2', PAIR_COUNT);
-    const status = builder.allocate('status', 'uint32', PAIR_COUNT);
-    const measures = builder.allocate('measures', 'float32x4', PAIR_COUNT);
+    const second = builder.allocate('second-positions', 'float32x3', sides);
+    const intersection = builder.allocate('intersection', 'float32x3', CAPACITY);
+    const counts = builder.allocate('counts', 'uint32x2', 1);
     builder.graph.add(
       new GPUSphericalConvexIntersection({
-        firstPositions: first.view,
+        firstPositions: builder.upload('hull', 'float32x3', packUnitVectors([hull])).view,
         secondPositions: second.view,
-        firstOffsets: builder.upload('first-offsets', 'uint32', offsets).view,
-        secondOffsets: builder.upload('second-offsets', 'uint32', offsets).view,
+        firstOffsets: builder.upload('first-offsets', 'uint32', Uint32Array.of(0, hull.length))
+          .view,
+        secondOffsets: builder.upload('second-offsets', 'uint32', Uint32Array.of(0, sides)).view,
         capacity: CAPACITY,
         output: {
           positions: intersection.view,
           counts: counts.view,
-          status: status.view,
-          measures: measures.view
+          status: builder.allocate('status', 'uint32', 1).view
         }
       })
     );
     const lonLat = addUnitVectorsToLonLat(builder, 'intersection', intersection);
-    const outlines = [
-      builder.allocate('first-outline', 'float32x4', PAIR_COUNT * sides),
-      builder.allocate('second-outline', 'float32x4', PAIR_COUNT * sides)
-    ];
+    const outline = builder.allocate('survey-outline', 'float32x4', sides);
     return {
       outputs: {
-        outlines,
+        shore: builder.upload('shore', 'float32x4', getRingSegments([shore])),
+        hull: builder.upload('hull-outline', 'float32x4', getRingSegments([hull])),
+        outline,
+        counts,
         ring: addGroupedRingSegments(builder, 'intersection', lonLat, counts, CAPACITY)
       },
       update: current => {
-        const rings = [0, 1].map(side =>
-          inputs.centers.map(([x, y]) =>
-            createRing(
-              [x + (side === 0 ? -1 : 1) * current.separation * 0.5, y],
-              0.19,
-              sides,
-              side === 0 ? 0 : current.rotation
-            )
-          )
+        const ring = getSurveyRing(
+          current.separation,
+          current.surveyLatitude,
+          130,
+          sides,
+          current.rotation
         );
-        [first, second].forEach((buffer, side) => buffer.write(packUnitVectors(rings[side])));
-        outlines.forEach((outline, side) =>
-          outline.write(
-            Float32Array.from(
-              rings[side].flatMap(ring =>
-                ring.flatMap(([x, y], index) => [x, y, ...ring[(index + 1) % sides]])
-              )
-            )
-          )
-        );
+        second.write(packUnitVectors([ring]));
+        outline.write(getRingSegments([ring]));
       }
     };
   },
   rebuildOn: ['sides'],
-  draw: ({outputs}) => [
+  // Drag: the survey footprint is centered on the pointer's longitude and latitude.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag the footprint',
+    rest: ({toUnit}) => toUnit([LONGITUDE_PARAMETER.default, LATITUDE_PARAMETER.default]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const separation = snapToParameter(LONGITUDE_PARAMETER, pointer.x);
+      const surveyLatitude = snapToParameter(LATITUDE_PARAMETER, pointer.y);
+      const counts = peek(outputs.counts);
+      return {
+        values: {separation, surveyLatitude},
+        glyphs: [{shape: 'crosshair', at: [separation, surveyLatitude]}],
+        readout: `intersection ${counts ? counts[0] : '…'} vertices`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     {
       layer: 'lines',
       context: true,
-      segments: outputs.outlines[0],
-      radius: 1.2,
-      color: [0.45, 0.65, 1, 0.8]
+      segments: outputs.shore,
+      radius: 1.3,
+      color: [...theme.muted, 0.9]
     },
     {
       layer: 'lines',
       context: true,
-      segments: outputs.outlines[1],
+      segments: outputs.hull,
       radius: 1.2,
-      color: [1, 0.6, 0.35, 0.8]
+      color: [0.45, 0.65, 1, 0.85]
     },
-    {layer: 'lines', segments: outputs.ring, radius: 3, color: [1, 1, 1, 1]}
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.outline,
+      radius: 1.2,
+      color: [1, 0.6, 0.35, 0.85]
+    },
+    {layer: 'lines', segments: outputs.ring, radius: 3, color: [...theme.ink, 1]}
   ]
 });

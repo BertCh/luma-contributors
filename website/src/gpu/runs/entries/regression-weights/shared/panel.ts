@@ -17,12 +17,14 @@ import {
   createRegressionInputs,
   createResponse,
   drawCoefficientPanel,
-  drawTractMap,
+  drawResidualMap,
   TRUE_COEFFICIENTS,
   uploadRegressionMap,
   uploadStandardizedWeights,
   type RegressionInputs
 } from './regression';
+import {addKernelPass} from './kernel';
+import {bindAxes, getFractionOf} from '../../../interaction';
 import type {GpuSceneParameter} from '../../../../types';
 
 export const PANEL_PERIOD_COUNT = 6;
@@ -53,6 +55,7 @@ export type PanelSpec = {
   caption: string;
   process: 'lag' | 'error';
   rebuildOn?: readonly string[];
+  /** Parameters must include `period`: the period whose residuals the map shows. */
   /** Adds the real operation and returns where its coefficients are. */
   addOperation(context: PanelContext): PanelCoefficients;
 };
@@ -74,14 +77,45 @@ function createPanelPredictors(inputs: RegressionInputs, periodCount: number): F
   return predictors;
 }
 
+type PanelInputs = {inputs: RegressionInputs; panelPredictors: Float32Array};
+type PanelOutputs = {
+  mesh: ReturnType<typeof uploadRegressionMap>;
+  residuals: RunBuffer<'float32'>;
+  panel: ReturnType<typeof createCoefficientPanel>;
+};
+
 /** Defines a run for a spatial panel model. */
 export function definePanelRun(spec: PanelSpec) {
   return defineOperationRun({
     parameters: spec.parameters,
     caption: spec.caption,
     rebuildOn: spec.rebuildOn,
+    // The pointer steps through the periods: the map shows the residuals of that period.
+    interaction: bindAxes<PanelInputs, PanelOutputs>(spec.parameters, {
+      kind: 'time',
+      hint: 'step through periods',
+      x: 'period',
+      decorate: (values, _pointer, {outputs, peek, world}) => {
+        const period = spec.parameters.find(parameter => parameter.id === 'period');
+        const estimates = peek(outputs.panel.estimates);
+        const ticks = Array.from({length: PANEL_PERIOD_COUNT}, (_, index) => {
+          const x = period ? getFractionOf(period, index + 1) * world.width : 0;
+          const isCurrent = index + 1 === values.period;
+          return {
+            shape: 'line' as const,
+            from: [x, 0.02 * world.height] as const,
+            to: [x, (isCurrent ? 0.08 : 0.045) * world.height] as const
+          };
+        });
+        const label = spec.process === 'lag' ? 'rho' : 'lambda';
+        return {
+          glyphs: ticks,
+          readout: `period ${values.period} of ${PANEL_PERIOD_COUNT} · ${label} ${estimates ? estimates[3].toFixed(2) : '-'} (true ${values.strength})`
+        };
+      }
+    }),
     createInputs: ({random, world}) => {
-      const inputs = createRegressionInputs(random, world, 5, undefined, true);
+      const inputs = createRegressionInputs(random, world, 5);
       return {inputs, panelPredictors: createPanelPredictors(inputs, PANEL_PERIOD_COUNT)};
     },
     build(builder, {inputs, panelPredictors}, values) {
@@ -101,6 +135,20 @@ export function definePanelRun(spec: PanelSpec) {
         periodCount: PANEL_PERIOD_COUNT,
         residuals
       });
+      // The residuals of the period shown, copied out of the period-major buffer the model wrote.
+      const periodIndex = builder.allocate('period-index', 'uint32', 1);
+      const shown = builder.allocate('period-residuals', 'float32', entityCount);
+      addKernelPass(builder, {
+        id: 'period-residuals',
+        invocationCount: entityCount,
+        bindings: [
+          {name: 'residuals', buffer: residuals, access: 'read'},
+          {name: 'periodIndex', buffer: periodIndex, access: 'read'},
+          {name: 'shown', buffer: shown, access: 'read_write'}
+        ],
+        declarations: `const ENTITY_COUNT: u32 = ${entityCount}u;`,
+        body: 'shown[shownOffset + index] = residuals[residualsOffset + periodIndex[periodIndexOffset] * ENTITY_COUNT + index];'
+      });
       const panel = createCoefficientPanel(
         builder,
         coefficients.source,
@@ -108,8 +156,11 @@ export function definePanelRun(spec: PanelSpec) {
         coefficients.truthOf(0)
       );
       return {
-        outputs: {mesh: uploadRegressionMap(builder, inputs), residuals, panel},
+        outputs: {mesh: uploadRegressionMap(builder, inputs), residuals: shown, panel},
         update: current => {
+          periodIndex.write(
+            Uint32Array.of(Math.max(0, Math.min(PANEL_PERIOD_COUNT, current.period) - 1))
+          );
           const strength = current.strength;
           const effects = current.unitEffects ?? 0;
           const entityEffects = Float32Array.from(
@@ -144,7 +195,7 @@ export function definePanelRun(spec: PanelSpec) {
       };
     },
     draw: ({inputs, outputs}) => [
-      ...drawTractMap(inputs.inputs, outputs.mesh, outputs.residuals),
+      ...drawResidualMap(inputs.inputs, outputs.mesh, outputs.residuals),
       ...drawCoefficientPanel(outputs.panel)
     ]
   });

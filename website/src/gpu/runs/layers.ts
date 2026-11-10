@@ -27,7 +27,7 @@ struct VertexOutput {
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let point = positions[indices[vertexIndex]];
   var output: VertexOutput;
-  output.position = vec4f((point / look.world * 2.0 - 1.0) * look.scale, 0.0, 1.0);
+  output.position = vec4f(worldToClip(point), 0.0, 1.0);
   output.value = readValue(owners[vertexIndex / 3u]);
   return output;
 }
@@ -81,8 +81,8 @@ fn vertexMain(
   @builtin(instance_index) instanceIndex: u32
 ) -> VertexOutput {
   let edge = edges[instanceIndex];
-  let start = (nodes[edge.x] / look.world * 2.0 - 1.0) * look.scale;
-  let end = (nodes[edge.y] / look.world * 2.0 - 1.0) * look.scale;
+  let start = worldToClip(nodes[edge.x]);
+  let end = worldToClip(nodes[edge.y]);
   var along = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
   var side = array<f32, 6>(-1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
   let halfSize = look.size * 0.5;
@@ -141,7 +141,7 @@ const CHART_PLOT = /* wgsl */ `
 
 fn plotPoint(x: f32, normalizedY: f32) -> vec2f {
   let world = vec2f(mix(plot[0].x, plot[0].z, x), mix(plot[0].y, plot[0].w, normalizedY));
-  return (world / look.world * 2.0 - 1.0) * look.scale;
+  return worldToClip(world);
 }
 
 fn normalizeValue(value: f32) -> f32 {

@@ -9,7 +9,7 @@ export const parameters: GpuSceneParameter[] = [
     id: 'stopSpeedThreshold',
     label: 'stopSpeedThreshold',
     min: 0,
-    max: 0.003,
+    max: 0.02,
     step: 0.0001,
     default: 0.0006
   },
@@ -20,6 +20,6 @@ export const parameters: GpuSceneParameter[] = [
     max: 150,
     step: 5,
     default: 30,
-    unit: 's'
+    unit: 'playback s'
   }
 ];

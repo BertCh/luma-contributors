@@ -11,9 +11,11 @@ import {
   getGPUNetworkLineGraphParameterValues
 } from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {
   createRoadNetwork,
   createRoads,
+  getEndpointMarkers,
   getSlotValues,
   uploadRoadTopology,
   uploadSlotLines
@@ -36,9 +38,9 @@ export default defineOperationRun({
       const head = network.neighbors[slot];
       arcCapacity += network.offsets[head + 1] - network.offsets[head];
     }
-    return {network, originSlots, arcCapacity};
+    return {network, origin, originSlots, arcCapacity};
   },
-  build(builder, {network, originSlots, arcCapacity}) {
+  build(builder, {network, origin, originSlots, arcCapacity}) {
     const {topology} = uploadRoadTopology(builder, network);
     const nodePositions = builder.upload('node-positions', 'float32x2', network.nodes);
     const parameterBuffer = builder.allocate('parameters', 'float32', 8);
@@ -81,7 +83,12 @@ export default defineOperationRun({
     );
     return {
       outputs: {
-        slots: uploadSlotLines(builder, network, 0.006),
+        origin: builder.upload(
+          'origin-position',
+          'float32x2',
+          Float32Array.of(network.nodes[origin * 2], network.nodes[origin * 2 + 1])
+        ),
+        slots: uploadSlotLines(builder, network, 0.012),
         costs: addSlotValues(builder, {id: 'line-costs', source: costs, count: network.slotCount})
       },
       update: values =>
@@ -94,5 +101,18 @@ export default defineOperationRun({
         )
     };
   },
-  draw: ({outputs}) => [getSlotValues(outputs.slots, outputs.costs, {radius: 2.2})]
+  // x is the left-turn penalty and y the right-turn penalty: the cost field reshapes around turns.
+  interaction: bindAxes(parameters, {
+    kind: 'pad',
+    hint: 'price the turns',
+    x: 'leftTurnCost',
+    y: 'rightTurnCost',
+    decorate: current => ({
+      readout: `left ${current.leftTurnCost.toFixed(2)} · right ${current.rightTurnCost.toFixed(2)} · angle ${current.angleCost.toFixed(2)}`
+    })
+  }),
+  draw: ({outputs, theme}) => [
+    getSlotValues(outputs.slots, outputs.costs, {radius: 2.4, range: [0, 3]}),
+    ...getEndpointMarkers(outputs.origin, theme, {colorIndex: 4})
+  ]
 });

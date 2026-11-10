@@ -8,8 +8,11 @@
 import {GPUNetworkInhomogeneousK} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {addCostMatrix, uploadSearch} from './shared/access';
-import {createRoads} from './shared/roads';
+import {createInsetMap, createRoads, gatherPositions, getRoadContext} from './shared/roads';
+import {getChartPosition, getChartWorldX} from '../../pick';
 import {parameters} from './network-inhomogeneous-k.parameters';
+
+const RECTANGLE = [0.56, 0.14, 0.97, 0.88] as const;
 
 const EVENT_COUNT = 32;
 const RADIUS_COUNT = 24;
@@ -31,7 +34,7 @@ export default defineOperationRun({
           network.nodes[network.edgePairs[edge * 2 + 1] * 2 + 1]
       )
     );
-    return {network, world, eventNodes, edgeLengths};
+    return {network, world, eventNodes, edgeLengths, inset: createInsetMap(world)};
   },
   build(builder, inputs, values) {
     const {network} = inputs;
@@ -63,7 +66,17 @@ export default defineOperationRun({
       })
     );
     return {
-      outputs: {k, numerator},
+      outputs: {
+        k,
+        numerator,
+        nodes: builder.upload('display-nodes', 'float32x2', inputs.inset.transform(network.nodes)),
+        edges: builder.upload('road-edges', 'uint32x2', network.edgePairs),
+        eventDots: builder.upload(
+          'event-dots',
+          'float32x2',
+          inputs.inset.transform(gatherPositions(network.nodes, inputs.eventNodes))
+        )
+      },
       update: current => {
         search.costLimit.write(Float32Array.of(8));
         radii.write(
@@ -82,8 +95,61 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['correction'],
+  // Level: x on the chart is the radius; a rule marks it and the readout gives K there.
+  interaction: {
+    kind: 'level',
+    hint: 'read K at a radius',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, world, peek}) {
+      // Over the chart the rule follows the pointer; over the map the pointer sweeps the whole axis.
+      const chartHit = getChartPosition(RECTANGLE, world, pointer.x, pointer.y);
+      const hit = {u: pointer.unitX < RECTANGLE[0] ? pointer.unitX / RECTANGLE[0] : chartHit.u};
+      const index = Math.min(RADIUS_COUNT - 1, Math.floor(hit.u * RADIUS_COUNT));
+      const k = peek(outputs.k);
+      const radius = ((index + 1) / RADIUS_COUNT) * values.radii;
+      // The same radius as a ring around the event nearest the middle of the map.
+      let central = inputs.eventNodes[0];
+      const distanceOf = (candidate: number) =>
+        Math.hypot(
+          inputs.network.nodes[candidate * 2] - world.width / 2,
+          inputs.network.nodes[candidate * 2 + 1] - 0.5
+        );
+      for (const node of inputs.eventNodes)
+        if (distanceOf(node) < distanceOf(central)) central = node;
+      return {
+        glyphs: [
+          {shape: 'curtain', x: getChartWorldX(RECTANGLE, world, (index + 0.5) / RADIUS_COUNT)},
+          {
+            shape: 'ring',
+            at: inputs.inset.toMap(
+              inputs.network.nodes[central * 2],
+              inputs.network.nodes[central * 2 + 1]
+            ),
+            radius: radius * inputs.inset.scale
+          }
+        ],
+        readout: `r ${radius.toFixed(2)} · K ${k ? k[index].toFixed(2) : '-'}`
+      };
+    }
+  },
   draw: ({outputs}) => [
-    {layer: 'chart', kind: 'bars', values: outputs.numerator, alpha: 0.35},
-    {layer: 'chart', kind: 'line', values: outputs.k, radius: 3}
+    getRoadContext(outputs),
+    {layer: 'dots', positions: outputs.eventDots, radius: 4, color: [1, 0.78, 0.25, 1]},
+    {
+      layer: 'chart',
+      kind: 'bars',
+      rectangle: RECTANGLE,
+      values: outputs.numerator,
+      range: [0, 20],
+      alpha: 0.35
+    },
+    {
+      layer: 'chart',
+      kind: 'line',
+      rectangle: RECTANGLE,
+      values: outputs.k,
+      range: [0, 2.5],
+      radius: 3
+    }
   ]
 });

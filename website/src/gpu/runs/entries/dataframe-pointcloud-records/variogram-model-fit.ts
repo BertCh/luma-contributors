@@ -13,19 +13,32 @@ import {
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {defineOperationRun} from '../../define-run';
 import {addFittedCurve} from './_lib/fitted-curve';
+import {
+  DISTANCE_PLOT,
+  getAxisFraction,
+  getAxisPointer,
+  getBinIndex,
+  getChartWorldY
+} from './_lib/distance-probe';
 import {createFieldSample, getFieldValues} from './_lib/helpers';
 import {parameters} from './variogram-model-fit.parameters';
 
 const POINT_COUNT = 700;
 const LAG_COUNT = 20;
 const CURVE_COUNT = 48;
-const PLOT = [0.58, 0.12, 0.96, 0.88] as const;
+const PLOT = DISTANCE_PLOT;
+const RANGE = [0, 2.2] as const;
+const REST_FRACTION = 0.3;
 const WEIGHTINGS = ['cressie', 'pairs', 'none'] as const;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Empirical semivariance bins and the three models fitted to them.',
-  createInputs: ({random, world}) => createFieldSample(random, world.width * 0.5, POINT_COUNT),
+  caption:
+    'Three fitted models over the empirical semivariance of log flash energy; the thin rules mark the spherical fit’s nugget, sill and range.',
+  createInputs: ({random, world}) => ({
+    ...createFieldSample(random, world.width * 0.5, POINT_COUNT),
+    world
+  }),
   build(builder, sample, values) {
     const positions = builder.upload('positions', 'float32x2', sample.positions);
     const observed = builder.allocate('values', 'float32', POINT_COUNT);
@@ -67,8 +80,12 @@ export default defineOperationRun({
       })
     );
     const curveDistances = builder.allocate('curve-distances', 'float32', CURVE_COUNT);
+    // Nugget, sill and range of the spherical fit, drawn as rules by the pointer interaction.
+    const marks = builder.allocate('marks', 'float32x4', 3);
     return {
       outputs: {
+        fitted,
+        marks,
         positions,
         observed,
         semivariances,
@@ -95,22 +112,85 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['weighting'],
+  // The pointer is a distance on the chart: the empirical semivariance and the three fitted models
+  // are read at that distance, and the spherical fit's nugget, sill and range are marked.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a distance',
+    rest: [getAxisPointer(REST_FRACTION), 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const fraction = getAxisFraction(pointer.unitX);
+      const distance = fraction * values.maximumDistance;
+      const x = (PLOT[0] + fraction * (PLOT[2] - PLOT[0])) * inputs.world.width;
+      const bottom = PLOT[1] * inputs.world.height;
+      const top = PLOT[3] * inputs.world.height;
+      const curveIndex = Math.round(fraction * (CURVE_COUNT - 1));
+      const empirical = peek(outputs.semivariances)?.[getBinIndex(fraction, LAG_COUNT)];
+      const models = [outputs.spherical, outputs.exponential, outputs.gaussian].map(
+        buffer => peek(buffer)?.[curveIndex]
+      );
+      const fit = peek(outputs.fitted);
+      if (fit) {
+        const [nugget, partialSill, range] = fit;
+        const left = PLOT[0] * inputs.world.width;
+        const right = PLOT[2] * inputs.world.width;
+        const rangeX = left + Math.min(1, range / values.maximumDistance) * (right - left);
+        const nuggetY = getChartWorldY(PLOT, inputs.world, RANGE, nugget);
+        const sillY = getChartWorldY(PLOT, inputs.world, RANGE, nugget + partialSill);
+        outputs.marks.write(
+          Float32Array.of(
+            left,
+            nuggetY,
+            right,
+            nuggetY,
+            left,
+            sillY,
+            right,
+            sillY,
+            rangeX,
+            bottom,
+            rangeX,
+            sillY
+          )
+        );
+      }
+      const text = (value: number | undefined) => (value === undefined ? '…' : value.toFixed(1));
+      return {
+        spotlight: null,
+        glyphs: [
+          {shape: 'line', from: [x, bottom], to: [x, top]},
+          ...models.flatMap((value, model) =>
+            value === undefined
+              ? []
+              : [
+                  {
+                    shape: 'dot' as const,
+                    at: [x, getChartWorldY(PLOT, inputs.world, RANGE, value)] as const
+                  }
+                ]
+          )
+        ],
+        readout: `h ${distance.toFixed(2)} · data ${text(empirical)} · sph ${text(models[0])} exp ${text(models[1])} gau ${text(models[2])}`
+      };
+    }
+  },
   draw: ({outputs, values}) => [
     {
       layer: 'dots',
       context: true,
       positions: outputs.positions,
       values: outputs.observed,
-      range: [0, 10],
+      range: [1, 7],
       radius: 2.8
     },
+    {layer: 'lines', context: true, segments: outputs.marks, count: 3, color: [0.3, 0.75, 1, 0.55]},
     {
       layer: 'chart',
       kind: 'scatter',
       values: outputs.semivariances,
       xValues: outputs.meanDistances,
       xRange: [0, values.maximumDistance],
-      range: [0, 5],
+      range: RANGE,
       rectangle: PLOT,
       radius: 5,
       color: [0.85, 0.85, 0.9, 0.9]
@@ -119,7 +199,7 @@ export default defineOperationRun({
       layer: 'chart',
       kind: 'line',
       values: outputs.spherical,
-      range: [0, 5],
+      range: RANGE,
       rectangle: PLOT,
       radius: 2.4,
       color: [0.3, 0.75, 1, 1]
@@ -128,7 +208,7 @@ export default defineOperationRun({
       layer: 'chart',
       kind: 'line',
       values: outputs.exponential,
-      range: [0, 5],
+      range: RANGE,
       rectangle: PLOT,
       radius: 2.4,
       color: [1, 0.6, 0.2, 1]
@@ -137,7 +217,7 @@ export default defineOperationRun({
       layer: 'chart',
       kind: 'line',
       values: outputs.gaussian,
-      range: [0, 5],
+      range: RANGE,
       rectangle: PLOT,
       radius: 2.4,
       color: [0.7, 1, 0.7, 1]

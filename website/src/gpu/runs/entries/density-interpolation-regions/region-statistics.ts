@@ -7,19 +7,21 @@
 
 import {GPURegionStatistics} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createUniformPoints} from '../../inputs';
+import {findParameter, snapToParameter} from '../../interaction';
 import {parameters} from './region-statistics.parameters';
 import {addSlice} from './support/gather';
+import {createStretchedSamples} from './support/interpolation';
 
 const HEADER_LENGTH = 8;
 const CIRCLE_SEGMENTS = 64;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Selected points and the histogram of their values, recomputed as the region moves.',
+  caption:
+    'Selected points and the histogram of their values (muted: all points), recomputed as the region moves.',
   createInputs: ({random, world}) => ({
     world,
-    points: createUniformPoints(random, world, 3000, 0.2)
+    points: createStretchedSamples(random, world, 3000, 0.2)
   }),
   build(builder, {world, points}, current) {
     const summary = builder.allocate('summary', 'uint32', HEADER_LENGTH + current.binCount);
@@ -38,16 +40,22 @@ export default defineOperationRun({
       })
     );
     const outline = builder.allocate('outline', 'float32x4', CIRCLE_SEGMENTS);
+    // The whole population on the same bins, drawn muted behind the selection.
+    const population = new Float32Array(current.binCount);
+    for (const value of points.values) {
+      population[Math.min(current.binCount - 1, Math.floor(value * current.binCount))]++;
+    }
     return {
       outputs: {
         mask,
+        population: builder.upload('population', 'float32', population),
         histogram: addSlice(builder, summary, HEADER_LENGTH, current.binCount, 'histogram'),
         positions: builder.upload('points', 'float32x2', points.positions),
         outline
       },
       update: values => {
         const centerX = values.centerX * world.width;
-        const centerY = 0.5;
+        const centerY = values.centerY;
         if (isRadius) region.write(Float32Array.of(centerX, centerY, values.size));
         else {
           region.write(
@@ -84,8 +92,37 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['kind', 'binCount'],
+  // The pointer is the center of the region; the mask and the histogram follow it.
+  interaction: {
+    kind: 'window',
+    hint: 'move the region',
+    rest: [
+      findParameter(parameters, 'centerX').default,
+      1 - findParameter(parameters, 'centerY').default
+    ],
+    resolve(pointer, {inputs, outputs, values, world, peek}) {
+      const centerX = snapToParameter(findParameter(parameters, 'centerX'), pointer.unitX);
+      const centerY = snapToParameter(findParameter(parameters, 'centerY'), 1 - pointer.unitY);
+      const mask = peek(outputs.mask);
+      let selectedCount = 0;
+      let sum = 0;
+      if (mask) {
+        mask.forEach((flag, row) => {
+          selectedCount += flag;
+          if (flag) sum += inputs.points.values[row];
+        });
+      }
+      return {
+        values: {centerX, centerY},
+        glyphs: [{shape: 'crosshair', at: [centerX * world.width, centerY], size: 7}],
+        readout: mask
+          ? `size ${values.size.toFixed(2)} · ${selectedCount} points · mean ${(sum / Math.max(1, selectedCount)).toFixed(2)}`
+          : `region size ${values.size.toFixed(2)}`
+      };
+    }
+  },
   draw: ({outputs}) => [
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 1.6, alpha: 0.5},
+    {layer: 'dots', context: true, positions: outputs.positions, radius: 2.2, alpha: 1},
     {
       layer: 'dots',
       positions: outputs.positions,
@@ -96,6 +133,15 @@ export default defineOperationRun({
       radius: 3
     },
     {layer: 'lines', context: true, segments: outputs.outline, color: [1, 1, 1, 1]},
+    {
+      layer: 'chart',
+      kind: 'bars',
+      context: true,
+      values: outputs.population,
+      range: 'auto',
+      rectangle: [0.62, 0.06, 0.97, 0.3],
+      ramp: 'sequential'
+    },
     {
       layer: 'chart',
       kind: 'bars',

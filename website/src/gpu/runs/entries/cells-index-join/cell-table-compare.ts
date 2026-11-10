@@ -10,17 +10,27 @@ import {
   GPUCellTableCompare
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createClusteredPoints} from '../../inputs';
+import {bindAxes} from '../../interaction';
+import {getHonshuEvents, HONSHU_WINDOW} from '../../../data/point-observations';
 import {addCellFill, addPointKeys, allocateCellTable, getCellTableViews} from './support/cells';
+import {getWindowCenter} from './support/pointer';
 import {parameters} from './cell-table-compare.parameters';
 
 const TABLE_CAPACITY = 1024;
 const UNION_CAPACITY = 2048;
 
+const SHIFT_PAD = bindAxes(parameters, {
+  kind: 'pad',
+  hint: 'shift the after points',
+  x: 'shift',
+  y: 'shiftNorth'
+});
+
 export default defineOperationRun({
   parameters,
+  geographicWindow: HONSHU_WINDOW,
   caption: 'Union of two cell tables; color is after minus before.',
-  createInputs: ({random, world}) => createClusteredPoints(random, world, 700, 4, 0.1),
+  createInputs: ({random}) => getHonshuEvents(random, 700),
   build(builder, points, values) {
     const resolution = values.resolution;
     const beforePositions = builder.upload('before-positions', 'float32x2', points.positions);
@@ -67,15 +77,48 @@ export default defineOperationRun({
     return {
       outputs: {union, fill: addCellFill(builder, 'h3', union.cells, 'union-fill')},
       update: current => {
-        const moved = Float32Array.from(points.positions, (value, index) =>
-          index % 2 === 0 ? value + current.shift : value
+        const moved = Float32Array.from(
+          points.positions,
+          (value, index) => value + (index % 2 === 0 ? current.shift : current.shiftNorth)
         );
         afterPositions.write(moved);
       }
     };
   },
   rebuildOn: ['measure', 'resolution'],
-  draw: ({outputs}) => [
+  // The pointer sets how far the "after" points moved (east and north), and so which cells
+  // gained or lost points.
+  interaction: {
+    ...SHIFT_PAD,
+    resolve(pointer, state) {
+      const base = SHIFT_PAD.resolve(pointer, state);
+      const values = {...state.values, ...base.values};
+      const center = getWindowCenter(HONSHU_WINDOW);
+      const delta = state.peek(state.outputs.union.delta);
+      const count = state.peek(state.outputs.union.count);
+      let gained = 0;
+      let lost = 0;
+      if (delta && count) {
+        for (let row = 0; row < count[0]; row++) {
+          if (delta[row] > 0) gained++;
+          else if (delta[row] < 0) lost++;
+        }
+      }
+      return {
+        ...base,
+        glyphs: [
+          {shape: 'dot', at: center},
+          {
+            shape: 'arrow',
+            from: center,
+            to: [center[0] + values.shift, center[1] + values.shiftNorth]
+          }
+        ],
+        readout: `shift ${values.shift.toFixed(2)}°E ${values.shiftNorth.toFixed(2)}°N · +${gained} / −${lost} cells`
+      };
+    }
+  },
+  draw: ({outputs, values}) => [
     {
       layer: 'polygons',
       positions: outputs.fill.boundaries,
@@ -83,7 +126,9 @@ export default defineOperationRun({
       owners: outputs.fill.owners,
       values: outputs.union.delta,
       triangleCount: outputs.fill.triangleCount,
-      ramp: 'diverging'
+      ramp: 'diverging',
+      // Fixed, so a bigger shift looks stronger instead of being stretched to the same colors.
+      range: values.measure === 0 ? [-8, 8] : [-3, 3]
     }
   ]
 });

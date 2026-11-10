@@ -20,7 +20,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 3,
     max: 80,
     step: 1,
-    default: 25,
+    default: 12,
     unit: '°'
   },
   {id: 'ambientIntensity', label: 'ambientIntensity', min: 0, max: 0.6, step: 0.05, default: 0.2}

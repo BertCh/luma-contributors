@@ -29,6 +29,16 @@ const websiteDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url
 const entriesDirectory = path.join(websiteDirectory, 'src/gpu/runs/entries');
 const DEFAULT_OUT = path.join(websiteDirectory, '.reports/runs');
 const CHANGE_THRESHOLD = 0.002; // fraction of pixels that must differ
+// Pointer gesture: positions across the canvas (0 to 1, y down) the verifier visits.
+const POINTER_POSITIONS = [
+  [0.25, 0.3],
+  [0.75, 0.3],
+  [0.5, 0.5],
+  [0.25, 0.72],
+  [0.75, 0.72]
+];
+// A moving glyph alone changes about 0.1 to 0.3% of pixels; the picture must change more than that.
+const POINTER_CHANGE_THRESHOLD = 0.004;
 const BLANK_THRESHOLD = 0.01; // fraction of pixels that must differ from the background
 
 function parseArguments(argv) {
@@ -131,8 +141,9 @@ async function verifyRun(browser, options, {group, id}, theme) {
   const page = await browser.newPage({viewport: {width: 960, height: 540}});
   const started = Date.now();
   try {
+    // An init script survives the reload Vite triggers when a source file changes mid-run.
+    await page.addInitScript(IMAGE_TOOLS);
     await page.goto(`http://localhost:${options.port}/run-harness.html?id=${id}&theme=${theme}`);
-    await page.evaluate(IMAGE_TOOLS);
     await page.waitForFunction(
       () => window.runHarness && window.runHarness.state.status !== 'loading',
       null,
@@ -192,6 +203,70 @@ async function verifyRun(browser, options, {group, id}, theme) {
       await page.evaluate(() => window.runHarness.settle());
     }
 
+    if (theme === options.themes[0]) {
+      if (!state.gesture) {
+        result.warnings.push('no interaction declared: the card falls back to the generic x scrub');
+      } else {
+        // Pointer gesture: visit five positions; the picture must follow, without recompiling.
+        const shots = [];
+        const readouts = [];
+        for (const position of POINTER_POSITIONS) {
+          await page.evaluate(point => window.runHarness.setPointer(point), position);
+          shots.push(await shoot(page));
+          readouts.push(await page.evaluate(() => window.runHarness.state.readout));
+        }
+        const compare = (first, second) =>
+          page.evaluate(([a, b]) => window.compareImages(a, b), [first.url, second.url]);
+        const changes = [];
+        for (const shot of shots) changes.push(Number((await compare(base, shot)).toFixed(4)));
+        const kept = [];
+        for (const shot of shots) {
+          let isDistinct = true;
+          for (const other of kept) {
+            if ((await compare(other, shot)) < POINTER_CHANGE_THRESHOLD) isDistinct = false;
+          }
+          if (isDistinct) kept.push(shot);
+        }
+        const pointerState = await page.evaluate(() => JSON.parse(JSON.stringify(window.runHarness.state)));
+        await page.evaluate(() => window.runHarness.resetPointer());
+        const rested = await shoot(page);
+        result.pointer = {
+          kind: state.gesture.kind,
+          hint: state.gesture.hint,
+          changes,
+          distinct: kept.length,
+          xEffect: Number((await compare(shots[0], shots[1])).toFixed(4)),
+          yEffect: Number((await compare(shots[0], shots[3])).toFixed(4)),
+          restDifference: Number((await compare(base, rested)).toFixed(4)),
+          pointerRebuilds: pointerState.pointerRebuildCount,
+          parameters: pointerState.pointerParameterIds,
+          readouts
+        };
+        for (const parameter of state.parameters) {
+          if (pointerState.pointerParameterIds.includes(parameter.id) && parameter.label.startsWith('Data: ')) {
+            result.warnings.push(`pointer gesture drives the input-data knob "${parameter.id}"`);
+          }
+        }
+        result.pointerShots = [shots[0].buffer, shots[2].buffer, shots[4].buffer];
+        if (Math.max(...changes, result.pointer.xEffect, result.pointer.yEffect) < POINTER_CHANGE_THRESHOLD) {
+          result.failures.push('pointer gesture does not change the picture');
+        } else if (kept.length < 3) {
+          result.warnings.push(`pointer gesture gives only ${kept.length} distinct pictures at 5 positions`);
+        }
+        if (pointerState.pointerRebuildCount > 0) {
+          result.failures.push('pointer gesture recompiles the graph: return compile-time parameters in `settle`, not `values`');
+        }
+        if (result.pointer.restDifference > 0.01) result.warnings.push('picture differs after the pointer returns to rest');
+        if (readouts.every(readout => !readout)) result.warnings.push('pointer gesture has no readout');
+        for (const parameter of state.parameters) {
+          const rest = state.restValues[parameter.id];
+          if (rest !== undefined && Math.abs(rest - parameter.default) > parameter.step * 1.5) {
+            result.warnings.push(`rest position gives ${parameter.id} ${rest}, not its default ${parameter.default}`);
+          }
+        }
+      }
+    }
+
     const final = await page.evaluate(() => JSON.parse(JSON.stringify(window.runHarness.state)));
     result.runCount = final.runCount;
     result.rebuildCount = final.rebuildCount;
@@ -223,6 +298,33 @@ async function writeContactSheet(browser, results, file) {
   await page.close();
 }
 
+/**
+ * One row per run: the picture at three pointer positions, with the gesture and readouts. Written
+ * as pages of eight runs (<name>-1.png, <name>-2.png, ...) so each page stays legible when read.
+ */
+async function writePointerSheet(browser, results, file) {
+  const withShots = results.filter(result => result.pointerShots);
+  const PAGE_SIZE = 8;
+  for (let start = 0; start < withShots.length; start += PAGE_SIZE) {
+    const rows = withShots
+      .slice(start, start + PAGE_SIZE)
+      .map(result => {
+        const images = result.pointerShots
+          .map(shot => `<img src="data:image/png;base64,${shot.toString('base64')}">`)
+          .join('');
+        const readouts = [0, 2, 4].map(index => result.pointer.readouts[index] ?? '(no readout)').join(' | ');
+        return `<section><h2>${result.id} <small>${result.pointer.kind}: ${result.pointer.hint} · distinct ${result.pointer.distinct}/5 · x ${(result.pointer.xEffect * 100).toFixed(1)}% y ${(result.pointer.yEffect * 100).toFixed(1)}%</small></h2><div>${images}</div><p>${readouts}</p></section>`;
+      })
+      .join('');
+    const page = await browser.newPage({viewport: {width: 1300, height: 400}});
+    await page.setContent(
+      `<body style="margin:0;background:#101521;font:12px monospace;color:#ccd;padding:8px">${rows}<style>section{margin-bottom:10px}h2{font-size:13px;margin:0 0 3px}small{color:#8a93a8;font-weight:normal}div{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}img{width:100%;display:block}p{margin:2px 0 0;color:#8a93a8}</style></body>`
+    );
+    await page.screenshot({path: file.replace(/\.png$/, `-${start / PAGE_SIZE + 1}.png`), fullPage: true});
+    await page.close();
+  }
+}
+
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   const all = listRuns();
@@ -244,8 +346,13 @@ async function main() {
     const results = [];
     for (const theme of options.themes) {
       let result = await verifyRun(browser, options, run, theme);
-      // Vite may re-optimize dependencies on the first load and reload the page; retry once.
-      if (result.failures.some(failure => failure.startsWith('harness error'))) {
+      // Vite reloads the page when a source file changes under it (every `.parameters.ts` is in
+      // the harness's module graph) or when it re-optimizes dependencies: retry.
+      for (
+        let attempt = 0;
+        attempt < 4 && result.failures.some(failure => failure.startsWith('harness error'));
+        attempt++
+      ) {
         result = await verifyRun(browser, options, run, theme);
       }
       results.push(result);
@@ -253,6 +360,9 @@ async function main() {
         const shotDirectory = path.join(options.out, run.group);
         fs.mkdirSync(shotDirectory, {recursive: true});
         fs.writeFileSync(path.join(shotDirectory, `${run.id}-${theme}.png`), result.screenshot);
+        (result.pointerShots ?? []).forEach((shot, index) => {
+          fs.writeFileSync(path.join(shotDirectory, `${run.id}-pointer-${index}.png`), shot);
+        });
       }
       const flag = result.passed ? 'PASS' : 'FAIL';
       console.log(`${flag} ${run.group}/${run.id} [${theme}] ${result.startMilliseconds ?? '-'}ms layers=${(result.layers ?? []).join('+')}${result.failures.length ? '\n   ' + result.failures.join('\n   ') : ''}${result.warnings.length ? '\n   warn: ' + result.warnings.join('; ') : ''}`);
@@ -263,7 +373,8 @@ async function main() {
   for (const [group, results] of byGroup) {
     const primary = results.filter(result => result.theme === options.themes[0]);
     await writeContactSheet(browser, primary, path.join(options.out, `${group}.png`));
-    const serializable = results.map(({screenshot, ...rest}) => rest);
+    await writePointerSheet(browser, primary, path.join(options.out, `${group}-pointer.png`));
+    const serializable = results.map(({screenshot, pointerShots, ...rest}) => rest);
     fs.writeFileSync(
       path.join(options.out, `${group}.json`),
       JSON.stringify({group, total: results.length, passed: results.filter(r => r.passed).length, results: serializable}, null, 2)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPURasterArithmetic on two synthetic bands (near-infrared and red): the output raster is the
+// GPURasterArithmetic on two Sentinel-2 bands (near-infrared and red): the output raster is the
 // per-cell result of the chosen operation. Sliders write the operation's per-frame parameter
 // buffer, so changing them re-runs the kernel without recompiling.
 
@@ -10,6 +10,7 @@ import {
   GPURasterArithmetic,
   type GPURasterBinaryOperation
 } from '@luma-contributors/analysis/raster-analysis';
+import {bindAxes} from '../../interaction';
 import {defineOperationRun} from '../../define-run';
 import {createImageryBands} from '../../inputs';
 import {parameters} from './raster-arithmetic.parameters';
@@ -22,10 +23,17 @@ const OPERATIONS: GPURasterBinaryOperation[] = [
   'absoluteDifference'
 ];
 
+const PAD = bindAxes(parameters, {
+  kind: 'pad',
+  hint: 'scale B and clamp',
+  x: 'scaleB',
+  y: 'clampMaximum'
+});
+
 export default defineOperationRun({
   parameters,
   caption: 'NIR and red bands in; the arithmetic result out, per cell.',
-  createInputs: ({random, world}) => createImageryBands(random, world),
+  createInputs: ({world}) => createImageryBands(world),
   build(builder, imagery, values) {
     const cellCount = imagery.values.length;
     const nearInfrared = builder.upload('nir', 'float32', imagery.nearInfrared);
@@ -53,6 +61,14 @@ export default defineOperationRun({
         )
     };
   },
+  // The pointer is a pad: scaleB across, clampMaximum up. Both are per-frame values.
+  interaction: {
+    ...PAD,
+    resolve: (pointer, state) => {
+      const base = PAD.resolve(pointer, state);
+      return {...base, ...{glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}]}};
+    }
+  },
   draw: ({inputs, outputs, values}) => [
     {
       layer: 'raster',
@@ -67,6 +83,7 @@ export default defineOperationRun({
       columns: inputs.columns,
       rows: inputs.rows,
       ramp: values.operation === 0 ? 'diverging' : 'sequential',
+      range: values.operation === 0 ? [-1, 1] : [0, 1],
       smoothing: true
     }
   ]

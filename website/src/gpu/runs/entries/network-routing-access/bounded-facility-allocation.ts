@@ -7,11 +7,14 @@
 import {GPUBoundedFacilityAllocation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {addCostMatrix, createAccessScene, uploadSearch} from './shared/access';
+import type {RunGlyph} from '../../interaction';
+import {getFacilityMarkers} from './shared/access';
+import {addFlaggedIds} from './shared/display';
 import {getRoadContext, uploadRoads} from './shared/roads';
 import {parameters} from './bounded-facility-allocation.parameters';
 
 const DEMAND_COUNT = 48;
-const CANDIDATE_COUNT = 10;
+const CANDIDATE_COUNT = 8;
 
 export default defineOperationRun({
   parameters,
@@ -60,6 +63,11 @@ export default defineOperationRun({
         ...uploadRoads(builder, network),
         assignments,
         selected,
+        selectedIds: addFlaggedIds(builder, {
+          id: 'selected',
+          flags: selected,
+          count: CANDIDATE_COUNT
+        }),
         demands: builder.upload('demands', 'float32x2', scene.demandPositions),
         candidates: builder.upload('candidates', 'float32x2', scene.facilityPositions)
       },
@@ -73,16 +81,60 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['operation', 'selectCount'],
-  draw: ({outputs}) => [
-    getRoadContext(outputs),
-    {layer: 'dots', positions: outputs.demands, values: outputs.assignments, radius: 5},
-    {
-      layer: 'dots',
-      positions: outputs.candidates,
-      values: outputs.selected,
-      ramp: 'sequential',
-      range: [-1, 1],
-      radius: 15
+  // Probe: the hovered chosen facility, the demand it serves and its load against its capacity.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a facility',
+    rest: ({inputs, toUnit}) => toUnit([inputs.facilityPositions[0], inputs.facilityPositions[1]]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const selected = peek(outputs.selected);
+      const assignments = peek(outputs.assignments);
+      let facility = 0;
+      let nearestDistance = Infinity;
+      for (let site = 0; site < CANDIDATE_COUNT; site++) {
+        if (selected && selected[site] !== 1) continue;
+        const distance = Math.hypot(
+          inputs.facilityPositions[site * 2] - pointer.x,
+          inputs.facilityPositions[site * 2 + 1] - pointer.y
+        );
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          facility = site;
+        }
+      }
+      const at: [number, number] = [
+        inputs.facilityPositions[facility * 2],
+        inputs.facilityPositions[facility * 2 + 1]
+      ];
+      const glyphs: RunGlyph[] = [{shape: 'ring', at, radius: 0.04}];
+      let served = 0;
+      let load = 0;
+      if (assignments) {
+        for (let demand = 0; demand < assignments.length; demand++) {
+          if (assignments[demand] !== facility) continue;
+          served++;
+          load += Math.round(inputs.population[demand]);
+          if (glyphs.length < 200) {
+            glyphs.push({
+              shape: 'line',
+              from: at,
+              to: [inputs.demandPositions[demand * 2], inputs.demandPositions[demand * 2 + 1]]
+            });
+          }
+        }
+      }
+      const total = inputs.population.reduce((sum, value) => sum + Math.round(value), 0);
+      const capacity = (total / Math.round(values.selectCount)) * values.capacity;
+      return {
+        spotlight: null,
+        glyphs,
+        readout: `facility ${facility + 1} · serves ${served} · load ${load} of ${capacity.toFixed(0)}`
+      };
     }
+  },
+  draw: ({outputs, theme}) => [
+    getRoadContext(outputs),
+    {layer: 'dots', positions: outputs.demands, values: outputs.assignments, radius: 7},
+    ...getFacilityMarkers(outputs.candidates, theme, {ids: outputs.selectedIds, radius: 11})
   ]
 });

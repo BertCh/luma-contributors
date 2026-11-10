@@ -6,14 +6,19 @@
 
 import {GPULocalKriging} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {getRasterCell, getRasterCellCenter} from '../../pick';
 import {parameters} from './local-kriging.parameters';
 import {addChannel} from './support/channel';
-import {createInterpolationInputs} from './support/interpolation';
+import {
+  createInterpolationInputs,
+  createNeighborhoodGlyphs,
+  drawSampleDots
+} from './support/interpolation';
 
 export default defineOperationRun({
   parameters,
   caption:
-    'Local kriging at every cell; neighborhood size and covariance range reshape the surface.',
+    'Local kriging at every cell; hover a cell for its neighbors (spokes) and covariance range (ring).',
   createInputs: ({random, world}) => createInterpolationInputs(random, world),
   build(builder, {grid, samples, observations}, values) {
     const cellCount = grid.columns * grid.rows;
@@ -34,9 +39,35 @@ export default defineOperationRun({
       outputs: {
         prediction: addChannel(builder, results, 0, 'prediction'),
         variance: addChannel(builder, results, 1, 'variance'),
-        positions: builder.upload('sample-positions', 'float32x2', samples.positions)
+        positions: builder.upload('sample-positions', 'float32x2', samples.positions),
+        sampleValues: builder.upload('sample-values', 'float32', samples.values)
       }
     };
+  },
+  rebuildOn: ['mode', 'range', 'neighborCount'],
+  // The hovered cell shows what is local: the neighborCount samples its kriging system was built from.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a cell',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const {grid, samples} = inputs;
+      const cell = getRasterCell(grid.columns, grid.rows, grid.window, pointer.x, pointer.y);
+      const at = getRasterCellCenter(grid.columns, grid.rows, grid.window, cell.column, cell.row);
+      const prediction = peek(outputs.prediction)?.[cell.index];
+      const variance = peek(outputs.variance)?.[cell.index];
+      return {
+        glyphs: [
+          ...createNeighborhoodGlyphs(samples.positions, at, values.neighborCount),
+          {shape: 'ring', at, radius: values.range},
+          {shape: 'crosshair', at}
+        ],
+        readout:
+          prediction === undefined
+            ? `neighborCount ${values.neighborCount}`
+            : `neighborCount ${values.neighborCount} · ${prediction.toFixed(2)} ± ${Math.sqrt(Math.max(0, variance ?? 0)).toFixed(2)}`
+      };
+    }
   },
   draw: ({inputs, outputs, values}) => [
     {
@@ -47,6 +78,6 @@ export default defineOperationRun({
       range: values.output === 1 ? 'auto' : [0, 1],
       smoothing: true
     },
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 2.5, color: [1, 1, 1, 0.9]}
+    ...drawSampleDots(outputs.positions, outputs.sampleValues)
   ]
 });

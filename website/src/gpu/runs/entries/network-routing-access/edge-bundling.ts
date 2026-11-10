@@ -9,26 +9,23 @@ import {
   getGPUEdgeBundlingParameterValues
 } from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
-import {createClusteredPoints} from '../../inputs';
+import {COMMUTE_FLOWS, getCommutePositions} from '../../../data/commute-flows';
+import {bindAxes} from '../../interaction';
+import {fitPositions} from './shared/graphs';
 import {parameters} from './edge-bundling.parameters';
 
-const POINT_COUNT = 64;
 const EDGE_COUNT = 140;
 const POINTS_PER_EDGE = 16;
 const ITERATIONS = 15;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Straight flow lines (muted) and their bundled paths.',
-  createInputs: ({random, world}) => {
-    const points = createClusteredPoints(random, world, POINT_COUNT, 3, 0);
-    const sources = new Uint32Array(EDGE_COUNT);
-    const targets = new Uint32Array(EDGE_COUNT);
-    for (let edge = 0; edge < EDGE_COUNT; edge++) {
-      sources[edge] = Math.floor(random() * POINT_COUNT);
-      do targets[edge] = Math.floor(random() * POINT_COUNT);
-      while (points.labels[targets[edge]] === points.labels[sources[edge]]);
-    }
+  caption: 'The 140 largest commuter flows in the Chicago extract, bundled into shared corridors.',
+  createInputs: ({world}) => {
+    const positions = fitPositions(getCommutePositions(world), world);
+    const flows = COMMUTE_FLOWS.slice(0, EDGE_COUNT);
+    const sources = Uint32Array.from(flows, ([home]) => home);
+    const targets = Uint32Array.from(flows, ([, work]) => work);
     const pairs = new Uint32Array(EDGE_COUNT * 2);
     for (let edge = 0; edge < EDGE_COUNT; edge++)
       pairs.set([sources[edge], targets[edge]], edge * 2);
@@ -43,10 +40,10 @@ export default defineOperationRun({
         );
       }
     }
-    return {points, sources, targets, pairs, pathPairs};
+    return {positions, sources, targets, pairs, pathPairs};
   },
   build(builder, inputs) {
-    const nodes = builder.upload('nodes', 'float32x2', inputs.points.positions);
+    const nodes = builder.upload('nodes', 'float32x2', inputs.positions);
     const paths = builder.allocate('paths', 'float32x2', EDGE_COUNT * POINTS_PER_EDGE);
     const parameterBuffer = builder.allocate('parameters', 'float32', 5);
     builder.graph.add(
@@ -80,6 +77,16 @@ export default defineOperationRun({
         )
     };
   },
+  // x is the bundling iteration reached, y the kernel radius that pulls edges together.
+  interaction: bindAxes(parameters, {
+    kind: 'time',
+    hint: 'scrub the bundling',
+    x: 'activeIterations',
+    y: 'kernelRadius',
+    decorate: current => ({
+      readout: `iteration ${current.activeIterations} / ${ITERATIONS} · kernelRadius ${current.kernelRadius.toFixed(3)}`
+    })
+  }),
   draw: ({outputs}) => [
     {layer: 'segments', context: true, nodes: outputs.nodes, edges: outputs.straight, radius: 0.8},
     {

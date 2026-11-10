@@ -5,6 +5,6 @@ import type {GpuSceneParameter} from '../../../types';
 
 // Bound to the per-frame playhead and maximumGap settings of GPUTrajectoryPlayhead.
 export const parameters: GpuSceneParameter[] = [
-  {id: 'playhead', label: 'playhead', min: 0, max: 600, step: 5, default: 120, unit: 's'},
-  {id: 'maximumGap', label: 'maximumGap', min: 0, max: 12, step: 1, default: 0, unit: 's'}
+  {id: 'playhead', label: 'playhead', min: 0, max: 600, step: 5, default: 430, unit: 'playback s'},
+  {id: 'maximumGap', label: 'maximumGap', min: 0, max: 12, step: 1, default: 0, unit: 'playback s'}
 ];

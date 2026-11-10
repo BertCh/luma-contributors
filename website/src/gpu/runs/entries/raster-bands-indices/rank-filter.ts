@@ -7,16 +7,17 @@
 
 import {GPURasterRankFilter} from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createFractalRaster} from '../../inputs';
+import {createElevationRaster} from '../../inputs';
 import {parameters} from './rank-filter.parameters';
 import {drawRaster, makeGridOfRaster, uploadBand} from './support/bands';
+import {getSwipeResult, getCellAt, getCellBox, getCurtainX} from './support/gestures';
 
 export default defineOperationRun({
   parameters,
   rebuildOn: ['radius', 'quantile'],
   caption: 'A speckled raster in; each cell replaced by a quantile of its neighborhood.',
   createInputs: ({random, world}) => {
-    const raster = createFractalRaster(random, world, 64, 4);
+    const raster = createElevationRaster(world, 64);
     const draws = Float32Array.from(raster.values, () => random());
     const flips = Float32Array.from(raster.values, () => (random() < 0.5 ? 0 : 1));
     return {...raster, draws, flips};
@@ -45,8 +46,29 @@ export default defineOperationRun({
         )
     };
   },
-  draw: ({inputs, outputs}) => [
-    drawRaster(inputs, outputs.source, {context: true, range: [0, 1]}),
-    drawRaster(inputs, outputs.result, {range: [0, 1], smoothing: false})
-  ]
+  // The pointer is a curtain between the speckled input and the filtered result, with the window.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe speckle and filter',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {inputs, values, world}) => {
+      const cell = getCellAt(inputs, world, pointer);
+      return getSwipeResult(
+        pointer,
+        `quantile ${values.quantile} of ${(2 * values.radius + 1) ** 2} cells`,
+        [getCellBox(inputs, world, cell.column, cell.row, values.radius)]
+      );
+    }
+  },
+  draw: ({inputs, outputs, interaction, world}) => {
+    const curtain = getCurtainX(interaction, world);
+    return [
+      drawRaster(inputs, outputs.source, {range: [0, 1], clip: {side: 'left', x: curtain}}),
+      drawRaster(inputs, outputs.result, {
+        range: [0, 1],
+        smoothing: false,
+        clip: {side: 'right', x: curtain}
+      })
+    ];
+  }
 });

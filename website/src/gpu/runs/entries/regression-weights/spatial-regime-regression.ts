@@ -17,6 +17,7 @@ import {
   TRUE_COEFFICIENTS,
   uploadRegressionMap
 } from './shared/regression';
+import {findTractUnder, getTractOutline} from './shared/probes';
 
 /** True coefficients of regime `regime`, drifting away from the base set by `contrast`. */
 function getRegimeCoefficients(regime: number, contrast: number): [number, number, number] {
@@ -88,8 +89,34 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['regimeCount'],
+  // The pointer picks a tract: its regime band is boxed on the map, with that regime's x1 slope read from the bars.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a regime',
+    rest: [0.3, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const tract = findTractUnder(inputs.tracts, pointer.x, pointer.y);
+      const estimates = peek(outputs.panel.estimates);
+      if (tract < 0 || !estimates) return {};
+      const regimeCount = values.regimeCount;
+      const regime = Math.min(
+        regimeCount - 1,
+        Math.floor((inputs.tracts.centers[tract * 2] / inputs.mapWidth) * regimeCount)
+      );
+      const width = inputs.mapWidth / regimeCount;
+      const truth = getRegimeCoefficients(regime, values.contrast)[1];
+      return {
+        focus: regime,
+        glyphs: [
+          {shape: 'box', minimum: [regime * width, 0.02], maximum: [(regime + 1) * width, 0.98]},
+          getTractOutline(inputs.tracts, tract)
+        ],
+        readout: `regime ${regime + 1} of ${regimeCount} · x1 slope ${estimates[regime * 3 + 1].toFixed(2)} (true ${truth.toFixed(2)})`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential'}),
+    ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [-2, 4]}),
     ...drawCoefficientPanel(outputs.panel)
   ]
 });

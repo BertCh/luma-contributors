@@ -1,44 +1,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Seeded time-series stacks (cell-major: `cell * sliceCount + slice`) for the temporal runs.
+// The first twelve Sentinel-2 observations span 2017-09-02 through 2022-08-07.
+// The July and September 2021 observations bracket the Dixie Fire (slices 7 and 8).
 
-import {createSmoothField, type Random} from '../../../inputs';
+import {sampleNdviSeries} from '../../../../data/ndvi';
+import type {Random} from '../../../inputs';
 
-export type StackInput = {
-  columns: number;
-  rows: number;
-  cellCount: number;
-  sliceCount: number;
-  /** Smooth 0..1 field per cell: where the change happens. */
-  region: Float32Array;
-  /** A second smooth field per cell (baseline level). */
-  level: Float32Array;
-  /** Noise per (cell, slice) in [-0.5, 0.5]. */
-  noise: Float32Array;
-  /** Cloud draw per (cell, slice) in [0, 1). */
-  clouds: Float32Array;
-};
-
-export function createStackInput(
-  random: Random,
-  aspect: number,
-  rows: number,
-  sliceCount: number
-): StackInput {
+export function createStackInput(random: Random, aspect: number, rows: number) {
   const columns = Math.max(8, Math.round(rows * aspect));
   const cellCount = columns * rows;
-  const regionField = createSmoothField(random, 3, 3);
-  const levelField = createSmoothField(random, 3, 4);
-  const region = new Float32Array(cellCount);
-  const level = new Float32Array(cellCount);
-  for (let cell = 0; cell < cellCount; cell++) {
-    const x = ((cell % columns) + 0.5) / columns;
-    const y = (Math.floor(cell / columns) + 0.5) / rows;
-    region[cell] = regionField(x, y);
-    level[cell] = levelField(x, y);
-  }
-  const noise = Float32Array.from({length: cellCount * sliceCount}, () => random() - 0.5);
-  const clouds = Float32Array.from({length: cellCount * sliceCount}, () => random());
-  return {columns, rows, cellCount, sliceCount, region, level, noise, clouds};
+  const dates = Array.from({length: 12}, (_, index) => index);
+  const observations = sampleNdviSeries(columns, rows, dates);
+  const clouds = Float32Array.from(observations, () => random());
+  return {columns, rows, cellCount, sliceCount: dates.length, observations, clouds};
 }

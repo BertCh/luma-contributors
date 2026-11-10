@@ -15,5 +15,6 @@ export const parameters: GpuSceneParameter[] = [
     options: ['intersects', 'within', 'contains']
   },
   {id: 'centerX', label: 'box center x', min: 0.2, max: 1.6, step: 0.05, default: 0.9},
+  {id: 'centerY', label: 'box center y', min: 0.2, max: 0.8, step: 0.05, default: 0.5},
   {id: 'size', label: 'box size', min: 0.1, max: 1.2, step: 0.05, default: 0.55}
 ];

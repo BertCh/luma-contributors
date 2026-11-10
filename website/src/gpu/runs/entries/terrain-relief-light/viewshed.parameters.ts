@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GpuSceneParameter} from '../../../types';
+import type {RunLegendItem} from '../../legend';
 
 // Bound to getGPUTerrainViewshedParameterValues({observer, observerHeight, maximumDistance}).
 export const parameters: GpuSceneParameter[] = [
@@ -33,4 +34,10 @@ export const parameters: GpuSceneParameter[] = [
     default: 2500,
     unit: ' m'
   }
+];
+
+export const legend: RunLegendItem[] = [
+  {label: 'visible', color: '#33d966'},
+  {label: 'hidden behind terrain', color: '#451a66'},
+  {label: 'out of range (clear)', color: '#9aa0ad'}
 ];

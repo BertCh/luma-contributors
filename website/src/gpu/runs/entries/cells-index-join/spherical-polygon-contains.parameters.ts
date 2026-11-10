@@ -3,8 +3,8 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// `complement` is a GPUSphericalPolygonContains prop (compile time). `holeSize` and `size` rewrite
-// the polygon rings per frame.
+// `complement` is a GPUSphericalPolygonContains prop (compile time). `holeSize` and `size` move and resize
+// the modeled survey exclusion.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'complement',
@@ -15,6 +15,31 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['false', 'true']
   },
-  {id: 'size', label: 'Data: size', min: 0.25, max: 0.5, step: 0.01, default: 0.42},
-  {id: 'holeSize', label: 'Data: holeSize', min: 0, max: 0.25, step: 0.01, default: 0.14}
+  {
+    id: 'size',
+    label: 'exclusion latitude',
+    min: 43.0,
+    max: 46.3,
+    step: 0.05,
+    default: 44.9,
+    unit: '°'
+  },
+  {
+    id: 'exclusionLongitude',
+    label: 'exclusion longitude',
+    min: -88.6,
+    max: -85.4,
+    step: 0.05,
+    default: -87.3,
+    unit: '°'
+  },
+  {
+    id: 'holeSize',
+    label: 'exclusion radius',
+    min: 4,
+    max: 80,
+    step: 1,
+    default: 40,
+    unit: 'km'
+  }
 ];

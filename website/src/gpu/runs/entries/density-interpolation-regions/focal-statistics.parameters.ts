@@ -14,7 +14,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 4,
     step: 1,
-    default: 2,
+    default: 3,
     options: ['mean', 'min', 'max', 'range', 'standardDeviation']
   }
 ];

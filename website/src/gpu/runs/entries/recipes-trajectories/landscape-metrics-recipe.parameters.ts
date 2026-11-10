@@ -3,8 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Both sliders reshape the landscape (and so rebuild); `classCount` is also the recipe's own prop.
 export const parameters: GpuSceneParameter[] = [
   {id: 'classCount', label: 'classCount', min: 2, max: 6, step: 1, default: 4},
-  {id: 'fragmentation', label: 'Data: fragmentation', min: 2, max: 8, step: 1, default: 3}
+  {id: 'grain', label: 'Data: sampling grain', min: 1, max: 8, step: 1, default: 1}
 ];

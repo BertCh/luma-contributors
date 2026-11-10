@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GpuSceneParameter} from '../../../types';
+import type {RunLegendItem} from '../../legend';
 
 // Bound to GPUTerrainWeissLandforms({smallScale, largeScale, standardization}) and getGPUTerrainWeissLandformsParameterValues({slopeThresholdDegrees}).
 export const parameters: GpuSceneParameter[] = [
@@ -41,4 +42,17 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['global', 'local']
   }
+];
+
+export const legend: RunLegendItem[] = [
+  {label: 'canyon', color: '#1a1a59'},
+  {label: 'midslope drainage', color: '#2659cc'},
+  {label: 'upland drainage', color: '#8ccce6'},
+  {label: 'u-shaped valley', color: '#33a699'},
+  {label: 'plain', color: '#cccbc7'},
+  {label: 'open slope', color: '#f2edb3'},
+  {label: 'upper slope', color: '#fab333'},
+  {label: 'local ridge', color: '#f26626'},
+  {label: 'midslope ridge', color: '#cc3326'},
+  {label: 'mountain top', color: '#8c0d1a'}
 ];

@@ -11,7 +11,13 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {addPairSegments} from './support/kernels';
-import {createRandomPoints, createZones, uploadZones} from './support/join';
+import {
+  createBoundsSegments,
+  createRandomPoints,
+  createZones,
+  getZoneBounds,
+  uploadZones
+} from './support/join';
 import {parameters} from './spatial-join-prepared.parameters';
 
 const POINT_COUNT = 360;
@@ -21,9 +27,10 @@ export default defineOperationRun({
   parameters,
   caption: 'The zone index is prepared once; moving points are joined against it every frame.',
   createInputs: ({random, world}) => ({
-    zones: createZones(random, world),
+    zones: createZones(world),
     points: createRandomPoints(random, world, POINT_COUNT),
-    world
+    world,
+    pointer: [world.width / 2, 0.5] as [number, number]
   }),
   build(builder, inputs) {
     const points = builder.allocate('points', 'float32x2', POINT_COUNT);
@@ -54,6 +61,13 @@ export default defineOperationRun({
       outputs: {
         points,
         zones,
+        count,
+        // The prepared index: one bounding box per zone, built once.
+        index: builder.upload(
+          'index-bounds',
+          'float32x4',
+          createBoundsSegments(getZoneBounds(inputs.zones, inputs.zones.positions))
+        ),
         pairs: addPairSegments(builder, 'pairs', {
           leftPositions: points,
           rightPositions: zones.centers,
@@ -67,16 +81,33 @@ export default defineOperationRun({
           Float32Array.from(inputs.points, (value, index) => {
             const row = Math.floor(index / 2);
             const phase = current.time * 2 * Math.PI + row * 0.37;
+            // A swarm centered on the pointer; `time` orbits each point around its own spot.
             if (index % 2 === 0) {
-              const x = inputs.world.width / 2 + (value - inputs.world.width / 2) * current.spread;
-              return x + Math.cos(phase) * 0.12;
+              const x = inputs.pointer[0] + (value - inputs.world.width / 2) * current.spread;
+              return x + Math.cos(phase) * 0.06;
             }
-            return 0.5 + (value - 0.5) * current.spread + Math.sin(phase) * 0.08;
+            return inputs.pointer[1] + (value - 0.5) * current.spread + Math.sin(phase) * 0.04;
           })
         )
     };
   },
+  // Drag: the swarm of points follows the pointer over the zones; the index is not rebuilt.
+  interaction: {
+    kind: 'drag',
+    hint: 'carry the swarm',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, peek}) {
+      inputs.pointer = [pointer.x, pointer.y];
+      const count = peek(outputs.count);
+      return {
+        rerun: true,
+        glyphs: [{shape: 'crosshair', at: inputs.pointer}],
+        readout: `index built once · ${count ? count[0] : '…'} pairs this frame`
+      };
+    }
+  },
   draw: ({outputs}) => [
+    {layer: 'lines', context: true, segments: outputs.index, radius: 1, color: [1, 0.85, 0.3, 0.7]},
     {
       layer: 'lines',
       context: true,

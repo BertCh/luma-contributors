@@ -121,7 +121,7 @@ parameters.write(getGPUTerrainDerivativesParameterValues(
 ));`,
     preview: {
       kind: 'terrain',
-      caption: 'Hillshade of a synthetic ridge, sun from the northwest.',
+      caption: 'Hillshade of the Grand Canyon, sun from the northwest.',
       seed: 401
     },
     related: ['relief-shading', 'terrain-curvature', 'terrain-ruggedness'],
@@ -382,7 +382,7 @@ graph.add(new GPUTerrainContours({
   ],
   output: {status: {overflow}}
 }));`,
-    preview: {kind: 'contours', caption: 'Contour lines from a synthetic mountain.', seed: 405},
+    preview: {kind: 'contours', caption: 'Contour lines across the Grand Canyon.', seed: 405},
     related: ['slope-aspect-hillshade', 'relief-shading'],
     lensScenario: 'gpu-terrain.terrain-contours',
     reference: REFERENCE,

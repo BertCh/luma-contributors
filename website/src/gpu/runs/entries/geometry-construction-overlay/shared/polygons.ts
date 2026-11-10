@@ -5,6 +5,7 @@
 // four-level packed layout the operations read: features own polygons own rings own vertices, with
 // open rings (the closing edge is implicit), counter-clockwise shells and clockwise holes.
 
+import {createShoreRing, SHORE_PROFILE_COUNT} from '../../../../data/hydrography';
 import type {GPUPolygonOverlayOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {RunBuffer, RunBuilder} from '../../../define-run';
 import {addKernelPass} from './kernel';
@@ -59,23 +60,6 @@ export function createRingSegments(set: PolygonSet): Float32Array {
   return createPackedSegments(set.positions, set.ringOffsets, true);
 }
 
-/** A star-shaped ring around (centerX, centerY), counter-clockwise. */
-export function createBlobRing(
-  random: Random,
-  centerX: number,
-  centerY: number,
-  radius: number,
-  vertexCount = 16,
-  irregularity = 0.25
-): number[][] {
-  const phase = random() * Math.PI * 2;
-  return Array.from({length: vertexCount}, (_, vertex) => {
-    const angle = phase + (vertex / vertexCount) * Math.PI * 2;
-    const spike = 1 - irregularity * random();
-    return [centerX + Math.cos(angle) * radius * spike, centerY + Math.sin(angle) * radius * spike];
-  });
-}
-
 export type BlobOptions = {
   rows?: number;
   columns?: number;
@@ -96,28 +80,28 @@ export function createBlobSet(random: Random, world: World, options: BlobOptions
   const cellWidth = world.width / columns;
   const cellHeight = world.height / rows;
   const builder = new PolygonBuilder();
+  const firstProfile = Math.floor(random() * SHORE_PROFILE_COUNT);
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
       const centerX = (column + 0.5 + (options.shiftX ?? 0)) * cellWidth;
       const centerY = (row + 0.5 + (options.shiftY ?? 0)) * cellHeight;
       const radius = Math.min(cellWidth, cellHeight) * 0.5 * (options.fill ?? 0.8);
-      const shell = createBlobRing(
-        random,
+      const shell = createShoreRing(
+        firstProfile + row * columns + column,
         centerX,
         centerY,
         radius,
-        options.vertexCount,
-        options.irregularity
+        options.vertexCount ?? 16,
+        Math.min(1, (options.irregularity ?? 0.4) ** 0.6)
       );
       const rings = [shell];
       if (options.hasHoles) {
+        const holeRadius =
+          0.35 * Math.min(...shell.map(([x, y]) => Math.hypot(x - centerX, y - centerY)));
         rings.push(
           Array.from({length: 8}, (_, vertex) => {
             const angle = -(vertex / 8) * Math.PI * 2;
-            return [
-              centerX + Math.cos(angle) * radius * 0.3,
-              centerY + Math.sin(angle) * radius * 0.3
-            ];
+            return [centerX + Math.cos(angle) * holeRadius, centerY + Math.sin(angle) * holeRadius];
           })
         );
       }
@@ -125,97 +109,6 @@ export function createBlobSet(random: Random, world: World, options: BlobOptions
     }
   }
   return builder.build();
-}
-
-export type CoverageOptions = {
-  columns?: number;
-  rows?: number;
-  /** Intermediate vertices on every cell edge. */
-  edgeVertexCount?: number;
-  /** Sideways noise of those vertices, in cell widths. */
-  wiggle?: number;
-  /** Also wiggle the outer boundary. */
-  wiggleBoundary?: boolean;
-};
-
-export type Coverage = PolygonSet & {
-  columns: number;
-  rows: number;
-  /** District label per cell: blocks of 2 x 2 cells. */
-  labels: Uint32Array;
-};
-
-/**
- * A polygon coverage: a grid of cells whose neighbors share every boundary vertex exactly (the
- * wiggly edges are generated once per edge and walked in opposite directions by the two cells).
- */
-export function createCoverage(
-  random: Random,
-  world: World,
-  options: CoverageOptions = {}
-): Coverage {
-  const rows = options.rows ?? 4;
-  const columns = options.columns ?? Math.max(3, Math.round(rows * world.width));
-  const edgeVertexCount = options.edgeVertexCount ?? 5;
-  const wiggle = options.wiggle ?? 0.12;
-  const isWiggly = (isInterior: boolean) => isInterior || Boolean(options.wiggleBoundary);
-  const margin = 0.03;
-  const cellWidth = (world.width - 2 * margin) / columns;
-  const cellHeight = (1 - 2 * margin) / rows;
-  const corners: number[][][] = Array.from({length: rows + 1}, (_, row) =>
-    Array.from({length: columns + 1}, (_, column) => [
-      margin +
-        (column + (column > 0 && column < columns ? (random() - 0.5) * 0.35 : 0)) * cellWidth,
-      margin + (row + (row > 0 && row < rows ? (random() - 0.5) * 0.35 : 0)) * cellHeight
-    ])
-  );
-  const makeEdge = (from: number[], to: number[], isInterior: boolean): number[][] => {
-    const normalX = -(to[1] - from[1]);
-    const normalY = to[0] - from[0];
-    return Array.from({length: edgeVertexCount}, (_, step) => {
-      const along = (step + 1) / (edgeVertexCount + 1);
-      const sideways = isInterior ? (random() - 0.5) * 2 * wiggle : 0;
-      return [
-        from[0] + (to[0] - from[0]) * along + normalX * sideways,
-        from[1] + (to[1] - from[1]) * along + normalY * sideways
-      ];
-    });
-  };
-  // Horizontal edge (row, column) runs corner (row, column) to (row, column + 1); vertical edge
-  // (row, column) runs corner (row, column) to (row + 1, column).
-  const horizontal = Array.from({length: rows + 1}, (_, row) =>
-    Array.from({length: columns}, (_, column) =>
-      makeEdge(corners[row][column], corners[row][column + 1], isWiggly(row > 0 && row < rows))
-    )
-  );
-  const vertical = Array.from({length: rows}, (_, row) =>
-    Array.from({length: columns + 1}, (_, column) =>
-      makeEdge(
-        corners[row][column],
-        corners[row + 1][column],
-        isWiggly(column > 0 && column < columns)
-      )
-    )
-  );
-  const builder = new PolygonBuilder();
-  const labels: number[] = [];
-  for (let row = 0; row < rows; row++) {
-    for (let column = 0; column < columns; column++) {
-      const ring = [
-        corners[row][column],
-        ...horizontal[row][column],
-        corners[row][column + 1],
-        ...vertical[row][column + 1],
-        corners[row + 1][column + 1],
-        ...[...horizontal[row + 1][column]].reverse(),
-        corners[row + 1][column],
-        ...[...vertical[row][column]].reverse()
-      ];
-      builder.addFeature([ring]);
-      labels.push(Math.floor(row / 2) * Math.ceil(columns / 2) + Math.floor(column / 2));
-    }
-  }
-  return {...builder.build(), columns, rows, labels: Uint32Array.from(labels)};
 }
 
 // ---------------------------------------------------------------------------------------------

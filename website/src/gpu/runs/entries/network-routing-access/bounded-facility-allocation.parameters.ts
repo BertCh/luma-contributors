@@ -15,5 +15,5 @@ export const parameters: GpuSceneParameter[] = [
     options: ['p-center', 'capacitated-p-median']
   },
   {id: 'selectCount', label: 'selectCount', min: 2, max: 6, step: 1, default: 4},
-  {id: 'capacity', label: 'Data: capacities', min: 0.3, max: 3, step: 0.1, default: 1.2}
+  {id: 'capacity', label: 'capacities', min: 0.3, max: 3, step: 0.1, default: 1.2}
 ];

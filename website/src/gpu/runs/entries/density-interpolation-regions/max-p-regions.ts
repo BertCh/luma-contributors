@@ -15,11 +15,17 @@ import {makeRandom} from '../../../demos/kit';
 import {uploadSpatialWeights} from '../../inputs';
 import {parameters} from './max-p-regions.parameters';
 import {uploadTractMesh} from './support/geometry';
+import {bindAxes} from '../../interaction';
 import {createRegionScene, drawLabels} from './support/regions';
+
+const STRIP = [0.04, 0.03, 0.96, 0.2] as const;
+// The strip's population axis; the highest threshold the slider offers.
+const STRIP_MAXIMUM = 40000;
 
 export default defineOperationRun({
   parameters,
-  caption: 'The most regions that each reach the population threshold.',
+  caption:
+    "The most regions that each reach the population threshold; the bars are the regions' populations.",
   createInputs: ({world}) => createRegionScene(makeRandom(7), world, 8, 2),
   build(builder, scene, current) {
     const {tracts, attributes, columnCount, population} = scene;
@@ -53,5 +59,46 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['startCount', 'seed'],
-  draw: ({inputs, outputs}) => drawLabels(inputs, outputs, outputs.labels)
+  // The population of every region, read back after each run, as bars under the map.
+  async afterRun({outputs, inputs, upload}) {
+    const bytes = await outputs.labels.buffer.readAsync();
+    const labels = new Uint32Array(bytes.buffer, bytes.byteOffset, inputs.tracts.count);
+    const sums = new Map<number, number>();
+    labels.forEach((label, tract) => {
+      if (label < inputs.tracts.count) {
+        sums.set(label, (sums.get(label) ?? 0) + inputs.population[tract]);
+      }
+    });
+    const bars = new Float32Array(inputs.tracts.count);
+    [...sums.values()]
+      .sort((first, second) => second - first)
+      .forEach((sum, row) => (bars[row] = sum));
+    return {bars: upload('region-population', 'float32', bars), regionCount: sums.size};
+  },
+  // x is the population threshold: the line across the bars is the least a region may hold.
+  interaction: bindAxes(parameters, {
+    kind: 'level',
+    hint: 'set the threshold',
+    x: 'threshold',
+    decorate: (values, _pointer, {world}) => {
+      const y = STRIP[1] + (values.threshold / STRIP_MAXIMUM) * (STRIP[3] - STRIP[1]);
+      return {
+        glyphs: [
+          {shape: 'line', from: [STRIP[0] * world.width, y], to: [STRIP[2] * world.width, y]}
+        ],
+        readout: `threshold ${values.threshold.toLocaleString('en-US')} residents per region`
+      };
+    }
+  }),
+  draw: ({inputs, outputs, extra}) => [
+    ...drawLabels(inputs, outputs, outputs.labels),
+    {
+      layer: 'chart',
+      kind: 'bars',
+      values: extra.bars,
+      range: [0, STRIP_MAXIMUM],
+      rectangle: STRIP,
+      ramp: 'sequential'
+    }
+  ]
 });

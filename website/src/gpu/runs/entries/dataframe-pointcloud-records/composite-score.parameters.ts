@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to the per-frame parameters of GPUCompositeScore: `scaler`, `aggregation` and one weight.
+// Bound to the per-frame parameters of GPUCompositeScore: `scaler`, `aggregation` and one weight of a chosen indicator.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'scaler',
@@ -23,5 +23,14 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['weighted-sum', 'weighted-geometric-mean', 'principal-component']
   },
-  {id: 'weight', label: 'weights[1]', min: 0, max: 4, step: 0.25, default: 1}
+  {
+    id: 'indicator',
+    label: 'weighted indicator',
+    min: 0,
+    max: 3,
+    step: 1,
+    default: 1,
+    options: ['poverty', 'unemployment', 'age 65+', 'population']
+  },
+  {id: 'weight', label: 'weights[indicator]', min: 0, max: 4, step: 0.25, default: 1}
 ];

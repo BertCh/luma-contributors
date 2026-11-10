@@ -10,14 +10,18 @@ import {
   defineOperationRun,
   type ParameterValues,
   type RunBuffer,
-  type RunBuilder
+  type RunBuilder,
+  type RunLayer
 } from '../../../define-run';
+import type {RunInteraction} from '../../../interaction';
 import {
+  type CoefficientPanel,
   createCoefficientPanel,
   createRegressionInputs,
   createResponse,
   drawCoefficientPanel,
-  drawTractMap,
+  drawResidualMap,
+  type RegressionInputs,
   TRUE_COEFFICIENTS,
   uploadRegressionMap,
   uploadStandardizedWeights
@@ -39,22 +43,39 @@ export type TableModelContext = {
   residuals: RunBuffer<'float32'>;
 };
 
-export type TableModelSpec = {
+/** What every table-model run draws from, plus the buffers its own operation added. */
+export type TableModelOutputs<Extra extends Record<string, RunBuffer>> = {
+  mesh: ReturnType<typeof uploadRegressionMap>;
+  residuals: RunBuffer<'float32'>;
+  panel: CoefficientPanel;
+} & Extra;
+
+export type TableModelSpec<Extra extends Record<string, RunBuffer>> = {
   parameters: readonly GpuSceneParameter[];
   caption: string;
   /** The data generating process; the `strength` parameter id sets rho or lambda. */
   process: 'lag' | 'error';
   rebuildOn?: readonly string[];
   /** Adds the real operation, writing into the context's table, summary, status and residuals. */
-  addOperation(context: TableModelContext): void;
+  addOperation(context: TableModelContext): Extra | void;
+  /** Replaces the residual map layers, for models with a second picture of their own. */
+  drawMap?(args: {
+    inputs: RegressionInputs;
+    outputs: TableModelOutputs<Extra>;
+    interaction: {curtain?: number};
+  }): RunLayer[];
+  interaction?: RunInteraction<RegressionInputs, TableModelOutputs<Extra>>;
 };
 
 /** Defines a run for a model with a four-column coefficient table. */
-export function defineTableModelRun(spec: TableModelSpec) {
+export function defineTableModelRun<Extra extends Record<string, RunBuffer> = {}>(
+  spec: TableModelSpec<Extra>
+) {
   return defineOperationRun({
     parameters: spec.parameters,
     caption: spec.caption,
     rebuildOn: spec.rebuildOn,
+    interaction: spec.interaction,
     createInputs: ({random, world}) => createRegressionInputs(random, world),
     build(builder, inputs, values) {
       const rowCount = inputs.tracts.count;
@@ -65,7 +86,7 @@ export function defineTableModelRun(spec: TableModelSpec) {
       const summary = builder.allocate('summary', 'float32', 32);
       const status = builder.allocate('status', 'uint32', 1);
       const residuals = builder.allocate('residuals', 'float32', rowCount);
-      spec.addOperation({
+      const extra = spec.addOperation({
         builder,
         values,
         weights: weights.input,
@@ -80,7 +101,12 @@ export function defineTableModelRun(spec: TableModelSpec) {
       const truth = [...TRUE_COEFFICIENTS, 0];
       const panel = createCoefficientPanel(builder, table, 4, truth);
       return {
-        outputs: {mesh: uploadRegressionMap(builder, inputs), residuals, panel},
+        outputs: {
+          mesh: uploadRegressionMap(builder, inputs),
+          residuals,
+          panel,
+          ...(extra ?? {})
+        } as TableModelOutputs<Extra>,
         update: current => {
           const strength = current.strength;
           response.write(
@@ -93,8 +119,10 @@ export function defineTableModelRun(spec: TableModelSpec) {
         }
       };
     },
-    draw: ({inputs, outputs}) => [
-      ...drawTractMap(inputs, outputs.mesh, outputs.residuals),
+    draw: ({inputs, outputs, interaction}) => [
+      ...(spec.drawMap
+        ? spec.drawMap({inputs, outputs, interaction})
+        : drawResidualMap(inputs, outputs.mesh, outputs.residuals)),
       ...drawCoefficientPanel(outputs.panel)
     ]
   });

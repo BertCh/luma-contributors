@@ -5,10 +5,10 @@ import type {GpuSceneParameter} from '../../../types';
 
 // Bound to getGPUWeightedOverlayParameterValues({layers: [{weight}], normalizeWeights}).
 export const parameters: GpuSceneParameter[] = [
-  {id: 'greenWeight', label: 'layers[0].weight (water)', min: -1, max: 1, step: 0.05, default: 0.5},
+  {id: 'greenWeight', label: 'layers[0].weight (green)', min: -1, max: 1, step: 0.05, default: 0.5},
   {
-    id: 'elevationWeight',
-    label: 'layers[1].weight (elevation)',
+    id: 'shortwaveWeight',
+    label: 'layers[1].weight (SWIR)',
     min: -1,
     max: 1,
     step: 0.05,
@@ -16,7 +16,7 @@ export const parameters: GpuSceneParameter[] = [
   },
   {
     id: 'nirWeight',
-    label: 'layers[2].weight (vegetation)',
+    label: 'layers[2].weight (NIR)',
     min: -1,
     max: 1,
     step: 0.05,

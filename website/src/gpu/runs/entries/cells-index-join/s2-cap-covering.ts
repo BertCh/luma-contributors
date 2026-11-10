@@ -6,23 +6,34 @@
 
 import {GPUS2CapCovering} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
+import {chooseSticky, createPointIndex} from '../../pick';
+import {getHonshuEventSites, HONSHU_WINDOW} from '../../../data/point-observations';
 import {addCellFill} from './support/cells';
 import {createCircleOutline, getUnitVector} from './support/polygons';
 import {parameters} from './s2-cap-covering.parameters';
 
 const CAPACITY = 256;
+const RADIUS_PARAMETER = findParameter(parameters, 'radius');
+const LONGITUDE_SCALE = Math.cos((((HONSHU_WINDOW[1] + HONSHU_WINDOW[3]) / 2) * Math.PI) / 180);
 const DEGREES_TO_RADIANS = Math.PI / 180;
 
 export default defineOperationRun({
   parameters,
-  caption: 'S2 cells covering three caps; the circles are the caps themselves.',
-  createInputs: ({world}) => ({
-    centers: [
-      [world.width * 0.25, 0.55],
-      [world.width * 0.55, 0.4],
-      [world.width * 0.8, 0.62]
-    ] as [number, number][]
-  }),
+  geographicWindow: HONSHU_WINDOW,
+  caption: 'S2 covers for hypothetical search radii around three observed Honshu epicenters.',
+  createInputs: () => {
+    const centers = getHonshuEventSites([
+      [141.2, 36.6],
+      [142.3, 37.5],
+      [141.6, 38.1]
+    ]);
+    return {
+      centers,
+      index: createPointIndex(centers.flat()),
+      held: -1
+    };
+  },
   build(builder, inputs, values) {
     const capCount = inputs.centers.length;
     const caps = builder.allocate('caps', 'float32x4', capCount);
@@ -42,6 +53,7 @@ export default defineOperationRun({
     return {
       outputs: {
         outline,
+        counts,
         sources: builder.upload(
           'sources',
           'uint32',
@@ -67,6 +79,32 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['level', 'mode'],
+  // Reach: the distance from the pointer to the nearest cap center is the radius of the caps.
+  interaction: {
+    kind: 'reach',
+    hint: 'set the cap radius',
+    rest: ({toUnit, inputs}) => {
+      const [longitude, latitude] = inputs.centers[0];
+      return toUnit([longitude + RADIUS_PARAMETER.default / LONGITUDE_SCALE, latitude]);
+    },
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.held = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.held);
+      const [longitude, latitude] = inputs.centers[inputs.held];
+      // Degrees of arc on the ground: longitude shrinks with the cosine of the latitude.
+      const arc = Math.hypot((pointer.x - longitude) * LONGITUDE_SCALE, pointer.y - latitude);
+      const radius = snapToParameter(RADIUS_PARAMETER, arc);
+      const counts = peek(outputs.counts);
+      return {
+        values: {radius},
+        glyphs: [
+          {shape: 'line', from: [longitude, latitude], to: [pointer.x, pointer.y]},
+          {shape: 'dot', at: [longitude, latitude]},
+          {shape: 'crosshair', at: [pointer.x, pointer.y], size: 6}
+        ],
+        readout: `cap radius ${radius.toFixed(2)}° · ${counts ? counts[inputs.held * 2] : '…'} cells at level ${values.level}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {
       layer: 'polygons',

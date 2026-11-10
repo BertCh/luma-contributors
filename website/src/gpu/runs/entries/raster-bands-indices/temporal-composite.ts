@@ -9,27 +9,19 @@
 import {GPURasterTemporal} from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
 import {parameters} from './temporal-composite.parameters';
+import {getSwipeResult, getCellAt, getCurtainX} from './support/gestures';
 import {createStackInput} from './support/stacks';
 
 const OPERATIONS = ['mean', 'minimum', 'maximum', 'median'] as const;
-const SLICE_COUNT = 12;
 
 export default defineOperationRun({
   parameters,
   rebuildOn: ['operation'],
   caption: 'Twelve cloudy dates in; one composite value per cell out.',
-  createInputs: ({random, aspect}) => createStackInput(random, aspect, 48, SLICE_COUNT),
+  createInputs: ({random, aspect}) => createStackInput(random, aspect, 48),
   build(builder, inputs, values) {
     const {cellCount, sliceCount} = inputs;
-    const stackValues = new Float32Array(cellCount * sliceCount);
-    for (let cell = 0; cell < cellCount; cell++) {
-      for (let slice = 0; slice < sliceCount; slice++) {
-        // Seasonal greenness curve per cell, scaled by its baseline level, plus noise.
-        const season = 0.5 + 0.4 * Math.sin(((slice - 3) / sliceCount) * Math.PI * 2);
-        stackValues[cell * sliceCount + slice] =
-          0.15 + 0.7 * inputs.level[cell] * season + 0.06 * inputs.noise[cell * sliceCount + slice];
-      }
-    }
+    const stackValues = inputs.observations;
     const stack = builder.upload('stack', 'float32', stackValues);
     const validity = builder.allocate('validity', 'uint32', cellCount * sliceCount);
     const composite = builder.allocate('composite', 'float32', cellCount);
@@ -51,35 +43,58 @@ export default defineOperationRun({
         }
       })
     );
-    const firstDate = builder.upload(
-      'first-date',
-      'float32',
-      Float32Array.from({length: cellCount}, (_, cell) => stackValues[cell * sliceCount])
-    );
+    const firstDate = builder.allocate('first-date', 'float32', cellCount);
     return {
       outputs: {firstDate, composite},
-      update: current =>
+      update: current => {
         validity.write(
-          Uint32Array.from(inputs.clouds, cloud => (cloud < current.cloudCover ? 0 : 1))
-        )
+          Uint32Array.from(inputs.clouds, (cloud, index) =>
+            Number.isFinite(stackValues[index]) && cloud >= current.cloudCover ? 1 : 0
+          )
+        );
+        // The first date as a single cloudy scene: its clouded cells are missing.
+        firstDate.write(
+          Float32Array.from({length: cellCount}, (_, cell) =>
+            inputs.clouds[cell * sliceCount] >= current.cloudCover
+              ? stackValues[cell * sliceCount]
+              : Number.NaN
+          )
+        );
+      }
     };
   },
-  draw: ({inputs, outputs}) => [
-    {
+  // The pointer is a curtain between one cloudy date and the composite of all twelve.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe one date and composite',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {inputs, values, world}) => {
+      const {index} = getCellAt(inputs, world, pointer);
+      let valid = 0;
+      for (let slice = 0; slice < inputs.sliceCount; slice++) {
+        const observation = index * inputs.sliceCount + slice;
+        if (
+          Number.isFinite(inputs.observations[observation]) &&
+          inputs.clouds[observation] >= values.cloudCover
+        ) {
+          valid++;
+        }
+      }
+      const readout = `${OPERATIONS[Math.round(values.operation)]}: ${valid} of 12 dates valid`;
+      return getSwipeResult(pointer, readout);
+    }
+  },
+  draw: ({inputs, outputs, interaction, world}) => {
+    const curtain = getCurtainX(interaction, world);
+    const look = {
       layer: 'raster',
-      context: true,
-      values: outputs.firstDate,
       columns: inputs.columns,
       rows: inputs.rows,
       range: [0, 0.9]
-    },
-    {
-      layer: 'raster',
-      values: outputs.composite,
-      columns: inputs.columns,
-      rows: inputs.rows,
-      range: [0, 0.9],
-      smoothing: true
-    }
-  ]
+    } as const;
+    return [
+      {...look, values: outputs.firstDate, clip: {side: 'left', x: curtain}},
+      {...look, values: outputs.composite, smoothing: true, clip: {side: 'right', x: curtain}}
+    ];
+  }
 });

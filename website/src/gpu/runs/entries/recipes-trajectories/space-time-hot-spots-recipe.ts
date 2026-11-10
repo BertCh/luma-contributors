@@ -3,7 +3,7 @@
 
 // addSpaceTimeHotSpotsRecipe: timestamped events counted into a cell by month cube, Gi* per slice
 // and a Mann-Kendall trend per cell. The map shows the trend z-score: red cells are intensifying
-// hot spots (the block whose counts grow), blue cells are fading.
+// hot spots, blue cells are fading.
 
 import {getGPUCalendarBucketsParameterValues} from '@luma-contributors/analysis/dataframe-analysis';
 import {
@@ -11,47 +11,40 @@ import {
   GPUParameterBuffer,
   addSpaceTimeHotSpotsRecipe
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {earthquakeEvents, getEventDots, getEventPosition} from './lib/earthquakes';
 import {defineOperationRun} from '../../define-run';
+import {getRasterCell, getRasterCellCenter} from '../../pick';
 import {parameters} from './space-time-hot-spots-recipe.parameters';
 
-const WIDTH = 8;
-const HEIGHT = 5;
+const WIDTH = 16;
+const HEIGHT = 10;
 const SLICES = 12;
 const CELLS = WIDTH * HEIGHT;
 
-/** Events on the lattice over twelve months of 2023: a hot block that grows and a cold corner. */
-function createEvents(growth: number) {
-  let state = 31;
-  const random = () => {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    return state / 4294967296;
-  };
-  const positions: number[] = [];
-  const words: number[] = [];
-  for (let cell = 0; cell < CELLS; cell++) {
-    const column = cell % WIDTH;
-    const row = Math.floor(cell / WIDTH);
-    for (let month = 0; month < SLICES; month++) {
-      let eventCount = 3 + Math.floor(random() * 3);
-      if (column >= 1 && column <= 3 && row >= 1 && row <= 2) eventCount += growth * month;
-      else if (column >= 5 && row >= 3)
-        eventCount = Math.max(0, eventCount - 3 + Math.floor(growth * (SLICES - month) * 0.4));
-      for (let event = 0; event < eventCount; event++) {
-        positions.push(column + 0.05 + 0.9 * random(), row + 0.05 + 0.9 * random());
-        const milliseconds = Date.UTC(2023, month, 1 + Math.floor(random() * 28), 12);
-        words.push(milliseconds % 2 ** 32, Math.floor(milliseconds / 2 ** 32));
-      }
-    }
-  }
-  return {positions: Float32Array.from(positions), timestamps: Uint32Array.from(words)};
+function selectEvents(minimumMagnitude: number) {
+  const events = earthquakeEvents.filter(event => event[3] >= minimumMagnitude);
+  // The GPU lattice numbers rows from its minimum y. Raster row zero is drawn at the top.
+  const positions = Float32Array.from(
+    events.flatMap(event => {
+      const [column, northing] = getEventPosition(event, WIDTH, HEIGHT);
+      return [column, HEIGHT - northing];
+    })
+  );
+  const timestamps = Uint32Array.from(
+    events.flatMap(event => {
+      const milliseconds = event[2] * 1000;
+      return [milliseconds % 2 ** 32, Math.floor(milliseconds / 2 ** 32)];
+    })
+  );
+  return {positions, timestamps};
 }
 
 export default defineOperationRun({
   parameters,
-  caption: 'Trend of Gi* hot spots through twelve months: intensifying red, fading blue.',
-  createInputs: () => ({}),
-  build(builder, _inputs, values) {
-    const events = createEvents(values.growth);
+  caption: 'Trend of Gi* hot spots among 2023 earthquakes in the Türkiye–Syria region.',
+  createInputs: ({world}) => ({world, dots: getEventDots(world.width, world.height)}),
+  build(builder, {dots}, values) {
+    const events = selectEvents(values.minimumMagnitude);
     const trendZ = builder.allocate('trend-z', 'float32', CELLS);
     const category = builder.allocate('category', 'uint32', CELLS);
     const recipe = addSpaceTimeHotSpotsRecipe(builder.graph, {
@@ -78,13 +71,42 @@ export default defineOperationRun({
       outputs: {trendZ: trendZ.view, category: category.view}
     });
     return {
-      outputs: {trendZ},
+      outputs: {trendZ, dots: builder.upload('events', 'float32x2', dots)},
       update: current =>
         recipe.setSettings({radius: current.radius, temporalWindow: current.temporalWindow})
     };
   },
-  rebuildOn: ['growth'],
+  rebuildOn: ['minimumMagnitude'],
+  // The pointer picks a cell: the ring is the spatial neighborhood (radius cells) its Gi* uses.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a cell',
+    rest: ({toUnit, world}) =>
+      toUnit(getRasterCellCenter(WIDTH, HEIGHT, [0, 0, world.width, world.height], 4, 6)),
+    resolve(pointer, {outputs, values, world, peek}) {
+      const bounds = [0, 0, world.width, world.height] as const;
+      const cell = getRasterCell(WIDTH, HEIGHT, bounds, pointer.x, pointer.y);
+      const [centerX, centerY] = getRasterCellCenter(WIDTH, HEIGHT, bounds, cell.column, cell.row);
+      const trend = peek(outputs.trendZ);
+      return {
+        glyphs: [
+          {shape: 'ring', at: [centerX, centerY], radius: values.radius / HEIGHT},
+          {shape: 'crosshair', at: [centerX, centerY]}
+        ],
+        readout: `cell (${cell.column}, ${cell.row}) · trend z ${trend ? trend[cell.index].toFixed(1) : '...'} · radius ${values.radius}`
+      };
+    }
+  },
   draw: ({outputs}) => [
-    {layer: 'raster', values: outputs.trendZ, columns: WIDTH, rows: HEIGHT, ramp: 'diverging'}
+    {
+      layer: 'raster',
+      values: outputs.trendZ,
+      columns: WIDTH,
+      rows: HEIGHT,
+      ramp: 'diverging',
+      range: [-3, 3],
+      alpha: 0.85
+    },
+    {layer: 'dots', context: true, positions: outputs.dots, radius: 2.2}
   ]
 });

@@ -13,5 +13,5 @@ export const parameters: GpuSceneParameter[] = [
 export const legend: RunLegendItem[] = [
   {label: 'polygon: the study window', color: '#9aa0ad'},
   {label: 'orange box: summary bounds', color: '#f2994d'},
-  {label: 'left bar: area (x10); right bar: perimeter', color: '#8a6bd1'}
+  {label: 'bars: area (x10), perimeter, bounds box area (x10)', color: '#8a6bd1'}
 ];

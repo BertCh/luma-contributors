@@ -20,5 +20,12 @@ export const parameters: GpuSceneParameter[] = [
       'fractional-catchment'
     ]
   },
-  {id: 'flowExponent', label: 'Data: flowExponent', min: 0.5, max: 6, step: 0.1, default: 1.1}
+  {
+    id: 'flowExponent',
+    label: 'GPUTerrainFlowFractions: flowExponent',
+    min: 0.5,
+    max: 6,
+    step: 0.1,
+    default: 1.1
+  }
 ];

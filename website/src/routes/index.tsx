@@ -2,39 +2,76 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createFileRoute, Link} from '@tanstack/react-router';
-import {getFacetCounts} from '../catalog';
-import type {PreviewKind} from '../catalog/schema';
-import {DATA_TYPES, USE_CASES} from '../catalog/taxonomy';
+import {getEntry, getFacetCounts} from '../catalog';
+import {getEntrySeed} from '../catalog/entry-seed';
+import {EntryPreview} from '../components/catalog/entry-preview';
+import {getDemo} from '../gpu/demos';
+import {useLiveSlot} from '../components/catalog/use-live-slot';
+import {DATA_TYPES, USE_CASES, type DataTypeId} from '../catalog/taxonomy';
 import {FacetIcon} from '../components/brand/facet-icon';
 import {Card} from '../components/ui/card';
 import {getChipClassName} from '../components/ui/chip';
 import {Section} from '../components/ui/section';
 import {GpuCanvas} from '../gpu/gpu-canvas';
-import {getPreviewParameters, getPreviewScene, PreviewFallback} from '../gpu/previews';
 
 export const Route = createFileRoute('/')({
   component: HomePage
 });
 
-/** Thumbnail kind for each data type facet. */
-const DATA_TYPE_PREVIEW: Record<string, PreviewKind> = {
-  points: 'points',
-  lines: 'lines',
-  polygons: 'polygons',
-  raster: 'raster',
-  terrain: 'terrain',
-  network: 'network',
-  table: 'histogram',
-  'time-series': 'time-series',
-  trajectories: 'trajectories',
-  'point-cloud': 'point-cloud',
-  cells: 'cells',
-  'spatial-weights': 'spatial-weights'
-};
+/** Each facet shows one operation that accepts that data type. */
+const DATA_TYPE_OPERATIONS = {
+  points: 'dbscan-clustering',
+  lines: 'line-density',
+  polygons: 'map-coloring',
+  raster: 'normalized-difference-water-index',
+  terrain: 'terrain-flow',
+  network: 'network-path-extraction',
+  table: 'column-profile',
+  'time-series': 'temporal-reduction',
+  trajectories: 'trajectory-playhead',
+  'point-cloud': 'pointcloud-ground',
+  cells: 'cell-aggregation',
+  'spatial-weights': 'spatial-weights-minimum-spanning-tree'
+} satisfies Record<DataTypeId, string>;
 
-const HERO_SEED = 7;
-/** One slider on the hero: the first parameter of the density scene. */
-const HERO_PARAMETERS = (getPreviewParameters('density-surface') ?? []).slice(0, 1);
+function requireEntry(id: string) {
+  const entry = getEntry(id);
+  if (!entry) throw new Error(`Missing homepage operation: ${id}`);
+  return entry;
+}
+
+const HERO_ENTRY = requireEntry('kernel-density');
+const HERO_DEMO = getDemo(HERO_ENTRY.id);
+if (!HERO_DEMO) throw new Error('Missing kernel density demo');
+const HERO_SCENE = HERO_DEMO.loader;
+const HERO_PARAMETERS = HERO_DEMO.parameters
+  .filter(parameter => parameter.id === 'bandwidth')
+  .map(parameter => ({...parameter, label: 'Default bandwidth'}));
+
+function DataTypeCard({facet, count}: {facet: (typeof DATA_TYPES)[number]; count: number}) {
+  const entry = requireEntry(DATA_TYPE_OPERATIONS[facet.id]);
+  const {live, ref, handlers} = useLiveSlot();
+  return (
+    <div ref={ref} {...handlers} className="facet-card-slot">
+      <Card
+        interactive
+        media={<EntryPreview entry={entry} live={live} interactive />}
+        title={
+          <>
+            <FacetIcon id={facet.id} size={18} />
+            <Link to="/explore/data/$id" params={{id: facet.id}}>
+              {facet.label}
+            </Link>
+            <span className="facet-card__count">{count}</span>
+          </>
+        }
+        meta={entry.title}
+      >
+        {facet.description}
+      </Card>
+    </div>
+  );
+}
 
 function HomePage() {
   const counts = getFacetCounts();
@@ -43,10 +80,11 @@ function HomePage() {
       <section className="hero">
         <div className="hero__canvas">
           <GpuCanvas
-            scene={getPreviewScene('density-surface')}
-            fallback={<PreviewFallback kind="density-surface" seed={HERO_SEED} />}
-            seed={HERO_SEED}
-            label="Live luma.gl density surface drawn on the GPU"
+            scene={HERO_SCENE}
+            fallback={<img className="hero__poster" src="/runs/kernel-density-dark.webp" alt="" />}
+            seed={getEntrySeed(HERO_ENTRY)}
+            theme="dark"
+            label="Kernel density of magnitude 4 and larger earthquakes around Japan, 2020–2024"
             interactive
             controls
             parameters={HERO_PARAMETERS}
@@ -57,7 +95,8 @@ function HomePage() {
             Spatial analysis, <em>on the GPU.</em>
           </h1>
           <p className="hero__lede">
-            Every picture here is drawn by luma.gl, live. Pick a data type, find the operation.
+            Move across the map to see how kernel bandwidth changes the density of earthquakes. Your
+            GPU recomputes the surface as you move.
           </p>
           <div className="hero__actions">
             <Link to="/explore" className="button">
@@ -68,7 +107,10 @@ function HomePage() {
             </Link>
             <span className="hero__install">npm i @luma-contributors/analysis</span>
           </div>
-          <p className="hero__hint">Live on your GPU. Move the pointer over the field.</p>
+          <p className="hero__hint">
+            M4+ earthquakes around Japan · 2020–2024 ·{' '}
+            <a href="https://earthquake.usgs.gov/data/comcat/">USGS ComCat</a>
+          </p>
         </div>
       </section>
 
@@ -80,28 +122,7 @@ function HomePage() {
         >
           <div className="facet-grid">
             {DATA_TYPES.map(facet => (
-              <Card
-                key={facet.id}
-                interactive
-                className="facet-card"
-                media={
-                  <PreviewFallback
-                    kind={DATA_TYPE_PREVIEW[facet.id] ?? 'points'}
-                    seed={HERO_SEED}
-                  />
-                }
-                title={
-                  <>
-                    <FacetIcon id={facet.id} size={18} />
-                    <Link to="/explore/data/$id" params={{id: facet.id}}>
-                      {facet.label}
-                    </Link>
-                    <span className="facet-card__count">{counts.data[facet.id] ?? 0}</span>
-                  </>
-                }
-              >
-                {facet.description}
-              </Card>
+              <DataTypeCard key={facet.id} facet={facet} count={counts.data[facet.id] ?? 0} />
             ))}
           </div>
         </Section>

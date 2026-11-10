@@ -3,8 +3,8 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// `operation` is a GPUSphericalPolygonOverlay prop (compile time). `shift` slides the right
-// polygon over the left one (a per-frame rewrite of its vertices).
+// `operation` is a GPUSphericalPolygonOverlay prop (compile time). `shift` and `shiftLatitude` slide
+// the right polygon over the left one (a per-frame rewrite of its vertices).
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'operation',
@@ -12,8 +12,25 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 3,
     step: 1,
-    default: 0,
+    default: 2,
     options: ['intersection', 'union', 'difference', 'symmetric-difference']
   },
-  {id: 'shift', label: 'Data: shift', min: -0.4, max: 0.4, step: 0.01, default: 0.18}
+  {
+    id: 'shift',
+    label: 'corridor longitude',
+    min: -90.5,
+    max: -85.8,
+    step: 0.05,
+    default: -87.8,
+    unit: '°'
+  },
+  {
+    id: 'shiftLatitude',
+    label: 'corridor latitude',
+    min: 46.8,
+    max: 48.6,
+    step: 0.05,
+    default: 47.7,
+    unit: '°'
+  }
 ];

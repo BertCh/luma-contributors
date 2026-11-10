@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUTerrainDerivatives and GPUTerrainFlow. A seeded synthetic landscape, sliders for the sun
+// Demo: GPUTerrainDerivatives and GPUTerrainFlow. Grand Canyon elevations, sliders for the sun
 // (Horn hillshade, recomputed on the GPU), slope exaggeration, and the stream threshold of a network
 // extracted by depression filling, D8 routing and flow accumulation.
 
@@ -12,6 +12,9 @@ import {
   GPUTerrainFlow
 } from '@luma-contributors/analysis/gpu-terrain';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {sampleElevation} from '../data/elevation';
+import type {RunGlyph} from '../runs/interaction';
+import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
 import {readParameterValues, TERRAIN_HYDROLOGY_PARAMETERS} from './parameters';
 import {
@@ -23,7 +26,6 @@ import {
   getDemoTheme,
   GraphRunner,
   importBufferView,
-  makeRandom,
   RasterLayer,
   type Color,
   type DemoView
@@ -32,7 +34,8 @@ import {
 export const parameters = TERRAIN_HYDROLOGY_PARAMETERS;
 
 const ROWS = 96;
-const CELL_SIZE = 60;
+const MINIMUM_ALTITUDE = 5;
+const MAXIMUM_ALTITUDE = 85;
 const LAND_RAMP: Color[] = ['#17323f', '#2c6556', '#6f9b55', '#c4b868', '#a98457', '#f1eee6'].map(
   value => {
     const number = Number.parseInt(value.slice(1), 16);
@@ -52,40 +55,15 @@ const scene: GpuScene = async context => {
   const columns = Math.max(48, Math.min(256, Math.round((ROWS * context.width) / context.height)));
   const worldWidth = columns / ROWS;
   const view: DemoView = {worldWidth, worldHeight: 1, width: context.width, height: context.height};
-  const random = makeRandom(context.seed);
+  const {elevation, cellSize} = sampleElevation(columns, ROWS);
   const grid = makeGPURasterMetadata({
     width: columns,
     height: ROWS,
-    cellSize: CELL_SIZE,
-    origin: [0, ROWS * CELL_SIZE]
+    cellSize,
+    origin: [0, ROWS * cellSize]
   });
   const cellCount = columns * ROWS;
 
-  // Fractal landscape: octaves of random plane waves plus a few ridge-lines.
-  const waves = Array.from({length: 22}, (_, index) => {
-    const octave = Math.floor(index / 4);
-    const angle = random() * Math.PI * 2;
-    const frequency = (2.2 + octave * 2.1) * (0.8 + 0.4 * random());
-    return {
-      kx: Math.cos(angle) * frequency,
-      ky: Math.sin(angle) * frequency,
-      phase: random() * Math.PI * 2,
-      amplitude: 260 / (1 + octave * 1.9)
-    };
-  });
-  const elevation = new Float32Array(cellCount);
-  for (let row = 0; row < ROWS; row++) {
-    for (let column = 0; column < columns; column++) {
-      const x = column / ROWS;
-      const y = row / ROWS;
-      let height = 0;
-      for (const wave of waves) {
-        height += wave.amplitude * Math.sin(wave.kx * x * 6 + wave.ky * y * 6 + wave.phase);
-      }
-      const edge = Math.min(1, 4 * Math.min(x, worldWidth - x, y, 1 - y) + 0.3);
-      elevation[row * columns + column] = 420 + height * (0.55 + 0.45 * edge);
-    }
-  }
   let low = Infinity;
   let high = -Infinity;
   for (const value of elevation) {
@@ -174,26 +152,93 @@ const scene: GpuScene = async context => {
       smoothing: true
     });
     rivers.update(view, theme, {mode: 2, categories: riverColors});
-    drawLayers(device, theme, [land, shade, rivers]);
+    drawLayers(device, theme, [land, shade, rivers, ...driver.getLayers()]);
   };
   const scheduler = new DrawScheduler(draw);
 
+  // Compass angle around the picture center is the sun azimuth; distance from it is the altitude
+  // (far is low). The pointer writes the sliders only once the reader has moved it.
+  const getReach = () => Math.min(view.width, view.height) / 2;
+  let isPointerOwner = false;
+  const driver = createPointerDriver({
+    device,
+    view,
+    theme,
+    reducedMotion: context.reducedMotion,
+    kind: 'aim',
+    hint: 'aim the sun',
+    rest() {
+      const azimuth = (values.azimuthDegrees * Math.PI) / 180;
+      const reach =
+        ((MAXIMUM_ALTITUDE - values.altitudeDegrees) / (MAXIMUM_ALTITUDE - MINIMUM_ALTITUDE)) *
+        getReach();
+      return [
+        0.5 + (Math.sin(azimuth) * reach) / view.width,
+        0.5 - (Math.cos(azimuth) * reach) / view.height
+      ];
+    },
+    reportReadout: context.reportReadout,
+    requestDraw: () => scheduler.request(),
+    resolve(pointer) {
+      const offsetX = (pointer.unitX - 0.5) * view.width;
+      const offsetY = (pointer.unitY - 0.5) * view.height;
+      if (isPointerOwner) {
+        const azimuthDegrees =
+          Math.round((Math.atan2(offsetX, -offsetY) * 180) / Math.PI + 360) % 360;
+        const nearness = 1 - Math.min(1, Math.hypot(offsetX, offsetY) / getReach());
+        const altitudeDegrees = Math.round(
+          MINIMUM_ALTITUDE + nearness * (MAXIMUM_ALTITUDE - MINIMUM_ALTITUDE)
+        );
+        if (
+          azimuthDegrees !== values.azimuthDegrees ||
+          altitudeDegrees !== values.altitudeDegrees
+        ) {
+          values.azimuthDegrees = azimuthDegrees;
+          values.altitudeDegrees = altitudeDegrees;
+          isDirty = true;
+          scheduler.request();
+          context.reportParameters?.({azimuthDegrees, altitudeDegrees});
+        }
+      }
+      const center: [number, number] = [view.worldWidth / 2, view.worldHeight / 2];
+      const glyphs: RunGlyph[] = [
+        {shape: 'arrow', from: center, to: [pointer.x, pointer.y]},
+        {shape: 'dot', at: center}
+      ];
+      return {
+        glyphs,
+        readout: `sun ${values.azimuthDegrees}° · ${values.altitudeDegrees}° up`
+      };
+    }
+  });
+
   return {
-    render() {
+    gesture: driver.gesture,
+    render(time) {
+      driver.advance(time);
       scheduler.flush();
     },
     setParameters(update) {
       Object.assign(values, update);
+      isPointerOwner = false;
+      driver.release();
       isDirty = true;
       scheduler.request();
     },
     resize(width, height) {
       view.width = width;
       view.height = height;
+      driver.refresh();
       scheduler.request();
     },
+    setPointer(position) {
+      if (position) isPointerOwner = true;
+      driver.setPointer(position);
+    },
+    resetPointer: driver.resetPointer,
     destroy() {
       scheduler.cancel();
+      driver.destroy();
       land.destroy();
       shade.destroy();
       rivers.destroy();

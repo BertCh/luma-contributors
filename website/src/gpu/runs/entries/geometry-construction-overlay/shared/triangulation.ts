@@ -11,8 +11,9 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun, type RunBuffer, type RunBuilder} from '../../../define-run';
 import type {GpuSceneParameter} from '../../../../types';
+import {clamp} from '../../../interaction';
 import {addKernelPass} from './kernel';
-import {OUTPUT_COLOR} from './lines';
+import {findNearestVertex, OUTPUT_COLOR} from './lines';
 import {
   createBlobSet,
   createRingSegments,
@@ -29,31 +30,40 @@ export function createSeededRandom(seed: number): () => number {
   };
 }
 
-/** Owner polygon of every output triangle, found on the GPU from the polygon triangle offsets. */
-function addTriangleOwners(
+/** Minimum interior angle of every output triangle, in degrees: slivers are low, good triangles near 60. */
+function addMinimumAngles(
   builder: RunBuilder,
-  triangleOffsets: RunBuffer<'uint32'>,
+  positions: RunBuffer<'float32x2'>,
+  indices: RunBuffer<'uint32'>,
   triangleCapacity: number
-): RunBuffer<'uint32'> {
-  const owners = builder.allocate('triangle-owners', 'uint32', triangleCapacity);
-  const polygonCount = triangleOffsets.length - 1;
+): RunBuffer<'float32'> {
+  const minimumAngles = builder.allocate('minimum-angles', 'float32', triangleCapacity);
   addKernelPass(builder, {
-    id: 'triangle-owner-pass',
+    id: 'minimum-angle-pass',
     invocationCount: triangleCapacity,
     bindings: [
-      {name: 'triangleOffsets', buffer: triangleOffsets, access: 'read'},
-      {name: 'owners', buffer: owners, access: 'read_write'}
+      {name: 'positions', buffer: positions, access: 'read'},
+      {name: 'indices', buffer: indices, access: 'read'},
+      {name: 'minimumAngles', buffer: minimumAngles, access: 'read_write'}
     ],
+    declarations: /* wgsl */ `
+fn cornerAngle(at: vec2f, first: vec2f, second: vec2f) -> f32 {
+  let u = normalize(first - at);
+  let v = normalize(second - at);
+  return degrees(acos(clamp(dot(u, v), -1.0, 1.0)));
+}`,
     body: /* wgsl */ `
-  var low = 0u;
-  var high = ${polygonCount + 1}u;
-  while (low < high) {
-    let middle = (low + high) / 2u;
-    if (triangleOffsets[triangleOffsetsOffset + middle] <= index) { low = middle + 1u; } else { high = middle; }
+  let a = positions[positionsOffset + indices[indicesOffset + index * 3u]];
+  let b = positions[positionsOffset + indices[indicesOffset + index * 3u + 1u]];
+  let c = positions[positionsOffset + indices[indicesOffset + index * 3u + 2u]];
+  let area = abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+  var result = 0.0;
+  if (area > 1.0e-9) {
+    result = min(cornerAngle(a, b, c), min(cornerAngle(b, a, c), cornerAngle(c, a, b)));
   }
-  owners[ownersOffset + index] = max(low, 1u) - 1u;`
+  minimumAngles[minimumAnglesOffset + index] = result;`
   });
-  return owners;
+  return minimumAngles;
 }
 
 export function createTriangulationRun(options: {
@@ -74,10 +84,20 @@ export function createTriangulationRun(options: {
           fill: 0.82,
           hasHoles
         });
-      return {getSet};
+      // The pointer carries one polygon vertex: its offset is applied on top of the slider's set.
+      const dragged = {vertex: -1, offset: [0, 0] as [number, number]};
+      const getMovedSet = (irregularity: number, hasHoles: boolean): PolygonSet => {
+        const set = getSet(irregularity, hasHoles);
+        if (dragged.vertex >= 0) {
+          set.positions[dragged.vertex * 2] += dragged.offset[0];
+          set.positions[dragged.vertex * 2 + 1] += dragged.offset[1];
+        }
+        return set;
+      };
+      return {getSet, getMovedSet, dragged};
     },
     build(builder, inputs, values) {
-      const set = inputs.getSet(values.irregularity, values.hasHoles === 1);
+      const set = inputs.getMovedSet(values.irregularity, values.hasHoles === 1);
       const polygons = uploadPolygonSet(builder, 'polygons', set);
       const polygonCount = set.polygonOffsets.length - 1;
       const ringCount = set.ringOffsets.length - 1;
@@ -107,37 +127,102 @@ export function createTriangulationRun(options: {
               output
             })
       );
-      const owners = addTriangleOwners(builder, triangleOffsets, triangleCapacity);
       const polygonIds = builder.upload(
         'polygon-ids',
         'uint32',
         Uint32Array.from({length: polygonCount}, (_, index) => index)
+      );
+      const minimumAngles = addMinimumAngles(
+        builder,
+        polygons.positions,
+        indices,
+        triangleCapacity
+      );
+      const triangleIds = builder.upload(
+        'triangle-ids',
+        'uint32',
+        Uint32Array.from({length: triangleCapacity}, (_, index) => index)
       );
       const outline = builder.allocate('outline', 'float32x4', createRingSegments(set).length / 4);
       return {
         outputs: {
           positions: polygons.positions,
           indices,
-          owners,
+          minimumAngles,
+          triangleIds,
           polygonIds,
           outline,
           triangleCapacity
         },
         update: current => {
-          const next = inputs.getSet(current.irregularity, values.hasHoles === 1);
+          const next = inputs.getMovedSet(current.irregularity, values.hasHoles === 1);
           polygons.positions.write(next.positions);
           outline.write(createRingSegments(next));
         }
       };
     },
     rebuildOn: ['hasHoles', 'maximumFlips'],
+    // The pointer carries the nearest polygon vertex (it leans toward the cursor and lets go at a
+    // distance) and the triangulation re-forms around it. Triangles are colored by minimum angle.
+    interaction: {
+      kind: 'drag',
+      hint: 'drag a vertex',
+      rest: ({inputs, values, toUnit}) => {
+        const set = inputs.getSet(values.irregularity, values.hasHoles === 1);
+        return toUnit([set.positions[0], set.positions[1]]);
+      },
+      resolve(pointer, {inputs, values}) {
+        const set = inputs.getSet(values.irregularity, values.hasHoles === 1);
+        const nearest = findNearestVertex(set.positions, pointer.x, pointer.y);
+        if (!nearest) return {};
+        const previous = inputs.dragged.vertex;
+        let vertex = nearest.row;
+        if (previous >= 0 && previous !== vertex) {
+          const previousDistance = Math.hypot(
+            set.positions[previous * 2] - pointer.x,
+            set.positions[previous * 2 + 1] - pointer.y
+          );
+          if (nearest.distance > previousDistance * 0.85) vertex = previous;
+        }
+        const baseX = set.positions[vertex * 2];
+        const baseY = set.positions[vertex * 2 + 1];
+        const deltaX = pointer.x - baseX;
+        const deltaY = pointer.y - baseY;
+        const weight = clamp((0.25 - Math.hypot(deltaX, deltaY)) / 0.15, 0, 1);
+        const offset: [number, number] = [deltaX * weight, deltaY * weight];
+        const changed =
+          vertex !== previous ||
+          offset[0] !== inputs.dragged.offset[0] ||
+          offset[1] !== inputs.dragged.offset[1];
+        inputs.dragged.vertex = vertex;
+        inputs.dragged.offset = offset;
+        return {
+          rerun: changed,
+          glyphs: [
+            {shape: 'ring', at: [baseX + offset[0], baseY + offset[1]], radius: 0.025},
+            {
+              shape: 'line',
+              from: [baseX, baseY],
+              to: [baseX + offset[0], baseY + offset[1]],
+              dashed: true
+            }
+          ],
+          readout:
+            values.maximumFlips === undefined
+              ? `vertex ${vertex} carried`
+              : `maximumFlips ${values.maximumFlips} · vertex ${vertex} carried`
+        };
+      }
+    },
     draw: ({outputs}) => [
       {
         layer: 'polygons',
         positions: outputs.positions,
         indices: outputs.indices,
-        owners: outputs.owners,
-        values: outputs.polygonIds,
+        owners: outputs.triangleIds,
+        values: outputs.minimumAngles,
+        ramp: 'sequential',
+        range: [0, 60],
         triangleCount: outputs.triangleCapacity,
         alpha: 0.85
       },

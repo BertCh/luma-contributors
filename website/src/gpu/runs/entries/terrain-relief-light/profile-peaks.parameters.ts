@@ -5,7 +5,15 @@ import type {GpuSceneParameter} from '../../../types';
 
 // Bound to GPUProfilePeaks({window, suppressionRadius}) and getGPUProfilePeaksParameterValues({minimumProminence}).
 export const parameters: GpuSceneParameter[] = [
-  {id: 'minimumProminence', label: 'minimumProminence', min: 0, max: 2, step: 0.05, default: 0.5},
+  {
+    id: 'minimumProminence',
+    label: 'minimumProminence',
+    min: 0,
+    max: 250,
+    step: 5,
+    default: 30,
+    unit: ' m'
+  },
   {id: 'window', label: 'window', min: 2, max: 16, step: 1, default: 6, unit: ' samples'},
   {
     id: 'suppressionRadius',
@@ -16,5 +24,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 4,
     unit: ' samples'
   },
-  {id: 'noise', label: 'Data: noise', min: 0, max: 1, step: 0.05, default: 0.3}
+  {id: 'noise', label: 'Data: noise', min: 0, max: 100, step: 5, default: 20, unit: ' m'}
 ];

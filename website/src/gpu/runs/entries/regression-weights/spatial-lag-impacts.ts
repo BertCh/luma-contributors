@@ -4,23 +4,54 @@
 // GPUSpatialLagImpacts turns a spatial-lag fit and its power traces into direct, indirect and total
 // impacts per predictor. The fit and traces come from GPUSpatialLagMaximumLikelihood in the same
 // graph. Right: three bar charts (direct, indirect, total) with one bar per predictor; the indirect
-// impact (spillover) grows with rho.
+// impact (spillover) grows with rho. Left: the change in the response when the tract under the
+// pointer gets a unit increase of the first predictor, with the estimated rho and slope.
 
 import {
   GPUSpatialLagImpacts,
   GPUSpatialLagMaximumLikelihood
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {type CsrWeights} from '../../inputs';
 import {parameters} from './spatial-lag-impacts.parameters';
 import {
   createRegressionInputs,
   createResponse,
+  drawSignedBars,
   drawTractMap,
+  drawZeroLine,
   MAP_SHARE,
   uploadRegressionMap,
   uploadStandardizedWeights
 } from './shared/regression';
+import {findTractUnder, getTractCenter, getTractOutline} from './shared/probes';
 import {addTableColumn} from './shared/weights';
+
+/** Column `shocked` of (I - rho W)^-1 by its Neumann series: the response of every tract to a unit shock there. */
+function getShockResponse(
+  weights: CsrWeights,
+  shocked: number,
+  rho: number,
+  scale: number
+): Float32Array {
+  let term = new Float32Array(weights.rowCount);
+  term[shocked] = 1;
+  const total = Float32Array.from(term);
+  for (let power = 1; power < 40; power++) {
+    const next = new Float32Array(weights.rowCount);
+    for (let row = 0; row < weights.rowCount; row++) {
+      for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
+        next[row] += weights.weights[slot] * term[weights.neighbors[slot]] * rho;
+      }
+    }
+    term = next;
+    for (let row = 0; row < total.length; row++) total[row] += term[row];
+  }
+  return total.map(value => value * scale);
+}
+
+const IMPACT_LIMIT = 5;
+const SHOCK_LIMIT = 1.2;
 
 const IMPACT_COLORS = [
   [0.4, 0.65, 1, 0.95],
@@ -81,10 +112,15 @@ export default defineOperationRun({
         output: {impacts: impacts.view}
       })
     );
+    const impactMap = builder.allocate('impact-map', 'float32', rowCount);
+    impactMap.write(getShockResponse(inputs.weights, 0, 0.5, 2));
     return {
       outputs: {
         mesh: uploadRegressionMap(builder, inputs),
         residuals,
+        table,
+        impactMap,
+        zeros: builder.upload('zeros', 'float32', new Float32Array(64)),
         components: [0, 1, 2].map(column =>
           addTableColumn(builder, 'impacts', impacts, 3, column, 2)
         )
@@ -94,18 +130,43 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['maximumPower'],
+  // The pointer picks the tract that gets a unit increase of x1: the map shows how far the response moves,
+  // at the tract itself (direct) and in the tracts around it (spillover), with the fitted rho and slope.
+  interaction: {
+    kind: 'place',
+    hint: 'shock a tract',
+    rest: [0.3, 0.5],
+    resolve(pointer, {inputs, outputs, peek}) {
+      const tract = findTractUnder(inputs.tracts, pointer.x, pointer.y);
+      const table = peek(outputs.table);
+      if (tract < 0 || !table) return {};
+      const rho = table[3 * 4];
+      const slope = table[1 * 4];
+      const change = getShockResponse(inputs.weights, tract, rho, slope);
+      outputs.impactMap.write(change);
+      const direct = change[tract];
+      const spillover = change.reduce((sum, value) => sum + value, 0) - direct;
+      return {
+        focus: tract,
+        glyphs: [
+          getTractOutline(inputs.tracts, tract),
+          {shape: 'ring', at: getTractCenter(inputs.tracts, tract), radius: 0.05, dashed: true}
+        ],
+        readout: `shock at tract ${tract} · direct ${direct.toFixed(2)} · spillover ${spillover.toFixed(2)}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
-    ...drawTractMap(inputs, outputs.mesh, outputs.residuals),
-    ...outputs.components.map(
-      (values, index) =>
-        ({
-          layer: 'chart',
-          kind: 'bars',
-          values,
-          range: [-4, 6],
-          color: IMPACT_COLORS[index],
-          rectangle: [MAP_SHARE + 0.08, 0.7 - index * 0.31, 0.97, 0.94 - index * 0.31]
-        }) as const
-    )
+    ...drawTractMap(inputs, outputs.mesh, outputs.impactMap, {
+      ramp: 'sequential',
+      range: [0, SHOCK_LIMIT]
+    }),
+    ...outputs.components.flatMap((values, index) => {
+      const rectangle = [MAP_SHARE + 0.08, 0.7 - index * 0.31, 0.97, 0.94 - index * 0.31] as const;
+      return [
+        ...drawSignedBars(values, rectangle, IMPACT_LIMIT, IMPACT_COLORS[index]),
+        drawZeroLine(outputs.zeros, rectangle)
+      ];
+    })
   ]
 });

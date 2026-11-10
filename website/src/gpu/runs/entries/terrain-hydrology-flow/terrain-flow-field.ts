@@ -16,6 +16,7 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
+import {aimAround} from '../../interaction';
 import {parameters} from './terrain-flow-field.parameters';
 import {createTerrainInputs, getTerrainContextLayer} from './shared/terrain';
 
@@ -91,14 +92,27 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer is the wind: its compass angle around the middle of the map is windDirection, and
+  // the farther out it sits the more the relief is exaggerated.
+  interaction: aimAround(parameters, {
+    hint: 'aim the wind',
+    angle: 'windDirection',
+    convention: 'math',
+    distance: {parameter: 'verticalExaggeration'},
+    readout: values =>
+      `wind ${values.windDirection} deg · verticalExaggeration ${values.verticalExaggeration}`
+  }),
   draw: ({inputs, outputs}) => [
     getTerrainContextLayer(inputs, outputs.elevation),
     {
+      // Speed relative to the free-stream wind (1): blue slows, red speeds up.
       layer: 'raster',
       values: outputs.speeds,
       columns: inputs.columns * OUTPUT_SCALE,
       rows: inputs.rows * OUTPUT_SCALE,
-      alpha: 0.5,
+      ramp: 'diverging',
+      range: [0, 2],
+      alpha: 0.55,
       smoothing: true
     },
     {
@@ -108,7 +122,7 @@ export default defineOperationRun({
       rows: inputs.rows * OUTPUT_SCALE,
       ramp: 'sequential',
       range: [0.2, 0.8],
-      alpha: 0.6
+      alpha: 0.4
     }
   ]
 });

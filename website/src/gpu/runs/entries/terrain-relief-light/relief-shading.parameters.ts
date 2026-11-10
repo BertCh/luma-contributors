@@ -14,7 +14,16 @@ export const parameters: GpuSceneParameter[] = [
     default: 315,
     unit: '°'
   },
-  {id: 'skyViewStrength', label: 'skyViewStrength', min: 0, max: 1, step: 0.05, default: 0.5},
+  {
+    id: 'altitudeDegrees',
+    label: 'lights[0].altitudeDegrees',
+    min: 5,
+    max: 85,
+    step: 5,
+    default: 40,
+    unit: '°'
+  },
+  {id: 'skyViewStrength', label: 'skyViewStrength', min: 0, max: 1, step: 0.05, default: 0.8},
   {id: 'exposure', label: 'exposure', min: 0.5, max: 2, step: 0.1, default: 1},
   {id: 'zFactor', label: 'zFactor', min: 0.5, max: 4, step: 0.25, default: 2}
 ];

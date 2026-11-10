@@ -10,6 +10,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createClusteredPoints} from '../../inputs';
+import {createPointIndex, getRasterCell} from '../../pick';
 import {parameters} from './point-density.parameters';
 
 const STATISTICS = ['count', 'sum', 'mean'] as const;
@@ -18,7 +19,9 @@ export default defineOperationRun({
   parameters,
   caption: 'Events binned into cells; the dots are the input points.',
   createInputs: ({random, world}) => ({
-    ...createClusteredPoints(random, world, 900, 4, 0.12),
+    ...(points => ({...points, index: createPointIndex(points.positions)}))(
+      createClusteredPoints(random, world, 900, 4, 0.12)
+    ),
     width: world.width
   }),
   build(builder, points, values) {
@@ -55,11 +58,73 @@ export default defineOperationRun({
       })
     );
     return {
-      outputs: {cells, columns, rows, dots: builder.upload('dots', 'float32x2', points.positions)}
+      outputs: {
+        cells,
+        columns,
+        rows,
+        dots: builder.upload('dots', 'float32x2', points.positions),
+        // The events of the hovered cell; unused rows stay NaN and are not drawn.
+        binned: builder.upload('binned', 'float32x2', new Float32Array(points.count * 2).fill(NaN))
+      }
     };
   },
-  draw: ({outputs}) => [
-    {layer: 'raster', values: outputs.cells, columns: outputs.columns, rows: outputs.rows},
-    {layer: 'dots', context: true, positions: outputs.dots, radius: 1.6}
+  // The hovered cell outlines itself and lights the events that were binned into it.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a cell',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const bounds = [0, 0, inputs.width, 1] as const;
+      // Snap to the cell of the nearest event, so the probe always lands on something binned.
+      const nearest = Math.max(0, inputs.index.nearest(pointer.x, pointer.y));
+      const cell = getRasterCell(
+        outputs.columns,
+        outputs.rows,
+        bounds,
+        inputs.positions[nearest * 2],
+        inputs.positions[nearest * 2 + 1]
+      );
+      const cellWidth = inputs.width / outputs.columns;
+      const cellHeight = 1 / outputs.rows;
+      const minimum: [number, number] = [cell.column * cellWidth, 1 - (cell.row + 1) * cellHeight];
+      const lit = new Float32Array(inputs.count * 2).fill(NaN);
+      let count = 0;
+      for (let row = 0; row < inputs.count; row++) {
+        const x = inputs.positions[row * 2];
+        const y = inputs.positions[row * 2 + 1];
+        if (
+          x < minimum[0] ||
+          x >= minimum[0] + cellWidth ||
+          y < minimum[1] ||
+          y >= minimum[1] + cellHeight
+        )
+          continue;
+        lit.set([x, y], count * 2);
+        count++;
+      }
+      outputs.binned.write(lit);
+      const value = peek(outputs.cells)?.[cell.index];
+      return {
+        glyphs: [
+          {shape: 'box', minimum, maximum: [minimum[0] + cellWidth, minimum[1] + cellHeight]}
+        ],
+        readout: `cell ${cell.column}, ${cell.row} · ${count} events · ${STATISTICS[values.statistic]} ${value === undefined ? '...' : value.toFixed(2)}`
+      };
+    }
+  },
+  draw: ({outputs, values}) => [
+    {
+      layer: 'raster',
+      values: outputs.cells,
+      columns: outputs.columns,
+      rows: outputs.rows,
+      range: [
+        [0, 10],
+        [0, 5],
+        [0, 1]
+      ][values.statistic] as [number, number]
+    },
+    {layer: 'dots', context: true, positions: outputs.dots, radius: 2.4},
+    {layer: 'dots', positions: outputs.binned, radius: 4, color: [1, 0.9, 0.35, 1]}
   ]
 });

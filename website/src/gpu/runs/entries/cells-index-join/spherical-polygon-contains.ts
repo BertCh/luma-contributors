@@ -1,87 +1,122 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUSphericalPolygonContains tests query points against a spherical polygon with a hole: a
-// non-convex star shell plus an inner ring. Dots are colored by the `contains` flag it wrote.
-
 import {GPUSphericalPolygonContains} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {sampleFlashes} from '../../../data/lightning';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
 import {packUnitVectors} from './support/polygons';
+import {
+  getLakeShore,
+  getRingSegments,
+  getSurveyRing,
+  MICHIGAN_WINDOW
+} from './support/spherical-surveys';
+import {formatLongitudeLatitude} from './support/pointer';
 import {parameters} from './spherical-polygon-contains.parameters';
 
-const QUERY_COUNT = 900;
-const SHELL_VERTEX_COUNT = 12;
-const HOLE_VERTEX_COUNT = 8;
-
-/** A star shell (alternating radii) and a counter-clockwise hole ring around `center`. */
-function createRings(center: [number, number], size: number, holeSize: number) {
-  const shell = Array.from({length: SHELL_VERTEX_COUNT}, (_, index) => {
-    const angle = (2 * Math.PI * index) / SHELL_VERTEX_COUNT;
-    const radius = size * (index % 2 === 0 ? 1 : 0.62);
-    return [center[0] + radius * Math.cos(angle), center[1] + radius * Math.sin(angle)];
-  });
-  const hole = Array.from({length: HOLE_VERTEX_COUNT}, (_, index) => {
-    const angle = (2 * Math.PI * index) / HOLE_VERTEX_COUNT;
-    return [center[0] + holeSize * Math.cos(angle), center[1] + holeSize * Math.sin(angle)];
-  });
-  return [shell, hole];
-}
+const EXCLUSION_SIDES = 12;
+const LONGITUDE_PARAMETER = findParameter(parameters, 'exclusionLongitude');
+const LATITUDE_PARAMETER = findParameter(parameters, 'size');
 
 export default defineOperationRun({
   parameters,
-  caption: 'Points inside a spherical polygon with a hole, tested on the GPU.',
-  createInputs: ({random, world}) => {
-    const queries = new Float32Array(QUERY_COUNT * 2);
-    for (let index = 0; index < QUERY_COUNT; index++) {
-      queries[index * 2] = random() * world.width;
-      queries[index * 2 + 1] = random();
+  geographicWindow: MICHIGAN_WINDOW,
+  caption:
+    'GOES lightning detections inside Lake Michigan, excluding an adjustable survey zone. The mapped exterior omits islands.',
+  createInputs: () => {
+    // The GLM fixture starts at 99° W, 36° N and covers a 16° by 10° window.
+    const flashes = sampleFlashes({width: 16, height: 10}, 4096);
+    const [west, south, east, north] = MICHIGAN_WINDOW;
+    const queries: number[][] = [];
+    for (let row = 0; row < flashes.count; row++) {
+      const longitude = flashes.positions[row * 2] - 99;
+      const latitude = flashes.positions[row * 2 + 1] + 36;
+      if (longitude >= west && longitude <= east && latitude >= south && latitude <= north) {
+        queries.push([longitude, latitude]);
+      }
     }
-    return {queries, center: [world.width / 2, 0.5] as [number, number]};
+    return {queries, shore: getLakeShore('Lake Michigan')};
   },
-  build(builder, inputs, values) {
-    const vertexCount = SHELL_VERTEX_COUNT + HOLE_VERTEX_COUNT;
+  build(builder, {queries, shore}, values) {
+    const vertexCount = shore.length + EXCLUSION_SIDES;
     const positions = builder.allocate('positions', 'float32x3', vertexCount);
-    const outline = builder.allocate('outline', 'float32x4', vertexCount);
-    const contains = builder.allocate('contains', 'uint32', QUERY_COUNT);
-    const status = builder.allocate('status', 'uint32', QUERY_COUNT);
-    const queryPairs = Array.from({length: QUERY_COUNT}, (_, index) => [
-      inputs.queries[index * 2],
-      inputs.queries[index * 2 + 1]
-    ]);
+    const exclusionOutline = builder.allocate('exclusion-outline', 'float32x4', EXCLUSION_SIDES);
+    const shoreOutline = builder.upload('shore-outline', 'float32x4', getRingSegments([shore]));
+    const contains = builder.allocate('contains', 'uint32', queries.length);
     builder.graph.add(
       new GPUSphericalPolygonContains({
         positions: positions.view,
         ringOffsets: builder.upload(
           'ring-offsets',
           'uint32',
-          Uint32Array.of(0, SHELL_VERTEX_COUNT, vertexCount)
+          Uint32Array.of(0, shore.length, vertexCount)
         ).view,
         polygonOffsets: builder.upload('polygon-offsets', 'uint32', Uint32Array.of(0, 2)).view,
-        queries: builder.upload('queries-xyz', 'float32x3', packUnitVectors([queryPairs])).view,
-        polygonIndices: builder.upload('polygon-indices', 'uint32', new Uint32Array(QUERY_COUNT))
+        queries: builder.upload('queries-xyz', 'float32x3', packUnitVectors([queries])).view,
+        polygonIndices: builder.upload('polygon-indices', 'uint32', new Uint32Array(queries.length))
           .view,
         complement: values.complement === 1,
-        output: {contains: contains.view, status: status.view}
+        output: {
+          contains: contains.view,
+          status: builder.allocate('status', 'uint32', queries.length).view
+        }
       })
     );
     return {
-      outputs: {contains, outline, queries: builder.upload('queries', 'float32x2', inputs.queries)},
+      outputs: {
+        contains,
+        exclusionOutline,
+        shoreOutline,
+        queries: builder.upload('queries', 'float32x2', Float32Array.from(queries.flat()))
+      },
       update: current => {
-        const rings = createRings(inputs.center, current.size, Math.max(current.holeSize, 0.02));
-        positions.write(packUnitVectors(rings));
-        outline.write(
-          Float32Array.from(
-            rings.flatMap(ring =>
-              ring.flatMap(([x, y], index) => [x, y, ...ring[(index + 1) % ring.length]])
-            )
-          )
+        const exclusion = getSurveyRing(
+          current.exclusionLongitude,
+          current.size,
+          current.holeSize,
+          EXCLUSION_SIDES
         );
+        const rings = [shore, exclusion];
+        positions.write(packUnitVectors(rings));
+        exclusionOutline.write(getRingSegments([exclusion]));
       }
     };
   },
   rebuildOn: ['complement'],
-  draw: ({outputs}) => [
-    {layer: 'dots', positions: outputs.queries, values: outputs.contains, radius: 2.6},
-    {layer: 'lines', context: true, segments: outputs.outline, radius: 1.8, color: [1, 1, 1, 0.9]}
+  // Place: the exclusion hole is centered on the pointer's longitude and latitude.
+  interaction: {
+    kind: 'place',
+    hint: 'place the exclusion',
+    rest: ({toUnit}) => toUnit([LONGITUDE_PARAMETER.default, LATITUDE_PARAMETER.default]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const exclusionLongitude = snapToParameter(LONGITUDE_PARAMETER, pointer.x);
+      const size = snapToParameter(LATITUDE_PARAMETER, pointer.y);
+      const contains = peek(outputs.contains);
+      let inside = 0;
+      if (contains) for (const flag of contains) inside += flag > 0 ? 1 : 0;
+      return {
+        values: {exclusionLongitude, size},
+        glyphs: [{shape: 'crosshair', at: [exclusionLongitude, size], size: 6}],
+        readout: `hole ${formatLongitudeLatitude(exclusionLongitude, size)} · ${values.holeSize} km · ${contains ? inside : '…'} inside`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.shoreOutline,
+      radius: 1.7,
+      color: [...theme.ink, 0.85]
+    },
+    {layer: 'dots', positions: outputs.queries, values: outputs.contains, radius: 3.6},
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.exclusionOutline,
+      radius: 4.2,
+      color: [0.98, 0.53, 0.22, 1]
+    }
   ]
 });

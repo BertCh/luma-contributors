@@ -9,11 +9,14 @@ import {
   GPULineSegmentize
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
 import {
   addPackedSegments,
   allocateLineOutput,
   createLineSet,
   createPackedSegments,
+  findNearestVertex,
+  findRestAround,
   OUTPUT_COLOR
 } from './shared/lines';
 import {parameters} from './line-segmentize.parameters';
@@ -21,7 +24,7 @@ import {parameters} from './line-segmentize.parameters';
 export default defineOperationRun({
   parameters,
   caption: 'Lines densified to a maximum segment length; dots are the vertices written.',
-  createInputs: ({random, world}) => createLineSet(random, world, 4, 5, 3),
+  createInputs: ({random, world}) => ({...createLineSet(random, world, 4, 5), world}),
   build(builder, lines, values) {
     const closedLines = values.closedLines === 1;
     const positions = builder.upload('positions', 'float32x2', lines.positions);
@@ -54,7 +57,7 @@ export default defineOperationRun({
       createPackedSegments(lines.positions, lines.lineOffsets, closedLines)
     );
     return {
-      outputs: {original, originalPoints, ...drawing},
+      outputs: {original, originalPoints, vertexCount: result.count, ...drawing},
       update: current =>
         parameterBuffer.write(
           getGPULineSegmentizeParameterValues({maximumSegmentLength: current.maximumSegmentLength})
@@ -62,6 +65,38 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['closedLines'],
+  // The distance from the pointer to the nearest original vertex is the longest segment allowed:
+  // the ring around that vertex is the reach of its segments.
+  interaction: {
+    kind: 'reach',
+    hint: 'move off a vertex',
+    rest: ({inputs, toUnit}) =>
+      toUnit(
+        findRestAround(
+          [inputs.positions[0], inputs.positions[1]],
+          findParameter(parameters, 'maximumSegmentLength').default,
+          (x, y) => findNearestVertex(inputs.positions, x, y)?.distance ?? 0,
+          inputs.world
+        )
+      ),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const hit = findNearestVertex(inputs.positions, pointer.x, pointer.y);
+      if (!hit) return {};
+      const vertexCount = peek(outputs.vertexCount)?.[0];
+      const maximumSegmentLength = snapToParameter(
+        findParameter(parameters, 'maximumSegmentLength'),
+        hit.distance
+      );
+      return {
+        values: {maximumSegmentLength},
+        glyphs: [
+          {shape: 'ring', at: hit.point, radius: maximumSegmentLength, dashed: true},
+          {shape: 'line', from: hit.point, to: [pointer.x, pointer.y], dashed: true}
+        ],
+        readout: `maximumSegmentLength ${maximumSegmentLength.toFixed(2)}${vertexCount === undefined ? '' : ` · ${vertexCount} vertices`}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.original},
     {layer: 'dots', context: true, positions: outputs.originalPoints, radius: 6},

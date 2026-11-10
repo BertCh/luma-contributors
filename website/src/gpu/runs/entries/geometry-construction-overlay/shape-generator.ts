@@ -10,35 +10,59 @@ import {
   GPUShapeGenerator,
   getGPUShapeVertexCount
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {sampleVesselTracks} from '../../../data/vessel-tracks';
 import {defineOperationRun} from '../../define-run';
-import {addPackedSegments, HIGHLIGHT_COLOR} from './shared/lines';
+import {findParameter, snapToParameter} from '../../interaction';
+import {
+  findNearestVertex,
+  findRestAround,
+  addPackedSegments,
+  HIGHLIGHT_COLOR
+} from './shared/lines';
 import {parameters} from './shape-generator.parameters';
 
 const SHAPES = ['circle', 'sector', 'ellipse'] as const;
 const FEATURE_COUNT = 8;
 const MAXIMUM_SEGMENTS = 48;
+const BASE_RADIUS = 0.1;
+// Pointer distance from a vessel that maps to the largest radiusScale.
+const REACH = 0.4;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Rings generated around centers: circles, sectors or rotated ellipses.',
-  createInputs: ({random, world}) => ({
-    centers: Float32Array.from({length: FEATURE_COUNT * 2}, (_, slot) => {
-      const feature = Math.floor(slot / 2);
-      const column = feature % 4;
-      const row = Math.floor(feature / 4);
-      return slot % 2 === 0
-        ? ((column + 0.5) / 4) * world.width
-        : (row + 0.5) / 2 + (random() - 0.5) * 0.04;
-    }),
-    radii: Float32Array.from({length: FEATURE_COUNT}, () => 0.07 + 0.06 * random()),
-    ellipseRadii: Float32Array.from({length: FEATURE_COUNT * 2}, (_, slot) =>
-      slot % 2 === 0 ? 0.1 + 0.05 * random() : 0.05 + 0.03 * random()
-    ),
-    bearings: Float32Array.from({length: FEATURE_COUNT * 2}, (_, slot) =>
-      slot % 2 === 0 ? 40 * (slot / 2) : 40 * (slot / 2 - 0.5) + 100 + 120 * random()
-    ),
-    rotations: Float32Array.from({length: FEATURE_COUNT}, (_, feature) => feature * 25)
-  }),
+  caption:
+    'Modeled search areas around the last San Francisco Bay AIS fixes. Sectors follow the last observed course.',
+  createInputs: ({world}) => {
+    const fleet = sampleVesselTracks(world, FEATURE_COUNT, 2, 72);
+    const centers = new Float32Array(FEATURE_COUNT * 2);
+    const radii = new Float32Array(FEATURE_COUNT).fill(BASE_RADIUS);
+    const ellipseRadii = new Float32Array(FEATURE_COUNT * 2);
+    const bearings = new Float32Array(FEATURE_COUNT * 2);
+    const rotations = new Float32Array(FEATURE_COUNT);
+    for (let vessel = 0; vessel < FEATURE_COUNT; vessel++) {
+      const first = fleet.trackOffsets[vessel];
+      const last = fleet.trackOffsets[vessel + 1] - 1;
+      const x = fleet.points[last * 2];
+      const y = fleet.points[last * 2 + 1];
+      let previous = last - 1;
+      // A vessel can transmit several stationary fixes before the end of its track.
+      while (
+        previous > first &&
+        fleet.points[previous * 2] === x &&
+        fleet.points[previous * 2 + 1] === y
+      ) {
+        previous--;
+      }
+      const course =
+        (Math.atan2(x - fleet.points[previous * 2], y - fleet.points[previous * 2 + 1]) * 180) /
+        Math.PI;
+      centers.set([x, y], vessel * 2);
+      ellipseRadii.set([0.14, 0.055], vessel * 2);
+      bearings.set([course - 45, course + 45], vessel * 2);
+      rotations[vessel] = course - 90;
+    }
+    return {centers, radii, ellipseRadii, bearings, rotations, tracks: fleet.segments, world};
+  },
   build(builder, inputs, values) {
     const shape = SHAPES[values.shape];
     const maximumVertices = getGPUShapeVertexCount(shape, MAXIMUM_SEGMENTS);
@@ -73,7 +97,11 @@ export default defineOperationRun({
       closed: shape !== 'sector'
     });
     return {
-      outputs: {centers, ...drawing},
+      outputs: {
+        centers,
+        tracks: builder.upload('observed-tracks', 'float32x4', inputs.tracks),
+        ...drawing
+      },
       update: current =>
         parameterBuffer.write(
           getGPUShapeGeneratorParameterValues({
@@ -84,7 +112,42 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['shape'],
-  draw: ({outputs}) => [
+  // The distance from the pointer to the nearest vessel sets radiusScale, spread over the whole
+  // picture (about 0.45 world units reaches the largest ring), so every position is live.
+  interaction: {
+    kind: 'reach',
+    hint: 'move off a vessel',
+    rest: ({inputs, toUnit}) => {
+      const scale = findParameter(parameters, 'radiusScale');
+      return toUnit(
+        findRestAround(
+          [inputs.centers[0], inputs.centers[1]],
+          ((scale.default - scale.min) / (scale.max - scale.min)) * REACH,
+          (x, y) => findNearestVertex(inputs.centers, x, y)?.distance ?? 0,
+          inputs.world
+        )
+      );
+    },
+    resolve(pointer, {inputs, values}) {
+      const hit = findNearestVertex(inputs.centers, pointer.x, pointer.y);
+      if (!hit) return {};
+      const scale = findParameter(parameters, 'radiusScale');
+      const radiusScale = snapToParameter(
+        scale,
+        scale.min + (scale.max - scale.min) * Math.min(1, hit.distance / REACH)
+      );
+      return {
+        values: {radiusScale},
+        glyphs: [
+          {shape: 'line', from: hit.point, to: [pointer.x, pointer.y], dashed: true},
+          {shape: 'dot', at: hit.point}
+        ],
+        readout: `radiusScale ${radiusScale.toFixed(2)} · ${values.segmentCount} segments`
+      };
+    }
+  },
+  draw: ({outputs, values}) => [
+    {layer: 'lines', segments: outputs.tracks, context: true, radius: 0.9, alpha: 0.6},
     {
       layer: 'segments',
       nodes: outputs.points,
@@ -92,7 +155,9 @@ export default defineOperationRun({
       values: outputs.lineIds,
       radius: 2.4
     },
-    {layer: 'dots', positions: outputs.points, color: HIGHLIGHT_COLOR, radius: 2.6},
+    ...(values.segmentCount <= 16
+      ? [{layer: 'dots' as const, positions: outputs.points, color: HIGHLIGHT_COLOR, radius: 2.6}]
+      : []),
     {layer: 'dots', context: true, positions: outputs.centers, radius: 3}
   ]
 });

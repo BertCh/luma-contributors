@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUContinuousSpatialSample lays a randomly shifted square lattice over an area frame (here a
-// set of tracts with a lake cut out), keeping the lattice sites that fall inside the frame.
+// connected set of Chicago Census tracts), keeping the lattice sites that fall inside the frame.
 
 import {GPUContinuousSpatialSample} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
@@ -10,26 +10,19 @@ import {createTracts} from '../../inputs';
 import {parameters} from './continuous-spatial-sample.parameters';
 
 const CAPACITY = 4000;
+// The spacings the pointer can settle on; the default is the middle one.
+const SPACINGS = [0.03, 0.045, 0.06, 0.09, 0.12] as const;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Sites of a random-shift lattice inside the frame; the lake is outside the frame.',
+  caption: 'Random-shift lattice sites inside the Chicago tract boundaries.',
   createInputs: ({world}) => {
     const tracts = createTracts(() => 0.5, world, 6, 0);
-    // Frame triangles (center, corner, next corner) of tracts away from the lake.
-    const frame: number[] = [];
-    const outline: number[] = [];
-    for (let triangle = 0; triangle < tracts.triangleCount; triangle++) {
-      const tract = tracts.triangleOwners[triangle];
-      const x = tracts.centers[tract * 2];
-      const y = tracts.centers[tract * 2 + 1];
-      if (Math.hypot(x - 0.5 * world.width, y - 0.5) < 0.25) continue;
-      for (let corner = 0; corner < 3; corner++) {
-        const vertex = tracts.triangleIndices[triangle * 3 + corner];
-        frame.push(tracts.vertices[vertex * 2], tracts.vertices[vertex * 2 + 1]);
-      }
-      outline.push(...tracts.outline.slice(triangle * 4, triangle * 4 + 4));
-    }
+    const frame = new Float32Array(tracts.triangleIndices.length * 2);
+    tracts.triangleIndices.forEach((vertex, index) => {
+      frame[index * 2] = tracts.vertices[vertex * 2];
+      frame[index * 2 + 1] = tracts.vertices[vertex * 2 + 1];
+    });
     let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity];
     for (let index = 0; index < frame.length; index += 2) {
       minX = Math.min(minX, frame[index]);
@@ -38,8 +31,8 @@ export default defineOperationRun({
       maxY = Math.max(maxY, frame[index + 1]);
     }
     return {
-      frame: Float32Array.from(frame),
-      outline: Float32Array.from(outline),
+      frame,
+      outline: tracts.outline,
       bounds: [minX - 0.01, minY - 0.01, maxX + 0.01, maxY + 0.01] as const
     };
   },
@@ -67,6 +60,32 @@ export default defineOperationRun({
         outlineCount: outline.length / 4
       }
     };
+  },
+  buildCache: 5,
+  rebuildOn: ['spacing', 'seed'],
+  // The pointer chooses the lattice spacing: the square shows one lattice cell, and the sites
+  // are rebuilt once the pointer rests on a spacing.
+  interaction: {
+    kind: 'reach',
+    hint: 'choose the spacing',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs}) {
+      const spacing =
+        SPACINGS[Math.min(SPACINGS.length - 1, Math.floor(pointer.unitX * SPACINGS.length))];
+      const [minimumX, minimumY, maximumX, maximumY] = inputs.bounds;
+      const corner: [number, number] = [(minimumX + maximumX) / 2, (minimumY + maximumY) / 2];
+      return {
+        settle: {spacing},
+        glyphs: [
+          {
+            shape: 'box',
+            minimum: corner,
+            maximum: [corner[0] + spacing, corner[1] + spacing]
+          }
+        ],
+        readout: `spacing ${spacing}`
+      };
+    }
   },
   draw: ({outputs, theme}) => [
     {

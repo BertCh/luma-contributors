@@ -20,14 +20,27 @@ import {
   getDiagramLayers,
   ShapeBatch
 } from '../../record-demo';
+import {findBoxAt, getBoxGlyph, getCenter} from './_lib/record-probe';
 import {parameters} from './computation-recorder.parameters';
 
 const SOURCE_BAR_CHARACTERS = 600;
 
+type Latest = {
+  published: ReturnType<typeof createDiagram>['layout']['boxes'];
+  recorded: ReturnType<typeof createDiagram>['layout']['boxes'];
+  /** Characters of retained text per source id (undefined: only a hash was kept). */
+  textLength: Map<string, number | undefined>;
+};
+
 export default defineOperationRun({
   parameters,
   caption: 'The same compiled graph: published facts only (top), recorded (bottom).',
-  createInputs: ({random, world}) => ({tracts: createRecordTracts(random), world}),
+  createInputs: ({random, world}) => ({
+    tracts: createRecordTracts(random),
+    world,
+    latest: null as Latest | null,
+    focus: {id: ''}
+  }),
   build(builder, {tracts}, values) {
     const recorder = new GPUComputationRecorder({sourceText: values.sourceText === 1});
     buildRelaxation(builder, tracts, {
@@ -78,11 +91,64 @@ export default defineOperationRun({
         source.text === undefined ? 0 : 1
       );
     });
+    inputs.latest = {
+      published: publishedDiagram.layout.boxes,
+      recorded: recordedDiagram.layout.boxes,
+      textLength: new Map(recorded.sources.map(source => [source.id, source.text?.length]))
+    };
     return {
       publishedDiagram,
       recordedDiagram,
       bars: bars.uploadShapes(upload, 'source-bars')
     };
+  },
+  // The pointer is a node of either graph: it is outlined with its twin in the other graph, and
+  // the nodes of the same recorded scope are outlined too.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a node',
+    rest: ({inputs}) => {
+      const box = inputs.latest?.recorded[0];
+      if (!box) return [0.2, 0.7];
+      const [x, y] = getCenter(box);
+      return [x / inputs.world.width, 1 - y];
+    },
+    resolve(pointer, {inputs}) {
+      const latest = inputs.latest;
+      if (!latest || latest.recorded.length === 0) return {readout: 'hover a node'};
+      const under = findBoxAt([...latest.recorded, ...latest.published], pointer.x, pointer.y);
+      if (under) inputs.focus.id = under.node.id;
+      const recorded =
+        latest.recorded.find(box => box.node.id === inputs.focus.id) ?? latest.recorded[0];
+      const published = latest.published.find(box => box.node.id === recorded.node.id);
+      const siblings = latest.recorded.filter(
+        box =>
+          box !== recorded &&
+          recorded.node.namespace &&
+          box.node.namespace === recorded.node.namespace
+      );
+      const length = recorded.node.source ? latest.textLength.get(recorded.node.source) : undefined;
+      return {
+        glyphs: [
+          getBoxGlyph(recorded),
+          ...siblings.map(box => getBoxGlyph(box, true)),
+          ...(published
+            ? [
+                getBoxGlyph(published),
+                {
+                  shape: 'line' as const,
+                  from: getCenter(recorded),
+                  to: getCenter(published),
+                  dashed: true
+                }
+              ]
+            : [])
+        ],
+        readout: `${recorded.node.id} · scope ${recorded.node.namespace ?? 'none'} · ${
+          length === undefined ? 'hash only' : `${(length / 1000).toFixed(1)} kB text`
+        }`
+      };
+    }
   },
   draw: ({extra, theme}) => [
     ...getDiagramLayers(extra.publishedDiagram, {context: true}),

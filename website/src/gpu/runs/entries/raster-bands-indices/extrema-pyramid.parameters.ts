@@ -21,14 +21,5 @@ export const parameters: GpuSceneParameter[] = [
     step: 1,
     default: 0,
     options: ['cell', 'bilinear']
-  },
-  {
-    id: 'statistic',
-    label: 'Level 0 shows',
-    min: 0,
-    max: 1,
-    step: 1,
-    default: 0,
-    options: ['maximum', 'minimum']
   }
 ];

@@ -9,21 +9,21 @@ import {
   addClockEncounters,
   getGPUTrajectoryClockParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {defineOperationRun} from '../../define-run';
+import {defineOperationRun, type RunBuffer} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {createFleet, raiseFleet} from './lib/fleet';
 import {parameters} from './clock-encounters.parameters';
 
-const PAIR_CAPACITY = 40;
+const PAIR_CAPACITY = 64;
 const BUCKET_COUNT = 24;
 
 export default defineOperationRun({
   parameters,
   caption: 'Tracks on one clock, and the pairs that met on it.',
-  createInputs: ({random, world}) =>
+  createInputs: ({world}) =>
     raiseFleet(
-      createFleet(random, world, {
-        trackCount: 18,
-        staggered: true,
+      createFleet(world, {
+        trackCount: 14,
         minimumFixes: 20,
         maximumFixes: 30
       }),
@@ -61,6 +61,7 @@ export default defineOperationRun({
     return {
       outputs: {
         samples,
+        count,
         bucketCounts,
         segments: builder.upload('segments', 'float32x4', fleet.segments)
       },
@@ -72,6 +73,25 @@ export default defineOperationRun({
       }
     };
   },
+  // x moves the clock's start and y its step: the window of sampled instants is drawn on a time strip.
+  interaction: bindAxes<unknown, {count: RunBuffer<'uint32'>}>(parameters, {
+    kind: 'pad',
+    hint: 'start and step',
+    x: 'start',
+    y: 'step',
+    decorate: (values, _pointer, {outputs, world, peek}) => {
+      const pairCount = peek(outputs.count);
+      const toWorldX = (seconds: number) => world.width * (0.06 + 0.88 * (seconds / 600));
+      const end = Math.min(600, values.start + values.step * (BUCKET_COUNT - 1));
+      return {
+        glyphs: [
+          {shape: 'line', from: [toWorldX(values.start), 0.018], to: [toWorldX(end), 0.018]},
+          {shape: 'dot', at: [toWorldX(values.start), 0.018]}
+        ],
+        readout: `clock start ${values.start} s · step ${values.step} s · ${pairCount ? pairCount[0] : 0} pairs met`
+      };
+    }
+  }),
   draw: ({inputs, outputs}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
     {layer: 'dots', positions: outputs.samples, radius: 4, alpha: 0.8},

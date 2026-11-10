@@ -6,7 +6,9 @@
 // muted lines are the unsplit inputs. Moving the vertical family moves the cuts.
 
 import {GPULineSplit} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createCrossingLines} from '../geometry-processing/shared/polygon-set';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {addPackedSegments, createPackedSegments} from './shared/lines';
 import {parameters} from './line-split.parameters';
 
@@ -19,30 +21,17 @@ export default defineOperationRun({
   parameters,
   caption: 'Lines cut at every crossing; each piece gets its own color.',
   createInputs: ({random, world}) => {
-    const jitter = Array.from({length: FAMILY_SIZE * 2 * VERTICES}, () => random() - 0.5);
-    const lineOffsets = Uint32Array.from(
-      {length: FAMILY_SIZE * 2 + 1},
-      (_, line) => line * VERTICES
-    );
+    const lines = createCrossingLines(random, world, FAMILY_SIZE, FAMILY_SIZE, VERTICES);
+    const {lineOffsets} = lines;
     const getPositions = (sweep: number, tilt: number) => {
-      const positions = new Float32Array(FAMILY_SIZE * 2 * VERTICES * 2);
-      for (let line = 0; line < FAMILY_SIZE * 2; line++) {
-        const isHorizontal = line < FAMILY_SIZE;
-        const slot = (isHorizontal ? line : line - FAMILY_SIZE) + 0.5;
-        for (let vertex = 0; vertex < VERTICES; vertex++) {
-          const along = vertex / (VERTICES - 1);
-          const noise = jitter[line * VERTICES + vertex] * 0.07;
-          const row = line * VERTICES + vertex;
-          if (isHorizontal) {
-            const baseY = (slot / FAMILY_SIZE) * world.height * 0.9 + world.height * 0.05;
-            positions[row * 2] = (0.03 + 0.94 * along) * world.width;
-            positions[row * 2 + 1] = baseY + noise + (along - 0.5) * tilt * 0.3;
-          } else {
-            const baseX =
-              ((slot / FAMILY_SIZE + sweep * 0.25) % 1) * world.width * 0.94 + 0.03 * world.width;
-            positions[row * 2] = baseX + noise + (along - 0.5) * tilt * 0.3;
-            positions[row * 2 + 1] = (0.03 + 0.94 * along) * world.height;
-          }
+      const positions = new Float32Array(lines.positions);
+      for (let vertex = 0; vertex < lines.vertexCount; vertex++) {
+        const x = positions[vertex * 2];
+        const y = positions[vertex * 2 + 1];
+        if (vertex < lines.firstVertexCount) {
+          positions[vertex * 2 + 1] += (x / world.width - 0.5) * tilt * 0.3;
+        } else {
+          positions[vertex * 2] += (sweep - 0.3) * 0.25 * world.width + (y - 0.5) * tilt * 0.3;
         }
       }
       return positions;
@@ -97,6 +86,14 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer carries the vertical family of input lines: x sweeps it sideways, y tilts both
+  // families, and the cuts move with the crossings.
+  interaction: bindAxes(parameters, {
+    kind: 'drag',
+    hint: 'drag the crossing lines',
+    x: 'sweep',
+    y: 'tilt'
+  }),
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.original, radius: 4},
     {
@@ -105,7 +102,6 @@ export default defineOperationRun({
       edges: outputs.edges,
       values: outputs.lineIds,
       radius: 2
-    },
-    {layer: 'dots', positions: outputs.points, values: outputs.lineIds, radius: 3}
+    }
   ]
 });

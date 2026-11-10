@@ -2,13 +2,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPURasterFractionalZonalDistribution behind GPURasterFractionalCoverage: the coverage-weighted
-// quantile of the raster values inside every polygon (filled), and the weighted sample variance
-// (bars). The probability is a per-frame input; the quantile method is compile-time.
+// quantile of the raster values inside every polygon (filled). The probability is a per-frame input,
+// set by the pointer; the quantile method is compile-time.
 
 import {
   GPURasterFractionalZonalDistribution,
   makeGPURasterBand
 } from '@luma-contributors/analysis/raster-analysis';
+import {bindAxes} from '../../interaction';
 import {defineOperationRun} from '../../define-run';
 import {parameters} from './fractional-zonal-distribution.parameters';
 import {drawRaster} from './support/bands';
@@ -16,9 +17,13 @@ import {
   addFractionalCoverage,
   createZoneInputs,
   drawZones,
+  getTractAt,
+  getTractRing,
   sampleField,
   uploadZoneMesh
 } from './support/zones';
+
+const PAD = bindAxes(parameters, {kind: 'level', hint: 'move the probability', x: 'probability'});
 
 export default defineOperationRun({
   parameters,
@@ -74,11 +79,40 @@ export default defineOperationRun({
       update: current => probabilities.write(Float32Array.of(current.probability))
     };
   },
+  // The pointer is the probability (x), shown on a scale along the bottom; the readout gives the
+  // quantile of the tract under it.
+  interaction: {
+    ...PAD,
+    resolve: (pointer, state) => {
+      const base = PAD.resolve(pointer, state);
+      const current = {...state.values, ...base.values};
+      const {inputs, outputs, world, peek} = state;
+      const tract = getTractAt(inputs.features, pointer.x, pointer.y);
+      const quantiles = peek(outputs.quantiles);
+      const left = world.width * 0.05;
+      const right = world.width * 0.95;
+      const y = world.height * 0.04;
+      const x = left + (right - left) * current.probability;
+      return {
+        ...base,
+        glyphs: [
+          {shape: 'line', from: [left, y], to: [right, y]},
+          {shape: 'dot', at: [x, y]},
+          ...(tract >= 0
+            ? ([
+                {shape: 'polyline', closed: true, points: getTractRing(inputs.features, tract)}
+              ] as const)
+            : [])
+        ],
+        readout: `probability ${current.probability.toFixed(2)} | tract quantile ${tract >= 0 && quantiles ? quantiles[tract].toFixed(2) : '-'}`
+      };
+    }
+  },
   draw: ({inputs, outputs, theme}) => [
     drawRaster(outputs, outputs.cellValues, {context: true}),
     drawZones(inputs.features, outputs.mesh, outputs.quantiles, {
       ramp: 'sequential',
-      range: [0, 1]
+      range: [0.1, 0.9]
     }),
     {layer: 'lines', context: true, segments: outputs.mesh.outline, color: [...theme.ink, 0.8]}
   ]

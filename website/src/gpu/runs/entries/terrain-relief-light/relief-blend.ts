@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUReliefBlend on a synthetic DEM: four terrain layers (hillshade, slope, positive openness and
+// GPUReliefBlend on a Grand Canyon DEM: four terrain layers (hillshade, slope, positive openness and
 // sky view factor), each stretched to [0, 1] and composited with its own blend mode and opacity
 // into one greyscale relief image, the recipe of the Visualization for Archaeological Topography.
 // The layer settings are a per-frame parameter buffer.
@@ -14,8 +14,10 @@ import {
   type GPUReliefBlendMode
 } from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {addTerrainHorizon} from './support/horizon';
-import {createTerrainInput, drawElevationContext, drawGrid, uploadTerrain} from './support/terrain';
+import {drawRelief} from './support/relief';
+import {createTerrainInput, uploadTerrain} from './support/terrain';
 import {parameters} from './relief-blend.parameters';
 
 const BLEND_MODES: GPUReliefBlendMode[] = ['normal', 'multiply', 'luminosity', 'overlay'];
@@ -23,10 +25,10 @@ const BLEND_MODES: GPUReliefBlendMode[] = ['normal', 'multiply', 'luminosity', '
 export default defineOperationRun({
   parameters,
   caption: 'Hillshade, slope, openness and sky view layers in; one blended relief image out.',
-  createInputs: ({random, world}) => createTerrainInput(random, world),
+  createInputs: ({world}) => createTerrainInput(world),
   build(builder, terrain) {
     const uploaded = uploadTerrain(builder, terrain);
-    const {grid, band, elevation, cellCount} = uploaded;
+    const {grid, band, cellCount} = uploaded;
     const derivativeParameters = builder.allocate('derivative-parameters', 'float32', 8);
     derivativeParameters.write(getGPUTerrainDerivativesParameterValues({zFactor: 2}, grid));
     const slope = builder.allocate('slope', 'float32', cellCount);
@@ -54,7 +56,7 @@ export default defineOperationRun({
       })
     );
     return {
-      outputs: {elevation, blend},
+      outputs: {blend},
       update: current =>
         parameterBuffer.write(
           getGPUReliefBlendParameterValues([
@@ -72,8 +74,16 @@ export default defineOperationRun({
         )
     };
   },
-  draw: ({inputs, outputs}) => [
-    drawElevationContext(inputs, outputs.elevation),
-    drawGrid(inputs, outputs.blend, {range: [0, 1], smoothing: true})
-  ]
+  // The pointer mixes the layers: x is the slope layer's opacity, y the positive openness layer's.
+  interaction: bindAxes(parameters, {
+    kind: 'pad',
+    hint: 'mix slope and openness',
+    x: 'slopeOpacity',
+    y: 'opennessOpacity',
+    decorate: (values, pointer) => ({
+      glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
+      readout: `slope ${values.slopeOpacity.toFixed(2)} · openness ${values.opennessOpacity.toFixed(2)}`
+    })
+  }),
+  draw: ({inputs, outputs}) => [drawRelief(inputs, outputs.blend)]
 });

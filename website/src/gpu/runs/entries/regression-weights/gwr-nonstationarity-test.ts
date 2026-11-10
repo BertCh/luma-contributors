@@ -16,7 +16,8 @@ import {
   getGPUGeographicallyWeightedRegressionParameterValues,
   getGPUPermutationParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {defineOperationRun} from '../../define-run';
+import {defineOperationRun, type RunBuffer} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {parameters} from './gwr-nonstationarity-test.parameters';
 import {
   createRegressionInputs,
@@ -35,7 +36,7 @@ export default defineOperationRun({
   parameters,
   caption:
     'Local slope (left); observed variation (bars), shuffled variation (dots), p-values (below).',
-  createInputs: ({random, world}) => createRegressionInputs(random, world, 8, MAP_SHARE, true),
+  createInputs: ({random, world}) => createRegressionInputs(random, world, 8, MAP_SHARE),
   build(builder, inputs) {
     const rowCount = inputs.tracts.count;
     const positions = builder.upload('positions', 'float32x2', inputs.tracts.centers);
@@ -121,7 +122,9 @@ export default defineOperationRun({
           1,
           3
         ),
-        markerPositions
+        markerPositions,
+        // The conventional 5% level, drawn as a line across the p-value chart.
+        significance: builder.upload('significance', 'float32', new Float32Array(64).fill(0.05))
       },
       update: current => {
         response.write(
@@ -142,13 +145,26 @@ export default defineOperationRun({
       }
     };
   },
+  // x sets how many shuffles the test runs, y the bandwidth of the fits it shuffles.
+  interaction: bindAxes<unknown, {pseudoP: RunBuffer<'float32'>}>(parameters, {
+    kind: 'pad',
+    hint: 'permutations and bandwidth',
+    x: 'permutationCount',
+    y: 'bandwidth',
+    decorate: (values, _pointer, {outputs, peek}) => {
+      const pseudoP = peek(outputs.pseudoP);
+      return {
+        readout: `permutationCount ${values.permutationCount} · bandwidth ${values.bandwidth} · p(x1) ${pseudoP ? pseudoP[1].toFixed(2) : '-'}`
+      };
+    }
+  }),
   draw: ({inputs, outputs}) => [
     ...drawTractMap(inputs, outputs.mesh, outputs.slope, {ramp: 'sequential', range: [0, 3.2]}),
     {
       layer: 'chart',
       kind: 'bars',
       values: outputs.observed,
-      ramp: 'sequential',
+      color: [0.55, 0.65, 0.95, 0.9],
       range: [0, 1],
       rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]
     },
@@ -169,6 +185,15 @@ export default defineOperationRun({
       values: outputs.pseudoP,
       range: [0, 1],
       color: [0.55, 0.65, 0.95, 0.9],
+      rectangle: [MAP_SHARE + 0.08, 0.08, 0.97, 0.34]
+    },
+    {
+      layer: 'chart',
+      kind: 'line',
+      values: outputs.significance,
+      range: [0, 1],
+      color: [1, 0.55, 0.3, 0.9],
+      radius: 1,
       rectangle: [MAP_SHARE + 0.08, 0.08, 0.97, 0.34]
     }
   ]

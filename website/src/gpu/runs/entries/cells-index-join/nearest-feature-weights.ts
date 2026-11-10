@@ -11,8 +11,10 @@ import {
   GPUNearestFeatureWeights
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {addCsrEdgeSegments, addCsrRowSums} from './support/kernels';
-import {createRandomPoints} from './support/join';
+import {getRainStations} from '../../../data/point-observations';
 import {parameters} from './nearest-feature-weights.parameters';
 
 const POINT_COUNT = 90;
@@ -20,7 +22,10 @@ const POINT_COUNT = 90;
 export default defineOperationRun({
   parameters,
   caption: 'k-nearest-neighbor weights: edges and the total weight of every point.',
-  createInputs: ({random, world}) => ({points: createRandomPoints(random, world, POINT_COUNT)}),
+  createInputs: ({random, world}) => {
+    const points = getRainStations(random, world, POINT_COUNT, true).positions;
+    return {points, index: createPointIndex(points), held: -1};
+  },
   build(builder, inputs, values) {
     const k = values.k;
     const slotCapacity = k + 1;
@@ -75,6 +80,9 @@ export default defineOperationRun({
     return {
       outputs: {
         points,
+        offsets,
+        neighbors,
+        weights,
         edges: addCsrEdgeSegments(builder, 'edges', {
           positions: points,
           offsets,
@@ -84,6 +92,39 @@ export default defineOperationRun({
         rowSums: addCsrRowSums(builder, 'weights', {offsets, weights, rowCount: POINT_COUNT})
       }
     };
+  },
+  // Render-only probe: the CSR row of the point under the pointer, read back from the GPU.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a point',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const row = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.held);
+      inputs.held = row;
+      if (row < 0) return {};
+      const x = inputs.points[row * 2];
+      const y = inputs.points[row * 2 + 1];
+      const glyphs: RunGlyph[] = [{shape: 'ring', at: [x, y], radius: 0.025}];
+      const offsets = peek(outputs.offsets);
+      const neighbors = peek(outputs.neighbors);
+      const weights = peek(outputs.weights);
+      let total = 0;
+      if (offsets && neighbors && weights) {
+        for (let entry = offsets[row]; entry < offsets[row + 1]; entry++) {
+          const to = [
+            inputs.points[neighbors[entry] * 2],
+            inputs.points[neighbors[entry] * 2 + 1]
+          ] as const;
+          glyphs.push({shape: 'line', from: [x, y], to}, {shape: 'dot', at: to});
+          total += weights[entry];
+        }
+      }
+      return {
+        focus: row,
+        glyphs,
+        readout: `row ${row} · k ${values.k} · Σ weights ${total.toFixed(2)}`
+      };
+    }
   },
   draw: ({outputs, values}) => [
     {

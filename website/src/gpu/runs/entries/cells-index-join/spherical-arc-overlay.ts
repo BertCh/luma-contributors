@@ -7,34 +7,30 @@
 
 import {GPUSphericalArcOverlay} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
 import {addCountedRingSegments, addUnitVectorsToLonLat} from './support/kernels';
 import {packUnitVectors} from './support/polygons';
+import {
+  getLakeShore,
+  getRingSegments,
+  getSurveySwath,
+  SUPERIOR_WINDOW
+} from './support/spherical-surveys';
 import {parameters} from './spherical-arc-overlay.parameters';
 
 const OPERATIONS = ['intersection', 'union', 'difference', 'symmetric-difference'] as const;
-const OUTPUT_VERTICES = 64;
-
-function createRing(center: [number, number], radius: number, count: number, turn: number) {
-  return Array.from({length: count}, (_, index) => {
-    const angle = (2 * Math.PI * index) / count + turn;
-    const length = radius * (index % 2 === 0 ? 1 : 0.8);
-    return [center[0] + length * Math.cos(angle), center[1] + length * Math.sin(angle)];
-  });
-}
-
-function ringToSegments(ring: number[][]): Float32Array {
-  return Float32Array.from(
-    ring.flatMap(([x, y], index) => [x, y, ...ring[(index + 1) % ring.length]])
-  );
-}
+const OUTPUT_VERTICES = 128;
+const LONGITUDE_PARAMETER = findParameter(parameters, 'shift');
+const LATITUDE_PARAMETER = findParameter(parameters, 'shiftLatitude');
 
 export default defineOperationRun({
   parameters,
-  caption: 'Union, intersection or difference of two spherical rings by exact arc arrangement.',
-  createInputs: ({world}) => ({center: [world.width / 2, 0.5] as [number, number]}),
-  build(builder, inputs, values) {
-    const leftRing = createRing([inputs.center[0] - 0.1, inputs.center[1]], 0.32, 8, 0.1);
-    const rightVertexCount = 8;
+  geographicWindow: SUPERIOR_WINDOW,
+  caption:
+    'Lake Superior’s mapped shoreline and a modeled survey corridor, combined along great-circle arcs.',
+  createInputs: () => ({shore: getLakeShore('Lake Superior')}),
+  build(builder, {shore: leftRing}, values) {
+    const rightVertexCount = 4;
     const rightPositions = builder.allocate('right-positions', 'float32x3', rightVertexCount);
     const positions = builder.allocate('result-positions', 'float32x3', OUTPUT_VERTICES);
     const ringOffsets = builder.allocate('result-rings', 'uint32', 17);
@@ -67,28 +63,40 @@ export default defineOperationRun({
     );
     const lonLat = addUnitVectorsToLonLat(builder, 'result', positions);
     const operandOutlines = [
-      builder.upload('left-outline', 'float32x4', ringToSegments(leftRing)),
+      builder.upload('left-outline', 'float32x4', getRingSegments([leftRing])),
       builder.allocate('right-outline', 'float32x4', rightVertexCount)
     ];
     return {
       outputs: {
         operandOutlines,
+        counts,
         result: addCountedRingSegments(builder, 'result', {positions: lonLat, ringOffsets, counts})
       },
       update: current => {
-        const ring = createRing(
-          [inputs.center[0] + current.shift, inputs.center[1] + 0.04],
-          0.3,
-          rightVertexCount,
-          0.5
-        );
+        const ring = getSurveySwath(current.shift, current.shiftLatitude);
         rightPositions.write(packUnitVectors([ring]));
-        operandOutlines[1].write(ringToSegments(ring));
+        operandOutlines[1].write(getRingSegments([ring]));
       }
     };
   },
   rebuildOn: ['operation'],
-  draw: ({outputs}) => [
+  // Drag: the survey corridor is centered on the pointer's longitude and latitude.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag the corridor',
+    rest: ({toUnit}) => toUnit([LONGITUDE_PARAMETER.default, LATITUDE_PARAMETER.default]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const shift = snapToParameter(LONGITUDE_PARAMETER, pointer.x);
+      const shiftLatitude = snapToParameter(LATITUDE_PARAMETER, pointer.y);
+      const counts = peek(outputs.counts);
+      return {
+        values: {shift, shiftLatitude},
+        glyphs: [{shape: 'crosshair', at: [shift, shiftLatitude]}],
+        readout: `${OPERATIONS[values.operation]} · ${counts ? `${counts[1]} rings, ${counts[0]} vertices` : '…'}`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     {
       layer: 'lines',
       context: true,
@@ -103,6 +111,6 @@ export default defineOperationRun({
       radius: 1.2,
       color: [1, 0.6, 0.35, 0.85]
     },
-    {layer: 'lines', segments: outputs.result, radius: 3, color: [1, 1, 1, 1]}
+    {layer: 'lines', segments: outputs.result, radius: 3, color: [...theme.ink, 1]}
   ]
 });

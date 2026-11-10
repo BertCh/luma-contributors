@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPULineIntegralConvolution on a seeded swirl field: every output pixel averages white noise along
+// GPULineIntegralConvolution on the GFS Helene wind field: every output pixel averages white noise along
 // its streamline for stepCount steps each way, so the noise smears into the flow. The raster it
 // wrote (values) is drawn as light streaks over the field speed (speeds, also its output).
 
@@ -12,15 +12,17 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, formatNumber, getFractionOf, getParameterAt} from '../../interaction';
 import {parameters} from './line-integral-convolution.parameters';
-import {createSwirlField} from './shared/vector-field';
+import {createWindField} from './shared/vector-field';
 
 const OUTPUT_SCALE = 2;
 
 export default defineOperationRun({
   parameters,
   caption: 'White noise smeared along the flow reveals eddies and saddles.',
-  createInputs: context => createSwirlField(context),
+  // LIC produces a row-major image. March with y increasing toward its bottom edge.
+  createInputs: context => createWindField(context, 'raster'),
   build(builder, field, current) {
     const outputColumns = field.columns * OUTPUT_SCALE;
     const outputRows = field.rows * OUTPUT_SCALE;
@@ -61,7 +63,23 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['stepCount'],
-  draw: ({inputs, outputs}) => [
+  // x draws the curtain between the field's speed (left) and the streaks convolved along its
+  // direction (right); y is the length of each convolution step.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe speed | streaks',
+    rest: [0.16, 1 - getFractionOf(findParameter(parameters, 'stepLength'), 0.5)],
+    resolve(pointer, {values}) {
+      const stepLength = getParameterAt(findParameter(parameters, 'stepLength'), 1 - pointer.unitY);
+      return {
+        values: {stepLength},
+        curtain: pointer.x,
+        glyphs: [{shape: 'curtain', x: pointer.x}],
+        readout: `speed | streaks · stepLength ${formatNumber(stepLength)} · ${values.stepCount} steps`
+      };
+    }
+  },
+  draw: ({inputs, outputs, interaction}) => [
     {
       layer: 'raster',
       values: outputs.speeds,
@@ -71,6 +89,7 @@ export default defineOperationRun({
     },
     {
       layer: 'raster',
+      clip: {side: 'right', x: interaction.curtain ?? 0},
       values: outputs.values,
       columns: inputs.columns * OUTPUT_SCALE,
       rows: inputs.rows * OUTPUT_SCALE,

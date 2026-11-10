@@ -1,97 +1,154 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// A small synthetic city for the urban-form recipes: a grid of rectangular buildings separated by
-// streets, with wall segments, heights and viewpoints in the street intersections.
+import footprints from '../../../../data/amsterdam-buildings.json';
 
-export type World = {width: number; height: number};
-export type Random = () => number;
-
-export type Buildings = {
-  count: number;
-  columns: number;
-  rows: number;
-  /** (x0, y0, x1, y1) of every building. */
-  rectangles: Float32Array;
-  /** Wall segments, four per building, counter-clockwise. */
-  segments: Float32Array;
-  /** Owning building of every wall segment. */
-  segmentBuildingIds: Uint32Array;
-  heights: Float32Array;
-};
+type Position = [number, number];
+type World = {width: number; height: number};
 
 export type CityLayout = {
-  margin: number;
-  cellWidth: number;
-  cellHeight: number;
-  columns: number;
-  rows: number;
-  /** Per-building size jitter in [0, 1), fixed so a slider only rescales. */
-  jitter: Float32Array;
+  rings: Position[][];
+  centers: Position[];
   heights: Float32Array;
+  streetY: number;
 };
 
-export function createCityLayout(
-  random: Random,
-  world: World,
-  columns: number,
-  rows: number,
-  margin = 0.04
-): CityLayout {
+function centerOf(ring: Position[]): Position {
+  return [
+    ring.reduce((sum, point) => sum + point[0], 0) / ring.length,
+    ring.reduce((sum, point) => sum + point[1], 0) / ring.length
+  ];
+}
+
+/** Fit whole Overtoom frontages in an oblique local frame, with the street running left to right. */
+export function createCityLayout(world: World, count: number, separate = false): CityLayout {
+  const norm = Math.hypot(1, 0.36);
+  const buildings = footprints
+    .map(building => {
+      // Project RD metres onto the street axis and its normal. The transect lies at y = 0.
+      const ring: Position[] = building.ring.map(([east, north]) => [
+        (east + 0.36 * north) / norm,
+        (north - 0.36 * east) / norm + 15
+      ]);
+      return {ring, center: centerOf(ring), height: building.height};
+    })
+    .filter(building => {
+      const north = building.ring.map(point => point[1]);
+      return Math.abs(building.center[1]) < 33 && Math.max(...north) - Math.min(...north) < 40;
+    });
+  // Include frontages on both sides of the street, starting near the midpoint of the tile.
+  buildings.sort(
+    (first, second) => Math.abs(first.center[0] - 12) - Math.abs(second.center[0] - 12)
+  );
+  const selected: typeof buildings = [];
+  const occupiedVertices = new Set<string>();
+  for (const building of buildings) {
+    // The tessellation operator requires unique boundary samples across owners.
+    if (separate && building.ring.some(point => occupiedVertices.has(point.join(',')))) continue;
+    selected.push(building);
+    if (separate) {
+      for (const point of building.ring) occupiedVertices.add(point.join(','));
+    }
+    if (selected.length === count) break;
+  }
+  selected.sort((first, second) => first.center[0] - second.center[0]);
+  const vertices = selected.flatMap(building => building.ring);
+  const west = Math.min(...vertices.map(vertex => vertex[0]));
+  const east = Math.max(...vertices.map(vertex => vertex[0]));
+  const south = Math.min(...vertices.map(vertex => vertex[1]));
+  const north = Math.max(...vertices.map(vertex => vertex[1]));
+  const scale = 0.88 * Math.min(world.width / (east - west), world.height / (north - south));
+  const originX = (world.width - (west + east) * scale) / 2;
+  const streetY = (world.height - (south + north) * scale) / 2;
+  const rings = selected.map(building =>
+    building.ring.map(([x, y]): Position => [originX + x * scale, streetY + y * scale])
+  );
   return {
-    margin,
-    cellWidth: (world.width - 2 * margin) / columns,
-    cellHeight: (1 - 2 * margin) / rows,
-    columns,
-    rows,
-    jitter: Float32Array.from({length: columns * rows * 2}, () => random()),
-    heights: Float32Array.from({length: columns * rows}, () => 6 + 30 * random())
+    rings,
+    centers: rings.map(centerOf),
+    heights: Float32Array.from(selected, building => building.height * scale),
+    streetY
   };
 }
 
-/** Buildings that fill `fill` of their cell (the rest is street), with a little size jitter. */
-export function getBuildings(layout: CityLayout, fill: number): Buildings {
-  const count = layout.columns * layout.rows;
-  const rectangles = new Float32Array(count * 4);
-  const segments = new Float32Array(count * 16);
-  for (let row = 0; row < layout.rows; row++) {
-    for (let column = 0; column < layout.columns; column++) {
-      const building = row * layout.columns + column;
-      const widthShare = fill * (0.85 + 0.15 * layout.jitter[building * 2]);
-      const heightShare = fill * (0.85 + 0.15 * layout.jitter[building * 2 + 1]);
-      const centerX = layout.margin + (column + 0.5) * layout.cellWidth;
-      const centerY = layout.margin + (row + 0.5) * layout.cellHeight;
-      const x0 = centerX - (layout.cellWidth * widthShare) / 2;
-      const x1 = centerX + (layout.cellWidth * widthShare) / 2;
-      const y0 = centerY - (layout.cellHeight * heightShare) / 2;
-      const y1 = centerY + (layout.cellHeight * heightShare) / 2;
-      rectangles.set([x0, y0, x1, y1], building * 4);
-      segments.set([x0, y0, x1, y0, x1, y0, x1, y1, x1, y1, x0, y1, x0, y1, x0, y0], building * 16);
-    }
-  }
+/** Alter setbacks for the interactive scenarios. A scale of one keeps the observed outlines. */
+export function getBuildings(
+  layout: CityLayout,
+  fill = 1,
+  widening = 0,
+  /** One building moved by `offset` (world units) while the pointer carries it. */
+  carried?: {building: number; offset: Position}
+) {
+  const segments: number[] = [];
+  const owners: number[] = [];
+  layout.rings.forEach((ring, building) => {
+    const [centerX, centerY] = layout.centers[building];
+    const shift = (Math.sign(centerY - layout.streetY) * widening) / 2;
+    const [carriedX, carriedY] = carried && carried.building === building ? carried.offset : [0, 0];
+    const scaled = ring.map(([x, y]) => [
+      centerX + (x - centerX) * fill + carriedX,
+      centerY + (y - centerY) * fill + shift + carriedY
+    ]);
+    scaled.forEach((point, corner) => {
+      segments.push(...point, ...scaled[(corner + 1) % ring.length]);
+      owners.push(building);
+    });
+  });
   return {
-    count,
-    columns: layout.columns,
-    rows: layout.rows,
-    rectangles,
-    segments,
-    segmentBuildingIds: Uint32Array.from({length: count * 4}, (_, segment) =>
-      Math.floor(segment / 4)
-    ),
-    heights: layout.heights
+    count: layout.rings.length,
+    segments: Float32Array.from(segments),
+    segmentBuildingIds: Uint32Array.from(owners)
   };
 }
 
-/** Positions in the street intersections of the layout (between four buildings). */
-export function getIntersections(layout: CityLayout): Float32Array {
-  const points: number[] = [];
-  for (let row = 1; row < layout.rows; row++) {
-    for (let column = 1; column < layout.columns; column++) {
-      points.push(
-        layout.margin + column * layout.cellWidth,
-        layout.margin + row * layout.cellHeight
-      );
+function containsPoint(ring: Position[], x: number, y: number): boolean {
+  let inside = false;
+  for (let corner = 0, last = ring.length - 1; corner < ring.length; last = corner++) {
+    const [firstX, firstY] = ring[corner];
+    const [lastX, lastY] = ring[last];
+    if (
+      firstY > y !== lastY > y &&
+      x < ((lastX - firstX) * (y - firstY)) / (lastY - firstY) + firstX
+    ) {
+      inside = !inside;
     }
   }
-  return Float32Array.from(points);
+  return inside;
+}
+
+/** The building whose footprint contains (x, y), or -1 on open ground. */
+export function findBuildingAt(layout: CityLayout, x: number, y: number): number {
+  return layout.rings.findIndex(ring => containsPoint(ring, x, y));
+}
+
+/** Uniform sampling of open space, including sidewalks, the street and rear courtyards. */
+export function sampleOpenSpace(layout: CityLayout, world: World): Float32Array {
+  const points: Position[] = [];
+  for (let row = 1; row < 17; row++) {
+    for (let column = 1; column < 28; column++) {
+      const x = (world.width * column) / 28;
+      const y = (world.height * row) / 17;
+      if (!layout.rings.some(ring => containsPoint(ring, x, y))) points.push([x, y]);
+    }
+  }
+  const count = Math.min(96, points.length);
+  return Float32Array.from(
+    Array.from(
+      {length: count},
+      (_, index) => points[Math.floor((index * points.length) / count)]
+    ).flat()
+  );
+}
+
+/** Positions along the centerline, inset from the edges of the measured frontages. */
+export function sampleStreet(layout: CityLayout, count: number): Float32Array {
+  const horizontal = layout.centers.map(point => point[0]);
+  const start = Math.min(...horizontal);
+  const end = Math.max(...horizontal);
+  return Float32Array.from(
+    Array.from({length: count}, (_, index) => [
+      start + ((index + 0.5) / count) * (end - start),
+      layout.streetY
+    ]).flat()
+  );
 }

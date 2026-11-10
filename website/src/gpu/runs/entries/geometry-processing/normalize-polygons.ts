@@ -9,15 +9,19 @@ import {GPUNormalizePolygons} from '@luma-contributors/analysis/gpu-spatial-anal
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
 import {createPolygonSet, restartRings, uploadPolygonSet} from './shared/polygon-set';
-import {addKernel, addOutputEdges} from './shared/shape-segments';
+import {addKernel, addOutputEdges, addRingArrows} from './shared/shape-segments';
+import {findParameter, snapToParameter} from '../../interaction';
 import {parameters} from './normalize-polygons.parameters';
+
+const STARTS = findParameter(parameters, 'start');
 
 export default defineOperationRun({
   parameters,
   caption: 'Rings re-started at a canonical vertex and wound one way.',
-  createInputs: ({seed, world}) => ({
-    set: createPolygonSet(makeRandom(seed), world, {hasHoles: true, rows: 2, columns: 4})
-  }),
+  createInputs: ({seed, world}) => {
+    const set = createPolygonSet(makeRandom(seed), world, {hasHoles: true, rows: 2, columns: 4});
+    return {set};
+  },
   build(builder, {set}) {
     const polygons = uploadPolygonSet(builder, set);
     const ringCount = set.ringOffsets.length - 1;
@@ -71,6 +75,8 @@ export default defineOperationRun({
         inputEdges: polygons.edges,
         inputStarts: firstVertices('input-starts', input, polygons.ringOffsets),
         normalizedStarts: firstVertices('normalized-starts', normalized, normalizedRings),
+        arrows: addRingArrows(builder, 'normalized', normalized, normalizedRings, ringCount),
+        inputArrows: addRingArrows(builder, 'input', input, polygons.ringOffsets, ringCount),
         polygons
       },
       update: values => {
@@ -91,10 +97,34 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer's angle around the picture center is where every input ring starts (eight vertices around).
+  interaction: {
+    kind: 'aim',
+    hint: 'aim the ring start',
+    rest: ({world, toUnit}) => {
+      const angle = (STARTS.default / 8) * Math.PI * 2;
+      return toUnit([world.width / 2 + Math.cos(angle) * 0.3, 0.5 + Math.sin(angle) * 0.3]);
+    },
+    resolve(pointer, {world}) {
+      const center: [number, number] = [world.width / 2, 0.5];
+      const turn = Math.atan2(pointer.y - center[1], pointer.x - center[0]) / (Math.PI * 2);
+      const start = snapToParameter(STARTS, ((turn + 1) % 1) * 8);
+      return {
+        values: {start: start % 8},
+        glyphs: [
+          {shape: 'arrow', from: center, to: [pointer.x, pointer.y]},
+          {shape: 'dot', at: center}
+        ],
+        readout: `input start ${start % 8} · canonical start fixed`
+      };
+    }
+  },
   draw: ({outputs, theme}) => [
     {layer: 'segments', context: true, nodes: outputs.input, edges: outputs.inputEdges},
     {layer: 'segments', nodes: outputs.normalized, edges: outputs.edges, radius: 1.8},
-    {layer: 'dots', positions: outputs.inputStarts, radius: 5, color: [...theme.ink, 1]},
+    {layer: 'lines', context: true, segments: outputs.inputArrows, radius: 1.4},
+    {layer: 'lines', segments: outputs.arrows, radius: 1.4, alpha: 0.8},
+    {layer: 'dots', positions: outputs.inputStarts, radius: 8, color: [...theme.ink, 1]},
     {layer: 'dots', positions: outputs.normalizedStarts, radius: 4, color: [1, 0.6, 0.2, 1]}
   ]
 });

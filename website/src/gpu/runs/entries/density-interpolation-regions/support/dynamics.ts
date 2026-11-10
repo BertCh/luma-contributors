@@ -6,6 +6,7 @@
 // drawn as a grid of colored cells through the polygon layer.
 
 import {createTracts, type CsrWeights, type TractsInput} from '../../../inputs';
+import workplaceJobs from '../../../../data/chicago-workplace-jobs.json';
 import type {RunBuilder} from '../../../define-run';
 
 export const PERIOD_COUNT = 6;
@@ -16,26 +17,29 @@ export type DynamicsInput = {
   values: Float32Array;
 };
 
-/** Tracts on the left `share` of the world with a smooth field that drifts and regresses over time. */
+const jobsByTract: Record<string, number[]> = workplaceJobs;
+const maximumLogJobs = Math.log1p(Math.max(...Object.values(jobsByTract).flat()));
+
+/** Workplace jobs in 2018–23, log-scaled on a single range shared by all six years. */
 export function createDynamics(
   random: () => number,
   world: {width: number; height: number},
   rows = 10,
-  share = 0.5
+  share = 0.5,
+  bottomMargin = 0
 ): DynamicsInput {
-  const noise = 0.1;
-  const tracts = createTracts(random, {width: world.width * share, height: 1}, rows, 0.2);
+  const tracts = createTracts(random, {width: world.width * share, height: 1 - bottomMargin}, rows);
+  if (bottomMargin > 0) {
+    // Lift the map so that a strip fits under it.
+    for (const array of [tracts.vertices, tracts.centers, tracts.outline]) {
+      for (let index = 1; index < array.length; index += 2) array[index] += bottomMargin;
+    }
+  }
   const values = new Float32Array(tracts.count * PERIOD_COUNT);
-  for (let period = 0; period < PERIOD_COUNT; period++) {
-    for (let place = 0; place < tracts.count; place++) {
-      const x = tracts.centers[place * 2];
-      const y = tracts.centers[place * 2 + 1];
-      const drift = 0.25 * Math.sin(period * 0.9 + x * 7 + y * 3);
-      const regression = 0.5 + (tracts.values[place] - 0.5) * (1 - 0.08 * period);
-      values[period * tracts.count + place] = Math.min(
-        1,
-        Math.max(0, regression + drift * 0.6 + (random() - 0.5) * noise)
-      );
+  for (let place = 0; place < tracts.count; place++) {
+    const years = jobsByTract[tracts.geoids[place]];
+    for (let period = 0; period < PERIOD_COUNT; period++) {
+      values[period * tracts.count + place] = Math.log1p(years[period]) / maximumLogJobs;
     }
   }
   return {tracts, values};
@@ -205,4 +209,94 @@ export function rowStandardize(csr: CsrWeights): CsrWeights {
     for (let slot = start; slot < end; slot++) weights[slot] = 1 / (end - start);
   }
   return {...csr, weights};
+}
+
+export type MatrixRectangle = readonly [number, number, number, number];
+
+/** The (row, column) of the cell of a `rows` x `columns` matrix under a world position, or null. */
+export function getMatrixCell(
+  rectangle: MatrixRectangle,
+  rows: number,
+  columns: number,
+  x: number,
+  y: number
+): {row: number; column: number} | null {
+  const [x0, y0, x1, y1] = rectangle;
+  if (x < x0 || x > x1 || y < y0 || y > y1) return null;
+  return {
+    column: Math.min(columns - 1, Math.floor(((x - x0) / (x1 - x0)) * columns)),
+    row: Math.min(rows - 1, Math.floor(((y1 - y) / (y1 - y0)) * rows))
+  };
+}
+
+/** The world rectangle of one cell of a matrix, as a box glyph's corners. */
+export function getMatrixCellBox(
+  rectangle: MatrixRectangle,
+  rows: number,
+  columns: number,
+  cell: {row: number; column: number}
+): {minimum: [number, number]; maximum: [number, number]} {
+  const [x0, y0, x1, y1] = rectangle;
+  const width = (x1 - x0) / columns;
+  const height = (y1 - y0) / rows;
+  return {
+    minimum: [x0 + cell.column * width, y1 - (cell.row + 1) * height],
+    maximum: [x0 + (cell.column + 1) * width, y1 - cell.row * height]
+  };
+}
+
+/** The (from, to) classes of one tract between `period` and the period `lag` later (earlier past the last period). */
+export function getTractMove(
+  classes: ArrayLike<number>,
+  tractCount: number,
+  period: number,
+  lag: number,
+  tract: number
+): {row: number; column: number} {
+  const start = period + lag < PERIOD_COUNT ? period : Math.max(0, PERIOD_COUNT - 1 - lag);
+  const end = Math.min(PERIOD_COUNT - 1, start + lag);
+  return {row: classes[start * tractCount + tract], column: classes[end * tractCount + tract]};
+}
+
+/**
+ * 1 for every tract that moved from class `from` to class `to` between `period` and the period
+ * `lag` later (earlier when that runs past the last period), 0 for the others; also the count.
+ */
+export function createMoveLabels(
+  classes: ArrayLike<number>,
+  tractCount: number,
+  period: number,
+  lag: number,
+  from: number,
+  to: number
+): {labels: Uint32Array; moveCount: number} {
+  const start = period + lag < PERIOD_COUNT ? period : Math.max(0, PERIOD_COUNT - 1 - lag);
+  const end = Math.min(PERIOD_COUNT - 1, start + lag);
+  const labels = new Uint32Array(tractCount);
+  let moveCount = 0;
+  for (let tract = 0; tract < tractCount; tract++) {
+    if (classes[start * tractCount + tract] === from && classes[end * tractCount + tract] === to) {
+      labels[tract] = 1;
+      moveCount++;
+    }
+  }
+  return {labels, moveCount};
+}
+
+/** The rectangles `createMatrixGrid` lays its matrices out in, in matrix order. */
+export function getMatrixGridRectangles(
+  matrixCount: number,
+  rectangle: MatrixRectangle,
+  columns = 2
+): MatrixRectangle[] {
+  const [x0, y0, x1, y1] = rectangle;
+  const rows = Math.ceil(matrixCount / columns);
+  const gap = 0.012;
+  const width = (x1 - x0 - gap * (columns - 1)) / columns;
+  const height = (y1 - y0 - gap * (rows - 1)) / rows;
+  return Array.from({length: matrixCount}, (_, matrix) => {
+    const left = x0 + (matrix % columns) * (width + gap);
+    const top = y1 - Math.floor(matrix / columns) * (height + gap);
+    return [left, top - height, left + width, top] as const;
+  });
 }

@@ -10,7 +10,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 3,
     step: 1,
-    default: 1,
+    default: 0,
     options: ['means', 'totals', 'coveredArea', 'validArea']
   },
   {id: 'gridWidth', label: 'grid.width', min: 6, max: 80, step: 2, default: 16, unit: 'cells'}

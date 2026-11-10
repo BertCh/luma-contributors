@@ -2768,6 +2768,11 @@ ${COMPILE_AND_ENCODE}
         description: '[effective resistance, true residual, energy, norm].'
       },
       {
+        name: 'estimatedCommandNodeCount',
+        type: 'number',
+        description: 'Command nodes the recipe added to the graph.'
+      },
+      {
         name: 'status',
         type: 'GraphDataView<"uint32x4">',
         description: '[converged, iterations, reachable, invalidEdges].'

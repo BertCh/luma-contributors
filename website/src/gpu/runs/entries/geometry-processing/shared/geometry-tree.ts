@@ -4,6 +4,7 @@
 // A small geometry collection in the postorder tree layout of GPUNormalizeGeometry: leaves (rings,
 // lines, points) first, then one collection root whose children are listed in a shuffled order.
 
+import {createRiverLine, createShoreRing} from '../../../../data/hydrography';
 import {makeRandom} from '../../../../demos/kit';
 import type {World} from './polygon-set';
 
@@ -57,24 +58,15 @@ export function createGeometryTree(world: World, options: GeometryTreeOptions): 
     const vertices: number[][] = [];
     if (kind === LINEAR_RING) {
       const count = 7;
-      for (let vertex = 0; vertex < count; vertex++) {
-        const angle = (vertex / count) * Math.PI * 2;
-        const spike = vertex % 2 === 0 ? 1 : 0.6;
-        vertices.push([
-          centerX + Math.cos(angle) * radius * spike,
-          centerY + Math.sin(angle) * radius * spike
-        ]);
-      }
+      vertices.push(...createShoreRing(leaf, centerX, centerY, radius * 1.3, count));
       const shift = (leaf + options.start) % count;
       const rotated = vertices.map((_, index) => vertices[(index + shift) % count]);
       vertices.splice(0, vertices.length, ...rotated, rotated[0]);
     } else if (kind === LINE_STRING) {
-      for (let vertex = 0; vertex < 6; vertex++) {
-        vertices.push([
-          centerX + (vertex / 5 - 0.5) * radius * 2.4,
-          centerY + (vertex % 2 === 0 ? -1 : 1) * radius * 0.5
-        ]);
-      }
+      const reach = createRiverLine(leaf, 8, {width: radius * 2.5, height: radius * 1.8});
+      vertices.push(
+        ...reach.map(([x, y]) => [centerX + x - radius * 1.25, centerY + y - radius * 0.9])
+      );
     } else {
       vertices.push([centerX, centerY]);
     }

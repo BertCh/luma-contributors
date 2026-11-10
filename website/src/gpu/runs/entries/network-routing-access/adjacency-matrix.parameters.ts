@@ -20,8 +20,8 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 2,
     step: 1,
-    default: 2,
+    default: 1,
     options: ['32', '64', '128']
   },
-  {id: 'communities', label: 'Data: communities', min: 2, max: 8, step: 1, default: 4}
+  {id: 'communities', label: 'North–south bands', min: 2, max: 8, step: 1, default: 4}
 ];

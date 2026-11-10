@@ -15,6 +15,6 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['parent', 'children', 'neighbors']
   },
-  {id: 'level', label: 'level', min: 6, max: 9, step: 1, default: 8},
-  {id: 'inputLevel', label: 'Data: inputLevel', min: 9, max: 11, step: 1, default: 10}
+  {id: 'level', label: 'level', min: 4, max: 8, step: 1, default: 7},
+  {id: 'inputLevel', label: 'Data: inputLevel', min: 8, max: 11, step: 1, default: 9}
 ];

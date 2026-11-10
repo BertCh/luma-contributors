@@ -2,13 +2,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUSpatialPearson between a variable and a second variable that follows it plus noise. The
-// map shows the first variable; the bar is the statistic the GPU wrote (one float32).
+// pointer is a curtain: the first variable on its left, the second on its right (one color scale).
+// The bar is the statistic the GPU wrote (one float32); the line through it is zero.
 
 import {GPUSpatialPearson} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {uploadSpatialWeights} from '../../inputs';
 import {createBandGraph, createPointField, mixNoise} from './shared/point-field';
 import {parameters} from './spatial-pearson.parameters';
+
+const CHART = [0.35, 0.04, 0.65, 0.22] as const;
 
 export default defineOperationRun({
   parameters,
@@ -30,6 +33,7 @@ export default defineOperationRun({
     return {
       outputs: {
         first,
+        second,
         statistic,
         positions: builder.upload('positions', 'float32x2', points.positions)
       },
@@ -37,13 +41,39 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['radius'],
-  draw: ({outputs}) => [
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe the two variables',
+    rest: [0.5, 0.4],
+    resolve(pointer, {outputs, world, peek}) {
+      const statistic = peek(outputs.statistic)?.[0];
+      const zero = (CHART[1] + (CHART[3] - CHART[1]) / 2) * world.height;
+      return {
+        curtain: pointer.x,
+        glyphs: [
+          {shape: 'curtain', x: pointer.x},
+          {shape: 'line', from: [CHART[0] * world.width, zero], to: [CHART[2] * world.width, zero]}
+        ],
+        readout: `x | y · spatial Pearson ${statistic === undefined ? '…' : statistic.toFixed(2)}`
+      };
+    }
+  },
+  draw: ({outputs, interaction, world}) => [
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.first,
-      radius: 4,
-      range: [0.1, 0.9]
+      radius: 4.5,
+      range: [0, 1],
+      clip: {side: 'left', x: interaction.curtain ?? world.width / 2}
+    },
+    {
+      layer: 'dots',
+      positions: outputs.positions,
+      values: outputs.second,
+      radius: 4.5,
+      range: [0, 1],
+      clip: {side: 'right', x: interaction.curtain ?? world.width / 2}
     },
     {
       layer: 'chart',
@@ -51,7 +81,7 @@ export default defineOperationRun({
       values: outputs.statistic,
       ramp: 'diverging',
       range: [-1, 1],
-      rectangle: [0.4, 0.04, 0.6, 0.32]
+      rectangle: CHART
     }
   ]
 });

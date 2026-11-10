@@ -11,6 +11,8 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createTracts, uploadSpatialWeights} from '../../inputs';
+import type {RunGlyph} from '../../interaction';
+import {findPolygonAt} from '../../pick';
 import {parameters} from './map-coloring.parameters';
 
 export default defineOperationRun({
@@ -43,6 +45,45 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['priority'],
+  // The pointer picks a tract; its rook neighbors are outlined, and none of them carries its color.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    resolve(pointer, {inputs, outputs, peek}) {
+      const row = findPolygonAt(
+        inputs.vertices,
+        inputs.triangleIndices,
+        inputs.triangleOwners,
+        pointer.x,
+        pointer.y,
+        inputs.triangleCount
+      );
+      if (row < 0) return {};
+      const getRing = (tract: number) =>
+        Array.from(
+          inputs.vertices.subarray(inputs.ringOffsets[tract] * 2, inputs.ringOffsets[tract + 1] * 2)
+        );
+      const glyphs: RunGlyph[] = [{shape: 'polyline', points: getRing(row), closed: true}];
+      const colors = peek(outputs.colors);
+      let neighborCount = 0;
+      let sharedCount = 0;
+      for (
+        let slot = inputs.contiguity.offsets[row];
+        slot < inputs.contiguity.offsets[row + 1];
+        slot++
+      ) {
+        const neighbor = inputs.contiguity.neighbors[slot];
+        neighborCount++;
+        if (colors && colors[neighbor] === colors[row]) sharedCount++;
+        glyphs.push({shape: 'polyline', points: getRing(neighbor), closed: true, dashed: true});
+      }
+      return {
+        focus: row,
+        glyphs,
+        readout: `tract ${row}${colors ? ` · color ${colors[row]}` : ''} · ${neighborCount} neighbors, ${sharedCount} share it`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     {
       layer: 'polygons',

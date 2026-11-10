@@ -7,9 +7,14 @@
 
 import {addFleetDwellZoneEventsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
 import {createFleet} from './lib/fleet';
 import {
+  chooseZoneCenters,
   createZoneRectangles,
+  dragNearestZone,
+  getZoneHalfSize,
+  type ZoneCenter,
   createZoneTriangles,
   ZONE_COUNT,
   ZONE_FEATURE_OFFSETS,
@@ -20,17 +25,20 @@ import {parameters} from './fleet-dwell-zone-events-recipe.parameters';
 
 export default defineOperationRun({
   parameters,
-  caption: 'Crossings per zone and the dwell they add up to.',
-  createInputs: ({random, world}) => ({
-    fleet: createFleet(random, world, {trackCount: 16, minimumFixes: 20, maximumFixes: 30}),
-    world
-  }),
-  build(builder, {fleet}, values) {
+  caption: 'Crossings per zone (small dots; exits ringed) and the dwell they add up to.',
+  createInputs: ({world}) => {
+    const fleet = createFleet(world, {trackCount: 16, minimumFixes: 20, maximumFixes: 30});
+    const homes = chooseZoneCenters(fleet);
+    return {fleet, world, homes, centers: homes as readonly ZoneCenter[]};
+  },
+  build(builder, inputs, values) {
+    const {fleet} = inputs;
     const capacity = fleet.trackCount * values.trackEventCapacity;
     const zonePositions = builder.allocate('zone-positions', 'float32x2', ZONE_COUNT * 4);
     const zoneOutline = builder.allocate('zone-outline', 'float32x4', ZONE_COUNT * 4);
     const eventPositions = builder.allocate('event-positions', 'float32x2', capacity);
     const eventZones = builder.allocate('event-zones', 'uint32', capacity);
+    const eventTypes = builder.allocate('event-types', 'uint32', capacity);
     const zoneTotals = builder.allocate('zone-totals', 'float32', ZONE_COUNT);
     const triangles = createZoneTriangles();
     addFleetDwellZoneEventsRecipe(builder.graph, {
@@ -50,7 +58,11 @@ export default defineOperationRun({
       candidateCapacity: 8192,
       trackEventCapacity: values.trackEventCapacity,
       outputs: {
-        events: {eventPositions: eventPositions.view, eventZones: eventZones.view},
+        events: {
+          eventPositions: eventPositions.view,
+          eventZones: eventZones.view,
+          eventTypes: eventTypes.view
+        },
         table: {sumValues: zoneTotals.view}
       }
     });
@@ -58,6 +70,7 @@ export default defineOperationRun({
       outputs: {
         eventPositions,
         eventZones,
+        eventTypes,
         zoneTotals,
         zonePositions,
         zoneOutline,
@@ -66,13 +79,54 @@ export default defineOperationRun({
         segments: builder.upload('segments', 'float32x4', fleet.segments)
       },
       update: current => {
-        const zones = createZoneRectangles({width: fleet.worldWidth, height: 1}, current.zoneSize);
+        const zones = createZoneRectangles(inputs.world, current.zoneSize, inputs.centers);
         zonePositions.write(zones.positions);
         zoneOutline.write(zones.outline);
       }
     };
   },
   rebuildOn: ['trackEventCapacity'],
+  // The pointer carries the nearest zone: the crossings and the dwell fill re-form around it.
+  interaction: {
+    kind: 'drag',
+    hint: 'move a zone',
+    rest: ({toUnit, inputs}) => toUnit(inputs.homes[0]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const {centers, zone} = dragNearestZone(inputs.homes, pointer);
+      inputs.centers = centers;
+      const [halfWidth, halfHeight] = getZoneHalfSize(inputs.world, values.zoneSize);
+      const [centerX, centerY] = centers[zone];
+      const eventPositions = peek(outputs.eventPositions);
+      const eventZones = peek(outputs.eventZones);
+      const totals = peek(outputs.zoneTotals);
+      const glyphs: RunGlyph[] = [
+        {
+          shape: 'box',
+          minimum: [centerX - halfWidth, centerY - halfHeight],
+          maximum: [centerX + halfWidth, centerY + halfHeight]
+        }
+      ];
+      let crossingCount = 0;
+      if (eventPositions && eventZones) {
+        for (let event = 0; event < eventZones.length; event++) {
+          if (eventZones[event] !== zone) continue;
+          crossingCount++;
+          if (glyphs.length < 30) {
+            glyphs.push({
+              shape: 'dot',
+              at: [eventPositions[event * 2], eventPositions[event * 2 + 1]]
+            });
+          }
+        }
+      }
+      const dwell = totals ? Math.round(totals[zone]) : 0;
+      return {
+        rerun: true,
+        glyphs,
+        readout: `zone ${'ABC'[zone]} · ${crossingCount} crossings · dwell ${dwell} s`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     {
       layer: 'polygons',
@@ -91,6 +145,18 @@ export default defineOperationRun({
       count: ZONE_COUNT * 4,
       radius: 2
     },
-    {layer: 'dots', positions: outputs.eventPositions, values: outputs.eventZones, radius: 10}
+    // Every crossing is a small dot by zone; exits get a larger bright ring (enter is type 0, and
+    // fade hides it).
+    {layer: 'dots', positions: outputs.eventPositions, values: outputs.eventZones, radius: 6},
+    {
+      layer: 'dots',
+      positions: outputs.eventPositions,
+      values: outputs.eventTypes,
+      ramp: 'sequential',
+      range: [0, 1],
+      fade: true,
+      radius: 12,
+      alpha: 0.7
+    }
   ]
 });

@@ -85,7 +85,7 @@ export function createRateDraws(random: () => number, count: number): RateDraws 
 
 /** Populations and event counts whose underlying risk follows the smooth tract values. */
 export function getRateCounts(
-  tracts: {count: number; values: Float32Array},
+  tracts: {count: number; values: Float32Array; population?: Float32Array},
   draws: RateDraws,
   contrast: number,
   smallShare: number
@@ -95,7 +95,12 @@ export function getRateCounts(
   const rates = new Float32Array(tracts.count);
   for (let tract = 0; tract < tracts.count; tract++) {
     const isSmall = draws.small[tract] < smallShare;
-    const population = isSmall ? 30 + draws.size[tract] * 80 : 600 + draws.size[tract] * 2400;
+    // Where a tract has a Census estimate use its observed denominator. The small-sample
+    // control deliberately reduces support to show the sampling variability of rates.
+    const fullPopulation = tracts.population?.[tract] ?? 600 + draws.size[tract] * 2400;
+    const population = isSmall
+      ? Math.min(fullPopulation, 30 + draws.size[tract] * 80)
+      : fullPopulation;
     const risk = 0.02 + 0.05 * contrast * tracts.values[tract] ** 2;
     const expected = population * risk;
     const count = Math.max(0, Math.round(expected + draws.noise[tract] * 2 * Math.sqrt(expected)));

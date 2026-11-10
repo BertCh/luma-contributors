@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// addHotSpotAnalysisRecipe on a raster lattice: noisy values with a high and a low cluster become
-// Getis-Ord Gi* z-scores (red hot, blue cold); cells under minimumNeighbors stay empty.
+// Getis-Ord Gi* on counts of observed 2023 earthquakes in a regional grid.
 
 import {
   addHotSpotAnalysisRecipe,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPUParameterBuffer
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {earthquakeEvents, getEventDots, getEventPosition} from './lib/earthquakes';
 import {defineOperationRun} from '../../define-run';
+import {getRasterCell, getRasterCellCenter} from '../../pick';
 import {parameters} from './hot-spot-analysis-recipe.parameters';
 
 const COLUMNS = 32;
@@ -17,11 +18,21 @@ const ROWS = 18;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Gi* z-scores of a noisy lattice: hot cluster red, cold cluster blue.',
-  createInputs: ({random}) => ({
-    noise: Float32Array.from({length: COLUMNS * ROWS}, () => random())
+  caption: 'Gi* hot spots of gridded 2023 earthquake counts in the Türkiye–Syria region.',
+  createInputs: ({world}) => ({
+    world,
+    dots: getEventDots(world.width, world.height),
+    events: earthquakeEvents.map(event => {
+      const [x, y] = getEventPosition(event, COLUMNS, ROWS);
+      return {
+        cell:
+          (ROWS - 1 - Math.min(ROWS - 1, Math.floor(y))) * COLUMNS +
+          Math.min(COLUMNS - 1, Math.floor(x)),
+        magnitude: event[3]
+      };
+    })
   }),
-  build(builder, {noise}, values) {
+  build(builder, {events, dots}, values) {
     const cellValues = builder.allocate('values', 'float32', COLUMNS * ROWS);
     const zScores = builder.allocate('z-scores', 'float32', COLUMNS * ROWS);
     const parameterBuffer = new GPUParameterBuffer(builder.device, {
@@ -44,28 +55,53 @@ export default defineOperationRun({
       outputs: {zScores: zScores.view}
     });
     return {
-      outputs: {zScores},
-      update: current =>
-        cellValues.write(
-          Float32Array.from(noise, (value, index) => {
-            const x = index % COLUMNS;
-            const y = Math.floor(index / COLUMNS);
-            const hot = Math.exp(-(((x - 8) / 4) ** 2 + ((y - 6) / 3) ** 2));
-            const cold = Math.exp(-(((x - 23) / 4) ** 2 + ((y - 12) / 3) ** 2));
-            return 10 + value * 2 + current.strength * 3 * (hot - cold);
-          })
-        )
+      outputs: {zScores, dots: builder.upload('events', 'float32x2', dots)},
+      update: current => {
+        const counts = new Float32Array(COLUMNS * ROWS);
+        for (const event of events)
+          if (event.magnitude >= current.minimumMagnitude) counts[event.cell]++;
+        cellValues.write(counts);
+      }
     };
   },
   rebuildOn: ['radius', 'minimumNeighbors'],
-  draw: ({outputs}) => [
+  // The pointer picks a cell: the box is the neighborhood Gi* summed for it, with its z-score.
+  interaction: {
+    kind: 'window',
+    hint: 'hover a cell',
+    rest: ({toUnit, world}) =>
+      toUnit(getRasterCellCenter(COLUMNS, ROWS, [0, 0, world.width, world.height], 9, 11)),
+    resolve(pointer, {outputs, values, world, peek}) {
+      const bounds = [0, 0, world.width, world.height] as const;
+      const cell = getRasterCell(COLUMNS, ROWS, bounds, pointer.x, pointer.y);
+      const radius = values.radius;
+      const [centerX, centerY] = getRasterCellCenter(COLUMNS, ROWS, bounds, cell.column, cell.row);
+      const halfWidth = ((radius + 0.5) * world.width) / COLUMNS;
+      const halfHeight = (radius + 0.5) / ROWS;
+      const zScores = peek(outputs.zScores);
+      const neighborCount = (2 * radius + 1) ** 2;
+      return {
+        glyphs: [
+          {
+            shape: 'box',
+            minimum: [centerX - halfWidth, centerY - halfHeight],
+            maximum: [centerX + halfWidth, centerY + halfHeight]
+          }
+        ],
+        readout: `cell z ${zScores ? zScores[cell.index].toFixed(1) : '...'} · radius ${radius} · ${neighborCount} cells`
+      };
+    }
+  },
+  draw: ({inputs, outputs}) => [
     {
       layer: 'raster',
       values: outputs.zScores,
       columns: COLUMNS,
       rows: ROWS,
       ramp: 'diverging',
-      range: [-4, 4]
-    }
+      range: [-4, 4],
+      alpha: 0.85
+    },
+    {layer: 'dots', context: true, positions: outputs.dots, radius: 2.2}
   ]
 });

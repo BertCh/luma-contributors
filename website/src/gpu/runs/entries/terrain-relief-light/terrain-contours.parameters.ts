@@ -5,6 +5,22 @@ import type {GpuSceneParameter} from '../../../types';
 
 // Bound to GPUTerrainContours({levels}): ten levels at firstLevel + k * interval, written per frame.
 export const parameters: GpuSceneParameter[] = [
-  {id: 'interval', label: 'levels: interval', min: 30, max: 140, step: 5, default: 70, unit: ' m'},
-  {id: 'firstLevel', label: 'levels: first', min: 0, max: 150, step: 5, default: 40, unit: ' m'}
+  {
+    id: 'interval',
+    label: 'levels: interval',
+    min: 30,
+    max: 250,
+    step: 10,
+    default: 150,
+    unit: ' m'
+  },
+  {
+    id: 'firstLevel',
+    label: 'levels: first',
+    min: 700,
+    max: 2100,
+    step: 25,
+    default: 750,
+    unit: ' m'
+  }
 ];

@@ -16,6 +16,12 @@ import {
   isolateTracts,
   uploadTractMesh
 } from './lib/tracts';
+import {
+  findZoneAt,
+  getNeighborhoodGlyphs,
+  getTractGeometry,
+  getZoneOutlineSegments
+} from './lib/zone-lookup';
 import {parameters} from './spatial-rate-recipe.parameters';
 
 export default defineOperationRun({
@@ -30,6 +36,14 @@ export default defineOperationRun({
     };
   },
   build(builder, {tracts, draws, order}, values) {
+    const islands = order.slice(0, values.islandCount);
+    const islandSegments = getZoneOutlineSegments(getTractGeometry(tracts), islands);
+    // A buffer cannot be empty: no islands draw one degenerate segment.
+    const islandOutline = builder.upload(
+      'island-outline',
+      'float32x4',
+      islandSegments.length ? islandSegments : new Float32Array(4)
+    );
     const events = builder.allocate('events', 'uint32', tracts.count);
     const populations = builder.allocate('populations', 'float32', tracts.count);
     const spatialRates = builder.allocate('spatial-rates', 'float32', tracts.count);
@@ -44,7 +58,11 @@ export default defineOperationRun({
       output: spatialRates.view
     });
     return {
-      outputs: {spatialRates, mesh: uploadTractMesh(builder, tracts)},
+      outputs: {
+        spatialRates,
+        islandOutline,
+        mesh: uploadTractMesh(builder, tracts)
+      },
       update: current => {
         const counts = getRateCounts(tracts, draws, 1, current.smallShare);
         events.write(counts.events);
@@ -53,11 +71,38 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['islandPolicy', 'islandCount'],
+  // The pointer picks a tract: the neighbors it was shrunk toward. An island has none.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a tract',
+    rest: ({toUnit, inputs}) => toUnit([inputs.tracts.centers[40], inputs.tracts.centers[41]]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const geometry = getTractGeometry(inputs.tracts);
+      const tract = findZoneAt(geometry, pointer.x, pointer.y);
+      const weights = isolateTracts(inputs.tracts.contiguity, inputs.order, values.islandCount);
+      const around = weights.neighbors.subarray(weights.offsets[tract], weights.offsets[tract + 1]);
+      const raw = getRateCounts(inputs.tracts, inputs.draws, 1, values.smallShare).rates[tract];
+      const smoothed = peek(outputs.spatialRates);
+      return {
+        glyphs: getNeighborhoodGlyphs(geometry, tract, around),
+        readout:
+          around.length === 0
+            ? `tract ${tract} · island · raw ${raw.toFixed(3)}`
+            : `raw ${raw.toFixed(3)} -> ${smoothed ? smoothed[tract].toFixed(3) : '...'} · ${around.length} neighbors`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     getTractFill(outputs.mesh, inputs.tracts, outputs.spatialRates, {
       ramp: 'sequential',
-      range: [0.01, 0.07]
+      range: [0.02, 0.06]
     }),
+    {
+      layer: 'lines',
+      segments: outputs.islandOutline,
+      count: outputs.islandOutline.length,
+      radius: 2.5
+    },
     {
       layer: 'lines',
       context: true,

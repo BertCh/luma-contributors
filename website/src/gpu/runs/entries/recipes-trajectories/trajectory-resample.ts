@@ -6,13 +6,15 @@
 
 import {GPUTrajectoryResample} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
 import {createFleet, createTrackEdges} from './lib/fleet';
+import {findNearestTrack, getTrackVertices} from './lib/track-lookup';
 import {parameters} from './trajectory-resample.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'Every track resampled to the same number of evenly spaced points.',
-  createInputs: ({random, world}) => createFleet(random, world, {trackCount: 10}),
+  createInputs: ({world}) => createFleet(world, {trackCount: 10, minimumFixes: 14}),
   build(builder, fleet, values) {
     const sampleCount = values.sampleCount;
     const samples = builder.allocate('samples', 'float32x2', fleet.trackCount * sampleCount);
@@ -40,6 +42,33 @@ export default defineOperationRun({
         )
       }
     };
+  },
+  // The pointer picks a track: its raw fixes against the evenly spaced samples the operation made.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a track',
+    rest: ({toUnit, inputs}) => {
+      const middle = Math.floor((inputs.trackOffsets[0] + inputs.trackOffsets[1]) / 2);
+      return toUnit([inputs.positions[middle * 2], inputs.positions[middle * 2 + 1]]);
+    },
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const {track} = findNearestTrack(inputs, pointer.x, pointer.y);
+      const glyphs: RunGlyph[] = [{shape: 'polyline', points: getTrackVertices(inputs, track)}];
+      const samples = peek(outputs.samples);
+      if (samples) {
+        const sampleCount = Math.round(values.sampleCount);
+        for (let sample = 0; sample < sampleCount; sample++) {
+          const row = track * sampleCount + sample;
+          glyphs.push({shape: 'dot', at: [samples[row * 2], samples[row * 2 + 1]]});
+        }
+      }
+      const fixCount = inputs.trackOffsets[track + 1] - inputs.trackOffsets[track];
+      const spacing = values.spacing === 1 ? 'arc-length' : 'time';
+      return {
+        glyphs,
+        readout: `track ${track} · ${fixCount} fixes -> ${values.sampleCount} samples · ${spacing}`
+      };
+    }
   },
   draw: ({inputs, outputs}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},

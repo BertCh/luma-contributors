@@ -11,9 +11,12 @@ import {
 } from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {uploadNetworkTopology} from '../../inputs';
-import {createRoads} from './shared/roads';
+import {createInsetMap, createRoads, getRoadContext} from './shared/roads';
 import {addSlice} from './shared/display';
+import {getChartPosition, getChartWorldX} from '../../pick';
 import {parameters} from './network-k-function.parameters';
+
+const RECTANGLE = [0.56, 0.14, 0.97, 0.88] as const;
 
 const EVENT_COUNT = 90;
 const BAND_COUNT = 48;
@@ -28,6 +31,8 @@ export default defineOperationRun({
     for (let slot = 0; slot < network.slotCount; slot++) networkLength += network.lengths[slot] / 2;
     return {
       network,
+      world,
+      inset: createInsetMap(world),
       networkLength,
       uniform: Float32Array.from({length: EVENT_COUNT * 2}, (_, index) =>
         index % 2 === 0 ? random() * world.width : random()
@@ -43,6 +48,12 @@ export default defineOperationRun({
   build(builder, inputs) {
     const {network} = inputs;
     const {topology} = uploadNetworkTopology(builder, network);
+    const displayNodes = builder.upload(
+      'display-nodes',
+      'float32x2',
+      inputs.inset.transform(network.nodes)
+    );
+    const eventDots = builder.allocate('event-dots', 'float32x2', EVENT_COUNT);
     const nodePositions = builder.upload('node-positions', 'float32x2', network.nodes);
     const events = builder.allocate('events', 'float32x2', EVENT_COUNT);
     const maximumDistance = builder.allocate('maximum-distance', 'float32', 1);
@@ -72,6 +83,9 @@ export default defineOperationRun({
     );
     return {
       outputs: {
+        nodes: displayNodes,
+        edges: builder.upload('road-edges', 'uint32x2', network.edgePairs),
+        eventDots,
         observed: addSlice(builder, {
           id: 'observed',
           source: kValues,
@@ -93,6 +107,7 @@ export default defineOperationRun({
             inputs.hotspots[index] * values.clustering;
         }
         events.write(inputs.events);
+        eventDots.write(inputs.inset.transform(inputs.events));
         maximumDistance.write(Float32Array.of(values.maximumDistance));
         networkLength.write(Float32Array.of(inputs.networkLength));
         parameterBuffer.write(
@@ -104,12 +119,62 @@ export default defineOperationRun({
       }
     };
   },
+  // Level: x on the chart is the distance band; a rule marks it and the readout compares the envelope.
+  interaction: {
+    kind: 'level',
+    hint: 'read K at a distance',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, world, peek}) {
+      // Over the chart the rule follows the pointer; over the map the pointer sweeps the whole axis.
+      const chartHit = getChartPosition(RECTANGLE, world, pointer.x, pointer.y);
+      const hit = {u: pointer.unitX < RECTANGLE[0] ? pointer.unitX / RECTANGLE[0] : chartHit.u};
+      const index = Math.min(BAND_COUNT - 1, Math.round(hit.u * (BAND_COUNT - 1)));
+      const observed = peek(outputs.observed);
+      const lower = peek(outputs.lower);
+      const upper = peek(outputs.upper);
+      const distance = ((index + 1) / BAND_COUNT) * values.maximumDistance;
+      const text =
+        observed && lower && upper
+          ? `K ${observed[index].toFixed(1)} · envelope ${lower[index].toFixed(1)}-${upper[index].toFixed(1)}`
+          : '';
+      // The same distance as a ring around the event nearest the middle of the map.
+      let central = 0;
+      for (let event = 1; event < EVENT_COUNT; event++) {
+        if (
+          Math.hypot(
+            inputs.events[event * 2] - world.width / 2,
+            inputs.events[event * 2 + 1] - 0.5
+          ) <
+          Math.hypot(
+            inputs.events[central * 2] - world.width / 2,
+            inputs.events[central * 2 + 1] - 0.5
+          )
+        ) {
+          central = event;
+        }
+      }
+      return {
+        glyphs: [
+          {shape: 'curtain', x: getChartWorldX(RECTANGLE, world, index / (BAND_COUNT - 1))},
+          {
+            shape: 'ring',
+            at: inputs.inset.toMap(inputs.events[central * 2], inputs.events[central * 2 + 1]),
+            radius: distance * inputs.inset.scale
+          }
+        ],
+        readout: `d ${distance.toFixed(2)} · ${text}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => {
     const range = [0, inputs.networkLength * 1.05] as const;
     return [
+      getRoadContext(outputs),
+      {layer: 'dots', positions: outputs.eventDots, radius: 4, color: [1, 0.78, 0.25, 1]},
       {
         layer: 'chart',
         kind: 'line',
+        rectangle: RECTANGLE,
         values: outputs.upper,
         range,
         color: [0.5, 0.7, 1, 0.6],
@@ -118,6 +183,7 @@ export default defineOperationRun({
       {
         layer: 'chart',
         kind: 'line',
+        rectangle: RECTANGLE,
         values: outputs.lower,
         range,
         color: [0.5, 0.7, 1, 0.6],
@@ -126,6 +192,7 @@ export default defineOperationRun({
       {
         layer: 'chart',
         kind: 'line',
+        rectangle: RECTANGLE,
         values: outputs.observed,
         range,
         color: [1, 0.78, 0.25, 1],

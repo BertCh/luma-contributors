@@ -61,3 +61,29 @@ export function addSlice(
   });
   return slice;
 }
+
+/** Adds a node copying the first `count` float32 rows of `source` from row `offset`, so a chart can drop empty rows or show one group. */
+export function addFloatSlice(
+  builder: RunBuilder,
+  source: RunBuffer<'float32'>,
+  count: number,
+  id: string,
+  offset = 0
+): RunBuffer<'float32'> {
+  const slice = builder.allocate(id, 'float32', count);
+  builder.graph.add({
+    getCommandNodes: graph => [
+      createWGSLKernelNode(graph, {
+        id,
+        operation: 'float-slice',
+        bindings: [
+          {name: 'sliceSource', view: source.view, type: 'f32', access: 'read'},
+          {name: 'sliceTarget', view: slice.view, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: count,
+        body: `sliceTarget[sliceTargetOffset + index] = sliceSource[sliceSourceOffset + index + ${offset}u];`
+      })
+    ]
+  });
+  return slice;
+}

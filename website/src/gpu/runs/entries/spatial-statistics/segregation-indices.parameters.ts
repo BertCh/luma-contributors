@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPUSegregation's `groupCount`, `scales` (aspatial or queen contiguity) and
+// Bound to GPUSegregation's `groupCount`, `scales` (aspatial or rook contiguity) and
 // `spatialForm`, plus how strongly the groups separate in space.
 export const parameters: GpuSceneParameter[] = [
   {id: 'groupCount', label: 'groupCount', min: 2, max: 5, step: 1, default: 3},
@@ -14,7 +14,7 @@ export const parameters: GpuSceneParameter[] = [
     max: 1,
     step: 1,
     default: 1,
-    options: ['aspatial', 'queen contiguity']
+    options: ['aspatial', 'rook contiguity']
   },
   {id: 'separation', label: 'Data: separation', min: 0, max: 1, step: 0.05, default: 0.35}
 ];

@@ -12,14 +12,34 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
+import {createPointIndex} from '../../pick';
 import {addJitter, createPolygonSet, uploadPolygonSet} from './shared/polygon-set';
-import {addKernel} from './shared/shape-segments';
+import {findPointAtDistance} from './shared/pointer-support';
+import {addKernel, addPairSegments} from './shared/shape-segments';
 import {parameters} from './vertex-snap.parameters';
+
+const TOLERANCE = findParameter(parameters, 'tolerance');
+/** The tolerance is this fraction of the pointer's distance to the nearest reference vertex. */
+const DISTANCE_SCALE = 0.4;
 
 export default defineOperationRun({
   parameters,
   caption: 'Noisy vertices pulled onto the reference vertices within the tolerance.',
-  createInputs: ({seed, world}) => ({seed, set: createPolygonSet(makeRandom(seed), world)}),
+  createInputs: ({seed, world}) => {
+    const set = createPolygonSet(makeRandom(seed), world, {rows: 2, columns: 4});
+    const index = createPointIndex(set.positions);
+    return {
+      seed,
+      set,
+      index,
+      restPoint: findPointAtDistance(
+        (x, y) => index.distanceTo(index.nearest(x, y), x, y),
+        TOLERANCE.default / DISTANCE_SCALE,
+        world
+      )
+    };
+  },
   build(builder, inputs) {
     const polygons = uploadPolygonSet(builder, inputs.set);
     const vertexCount = inputs.set.positions.length / 2;
@@ -46,17 +66,53 @@ export default defineOperationRun({
       body: `flags[flagsOffset + index] = select(1u, 0u, rows[rowsOffset + index] == ${GPU_VERTEX_SNAP_NO_REFERENCE}u);`
     });
     return {
-      outputs: {...polygons, noisy, snapped, didSnap},
+      outputs: {
+        ...polygons,
+        noisy,
+        snapped,
+        didSnap,
+        links: addPairSegments(builder, 'snap-links', noisy, snapped)
+      },
       update: values => {
         noisy.write(
-          addJitter(inputs.set.positions, makeRandom(inputs.seed + 1), values.noise * 0.03)
+          addJitter(inputs.set.positions, makeRandom(inputs.seed + 1), values.noise * 0.07)
         );
         parameterBuffer.write(getGPUVertexSnapParameterValues({tolerance: values.tolerance}));
       }
     };
   },
+  // The pointer's distance to the nearest reference vertex is the tolerance: its ring passes through the pointer.
+  interaction: {
+    kind: 'reach',
+    hint: 'stretch the snap radius',
+    rest: ({inputs, toUnit}) => toUnit(inputs.restPoint),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const row = inputs.index.nearest(pointer.x, pointer.y);
+      const reference: [number, number] = [
+        inputs.set.positions[row * 2],
+        inputs.set.positions[row * 2 + 1]
+      ];
+      const tolerance = snapToParameter(
+        TOLERANCE,
+        inputs.index.distanceTo(row, pointer.x, pointer.y) * DISTANCE_SCALE
+      );
+      const flags = peek(outputs.didSnap);
+      let snapped = 0;
+      if (flags) for (const flag of flags) snapped += flag;
+      return {
+        values: {tolerance},
+        glyphs: [
+          {shape: 'ring', at: reference, radius: tolerance},
+          {shape: 'line', from: reference, to: [pointer.x, pointer.y], dashed: true},
+          {shape: 'dot', at: reference}
+        ],
+        readout: `tolerance ${tolerance.toFixed(3)} · ${flags ? Math.round((100 * snapped) / flags.length) : '...'}% snapped`
+      };
+    }
+  },
   draw: ({outputs, theme}) => [
     {layer: 'segments', context: true, nodes: outputs.noisy, edges: outputs.edges},
+    {layer: 'lines', segments: outputs.links, radius: 1, alpha: 0.5},
     {
       layer: 'segments',
       nodes: outputs.snapped,

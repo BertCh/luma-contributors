@@ -6,22 +6,27 @@
 
 import {GPUCellTopology} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {chooseSticky, createPointIndex} from '../../pick';
+import {getHonshuEventSites, HONSHU_WINDOW} from '../../../data/point-observations';
 import {addCellFill, addPointKeys, getCellFamily} from './support/cells';
+import {formatCellKey} from './support/pointer';
 import {parameters} from './cell-topology.parameters';
 
 export default defineOperationRun({
   parameters,
-  caption: 'Grid neighbors of three seed cells: disk colored by distance, or the ring at k.',
-  createInputs: ({world}) => ({
-    seeds: Float32Array.of(
-      world.width * 0.24,
-      0.5,
-      world.width * 0.56,
-      0.38,
-      world.width * 0.8,
-      0.66
-    )
-  }),
+  geographicWindow: HONSHU_WINDOW,
+  caption: 'Cell disks and rings around three observed Honshu earthquake epicenters.',
+  createInputs: () => {
+    const anchors = Float32Array.from(
+      getHonshuEventSites([
+        [141.2, 36.6],
+        [142.3, 37.5],
+        [141.6, 38.1]
+      ]).flat()
+    );
+    // `seeds` moves with the pointer; `anchors` stay put and decide which seed the pointer holds.
+    return {anchors, seeds: Float32Array.from(anchors), index: createPointIndex(anchors), held: -1};
+  },
   build(builder, inputs, values) {
     const family = getCellFamily(values.family);
     const isDisk = values.operation === 0;
@@ -30,7 +35,7 @@ export default defineOperationRun({
     const ringStride = (family === 'h3' ? 6 : 8) * k;
     const seedCount = inputs.seeds.length / 2;
     const rowStride = isDisk ? stride : ringStride;
-    const seeds = builder.upload('seeds', 'float32x2', inputs.seeds);
+    const seeds = builder.allocate('seeds', 'float32x2', seedCount);
     const seedCells = addPointKeys(builder, family, family === 'h3' ? 5 : 11, seeds);
     const neighbors = builder.allocate('neighbors', 'uint32x2', seedCount * rowStride);
     const distances = builder.allocate('distances', 'uint32', seedCount * rowStride);
@@ -44,7 +49,37 @@ export default defineOperationRun({
           : {cells: neighbors.view}
       })
     );
-    return {outputs: {seeds, distances, fill: addCellFill(builder, family, neighbors)}};
+    return {
+      outputs: {seeds, seedCells, distances, fill: addCellFill(builder, family, neighbors)},
+      update: () => seeds.write(inputs.seeds)
+    };
+  },
+  rebuildOn: ['family', 'operation', 'k'],
+  // The pointer carries the nearest seed: the disk or ring around it is keyed again every frame.
+  interaction: {
+    kind: 'place',
+    hint: 'move a seed',
+    rest: ({toUnit, inputs}) => toUnit([inputs.anchors[0], inputs.anchors[1]]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.held = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.held);
+      inputs.seeds.set(inputs.anchors);
+      inputs.seeds[inputs.held * 2] = pointer.x;
+      inputs.seeds[inputs.held * 2 + 1] = pointer.y;
+      const keys = peek(outputs.seedCells);
+      const k = values.k;
+      const isDisk = values.operation === 0;
+      const family = getCellFamily(values.family);
+      const cellCount = isDisk
+        ? family === 'h3'
+          ? 3 * k * (k + 1) + 1
+          : (2 * k + 1) ** 2
+        : (family === 'h3' ? 6 : 8) * k;
+      return {
+        rerun: true,
+        glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
+        readout: `${cellCount} cells · k ${k} · seed ${formatCellKey(keys, inputs.held)}`
+      };
+    }
   },
   draw: ({outputs, values}) => [
     {

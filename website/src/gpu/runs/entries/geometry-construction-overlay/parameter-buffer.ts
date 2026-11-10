@@ -3,57 +3,52 @@
 
 // GPUParameterBuffer carries a per-frame value into a compiled graph. Here the tolerance of a line
 // simplification is written into one on every slider move: the graph is compiled once and only
-// re-encoded, so dragging is cheap. A noisy coastline is the muted input; kept vertices are the
+// re-encoded, so dragging is cheap. The shore of Lake Superior is the muted input; kept vertices are the
 // output.
 
+import {createGreatLakeRings} from '../../../data/hydrography';
 import {
   getGPULineSimplificationParameterValues,
   GPULineSimplification,
   GPUParameterBuffer
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
 import {
   addSelectedSegments,
   createPackedSegments,
   createRowLines,
+  findNearestLine,
+  findRestBesideLines,
   OUTPUT_COLOR
 } from './shared/lines';
 import {parameters} from './parameter-buffer.parameters';
 
-const VERTEX_COUNT = 260;
-
 export default defineOperationRun({
   parameters,
   caption: 'The tolerance lives in a GPUParameterBuffer; the graph is compiled once.',
-  createInputs: ({random, world}) => {
-    const phases = Array.from({length: 6}, () => random() * Math.PI * 2);
-    const positions = new Float32Array(VERTEX_COUNT * 2);
-    for (let vertex = 0; vertex < VERTEX_COUNT; vertex++) {
-      const angle = (vertex / (VERTEX_COUNT - 1)) * Math.PI * 2;
-      let radius = 0.36;
-      for (let harmonic = 0; harmonic < phases.length; harmonic++) {
-        radius += (0.06 / (harmonic + 1)) * Math.sin((harmonic + 2) * angle + phases[harmonic]);
-      }
-      radius += (random() - 0.5) * 0.012;
-      positions[vertex * 2] = world.width / 2 + Math.cos(angle) * radius * 1.25;
-      positions[vertex * 2 + 1] = 0.5 + Math.sin(angle) * radius;
-    }
-    return {positions, lineOffsets: Uint32Array.of(0, VERTEX_COUNT)};
+  createInputs: ({world}) => {
+    const [shore] = createGreatLakeRings(world, 'Lake Superior');
+    const positions = Float32Array.from([...shore, shore[0]].flat());
+    return {positions, lineOffsets: Uint32Array.of(0, positions.length / 2), world};
   },
   build(builder, line) {
+    const vertexCount = line.positions.length / 2;
     const positions = builder.upload('positions', 'float32x2', line.positions);
     const lineOffsets = builder.upload('line-offsets', 'uint32', line.lineOffsets);
-    const importance = builder.allocate('importance', 'float32', VERTEX_COUNT);
-    const ids = builder.allocate('kept-ids', 'uint32', VERTEX_COUNT);
+    const importance = builder.allocate('importance', 'float32', vertexCount);
+    const ids = builder.allocate('kept-ids', 'uint32', vertexCount);
     const count = builder.allocate('kept-count', 'uint32', 1);
     const overflow = builder.allocate('kept-overflow', 'uint32', 1);
-    const keptMask = builder.allocate('kept-mask', 'uint32', VERTEX_COUNT);
+    const keptMask = builder.allocate('kept-mask', 'uint32', vertexCount);
     // The real parameter buffer of the operation (an application-owned, per-frame storage buffer).
-    const parameterBuffer = new GPUParameterBuffer(builder.device, {
-      id: 'tolerance',
-      format: 'float32',
-      length: 4
-    });
+    const parameterBuffer = builder.own(
+      new GPUParameterBuffer(builder.device, {
+        id: 'tolerance',
+        format: 'float32',
+        length: 4
+      })
+    );
     builder.graph.add(
       new GPULineSimplification({
         positions: positions.view,
@@ -75,12 +70,43 @@ export default defineOperationRun({
       createPackedSegments(line.positions, line.lineOffsets, false)
     );
     return {
-      outputs: {original, simplified, positions, keptMask},
+      outputs: {original, simplified, positions, keptMask, keptCount: count},
       update: current =>
         parameterBuffer.write(
           getGPULineSimplificationParameterValues({tolerance: current.tolerance})
         )
     };
+  },
+  // The distance from the pointer to the shoreline is the tolerance, written into the parameter
+  // buffer each frame: the graph is compiled once and only re-encoded.
+  interaction: {
+    kind: 'reach',
+    hint: 'move off the shore',
+    rest: ({inputs, toUnit}) =>
+      toUnit(
+        findRestBesideLines(
+          inputs,
+          findParameter(parameters, 'tolerance').default,
+          (x, y) => findNearestLine(inputs, x, y)?.distance ?? 0,
+          inputs.world,
+          1e-3
+        )
+      ),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const hit = findNearestLine(inputs, pointer.x, pointer.y);
+      if (!hit) return {};
+      const tolerance = snapToParameter(findParameter(parameters, 'tolerance'), hit.distance);
+      const keptCount = peek(outputs.keptCount)?.[0];
+      return {
+        values: {tolerance},
+        glyphs: [
+          {shape: 'ring', at: hit.point, radius: tolerance, dashed: true},
+          {shape: 'line', from: hit.point, to: [pointer.x, pointer.y]},
+          {shape: 'dot', at: hit.point}
+        ],
+        readout: `tolerance ${tolerance.toFixed(3)} · compiled once${keptCount === undefined ? '' : ` · kept ${keptCount}`}`
+      };
+    }
   },
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.original, radius: 4},

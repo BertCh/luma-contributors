@@ -17,26 +17,6 @@ export type PackedPolygons = {
   centers: Float32Array;
 };
 
-/** A star-shaped ring around `center`; `roughness` 0 gives a regular polygon. */
-export function createStarRing(
-  random: () => number,
-  center: readonly [number, number],
-  radius: number,
-  vertexCount: number,
-  roughness = 0.5
-): number[][] {
-  const ring: number[][] = [];
-  for (let index = 0; index < vertexCount; index++) {
-    const angle = (2 * Math.PI * index) / vertexCount;
-    const length = radius * (1 - roughness * random());
-    ring.push([
-      Math.fround(center[0] + length * Math.cos(angle)),
-      Math.fround(center[1] + length * Math.sin(angle))
-    ]);
-  }
-  return ring;
-}
-
 /** Packs one shell ring per feature. */
 export function packPolygonRings(rings: readonly number[][][]): PackedPolygons {
   const positions: number[] = [];
@@ -87,19 +67,26 @@ export function createCircleOutline(
   radius: number,
   segmentCount = 64
 ): Float32Array {
-  const segments = new Float32Array(segmentCount * 4);
-  for (let index = 0; index < segmentCount; index++) {
-    const first = (2 * Math.PI * index) / segmentCount;
-    const second = (2 * Math.PI * (index + 1)) / segmentCount;
-    segments.set(
-      [
-        center[0] + radius * Math.cos(first),
-        center[1] + radius * Math.sin(first),
-        center[0] + radius * Math.cos(second),
-        center[1] + radius * Math.sin(second)
-      ],
-      index * 4
+  const radians = Math.PI / 180;
+  const latitude = center[1] * radians;
+  const angle = radius * radians;
+  function destination(bearing: number): [number, number] {
+    const north = Math.asin(
+      Math.sin(latitude) * Math.cos(angle) +
+        Math.cos(latitude) * Math.sin(angle) * Math.cos(bearing)
     );
+    const east = Math.atan2(
+      Math.sin(bearing) * Math.sin(angle) * Math.cos(latitude),
+      Math.cos(angle) - Math.sin(latitude) * Math.sin(north)
+    );
+    return [center[0] + east / radians, north / radians];
+  }
+  const segments = new Float32Array(segmentCount * 4);
+  let start = destination(0);
+  for (let index = 0; index < segmentCount; index++) {
+    const end = destination((2 * Math.PI * (index + 1)) / segmentCount);
+    segments.set([...start, ...end], index * 4);
+    start = end;
   }
   return segments;
 }

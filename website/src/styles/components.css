@@ -25,6 +25,10 @@
 .site-footer a { color: var(--color-muted); }
 .site-footer a:hover { color: var(--color-text); }
 .site-footer__links { display: flex; gap: var(--space-4); flex-wrap: wrap; }
+.demo-source-list { max-width: 75ch; margin: 0; }
+.demo-source-list > div { padding: var(--space-3) 0; border-bottom: 1px solid var(--color-border); }
+.demo-source-list dt { font-weight: 600; }
+.demo-source-list dd { margin: var(--space-1) 0 0; color: var(--color-muted); }
 
 /* Card */
 .card { position: relative; display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-medium); background: var(--color-surface); box-shadow: var(--shadow-card); transition: border-color 0.15s, transform 0.15s; }

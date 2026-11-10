@@ -1,108 +1,54 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Live WebGPU canvases are expensive, so card grids share a few "live slots". A card holds a slot
-// while it is hovered, focused or near the middle of the viewport; the oldest holder is evicted.
+import {useEffect, useRef, useState, type FocusEvent, type PointerEvent} from 'react';
+import {rememberCardHover} from '../../gpu/canvas-pointer';
 
-import {useCallback, useEffect, useRef, useState} from 'react';
-
-const MAX_LIVE_CANVASES = 3;
-
-type SlotHolder = {id: number; release: () => void};
-
-const holders: SlotHolder[] = [];
-let nextHolderId = 1;
-
-function acquireSlot(release: () => void): number {
-  const id = nextHolderId++;
-  holders.push({id, release});
-  while (holders.length > MAX_LIVE_CANVASES) {
-    holders.shift()?.release();
-  }
-  return id;
-}
-
-function releaseSlot(id: number): void {
-  const index = holders.findIndex(holder => holder.id === id);
-  if (index >= 0) {
-    holders.splice(index, 1);
-  }
-}
-
-export type LiveSlot = {
-  /** True while this element owns a live canvas. */
-  live: boolean;
-  /** Attach to the element whose visibility requests a slot. */
-  ref: (element: HTMLElement | null) => void;
-  /** Spread on the element to request a slot on hover and focus. */
-  handlers: {
-    onPointerEnter: () => void;
-    onPointerLeave: () => void;
-    onFocus: () => void;
-    onBlur: () => void;
-  };
-};
-
-export function useLiveSlot(): LiveSlot {
-  const [live, setLive] = useState(false);
-  const slotId = useRef<number | null>(null);
-  const element = useRef<HTMLElement | null>(null);
-  const observer = useRef<IntersectionObserver | null>(null);
-
-  const release = useCallback(() => {
-    if (slotId.current !== null) {
-      releaseSlot(slotId.current);
-      slotId.current = null;
-    }
-    setLive(false);
-  }, []);
-
-  const acquire = useCallback(() => {
-    if (slotId.current !== null) {
-      return;
-    }
-    slotId.current = acquireSlot(() => {
-      slotId.current = null;
-      setLive(false);
-    });
-    setLive(true);
-  }, []);
-
-  const ref = useCallback(
-    (node: HTMLElement | null) => {
-      observer.current?.disconnect();
-      element.current = node;
-      if (node && typeof IntersectionObserver !== 'undefined') {
-        // Only cards crossing the middle band of the viewport become live on their own.
-        observer.current = new IntersectionObserver(
-          entries => {
-            for (const entry of entries) {
-              if (entry.isIntersecting) {
-                acquire();
-              } else {
-                release();
-              }
-            }
-          },
-          {rootMargin: '-35% 0px -35% 0px'}
-        );
-        observer.current.observe(node);
-      }
-    },
-    [acquire, release]
-  );
-
+/** A card runs while deliberately hovered or keyboard-focused. A touch tap follows the link. */
+export function useLiveSlot() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(
     () => () => {
-      observer.current?.disconnect();
-      release();
+      clearTimeout(hoverTimer.current);
+      clearTimeout(leaveTimer.current);
     },
-    [release]
+    []
   );
 
   return {
-    live,
+    live: hovered || focused,
     ref,
-    handlers: {onPointerEnter: acquire, onPointerLeave: release, onFocus: acquire, onBlur: release}
+    handlers: {
+      onPointerEnter(event: PointerEvent<HTMLElement>) {
+        if (event.pointerType === 'touch') return;
+        rememberCardHover(event.currentTarget, [event.clientX, event.clientY]);
+        clearTimeout(hoverTimer.current);
+        clearTimeout(leaveTimer.current);
+        // Avoid compiling graphs for every card the pointer crosses on its way to a destination.
+        hoverTimer.current = setTimeout(() => setHovered(true), 90);
+      },
+      onPointerMove(event: PointerEvent<HTMLElement>) {
+        if (event.pointerType !== 'touch') {
+          rememberCardHover(event.currentTarget, [event.clientX, event.clientY]);
+        }
+      },
+      onPointerLeave(event: PointerEvent<HTMLElement>) {
+        rememberCardHover(event.currentTarget, null);
+        clearTimeout(hoverTimer.current);
+        // A short grace keeps the scene when the pointer crosses a gap or comes straight back.
+        clearTimeout(leaveTimer.current);
+        leaveTimer.current = setTimeout(() => setHovered(false), 200);
+      },
+      onFocus(event: FocusEvent<HTMLElement>) {
+        setFocused(event.target.matches(':focus-visible'));
+      },
+      onBlur(event: FocusEvent<HTMLElement>) {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
+      }
+    }
   };
 }

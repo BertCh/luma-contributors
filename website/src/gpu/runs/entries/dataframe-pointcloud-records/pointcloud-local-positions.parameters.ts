@@ -8,12 +8,12 @@ import type {GpuSceneParameter} from '../../../types';
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'originDistance',
-    label: 'Data: coordinate magnitude',
+    label: 'coordinate magnitude',
     min: 0.1,
     max: 10,
     step: 0.1,
     default: 4.5,
     unit: 'Mm'
   },
-  {id: 'extent', label: 'Data: patch extent', min: 5, max: 40, step: 1, default: 12, unit: 'm'}
+  {id: 'extent', label: 'patch extent', min: 5, max: 40, step: 1, default: 12, unit: 'm'}
 ];

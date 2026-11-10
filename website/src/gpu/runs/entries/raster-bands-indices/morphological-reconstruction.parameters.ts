@@ -4,7 +4,7 @@
 import type {GpuSceneParameter} from '../../../types';
 
 export const parameters: GpuSceneParameter[] = [
-  {id: 'height', label: 'Data: marker offset', min: 0, max: 0.6, step: 0.02, default: 0.25},
+  {id: 'height', label: 'marker offset', min: 0, max: 0.6, step: 0.02, default: 0.25},
   {
     id: 'method',
     label: 'method',

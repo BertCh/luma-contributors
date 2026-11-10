@@ -8,7 +8,7 @@
 
 import {GPUTerrainSpikeRepair} from '@luma-contributors/analysis/gpu-terrain';
 import {defineOperationRun} from '../../define-run';
-import {createTerrainInput, drawElevationContext, drawGrid, uploadTerrain} from './support/terrain';
+import {createTerrainInput, drawGrid, uploadTerrain} from './support/terrain';
 import {parameters} from './spike-repair.parameters';
 
 export default defineOperationRun({
@@ -16,13 +16,13 @@ export default defineOperationRun({
   rebuildOn: ['jump', 'tolerance'],
   caption: 'A damaged elevation tile in; the repaired tile out.',
   createInputs: ({random, world}) => {
-    const terrain = createTerrainInput(random, world, 48);
+    const terrain = createTerrainInput(world, 48);
     const blocks = Array.from({length: 12}, () => ({
       column: Math.floor(random() * (terrain.columns - 10)),
       row: Math.floor(random() * (terrain.rows - 10)),
       width: 3 + Math.floor(random() * 6),
       height: 3 + Math.floor(random() * 6),
-      offset: (random() < 0.5 ? -1 : 1) * 256 * (random() < 0.7 ? 1 : 2)
+      offset: (random() < 0.5 ? -1 : 1) * 256
     }));
     return {...terrain, blocks};
   },
@@ -62,8 +62,23 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({inputs, outputs}) => [
-    drawElevationContext(inputs, outputs.elevation),
-    drawGrid(inputs, outputs.repaired, {hillshade: 0.5, elevation: 60})
-  ]
+  // The pointer is a curtain: the damaged tile on the left, the repaired tile on the right.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe damaged and repaired',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {values}) => ({
+      curtain: pointer.x,
+      glyphs: [{shape: 'curtain', x: pointer.x}],
+      readout: `damaged | repaired · ${values.spikeCount} blocks shifted`
+    })
+  },
+  draw: ({inputs, outputs, interaction, world}) => {
+    const curtain = interaction.curtain ?? world.width / 2;
+    const look = {range: [650, 2300] as const, hillshade: 0.6, elevation: 60};
+    return [
+      drawGrid(inputs, outputs.elevation, {...look, clip: {side: 'left', x: curtain}}),
+      drawGrid(inputs, outputs.repaired, {...look, clip: {side: 'right', x: curtain}})
+    ];
+  }
 });

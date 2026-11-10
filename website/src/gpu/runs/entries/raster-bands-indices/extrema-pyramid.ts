@@ -13,15 +13,17 @@ import {
   makeGPURasterBand
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createFractalRaster} from '../../inputs';
+import {createElevationRaster} from '../../inputs';
 import {parameters} from './extrema-pyramid.parameters';
+import {formatNumber} from '../../interaction';
 import {makeGridOfRaster} from './support/bands';
+import {getSwipeResult, getCellAt, getCurtainX} from './support/gestures';
 
 export default defineOperationRun({
   parameters,
   rebuildOn: ['firstBlockSize', 'footprint'],
   caption: 'A raster in; the maximum and minimum of every block out (level 0).',
-  createInputs: ({random, world}) => createFractalRaster(random, world, 64, 6),
+  createInputs: ({world}) => createElevationRaster(world, 64),
   build(builder, inputs, values) {
     const grid = makeGridOfRaster(inputs);
     const firstBlockSize = 2 ** Math.round(values.firstBlockSize);
@@ -51,21 +53,53 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({inputs, outputs, values}) => [
-    {
+  // The pointer is a curtain between the block minima (left) and maxima (right), with the block.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe minimum and maximum',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {inputs, values, world}) => {
+      const size = 2 ** Math.round(values.firstBlockSize);
+      const cell = getCellAt(inputs, world, pointer);
+      const column = Math.floor(cell.column / size) * size;
+      const row = Math.floor(cell.row / size) * size;
+      const blockWidth = Math.min(size, inputs.columns - column);
+      const blockHeight = Math.min(size, inputs.rows - row);
+      const cellWidth = world.width / inputs.columns;
+      const cellHeight = world.height / inputs.rows;
+      let minimum = Infinity;
+      let maximum = -Infinity;
+      for (let rowIndex = row; rowIndex < row + blockHeight; rowIndex++) {
+        for (let columnIndex = column; columnIndex < column + blockWidth; columnIndex++) {
+          const value = inputs.values[rowIndex * inputs.columns + columnIndex];
+          minimum = Math.min(minimum, value);
+          maximum = Math.max(maximum, value);
+        }
+      }
+      return getSwipeResult(
+        pointer,
+        `block ${size}x${size} | min ${formatNumber(minimum)} | max ${formatNumber(maximum)}`,
+        [
+          {
+            shape: 'box',
+            minimum: [column * cellWidth, world.height - (row + blockHeight) * cellHeight],
+            maximum: [(column + blockWidth) * cellWidth, world.height - row * cellHeight]
+          }
+        ]
+      );
+    }
+  },
+  draw: ({outputs, interaction, world}) => {
+    const curtain = getCurtainX(interaction, world);
+    const look = {
       layer: 'raster',
-      context: true,
-      values: outputs.source,
-      columns: inputs.columns,
-      rows: inputs.rows,
-      range: [0, 1]
-    },
-    {
-      layer: 'raster',
-      values: values.statistic === 0 ? outputs.maximum : outputs.minimum,
       columns: outputs.columns,
       rows: outputs.rows,
       range: [0, 1]
-    }
-  ]
+    } as const;
+    return [
+      {...look, values: outputs.minimum, clip: {side: 'left', x: curtain}},
+      {...look, values: outputs.maximum, clip: {side: 'right', x: curtain}}
+    ];
+  }
 });

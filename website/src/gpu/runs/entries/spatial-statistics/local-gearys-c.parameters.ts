@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPULocalGeary's `islands` prop, plus the data the statistic is computed from.
+// Bound to GPULocalGeary's `islands` prop, plus the band radius of its weights and the data the statistic is computed from.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'islands',
@@ -14,6 +14,6 @@ export const parameters: GpuSceneParameter[] = [
     default: 1,
     options: ['exclude', 'keep']
   },
-  {id: 'noise', label: 'Data: noise', min: 0, max: 1, step: 0.05, default: 0.35},
-  {id: 'radius', label: 'Data: radius', min: 0.03, max: 0.12, step: 0.005, default: 0.05}
+  {id: 'noise', label: 'Data: noise', min: 0, max: 1, step: 0.05, default: 0.15},
+  {id: 'radius', label: 'radius', min: 0.03, max: 0.12, step: 0.005, default: 0.05}
 ];

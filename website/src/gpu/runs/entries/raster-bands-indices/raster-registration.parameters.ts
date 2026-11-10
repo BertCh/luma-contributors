@@ -7,7 +7,7 @@ export const parameters: GpuSceneParameter[] = [
   {id: 'upsampleFactor', label: 'upsampleFactor', min: 1, max: 32, step: 1, default: 10},
   {
     id: 'shiftX',
-    label: 'Data: true shift x',
+    label: 'true shift x',
     min: 0.05,
     max: 0.95,
     step: 0.01,
@@ -16,7 +16,7 @@ export const parameters: GpuSceneParameter[] = [
   },
   {
     id: 'shiftY',
-    label: 'Data: true shift y',
+    label: 'true shift y',
     min: 0.05,
     max: 0.95,
     step: 0.01,

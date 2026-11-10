@@ -10,6 +10,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
+import {aimAround} from '../../interaction';
 import {createPolygonSet, uploadPolygonSet} from './shared/polygon-set';
 
 import {parameters} from './affine-transform.parameters';
@@ -53,6 +54,13 @@ export default defineOperationRun({
         )
     };
   },
+  // The pointer's angle around the picture center is the rotation and its distance the scale.
+  interaction: aimAround(parameters, {
+    hint: 'aim the rotation',
+    angle: 'rotate',
+    distance: {parameter: 'scale', reach: 0.6},
+    readout: values => `rotate ${values.rotate}° · scale ${values.scale.toFixed(2)}`
+  }),
   draw: ({inputs, outputs}) => [
     {layer: 'lines', context: true, segments: outputs.outline, count: inputs.set.outlineCount},
     {layer: 'segments', nodes: outputs.transformed, edges: outputs.edges, radius: 1.8}

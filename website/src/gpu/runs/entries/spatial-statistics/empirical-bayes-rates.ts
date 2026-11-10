@@ -2,22 +2,21 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUEmpiricalBayesRates: shrinks noisy raw rates toward the overall rate, small populations most.
-// The tract colors are the smoothed rates; the dots are the raw rates on the same scale.
+// The pointer is a curtain: the raw rates on its left, the smoothed rates on its right, on one
+// scale, so the extremes of the small tracts visibly shrink toward the overall rate.
 
 import {GPUEmpiricalBayesRates} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createTracts} from '../../inputs';
-import {createRateSeeds, getRateCounts, uploadTractMesh} from './shared/tract-rates';
+import {getRateCounts, pickTract, uploadTractMesh} from './shared/tract-rates';
 import {parameters} from './empirical-bayes-rates.parameters';
 
 export default defineOperationRun({
   parameters,
-  caption: 'Smoothed rates per tract, with the raw rates as dots.',
-  createInputs: ({random, world}) => {
-    const tracts = createTracts(random, world);
-    return {tracts, seeds: createRateSeeds(random, tracts.count)};
-  },
-  build(builder, {tracts, seeds}) {
+  caption:
+    'Raw and smoothed shares of residents age 65+ (Census counts with simulated sampling noise).',
+  createInputs: ({random, world}) => ({tracts: createTracts(random, world), focus: {row: -1}}),
+  build(builder, {tracts}) {
     const events = builder.allocate('events', 'float32', tracts.count);
     const populations = builder.allocate('populations', 'float32', tracts.count);
     const smoothedRates = builder.allocate('smoothed-rates', 'float32', tracts.count);
@@ -32,34 +31,56 @@ export default defineOperationRun({
     return {
       outputs: {smoothedRates, rawRates, ...uploadTractMesh(builder, tracts)},
       update: current => {
-        const counts = getRateCounts(
-          seeds,
-          tracts.values,
-          current.riskContrast,
-          current.populationScale
-        );
+        const counts = getRateCounts(tracts, current.riskContrast, current.populationScale);
         events.write(counts.events);
         populations.write(counts.populations);
       }
     };
   },
-  draw: ({inputs, outputs}) => [
-    {
-      layer: 'polygons',
-      positions: outputs.vertices,
-      indices: outputs.indices,
-      owners: outputs.owners,
-      values: outputs.smoothedRates,
-      triangleCount: inputs.tracts.triangleCount,
-      range: [0.015, 0.065]
-    },
-    {layer: 'lines', context: true, segments: outputs.outline, count: inputs.tracts.outlineCount},
-    {
-      layer: 'dots',
-      positions: outputs.centers,
-      values: outputs.rawRates,
-      range: [0.015, 0.065],
-      radius: 4
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe raw and smoothed',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, peek}) {
+      const row = pickTract(inputs.tracts, pointer, inputs.focus.row);
+      inputs.focus.row = row;
+      const raw = peek(outputs.rawRates)?.[row];
+      const smoothed = peek(outputs.smoothedRates)?.[row];
+      const rates =
+        row >= 0 && raw !== undefined && smoothed !== undefined
+          ? ` · tract ${(raw * 100).toFixed(0)}% -> ${(smoothed * 100).toFixed(0)}%`
+          : '';
+      return {
+        curtain: pointer.x,
+        glyphs: [{shape: 'curtain', x: pointer.x}],
+        readout: `raw | smoothed${rates}`
+      };
     }
-  ]
+  },
+  draw: ({inputs, outputs, interaction, world}) => {
+    const curtain = interaction.curtain ?? world.width / 2;
+    return [
+      {
+        layer: 'polygons',
+        positions: outputs.vertices,
+        indices: outputs.meshIndices,
+        owners: outputs.owners,
+        values: outputs.rawRates,
+        triangleCount: inputs.tracts.triangleCount,
+        range: [0, 0.35],
+        clip: {side: 'left', x: curtain}
+      },
+      {
+        layer: 'polygons',
+        positions: outputs.vertices,
+        indices: outputs.meshIndices,
+        owners: outputs.owners,
+        values: outputs.smoothedRates,
+        triangleCount: inputs.tracts.triangleCount,
+        range: [0, 0.35],
+        clip: {side: 'right', x: curtain}
+      },
+      {layer: 'lines', context: true, segments: outputs.outline, count: inputs.tracts.outlineCount}
+    ];
+  }
 });

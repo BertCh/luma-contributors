@@ -10,11 +10,11 @@ export const parameters: GpuSceneParameter[] = [
     label: 'sunTable: latitude',
     min: -60,
     max: 70,
-    step: 5,
-    default: 46.5,
+    step: 1,
+    default: 36,
     unit: '°'
   },
-  {id: 'month', label: 'sunTable: month', min: 1, max: 12, step: 1, default: 6},
+  {id: 'month', label: 'sunTable: month', min: 1, max: 12, step: 1, default: 12},
   {
     id: 'output',
     label: 'output',

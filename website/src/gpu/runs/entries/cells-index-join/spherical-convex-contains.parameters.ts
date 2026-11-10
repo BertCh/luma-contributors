@@ -3,8 +3,8 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// `complement` is a GPUSphericalConvexContains prop (compile time). `sides` and `size` shape the two
-// convex spherical polygons; `size` is a per-frame rewrite of the polygon vertices.
+// `complement` is a GPUSphericalConvexContains prop (compile time). `sides` and `size` shape the
+// geodesic search area; `size` is a per-frame rewrite of the polygon vertices.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'complement',
@@ -15,6 +15,6 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['false', 'true']
   },
-  {id: 'sides', label: 'Data: sides', min: 3, max: 8, step: 1, default: 6},
-  {id: 'size', label: 'Data: size', min: 0.2, max: 0.48, step: 0.01, default: 0.36}
+  {id: 'sides', label: 'sides', min: 3, max: 8, step: 1, default: 6},
+  {id: 'size', label: 'search radius', min: 15, max: 120, step: 1, default: 60, unit: 'km'}
 ];

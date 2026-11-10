@@ -28,24 +28,19 @@ export default defineOperationRun({
   caption: 'Rows of the chosen layer that a pick touched.',
   createInputs: ({random, world}) => ({
     world,
-    points: createUniformPoints(random, world, 900, 0.2)
+    points: createUniformPoints(random, world, 600, 0.2),
+    // The pick position is owned by the pointer; it rests at the middle of the picture.
+    center: [0.5 * world.width, 0.5] as [number, number]
   }),
-  build(builder, {world, points}, current) {
+  build(builder, {points, center}, current) {
     // The pick result: [pair count, reserved, (object index, batch)...] for every point within
-    // the pick radius of the pointer; point i belongs to layer i % 3.
-    const picked: number[] = [];
-    for (let row = 0; row < points.count; row++) {
-      const distance = Math.hypot(
-        points.positions[row * 2] - 0.5 * world.width,
-        points.positions[row * 2 + 1] - 0.5
-      );
-      if (distance < current.pickRadius) picked.push(row, row % BATCH_COUNT);
-    }
-    const picks = Uint32Array.from([picked.length / 2, 0, ...picked]);
+    // the pick radius of the pointer; point i belongs to layer i % 3. The buffer has room for
+    // every point, so the pointer rewrites it without a rebuild.
+    const picks = builder.allocate('picks', 'uint32', 2 + points.count * 2);
     const mask = builder.allocate('mask', 'uint32', points.count);
     builder.graph.add(
       new GPUPickRegionMask({
-        picks: builder.upload('picks', 'uint32', picks).view,
+        picks: picks.view,
         batchIndex: current.batchIndex,
         output: {
           mask: mask.view,
@@ -55,6 +50,17 @@ export default defineOperationRun({
     );
     const batches = Uint32Array.from({length: points.count}, (_, row) => row % BATCH_COUNT);
     return {
+      update: values => {
+        const picked: number[] = [];
+        for (let row = 0; row < points.count; row++) {
+          const distance = Math.hypot(
+            points.positions[row * 2] - center[0],
+            points.positions[row * 2 + 1] - center[1]
+          );
+          if (distance < values.pickRadius) picked.push(row, row % BATCH_COUNT);
+        }
+        picks.write(Uint32Array.from([picked.length / 2, 0, ...picked]));
+      },
       outputs: {
         mask,
         batches: builder.upload('batches', 'uint32', batches),
@@ -62,13 +68,32 @@ export default defineOperationRun({
       }
     };
   },
+  rebuildOn: ['batchIndex'],
+  // The pointer is the pick position; the pick radius is the ring around it.
+  interaction: {
+    kind: 'place',
+    hint: 'move the pick',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.center[0] = pointer.x;
+      inputs.center[1] = pointer.y;
+      const mask = peek(outputs.mask);
+      let pickedCount = 0;
+      if (mask) for (const flag of mask) pickedCount += flag;
+      return {
+        rerun: true,
+        glyphs: [{shape: 'ring', at: inputs.center, radius: values.pickRadius}],
+        readout: `batchIndex ${values.batchIndex} · ${mask ? pickedCount : '...'} rows picked`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.batches,
       categories: BATCH_COLORS,
-      radius: 4.5,
+      radius: 3.4,
       alpha: 0.85
     },
     {
@@ -76,14 +101,14 @@ export default defineOperationRun({
       positions: outputs.positions,
       values: outputs.mask,
       categories: HALO_COLORS,
-      radius: 9
+      radius: 7
     },
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.batches,
       categories: BATCH_COLORS,
-      radius: 4.5
+      radius: 3.4
     }
   ]
 });

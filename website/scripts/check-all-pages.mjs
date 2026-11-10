@@ -237,12 +237,8 @@ async function main() {
     }
   }
   const server = await serve(options.port);
-  const browser = await chromium.launch({
-    args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--enable-features=Vulkan,WebGPUService', '--use-angle=metal']
-  });
   const results = [];
-  const queue = [...specs];
-  async function work() {
+  async function work(browser, queue) {
     for (let spec = queue.shift(); spec; spec = queue.shift()) {
       let result = await checkPage(browser, options, spec);
       if (!result.passed) result = await checkPage(browser, options, spec); // one retry for load flakes
@@ -251,9 +247,29 @@ async function main() {
       console.log(`${result.passed ? 'PASS' : 'FAIL'} ${spec.url} ${result.errors.slice(0, 2).join(' | ')}${result.sliderChanges === false ? ` (first slider inert; any=${result.anyControlChange})` : ''}`);
     }
   }
-  await Promise.all(Array.from({length: options.workers}, work));
-  await browser.close();
-  server.close();
+  // Each function compiles a new GPU graph. Restart Chromium between batches so
+  // driver pipeline caches stay bounded on a full-catalog sweep.
+  const batchSize = 40;
+  try {
+    for (let first = 0; first < specs.length; first += batchSize) {
+      const browser = await chromium.launch({
+        args: [
+          '--enable-unsafe-webgpu',
+          '--ignore-gpu-blocklist',
+          '--enable-features=Vulkan,WebGPUService',
+          ...(process.platform === 'darwin' ? ['--use-angle=metal'] : [])
+        ]
+      });
+      try {
+        const queue = specs.slice(first, first + batchSize);
+        await Promise.all(Array.from({length: options.workers}, () => work(browser, queue)));
+      } finally {
+        await browser.close();
+      }
+    }
+  } finally {
+    server.close();
+  }
   results.sort((a, b) => a.url.localeCompare(b.url));
   const functionResults = results.filter(result => result.kind === 'fn');
   const summary = {

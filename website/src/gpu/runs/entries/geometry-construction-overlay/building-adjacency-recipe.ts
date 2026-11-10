@@ -11,52 +11,58 @@ import {
   GPUSharedPaths
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import type {RunGlyph} from '../../interaction';
 import {addKernelPass, getViewBuffer} from './shared/kernel';
 import {addPackedSegments, HIGHLIGHT_COLOR} from './shared/lines';
+import {createCityLayout, findBuildingAt} from './shared/urban';
 import {parameters} from './building-adjacency-recipe.parameters';
-
-const ROWS = 3;
-const PER_ROW = 8;
-const BUILDING_COUNT = ROWS * PER_ROW;
-const RING_VERTICES = 5;
 
 export default defineOperationRun({
   parameters,
   caption: 'Terraces found from shared walls: one color per connected group of buildings.',
-  createInputs: ({random, world}) => {
-    const widths = Float32Array.from({length: BUILDING_COUNT}, () => 0.7 + 0.6 * random());
-    const getRings = (splitEvery: number, gap: number) => {
-      const positions = new Float32Array(BUILDING_COUNT * RING_VERTICES * 2);
-      for (let row = 0; row < ROWS; row++) {
-        const rowWidth = Array.from({length: PER_ROW}, (_, slot) => widths[row * PER_ROW + slot]);
-        const breaks = Math.floor((PER_ROW - 1) / splitEvery);
-        const total = rowWidth.reduce((sum, width) => sum + width, 0);
-        const unit = (world.width - 0.1 - gap * breaks) / total;
-        const y0 = 0.1 + row * 0.3;
-        const y1 = y0 + 0.2;
-        let x = 0.05;
-        for (let slot = 0; slot < PER_ROW; slot++) {
-          if (slot > 0 && slot % splitEvery === 0) x += gap;
-          const x1 = x + rowWidth[slot] * unit;
-          const building = row * PER_ROW + slot;
-          positions.set([x, y0, x1, y0, x1, y1, x, y1, x, y0], building * RING_VERTICES * 2);
-          x = x1;
-        }
+  createInputs: ({world}) => {
+    const layout = createCityLayout(world, 24);
+    const offsets = [0];
+    const vertexOwners: number[] = [];
+    const edges: number[] = [];
+    layout.rings.forEach((ring, building) => {
+      const offset = vertexOwners.length;
+      for (let corner = 0; corner <= ring.length; corner++) {
+        vertexOwners.push(building);
+        if (corner < ring.length) edges.push(offset + corner, offset + corner + 1);
       }
-      return positions;
+      offsets.push(vertexOwners.length);
+    });
+    const getRings = (splitEvery: number, gap: number, hovered: number) => {
+      const positions: number[] = [];
+      layout.rings.forEach((ring, building) => {
+        const [centerX, centerY] = layout.centers[building];
+        // Recede every nth footprint to simulate interruptions in the terraces.
+        const isReceded = (building + 1) % splitEvery === 0 || building === hovered;
+        const factor = isReceded ? 1 - Math.max(gap, 0.02) * 8 : 1;
+        for (const [x, y] of [...ring, ring[0]]) {
+          positions.push(centerX + (x - centerX) * factor, centerY + (y - centerY) * factor);
+        }
+      });
+      return Float32Array.from(positions);
     };
-    return {getRings};
+    return {
+      layout,
+      world,
+      hovered: {building: -1},
+      count: layout.rings.length,
+      getRings,
+      offsets: Uint32Array.from(offsets),
+      edges: Uint32Array.from(edges),
+      vertexOwners: Uint32Array.from(vertexOwners)
+    };
   },
   build(builder, inputs, values) {
-    const initial = inputs.getRings(values.splitEvery, values.gap);
+    const initial = inputs.getRings(values.splitEvery, values.gap, inputs.hovered.building);
     const positions = builder.upload('rings', 'float32x2', initial);
-    const lineOffsets = builder.upload(
-      'ring-offsets',
-      'uint32',
-      Uint32Array.from({length: BUILDING_COUNT + 1}, (_, building) => building * RING_VERTICES)
-    );
-    const runCapacity = 256;
-    const vertexCapacity = 2048;
+    const lineOffsets = builder.upload('ring-offsets', 'uint32', inputs.offsets);
+    const runCapacity = 512;
+    const vertexCapacity = 4096;
     const leftLineIds = builder.allocate('run-left', 'uint32', runCapacity);
     const rightLineIds = builder.allocate('run-right', 'uint32', runCapacity);
     const forward = builder.allocate('run-forward', 'uint32', runCapacity);
@@ -92,13 +98,9 @@ export default defineOperationRun({
     const owners = builder.upload(
       'ring-owners',
       'uint32',
-      Uint32Array.from({length: BUILDING_COUNT}, (_, index) => index)
+      Uint32Array.from({length: inputs.count}, (_, index) => index)
     );
-    const orientations = builder.upload(
-      'orientations',
-      'float32',
-      new Float32Array(BUILDING_COUNT)
-    );
+    const orientations = builder.upload('orientations', 'float32', new Float32Array(inputs.count));
     const recipe = addBuildingAdjacencyRecipe(builder.graph, {
       sharedPaths: sharedOutput,
       lineBuildingIds: owners.view,
@@ -107,30 +109,23 @@ export default defineOperationRun({
     const nodeComponents = builder.allocate(
       'ring-components',
       'uint32',
-      BUILDING_COUNT * RING_VERTICES
+      inputs.vertexOwners.length
     );
+    const vertexOwners = builder.upload('vertex-owners', 'uint32', inputs.vertexOwners);
     addKernelPass(builder, {
       id: 'adjacency-publish-pass',
-      invocationCount: BUILDING_COUNT * RING_VERTICES,
+      invocationCount: inputs.vertexOwners.length,
       bindings: [
         {name: 'components', buffer: getViewBuffer(recipe.outputs.components), access: 'read'},
+        {name: 'vertexOwners', buffer: vertexOwners, access: 'read'},
         {name: 'nodeComponents', buffer: nodeComponents, access: 'read_write'}
       ],
       body: /* wgsl */ `
   // Component ids are building indices; spread them over the eight palette colors.
-  let component = components[componentsOffset + index / ${RING_VERTICES}u];
+  let component = components[componentsOffset + vertexOwners[vertexOwnersOffset + index]];
   nodeComponents[nodeComponentsOffset + index] = select(component * 3u + component / 8u, component, component == 0xffffffffu);`
     });
-    const edges = builder.upload(
-      'ring-edges',
-      'uint32x2',
-      Uint32Array.from({length: BUILDING_COUNT * (RING_VERTICES - 1) * 2}, (_, slot) => {
-        const edge = Math.floor(slot / 2);
-        const building = Math.floor(edge / (RING_VERTICES - 1));
-        const step = edge % (RING_VERTICES - 1);
-        return building * RING_VERTICES + step + (slot % 2);
-      })
-    );
+    const edges = builder.upload('ring-edges', 'uint32x2', inputs.edges);
     // Every building shares its whole ring with itself; only runs between two buildings are walls.
     const isWall = builder.allocate('run-is-wall', 'uint32', runCapacity);
     addKernelPass(builder, {
@@ -150,8 +145,37 @@ export default defineOperationRun({
     });
     return {
       outputs: {positions, edges, nodeComponents, shared},
-      update: current => positions.write(inputs.getRings(current.splitEvery, current.gap))
+      update: current =>
+        positions.write(inputs.getRings(current.splitEvery, current.gap, inputs.hovered.building))
     };
+  },
+  // The pointer pushes the building under it back from its neighbors (a pointer-owned input of the
+  // recipe): its shared walls disappear and its terrace splits in two.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a building',
+    rest: ({inputs, toUnit}) => toUnit([inputs.world.width / 2, inputs.layout.streetY]),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const building = findBuildingAt(inputs.layout, pointer.x, pointer.y);
+      const changed = building !== inputs.hovered.building;
+      inputs.hovered.building = building;
+      if (building < 0) return {rerun: changed, readout: 'no building hovered'};
+      const components = peek(outputs.nodeComponents);
+      const glyphs: RunGlyph[] = [
+        {shape: 'polyline', points: inputs.layout.rings[building].flat(), closed: true}
+      ];
+      const terraces = new Set<number>();
+      if (components) {
+        for (let member = 0; member < inputs.count; member++) {
+          terraces.add(components[inputs.offsets[member]]);
+        }
+      }
+      return {
+        rerun: changed,
+        glyphs,
+        readout: `building ${building} set back${components ? ` · ${terraces.size} terraces` : ''}`
+      };
+    }
   },
   draw: ({outputs}) => [
     {

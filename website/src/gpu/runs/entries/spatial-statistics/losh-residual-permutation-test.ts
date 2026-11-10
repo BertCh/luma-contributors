@@ -12,7 +12,12 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {uploadSpatialWeights} from '../../inputs';
-import {createNeighborGraph, createPointField} from './shared/point-field';
+import {
+  createNeighborGraph,
+  createPointField,
+  createProbeInputs,
+  probeNeighbors
+} from './shared/point-field';
 import {parameters} from './losh-residual-permutation-test.parameters';
 
 const ALTERNATIVES = ['two-sided', 'greater', 'lesser'] as const;
@@ -21,9 +26,26 @@ const MAXIMUM_PERMUTATIONS = 499;
 export default defineOperationRun({
   parameters,
   caption: 'Significant local variability, from permuting the LOSH residuals.',
-  createInputs: ({random, world}) => createPointField(random, world, 600, false),
+  createInputs: ({random, world}) => {
+    const points = createPointField(random, world, 600, 0);
+    return {...createProbeInputs(points), graph: createNeighborGraph(points.positions, 6)};
+  },
   build(builder, points, values) {
-    const graph = createNeighborGraph(points.positions, 6);
+    const {graph} = points;
+    const bandEdges = builder.upload(
+      'band-edges',
+      'float32x4',
+      Float32Array.of(
+        points.worldWidth * 0.32,
+        0,
+        points.worldWidth * 0.32,
+        1,
+        points.worldWidth * 0.68,
+        0,
+        points.worldWidth * 0.68,
+        1
+      )
+    );
     const valueBuffer = builder.allocate('values', 'float32', points.count);
     const parameterBuffer = builder.allocate(
       'permutation',
@@ -61,6 +83,8 @@ export default defineOperationRun({
       outputs: {
         significant,
         statistic,
+        pseudoPValues,
+        bandEdges,
         positions: builder.upload('positions', 'float32x2', points.positions)
       },
       update: current => {
@@ -81,14 +105,37 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['alternative'],
-  draw: ({outputs}) => [
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 2},
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a point',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, peek}) {
+      const probe = probeNeighbors(inputs, pointer, inputs.graph.weights);
+      if (probe.row < 0) return {};
+      const statistic = peek(outputs.statistic)?.[probe.row];
+      const pseudoP = peek(outputs.pseudoPValues)?.[probe.row];
+      const isSignificant = peek(outputs.significant)?.[probe.row] === 1;
+      return {
+        glyphs: probe.glyphs,
+        readout: `LOSH ${statistic === undefined ? '…' : statistic.toFixed(2)} · p ${
+          pseudoP === undefined ? '…' : pseudoP.toFixed(3)
+        }${isSignificant ? ' · significant' : ''}`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
+    // The vertical band where noise is added to the values: the test should fire inside it.
+    {layer: 'lines', context: true, segments: outputs.bandEdges, count: 2},
+    {layer: 'dots', positions: outputs.positions, color: [...theme.ink, 0.4], radius: 2.5},
+    // Only significant points are drawn in color: the faded mask hides the rest.
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.significant,
-      ramp: 'categorical',
-      radius: 4.5
+      ramp: 'sequential',
+      range: [0, 1],
+      fade: true,
+      radius: 5.5
     }
   ]
 });

@@ -17,10 +17,10 @@ export const parameters: GpuSceneParameter[] = [
   {
     id: 'validMaximum',
     label: 'validRange: maximum',
-    min: 300,
-    max: 1400,
+    min: 700,
+    max: 2400,
     step: 50,
-    default: 1400,
+    default: 2400,
     unit: ' m'
   }
 ];

@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// A seeded street network for the network demos: a jittered lattice of intersections with some
-// blocks knocked out and a few diagonals, stored as CSR topology (offsets, neighbors) plus a
-// per-slot length and random delay, so congestion can restretch the costs without rebuilding it.
+import streets from '../data/sf-market-streets.json';
+import {fitLocalMap} from '../data/fit-local-map';
 
 export type StreetNetwork = {
-  columns: number;
   nodeCount: number;
   /** Intersection positions, (x, y) pairs. */
   nodes: Float32Array;
@@ -24,32 +22,13 @@ export type StreetNetwork = {
   findNearestNode(x: number, y: number): number;
 };
 
-export function createStreetNetwork(
-  random: () => number,
-  worldWidth: number,
-  rows: number
-): StreetNetwork {
-  const columns = Math.max(16, Math.round(rows * worldWidth));
-  const nodeCount = columns * rows;
-  const nodes = new Float32Array(nodeCount * 2);
-  for (let row = 0; row < rows; row++) {
-    for (let column = 0; column < columns; column++) {
-      const index = row * columns + column;
-      nodes[index * 2] = ((column + 0.5 + (random() - 0.5) * 0.5) / columns) * worldWidth;
-      nodes[index * 2 + 1] = (row + 0.5 + (random() - 0.5) * 0.5) / rows;
-    }
-  }
-  const edgeList: number[] = [];
-  for (let row = 0; row < rows; row++) {
-    for (let column = 0; column < columns; column++) {
-      const index = row * columns + column;
-      if (column + 1 < columns && random() > 0.1) edgeList.push(index, index + 1);
-      if (row + 1 < rows && random() > 0.1) edgeList.push(index, index + columns);
-      if (column + 1 < columns && row + 1 < rows && random() > 0.93) {
-        edgeList.push(index, index + columns + 1);
-      }
-    }
-  }
+export function createStreetNetwork(worldWidth: number, maximumNodes: number): StreetNetwork {
+  // The fixture is ordered so that every prefix stays connected, even in the smallest demo.
+  const locations = streets.nodes.slice(0, maximumNodes);
+  const project = fitLocalMap(locations, {width: worldWidth, height: 1});
+  const nodeCount = locations.length;
+  const nodes = Float32Array.from(locations.flatMap(([x, y]) => project(x, y)));
+  const edgeList = streets.edges.filter(([, to]) => to < nodeCount).flat();
   const edgeCount = edgeList.length / 2;
 
   // Undirected roads become two directed CSR slots.
@@ -72,7 +51,8 @@ export function createStreetNetwork(
       nodes[from * 2] - nodes[to * 2],
       nodes[from * 2 + 1] - nodes[to * 2 + 1]
     );
-    const delay = random();
+    // Reproducible scenario cost. TIGER records road topology, not traffic or travel speeds.
+    const delay = (Math.imul(edge + 1, 2654435761) >>> 0) / 4294967296;
     for (const [source, target] of [
       [from, to],
       [to, from]
@@ -84,7 +64,6 @@ export function createStreetNetwork(
   }
 
   return {
-    columns,
     nodeCount,
     nodes,
     edgePairs: Uint32Array.from(edgeList),

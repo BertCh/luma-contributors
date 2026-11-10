@@ -8,21 +8,20 @@
 import {addIsovistsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {addKernelPass, getViewBuffer} from './shared/kernel';
-import {createCityLayout, getBuildings, getIntersections} from './shared/urban';
+import {createCityLayout, getBuildings, sampleStreet} from './shared/urban';
 import {parameters} from './isovists-recipe.parameters';
 
-const VIEWPOINT_COUNT = 4;
+// Viewpoint 0 follows the pointer; viewpoint 1 stays put for comparison.
+const VIEWPOINT_COUNT = 2;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Visible area from four viewpoints: rays stop at the first building wall.',
-  createInputs: ({random, world}) => {
-    const layout = createCityLayout(random, world, 7, 4);
-    const intersections = getIntersections(layout);
-    const viewpoints = Float32Array.from(
-      [3, 8, 13, 17].flatMap(index => [intersections[index * 2], intersections[index * 2 + 1]])
-    );
-    return {layout, viewpoints};
+  caption:
+    'Visible area from two viewpoints, one under the pointer: rays hit a wall at the first building wall.',
+  createInputs: ({world}) => {
+    const layout = createCityLayout(world, 24);
+    const viewpoints = sampleStreet(layout, VIEWPOINT_COUNT);
+    return {layout, viewpoints, initial: [viewpoints[0], viewpoints[1]] as const};
   },
   build(builder, inputs, values) {
     const buildings = getBuildings(inputs.layout, values.fill);
@@ -79,9 +78,38 @@ export default defineOperationRun({
   rays[raysOffset + index] = select(vec4f(-9.0), vec4f(viewpoints[viewpointsOffset + index / ${rayCount}u], end), end.x > -8.0);`
     });
     const walls = builder.upload('wall-segments', 'float32x4', buildings.segments);
-    return {outputs: {walls, nodes, edges, owners, rays, positions}};
+    return {
+      outputs: {walls, nodes, edges, owners, rays, positions},
+      update: () => positions.write(inputs.viewpoints)
+    };
   },
   rebuildOn: ['maximumDistance', 'rayCount', 'fill'],
+  // The pointer is the first viewpoint: the rays are recast from it and stop at the first wall.
+  interaction: {
+    kind: 'place',
+    hint: 'move the viewpoint',
+    rest: ({inputs, toUnit}) => toUnit(inputs.initial),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.viewpoints[0] = pointer.x;
+      inputs.viewpoints[1] = pointer.y;
+      const nodes = peek(outputs.nodes);
+      let stopped = 0;
+      if (nodes) {
+        for (let ray = 0; ray < values.rayCount; ray++) {
+          const length = Math.hypot(nodes[ray * 2] - pointer.x, nodes[ray * 2 + 1] - pointer.y);
+          if (nodes[ray * 2] > -8 && length < values.maximumDistance - 1e-3) stopped++;
+        }
+      }
+      return {
+        rerun: true,
+        glyphs: [
+          {shape: 'ring', at: [pointer.x, pointer.y], radius: values.maximumDistance, dashed: true},
+          {shape: 'crosshair', at: [pointer.x, pointer.y]}
+        ],
+        readout: `maximumDistance ${values.maximumDistance.toFixed(2)}${nodes ? ` · ${stopped} of ${values.rayCount} rays stop` : ''}`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.walls, radius: 2.5},
     {
@@ -91,7 +119,7 @@ export default defineOperationRun({
       values: outputs.owners,
       radius: 2
     },
-    {layer: 'lines', segments: outputs.rays, alpha: 0.12, radius: 0.8},
+    {layer: 'lines', segments: outputs.rays, alpha: 0.2, radius: 0.8},
     {layer: 'dots', positions: outputs.positions, values: undefined, radius: 6, color: [1, 1, 1, 1]}
   ]
 });

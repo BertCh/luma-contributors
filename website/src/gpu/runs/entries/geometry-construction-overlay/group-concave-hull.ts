@@ -10,13 +10,17 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createClusteredPoints} from '../../inputs';
+import {createPointCarry, getCarriedPositions, updatePointCarry} from './shared/carry';
 import {addEdgeDrawing} from './shared/edges';
 import {parameters} from './group-concave-hull.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'One concave hull per label; each boundary has its group color.',
-  createInputs: ({random, world}) => createClusteredPoints(random, world, 300, 3, 0.08),
+  createInputs: ({random, world}) => {
+    const points = createClusteredPoints(random, world, 300, 3, 0.08);
+    return {...points, carry: createPointCarry(points.positions)};
+  },
   build(builder, points, values) {
     const groupCount = values.groupCount;
     const groupCapacity = getDelaunayMaximumTriangleCount(points.count);
@@ -51,11 +55,38 @@ export default defineOperationRun({
       edgeValidity,
       groupCapacity * 3
     );
-    return {outputs: {positions, groupIds, ...drawing}};
+    return {
+      outputs: {positions, groupIds, ...drawing},
+      update: () => positions.write(getCarriedPositions(points.positions, points.carry))
+    };
   },
   rebuildOn: ['maximumCircumradius', 'groupCount'],
+  // The pointer carries the nearest point (it keeps its label) and that group's hull re-forms.
+  interaction: {
+    kind: 'drag',
+    hint: 'carry a point',
+    rest: ({inputs, toUnit}) => toUnit([inputs.positions[0], inputs.positions[1]]),
+    resolve(pointer, {inputs}) {
+      const carried = updatePointCarry(
+        inputs.carry,
+        inputs.positions,
+        [pointer.x, pointer.y],
+        0.6,
+        1.2
+      );
+      const group = carried.row >= 0 ? inputs.labels[carried.row] : 0;
+      return {
+        rerun: carried.changed,
+        glyphs: [
+          {shape: 'ring', at: carried.at, radius: 0.025},
+          {shape: 'dot', at: carried.at}
+        ],
+        readout: `group ${group} · point ${carried.row} carried`
+      };
+    }
+  },
   draw: ({outputs}) => [
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 3},
+    {layer: 'dots', positions: outputs.positions, values: outputs.groupIds, alpha: 0.55, radius: 3},
     {
       layer: 'segments',
       nodes: outputs.nodes,

@@ -22,6 +22,5 @@ export const parameters: GpuSceneParameter[] = [
     step: 1,
     default: 12,
     unit: 'h'
-  },
-  {id: 'drift', label: 'Data: temporal drift', min: 0, max: 4, step: 0.2, default: 1.5}
+  }
 ];

@@ -11,3 +11,12 @@ declare module 'virtual:catalog-summaries' {
   const catalogSummaries: CatalogSummary[];
   export default catalogSummaries;
 }
+
+declare module 'virtual:demo-data' {
+  import type {DemoDataSource} from './gpu/data/provenance';
+  const inventory: {
+    sources: Record<string, DemoDataSource>;
+    entries: Record<string, {sources: string[]; scenario?: string; caption?: string}>;
+  };
+  export default inventory;
+}

@@ -10,11 +10,14 @@ import {
   GPULineSimplification
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
 import {
   addSelectedSegments,
   createLineSet,
   createPackedSegments,
   createRowLines,
+  findNearestLine,
+  findRestBesideLines,
   OUTPUT_COLOR
 } from './shared/lines';
 import {parameters} from './line-simplification.parameters';
@@ -22,7 +25,7 @@ import {parameters} from './line-simplification.parameters';
 export default defineOperationRun({
   parameters,
   caption: 'Douglas-Peucker: the kept vertices (orange) and the simplified line (blue).',
-  createInputs: ({random, world}) => createLineSet(random, world, 3, 48, 0.9),
+  createInputs: ({random, world}) => ({...createLineSet(random, world, 3, 48), world}),
   build(builder, lines) {
     const rowCount = lines.positions.length / 2;
     const positions = builder.upload('positions', 'float32x2', lines.positions);
@@ -55,12 +58,43 @@ export default defineOperationRun({
       createPackedSegments(lines.positions, lines.lineOffsets, false)
     );
     return {
-      outputs: {original, simplified, positions, keptMask},
+      outputs: {original, simplified, positions, keptMask, keptCount: count},
       update: current =>
         parameterBuffer.write(
           getGPULineSimplificationParameterValues({tolerance: current.tolerance})
         )
     };
+  },
+  // The distance from the pointer to the nearest input line is the tolerance, so the corridor of
+  // that half-width around the line is exactly what simplification may deviate within.
+  interaction: {
+    kind: 'reach',
+    hint: 'move off the line',
+    rest: ({inputs, toUnit}) =>
+      toUnit(
+        findRestBesideLines(
+          inputs,
+          findParameter(parameters, 'tolerance').default,
+          (x, y) => findNearestLine(inputs, x, y)?.distance ?? 0,
+          inputs.world,
+          1e-3
+        )
+      ),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const hit = findNearestLine(inputs, pointer.x, pointer.y);
+      if (!hit) return {};
+      const tolerance = snapToParameter(findParameter(parameters, 'tolerance'), hit.distance);
+      const keptCount = peek(outputs.keptCount)?.[0];
+      return {
+        values: {tolerance},
+        glyphs: [
+          {shape: 'ring', at: hit.point, radius: tolerance, dashed: true},
+          {shape: 'line', from: hit.point, to: [pointer.x, pointer.y]},
+          {shape: 'dot', at: hit.point}
+        ],
+        readout: `tolerance ${tolerance.toFixed(3)}${keptCount === undefined ? '' : ` · kept ${keptCount} of ${inputs.positions.length / 2}`}`
+      };
+    }
   },
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.original},

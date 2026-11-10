@@ -5,17 +5,18 @@
 // degree). The matrix shows the effect: with this order the communities line up as diagonal blocks.
 
 import {GPUAdjacencyMatrix, GPUAdjacencyMatrixOrder} from '@luma-contributors/analysis/gpu-network';
-import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
-import {createCommunityGraph, uploadAdjacency} from './shared/graphs';
+import {createBandedGraph, uploadAdjacency} from './shared/graphs';
 import {parameters} from './adjacency-matrix-order.parameters';
 
 export default defineOperationRun({
   parameters,
-  caption: 'Adjacency matrix drawn in the order the operation produced.',
-  createInputs: ({seed, world}) => ({seed, world}),
-  build(builder, {seed, world}, values) {
-    const graph = createCommunityGraph(makeRandom(seed), world, Math.round(values.communities));
+  caption:
+    'Adjacency matrix in input order (left of the curtain) and in the order the operation produced (right).',
+  createInputs: () => ({}),
+  build(builder, _inputs, values) {
+    const graph = createBandedGraph(Math.round(values.communities));
+    const topology = uploadAdjacency(builder, graph);
     const order = builder.allocate('order', 'uint32', graph.nodeCount);
     builder.graph.add(
       new GPUAdjacencyMatrixOrder({
@@ -24,26 +25,72 @@ export default defineOperationRun({
         output: {order: order.view}
       })
     );
-    const counts = builder.allocate('counts', 'uint32', values.resolution * values.resolution);
+    const inputOrder = builder.upload(
+      'input-order',
+      'uint32',
+      Uint32Array.from({length: graph.nodeCount}, (_, node) => node)
+    );
+    const size = values.resolution * values.resolution;
+    const orderedCounts = builder.allocate('ordered-counts', 'uint32', size);
+    const inputCounts = builder.allocate('input-counts', 'uint32', size);
     builder.graph.add(
       new GPUAdjacencyMatrix({
-        topology: uploadAdjacency(builder, graph),
+        id: 'matrix-ordered',
+        topology,
         directed: true,
         order: order.view,
         resolution: values.resolution,
-        output: {counts: counts.view}
+        output: {counts: orderedCounts.view}
       })
     );
-    return {outputs: {counts, resolution: values.resolution}};
+    builder.graph.add(
+      new GPUAdjacencyMatrix({
+        id: 'matrix-input',
+        topology,
+        directed: true,
+        order: inputOrder.view,
+        resolution: values.resolution,
+        output: {counts: inputCounts.view}
+      })
+    );
+    return {
+      outputs: {orderedCounts, inputCounts, resolution: values.resolution},
+      update: () => undefined
+    };
   },
-  draw: ({outputs}) => [
-    {
-      layer: 'raster',
-      values: outputs.counts,
-      columns: outputs.resolution,
-      rows: outputs.resolution,
-      ramp: 'sequential',
-      range: [0, 6]
-    }
-  ]
+  rebuildOn: ['resolution', 'communities'],
+  // Swipe: the curtain separates the matrix in input order from the matrix the operation ordered.
+  interaction: {
+    kind: 'swipe',
+    hint: 'swipe the order',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {values}) => ({
+      curtain: pointer.x,
+      glyphs: [{shape: 'curtain', x: pointer.x}],
+      readout: `input order | grouped order (${Math.round(values.communities)} bands)`
+    })
+  },
+  draw: ({outputs, interaction, world}) => {
+    const curtain = interaction.curtain ?? world.width / 2;
+    return [
+      {
+        layer: 'raster',
+        values: outputs.inputCounts,
+        columns: outputs.resolution,
+        rows: outputs.resolution,
+        ramp: 'sequential',
+        range: [0, 3],
+        clip: {side: 'left', x: curtain}
+      },
+      {
+        layer: 'raster',
+        values: outputs.orderedCounts,
+        columns: outputs.resolution,
+        rows: outputs.resolution,
+        ramp: 'sequential',
+        range: [0, 3],
+        clip: {side: 'right', x: curtain}
+      }
+    ];
+  }
 });

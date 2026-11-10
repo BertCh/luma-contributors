@@ -6,11 +6,11 @@ import type {GpuSceneParameter} from '../../../types';
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'districtSize',
-    label: 'Data: districtSize',
+    label: 'Data: district size',
     min: 1,
-    max: 4,
+    max: 16,
     step: 1,
-    default: 2,
-    unit: 'cells'
+    default: 4,
+    unit: 'tracts'
   }
 ];

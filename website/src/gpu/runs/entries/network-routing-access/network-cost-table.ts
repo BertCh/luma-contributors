@@ -1,22 +1,32 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUNetworkCostTable: a sparse table of every origin-destination pair within the radius. Each bar
-// is one table row's travel cost; the number of rows grows with the cost limit.
+// GPUNetworkCostTable: a sparse table of every origin-destination pair within the radius. The
+// picture draws the row of the hovered origin: its cost to each intersection inside the radius.
 
 import {GPUNetworkCostTable} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
 import {createNetwork, uploadNetworkTopology} from '../../inputs';
+import {chooseSticky} from '../../pick';
+import {createNodeIndex, getRoadContext, getRoadValues, uploadRoads} from './shared/roads';
 import {parameters} from './network-cost-table.parameters';
 
 const CAPACITY = 3000;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Costs of the origin-destination pairs inside the radius, in table order.',
+  caption:
+    'The cost table row of one origin, drawn as the cost to each intersection within the radius.',
   createInputs: ({random, world}) => {
     const network = createNetwork(random, world, 9);
-    return {network, costs: new Float32Array(network.slotCount)};
+    const defaultNode = network.findNearestNode(world.width / 2, 0.5);
+    return {
+      network,
+      defaultNode,
+      node: defaultNode,
+      index: createNodeIndex(network),
+      costs: new Float32Array(network.slotCount)
+    };
   },
   build(builder, inputs) {
     const {network} = inputs;
@@ -34,7 +44,17 @@ export default defineOperationRun({
       })
     );
     return {
-      outputs: {costs},
+      outputs: {
+        ...uploadRoads(builder, network),
+        offsets,
+        targets,
+        costs,
+        rowCosts: builder.upload(
+          'row-costs',
+          'float32',
+          new Float32Array(network.nodeCount).fill(Number.NaN)
+        )
+      },
       update: values => {
         network.fillWeights(inputs.costs, values.congestion);
         weights.write(inputs.costs);
@@ -43,7 +63,50 @@ export default defineOperationRun({
       }
     };
   },
+  // Probe: the hovered intersection's row of the table, drawn on the roads it reaches.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover an origin',
+    rest: ({inputs, toUnit}) =>
+      toUnit([
+        inputs.network.nodes[inputs.defaultNode * 2],
+        inputs.network.nodes[inputs.defaultNode * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.node = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.node);
+      const origin = inputs.node;
+      const offsets = peek(outputs.offsets);
+      const targets = peek(outputs.targets);
+      const costs = peek(outputs.costs);
+      const row = new Float32Array(inputs.network.nodeCount).fill(Number.NaN);
+      let targetCount = 0;
+      if (offsets && targets && costs) {
+        for (let entry = offsets[origin]; entry < offsets[origin + 1]; entry++) {
+          row[targets[entry]] = costs[entry];
+          targetCount++;
+        }
+      }
+      outputs.rowCosts.write(row);
+      return {
+        glyphs: [
+          {
+            shape: 'crosshair',
+            at: [inputs.network.nodes[origin * 2], inputs.network.nodes[origin * 2 + 1]],
+            size: 14
+          },
+          {
+            shape: 'ring',
+            at: [inputs.network.nodes[origin * 2], inputs.network.nodes[origin * 2 + 1]],
+            radius: values.costLimit,
+            dashed: true
+          }
+        ],
+        readout: `node ${origin} · ${targetCount} targets within ${values.costLimit.toFixed(2)}`
+      };
+    }
+  },
   draw: ({outputs, values}) => [
-    {layer: 'chart', kind: 'bars', values: outputs.costs, range: [0, values.costLimit]}
+    getRoadContext(outputs),
+    getRoadValues(outputs, outputs.rowCosts, {radius: 2.4, range: [0, values.costLimit]})
   ]
 });

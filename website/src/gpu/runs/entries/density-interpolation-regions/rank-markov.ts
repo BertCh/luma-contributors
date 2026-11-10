@@ -7,6 +7,7 @@
 
 import {GPURankMarkov} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {parameters} from './rank-markov.parameters';
 import {addSlice} from './support/gather';
 import {createDynamics, createMatrixMesh, PERIOD_COUNT, uploadMatrixMesh} from './support/dynamics';
@@ -15,7 +16,7 @@ import {uploadTractMesh} from './support/geometry';
 export default defineOperationRun({
   parameters,
   caption: 'Rank transitions between periods and the mobility of each step.',
-  createInputs: ({random, world}) => ({...createDynamics(random, world, 7), world}),
+  createInputs: ({random, world}) => ({...createDynamics(random, world, 5), world}),
   build(builder, {tracts, values, world}, current) {
     const placeCount = Math.min(tracts.count, 64);
     // GPURankMarkov handles at most 64 places; keep the first 64 (the mesh draws them all).
@@ -46,14 +47,15 @@ export default defineOperationRun({
       0.92
     ]);
     const mesh = uploadTractMesh(builder, tracts);
-    // Tracts past the first 64 reuse the last place's rank.
-    mesh.owners.write(
-      Uint32Array.from(
-        tracts.triangleOwners,
-        owner => Math.min(owner, placeCount - 1) + current.period * placeCount
-      )
-    );
     return {
+      // The period is per-frame: it only changes which period's ranks color the map.
+      update: values =>
+        mesh.owners.write(
+          Uint32Array.from(
+            tracts.triangleOwners,
+            owner => Math.min(owner, placeCount - 1) + values.period * placeCount
+          )
+        ),
       outputs: {
         ranks: addSlice(builder, ranks, 0, ranks.length, 'rank-values'),
         probabilities,
@@ -64,6 +66,16 @@ export default defineOperationRun({
       }
     };
   },
+  rebuildOn: ['mode'],
+  // x plays the periods: the map shows the ranks of that period.
+  interaction: bindAxes(parameters, {
+    kind: 'time',
+    hint: 'play the periods',
+    x: 'period',
+    decorate: values => ({
+      readout: `period ${values.period + 1} of ${PERIOD_COUNT} · ranks of ${values.mode === 0 ? 'full' : 'geographic'} mode`
+    })
+  }),
   draw: ({inputs, outputs, world}) => [
     {
       layer: 'polygons',

@@ -17,5 +17,5 @@ export const parameters: GpuSceneParameter[] = [
   },
   {id: 'permutationCount', label: 'permutationCount', min: 49, max: 999, step: 50, default: 999},
   {id: 'seed', label: 'seed', min: 1, max: 40, step: 1, default: 3},
-  {id: 'noise', label: 'Data: noise', min: 0, max: 1, step: 0.05, default: 0.4}
+  {id: 'noise', label: 'Data: noise', min: 0, max: 1, step: 0.05, default: 0.75}
 ];

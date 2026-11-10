@@ -4,10 +4,12 @@
 // GPUCellCover fills two polygons with cells (polyfill). Cells that are provably inside the polygon
 // (core) are drawn in one color, border cells in another; the outline is the input polygon.
 
+import {createShoreRing} from '../../../data/hydrography';
 import {GPUCellCover} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {addCellFill, getCellFamily} from './support/cells';
-import {createStarRing, packPolygonRings} from './support/polygons';
+import {packPolygonRings} from './support/polygons';
 import {parameters} from './cell-cover.parameters';
 
 const OUTPUT_CAPACITY = 2048;
@@ -15,11 +17,20 @@ const OUTPUT_CAPACITY = 2048;
 export default defineOperationRun({
   parameters,
   caption: 'Cells covering two polygons; core cells (inside) and border cells differ in color.',
-  createInputs: ({random, world}) =>
-    packPolygonRings([
-      createStarRing(random, [world.width * 0.3, 0.5], 0.3, 11, 0.45),
-      createStarRing(random, [world.width * 0.7, 0.5], 0.32, 13, 0.35)
-    ]),
+  createInputs: ({world}) => {
+    const polygons = packPolygonRings([
+      createShoreRing(0, world.width * 0.3, 0.5, 0.42, 32),
+      createShoreRing(1, world.width * 0.7, 0.5, 0.42, 32)
+    ]);
+    // `centers` are where the two polygons sit now: the pointer drags the nearer one.
+    return {
+      ...polygons,
+      origin: polygons.centers,
+      centers: Float32Array.from(polygons.centers),
+      index: createPointIndex(polygons.centers),
+      held: -1
+    };
+  },
   build(builder, polygons, values) {
     const family = getCellFamily(values.family);
     const resolution = values.resolution + (family === 'h3' ? 0 : 6);
@@ -61,8 +72,10 @@ export default defineOperationRun({
         core.write(new Uint32Array(OUTPUT_CAPACITY));
         const scale = (array: Float32Array, stride: number, ownerOf: (index: number) => number) =>
           Float32Array.from(array, (value, index) => {
-            const center = polygons.centers[ownerOf(Math.floor(index / stride)) * 2 + (index % 2)];
-            return center + (value - center) * current.size;
+            const ring = ownerOf(Math.floor(index / stride));
+            const axis = index % 2;
+            const origin = polygons.origin[ring * 2 + axis];
+            return polygons.centers[ring * 2 + axis] + (value - origin) * current.size;
           });
         const ringOf = (vertex: number) => (vertex < polygons.ringOffsets[1] ? 0 : 1);
         positions.write(scale(polygons.positions, 2, ringOf));
@@ -71,12 +84,34 @@ export default defineOperationRun({
       },
       outputs: {
         core,
+        count: status.count,
         outline,
         fill: addCellFill(builder, family, cells)
       }
     };
   },
   rebuildOn: ['family', 'resolution'],
+  // The pointer drags the nearer polygon; the cover follows it on the GPU every frame.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag a polygon',
+    rest: ({toUnit, inputs}) => toUnit([inputs.origin[0], inputs.origin[1]]),
+    resolve(pointer, {inputs, outputs, peek}) {
+      inputs.held = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.held);
+      inputs.centers.set(inputs.origin);
+      inputs.centers[inputs.held * 2] = pointer.x;
+      inputs.centers[inputs.held * 2 + 1] = pointer.y;
+      const core = peek(outputs.core);
+      const count = peek(outputs.count);
+      let coreCount = 0;
+      if (core && count) for (let row = 0; row < count[0]; row++) coreCount += core[row];
+      return {
+        rerun: true,
+        glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
+        readout: count ? `core ${coreCount} · border ${count[0] - coreCount} cells` : 'cover …'
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     {
       layer: 'polygons',

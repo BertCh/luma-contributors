@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPURasterCellStatistics over a five-layer stack (green, red, NIR, SWIR, elevation) where clouds
+// GPURasterCellStatistics over a five-layer stack (green, red, NIR, SWIR1, SWIR2) where clouds
 // blank different cells in each layer. Statistics use each cell's valid layers; cells with fewer
 // than `minimumValidCount` valid layers become nodata. All outputs are written; a slider picks
 // which one is drawn.
@@ -13,22 +13,32 @@ import {
 import {defineOperationRun} from '../../define-run';
 import {createImageryBands, createSmoothField} from '../../inputs';
 import {parameters} from './cell-statistics.parameters';
+import {formatNumber} from '../../interaction';
 import {drawRaster} from './support/bands';
+import {getCellAt, getCellBox} from './support/gestures';
 
 const STATISTICS = ['mean', 'maximum', 'range', 'standardDeviation', 'variety', 'counts'] as const;
 const LAYER_COUNT = 5;
+const RANGES = {
+  mean: [0, 0.25],
+  maximum: [0, 0.5],
+  range: [0, 0.3],
+  standardDeviation: [0, 0.15],
+  variety: [0, 5],
+  counts: [0, 5]
+} as const;
 
 export default defineOperationRun({
   parameters,
   caption: 'A stack of five layers in; per-cell statistics of the valid layers out.',
   createInputs: ({random, world}) => {
-    const imagery = createImageryBands(random, world);
+    const imagery = createImageryBands(world);
     const layers = [
       imagery.green,
       imagery.red,
       imagery.nearInfrared,
       imagery.shortwaveInfrared,
-      imagery.values
+      imagery.shortwaveInfrared2
     ];
     const clouds = layers.map(() => {
       const field = createSmoothField(random, 3, 4);
@@ -71,8 +81,9 @@ export default defineOperationRun({
       })
     );
     const first = builder.upload('first-layer', 'float32', inputs.layers[0]);
+    const inset = builder.allocate('inset', 'float32', LAYER_COUNT);
     return {
-      outputs: {...outputs, first},
+      outputs: {...outputs, first, inset},
       update: current => {
         const data = new Float32Array(cellCount * LAYER_COUNT);
         // Cloud mask: the cells where the smooth field is highest are blank in that layer.
@@ -90,14 +101,46 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer probes one cell: its five layer values (clouded layers are gaps) in an inset bar
+  // chart, with the cell's valid count and mean in the readout.
+  interaction: {
+    kind: 'probe',
+    hint: 'probe a cell',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {inputs, outputs, values, world}) => {
+      const {column, row, index} = getCellAt(inputs, world, pointer);
+      const threshold = 1 - values.cloudCover;
+      const layerValues = inputs.layers.map((layer, layerIndex) =>
+        inputs.clouds[layerIndex][index] > threshold ? Number.NaN : layer[index]
+      );
+      const valid = layerValues.filter(value => Number.isFinite(value));
+      outputs.inset.write(
+        Float32Array.from(layerValues, value => (Number.isFinite(value) ? value : 0))
+      );
+      const mean = valid.reduce((sum, value) => sum + value, 0) / (valid.length || 1);
+      const kept = valid.length >= values.minimumValidCount;
+      return {
+        glyphs: [getCellBox(inputs, world, column, row)],
+        readout: `${valid.length} of 5 valid | ${kept ? `mean ${formatNumber(mean)}` : 'nodata'}`
+      };
+    }
+  },
   draw: ({inputs, outputs, values}) => {
     const statistic = STATISTICS[Math.round(values.statistic)];
     return [
       drawRaster(inputs, outputs.first, {context: true}),
       drawRaster(inputs, outputs[statistic], {
         ramp: 'sequential',
+        range: RANGES[statistic],
         smoothing: statistic !== 'variety' && statistic !== 'counts'
-      })
+      }),
+      {
+        layer: 'chart',
+        kind: 'bars',
+        values: outputs.inset,
+        range: [0, 0.6],
+        rectangle: [0.03, 0.04, 0.3, 0.3]
+      }
     ];
   }
 });

@@ -8,27 +8,25 @@
 import {GPUChunkedSpatialWeightsValidation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createKnnWeights, createUniformPoints} from '../../inputs';
+import type {RunGlyph} from '../../interaction';
 import {parameters} from './chunked-weights-validation.parameters';
 import {addKernelPass} from './shared/kernel';
+import {describeViolation, findNearestFlagged} from './shared/probes';
 import {
   addLinkSegments,
   getChunkRowCounts,
+  getSegmentTargets,
   sortPointsByX,
-  uploadChunkedWeights
+  uploadChunkBoundaries,
+  uploadChunkedWeights,
+  stretchPoints
 } from './shared/weights';
-
-const CHUNK_COLORS = [
-  [0.95, 0.55, 0.25, 0.4],
-  [0.35, 0.75, 1, 0.4],
-  [0.65, 0.9, 0.4, 0.4],
-  [0.95, 0.45, 0.8, 0.4]
-] as const;
 
 export default defineOperationRun({
   parameters,
   caption: 'Rows colored by the violation flags the GPU wrote across chunks.',
   createInputs: ({random, world}) => {
-    const points = createUniformPoints(random, world, 140, 0.1);
+    const points = stretchPoints(createUniformPoints(random, world, 140, 0.1), world);
     return sortPointsByX(points.positions, points.values);
   },
   build(builder, points, values) {
@@ -49,8 +47,8 @@ export default defineOperationRun({
         output: {flags: flags.view, status: {invalidCount: invalidCount.view}}
       })
     );
-    // Violation kind per row: 0 for a clean row, 2 plus the lowest violated bit otherwise.
-    const kinds = builder.allocate('kinds', 'float32', rowCount);
+    // Lowest violated bit per row (a category), 0xffffffff for a clean row.
+    const kinds = builder.allocate('kinds', 'uint32', rowCount);
     addKernelPass(builder, {
       id: 'violation-kinds',
       invocationCount: rowCount,
@@ -59,12 +57,19 @@ export default defineOperationRun({
         {name: 'kinds', buffer: kinds, access: 'read_write'}
       ],
       body: `let flag = flags[flagsOffset + index];
-  kinds[kindsOffset + index] = select(0.0, 2.0 + f32(firstTrailingBit(flag)), flag != 0u);`
+  kinds[kindsOffset + index] = select(0xffffffffu, firstTrailingBit(flag), flag != 0u);`
     });
     return {
       outputs: {
         positions,
         kinds,
+        flags,
+        chunkStarts: weights.chunks.map(chunk => chunk.rowStart),
+        boundaries: uploadChunkBoundaries(
+          builder,
+          points.positions,
+          weights.chunks.map(chunk => chunk.rowStart)
+        ),
         links: weights.chunks.map((chunk, index) =>
           addLinkSegments(builder, `uploaded-${index}`, chunk, positions, {
             rowStart: chunk.rowStart
@@ -94,25 +99,46 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['chunkCount'],
+  // The pointer finds the nearest flagged row; its ring, links and violation are named.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a flagged point',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, peek}) {
+      const flags = peek(outputs.flags);
+      if (!flags) return {};
+      const row = findNearestFlagged(flags, inputs.positions, pointer.x, pointer.y);
+      if (row < 0) return {readout: 'no broken rows'};
+      const from = [inputs.positions[row * 2], inputs.positions[row * 2 + 1]] as const;
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at: from, radius: 0.04},
+        {shape: 'crosshair', at: from, size: 16}
+      ];
+      for (const links of outputs.links) {
+        for (const to of getSegmentTargets(peek(links), from)) {
+          glyphs.push({shape: 'line', from, to, dashed: true});
+        }
+      }
+      return {focus: row, glyphs, readout: `row ${row} · ${describeViolation(flags[row])}`};
+    }
+  },
   draw: ({outputs}) => [
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.boundaries,
+      count: outputs.chunkStarts.length - 1
+    },
     ...outputs.links.map(
-      (segments, index) =>
-        ({
-          layer: 'lines',
-          segments,
-          color: CHUNK_COLORS[index % CHUNK_COLORS.length],
-          radius: 1.2
-        }) as const
+      segments =>
+        ({layer: 'lines', context: true, segments, color: [0.6, 0.65, 0.85, 0.3]}) as const
     ),
     {layer: 'dots', context: true, positions: outputs.positions, radius: 2.4},
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.kinds,
-      ramp: 'sequential',
-      range: [0, 7],
-      fade: true,
-      radius: 4.2
+      radius: 5.5
     }
   ]
 });

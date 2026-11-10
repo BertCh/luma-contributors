@@ -11,6 +11,8 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
+import {getRainStations} from '../../../data/point-observations';
+import {clamp} from '../../interaction';
 import {parameters} from './distance-field.parameters';
 
 const SEED_CAPACITY = 12;
@@ -18,20 +20,17 @@ const ROWS = 60;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Distance rings and Voronoi zones around seed points.',
+  caption: 'Distance to NOAA rain gauges across the Carolinas during Hurricane Helene.',
   createInputs: ({random, world}) => {
     const columns = Math.round(ROWS * world.width);
-    const seeds = new Float32Array(SEED_CAPACITY * 2);
-    for (let index = 0; index < SEED_CAPACITY; index++) {
-      seeds[index * 2] = world.width * (0.06 + 0.88 * random());
-      seeds[index * 2 + 1] = 0.06 + 0.88 * random();
-    }
+    const seeds = Float32Array.from(getRainStations(random, world, SEED_CAPACITY, true).positions);
     const cellSize = world.height / ROWS;
     return {
       columns,
       rows: ROWS,
       cellSize,
       seeds,
+      defaultSeed: [seeds[0], seeds[1]] as const,
       grid: makeGPURasterMetadata({
         width: columns,
         height: ROWS,
@@ -59,6 +58,8 @@ export default defineOperationRun({
     return {
       outputs: {seedPositions, distances, allocation},
       update: next => {
+        // Seed 0 is the station the pointer drags.
+        seedPositions.write(inputs.seeds);
         seedCount.write(Uint32Array.of(Math.round(next.seedCount)));
         parameterBuffer.write(
           getGPUDistanceFieldParameterValues({maximumDistance: next.maximumDistance}, inputs.grid)
@@ -66,13 +67,33 @@ export default defineOperationRun({
       }
     };
   },
+  interaction: {
+    kind: 'drag',
+    hint: 'drag a station',
+    rest: ({inputs, toUnit}) => toUnit(inputs.defaultSeed),
+    resolve(pointer, {inputs, values, world}) {
+      const x = Math.fround(clamp(pointer.x, 0, world.width));
+      const y = Math.fround(clamp(pointer.y, 0, world.height));
+      const moved = inputs.seeds[0] !== x || inputs.seeds[1] !== y;
+      inputs.seeds[0] = x;
+      inputs.seeds[1] = y;
+      return {
+        rerun: moved,
+        glyphs: [
+          {shape: 'ring', at: [x, y], radius: values.maximumDistance, dashed: true},
+          {shape: 'crosshair', at: [x, y]}
+        ],
+        readout: `station 1 at (${x.toFixed(2)}, ${y.toFixed(2)}) · maximumDistance ${values.maximumDistance}`
+      };
+    }
+  },
   draw: ({inputs, outputs, values}) => [
     {
       layer: 'raster',
       values: outputs.allocation,
       columns: inputs.columns,
       rows: inputs.rows,
-      alpha: 0.45
+      alpha: 0.3
     },
     {
       layer: 'raster',

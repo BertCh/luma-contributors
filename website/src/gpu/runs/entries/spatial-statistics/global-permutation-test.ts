@@ -12,23 +12,22 @@ import {
   GPU_PERMUTATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, getFractionOf, getParameterAt} from '../../interaction';
 import {uploadSpatialWeights} from '../../inputs';
+import {drawReferenceHistogram} from './shared/permutation-chart';
 import {createNeighborGraph, createPointField, mixNoise} from './shared/point-field';
 import {parameters} from './global-permutation-test.parameters';
 
 const STATISTICS = ['moran', 'geary', 'getisOrdG'] as const;
+const STATISTIC_LABELS = ['Moran I', 'Geary C', 'Getis-Ord G'] as const;
 const MAXIMUM_PERMUTATIONS = 999;
-const HISTOGRAM_BINS = 24;
-// Axis range per statistic: wide enough for the shuffled values and the observed value.
-const RANGES = [
-  [-0.1, 0.3],
-  [0.6, 1.15],
-  [0.0118, 0.0125]
-] as const;
+const HISTOGRAM_BINS = 28;
+const COUNT_PARAMETER = findParameter(parameters, 'permutationCount');
+const CHART = [0.1, 0.04, 0.9, 0.22] as const;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Observed statistic against 999 shuffles of the values.',
+  caption: 'Observed statistic against shuffles of the values: more shuffles settle the p-value.',
   createInputs: ({random, world}) => createPointField(random, world, 500),
   build(builder, points, values) {
     const graph = createNeighborGraph(points.positions, 6);
@@ -41,6 +40,7 @@ export default defineOperationRun({
     const summary = builder.allocate('summary', 'float32', GPU_GLOBAL_PERMUTATION_SUMMARY.length);
     const histogram = builder.allocate('histogram', 'uint32', HISTOGRAM_BINS);
     const reference = builder.allocate('reference', 'float32', MAXIMUM_PERMUTATIONS);
+    const bins = builder.allocate('bins', 'float32', HISTOGRAM_BINS);
     builder.graph.add(
       new GPUGlobalPermutationTest({
         weights: uploadSpatialWeights(builder, graph.weights),
@@ -60,11 +60,7 @@ export default defineOperationRun({
         valueBuffer,
         summary,
         reference,
-        indices: builder.upload(
-          'indices',
-          'float32',
-          Float32Array.from({length: MAXIMUM_PERMUTATIONS}, (_, index) => index)
-        ),
+        bins,
         positions: builder.upload('positions', 'float32x2', points.positions)
       },
       update: current => {
@@ -79,32 +75,48 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['statistic'],
-  draw: ({outputs, values}) => [
+  // The pointer's x is the permutation count: the histogram fills and the p-value settles.
+  interaction: {
+    kind: 'time',
+    hint: 'sweep the shuffles',
+    rest: [getFractionOf(COUNT_PARAMETER, COUNT_PARAMETER.default), 0.5],
+    resolve(pointer, {outputs, values, world, peek}) {
+      const permutationCount = getParameterAt(COUNT_PARAMETER, pointer.unitX);
+      const summary = peek(outputs.summary);
+      const observed = summary?.[GPU_GLOBAL_PERMUTATION_SUMMARY.observed] ?? NaN;
+      const {glyphs} = drawReferenceHistogram({
+        histogram: outputs.bins,
+        samples: peek(outputs.reference),
+        sampleCount: permutationCount,
+        observed,
+        rectangle: CHART,
+        world
+      });
+      const pseudoP = summary?.[GPU_GLOBAL_PERMUTATION_SUMMARY.pseudoPValue];
+      return {
+        values: {permutationCount},
+        glyphs,
+        readout: `${permutationCount} shuffles · ${STATISTIC_LABELS[values.statistic]} ${
+          Number.isFinite(observed) ? observed.toFixed(3) : '…'
+        } · p ${pseudoP === undefined ? '…' : pseudoP.toFixed(3)}`
+      };
+    }
+  },
+  draw: ({outputs, theme}) => [
     {
       layer: 'dots',
       positions: outputs.positions,
       values: outputs.valueBuffer,
       radius: 4,
-      range: [0.1, 0.9]
-    },
-    {
-      layer: 'chart',
-      kind: 'scatter',
-      values: outputs.reference,
-      xValues: outputs.indices,
-      xRange: [0, MAXIMUM_PERMUTATIONS],
-      color: [0.4, 0.68, 1, 0.8],
-      radius: 2,
-      range: RANGES[values.statistic],
-      rectangle: [0.04, 0.04, 0.62, 0.32]
+      range: [0, 1]
     },
     {
       layer: 'chart',
       kind: 'bars',
-      values: outputs.summary,
-      ramp: 'diverging',
-      range: RANGES[values.statistic],
-      rectangle: [0.7, 0.04, 0.96, 0.32]
+      values: outputs.bins,
+      range: [0, 1],
+      rectangle: CHART,
+      color: [...theme.categories[0], 0.9]
     }
   ]
 });

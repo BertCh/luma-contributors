@@ -24,10 +24,10 @@ export const parameters: GpuSceneParameter[] = [
   },
   {
     id: 'gap',
-    label: 'Data: gap',
+    label: 'Data: boundary inset',
     min: 0,
-    max: 0.015,
-    step: 0.0005,
-    default: 0.006
+    max: 0.25,
+    step: 0.01,
+    default: 0.06
   }
 ];

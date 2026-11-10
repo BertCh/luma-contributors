@@ -10,18 +10,31 @@ import {
   getGPUNetworkAccessibilityParameterValues
 } from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
-import {addCostMatrix, createAccessScene, DECAY_NAMES, uploadSearch} from './shared/access';
+import {
+  addCostMatrix,
+  createAccessScene,
+  createFacilityDrag,
+  DECAY_NAMES,
+  getFacilityMarkers,
+  moveFacility,
+  uploadSearch
+} from './shared/access';
 import {getRoadContext, getRoadValues, uploadRoads} from './shared/roads';
 import {parameters} from './network-accessibility.parameters';
 
 export default defineOperationRun({
   parameters,
   caption: 'Opportunities reachable from each intersection, within the threshold.',
-  createInputs: ({random, world}) => createAccessScene(random, world, 8, 8),
+  createInputs: ({random, world}) => {
+    const scene = createAccessScene(random, world, 8, 8);
+    return {...scene, drag: createFacilityDrag(scene)};
+  },
   build(builder, scene) {
     const {network} = scene;
     const search = uploadSearch(builder, network);
-    const matrix = addCostMatrix(builder, search, scene.facilityNodes, network.nodeCount);
+    const facilityNodes = builder.upload('facility-nodes', 'uint32', scene.facilityNodes);
+    const facilities = builder.upload('facilities', 'float32x2', scene.facilityPositions);
+    const matrix = addCostMatrix(builder, search, facilityNodes, network.nodeCount);
     const parameterBuffer = builder.allocate('parameters', 'float32', 4);
     const gravity = builder.allocate('gravity', 'float32', network.nodeCount);
     const cumulative = builder.allocate('cumulative', 'float32', network.nodeCount);
@@ -39,9 +52,11 @@ export default defineOperationRun({
         ...uploadRoads(builder, network),
         gravity,
         cumulative,
-        facilities: builder.upload('facilities', 'float32x2', scene.facilityPositions)
+        facilities
       },
       update: values => {
+        facilityNodes.write(scene.facilityNodes);
+        facilities.write(scene.facilityPositions);
         search.costLimit.write(Float32Array.of(2.5));
         parameterBuffer.write(
           getGPUNetworkAccessibilityParameterValues({
@@ -54,11 +69,33 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({outputs, values}) => [
+  interaction: {
+    kind: 'drag',
+    hint: 'drag a facility',
+    rest: ({inputs, toUnit}) =>
+      toUnit([inputs.drag.defaultPositions[0], inputs.drag.defaultPositions[1]]),
+    resolve(pointer, {inputs, values, peek, outputs}) {
+      const move = moveFacility(inputs, inputs.drag, pointer.x, pointer.y);
+      const at: [number, number] = [
+        inputs.network.nodes[move.node * 2],
+        inputs.network.nodes[move.node * 2 + 1]
+      ];
+      return {
+        rerun: move.changed,
+        glyphs: [
+          {shape: 'ring', at, radius: values.threshold, dashed: true},
+          {shape: 'crosshair', at, size: 14}
+        ],
+        readout: `opportunity ${move.facility + 1} · threshold ${values.threshold.toFixed(2)}`
+      };
+    }
+  },
+  draw: ({outputs, values, theme}) => [
     getRoadContext(outputs),
     getRoadValues(outputs, values.measure === 0 ? outputs.gravity : outputs.cumulative, {
-      radius: 2.4
+      radius: 2.4,
+      range: [0, values.measure === 0 ? 8 : 8]
     }),
-    {layer: 'dots', positions: outputs.facilities, radius: 6, color: [1, 1, 1, 1]}
+    ...getFacilityMarkers(outputs.facilities, theme, {radius: 7})
   ]
 });

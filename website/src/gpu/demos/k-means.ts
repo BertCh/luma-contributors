@@ -10,14 +10,18 @@ import {
   getGPUKMeansParameterValues,
   GPU_KMEANS_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getEarthquakes} from '../data/point-observations';
+import {createPointIndex} from '../runs/pick';
+import type {RunGlyph} from '../runs/interaction';
+import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
+import {createJapanCoast} from './japan-coast';
 import {K_MEANS_PARAMETERS, readParameterValues} from './parameters';
 import {
   assertWebGPU,
   createEmptyStorageBuffer,
   createStorageBuffer,
   DotLayer,
-  drawGaussianCluster,
   DrawScheduler,
   drawLayers,
   getDemoTheme,
@@ -43,22 +47,13 @@ const scene: GpuScene = async context => {
   const view: DemoView = {worldWidth, worldHeight: 1, width: context.width, height: context.height};
   const random = makeRandom(context.seed);
 
-  const positions: number[] = [];
-  const blobs = [
-    [0.17, 0.32, 0.09, 170],
-    [0.33, 0.72, 0.08, 150],
-    [0.52, 0.42, 0.1, 190],
-    [0.74, 0.7, 0.08, 150],
-    [0.86, 0.28, 0.09, 160]
-  ] as const;
-  for (const [centerX, centerY, spread, count] of blobs) {
-    for (let index = 0; index < count; index++) {
-      positions.push(...drawGaussianCluster(random, centerX * worldWidth, centerY, spread));
-    }
-  }
-  const pointCount = positions.length / 2;
+  const {positions, count: pointCount} = getEarthquakes(
+    random,
+    {width: worldWidth, height: 1},
+    820
+  );
 
-  const positionBuffer = createStorageBuffer(device, Float32Array.from(positions));
+  const positionBuffer = createStorageBuffer(device, positions);
   const parameterBuffer = createEmptyStorageBuffer(device, GPU_KMEANS_PARAMETER_LENGTH);
   const labels = createEmptyStorageBuffer(device, pointCount);
   const centers = createEmptyStorageBuffer(device, CLUSTER_COUNT * 2);
@@ -94,8 +89,31 @@ const scene: GpuScene = async context => {
   }
   let isDestroyed = false;
 
+  const coast = createJapanCoast(device, worldWidth);
   const dots = new DotLayer(device, positionBuffer, labels, pointCount, 'uint32');
   const centerRings = new DotLayer(device, centers, centerValues, CLUSTER_COUNT);
+  const litPositions = createEmptyStorageBuffer(device, pointCount * 2);
+  const litValues = createEmptyStorageBuffer(device, pointCount);
+  const litDots = new DotLayer(device, litPositions, litValues, pointCount);
+  litDots.setInstanceCount(0);
+  const pointIndex = createPointIndex(positions, pointCount);
+  // CPU copies of the latest run, for the probe. The run counter drops reads that arrive late.
+  let clusterLabels: Uint32Array | null = null;
+  let clusterCenters: Float32Array | null = null;
+  let runCount = 0;
+  const readClusters = async () => {
+    const thisRun = ++runCount;
+    const [labelBytes, centerBytes] = await Promise.all([labels.readAsync(), centers.readAsync()]);
+    if (isDestroyed || thisRun !== runCount) return;
+    clusterLabels = new Uint32Array(labelBytes.buffer, labelBytes.byteOffset, pointCount).slice();
+    clusterCenters = new Float32Array(
+      centerBytes.buffer,
+      centerBytes.byteOffset,
+      CLUSTER_COUNT * 2
+    ).slice();
+    driver.refresh();
+    scheduler.request();
+  };
   const cycleMilliseconds = ITERATION_STEPS.length * STEP_MILLISECONDS + HOLD_MILLISECONDS;
   let lastKey = '';
   let isManual = false;
@@ -118,6 +136,7 @@ const scene: GpuScene = async context => {
         lastKey = key;
         parameterBuffer.write(getGPUKMeansParameterValues({seed}));
         runner.run();
+        void readClusters();
       } else if (!pending.has(iterations)) {
         pending.add(iterations);
         void createRunner(iterations).then(created => {
@@ -137,14 +156,69 @@ const scene: GpuScene = async context => {
       solid: [...theme.ink, 1],
       hillshade: 1
     });
-    drawLayers(device, theme, [dots, centerRings]);
+    coast.layer.update(view, theme, {radius: 0.7, solid: [...theme.muted, 0.8]});
+    litDots.update(view, theme, {mode: -1, radius: 4.4, solid: [...theme.ink, 1], hillshade: 1});
+    drawLayers(device, theme, [coast.layer, dots, litDots, centerRings, ...driver.getLayers()]);
   };
   let lastTime = 0;
   const scheduler = new DrawScheduler(() => draw(lastTime));
 
+  // The seeding is internal to GPUKMeans (a seed parameter, no initial-centers input), so the
+  // pointer probes the nearest epicenter instead of carrying a center.
+  const lit = new Float32Array(pointCount * 2);
+  const driver = createPointerDriver({
+    device,
+    view,
+    theme,
+    reducedMotion: context.reducedMotion,
+    kind: 'probe',
+    hint: 'hover an epicenter',
+    rest: [0.5, 0.5],
+    reportReadout: context.reportReadout,
+    requestDraw: () => scheduler.request(),
+    resolve(pointer, pointerContext) {
+      if (!clusterLabels || !clusterCenters) {
+        litDots.setInstanceCount(0);
+        return {};
+      }
+      const nearest = pointIndex.nearest(pointer.x, pointer.y);
+      if (nearest < 0) return {};
+      const cluster = clusterLabels[nearest];
+      let litCount = 0;
+      for (let index = 0; index < pointCount; index++) {
+        if (clusterLabels[index] !== cluster) continue;
+        lit[litCount * 2] = positions[index * 2];
+        lit[litCount * 2 + 1] = positions[index * 2 + 1];
+        litCount++;
+      }
+      litPositions.write(lit);
+      litDots.setInstanceCount(litCount);
+      scheduler.request();
+      const center: [number, number] = [
+        clusterCenters[cluster * 2],
+        clusterCenters[cluster * 2 + 1]
+      ];
+      const epicenter: [number, number] = [positions[nearest * 2], positions[nearest * 2 + 1]];
+      const glyphs: RunGlyph[] = [
+        {shape: 'line', from: epicenter, to: center},
+        {shape: 'ring', at: epicenter, radius: pointerContext.pixelSize * 7},
+        {shape: 'crosshair', at: center}
+      ];
+      return {
+        glyphs,
+        readout: `cluster ${cluster + 1} of ${CLUSTER_COUNT} · ${litCount} quakes · ${Math.hypot(
+          epicenter[0] - center[0],
+          epicenter[1] - center[1]
+        ).toFixed(2)} from its center`
+      };
+    }
+  });
+
   return {
+    gesture: driver.gesture,
     render(timeMilliseconds) {
       lastTime = timeMilliseconds;
+      driver.advance(timeMilliseconds);
       scheduler.flush();
     },
     setParameters(update) {
@@ -155,17 +229,31 @@ const scene: GpuScene = async context => {
     resize(width, height) {
       view.width = width;
       view.height = height;
+      driver.refresh();
       scheduler.request();
     },
+    setPointer: driver.setPointer,
+    resetPointer: driver.resetPointer,
     destroy() {
       isDestroyed = true;
       scheduler.cancel();
+      driver.destroy();
+      litDots.destroy();
+      coast.destroy();
       dots.destroy();
       centerRings.destroy();
       for (const runner of runners.values()) {
         runner.destroy();
       }
-      for (const buffer of [positionBuffer, parameterBuffer, labels, centers, centerValues]) {
+      for (const buffer of [
+        positionBuffer,
+        parameterBuffer,
+        labels,
+        centers,
+        centerValues,
+        litPositions,
+        litValues
+      ]) {
         buffer.destroy();
       }
     }

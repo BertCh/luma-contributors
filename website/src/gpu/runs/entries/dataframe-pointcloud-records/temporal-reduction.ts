@@ -8,27 +8,46 @@ import {
   GPUTemporalReduction,
   getGPUTemporalReductionParameterValues
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {defineOperationRun} from '../../define-run';
+import {defineOperationRun, type RunBuffer} from '../../define-run';
+import {bindAxes} from '../../interaction';
+import {getRasterCell} from '../../pick';
 import {addIntegerToFloat} from './_lib/convert';
+import {sampleFlashes} from '../../../data/lightning';
 import {parameters} from './temporal-reduction.parameters';
 
 const ROW_COUNT = 4000;
 const CELL_COUNT = 12;
-const BUCKET_COUNT = 24;
+const BUCKET_COUNT = 18;
 
-export default defineOperationRun({
+type Inputs = ReturnType<typeof createInputs>;
+type Outputs = {slotCounts: RunBuffer; ticks: RunBuffer};
+
+function createInputs({world}: {world: {width: number; height: number}}) {
+  const flashes = sampleFlashes({width: 1, height: 1}, ROW_COUNT);
+  const cells = Uint32Array.from(flashes.hours, (_, row) =>
+    Math.min(CELL_COUNT - 1, Math.floor(flashes.positions[row * 2] * CELL_COUNT))
+  );
+  // Counts are shown on the scale of the widest buckets, so widening them visibly raises the counts.
+  let tallest = 1;
+  for (let origin = 0; origin <= 12; origin += 0.5) {
+    const counts = new Uint32Array(CELL_COUNT * BUCKET_COUNT);
+    flashes.hours.forEach((hour, row) => {
+      const bucket = Math.floor((hour - origin) / 2);
+      if (bucket >= 0 && bucket < BUCKET_COUNT)
+        tallest = Math.max(tallest, ++counts[cells[row] * BUCKET_COUNT + bucket]);
+    });
+  }
+  return {world, cells, hours: flashes.hours, energy: flashes.energy, tallest};
+}
+
+export default defineOperationRun<Inputs, Outputs>({
   parameters,
-  caption: 'Readings per map cell (rows) and time bucket (columns).',
-  createInputs: ({random}) => ({
-    cells: Uint32Array.from({length: ROW_COUNT}, () => Math.floor(random() * CELL_COUNT)),
-    uniform: Float32Array.from({length: ROW_COUNT}, () => random()),
-    gaussian: Float32Array.from({length: ROW_COUNT}, () => random() + random() + random() - 1.5),
-    values: Float32Array.from({length: ROW_COUNT}, () => random())
-  }),
+  caption: 'Midwest lightning flashes by longitude band and hours since May 21, 2024, 12:00 UTC.',
+  createInputs,
   build(builder, inputs) {
     const cellIds = builder.upload('cell-ids', 'uint32', inputs.cells);
-    const timestamps = builder.allocate('timestamps', 'float32', ROW_COUNT);
-    const values = builder.upload('values', 'float32', inputs.values);
+    const timestamps = builder.upload('timestamps', 'float32', inputs.hours);
+    const values = builder.upload('energy', 'float32', inputs.energy);
     const parameterBuffer = builder.allocate('parameters', 'float32', 2);
     const slotCount = CELL_COUNT * BUCKET_COUNT;
     const counts = builder.allocate('counts', 'uint32', slotCount);
@@ -57,16 +76,17 @@ export default defineOperationRun({
       })
     );
     const slotCounts = addIntegerToFloat(builder, 'slot-counts', counts);
+    const ticks = builder.allocate('ticks', 'float32x4', 4);
     return {
-      outputs: {slotCounts},
+      outputs: {slotCounts, ticks},
       update: current => {
-        // Each cell has its own rush hour; off-peak readings spread over the whole day.
-        timestamps.write(
-          Float32Array.from(inputs.uniform, (uniform, row) => {
-            const peak = 4 + (inputs.cells[row] % 4) * 4.5;
-            return uniform < current.noise
-              ? uniform * (24 / current.noise)
-              : Math.min(24, Math.max(0, peak + inputs.gaussian[row] * 3));
+        // Ticks at hours 0, 6, 12 and 18; those outside the bucketed span collapse to nothing.
+        ticks.write(
+          Float32Array.from({length: 16}, (_, index) => {
+            const column = ((index >> 2) * 6 - current.origin) / current.width;
+            const isVisible = column >= 0 && column <= BUCKET_COUNT;
+            const x = isVisible ? (column / BUCKET_COUNT) * inputs.world.width : 0;
+            return [x, 1, x, isVisible ? 0.96 : 1][index % 4];
           })
         );
         parameterBuffer.write(
@@ -76,13 +96,43 @@ export default defineOperationRun({
     };
   },
   rebuildOn: [],
-  draw: ({outputs}) => [
+  // The pointer is a pad on the bucket grid: x slides its origin, y sets the bucket width.
+  interaction: bindAxes<Inputs, Outputs>(parameters, {
+    kind: 'pad',
+    hint: 'slide origin, width up',
+    x: 'origin',
+    y: 'width',
+    decorate: (values, pointer, {inputs, outputs, peek}) => {
+      const cell = getRasterCell(
+        BUCKET_COUNT,
+        CELL_COUNT,
+        [0, 0, inputs.world.width, 1],
+        pointer.x,
+        pointer.y
+      );
+      const count = peek(outputs.slotCounts)?.[cell.index];
+      const left = (cell.column / BUCKET_COUNT) * inputs.world.width;
+      const right = ((cell.column + 1) / BUCKET_COUNT) * inputs.world.width;
+      return {
+        glyphs: [
+          {
+            shape: 'box',
+            minimum: [left, 1 - (cell.row + 1) / CELL_COUNT],
+            maximum: [right, 1 - cell.row / CELL_COUNT]
+          }
+        ],
+        readout: `origin ${values.origin} h · width ${values.width} h · ${count ?? '…'} flashes here`
+      };
+    }
+  }),
+  draw: ({inputs, outputs}) => [
     {
       layer: 'raster',
       values: outputs.slotCounts,
       columns: BUCKET_COUNT,
       rows: CELL_COUNT,
-      range: [0, 80]
-    }
+      range: [0, inputs.tallest]
+    },
+    {layer: 'lines', context: true, segments: outputs.ticks, count: 4, color: [1, 1, 1, 0.8]}
   ]
 });

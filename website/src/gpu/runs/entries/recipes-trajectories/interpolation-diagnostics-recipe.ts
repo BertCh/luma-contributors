@@ -10,7 +10,9 @@ import {
   getGPUKrigingParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
 import {createUniformPoints} from '../../inputs';
+import {findBusiestPoint} from './lib/points';
 import {createWorldGrid} from './lib/rasterize';
 import {parameters} from './interpolation-diagnostics-recipe.parameters';
 
@@ -19,10 +21,14 @@ const MODELS = ['spherical', 'exponential', 'gaussian'] as const;
 export default defineOperationRun({
   parameters,
   caption: 'Kriged surface with leave-one-out residuals at the samples.',
-  createInputs: ({random, world}) => ({
-    grid: createWorldGrid(world),
-    samples: createUniformPoints(random, world, 60, 0.35)
-  }),
+  createInputs: ({random, world}) => {
+    const samples = createUniformPoints(random, world, 60, 0.35);
+    return {
+      grid: createWorldGrid(world),
+      samples,
+      anchor: findBusiestPoint(samples.positions, 0.3)
+    };
+  },
   build(builder, {grid, samples}) {
     const sampleCount = samples.count;
     const positions = builder.upload('positions', 'float32x2', samples.positions);
@@ -64,7 +70,7 @@ export default defineOperationRun({
       }
     });
     return {
-      outputs: {surface, residuals, positions},
+      outputs: {surface, residuals, positions, rootMeanSquaredError},
       update: current =>
         parameterBuffer.write(
           getGPUKrigingParameterValues(
@@ -83,6 +89,29 @@ export default defineOperationRun({
         )
     };
   },
+  // The distance from a sample to the pointer is the variogram range: the ring is its reach.
+  interaction: {
+    kind: 'reach',
+    hint: 'stretch the range',
+    rest: ({toUnit, inputs}) =>
+      toUnit([inputs.anchor[0] + parameters[1].default, inputs.anchor[1]]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const range = snapToParameter(
+        findParameter(parameters, 'range'),
+        Math.hypot(pointer.x - inputs.anchor[0], pointer.y - inputs.anchor[1])
+      );
+      const error = peek(outputs.rootMeanSquaredError);
+      return {
+        values: {range},
+        glyphs: [
+          {shape: 'ring', at: inputs.anchor, radius: range},
+          {shape: 'line', from: inputs.anchor, to: [pointer.x, pointer.y], dashed: true},
+          {shape: 'dot', at: inputs.anchor}
+        ],
+        readout: `variogram.range ${range.toFixed(2)} · ${MODELS[values.model]} · RMSE ${error ? error[0].toFixed(4) : '...'}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     {
       layer: 'raster',
@@ -97,6 +126,7 @@ export default defineOperationRun({
       positions: outputs.positions,
       values: outputs.residuals,
       ramp: 'diverging',
+      range: [-0.4, 0.4],
       radius: 8
     }
   ]

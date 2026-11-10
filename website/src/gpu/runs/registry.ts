@@ -67,12 +67,18 @@ export function getRunParameters(entryId: string): GpuSceneParameters | undefine
   return hasRun(entryId) ? (PARAMETERS.get(entryId) ?? []) : undefined;
 }
 
+const loaders = new Map<string, GpuSceneLoader>();
+
 /** Scene loader for the entry's run, for `<GpuCanvas scene={...}>`; the module is lazy. */
 export function getRunScene(entryId: string): GpuSceneLoader | undefined {
   const path = SCENE_PATHS.get(entryId);
   if (!path) return undefined;
-  return async (): Promise<GpuSceneModule> => {
+  const existing = loaders.get(entryId);
+  if (existing) return existing;
+  const loader = async (): Promise<GpuSceneModule> => {
     const module = await SCENE_LOADERS[path]();
     return {default: module.default, parameters: [...(PARAMETERS.get(entryId) ?? [])]};
   };
+  loaders.set(entryId, loader);
+  return loader;
 }

@@ -7,27 +7,22 @@
 
 import {GPUH3CellIdentities} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {addCellGeometry, addPointKeys} from './support/cells';
+import type {RunGlyph} from '../../interaction';
+import {findNearestOnPolyline} from '../../pick';
+import {getHonshuEvents, HONSHU_WINDOW} from '../../../data/point-observations';
+import {addCellGeometry, addPointerCell, addPointKeys} from './support/cells';
+import {formatCellKey, getWindowCenter, readPointerCell} from './support/pointer';
 import {addHighWordField} from './support/kernels';
 import {parameters} from './h3-cell-identities.parameters';
 
-const GRID_COLUMNS = 40;
-const GRID_ROWS = 22;
-
 export default defineOperationRun({
   parameters,
-  caption: 'Six identifiers per cell: each corner shows the number encoded in its identifier.',
-  createInputs: ({world}) => {
-    const positions = new Float32Array(GRID_COLUMNS * GRID_ROWS * 2);
-    for (let row = 0; row < GRID_ROWS; row++) {
-      for (let column = 0; column < GRID_COLUMNS; column++) {
-        const index = (row * GRID_COLUMNS + column) * 2;
-        positions[index] = ((column + 0.5) / GRID_COLUMNS) * world.width;
-        positions[index + 1] = (row + 0.5) / GRID_ROWS;
-      }
-    }
-    return {count: GRID_COLUMNS * GRID_ROWS, positions};
-  },
+  geographicWindow: HONSHU_WINDOW,
+  caption: 'H3 identifiers at Honshu epicenters. Each colored edge shows its encoded number.',
+  createInputs: ({random}) => ({
+    ...getHonshuEvents(random, 700),
+    pointer: [...getWindowCenter(HONSHU_WINDOW)] as [number, number]
+  }),
   build(builder, grid, values) {
     const positions = builder.upload('positions', 'float32x2', grid.positions);
     const cells = addPointKeys(builder, 'h3', values.resolution, positions);
@@ -47,8 +42,23 @@ export default defineOperationRun({
       edges[slot * 2] = slot;
       edges[slot * 2 + 1] = cell * 6 + ((slot + 1) % 6);
     }
+    // The same operation on the one cell under the pointer.
+    const pointer = builder.allocate('pointer', 'float32x2', 1);
+    const pointerCell = addPointerCell(builder, 'h3', values.resolution, pointer);
+    const pointerIdentifiers = builder.allocate('pointer-identifiers', 'uint32x2', 6);
+    builder.graph.add(
+      new GPUH3CellIdentities({
+        id: 'pointer-identities',
+        cells: pointerCell.cells.view,
+        operation: values.operation === 0 ? 'directed-edges' : 'vertices',
+        output: pointerIdentifiers.view
+      })
+    );
     return {
+      update: () => pointer.write(Float32Array.from(grid.pointer)),
       outputs: {
+        pointerCell,
+        pointerIdentifiers,
         corners: geometry.boundaries,
         numbers: addHighWordField(builder, 'identifiers', identifiers, 24),
         edges: builder.upload('edges', 'uint32x2', edges)
@@ -56,15 +66,83 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['operation', 'resolution'],
-  draw: ({outputs}) => [
-    {
-      layer: 'segments',
-      nodes: outputs.corners,
-      edges: outputs.edges,
-      values: outputs.numbers,
-      ramp: 'sequential',
-      range: [0, 6],
-      radius: 3.5
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a cell',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.pointer = [pointer.x, pointer.y];
+      const cell = readPointerCell(peek, outputs.pointerCell);
+      const identifiers = peek(outputs.pointerIdentifiers);
+      if (!cell.outline || !cell.boundaries || !identifiers)
+        return {rerun: true, readout: 'cell …'};
+      const glyphs: RunGlyph[] = [cell.outline];
+      const isEdges = values.operation === 0;
+      let slot = 0;
+      if (isEdges) {
+        // The edge slot nearest the pointer: slot `s` runs from corner `s` to corner `s + 1`.
+        const hit = findNearestOnPolyline(
+          cell.boundaries,
+          pointer.x,
+          pointer.y,
+          0,
+          cell.vertexCount,
+          true
+        );
+        slot = hit ? hit.index : 0;
+        const next = (slot + 1) % cell.vertexCount;
+        glyphs.push({
+          shape: 'line',
+          from: [cell.boundaries[slot * 2], cell.boundaries[slot * 2 + 1]],
+          to: [cell.boundaries[next * 2], cell.boundaries[next * 2 + 1]]
+        });
+      } else {
+        let nearest = Infinity;
+        for (let corner = 0; corner < cell.vertexCount; corner++) {
+          const distance = Math.hypot(
+            cell.boundaries[corner * 2] - pointer.x,
+            cell.boundaries[corner * 2 + 1] - pointer.y
+          );
+          if (distance < nearest) {
+            nearest = distance;
+            slot = corner;
+          }
+        }
+        glyphs.push({
+          shape: 'ring',
+          at: [cell.boundaries[slot * 2], cell.boundaries[slot * 2 + 1]],
+          radius: 0.05
+        });
+      }
+      const number = (identifiers[slot * 2 + 1] >>> 24) & 7;
+      return {
+        rerun: true,
+        glyphs,
+        readout: `${isEdges ? 'edge' : 'vertex'} ${number} · id ${formatCellKey(identifiers, slot)}`
+      };
     }
-  ]
+  },
+  draw: ({outputs, values}) =>
+    values.operation === 1
+      ? [
+          {
+            layer: 'dots',
+            positions: outputs.corners,
+            values: outputs.numbers,
+            ramp: 'categorical',
+            range: [0, 5],
+            radius: 4
+          }
+        ]
+      : [
+          {
+            layer: 'segments',
+            nodes: outputs.corners,
+            edges: outputs.edges,
+            values: outputs.numbers,
+            ramp: 'categorical',
+            range: [0, 6],
+            radius: 3.5
+          }
+        ]
 });

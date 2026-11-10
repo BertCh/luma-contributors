@@ -4,7 +4,7 @@
 import type {GpuSceneParameter} from '../../../types';
 
 export const parameters: GpuSceneParameter[] = [
-  {id: 'distance', label: 'distance', min: -0.06, max: 0.06, step: 0.0025, default: 0.03},
+  {id: 'distance', label: 'distance', min: -0.12, max: 0.12, step: 0.0025, default: 0.06},
   {
     id: 'joinStyle',
     label: 'joinStyle',

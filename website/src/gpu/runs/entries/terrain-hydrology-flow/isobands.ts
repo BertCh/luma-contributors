@@ -10,12 +10,22 @@ import {
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
 import {parameters} from './isobands.parameters';
-import {createIsoInputs, getLevels, LEVEL_CAPACITY} from './shared/iso';
+import {
+  createIsoInputs,
+  getBreaksThrough,
+  getLevels,
+  LEVEL_CAPACITY,
+  sampleValue
+} from './shared/iso';
 
 export default defineOperationRun({
   parameters,
   caption: 'Filled bands between breaks, one color each.',
-  createInputs: context => createIsoInputs(context),
+  createInputs: context => ({
+    ...createIsoInputs(context),
+    /** The field value under the pointer: the break the bands are anchored on. */
+    cursorValue: null as number | null
+  }),
   build(builder, inputs) {
     const triangleCapacity = inputs.cellCount * 8;
     const values = builder.upload('values', 'float32', inputs.valuesBottomUp);
@@ -52,7 +62,12 @@ export default defineOperationRun({
     return {
       outputs: {display, triangles, triangleBands, vertexIndices, owners},
       update: current => {
-        breaks.write(getLevels(current.interval, current.interval));
+        const anchor = inputs.cursorValue;
+        breaks.write(
+          anchor === null
+            ? getLevels(current.interval, current.interval)
+            : getBreaksThrough(anchor, current.interval, Math.round(current.breakCount))
+        );
         parameterBuffer.write(
           getGPUIsobandsParameterValues(
             {breakCount: Math.round(current.breakCount), extent: inputs.extent},
@@ -65,7 +80,24 @@ export default defineOperationRun({
       }
     };
   },
-  draw: ({inputs, outputs}) => [
+  // The pointer reads the field: the breaks are spaced by `interval` around the value under it, so a
+  // band boundary always runs through the cursor.
+  interaction: {
+    kind: 'level',
+    hint: 'pick a break',
+    rest: [0.55, 0.45],
+    resolve(pointer, {inputs, values}) {
+      const value = Math.round(sampleValue(inputs, pointer.x, pointer.y) * 10) / 10;
+      const changed = inputs.cursorValue !== value;
+      inputs.cursorValue = value;
+      return {
+        rerun: changed,
+        glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
+        readout: `break ${value.toFixed(1)} · next ${(value + values.interval).toFixed(1)}`
+      };
+    }
+  },
+  draw: ({inputs, outputs, values}) => [
     {
       layer: 'raster',
       context: true,
@@ -80,6 +112,8 @@ export default defineOperationRun({
       owners: outputs.owners,
       values: outputs.triangleBands,
       triangleCount: outputs.owners.length,
+      ramp: 'sequential',
+      range: [0, values.breakCount],
       alpha: 0.85
     }
   ]

@@ -15,5 +15,5 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['maximum-deviation', 'integrated-squared-deviation', 'extreme-rank']
   },
-  {id: 'clustering', label: 'Data: clustering', min: 0, max: 0.8, step: 0.05, default: 0.35}
+  {id: 'clustering', label: 'Data: observed share', min: 0, max: 1, step: 0.05, default: 1}
 ];

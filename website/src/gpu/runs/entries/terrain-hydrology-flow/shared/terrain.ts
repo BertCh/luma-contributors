@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Shared inputs for the terrain and hydrology runs: a seeded DEM whose ground coordinates are the
+// Shared inputs for the terrain and hydrology runs: the Grand Canyon DEM whose ground coordinates are the
 // drawing world (so reach polylines can be drawn directly), and the real GPUTerrainFlow that the
 // downstream operations (watersheds, stream order, HAND, ...) consume.
 
@@ -17,7 +17,8 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import type {RunBuffer, RunBuilder, RunInputContext} from '../../../define-run';
-import {createSmoothField} from '../../../inputs';
+import {getRasterCell, type RasterCell} from '../../../pick';
+import {sampleElevation, normalizeElevation} from '../../../../data/elevation';
 
 type RasterGrid = ReturnType<typeof makeGPURasterMetadata>;
 
@@ -36,29 +37,17 @@ export type TerrainInputs = {
   elevationRange: [number, number];
 };
 
-/** A tilted, fractal landscape with a central valley and a few pits. */
+/** Grand Canyon terrain scaled into the flow graph’s local coordinate system. */
 export function createTerrainInputs(
   context: RunInputContext,
   rows = 48,
   fixedColumns?: number
 ): TerrainInputs {
-  const {random, world} = context;
+  const {world} = context;
   const columns = fixedColumns ?? Math.max(24, Math.round(rows * world.width));
   const cellSize = world.height / rows;
-  const field = createSmoothField(random, 5, 3);
-  const cellCount = columns * rows;
-  const elevation = new Float32Array(cellCount);
-  for (let row = 0; row < rows; row++) {
-    for (let column = 0; column < columns; column++) {
-      const x = (column + 0.5) / columns;
-      const y = (row + 0.5) / rows;
-      // A tributary valley joins a trunk valley that drains to the right edge.
-      const valley = 0.2 * Math.abs(y - (0.55 + 0.08 * Math.sin(x * 6))) ** 0.8;
-      const tributary = 0.1 * Math.abs(y - (0.55 + 0.35 * Math.sin(x * 3.2 + 1.5))) ** 0.9;
-      const tilt = 0.2 * (1 - x);
-      elevation[row * columns + column] = 0.11 * field(x, y) + tilt + 0.6 * valley + tributary;
-    }
-  }
+  const measured = sampleElevation(columns, rows);
+  const elevation = measured.elevation.map(value => (value * cellSize) / measured.cellSize);
   return assembleTerrainInputs(columns, rows, cellSize, elevation);
 }
 
@@ -77,13 +66,12 @@ export function createCraterTerrainInputs(
   const {random, world} = context;
   const columns = Math.max(24, Math.round(rows * world.width));
   const cellSize = world.height / rows;
-  const field = createSmoothField(random, 3, 3);
+  const relief = normalizeElevation(sampleElevation(columns, rows).elevation);
   const elevation = new Float32Array(columns * rows);
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
       elevation[row * columns + column] =
-        noise * field((column + 0.5) / columns, (row + 0.5) / rows) +
-        tilt * (1 - (column + 0.5) / columns);
+        noise * relief[row * columns + column] + tilt * (1 - (column + 0.5) / columns);
     }
   }
   for (let craterRow = 0; craterRow < craterRows; craterRow++) {
@@ -106,7 +94,77 @@ export function createCraterTerrainInputs(
   return assembleTerrainInputs(columns, rows, cellSize, elevation);
 }
 
-function assembleTerrainInputs(
+/**
+ * A gentle slope with a few large craters, each holding smaller pits on its floor: draining a small
+ * pit first spills into the big bowl, which spills over its rim, so the depressions nest two deep.
+ */
+export function createNestedCraterTerrainInputs(
+  context: RunInputContext,
+  rows = 40,
+  craterColumns = 3,
+  craterRows = 2
+): TerrainInputs & {craterCenters: [number, number][]; subPitCenters: [number, number][]} {
+  const {random, world} = context;
+  const columns = Math.max(24, Math.round(rows * world.width));
+  const cellSize = world.height / rows;
+  const elevation = new Float32Array(columns * rows);
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      elevation[row * columns + column] = 0.05 * (1 - (column + 0.5) / columns);
+    }
+  }
+  const craterCenters: [number, number][] = [];
+  const subPitCenters: [number, number][] = [];
+  const addBump = (
+    centerColumn: number,
+    centerRow: number,
+    getHeight: (distance: number) => number
+  ) => {
+    for (let row = 0; row < rows; row++) {
+      for (let column = 0; column < columns; column++) {
+        elevation[row * columns + column] += getHeight(
+          Math.hypot(column - centerColumn, row - centerRow)
+        );
+      }
+    }
+  };
+  for (let craterRow = 0; craterRow < craterRows; craterRow++) {
+    for (let craterColumn = 0; craterColumn < craterColumns; craterColumn++) {
+      const centerColumn =
+        columns * ((craterColumn + 0.5 + 0.2 * (random() - 0.5)) / craterColumns);
+      const centerRow = rows * ((craterRow + 0.5 + 0.2 * (random() - 0.5)) / craterRows);
+      const ringRadius = 7 + 2 * random();
+      craterCenters.push([centerColumn, centerRow]);
+      // The bowl and its raised rim.
+      addBump(
+        centerColumn,
+        centerRow,
+        distance =>
+          0.04 * Math.exp(-(((distance - ringRadius) / 1.8) ** 2)) -
+          0.035 * Math.exp(-(distance * distance) / (2 * (ringRadius * 0.55) ** 2))
+      );
+      // Two smaller pits in the bowl.
+      for (const side of [-1, 1]) {
+        subPitCenters.push([
+          centerColumn + side * ringRadius * 0.35,
+          centerRow + side * ringRadius * 0.15
+        ]);
+        addBump(
+          centerColumn + side * ringRadius * 0.35,
+          centerRow + side * ringRadius * 0.15,
+          distance => -0.02 * Math.exp(-(distance * distance) / (2 * 1.6 * 1.6))
+        );
+      }
+    }
+  }
+  return {
+    ...assembleTerrainInputs(columns, rows, cellSize, elevation),
+    craterCenters,
+    subPitCenters
+  };
+}
+
+export function assembleTerrainInputs(
   columns: number,
   rows: number,
   cellSize: number,
@@ -232,13 +290,126 @@ export function getTerrainContextLayer(terrain: TerrainInputs, elevation: RunBuf
 /** The lowest cell of the trunk valley near a column (fraction of the width), as a cell index. */
 export function findValleyCell(terrain: TerrainInputs, columnFraction: number): number {
   const column = Math.min(terrain.columns - 1, Math.floor(terrain.columns * columnFraction));
-  const centerRow = Math.round(
-    (0.55 + 0.08 * Math.sin(((column + 0.5) / terrain.columns) * 6)) * terrain.rows - 0.5
-  );
-  let bestCell = centerRow * terrain.columns + column;
-  for (let row = centerRow - 3; row <= centerRow + 3; row++) {
+  let bestCell = column;
+  for (let row = 1; row < terrain.rows; row++) {
     const cell = row * terrain.columns + column;
     if (terrain.elevation[cell] < terrain.elevation[bestCell]) bestCell = cell;
   }
   return bestCell;
+}
+
+/** [column, row] offsets of the eight D8 neighbors, in the order of the fractions: E, SE, S, SW, W, NW, N, NE. */
+export const D8_OFFSETS = [
+  [1, 0],
+  [1, 1],
+  [0, 1],
+  [-1, 1],
+  [-1, 0],
+  [-1, -1],
+  [0, -1],
+  [1, -1]
+] as const;
+
+export const D8_NAMES = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'] as const;
+
+type World = {width: number; height: number};
+
+/** The raster cell under a drawing-world position (the raster layer fills the drawing world). */
+export function getTerrainCell(
+  terrain: TerrainInputs,
+  world: World,
+  x: number,
+  y: number
+): RasterCell {
+  return getRasterCell(terrain.columns, terrain.rows, [0, 0, world.width, world.height], x, y);
+}
+
+/** Drawing-world position of a cell's center. */
+export function getTerrainCellCenter(
+  terrain: TerrainInputs,
+  world: World,
+  cell: number
+): [number, number] {
+  const column = cell % terrain.columns;
+  const row = Math.floor(cell / terrain.columns);
+  return [
+    ((column + 0.5) / terrain.columns) * world.width,
+    (1 - (row + 0.5) / terrain.rows) * world.height
+  ];
+}
+
+/**
+ * The cell of highest accumulation within `radius` cells of `cell`: the pointer's snap to the
+ * channel nearest to it. Without an accumulation copy yet, the cell itself.
+ */
+export function snapToChannelCell(
+  terrain: TerrainInputs,
+  accumulation: ArrayLike<number> | null,
+  cell: number,
+  radius = 3
+): number {
+  if (!accumulation) return cell;
+  const column = cell % terrain.columns;
+  const row = Math.floor(cell / terrain.columns);
+  let best = cell;
+  for (let offsetRow = -radius; offsetRow <= radius; offsetRow++) {
+    for (let offsetColumn = -radius; offsetColumn <= radius; offsetColumn++) {
+      const nextColumn = column + offsetColumn;
+      const nextRow = row + offsetRow;
+      if (
+        nextColumn < 0 ||
+        nextRow < 0 ||
+        nextColumn >= terrain.columns ||
+        nextRow >= terrain.rows
+      ) {
+        continue;
+      }
+      const candidate = nextRow * terrain.columns + nextColumn;
+      if (accumulation[candidate] > accumulation[best]) best = candidate;
+    }
+  }
+  return best;
+}
+
+/**
+ * The cells a drop of water visits from `cell`: follows the D8 codes of GPUTerrainFlow until a
+ * terminal cell, a stream cell (when `streams` is given) or `maximumSteps`. Includes `cell` and
+ * the cell where it stops.
+ */
+export function traceDownstream(
+  terrain: TerrainInputs,
+  flowDirections: ArrayLike<number>,
+  cell: number,
+  streams: ArrayLike<number> | null = null,
+  maximumSteps = terrain.cellCount
+): number[] {
+  const path = [cell];
+  let current = cell;
+  for (let step = 0; step < maximumSteps; step++) {
+    if (streams && streams[current] !== 0 && streams[current] !== 0xffffffff) break;
+    const code = flowDirections[current];
+    if (code === 0 || code >= 0xfffffffe) break;
+    const direction = Math.round(Math.log2(code));
+    const column = (current % terrain.columns) + D8_OFFSETS[direction][0];
+    const row = Math.floor(current / terrain.columns) + D8_OFFSETS[direction][1];
+    if (column < 0 || row < 0 || column >= terrain.columns || row >= terrain.rows) break;
+    current = row * terrain.columns + column;
+    path.push(current);
+  }
+  return path;
+}
+
+/** Packed (x, y) pairs of the cell centers, for a polyline glyph. */
+export function getCellPolyline(
+  terrain: TerrainInputs,
+  world: World,
+  cells: readonly number[]
+): Float32Array {
+  const points = new Float32Array(cells.length * 2);
+  cells.forEach((cell, index) => {
+    const [x, y] = getTerrainCellCenter(terrain, world, cell);
+    points[index * 2] = x;
+    points[index * 2 + 1] = y;
+  });
+  return points;
 }

@@ -115,7 +115,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'buffers',
       seed: 4101,
-      caption: 'Round-joined 50 m buffers around street centerlines.'
+      caption: 'Buffers around river centerlines and shoreline profiles.'
     },
     related: ['offset-curve', 'polygon-overlay', 'outline-geometry'],
     lensScenario: 'gpu-spatial-analysis.buffer-surface',
@@ -212,7 +212,11 @@ graph.add(new GPUOffsetCurve({
 const compiled = await graph.compileAsync();
 parameters.write(getGPUOffsetCurveParameterValues({distance: -12, mitreLimit: 5}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'buffers', seed: 4102, caption: 'A street offset 12 m to its right.'},
+    preview: {
+      kind: 'buffers',
+      seed: 4102,
+      caption: 'Signed offsets around meanders of the Missouri and Ohio.'
+    },
     related: ['buffer-surface', 'outline-geometry', 'line-smooth'],
     lensScenario: 'gpu-spatial-analysis.offset-curve',
     reference: 'api/gpu-spatial-analysis/operators-geometry',
@@ -399,7 +403,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     preview: {
       kind: 'polygon-overlay',
       seed: 4104,
-      caption: 'Parcels intersected with a flood zone.'
+      caption: 'Shifted shoreline profiles intersect in a modeled overlay.'
     },
     related: ['buffer-surface', 'coverage-dissolve', 'segment-ring-assembly'],
     lensScenario: 'gpu-spatial-analysis.polygon-overlay',
@@ -615,7 +619,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'polygons',
       seed: 4106,
-      caption: 'Counties simplified; shared borders stay shared.'
+      caption: 'Chicago tracts retain their shared borders during simplification.'
     },
     related: ['line-simplification', 'coverage-dissolve', 'coverage-validity'],
     lensScenario: 'gpu-spatial-analysis.coverage-simplification',
@@ -716,7 +720,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'polygons',
       seed: 4107,
-      caption: 'Invalid edges of a county coverage, highlighted.'
+      caption: 'Gaps and overlaps between edited Chicago tract boundaries.'
     },
     related: ['coverage-dissolve', 'coverage-simplification', 'shared-paths'],
     lensScenario: 'gpu-spatial-analysis.coverage-validity',
@@ -812,7 +816,11 @@ graph.add(new GPUSegmentRingAssembly({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'polygons', seed: 4108, caption: 'Loose boundary edges closed into rings.'},
+    preview: {
+      kind: 'polygons',
+      seed: 4108,
+      caption: 'Jittered Chicago tract edges are assembled into rings.'
+    },
     related: ['polygon-overlay', 'coverage-dissolve', 'concave-hull'],
     lensScenario: 'gpu-spatial-analysis.segment-ring-assembly',
     reference: 'api/gpu-spatial-analysis',
@@ -1241,7 +1249,11 @@ graph.add(new GPUDelaunayTessellation({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // \`output.triangles\` is a uint32x3 index buffer, ready for a mesh or Voronoi`,
-    preview: {kind: 'tessellation', seed: 4113, caption: 'Delaunay triangles over random sites.'},
+    preview: {
+      kind: 'tessellation',
+      seed: 4113,
+      caption: 'Delaunay triangles between observed rain gauges.'
+    },
     related: ['voronoi-diagram', 'constrained-delaunay-triangulation', 'concave-hull'],
     lensScenario: 'gpu-spatial-analysis.delaunay-tessellation',
     reference: 'api/gpu-spatial-analysis',
@@ -1325,7 +1337,11 @@ graph.add(new GPUVoronoiDiagram({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'tessellation', seed: 4114, caption: 'Voronoi cells around 40 sites.'},
+    preview: {
+      kind: 'tessellation',
+      seed: 4114,
+      caption: 'Voronoi cells around Carolinas rain gauges.'
+    },
     related: ['delaunay-tessellation', 'building-tessellation-recipe', 'dorling-cartogram'],
     lensScenario: 'gpu-spatial-analysis.voronoi-diagram',
     reference: 'api/gpu-spatial-analysis',
@@ -1617,7 +1633,11 @@ graph.add(new GPULineSegmentize({
 const compiled = await graph.compileAsync();
 parameters.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: 25}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 4117, caption: 'Streets densified to 25 m segments.'},
+    preview: {
+      kind: 'lines',
+      seed: 4117,
+      caption: 'River reaches densified to a chosen segment length.'
+    },
     related: ['line-chunk', 'line-smooth', 'great-circle-arcs'],
     lensScenario: 'gpu-spatial-analysis.line-segmentize',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1699,7 +1719,11 @@ graph.add(new GPUGreatCircleArcs({
 const compiled = await graph.compileAsync();
 parameters.write(getGPUGreatCircleArcsParameterValues({maximumSegmentLength: 0, minimumSegments: 32}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'flows', seed: 4118, caption: 'Arcs from one hub to 40 destinations.'},
+    preview: {
+      kind: 'flows',
+      seed: 4118,
+      caption: 'Great-circle arcs between seven pairs of mapped cities.'
+    },
     related: ['line-segmentize', 'line-chunk'],
     lensScenario: 'gpu-spatial-analysis.great-circle-arcs',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1783,7 +1807,11 @@ graph.add(new GPULineSmooth({
 const compiled = await graph.compileAsync();
 parameters.write(getGPULineSmoothParameterValues({ratio: 0.25}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 4119, caption: 'Two Chaikin rounds on angular streets.'},
+    preview: {
+      kind: 'lines',
+      seed: 4119,
+      caption: 'Chaikin smoothing rounds the bends of sampled river reaches.'
+    },
     related: ['line-simplification', 'line-segmentize', 'offset-curve'],
     lensScenario: 'gpu-spatial-analysis.line-smooth',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1871,7 +1899,7 @@ graph.add(new GPULineChunk({
 const compiled = await graph.compileAsync();
 parameters.write(getGPULineChunkParameterValues({chunkLength: 100}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 4120, caption: 'Streets cut into 100 m chunks.'},
+    preview: {kind: 'lines', seed: 4120, caption: 'River reaches cut into equal-length chunks.'},
     related: ['line-segmentize', 'line-locate', 'linear-referencing'],
     lensScenario: 'gpu-spatial-analysis.line-chunk',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -1941,7 +1969,11 @@ graph.add(new GPULineSplit({
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
 // \`output.pieces.geometry\` holds the noded lines, \`pieces.sourceIds\` the origin line`,
-    preview: {kind: 'lines', seed: 4121, caption: 'Streets noded at every intersection.'},
+    preview: {
+      kind: 'lines',
+      seed: 4121,
+      caption: 'Reaches are turned across each other and split at intersections.'
+    },
     related: ['line-merge', 'shared-paths', 'line-clip-by-polygon'],
     lensScenario: 'gpu-spatial-analysis.line-split',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2016,7 +2048,11 @@ graph.add(new GPULineMerge({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 4122, caption: 'Segments joined into continuous chains.'},
+    preview: {
+      kind: 'lines',
+      seed: 4122,
+      caption: 'Shuffled river fragments join back into continuous chains.'
+    },
     related: ['line-split', 'line-simplification', 'shared-paths'],
     lensScenario: 'gpu-spatial-analysis.line-merge',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2121,7 +2157,11 @@ graph.add(new GPULineSimplification({
 const compiled = await graph.compileAsync();
 parameters.write(getGPULineSimplificationParameterValues({tolerance: 15}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 4123, caption: 'A GPS track thinned at 15 m tolerance.'},
+    preview: {
+      kind: 'lines',
+      seed: 4123,
+      caption: 'River centerlines simplified at the selected tolerance.'
+    },
     related: ['coverage-simplification', 'line-smooth', 'line-segmentize'],
     lensScenario: 'gpu-spatial-analysis.line-simplification',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2205,7 +2245,11 @@ graph.add(new GPULineClipByPolygon({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 4124, caption: 'Streets clipped to a district.'},
+    preview: {
+      kind: 'lines',
+      seed: 4124,
+      caption: 'River segments clipped to modeled shoreline outlines.'
+    },
     related: ['line-split', 'polygon-overlay', 'shared-paths'],
     lensScenario: 'gpu-spatial-analysis.line-clip-by-polygon',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2284,7 +2328,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
     preview: {
       kind: 'lines',
       seed: 4125,
-      caption: 'Party walls shared between neighboring buildings.'
+      caption: 'A copied river path shares part of its course before a modeled detour.'
     },
     related: ['building-adjacency-recipe', 'line-split', 'coverage-validity'],
     lensScenario: 'gpu-spatial-analysis.shared-paths',
@@ -2387,7 +2431,11 @@ graph.add(new GPULinearReferencing({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'lines', seed: 4126, caption: 'Points snapped to the nearest street.'},
+    preview: {
+      kind: 'lines',
+      seed: 4126,
+      caption: 'Query points snapped to sampled river centerlines.'
+    },
     related: ['line-locate', 'line-chunk'],
     lensScenario: 'gpu-spatial-analysis.linear-referencing',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2488,7 +2536,7 @@ const compiled = await graph.compileAsync();
 // every frame: advance the vehicles by 12 m
 parameters.write(getGPULineLocateParameterValues({measureOffset: frame * 12}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'trajectories', seed: 4127, caption: 'Markers advancing along routes.'},
+    preview: {kind: 'trajectories', seed: 4127, caption: 'Markers located along river reaches.'},
     related: ['linear-referencing', 'line-chunk'],
     lensScenario: 'gpu-spatial-analysis.line-locate',
     reference: 'api/gpu-spatial-analysis/operators-lines',
@@ -2761,7 +2809,11 @@ graph.add(new GPUDorlingCartogram({
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'point-clusters', seed: 4130, caption: 'Counties as non-overlapping circles.'},
+    preview: {
+      kind: 'point-clusters',
+      seed: 4130,
+      caption: 'Chicago tracts represented by non-overlapping circles.'
+    },
     related: ['group-geometry', 'map-coloring', 'voronoi-diagram'],
     lensScenario: 'gpu-spatial-analysis.dorling-cartogram',
     reference: 'api/gpu-spatial-analysis/gpu-dorling-cartogram',
@@ -2848,7 +2900,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     preview: {
       kind: 'classification',
       seed: 4132,
-      caption: 'Counties in five colors, no neighbors alike.'
+      caption: 'Chicago tracts colored by shared-edge adjacency.'
     },
     related: ['dorling-cartogram', 'coverage-dissolve'],
     lensScenario: 'gpu-spatial-analysis.map-coloring',
@@ -2976,7 +3028,11 @@ const compiled = await graph.compileAsync(); // once
 // on every slider change: write, encode, no recompile
 parameters.write(getGPULineSimplificationParameterValues({tolerance}));
 compiled.encode(device.commandEncoder, {parameters: undefined});`,
-    preview: {kind: 'pipeline', seed: 4134, caption: 'One compiled graph, new values every frame.'},
+    preview: {
+      kind: 'pipeline',
+      seed: 4134,
+      caption: 'A live tolerance controls simplification of the Lake Superior shore.'
+    },
     related: ['offset-expansion', 'line-simplification', 'buffer-surface'],
     reference: 'api/gpu-raster/operations-analysis',
     maturity: 'stable'

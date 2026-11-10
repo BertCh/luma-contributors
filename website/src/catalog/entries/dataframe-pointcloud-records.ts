@@ -2982,14 +2982,14 @@ const local = makePointCloudLocalPositions(absolute, origin);
 // positions, samples, validity, shiftedPositions, statusWords: views on graph
 graph.add(new GPUDatumGridTransform({
   positions, samples, validity,
-  grids: [{width: 3, height: 3, sampleOffset: 0, origin: [-1, -1], spacing: [1, 1]}],
-  operation: 'combined', direction: 'forward',
+  grids: [{width: 65, height: 31, sampleOffset: 0, origin: [-96, 35.5], spacing: [0.25, 0.25]}],
+  operation: 'horizontal', direction: 'forward',
   output: {positions: shiftedPositions, status: statusWords}
 }));`,
     preview: {
       kind: 'raster',
       seed: 9136,
-      caption: 'A shift grid warping positions between datums.'
+      caption: 'Magnified NAD27–NAD83 shifts across the Midwest, colored by distance.'
     },
     related: ['local-frame-projection'],
     reference: 'api/geospatial',

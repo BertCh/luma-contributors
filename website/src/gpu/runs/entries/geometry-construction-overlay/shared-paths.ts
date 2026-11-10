@@ -7,6 +7,7 @@
 
 import {GPUSharedPaths} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {bindAxes} from '../../interaction';
 import {addPackedSegments, createLineSet, createPackedSegments} from './shared/lines';
 import {parameters} from './shared-paths.parameters';
 
@@ -17,7 +18,7 @@ export default defineOperationRun({
   parameters,
   caption: 'Stretches shared exactly by two line sets, one color per shared run.',
   createInputs: ({random, world}) => {
-    const left = createLineSet(random, world, LINE_COUNT, VERTEX_COUNT, 1.2);
+    const left = createLineSet(random, world, LINE_COUNT, VERTEX_COUNT);
     const getRight = (overlap: number, detour: number) => {
       const positions = new Float32Array(left.positions);
       for (let line = 0; line < LINE_COUNT; line++) {
@@ -90,6 +91,26 @@ export default defineOperationRun({
       }
     };
   },
+  // The pointer places where the right lines leave their partners: x is how many vertices they
+  // share, y is how far they detour afterwards.
+  interaction: bindAxes<{left: {positions: Float32Array}}, unknown>(parameters, {
+    kind: 'drag',
+    hint: 'move the departure point',
+    x: 'overlap',
+    y: 'detour',
+    decorate: (values, _pointer, {inputs}) => ({
+      glyphs: [0, 1, 2].map(line => {
+        const vertex =
+          line * VERTEX_COUNT + (line === 1 ? VERTEX_COUNT - values.overlap : values.overlap - 1);
+        return {
+          shape: 'ring' as const,
+          at: [inputs.left.positions[vertex * 2], inputs.left.positions[vertex * 2 + 1]] as const,
+          radius: 0.03
+        };
+      }),
+      readout: `overlap ${values.overlap} vertices · detour ${values.detour.toFixed(3)}`
+    })
+  }),
   draw: ({outputs}) => [
     {layer: 'lines', context: true, segments: outputs.leftSegments, radius: 4},
     {

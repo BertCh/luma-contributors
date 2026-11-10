@@ -7,7 +7,7 @@
 
 import {defineOperationRun} from '../../define-run';
 import {parameters} from './cost-distance.parameters';
-import {addCostDistance, createCostInputs} from './shared/cost';
+import {addCostDistance, createCostInputs, getCostCell} from './shared/cost';
 
 export default defineOperationRun({
   parameters,
@@ -19,6 +19,31 @@ export default defineOperationRun({
       outputs: {friction: cost.friction, costs: cost.costs, sources: cost.sources},
       update: values => cost.writeSettings(values)
     };
+  },
+  // The pointer is the first source: the cost fronts are recomputed from the cell under it (the
+  // wall is not a valid source, so the source stays on its side).
+  interaction: {
+    kind: 'place',
+    hint: 'move the source',
+    rest: ({inputs, toUnit}) => {
+      const cell = inputs.defaultSources[0];
+      return toUnit([inputs.cellCenters[cell * 2], inputs.cellCenters[cell * 2 + 1]]);
+    },
+    resolve(pointer, {inputs, values}) {
+      const cell = getCostCell(inputs, pointer.x, pointer.y);
+      let rerun = false;
+      if (!inputs.isWallCell[cell.index] && inputs.sources[0] !== cell.index) {
+        inputs.sources[0] = cell.index;
+        rerun = true;
+      }
+      const source = inputs.sources[0];
+      const at = [inputs.cellCenters[source * 2], inputs.cellCenters[source * 2 + 1]] as const;
+      return {
+        rerun,
+        glyphs: [{shape: 'crosshair', at}],
+        readout: `source [${source % inputs.columns}, ${Math.floor(source / inputs.columns)}] · costLimit ${values.costLimit}`
+      };
+    }
   },
   draw: ({inputs, outputs, values}) => [
     {

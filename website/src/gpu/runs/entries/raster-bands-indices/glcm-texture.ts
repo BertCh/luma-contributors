@@ -6,7 +6,9 @@
 // smooth on the left and rough on the right. The seven features of a cell are stored side by side,
 // so GPURasterSampling reads the wide feature raster at the right column to pull out the feature
 // the slider selects as a plain per-cell raster. Levels, radius and offset are construction props;
-// roughness rewrites the scene.
+// roughness rewrites the scene: the added noise grows from nothing at the left edge to full at the
+// right. The pointer is the window: its (2 * radius + 1) cells square is outlined and the cell's
+// features are read out; the left strip shows the input.
 
 import {
   getGPURasterSamplingParameterValues,
@@ -15,7 +17,10 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import {defineOperationRun} from '../../define-run';
+import {sampleReflectance} from '../../../data/reflectance';
+import {formatNumber} from '../../interaction';
 import {parameters} from './glcm-texture.parameters';
+import {getCellAt, getCellBox} from './support/gestures';
 
 const FEATURE_COUNT = 7;
 const FEATURES = [
@@ -35,12 +40,14 @@ const OFFSETS = [
 ] as const;
 const COLUMNS = 48;
 const ROWS = 27;
+const STRIP = 0.16;
 
 export default defineOperationRun({
   parameters,
   rebuildOn: ['levels', 'radius', 'direction'],
-  caption: 'A smooth-to-rough scene in; seven texture features per cell out.',
+  caption: 'Feather River near-infrared reflectance in; seven texture features per cell out.',
   createInputs: ({random}) => ({
+    nir: sampleReflectance(COLUMNS, ROWS).nearInfrared,
     noise: Float32Array.from({length: COLUMNS * ROWS}, () => random())
   }),
   build(builder, inputs, values) {
@@ -93,13 +100,15 @@ export default defineOperationRun({
       return output;
     });
     return {
-      outputs: {scene, gathered},
+      outputs: {scene, features, gathered},
       update: current =>
         scene.write(
           Float32Array.from(inputs.noise, (noise, index) => {
-            // Texture grows from smooth (left) to rough (right); a gentle ramp underneath.
-            const column = (index % COLUMNS) / (COLUMNS - 1);
-            return Math.min(1, 0.3 + 0.4 * column + current.roughness * column * (noise - 0.5));
+            const rough = (index % COLUMNS) / (COLUMNS - 1);
+            return Math.max(
+              0,
+              Math.min(1, 2 * inputs.nir[index] + current.roughness * rough * (noise - 0.5))
+            );
           })
         )
     };
@@ -119,7 +128,32 @@ export default defineOperationRun({
     const span = Math.max(high - low, 1e-6);
     return {range: [low - span * 0.4, high] as const};
   },
-  draw: ({outputs, values, extra}) => [
+  interaction: {
+    kind: 'window',
+    hint: 'move the texture window',
+    rest: [0.5, 0.5],
+    resolve: (pointer, {outputs, values, world, peek}) => {
+      const grid = {columns: COLUMNS, rows: ROWS};
+      const {column, row, index} = getCellAt(grid, world, pointer);
+      const features = peek(outputs.features);
+      const at = (feature: number) =>
+        features ? formatNumber(features[index * FEATURE_COUNT + feature]) : '-';
+      return {
+        glyphs: [getCellBox(grid, world, column, row, values.radius)],
+        readout: `contrast ${at(0)} | homogeneity ${at(2)} | entropy ${at(6)}`
+      };
+    }
+  },
+  draw: ({outputs, values, extra, world}) => [
+    {
+      layer: 'raster',
+      values: outputs.scene,
+      columns: COLUMNS,
+      rows: ROWS,
+      ramp: 'sequential',
+      range: [0, 1],
+      clip: {side: 'left', x: world.width * STRIP}
+    },
     {
       layer: 'raster',
       values: outputs.gathered[Math.round(values.feature)],
@@ -127,7 +161,8 @@ export default defineOperationRun({
       rows: ROWS,
       ramp: Math.round(values.feature) === 5 ? 'diverging' : 'sequential',
       range: Math.round(values.feature) === 5 ? 'auto' : (extra?.range ?? 'auto'),
-      smoothing: false
+      smoothing: false,
+      clip: {side: 'right', x: world.width * STRIP}
     }
   ]
 });

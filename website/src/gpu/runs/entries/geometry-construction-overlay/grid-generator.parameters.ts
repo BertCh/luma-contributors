@@ -13,7 +13,7 @@ export const parameters: GpuSceneParameter[] = [
     default: 1,
     options: ['square', 'hex', 'triangle']
   },
-  {id: 'cellWidth', label: 'cellWidth', min: 0.05, max: 0.085, step: 0.002, default: 0.08},
+  {id: 'cellWidth', label: 'cellWidth', min: 0.03, max: 0.15, step: 0.005, default: 0.08},
   {
     id: 'hexOrientation',
     label: 'hexOrientation',

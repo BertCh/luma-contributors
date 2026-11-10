@@ -23,14 +23,23 @@ import {
   RELAXATION_SLOT_NAMES,
   ShapeBatch
 } from '../../record-demo';
+import {getBoxGlyph, type Box} from './_lib/record-probe';
 import {parameters} from './snapshot-tap.parameters';
 
 const COORDINATE_COUNT = 10;
+// The tap's iteration is picked among these (applied once the pointer rests: it changes the graph).
+const MAXIMUM_PICK = 5;
+
+type Latest = {boxes: ReturnType<typeof createDiagram>['layout']['boxes']};
 
 export default defineOperationRun({
   parameters,
   caption: 'The tap node in the graph, and the views it copied into the arena.',
-  createInputs: ({random, world}) => ({tracts: createRecordTracts(random), world}),
+  createInputs: ({random, world}) => ({
+    tracts: createRecordTracts(random),
+    world,
+    latest: null as Latest | null
+  }),
   build(builder, {tracts}, values) {
     const recorder = new GPUComputationRecorder();
     const slotNames = RELAXATION_SLOT_NAMES.slice(0, values.views);
@@ -73,6 +82,7 @@ export default defineOperationRun({
       node => (tapIds.has(node.id) ? 1 : 0),
       edge => !tapIds.has(edge.to.node.id)
     );
+    inputs.latest = {boxes: diagram.layout.boxes};
     // The dependency edge into the tap, highlighted.
     const highlight = new ShapeBatch();
     for (const edge of diagram.layout.edges) {
@@ -129,6 +139,37 @@ export default defineOperationRun({
       maps: maps.map((batch, index) => batch.uploadShapes(upload, `map-${index}`)),
       maximumResidual
     };
+  },
+  // The pointer picks the iteration the tap follows: the column of nodes under it is outlined, and
+  // the tap moves there once the pointer rests (the graph is rebuilt, so only the iterations 1 to 5).
+  interaction: {
+    kind: 'place',
+    hint: 'pick the tapped iteration',
+    rest: [0.5, 0.25],
+    resolve(pointer, {inputs, values}) {
+      const fraction = Math.min(1, Math.max(0, (pointer.unitX - 0.05) / 0.9));
+      const iteration = Math.min(
+        MAXIMUM_PICK,
+        values.iterations,
+        Math.floor(fraction * values.iterations) + 1
+      );
+      const nodes = (inputs.latest?.boxes ?? []).filter(
+        box => box.node.namespace === `iteration-${iteration}`
+      );
+      const bounds: Box | null = nodes.length
+        ? {
+            x0: Math.min(...nodes.map(box => box.x0)),
+            x1: Math.max(...nodes.map(box => box.x1)),
+            y0: Math.min(...nodes.map(box => box.y0)),
+            y1: Math.max(...nodes.map(box => box.y1))
+          }
+        : null;
+      return {
+        settle: {afterNode: iteration},
+        glyphs: bounds ? [getBoxGlyph(bounds, true)] : [],
+        readout: `tap after iteration ${iteration} · ${values.views} views copied`
+      };
+    }
   },
   draw: ({extra, theme}) => [
     {

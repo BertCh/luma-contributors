@@ -16,5 +16,13 @@ export const parameters: GpuSceneParameter[] = [
     options: ['[0, 1]', '[0, 0]', '[1, 1]']
   },
   {id: 'radiusCount', label: 'radiusCount', min: 8, max: 40, step: 4, default: 24},
-  {id: 'attraction', label: 'Data: attraction', min: 0, max: 1, step: 0.05, default: 0.6}
+  {
+    id: 'areaThreshold',
+    label: 'Data: flash area cutoff',
+    min: 80,
+    max: 600,
+    step: 20,
+    default: 200,
+    unit: 'km²'
+  }
 ];

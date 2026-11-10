@@ -10,20 +10,26 @@ import {
   GPUTrajectoryResample
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, snapToParameter} from '../../interaction';
 import {createFleet, raiseFleet} from './lib/fleet';
+import {findBusiestFix} from './lib/track-lookup';
 import {parameters} from './trajectory-encounters.parameters';
 
-const PAIR_CAPACITY = 40;
+const PAIR_CAPACITY = 64;
 const CELL_SIZE = 0.16;
+/** Pointer travel (world units) per unit of encounter distance, so the whole range fits the canvas. */
+const POINTER_PER_DISTANCE = 4;
 
 export default defineOperationRun({
   parameters,
   caption: 'Track pairs within a distance of each other in the same time bucket.',
-  createInputs: ({random, world}) =>
-    raiseFleet(
-      createFleet(random, world, {trackCount: 18, minimumFixes: 24, maximumFixes: 34}),
+  createInputs: ({world}) => {
+    const fleet = raiseFleet(
+      createFleet(world, {trackCount: 14, minimumFixes: 24, maximumFixes: 34}),
       0.42
-    ),
+    );
+    return {...fleet, anchor: findBusiestFix(fleet, 0.12)};
+  },
   build(builder, fleet, values) {
     const bucketCount = values.bucketCount;
     const distance = builder.allocate('distance', 'float32', 1);
@@ -64,6 +70,7 @@ export default defineOperationRun({
     return {
       outputs: {
         samples,
+        count,
         bucketCounts,
         segments: builder.upload('segments', 'float32x4', fleet.segments)
       },
@@ -71,6 +78,30 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['bucketCount'],
+  // Distance is how far the pointer is from a busy spot: the ring is the encounter distance.
+  interaction: {
+    kind: 'reach',
+    hint: 'stretch the distance',
+    rest: ({toUnit, inputs}) =>
+      toUnit([inputs.anchor[0] + parameters[0].default * POINTER_PER_DISTANCE, inputs.anchor[1]]),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const distance = snapToParameter(
+        findParameter(parameters, 'distance'),
+        Math.hypot(pointer.x - inputs.anchor[0], pointer.y - inputs.anchor[1]) /
+          POINTER_PER_DISTANCE
+      );
+      const pairCount = peek(outputs.count);
+      return {
+        values: {distance},
+        glyphs: [
+          {shape: 'ring', at: inputs.anchor, radius: distance},
+          {shape: 'line', from: inputs.anchor, to: [pointer.x, pointer.y], dashed: true},
+          {shape: 'dot', at: inputs.anchor}
+        ],
+        readout: `distance ${distance.toFixed(3)} · ${pairCount ? pairCount[0] : 0} pairs met`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
     {layer: 'dots', context: true, positions: outputs.samples, radius: 3.5},

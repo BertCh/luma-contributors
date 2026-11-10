@@ -10,7 +10,7 @@ export const parameters: GpuSceneParameter[] = [
     min: 0,
     max: 3,
     step: 1,
-    default: 3,
+    default: 2,
     options: ['water fraction', 'soil fraction', 'vegetation fraction', 'residual']
   },
   {
@@ -22,6 +22,6 @@ export const parameters: GpuSceneParameter[] = [
     default: 2,
     options: ['unconstrained', 'nonnegative', 'simplex']
   },
-  {id: 'unknown', label: 'Data: unknown material', min: 0, max: 1, step: 0.05, default: 0.5},
-  {id: 'noise', label: 'Data: noise', min: 0, max: 0.1, step: 0.005, default: 0.03}
+  {id: 'unknown', label: 'Data: unknown material', min: 0, max: 1, step: 0.05, default: 0},
+  {id: 'noise', label: 'Data: noise', min: 0, max: 0.1, step: 0.005, default: 0}
 ];

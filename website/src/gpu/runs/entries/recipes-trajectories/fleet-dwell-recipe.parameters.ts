@@ -21,7 +21,7 @@ export const parameters: GpuSceneParameter[] = [
     max: 150,
     step: 5,
     default: 30,
-    unit: 's'
+    unit: 'playback s'
   },
-  {id: 'zoneSize', label: 'Data: zoneSize', min: 0.5, max: 1.6, step: 0.05, default: 1}
+  {id: 'zoneSize', label: 'zoneSize', min: 0.5, max: 1.6, step: 0.05, default: 1}
 ];

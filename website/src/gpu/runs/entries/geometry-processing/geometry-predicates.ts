@@ -7,7 +7,9 @@
 import {GPUGeometryPredicates} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {makeRandom} from '../../../demos/kit';
 import {defineOperationRun} from '../../define-run';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {createLineEdges, createPolygonSet, createRingOfVertex} from './shared/polygon-set';
+import {findRingCrossings} from './shared/pointer-support';
 import {addFeatureValues} from './shared/shape-segments';
 import {parameters} from './geometry-predicates.parameters';
 
@@ -34,10 +36,24 @@ function createLines(random: () => number, world: {width: number; height: number
     for (const [x, y] of ring) positions.push(x, y);
     lineOffsets.push(positions.length / 2);
   }
+  const lineCenters = Float32Array.from({length: set.count * 2}, (_, component) => {
+    let sum = 0;
+    for (
+      let vertex = lineOffsets[component >> 1];
+      vertex < lineOffsets[(component >> 1) + 1];
+      vertex++
+    ) {
+      sum += positions[vertex * 2 + (component & 1)];
+    }
+    return sum / (lineOffsets[(component >> 1) + 1] - lineOffsets[component >> 1]);
+  });
   return {
     count: set.count,
     positions: Float32Array.from(positions),
-    lineOffsets: Uint32Array.from(lineOffsets)
+    lineOffsets: Uint32Array.from(lineOffsets),
+    lineCenters,
+    index: createPointIndex(lineCenters),
+    focus: {line: -1}
   };
 }
 
@@ -73,7 +89,10 @@ export default defineOperationRun({
       createRingOfVertex(lines.lineOffsets)
     );
     return {
+      // `output` only chooses which column `draw` shows, so it never recompiles.
+      update: () => undefined,
       outputs: {
+        columns,
         positions,
         edges: builder.upload('edges', 'uint32x2', createLineEdges(lines.lineOffsets)),
         flags: [
@@ -84,6 +103,36 @@ export default defineOperationRun({
         ]
       }
     };
+  },
+  // The pointer picks a line; its four written flags are read back and the line is outlined.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a line',
+    rest: ({inputs, toUnit}) => toUnit([inputs.lineCenters[2 * 2], inputs.lineCenters[2 * 2 + 1]]),
+    resolve(pointer, {inputs, outputs, peek}) {
+      const line = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.focus.line);
+      inputs.focus.line = line;
+      if (line < 0) return {};
+      const first = inputs.lineOffsets[line];
+      const last = inputs.lineOffsets[line + 1];
+      const flags = [
+        ['isSimple', peek(outputs.columns.isSimple)],
+        ['isRing', peek(outputs.columns.isRing)],
+        ['isClosed', peek(outputs.columns.isClosed)],
+        ['isCcw', peek(outputs.columns.isCcw)]
+      ] as const;
+      const crossings = findRingCrossings(inputs.positions, first, last - first - 1);
+      return {
+        focus: line,
+        glyphs: [
+          {shape: 'polyline', points: inputs.positions.subarray(first * 2, last * 2)},
+          ...(flags[0][1]?.[line] === 0 ? crossings.map(at => ({shape: 'dot' as const, at})) : [])
+        ],
+        readout: flags
+          .map(([name, column]) => `${name} ${column ? column[line] === 1 : '...'}`)
+          .join(' · ')
+      };
+    }
   },
   draw: ({outputs, values}) => [
     {

@@ -2,9 +2,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUSimilarLocations: ranks every tract by its distance to a reference tract in a space of four
-// attributes (standardized). The colors are those distances (bright = most different); the
-// reference tract is the large dot. The map is smooth in attribute space but not in geography,
-// so similar tracts are often far apart.
+// attributes (standardized). The colors are the ranks of that distance (bright = most different,
+// the same scale whatever the weights); the reference tract and its 12 most similar tracts are
+// outlined. The map is smooth in attribute space but not in geography, so similar tracts are often
+// far apart. The pointer picks the reference tract.
 
 import {
   getGPUSimilarLocationsParameterLength,
@@ -12,12 +13,14 @@ import {
   GPUSimilarLocations
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createSmoothField, createTracts} from '../../inputs';
-import {uploadTractMesh} from './shared/tract-rates';
+import {createTracts} from '../../inputs';
+import {createTractOutline, pickTract, uploadTractMesh} from './shared/tract-rates';
 import {parameters} from './similar-locations.parameters';
 
 const COLUMN_COUNT = 4;
 const RESULT_CAPACITY = 40;
+const DEFAULT_TRACT = 40;
+const SIMILAR_COUNT = 12;
 const STANDARDIZATIONS = ['zscore', 'rank'] as const;
 
 export default defineOperationRun({
@@ -25,14 +28,17 @@ export default defineOperationRun({
   caption: 'Distance of every tract from the reference tract in attribute space.',
   createInputs: ({random, world}) => {
     const tracts = createTracts(random, world);
-    const fields = Array.from({length: COLUMN_COUNT}, () => createSmoothField(random, 3));
     const attributes = new Float32Array(tracts.count * COLUMN_COUNT);
     for (let tract = 0; tract < tracts.count; tract++) {
-      const x = tracts.centers[tract * 2] / world.width;
-      const y = tracts.centers[tract * 2 + 1] / world.height;
-      fields.forEach((field, column) => {
-        attributes[tract * COLUMN_COUNT + column] = field(x, y) * 100;
-      });
+      attributes.set(
+        [
+          tracts.povertyShare[tract],
+          tracts.unemploymentShare[tract],
+          tracts.age65[tract] / tracts.population[tract],
+          tracts.population[tract]
+        ],
+        tract * COLUMN_COUNT
+      );
     }
     return {tracts, attributes};
   },
@@ -67,7 +73,9 @@ export default defineOperationRun({
     const reference = new Uint32Array(tracts.count);
     return {
       outputs: {
+        ranks,
         distances,
+        topIds,
         referenceMask,
         ...uploadTractMesh(builder, tracts)
       },
@@ -79,7 +87,7 @@ export default defineOperationRun({
         parameterBuffer.write(
           getGPUSimilarLocationsParameterValues(
             {
-              resultCount: 12,
+              resultCount: SIMILAR_COUNT,
               weights: [current.firstWeight, current.secondWeight, 1, 1]
             },
             COLUMN_COUNT
@@ -89,23 +97,48 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['standardization'],
+  interaction: {
+    kind: 'place',
+    hint: 'pick the reference tract',
+    rest: ({inputs, toUnit}) =>
+      toUnit([
+        inputs.tracts.centers[DEFAULT_TRACT * 2],
+        inputs.tracts.centers[DEFAULT_TRACT * 2 + 1]
+      ]),
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const picked = pickTract(inputs.tracts, pointer, values.referenceTract);
+      const topIds = peek(outputs.topIds);
+      const distances = peek(outputs.distances);
+      const glyphs = [createTractOutline(inputs.tracts, picked)];
+      let farthest = NaN;
+      if (topIds) {
+        for (let rank = 0; rank < SIMILAR_COUNT; rank++) {
+          const tract = topIds[rank];
+          if (tract >= inputs.tracts.count || tract === picked) continue;
+          glyphs.push(createTractOutline(inputs.tracts, tract));
+          if (distances) farthest = distances[tract];
+        }
+      }
+      return {
+        values: {referenceTract: picked},
+        glyphs,
+        readout: `reference tract ${picked} · ${SIMILAR_COUNT} most similar${
+          Number.isFinite(farthest) ? ` within ${farthest.toFixed(1)}` : ''
+        } · weights ${values.firstWeight}, ${values.secondWeight}`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     {
       layer: 'polygons',
       positions: outputs.vertices,
-      indices: outputs.indices,
+      indices: outputs.meshIndices,
       owners: outputs.owners,
-      values: outputs.distances,
+      values: outputs.ranks,
+      ramp: 'sequential',
+      range: [0, inputs.tracts.count],
       triangleCount: inputs.tracts.triangleCount
     },
-    {layer: 'lines', context: true, segments: outputs.outline, count: inputs.tracts.outlineCount},
-    {
-      layer: 'dots',
-      positions: outputs.centers,
-      values: outputs.referenceMask,
-      ramp: 'sequential',
-      range: [0, 1],
-      radius: 3.5
-    }
+    {layer: 'lines', context: true, segments: outputs.outline, count: inputs.tracts.outlineCount}
   ]
 });

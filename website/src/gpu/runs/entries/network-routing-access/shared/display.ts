@@ -185,3 +185,88 @@ export function addUint32Copy(
   );
   return copy;
 }
+
+/**
+ * Facility colors: row `index` holds `index` where `flags[index]` equals `flagValue` and the invalid
+ * value 0xffffffff otherwise, so selected (or open) sites take their categorical color and the
+ * others draw muted.
+ */
+export function addFlaggedIds(
+  builder: RunBuilder,
+  options: {id: string; flags: RunBuffer<'uint32'>; count: number; flagValue?: number}
+): RunBuffer<'uint32'> {
+  const ids = builder.allocate(`${options.id}-ids`, 'uint32', options.count);
+  builder.graph.add(
+    createWGSLKernelNode(builder.graph, {
+      id: `${options.id}-flagged`,
+      operation: 'display-flagged-ids',
+      invocationCount: options.count,
+      bindings: [
+        {name: 'flags', view: options.flags.view, type: 'u32', access: 'read'},
+        {name: 'ids', view: ids.view, type: 'u32', access: 'read_write'}
+      ],
+      body: `ids[idsOffset + index] = select(0xffffffffu, index, flags[flagsOffset + index] == ${options.flagValue ?? 1}u);`
+    })
+  );
+  return ids;
+}
+
+/** (x0, y0, x1, y1) segments joining two parallel float32x2 position buffers row by row. */
+export function addPairSegments(
+  builder: RunBuilder,
+  options: {id: string; from: RunBuffer<'float32x2'>; to: RunBuffer<'float32x2'>}
+): RunBuffer<'float32x4'> {
+  const segments = builder.allocate(`${options.id}-pairs`, 'float32x4', options.from.length);
+  builder.graph.add(
+    createWGSLKernelNode(builder.graph, {
+      id: `${options.id}-join`,
+      operation: 'display-pair-segments',
+      invocationCount: options.from.length,
+      bindings: [
+        {name: 'origins', view: options.from.view, type: 'f32', access: 'read'},
+        {name: 'targets', view: options.to.view, type: 'f32', access: 'read'},
+        {name: 'segments', view: segments.view, type: 'f32', access: 'read_write'}
+      ],
+      body: `
+  let slot = segmentsOffset + index * 4u;
+  segments[slot] = origins[originsOffset + index * 2u];
+  segments[slot + 1u] = origins[originsOffset + index * 2u + 1u];
+  segments[slot + 2u] = targets[targetsOffset + index * 2u];
+  segments[slot + 3u] = targets[targetsOffset + index * 2u + 1u];`
+    })
+  );
+  return segments;
+}
+
+/**
+ * Facility id per demand location, or the invalid value 0xffffffff where the nearest facility is
+ * farther than `threshold` (a one-row float32 buffer the run rewrites each frame).
+ */
+export function addThresholdedIds(
+  builder: RunBuilder,
+  options: {
+    id: string;
+    facilities: RunBuffer<'uint32'>;
+    costs: RunBuffer<'float32'>;
+    threshold: RunBuffer<'float32'>;
+  }
+): RunBuffer<'uint32'> {
+  const ids = builder.allocate(`${options.id}-ids`, 'uint32', options.facilities.length);
+  builder.graph.add(
+    createWGSLKernelNode(builder.graph, {
+      id: `${options.id}-thresholded`,
+      operation: 'display-thresholded-ids',
+      invocationCount: options.facilities.length,
+      bindings: [
+        {name: 'facilities', view: options.facilities.view, type: 'u32', access: 'read'},
+        {name: 'costs', view: options.costs.view, type: 'f32', access: 'read'},
+        {name: 'threshold', view: options.threshold.view, type: 'f32', access: 'read'},
+        {name: 'ids', view: ids.view, type: 'u32', access: 'read_write'}
+      ],
+      body: `
+  let isCovered = costs[costsOffset + index] <= threshold[thresholdOffset];
+  ids[idsOffset + index] = select(0xffffffffu, facilities[facilitiesOffset + index], isCovered);`
+    })
+  );
+  return ids;
+}

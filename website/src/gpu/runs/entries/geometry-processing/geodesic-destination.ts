@@ -1,42 +1,37 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUGeodesicDestination: from a few origins, a fan of bearings and one distance give the
-// destination points. Lines join each origin to its destinations on an equirectangular map, so
-// the geodesics bend with latitude; destination dots are colored by the final bearing.
+// GPUGeodesicDestination: from one origin, a fan of bearings and one distance give the destination
+// points. The arcs are the same operation sampled at k/12 of the distance, so on the equirectangular
+// map they bend with latitude; destination dots are colored by the final bearing.
 
 import {GPUGeodesicDestination} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createCoastlineSegments} from '../../../data/coastline';
 import {defineOperationRun} from '../../define-run';
-import {addEquirectangular, addPairSegments} from './shared/shape-segments';
+import {clamp} from '../../interaction';
 import {parameters} from './geodesic-destination.parameters';
+import {addEquirectangular, addGeodesicArcs} from './shared/shape-segments';
 
-const ORIGINS = [
-  [-100, 40],
-  [10, 50],
-  [105, 25],
-  [-60, -25],
-  [25, -20],
-  [150, -30]
-];
-const BEARINGS_PER_ORIGIN = 18;
-const ROW_COUNT = ORIGINS.length * BEARINGS_PER_ORIGIN;
+const DEFAULT_ORIGIN = [2.35, 48.86] as const;
+const BEARING_COUNT = 72;
+const ARC_STEPS = 12;
+const MAXIMUM_LATITUDE = 78;
+
+const getMapX = (longitude: number, width: number) =>
+  width * 0.04 + ((longitude + 180) / 360) * width * 0.92;
+const getMapY = (latitude: number) => 0.04 + ((latitude + 90) / 180) * 0.92;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Where each bearing and distance lead on the globe.',
-  createInputs: ({world}) => ({world}),
-  build(builder, {world}) {
-    const origins = new Float32Array(ROW_COUNT * 2);
-    for (let row = 0; row < ROW_COUNT; row++) {
-      const origin = ORIGINS[Math.floor(row / BEARINGS_PER_ORIGIN)];
-      origins[row * 2] = origin[0];
-      origins[row * 2 + 1] = origin[1];
-    }
-    const originBuffer = builder.upload('origins', 'float32x2', origins);
-    const bearings = builder.allocate('bearings', 'float32', ROW_COUNT);
-    const distances = builder.allocate('distances', 'float32', ROW_COUNT);
-    const destinations = builder.allocate('destinations', 'float32x2', ROW_COUNT);
-    const finalBearings = builder.allocate('final-bearings', 'float32', ROW_COUNT);
+  caption: 'Where each bearing and distance lead on the globe; the arcs are great circles.',
+  createInputs: ({world}) => ({world, origin: [...DEFAULT_ORIGIN] as [number, number]}),
+  build(builder, inputs) {
+    const {world} = inputs;
+    const origins = builder.allocate('origins', 'float32x2', BEARING_COUNT);
+    const bearings = builder.allocate('bearings', 'float32', BEARING_COUNT);
+    const distances = builder.allocate('distances', 'float32', BEARING_COUNT);
+    const destinations = builder.allocate('destinations', 'float32x2', BEARING_COUNT);
+    const finalBearings = builder.allocate('final-bearings', 'float32', BEARING_COUNT);
     builder.graph.add(
       new GPUGeodesicDestination({
         spatialContext: {
@@ -44,34 +39,76 @@ export default defineOperationRun({
           metric: 'ellipsoidal',
           units: 'meters'
         },
-        origins: originBuffer.view,
+        origins: origins.view,
         bearings: bearings.view,
         distances: distances.view,
         output: {destinations: destinations.view, finalBearings: finalBearings.view}
       })
     );
-    const mapOrigins = addEquirectangular(builder, 'origins', originBuffer, world);
-    const mapDestinations = addEquirectangular(builder, 'destinations', destinations, world);
     return {
       outputs: {
-        rays: addPairSegments(builder, 'rays', mapOrigins, mapDestinations),
-        mapOrigins,
-        mapDestinations,
+        coastline: builder.upload(
+          'coastline',
+          'float32x4',
+          createCoastlineSegments([(world.width * 0.92) / 360, 0.92 / 180], [world.width / 2, 0.5])
+        ),
+        arcs: addGeodesicArcs(builder, 'arcs', {
+          origins,
+          bearings,
+          distances,
+          rowCount: BEARING_COUNT,
+          steps: ARC_STEPS,
+          world
+        }),
+        mapOrigins: addEquirectangular(builder, 'origins', origins, world),
+        mapDestinations: addEquirectangular(builder, 'destinations', destinations, world),
         finalBearings
       },
       update: values => {
-        bearings.write(
+        origins.write(
           Float32Array.from(
-            {length: ROW_COUNT},
-            (_, row) => ((row % BEARINGS_PER_ORIGIN) / BEARINGS_PER_ORIGIN) * values.bearingSpan
+            {length: BEARING_COUNT * 2},
+            (_, component) => inputs.origin[component & 1]
           )
         );
-        distances.write(new Float32Array(ROW_COUNT).fill(values.distance * 1000));
+        bearings.write(
+          Float32Array.from(
+            {length: BEARING_COUNT},
+            (_, row) => (row / BEARING_COUNT) * values.bearingSpan
+          )
+        );
+        distances.write(new Float32Array(BEARING_COUNT).fill(values.distance * 1000));
       }
     };
   },
+  // The pointer is the origin of the whole fan; the distance stays the slider.
+  interaction: {
+    kind: 'place',
+    hint: 'move the origin',
+    rest: ({world, toUnit}) =>
+      toUnit([getMapX(DEFAULT_ORIGIN[0], world.width), getMapY(DEFAULT_ORIGIN[1])]),
+    resolve(pointer, {inputs, values, world}) {
+      const longitude = clamp(
+        ((pointer.x - world.width * 0.04) / (world.width * 0.92)) * 360 - 180,
+        -180,
+        180
+      );
+      const latitude = clamp(
+        ((pointer.y - 0.04) / 0.92) * 180 - 90,
+        -MAXIMUM_LATITUDE,
+        MAXIMUM_LATITUDE
+      );
+      inputs.origin = [longitude, latitude];
+      return {
+        rerun: true,
+        glyphs: [{shape: 'crosshair', at: [getMapX(longitude, world.width), getMapY(latitude)]}],
+        readout: `origin ${Math.abs(latitude).toFixed(1)}°${latitude < 0 ? 'S' : 'N'} ${Math.abs(longitude).toFixed(1)}°${longitude < 0 ? 'W' : 'E'} · ${values.distance} km`
+      };
+    }
+  },
   draw: ({outputs}) => [
-    {layer: 'lines', context: true, segments: outputs.rays},
+    {layer: 'lines', context: true, segments: outputs.coastline, radius: 0.8, alpha: 0.45},
+    {layer: 'lines', segments: outputs.arcs, radius: 1.1, alpha: 0.7},
     {layer: 'dots', positions: outputs.mapOrigins, context: true, radius: 4},
     {
       layer: 'dots',
@@ -79,7 +116,7 @@ export default defineOperationRun({
       values: outputs.finalBearings,
       ramp: 'diverging',
       range: [-180, 180],
-      radius: 5
+      radius: 4
     }
   ]
 });

@@ -10,47 +10,67 @@ import {
   getGPULonLatPolygonPreparationParameterValues,
   GPULonLatPolygonPreparation
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {defineOperationRun} from '../../define-run';
+import sample from '../../../data/natural-earth-geometry.json';
+import {createCoastlineSegments} from '../../../data/coastline';
+import {defineOperationRun, type RunBuffer, type RunBuilder} from '../../define-run';
+import {clamp} from '../../interaction';
 import {createRingEdges} from './shared/polygon-set';
-import {addEquirectangular, addOutputEdges, addRingCategories} from './shared/shape-segments';
+import {addKernel, addOutputEdges, addRingCategories} from './shared/shape-segments';
 import {parameters} from './lon-lat-polygon-preparation.parameters';
 
-// Three features of one ring each: a box over the antimeridian, a polar triangle, a plain box.
-const POSITIONS = Float32Array.of(
-  170,
-  5,
-  -160,
-  5,
-  -160,
-  35,
-  170,
-  35,
-  -150,
-  70,
-  -30,
-  70,
-  90,
-  70,
-  -60,
-  -30,
-  -20,
-  -30,
-  -20,
-  -5,
-  -60,
-  -5
+// Modeled survey bounds in the Bering Sea and around the Arctic pole, plus the mapped Greenland shore.
+const BERING_WINDOW = [
+  [170, 50],
+  [-155, 50],
+  [-155, 65],
+  [170, 65]
+];
+const POLAR_WINDOW = [
+  [-150, 70],
+  [-30, 70],
+  [90, 70]
+];
+const RINGS = [BERING_WINDOW, POLAR_WINDOW, sample.greenlandShore];
+const POSITIONS = Float32Array.from(RINGS.flat(2));
+const RING_OFFSETS = Uint32Array.of(
+  0,
+  BERING_WINDOW.length,
+  BERING_WINDOW.length + POLAR_WINDOW.length,
+  POSITIONS.length / 2
 );
-const RING_OFFSETS = Uint32Array.of(0, 4, 7, 11);
 const POLYGON_OFFSETS = Uint32Array.of(0, 1, 2, 3);
 const FEATURE_OFFSETS = Uint32Array.of(0, 1, 2, 3);
 const OUTPUT_VERTICES = 4096;
+/** The map is cropped to the northern latitudes where all three rings live. */
+const SOUTH = 40;
+const NORTH = 90;
+const HALF_WIDTH = 17.5;
+const BERING_CENTER = [187.5 - 360, 57.5] as const;
+
+const wrapLongitude = (longitude: number) => ((((longitude + 180) % 360) + 360) % 360) - 180;
+const getMapX = (longitude: number, width: number) =>
+  width * 0.04 + ((longitude + 180) / 360) * width * 0.92;
+const getMapY = (latitude: number) => 0.04 + ((latitude - SOUTH) / (NORTH - SOUTH)) * 0.92;
+
+/** Rewrites the Bering window as a box of fixed size around `center` (longitude, latitude). */
+function createPositions(center: readonly [number, number]): Float32Array {
+  const positions = Float32Array.from(POSITIONS);
+  const west = wrapLongitude(center[0] - HALF_WIDTH);
+  const east = wrapLongitude(center[0] + HALF_WIDTH);
+  const south = center[1] - 7.5;
+  const north = center[1] + 7.5;
+  positions.set([west, south, east, south, east, north, west, north]);
+  return positions;
+}
 
 export default defineOperationRun({
   parameters,
-  caption: 'Edges densified, the antimeridian polygon split, the polar ring capped.',
-  createInputs: ({world}) => ({world}),
-  build(builder, {world}, values) {
-    const positions = builder.upload('positions', 'float32x2', POSITIONS);
+  caption:
+    'Greenland’s shore densified, a Bering survey window split at the date line and a polar survey ring capped.',
+  createInputs: ({world}) => ({world, center: [...BERING_CENTER] as [number, number]}),
+  build(builder, inputs, values) {
+    const {world} = inputs;
+    const positions = builder.upload('positions', 'float32x2', createPositions(inputs.center));
     const featureOffsets = builder.upload('feature-offsets', 'uint32', FEATURE_OFFSETS);
     const polygonOffsets = builder.upload('polygon-offsets', 'uint32', POLYGON_OFFSETS);
     const ringOffsets = builder.upload('ring-offsets', 'uint32', RING_OFFSETS);
@@ -92,22 +112,70 @@ export default defineOperationRun({
     );
     return {
       outputs: {
-        input: addEquirectangular(builder, 'input', positions, world),
+        coast: builder.upload(
+          'coast',
+          'float32x4',
+          createCoastlineSegments(
+            [(world.width * 0.92) / 360, 0.92 / (NORTH - SOUTH)],
+            [world.width / 2, 0.04 - (SOUTH * 0.92) / (NORTH - SOUTH)]
+          )
+        ),
+        input: addCroppedMap(builder, 'input', positions, world),
         inputEdges: builder.upload('input-edges', 'uint32x2', createRingEdges(RING_OFFSETS)),
-        prepared: addEquirectangular(builder, 'prepared', prepared, world),
+        prepared: addCroppedMap(builder, 'prepared', prepared, world),
         preparedEdges: addOutputEdges(builder, 'prepared', preparedRings, OUTPUT_VERTICES, true),
         categories: addRingCategories(builder, 'prepared', preparedRings, OUTPUT_VERTICES)
       },
-      update: current =>
+      update: current => {
         parameterBuffer.write(
           getGPULonLatPolygonPreparationParameterValues('great-circle', {
             maximumSegmentDegrees: current.maximumSegmentDegrees
           })
-        )
+        );
+        positions.write(createPositions(inputs.center));
+      }
     };
+  },
+  // The pointer carries the Bering survey window; across the date line it is split in two.
+  interaction: {
+    kind: 'drag',
+    hint: 'drag across the date line',
+    rest: ({inputs, toUnit}) =>
+      toUnit([getMapX(BERING_CENTER[0], inputs.world.width), getMapY(BERING_CENTER[1])]),
+    resolve(pointer, {inputs, world, values}) {
+      const longitude = clamp(
+        ((pointer.x - world.width * 0.04) / (world.width * 0.92)) * 360 - 180,
+        -180,
+        180
+      );
+      const latitude = clamp(
+        SOUTH + ((pointer.y - 0.04) / 0.92) * (NORTH - SOUTH),
+        SOUTH + 8,
+        NORTH - 8
+      );
+      inputs.center = [longitude, latitude];
+      const west = wrapLongitude(longitude - HALF_WIDTH);
+      const east = wrapLongitude(longitude + HALF_WIDTH);
+      const crosses = west > east;
+      const edgeX = [getMapX(-180, world.width), getMapX(180, world.width)];
+      return {
+        rerun: true,
+        glyphs: [
+          ...edgeX.map(x => ({
+            shape: 'line' as const,
+            from: [x, 0] as const,
+            to: [x, 1] as const,
+            dashed: true
+          })),
+          {shape: 'crosshair', at: [pointer.x, pointer.y]}
+        ],
+        readout: `window ${Math.round(west)}..${Math.round(east)}° · ${crosses ? (values.antimeridian === 1 ? 'rejected' : 'split in 2') : 'whole'}`
+      };
+    }
   },
   rebuildOn: ['antimeridian', 'poleRings'],
   draw: ({outputs}) => [
+    {layer: 'lines', context: true, segments: outputs.coast, alpha: 0.4, radius: 0.8},
     {layer: 'segments', context: true, nodes: outputs.input, edges: outputs.inputEdges},
     {
       layer: 'segments',
@@ -118,3 +186,26 @@ export default defineOperationRun({
     }
   ]
 });
+
+/** Maps longitude/latitude degrees to the drawing world, cropped to the northern latitudes. */
+function addCroppedMap(
+  builder: RunBuilder,
+  id: string,
+  lonLat: RunBuffer<'float32x2'>,
+  world: {width: number; height: number}
+): RunBuffer<'float32x2'> {
+  const projected = builder.allocate(`${id}-world`, 'float32x2', lonLat.length);
+  addKernel(builder, {
+    id: `${id}-cropped-map`,
+    invocationCount: lonLat.length,
+    bindings: [
+      {name: 'lonLat', buffer: lonLat, access: 'read'},
+      {name: 'projected', buffer: projected, access: 'read_write'}
+    ],
+    body: `let lon = lonLat[lonLatOffset + index * 2u];
+  let lat = lonLat[lonLatOffset + index * 2u + 1u];
+  projected[projectedOffset + index * 2u] = ${world.width * 0.04} + (lon + 180.0) / 360.0 * ${world.width * 0.92};
+  projected[projectedOffset + index * 2u + 1u] = 0.04 + (lat - ${SOUTH}.0) / ${NORTH - SOUTH}.0 * 0.92;`
+  });
+  return projected;
+}

@@ -21,8 +21,8 @@ import {
   createStorageBuffer,
   DotLayer,
   DrawScheduler,
-  drawLayers,
   getDemoTheme,
+  getWorldPosition,
   GraphRunner,
   importBufferView,
   makeRandom,
@@ -36,7 +36,16 @@ import {
   type LookOptions,
   type ValueFormat
 } from '../demos/kit';
+import {
+  type ParameterPatch,
+  type RunInteraction,
+  type RunInteractionResult,
+  type RunInteractionState,
+  type RunPeek,
+  type RunPointer
+} from './interaction';
 import {ChartLayer, EdgeLayer, MeshLayer} from './layers';
+import {getGlyphMetrics, getPixelOfWorld, PointerOverlay} from './pointer-overlay';
 
 // ---------------------------------------------------------------------------------------------
 // Buffers
@@ -160,7 +169,7 @@ export function createRunArray(format: RunFormat, length: number): RunArray {
 // ---------------------------------------------------------------------------------------------
 // Layer descriptors
 
-export type RampKind = 'sequential' | 'diverging' | 'categorical' | 'cyclic';
+export type RampKind = 'sequential' | 'diverging' | 'categorical' | 'cyclic' | 'grey';
 
 type ValueLook = {
   /** Default: categorical for uint32 values, sequential for float32. */
@@ -182,6 +191,11 @@ type CommonLook = {
   context?: boolean;
   /** Solid RGBA (0-1) instead of the ramp, for layers without values. */
   color?: readonly [number, number, number, number];
+  /**
+   * Draw only the part of the layer left or right of world x. A swipe gesture gives the input
+   * layer `{side: 'left', x: curtain}` and the output layer `{side: 'right', x: curtain}`.
+   */
+  clip?: {side: 'left' | 'right'; x: number};
 };
 
 type AnyBuffer = RunBuffer<RunFormat>;
@@ -205,6 +219,8 @@ export type DotsRunLayer = {
   /** Draw only the first `count` dots. Default: all positions. */
   count?: number;
   radius?: number;
+  /** Scale each dot's radius with its value, from 30% at the low end of `range` to all of it. */
+  sizeByValue?: boolean;
 } & ValueLook &
   CommonLook;
 
@@ -319,6 +335,10 @@ export type RunDrawState<Inputs, Outputs, Extra = undefined> = {
   world: {width: number; height: number};
   /** What `afterRun` returned for the latest run; `undefined` for runs without `afterRun`. */
   extra: Extra;
+  /** What `interaction.resolve` returned for the current pointer (empty without an interaction). */
+  interaction: RunInteractionResult;
+  /** The pointer the interaction last resolved, or null without an interaction. */
+  pointer: RunPointer | null;
 };
 
 /** What `afterRun` receives: the finished run, and builders for the buffers `draw` will show. */
@@ -341,6 +361,8 @@ export type RunAfterState<Inputs, Outputs> = {
 export type OperationRunSpec<Inputs, Outputs, Extra = undefined> = {
   /** Slider parameters, bound to real props. Import them from the sibling `.parameters.ts`. */
   parameters?: readonly GpuSceneParameter[];
+  /** Draw geographic analysis output directly, in [west, south, east, north] degrees. */
+  geographicWindow?: readonly [number, number, number, number];
   /** Seeded CPU inputs, at most ~20k elements. */
   createInputs(context: RunInputContext): Inputs;
   /** Uploads inputs, allocates outputs and adds the real operation: `builder.graph.add(...)`. */
@@ -363,6 +385,17 @@ export type OperationRunSpec<Inputs, Outputs, Extra = undefined> = {
    * when `build` returns no `update`, none otherwise.
    */
   rebuildOn?: readonly string[];
+  /**
+   * The pointer gesture of this picture: what the pointer means for the operation. Without it the
+   * card falls back to scrubbing one slider along x. See ./README.md, "Pointer interaction".
+   */
+  interaction?: RunInteraction<Inputs, Outputs>;
+  /**
+   * Keep up to this many compiled builds, keyed by the values of the compile-time parameters, so
+   * returning to a value the reader already visited does not recompile. Leave it out for runs that
+   * hand stateful resources to `builder.own`.
+   */
+  buildCache?: number;
   /** One line shown by the verification harness. */
   caption?: string;
 };
@@ -382,6 +415,14 @@ export type RunDebug = {
   getRunCount(): number;
   getRebuildCount(): number;
   getLayerKinds(): string[];
+  /** The interaction's current readout line. */
+  getReadout(): string | null;
+  /** Parameter values the interaction returns at its rest position (for the verifier). */
+  getRestValues(): ParameterPatch;
+  /** Rebuilds caused by `values` the interaction returned: must stay 0 (use `settle`). */
+  getPointerRebuildCount(): number;
+  /** Ids of every parameter the interaction has written through `values` or `settle`. */
+  getPointerParameterIds(): string[];
 };
 
 export type RunInstance = GpuSceneInstance & {debug: RunDebug};
@@ -393,8 +434,11 @@ const RAMP_MODES: Record<RampKind, 0 | 1 | 2 | 3> = {
   sequential: 0,
   diverging: 1,
   categorical: 2,
-  cyclic: 3
+  cyclic: 3,
+  grey: 0
 };
+/** Shadow to lit, the same in both themes: for illumination and hillshade buffers. */
+const GREY_RAMP = [0.04, 0.2, 0.4, 0.6, 0.8, 0.98].map(level => [level, level, level] as const);
 const DEFAULT_RECTANGLE = [0.07, 0.14, 0.95, 0.88] as const;
 const INVALID_LIMIT = 1e20;
 
@@ -417,7 +461,17 @@ function readRange(bytes: Uint8Array, format: ValueFormat): [number, number] | n
   return minimum <= maximum ? [minimum, maximum] : null;
 }
 
-type Resolved = {layer: DemoLayer; look: LookOptions; instanceCount?: number};
+type Resolved = {
+  layer: DemoLayer;
+  look: LookOptions;
+  instanceCount?: number;
+  clip?: {side: 'left' | 'right'; x: number};
+};
+
+/** Time constant of the glide from the rest position to a pointer that has just arrived. */
+const POINTER_GLIDE_MILLISECONDS = 45;
+/** How long the pointer must rest before compile-time (`settle`) values are applied. */
+const SETTLE_MILLISECONDS = 140;
 
 type CachedLayer = {signature: unknown[]; layer: DemoLayer; owned: Buffer[]};
 
@@ -440,6 +494,13 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
       width: context.width,
       height: context.height
     };
+    if (spec.geographicWindow) {
+      const [west, south, east, north] = spec.geographicWindow;
+      view.origin = [west, south];
+      view.worldWidth = east - west;
+      view.worldHeight = north - south;
+      view.longitudeScale = Math.cos(((north + south) * Math.PI) / 360);
+    }
     const inputs = spec.createInputs({
       seed: context.seed,
       random: makeRandom(context.seed),
@@ -455,17 +516,50 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
     const createBuilt = async (): Promise<Built> => {
       const buffers = new RunBufferSet();
       let result: RunBuild<Outputs> | undefined;
-      const runner = await GraphRunner.create(device, 'run-operation', graph => {
-        result = spec.build(buffers.createBuilder(device, graph), inputs, values);
-      });
-      // result is set synchronously by the callback above.
-      return {runner, buffers, result: result as RunBuild<Outputs>};
+      try {
+        const runner = await GraphRunner.create(device, 'run-operation', graph => {
+          result = spec.build(buffers.createBuilder(device, graph), inputs, values);
+        });
+        // result is set synchronously by the callback above.
+        return {runner, buffers, result: result as RunBuild<Outputs>};
+      } catch (error) {
+        buffers.destroy();
+        throw error;
+      }
     };
 
+    const rebuildIds = new Set(spec.rebuildOn ?? []);
+    /**
+     * Identifies a build by the values of the parameters that are compiled into it: the
+     * `rebuildOn` ids when the build has an `update`, otherwise every parameter.
+     */
+    const getBuildKey = (): string =>
+      parameters
+        .filter(parameter => !current.result.update || rebuildIds.has(parameter.id))
+        .map(parameter => values[parameter.id])
+        .join(',');
+
     let current = await createBuilt();
+    let currentKey = getBuildKey();
+    const builtCache = new Map<string, Built>();
     const destroyBuilt = (built: Built) => {
       built.runner.destroy();
       built.buffers.destroy();
+    };
+    /** Keeps the outgoing build for reuse when the spec asks for a cache, otherwise destroys it. */
+    const retireBuilt = (key: string, built: Built) => {
+      const capacity = spec.buildCache ?? 0;
+      // A build that owns stateful resources (an arena a run consumes) cannot be reused.
+      if (capacity <= 0 || builtCache.has(key) || built.buffers.resources.length > 0) {
+        destroyBuilt(built);
+        return;
+      }
+      builtCache.set(key, built);
+      while (builtCache.size > capacity) {
+        const [oldestKey, oldest] = builtCache.entries().next().value as [string, Built];
+        builtCache.delete(oldestKey);
+        destroyBuilt(oldest);
+      }
     };
 
     // Layer cache: one entry per descriptor index, rebuilt when its buffers change.
@@ -477,7 +571,8 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
       }
       layerCache.clear();
     };
-    const ranges = new Map<Buffer, [number, number]>();
+    // Keyed weakly so a cached build keeps its measured ranges and destroyed buffers drop theirs.
+    const ranges = new WeakMap<Buffer, [number, number]>();
     const wantedRanges = new Map<Buffer, ValueFormat>();
     let dummyValues: Buffer | null = null;
     const getDummyValues = () => (dummyValues ??= createEmptyStorageBuffer(device, 4));
@@ -491,9 +586,277 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
     let needsRebuild = false;
     let framesToDraw = 3;
     let rebuildPromise: Promise<void> | null = null;
+    /** True from a build swap until its first run: its buffers do not hold this state yet. */
+    let isAwaitingFirstRun = false;
+    /** Counts builds, so a gesture can tell that its render-only buffers are new. */
+    let buildNumber = 0;
     let kinds: string[] = [];
 
-    const rebuildIds = new Set(spec.rebuildOn ?? []);
+    // -------------------------------------------------------------------------------------------
+    // Pointer interaction
+
+    const interaction = spec.interaction;
+    const pointerState = {
+      /** Where the gesture rests: the poster. Position across the canvas, 0 to 1, y down. */
+      rest: [0.5, 0.5] as [number, number],
+      /** Where the pointer is; null until it first arrives and after a slider takes over. */
+      target: null as [number, number] | null,
+      /** The position the interaction is resolved at: the pointer, or on its way to it. */
+      effective: [0.5, 0.5] as [number, number],
+      /** True while `effective` glides from where it was to a pointer that has just arrived. */
+      isGliding: false,
+      lastTime: 0,
+      result: {} as RunInteractionResult,
+      pointer: null as RunPointer | null
+    };
+    let readout: string | null = null;
+    let restValues: ParameterPatch = {};
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    let pendingSettle: ParameterPatch | null = null;
+    let pointerRebuildCount = 0;
+    /** False once a slider has changed a value: the pointer may not write values until it moves. */
+    let pointerOwnsValues = true;
+    /** Runs started by readbacks since the pointer or a slider last moved; stops a feedback loop. */
+    let peekDrivenRunCount = 0;
+    const pointerParameterIds = new Set<string>();
+
+    // CPU copies of buffers the interaction asked to `peek`, refreshed after each run.
+    type PeekEntry = {format: RunFormat; data: RunArray | null};
+    const peeks = new Map<Buffer, PeekEntry>();
+    /** Bumped on every rebuild: a readback of the previous build's buffers is discarded. */
+    let peekEpoch = 0;
+    let pendingPeek: Promise<void> | null = null;
+    let isPeekInFlight = false;
+    let isPeekQueued = false;
+    let hasNewPeek = false;
+    const peek: RunPeek = wanted => {
+      const buffer = wanted.buffer as Buffer;
+      let entry = peeks.get(buffer);
+      if (!entry) {
+        entry = {format: wanted.format as RunFormat, data: null};
+        peeks.set(buffer, entry);
+        hasNewPeek = true;
+      }
+      return entry.data;
+    };
+    /**
+     * Reads the peeked buffers back and resolves the interaction again. One readback is in flight
+     * at a time; a request that arrives meanwhile is queued, so a moving pointer cannot starve it.
+     */
+    const refreshPeeks = (): Promise<void> => {
+      hasNewPeek = false;
+      if (peeks.size === 0) return Promise.resolve();
+      if (isPeekInFlight) {
+        isPeekQueued = true;
+        return pendingPeek ?? Promise.resolve();
+      }
+      isPeekInFlight = true;
+      const epoch = peekEpoch;
+      const task = (async () => {
+        const wanted = [...peeks];
+        const read = await Promise.all(
+          wanted.map(async ([buffer, entry]) => {
+            try {
+              const bytes = await buffer.readAsync();
+              const copy = bytes.buffer.slice(
+                bytes.byteOffset,
+                bytes.byteOffset + bytes.byteLength
+              );
+              if (entry.format.startsWith('uint32')) return new Uint32Array(copy);
+              if (entry.format.startsWith('sint32')) return new Int32Array(copy);
+              return new Float32Array(copy);
+            } catch {
+              return null;
+            }
+          })
+        );
+        if (isDestroyed || epoch !== peekEpoch) return;
+        wanted.forEach(([, entry], index) => {
+          if (read[index]) entry.data = read[index];
+        });
+        // The interaction can now answer from the operation's output: resolve again. A slider's
+        // values stay as the reader set them.
+        applyPointer({isPeekRefresh: true, applyValues: pointerOwnsValues});
+        framesToDraw = Math.max(framesToDraw, 2);
+        scheduler.request();
+      })();
+      const tracked: Promise<void> = task
+        .catch(() => undefined)
+        .finally(() => {
+          isPeekInFlight = false;
+          if (pendingPeek === tracked) pendingPeek = null;
+          if (isPeekQueued && !isDestroyed) {
+            isPeekQueued = false;
+            void refreshPeeks();
+          }
+        });
+      pendingPeek = tracked;
+      return tracked;
+    };
+
+    const getInteractionState = (): RunInteractionState<Inputs, Outputs> => ({
+      inputs,
+      outputs: current.result.outputs,
+      values,
+      world,
+      pixelSize: getGlyphMetrics(view).pixelSize,
+      toUnit: point => {
+        const [pixelX, pixelY] = getPixelOfWorld(view, point[0], point[1]);
+        return [pixelX / view.width, pixelY / view.height];
+      },
+      peek,
+      build: buildNumber
+    });
+
+    // Glyphs and the probe spotlight, drawn over the picture.
+    const overlay = new PointerOverlay(device);
+    /** True while the reader is pointing: the spotlight belongs to probing, not to the poster. */
+    let isProbing = false;
+    const setOverlay = (result: RunInteractionResult) => {
+      const spotlight =
+        result.spotlight === undefined
+          ? interaction?.kind === 'probe'
+            ? 'auto'
+            : null
+          : result.spotlight;
+      overlay.set(result.glyphs ?? [], view, spotlight);
+      if (context.reducedMotion) overlay.setSpotlightOn(isProbing);
+    };
+
+    /** Applies parameter values (from a slider or the pointer) and schedules the run or rebuild. */
+    const changeValues = (update: ParameterPatch) => {
+      Object.assign(values, update);
+      const hasUpdate = Boolean(current.result.update);
+      const changesGraph = Object.keys(update).some(id => (hasUpdate ? rebuildIds.has(id) : true));
+      if (changesGraph && parameters.length > 0) needsRebuild = true;
+      needsRun = true;
+      scheduler.request();
+    };
+    /** The entries of `patch` that differ from the current values, or null when none do. */
+    const getChanged = (patch: ParameterPatch | undefined): ParameterPatch | null => {
+      if (!patch) return null;
+      const changed: ParameterPatch = {};
+      let hasChange = false;
+      for (const [id, value] of Object.entries(patch)) {
+        if (Number.isFinite(value) && values[id] !== value) {
+          changed[id] = value;
+          hasChange = true;
+        }
+      }
+      return hasChange ? changed : null;
+    };
+    const applySettle = () => {
+      clearTimeout(settleTimer);
+      const changed = getChanged(pendingSettle ?? undefined);
+      pendingSettle = null;
+      if (!changed) return;
+      changeValues(changed);
+      context.reportParameters?.(changed);
+    };
+
+    /** Resolves the interaction at the damped pointer position and applies what it returns. */
+    const applyPointer = (
+      options: {applyValues?: boolean; isPeekRefresh?: boolean; isAfterRebuild?: boolean} = {}
+    ) => {
+      if (!interaction || isDestroyed) return;
+      // While a rebuild is pending the values already describe the next build but `outputs` and
+      // the peeked arrays still belong to the old one. The gesture resumes when the swap is done.
+      if ((needsRebuild || rebuildPromise) && !options.isAfterRebuild) return;
+      const [unitX, unitY] = pointerState.effective;
+      const [x, y] = getWorldPosition(view, [unitX * view.width, unitY * view.height]);
+      const pointer: RunPointer = {x, y, unitX, unitY};
+      const result = interaction.resolve(pointer, getInteractionState()) ?? {};
+      pointerState.pointer = pointer;
+      pointerState.result = result;
+      for (const id of Object.keys(result.values ?? {})) pointerParameterIds.add(id);
+      for (const id of Object.keys(result.settle ?? {})) pointerParameterIds.add(id);
+      if (options.applyValues !== false) {
+        let changed = getChanged(result.values);
+        // Values derived from the output can chase themselves: readback, new value, run, readback.
+        // A few rounds may converge; after that the readbacks stop driving runs.
+        if (changed && options.isPeekRefresh && ++peekDrivenRunCount > 3) changed = null;
+        if (changed) {
+          const wasRebuilding = needsRebuild;
+          changeValues(changed);
+          if (needsRebuild && !wasRebuilding) {
+            // Compile-time parameters belong in `settle`, never in `values`.
+            pointerRebuildCount++;
+          }
+          context.reportParameters?.(changed);
+        }
+        clearTimeout(settleTimer);
+        if (getChanged(result.settle)) {
+          pendingSettle = {...result.settle};
+          settleTimer = setTimeout(applySettle, SETTLE_MILLISECONDS);
+        } else {
+          // Back on the value that is already live: nothing is left to settle.
+          pendingSettle = null;
+        }
+      }
+      // A peek refresh re-resolves against new output; it must not start another run by itself.
+      if (result.rerun && !options.isPeekRefresh) {
+        needsRun = true;
+      }
+      // When a slider owns the values and has moved one away from what this pointer position
+      // gives, the gesture's glyphs and readout would contradict the picture: hide them.
+      const isContradicted =
+        options.applyValues === false &&
+        Object.entries({...result.values, ...result.settle}).some(
+          ([id, value]) => Number.isFinite(value) && values[id] !== value
+        );
+      setOverlay(isContradicted ? {} : result);
+      const nextReadout = isContradicted ? null : (result.readout ?? null);
+      if (nextReadout !== readout) {
+        readout = nextReadout;
+        context.reportReadout?.(readout);
+      }
+      framesToDraw = Math.max(framesToDraw, 2);
+      // A buffer peeked for the first time is read now, unless a run is about to refresh them all.
+      if (hasNewPeek && !needsRun) void refreshPeeks();
+    };
+    /**
+     * Jumps the resolved position to the pointer. With `flushSettle` it also applies pending
+     * compile-time values now (verification); otherwise their debounce keeps running.
+     */
+    const finishPointer = (flushSettle = false) => {
+      if (!interaction) return;
+      overlay.setSpotlightOn(isProbing);
+      pointerState.isGliding = false;
+      const target = pointerState.target;
+      if (
+        target &&
+        (target[0] !== pointerState.effective[0] || target[1] !== pointerState.effective[1])
+      ) {
+        pointerState.effective = [target[0], target[1]];
+        applyPointer();
+      }
+      if (flushSettle && pendingSettle) applySettle();
+    };
+    /**
+     * Moves the resolved position to the pointer; called every animation frame. A pointer that has
+     * just arrived is reached by a short glide from the rest position; after that the position is
+     * the pointer itself, so handles stay exactly under the cursor.
+     */
+    const advancePointer = (time: number) => {
+      const elapsed = Math.min(100, Math.max(0, time - pointerState.lastTime));
+      pointerState.lastTime = time;
+      const target = pointerState.target;
+      if (!interaction) return;
+      if (overlay.fadeSpotlight(isProbing, elapsed)) framesToDraw = Math.max(framesToDraw, 1);
+      if (!target) return;
+      const [x, y] = pointerState.effective;
+      const deltaX = target[0] - x;
+      const deltaY = target[1] - y;
+      if (deltaX === 0 && deltaY === 0) return;
+      if (!pointerState.isGliding || Math.hypot(deltaX, deltaY) < 0.004) {
+        pointerState.isGliding = false;
+        pointerState.effective = [target[0], target[1]];
+      } else {
+        const amount = 1 - Math.exp(-elapsed / POINTER_GLIDE_MILLISECONDS);
+        pointerState.effective = [x + deltaX * amount, y + deltaY * amount];
+      }
+      applyPointer();
+    };
 
     const getRange = (layer: ValueLook, buffer: AnyBuffer | undefined): [number, number] => {
       if (layer.range && layer.range !== 'auto') return [layer.range[0], layer.range[1]];
@@ -534,7 +897,13 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         alpha: layer.alpha ?? (isContext ? 0.9 : 1),
         solid,
         ramp:
-          isContext && hasValues ? contextRamp : ramp === 'diverging' ? theme.diverging : undefined,
+          isContext && hasValues
+            ? contextRamp
+            : ramp === 'diverging'
+              ? theme.diverging
+              : ramp === 'grey'
+                ? GREY_RAMP
+                : undefined,
         categories: isContext && hasValues ? [theme.muted] : valued.categories,
         logarithmic: valued.logarithmic,
         bands: valued.bands,
@@ -568,7 +937,7 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         layerObject = created.layer;
         layerCache.set(index, {signature, layer: created.layer, owned: created.owned});
       }
-      return resolveLook(layer, layerObject);
+      return {...resolveLook(layer, layerObject), clip: layer.clip};
     };
 
     const createLayer = (layer: RunLayer): {layer: DemoLayer; owned: Buffer[]} => {
@@ -693,7 +1062,12 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         case 'dots':
           return {
             layer: layerObject,
-            look: {...getLook(layer, layer.values), radius: layer.radius ?? 2.4, hillshade: 0.5}
+            look: {
+              ...getLook(layer, layer.values),
+              radius: layer.radius ?? 2.4,
+              hillshade: 0.5,
+              sizeByValue: layer.sizeByValue
+            }
           };
         case 'segments':
           return {
@@ -761,7 +1135,11 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         if (!previous || previous[0] !== range[0] || previous[1] !== range[1]) changed = true;
         ranges.set(buffer, range);
       }
-      if (changed) framesToDraw = 3;
+      if (changed) {
+        framesToDraw = 3;
+        // Without an animation loop (reduced motion) nothing else would draw the new range.
+        scheduler.request();
+      }
     };
 
     // Post-run results (`afterRun`): the latest committed value, its buffers, and the run in flight.
@@ -778,7 +1156,9 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
             values,
             theme,
             world,
-            extra: extra as Extra
+            extra: extra as Extra,
+            interaction: pointerState.result,
+            pointer: pointerState.pointer
           })
         : spec.draw;
 
@@ -791,11 +1171,38 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         drawLayersList.push(resolveLayer(layer, index));
       });
       for (const resolved of drawLayersList) resolved.layer.update(view, theme, resolved.look);
-      drawLayers(
-        device,
-        theme,
-        drawLayersList.map(resolved => resolved.layer)
-      );
+      const glyphLayers = overlay.getLayers(view, theme);
+      const renderPass = device.beginRenderPass({
+        clearColor: [...theme.background] as [number, number, number, number]
+      });
+      // Read after the pass has acquired its framebuffer, which may resize the drawing buffer.
+      const [bufferWidth, bufferHeight] = device.getDefaultCanvasContext().getDrawingBufferSize();
+      let isClipped = false;
+      for (const resolved of drawLayersList) {
+        if (resolved.clip && Number.isFinite(resolved.clip.x)) {
+          // Scissor in framebuffer pixels: the layer keeps only one side of the curtain.
+          const curtain = Math.min(
+            bufferWidth,
+            Math.max(
+              0,
+              Math.round((getPixelOfWorld(view, resolved.clip.x, 0)[0] / view.width) * bufferWidth)
+            )
+          );
+          const left = resolved.clip.side === 'left' ? 0 : curtain;
+          const width = resolved.clip.side === 'left' ? curtain : bufferWidth - curtain;
+          if (width <= 0) continue;
+          renderPass.setParameters({scissorRect: [left, 0, width, bufferHeight]});
+          isClipped = true;
+        } else if (isClipped) {
+          renderPass.setParameters({scissorRect: [0, 0, bufferWidth, bufferHeight]});
+          isClipped = false;
+        }
+        resolved.layer.draw(renderPass);
+      }
+      if (isClipped) renderPass.setParameters({scissorRect: [0, 0, bufferWidth, bufferHeight]});
+      for (const layer of glyphLayers) layer.draw(renderPass);
+      renderPass.end();
+      device.submit();
     };
 
     const runOperation = () => {
@@ -856,35 +1263,62 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
     const rebuild = () => {
       rebuildPromise ??= (async () => {
         needsRebuild = false;
-        const next = await createBuilt();
+        const nextKey = getBuildKey();
+        const cached = builtCache.get(nextKey);
+        if (cached) builtCache.delete(nextKey);
+        const next = cached ?? (await createBuilt());
         if (isDestroyed) {
           destroyBuilt(next);
           return;
         }
         disposeLayers();
-        ranges.clear();
         wantedRanges.clear();
+        peeks.clear();
+        peekEpoch++;
+        buildNumber++;
         afterGeneration++;
-        destroyBuilt(current);
+        retireBuilt(currentKey, current);
         current = next;
-        rebuildCount++;
+        currentKey = nextKey;
+        if (!cached) rebuildCount++;
         needsRun = true;
+        isAwaitingFirstRun = true;
+        // The new build has new buffers: the gesture subscribes its readbacks again and rewrites
+        // whatever it draws from them.
+        // (Unless the values have already moved on to yet another build.)
+        if (interaction && !needsRebuild) {
+          applyPointer({applyValues: pointerOwnsValues, isAfterRebuild: true});
+        }
         framesToDraw = 3;
-      })().finally(() => {
-        rebuildPromise = null;
-        if (needsRebuild) rebuild();
-      });
+      })()
+        .catch(error => {
+          // Device teardown can race a queued compilation after a card releases its live slot.
+          if (!isDestroyed) {
+            // biome-ignore lint/suspicious/noConsole: surface asynchronous graph errors
+            console.error('Could not rebuild operation', error);
+          }
+        })
+        .finally(() => {
+          rebuildPromise = null;
+          if (isDestroyed) return;
+          if (needsRebuild) rebuild();
+          else scheduler.request(); // Also present the completed build in reduced-motion mode.
+        });
     };
 
     const draw = () => {
       if (isDestroyed) return;
       if (needsRebuild) rebuild();
+      // A build that was just swapped in is drawn only after it has run.
+      if (isAwaitingFirstRun && rebuildPromise) return;
       if (needsRun && !rebuildPromise) {
         needsRun = false;
+        isAwaitingFirstRun = false;
         runOperation();
         framesToDraw = 3;
         render();
         void refreshRanges();
+        void refreshPeeks();
         // biome-ignore lint/suspicious/noConsole: a failed post-run hook must be visible
         void refreshExtra().catch(error => console.error(error));
         return;
@@ -897,11 +1331,50 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
     runOperation();
     needsRun = false;
     await refreshExtra();
+    if (interaction) {
+      // The picture starts at the gesture's rest position: the poster.
+      const rest =
+        typeof interaction.rest === 'function'
+          ? interaction.rest(getInteractionState())
+          : (interaction.rest ?? [0.5, 0.5]);
+      pointerState.rest = [rest[0], rest[1]];
+      pointerState.effective = [rest[0], rest[1]];
+      // Keep slider values the page restored (a theme change restarts the scene with them).
+      const isUntouched = parameters.every(parameter => values[parameter.id] === parameter.default);
+      pointerOwnsValues = isUntouched;
+      applyPointer({applyValues: isUntouched});
+      restValues = {...pointerState.result.values, ...pointerState.result.settle};
+      if (needsRun) {
+        needsRun = false;
+        runOperation();
+        await refreshExtra();
+      }
+      await refreshPeeks();
+      if (needsRun) {
+        needsRun = false;
+        runOperation();
+        await refreshExtra();
+      }
+    }
     render();
     await refreshRanges();
 
     const instance: RunInstance = {
-      render() {
+      // Prefer an adjustable uniform over a compile-time setting for pointer scrubbing.
+      scrubParameter:
+        parameters.find(parameter => parameter.cardScrub) ??
+        parameters.find(
+          parameter => current.result.update && !rebuildIds.has(parameter.id) && !parameter.options
+        ),
+      gesture: interaction
+        ? {
+            kind: interaction.kind,
+            hint: interaction.hint,
+            rest: [pointerState.rest[0], pointerState.rest[1]]
+          }
+        : undefined,
+      render(time) {
+        advancePointer(time);
         if (framesToDraw > 0 || needsRun || needsRebuild) {
           framesToDraw = Math.max(framesToDraw - 1, 0);
           scheduler.flush();
@@ -911,25 +1384,66 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         view.width = width;
         view.height = height;
         framesToDraw = 3;
+        if (interaction) applyPointer({applyValues: false});
         scheduler.request();
       },
       setParameters(update) {
-        Object.assign(values, update);
-        const hasUpdate = Boolean(current.result.update);
-        const changesGraph = Object.keys(update).some(id =>
-          hasUpdate ? rebuildIds.has(id) : true
-        );
-        if (changesGraph && parameters.length > 0) needsRebuild = true;
-        needsRun = true;
-        scheduler.request();
+        if (interaction) {
+          // A slider now owns the values: stop following the pointer until it moves again.
+          pointerState.target = null;
+          isProbing = false;
+          pointerOwnsValues = false;
+          peekDrivenRunCount = 0;
+          clearTimeout(settleTimer);
+          pendingSettle = null;
+        }
+        changeValues(update);
+        // Glyphs, readouts and render-only buffers the gesture derives from the values follow them.
+        if (interaction) applyPointer({applyValues: false});
       },
+      setPointer: interaction
+        ? position => {
+            // Off the picture (but still on the card): hold the last state.
+            if (!position) return;
+            // A pointer that arrives (first hover, or after a slider took over) glides in.
+            if (!pointerState.target && !context.reducedMotion) pointerState.isGliding = true;
+            isProbing = true;
+            pointerOwnsValues = true;
+            peekDrivenRunCount = 0;
+            pointerState.target = [
+              Math.min(1, Math.max(0, position[0] / view.width)),
+              Math.min(1, Math.max(0, position[1] / view.height))
+            ];
+            if (context.reducedMotion) finishPointer();
+            else framesToDraw = Math.max(framesToDraw, 1);
+            scheduler.request();
+          }
+        : undefined,
+      resetPointer: interaction
+        ? () => {
+            // Straight back to rest: a glide would write every value on the way over the defaults.
+            pointerState.target = null;
+            pointerState.isGliding = false;
+            pointerState.effective = [pointerState.rest[0], pointerState.rest[1]];
+            isProbing = false;
+            pointerOwnsValues = true;
+            peekDrivenRunCount = 0;
+            overlay.setSpotlightOn(false);
+            applyPointer();
+            scheduler.request();
+          }
+        : undefined,
       destroy() {
         isDestroyed = true;
         scheduler.cancel();
+        clearTimeout(settleTimer);
         disposeLayers();
+        overlay.destroy();
         if (dummyValues) dummyValues.destroy();
         extraBuffers?.destroy();
         destroyBuilt(current);
+        for (const built of builtCache.values()) destroyBuilt(built);
+        builtCache.clear();
       },
       debug: {
         setInputsOnly(flag) {
@@ -940,11 +1454,20 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         async settle() {
           scheduler.cancel();
           const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+          finishPointer(true);
           for (
             let attempt = 0;
-            attempt < 400 && (rebuildPromise || needsRebuild || needsRun || pendingAfter);
+            attempt < 400 &&
+            (rebuildPromise ||
+              needsRebuild ||
+              needsRun ||
+              pendingAfter ||
+              pendingPeek ||
+              pendingSettle);
             attempt++
           ) {
+            // A readback can arm the settle debounce again: apply it rather than wait it out.
+            if (pendingSettle && !rebuildPromise) applySettle();
             draw();
             await nextFrame();
           }
@@ -955,7 +1478,11 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         },
         getRunCount: () => runCount,
         getRebuildCount: () => rebuildCount,
-        getLayerKinds: () => kinds
+        getLayerKinds: () => kinds,
+        getReadout: () => readout,
+        getRestValues: () => restValues,
+        getPointerRebuildCount: () => pointerRebuildCount,
+        getPointerParameterIds: () => [...pointerParameterIds]
       }
     };
     return instance;

@@ -31,11 +31,6 @@ export function makeRandom(seed: number): () => number {
   };
 }
 
-/** Standard normal sample from two uniform samples (Box-Muller). */
-export function drawGaussian(random: () => number): number {
-  return Math.sqrt(-2 * Math.log(1 - random())) * Math.cos(2 * Math.PI * random());
-}
-
 // ---------------------------------------------------------------------------------------------
 // Theme and palettes
 
@@ -170,13 +165,16 @@ export class GraphRunner {
 export type DemoView = {
   worldWidth: number;
   worldHeight: number;
+  /** Geographic runs draw in native longitude/latitude around this southwest origin. */
+  origin?: readonly [number, number];
+  longitudeScale?: number;
   width: number;
   height: number;
 };
 
 /** NDC scale that fits the world rectangle inside the canvas. */
 export function getViewScale(view: DemoView): [number, number] {
-  const worldAspect = view.worldWidth / view.worldHeight;
+  const worldAspect = (view.worldWidth * (view.longitudeScale ?? 1)) / view.worldHeight;
   const canvasAspect = view.width / view.height;
   return worldAspect > canvasAspect
     ? [1, canvasAspect / worldAspect]
@@ -192,8 +190,8 @@ export function getWorldPosition(
   const ndcX = (pixel[0] / view.width) * 2 - 1;
   const ndcY = 1 - (pixel[1] / view.height) * 2;
   return [
-    ((ndcX / scaleX + 1) / 2) * view.worldWidth,
-    ((ndcY / scaleY + 1) / 2) * view.worldHeight
+    (view.origin?.[0] ?? 0) + ((ndcX / scaleX + 1) / 2) * view.worldWidth,
+    (view.origin?.[1] ?? 0) + ((ndcY / scaleY + 1) / 2) * view.worldHeight
   ];
 }
 
@@ -217,10 +215,16 @@ struct Look {
   light: vec4f,
   stops: array<vec4f, 6>,
   colors: array<vec4f, 16>,
-  // x: curve (0 linear, 1 log2), y: fade alpha with value (0 or 1), z: quantize to this many bands
-  extra: vec4f
+  // x: curve (0 linear, 1 log2), y: fade alpha with value (0 or 1), z: quantize to this many bands,
+  // w: dots only, scale the radius with the value (0 or 1)
+  extra: vec4f,
+  origin: vec2f
 };
 @group(0) @binding(0) var<uniform> look: Look;
+
+fn worldToClip(point: vec2f) -> vec2f {
+  return ((point - look.origin) / look.world * 2.0 - 1.0) * look.scale;
+}
 
 fn isValid(value: f32) -> bool {
   return abs(value) < 1.0e20;
@@ -371,11 +375,21 @@ fn vertexMain(
     vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0)
   );
   let corner = corners[vertexIndex];
-  let center = (positions[instanceIndex] / look.world * 2.0 - 1.0) * look.scale;
+  let center = worldToClip(positions[instanceIndex]);
+  let value = readValue(instanceIndex);
+  var radius = look.radius;
+  if (look.extra.w > 0.5) {
+    // Size by value: from 30% of the radius at the low end of the range to all of it at the high end.
+    var amount = 0.0;
+    if (isValid(value)) {
+      amount = clamp((value - look.range.x) / max(look.range.y - look.range.x, 1.0e-12), 0.0, 1.0);
+    }
+    radius = look.radius * (0.3 + 0.7 * amount);
+  }
   var output: VertexOutput;
-  output.position = vec4f(center + corner * look.radius * 2.0 / look.size, 0.0, 1.0);
+  output.position = vec4f(center + corner * radius * 2.0 / look.size, 0.0, 1.0);
   output.local = corner;
-  output.value = readValue(instanceIndex);
+  output.value = value;
   return output;
 }
 
@@ -386,7 +400,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     discard;
   }
   var color = colorize(input.value);
-  if (look.mode < -0.5 || color.a == 0.0) {
+  // Invalid values take the solid color. A value faded to nothing stays invisible.
+  if (look.mode < -0.5 || (color.a == 0.0 && look.extra.y < 0.5)) {
     color = look.light;
   }
   let edge = 1.0 - smoothstep(1.0 - 2.0 / max(look.radius, 1.0), 1.0, distance);
@@ -417,8 +432,8 @@ fn vertexMain(
   @builtin(instance_index) instanceIndex: u32
 ) -> VertexOutput {
   let edge = edges[instanceIndex];
-  let start = (nodes[edge.x] / look.world * 2.0 - 1.0) * look.scale;
-  let end = (nodes[edge.y] / look.world * 2.0 - 1.0) * look.scale;
+  let start = worldToClip(nodes[edge.x]);
+  let end = worldToClip(nodes[edge.y]);
   var along = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
   var side = array<f32, 6>(-1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
   let halfSize = look.size * 0.5;
@@ -470,8 +485,8 @@ fn vertexMain(
     return output;
   }
   let segment = segments[instanceIndex];
-  let start = (segment.xy / look.world * 2.0 - 1.0) * look.scale;
-  let end = (segment.zw / look.world * 2.0 - 1.0) * look.scale;
+  let start = worldToClip(segment.xy);
+  let end = worldToClip(segment.zw);
   var along = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
   var side = array<f32, 6>(-1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
   let halfSize = look.size * 0.5;
@@ -518,8 +533,8 @@ fn vertexMain(
   }
   let startPoint = nodes[ids[instanceIndex]];
   let endPoint = nodes[ids[instanceIndex + 1u]];
-  let start = (startPoint / look.world * 2.0 - 1.0) * look.scale;
-  let end = (endPoint / look.world * 2.0 - 1.0) * look.scale;
+  let start = worldToClip(startPoint);
+  let end = worldToClip(endPoint);
   var along = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
   var side = array<f32, 6>(-1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
   let halfSize = look.size * 0.5;
@@ -567,8 +582,8 @@ fn vertexMain(
   let corner = instanceIndex % 3u;
   let first = triangles[triangle * 3u + corner];
   let second = triangles[triangle * 3u + (corner + 1u) % 3u];
-  let start = (positions[first] / look.world * 2.0 - 1.0) * look.scale;
-  let end = (positions[second] / look.world * 2.0 - 1.0) * look.scale;
+  let start = worldToClip(positions[first]);
+  let end = worldToClip(positions[second]);
   var along = array<f32, 6>(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
   var side = array<f32, 6>(-1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
   let halfSize = look.size * 0.5;
@@ -589,7 +604,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 }
 `;
 
-export const LOOK_FLOATS = 116;
+export const LOOK_FLOATS = 120;
 
 export const ALPHA_BLEND = {
   blend: true,
@@ -629,6 +644,8 @@ export type LookOptions = {
   fade?: boolean;
   /** Quantize the ramp into this many bands (isochrone steps). */
   bands?: number;
+  /** Dots only: scale each dot's radius with its value, from 30% at the low end of the range. */
+  sizeByValue?: boolean;
 };
 
 abstract class DemoLayer {
@@ -688,7 +705,16 @@ abstract class DemoLayer {
       const color = categories[index % categories.length];
       values.set([color[0], color[1], color[2], color.length === 4 ? color[3] : 1], 48 + index * 4);
     }
-    values.set([options.logarithmic ? 1 : 0, options.fade ? 1 : 0, options.bands ?? 0, 0], 112);
+    values.set(
+      [
+        options.logarithmic ? 1 : 0,
+        options.fade ? 1 : 0,
+        options.bands ?? 0,
+        options.sizeByValue ? 1 : 0
+      ],
+      112
+    );
+    values.set(view.origin ?? [0, 0], 116);
     this.lookBuffer.write(values);
   }
 
@@ -860,14 +886,4 @@ export function assertWebGPU(device: Device): void {
     // Demos run real compute kernels, which need WebGPU.
     throw new Error('WebGPU required');
   }
-}
-
-/** Gaussian blob sample around (centerX, centerY). */
-export function drawGaussianCluster(
-  random: () => number,
-  centerX: number,
-  centerY: number,
-  spread: number
-): [number, number] {
-  return [centerX + drawGaussian(random) * spread, centerY + drawGaussian(random) * spread];
 }

@@ -10,20 +10,22 @@ import {
   GPUKriging
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createUniformPoints} from '../../inputs';
+import {findParameter, snapToParameter} from '../../interaction';
 import {parameters} from './kriging.parameters';
 import {createRunGrid} from './support/grid';
+import {createStretchedSamples, drawSampleDots, findNearestSamples} from './support/interpolation';
 
 const MODELS = ['spherical', 'exponential', 'gaussian'] as const;
 
 export default defineOperationRun({
   parameters,
   caption: 'Kriged surface from scattered samples (dots).',
-  createInputs: ({random, world}) => ({
-    world,
-    grid: createRunGrid(world, 64),
-    samples: createUniformPoints(random, world, 70, 0.05)
-  }),
+  createInputs: ({random, world}) => {
+    const samples = createStretchedSamples(random, world, 70);
+    // The sample nearest the middle anchors the range ring.
+    const [anchor] = findNearestSamples(samples.positions, world.width / 2, 0.5, 1);
+    return {world, grid: createRunGrid(world, 64), samples, anchor};
+  },
   build(builder, {grid, samples}) {
     const positions = builder.upload('positions', 'float32x2', samples.positions);
     const sampleValues = builder.upload('values', 'float32', samples.values);
@@ -62,6 +64,36 @@ export default defineOperationRun({
         )
     };
   },
+  // The distance from the pointer to the anchor sample is the variogram range: the ring is the
+  // distance beyond which two samples no longer inform each other.
+  interaction: {
+    kind: 'reach',
+    hint: 'stretch the range',
+    rest: ({inputs, toUnit}) => {
+      const [x, y] = [
+        inputs.samples.positions[inputs.anchor * 2],
+        inputs.samples.positions[inputs.anchor * 2 + 1]
+      ];
+      const direction = x < inputs.world.width / 2 ? 1 : -1;
+      return toUnit([x + direction * 0.3, y]);
+    },
+    resolve(pointer, {inputs, values}) {
+      const x = inputs.samples.positions[inputs.anchor * 2];
+      const y = inputs.samples.positions[inputs.anchor * 2 + 1];
+      const range = snapToParameter(
+        findParameter(parameters, 'range'),
+        Math.hypot(pointer.x - x, pointer.y - y)
+      );
+      return {
+        values: {range},
+        glyphs: [
+          {shape: 'ring', at: [x, y], radius: range},
+          {shape: 'dot', at: [x, y]}
+        ],
+        readout: `variogram.range ${range.toFixed(2)} · ${MODELS[values.model]}`
+      };
+    }
+  },
   draw: ({inputs, outputs, values}) => [
     {
       layer: 'raster',
@@ -71,6 +103,6 @@ export default defineOperationRun({
       range: values.output === 1 ? 'auto' : [0, 1],
       smoothing: true
     },
-    {layer: 'dots', context: true, positions: outputs.positions, radius: 2.5, color: [1, 1, 1, 0.9]}
+    ...drawSampleDots(outputs.positions, outputs.sampleValues)
   ]
 });

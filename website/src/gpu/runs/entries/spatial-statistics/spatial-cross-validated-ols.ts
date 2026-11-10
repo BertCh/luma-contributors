@@ -2,13 +2,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUSpatialCrossValidatedOLS: fits ordinary least squares on each fold's training blocks and
-// predicts everything. Left: points colored by the fold-0 prediction. Right: the observed
-// response. The bars are the fitted coefficients of every fold (intercept first); when they
-// agree across folds the model is stable across space.
+// predicts everything. The map shows the residual (prediction minus observed) of one fold's
+// held-out stations; the other stations are muted. Hovering a station picks its fold. The bars are
+// the fitted coefficients of every fold (intercept first); when they agree across folds the model is
+// stable across space.
 
 import {GPUSpatialCrossValidatedOLS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createSmoothField, createUniformPoints} from '../../inputs';
+import {getRainStations} from '../../../data/point-observations';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {CHART_BAND} from './shared/point-field';
 import {parameters} from './spatial-cross-validated-ols.parameters';
 
@@ -16,40 +18,49 @@ const POINT_COUNT = 400;
 const PREDICTOR_COUNT = 3;
 const BLOCK_COLUMNS = 6;
 const BLOCK_ROWS = 3;
+const BARS = [0.2, 0.04, 0.8, 0.24] as const;
 
 export default defineOperationRun({
   parameters,
-  caption: 'Fold-0 predictions, observed response and per-fold coefficients.',
+  caption:
+    'Carolina rainfall predicted from the previous day and station location, with spatial holdouts.',
   createInputs: ({random, world}) => {
-    const mapHeight = 1 - CHART_BAND;
-    const panelWidth = world.width / 2;
-    const points = createUniformPoints(
+    const mapHeight = world.height - CHART_BAND;
+    const points = getRainStations(
       random,
-      {width: panelWidth, height: mapHeight},
+      {width: world.width, height: mapHeight},
       POINT_COUNT,
-      0
+      true
     );
-    const field = createSmoothField(random, 3);
+    const observedRain = Float32Array.from(
+      points.rain,
+      rain => Math.log1p(rain) / Math.log1p(343.4)
+    );
     const positions = Float32Array.from(points.positions, (value, index) =>
-      index % 2 === 1 ? value + (1 - mapHeight) : value
-    );
-    const mirrored = Float32Array.from(positions, (value, index) =>
-      index % 2 === 0 ? value + panelWidth : value
+      index % 2 === 1 ? value + CHART_BAND : value
     );
     const predictors = new Float32Array(POINT_COUNT * PREDICTOR_COUNT);
     const blocks = new Uint32Array(POINT_COUNT);
     const noise = Float32Array.from({length: POINT_COUNT}, () => random() - 0.5);
     for (let row = 0; row < POINT_COUNT; row++) {
-      const x = points.positions[row * 2] / panelWidth;
+      const x = points.positions[row * 2] / world.width;
       const y = points.positions[row * 2 + 1] / mapHeight;
-      predictors[row * PREDICTOR_COUNT] = field(x, y);
+      predictors[row * PREDICTOR_COUNT] = Math.log1p(points.previousRain[row]) / Math.log1p(343.4);
       predictors[row * PREDICTOR_COUNT + 1] = x;
       predictors[row * PREDICTOR_COUNT + 2] = y;
       blocks[row] =
         Math.min(Math.floor(y * BLOCK_ROWS), BLOCK_ROWS - 1) * BLOCK_COLUMNS +
         Math.min(Math.floor(x * BLOCK_COLUMNS), BLOCK_COLUMNS - 1);
     }
-    return {positions, mirrored, predictors, blocks, noise};
+    return {
+      positions,
+      index: createPointIndex(positions),
+      focus: {row: -1},
+      predictors,
+      observedRain,
+      blocks,
+      noise
+    };
   },
   build(builder, inputs, values) {
     const foldCount = values.foldCount;
@@ -99,48 +110,79 @@ export default defineOperationRun({
     return {
       outputs: {
         response,
+        folds,
+        testing,
         predictions,
         coefficients,
-        left: builder.upload('left', 'float32x2', inputs.positions),
-        right: builder.upload('right', 'float32x2', inputs.mirrored)
+        counts,
+        foldCount,
+        // Render-only: the hovered fold's residuals at its held-out stations, NaN elsewhere.
+        residuals: builder.allocate('residuals', 'float32', POINT_COUNT),
+        positions: builder.upload('map-positions', 'float32x2', inputs.positions)
       },
       update: current => {
         response.write(
-          Float32Array.from({length: POINT_COUNT}, (_, row) => {
-            const base = inputs.predictors.subarray(
-              row * PREDICTOR_COUNT,
-              (row + 1) * PREDICTOR_COUNT
-            );
-            return (
-              0.2 +
-              0.6 * base[0] +
-              0.3 * base[1] -
-              0.2 * base[2] +
-              current.noise * inputs.noise[row]
-            );
-          })
+          Float32Array.from(
+            inputs.observedRain,
+            (rain, row) => rain + current.noise * inputs.noise[row]
+          )
         );
       }
     };
   },
   rebuildOn: ['foldCount', 'bufferDistance'],
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a station',
+    rest: [0.5, 0.4],
+    resolve(pointer, {inputs, outputs, values, world, peek}) {
+      const row = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.focus.row);
+      inputs.focus.row = row;
+      const folds = peek(outputs.folds);
+      const testing = peek(outputs.testing);
+      const predictions = peek(outputs.predictions);
+      const response = peek(outputs.response);
+      // Zero line through the coefficient bars (the bars span -1 to 1).
+      const zero = (BARS[1] + (BARS[3] - BARS[1]) / 2) * world.height;
+      const zeroLine = {
+        shape: 'line',
+        from: [BARS[0] * world.width, zero],
+        to: [BARS[2] * world.width, zero]
+      } as const;
+      if (row < 0 || !folds || !testing || !predictions || !response) return {glyphs: [zeroLine]};
+      const fold = folds[row];
+      const residuals = new Float32Array(POINT_COUNT).fill(NaN);
+      for (let station = 0; station < POINT_COUNT; station++) {
+        if (testing[fold * POINT_COUNT + station] === 1) {
+          residuals[station] = predictions[fold * POINT_COUNT + station] - response[station];
+        }
+      }
+      outputs.residuals.write(residuals);
+      const counts = peek(outputs.counts);
+      return {
+        glyphs: [
+          zeroLine,
+          {
+            shape: 'crosshair',
+            at: [inputs.positions[row * 2], inputs.positions[row * 2 + 1]],
+            size: 12
+          }
+        ],
+        readout: `fold ${fold + 1}/${outputs.foldCount} · ${counts ? counts[fold * 3 + 1] : '…'} test · ${
+          counts ? counts[fold * 3 + 2] : '…'
+        } buffered out (${values.bufferDistance})`
+      };
+    }
+  },
   draw: ({outputs}) => [
+    // Residual of the hovered fold's held-out stations; stations outside it are muted.
     {
       layer: 'dots',
-      positions: outputs.right,
-      values: outputs.response,
-      count: POINT_COUNT,
-      radius: 3.5,
-      range: [0, 1],
-      context: true
-    },
-    {
-      layer: 'dots',
-      positions: outputs.left,
-      values: outputs.predictions,
-      count: POINT_COUNT,
-      radius: 3.5,
-      range: [0, 1]
+      positions: outputs.positions,
+      values: outputs.residuals,
+      ramp: 'diverging',
+      range: [-0.1, 0.1],
+      radius: 4
     },
     {
       layer: 'chart',
@@ -148,7 +190,7 @@ export default defineOperationRun({
       values: outputs.coefficients,
       ramp: 'diverging',
       range: [-1, 1],
-      rectangle: [0.2, 0.04, 0.8, 0.3]
+      rectangle: BARS
     }
   ]
 });

@@ -4,7 +4,7 @@
 import type {GpuSceneParameter} from '../../../types';
 
 export const parameters: GpuSceneParameter[] = [
-  {id: 'mergeThreshold', label: 'mergeThreshold', min: 0, max: 0.6, step: 0.02, default: 0.2},
+  {id: 'mergeThreshold', label: 'mergeThreshold', min: 0, max: 0.6, step: 0.02, default: 0.06},
   {
     id: 'mergeMode',
     label: 'mergeMode',

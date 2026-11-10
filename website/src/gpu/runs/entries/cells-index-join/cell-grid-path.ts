@@ -7,26 +7,28 @@
 
 import {GPUCellGridPath} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {getHonshuEventSites, HONSHU_WINDOW} from '../../../data/point-observations';
 import {addCellFill, addPointKeys} from './support/cells';
+import {getWindowCenter} from './support/pointer';
 import {parameters} from './cell-grid-path.parameters';
 
 const RESOLUTION = 5;
+const LONGITUDE_SCALE = Math.cos((((HONSHU_WINDOW[1] + HONSHU_WINDOW[3]) / 2) * Math.PI) / 180);
 
 export default defineOperationRun({
   parameters,
-  caption: 'The cells along each grid path, and the pairs that were joined.',
-  createInputs: ({world}) => ({
-    origins: Float32Array.of(
-      world.width * 0.2,
-      0.25,
-      world.width * 0.3,
-      0.75,
-      world.width * 0.55,
-      0.3,
-      world.width * 0.7,
-      0.8
-    ),
-    world
+  geographicWindow: HONSHU_WINDOW,
+  caption: 'H3 paths from four Honshu epicenters to the epicenters around the pointer.',
+  createInputs: () => ({
+    pointer: [...getWindowCenter(HONSHU_WINDOW)] as [number, number],
+    origins: Float32Array.from(
+      getHonshuEventSites([
+        [140.8, 36.45],
+        [142.1, 38.05],
+        [141.0, 37.35],
+        [143.4, 37.85]
+      ]).flat()
+    )
   }),
   build(builder, inputs, values) {
     const pairCount = inputs.origins.length / 2;
@@ -54,6 +56,7 @@ export default defineOperationRun({
     );
     return {
       outputs: {
+        counts,
         origins,
         destinations,
         pairs: builder.upload(
@@ -64,20 +67,41 @@ export default defineOperationRun({
         fill: addCellFill(builder, 'h3', pathCells)
       },
       update: current => {
-        // Destinations sit `spread` away from each origin, alternating direction.
-        destinations.write(
-          Float32Array.from(inputs.origins, (value, index) => {
-            const pair = index >> 1;
-            const direction = pair % 2 === 0 ? 1 : -1;
-            return index % 2 === 0
-              ? value + direction * current.spread * 0.9
-              : value + direction * current.spread * 0.3;
-          })
-        );
+        // The pointer is the destination region: each pair ends at the measured epicenter nearest
+        // its own spot on a fan of radius `spread` around the pointer, so both endpoints are observations.
+        const targets: [number, number][] = [];
+        for (let pair = 0; pair < pairCount; pair++) {
+          const angle = ((pair + 0.5) / pairCount) * 2 * Math.PI;
+          targets.push([
+            inputs.pointer[0] + (Math.cos(angle) * current.spread) / LONGITUDE_SCALE,
+            inputs.pointer[1] + Math.sin(angle) * current.spread
+          ]);
+        }
+        destinations.write(Float32Array.from(getHonshuEventSites(targets).flat()));
       }
     };
   },
   rebuildOn: ['maximumPathLength'],
+  // The pointer is where the paths go: every origin routes to the epicenters around it.
+  interaction: {
+    kind: 'place',
+    hint: 'choose a destination',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      inputs.pointer = [pointer.x, pointer.y];
+      const counts = peek(outputs.counts);
+      const lengths = counts ? [...counts].filter(length => length > 0) : [];
+      const longest = lengths.length > 0 ? Math.max(...lengths) : 0;
+      return {
+        rerun: true,
+        glyphs: [
+          {shape: 'crosshair', at: inputs.pointer},
+          {shape: 'ring', at: inputs.pointer, radius: values.spread, dashed: true}
+        ],
+        readout: `paths up to ${longest} cells (max ${values.maximumPathLength})`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {
       layer: 'polygons',

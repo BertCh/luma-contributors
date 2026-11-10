@@ -7,5 +7,5 @@ import type {GpuSceneParameter} from '../../../types';
 // moves the zone polygons.
 export const parameters: GpuSceneParameter[] = [
   {id: 'trackEventCapacity', label: 'trackEventCapacity', min: 1, max: 6, step: 1, default: 6},
-  {id: 'zoneSize', label: 'Data: zoneSize', min: 0.5, max: 1.6, step: 0.05, default: 1}
+  {id: 'zoneSize', label: 'zoneSize', min: 0.5, max: 1.6, step: 0.05, default: 1}
 ];

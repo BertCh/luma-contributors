@@ -7,18 +7,24 @@
 
 import {GPUProbitRegression} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
+import {findParameter, getFractionOf, getParameterAt} from '../../interaction';
 import {parameters} from './probit-regression.parameters';
 import {
   COEFFICIENT_RANGE,
   createCoefficientPanel,
   createRegressionInputs,
   drawCoefficientPanel,
+  drawSignedBars,
   drawTractMap,
+  drawZeroLine,
   MAP_SHARE,
   uploadRegressionMap
 } from './shared/regression';
 
 const LATENT_COEFFICIENTS = [-1.2, 2.4, -1.8] as const;
+const ITERATION_STEPS = [1, 2, 3, 5, 8];
+const MARGINAL_RECTANGLE = [MAP_SHARE + 0.08, 0.08, 0.97, 0.34] as const;
+const maximumIterations = findParameter(parameters, 'maximumIterations');
 
 export default defineOperationRun({
   parameters,
@@ -49,7 +55,13 @@ export default defineOperationRun({
     );
     const panel = createCoefficientPanel(builder, coefficients, 1, LATENT_COEFFICIENTS);
     return {
-      outputs: {mesh: uploadRegressionMap(builder, inputs), fitted, marginalEffects, panel},
+      outputs: {
+        mesh: uploadRegressionMap(builder, inputs),
+        fitted,
+        response,
+        marginalEffects,
+        panel
+      },
       update: current => {
         response.write(
           Float32Array.from({length: rowCount}, (_, tract) => {
@@ -66,20 +78,40 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['maximumIterations'],
+  buildCache: 5,
+  // The pointer along x steps through Fisher scoring: the estimates settle on one of five iteration counts and
+  // the bars converge on the dots.
+  interaction: {
+    kind: 'time',
+    hint: 'step the iterations',
+    rest: [getFractionOf(maximumIterations, maximumIterations.default), 0.5],
+    resolve(pointer, {outputs, peek, values}) {
+      const requested = getParameterAt(maximumIterations, pointer.unitX);
+      const iterations = ITERATION_STEPS.reduce((nearest, step) =>
+        Math.abs(step - requested) < Math.abs(nearest - requested) ? step : nearest
+      );
+      const estimates = peek(outputs.panel.estimates);
+      const x = pointer.x;
+      return {
+        settle: {maximumIterations: iterations},
+        glyphs: [{shape: 'curtain', x}],
+        readout: `maximumIterations ${iterations} · x1 ${estimates ? estimates[1].toFixed(2) : '-'} (true ${(LATENT_COEFFICIENTS[1] / values.noise).toFixed(2)})`
+      };
+    }
+  },
   draw: ({inputs, outputs}) => [
     ...drawTractMap(inputs, outputs.mesh, outputs.fitted, {ramp: 'sequential', range: [0, 1]}),
-    ...drawCoefficientPanel(outputs.panel).map(layer =>
-      layer.layer === 'chart'
-        ? {...layer, rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9] as const}
-        : layer
-    ),
+    // The observed 0/1 outcomes at the tract centers, on the fitted probability's scale.
     {
-      layer: 'chart',
-      kind: 'bars',
-      values: outputs.marginalEffects,
-      ramp: 'diverging',
-      range: [-COEFFICIENT_RANGE[1] / 4, COEFFICIENT_RANGE[1] / 4],
-      rectangle: [MAP_SHARE + 0.08, 0.08, 0.97, 0.34]
-    }
+      layer: 'dots',
+      positions: outputs.mesh.centers,
+      values: outputs.response,
+      ramp: 'sequential',
+      range: [0, 1],
+      radius: 3.2
+    },
+    ...drawCoefficientPanel(outputs.panel, {rectangle: [MAP_SHARE + 0.08, 0.42, 0.97, 0.9]}),
+    ...drawSignedBars(outputs.marginalEffects, MARGINAL_RECTANGLE, COEFFICIENT_RANGE[1] / 4),
+    drawZeroLine(outputs.panel.zeros, MARGINAL_RECTANGLE)
   ]
 });

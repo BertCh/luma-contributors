@@ -8,29 +8,32 @@
 import {GPUChunkedSpatialWeightsTransform} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createDistanceBandWeights, createUniformPoints} from '../../inputs';
+import type {RunGlyph} from '../../interaction';
+import {chooseSticky, createPointIndex} from '../../pick';
 import {parameters} from './chunked-weights-transform.parameters';
 import {
   addLinkSegments,
   addRowSums,
+  getChunkNumber,
   getChunkRowCounts,
+  getRowLinkGlyphs,
+  getSegmentTargets,
   sortPointsByX,
-  uploadChunkedWeights
+  uploadChunkBoundaries,
+  uploadChunkedWeights,
+  stretchPoints
 } from './shared/weights';
 
-const CHUNK_COLORS = [
-  [0.95, 0.55, 0.25, 0.4],
-  [0.35, 0.75, 1, 0.4],
-  [0.65, 0.9, 0.4, 0.4],
-  [0.95, 0.45, 0.8, 0.4]
-] as const;
+const BAND_RADIUS = 0.1;
 const OPERATIONS = ['row', 'binary', 'kernel', 'double', 'variance'] as const;
 
 export default defineOperationRun({
   parameters,
   caption: 'Row sums of the transformed weights, computed chunk by chunk.',
   createInputs: ({random, world}) => {
-    const points = createUniformPoints(random, world, 260, 0.1);
-    return sortPointsByX(points.positions, points.values);
+    const points = stretchPoints(createUniformPoints(random, world, 260, 0.1), world);
+    const sorted = sortPointsByX(points.positions, points.values);
+    return {...sorted, index: createPointIndex(sorted.positions), focus: {row: -1}};
   },
   build(builder, points, values) {
     const rowCount = points.values.length;
@@ -39,7 +42,7 @@ export default defineOperationRun({
     const band = uploadChunkedWeights(
       builder,
       'band',
-      createDistanceBandWeights(points.positions, 0.1),
+      createDistanceBandWeights(points.positions, BAND_RADIUS),
       chunkRowCounts
     );
     const transformed = band.chunks.map((chunk, index) =>
@@ -56,6 +59,12 @@ export default defineOperationRun({
     );
     return {
       outputs: {
+        chunkStarts: band.chunks.map(chunk => chunk.rowStart),
+        boundaries: uploadChunkBoundaries(
+          builder,
+          points.positions,
+          band.chunks.map(chunk => chunk.rowStart)
+        ),
         chunks: band.chunks.map((chunk, index) => ({
           positions: builder.upload(
             `chunk-positions-${index}`,
@@ -71,14 +80,46 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['operation', 'bandwidth', 'chunkCount'],
+  // The pointer picks a row: its band ring, its links, and the transformed weight sum of the row.
+  interaction: {
+    kind: 'probe',
+    hint: 'hover a point',
+    rest: [0.5, 0.5],
+    resolve(pointer, {inputs, outputs, values, peek}) {
+      const row = chooseSticky(inputs.index, pointer.x, pointer.y, inputs.focus.row);
+      inputs.focus.row = row;
+      if (row < 0) return {};
+      const from = [inputs.positions[row * 2], inputs.positions[row * 2 + 1]] as const;
+      const links = outputs.chunks.flatMap(chunk => getSegmentTargets(peek(chunk.links), from));
+      const chunkNumber = getChunkNumber(outputs.chunkStarts, row);
+      const chunk = outputs.chunks[chunkNumber - 1];
+      const rowSums = peek(chunk.rowSums);
+      const rowSum = rowSums ? rowSums[row - outputs.chunkStarts[chunkNumber - 1]] : undefined;
+      const glyphs: RunGlyph[] = [
+        {shape: 'ring', at: from, radius: values.bandwidth, dashed: true},
+        ...getRowLinkGlyphs(from, links)
+      ];
+      return {
+        focus: row,
+        glyphs,
+        readout: `row ${row} (chunk ${chunkNumber}) · ${links.length} links · sum ${rowSum?.toFixed(2) ?? '-'}`
+      };
+    }
+  },
   draw: ({outputs}) => [
+    {
+      layer: 'lines',
+      context: true,
+      segments: outputs.boundaries,
+      count: outputs.chunkStarts.length - 1
+    },
     ...outputs.chunks.map(
-      (chunk, index) =>
+      chunk =>
         ({
           layer: 'lines',
           segments: chunk.links,
-          color: CHUNK_COLORS[index % CHUNK_COLORS.length],
-          radius: 1.2
+          color: [0.6, 0.65, 0.85, 0.3],
+          radius: 1.1
         }) as const
     ),
     ...outputs.chunks.map(

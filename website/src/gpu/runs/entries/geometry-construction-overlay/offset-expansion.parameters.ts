@@ -4,6 +4,14 @@
 import type {GpuSceneParameter} from '../../../types';
 
 export const parameters: GpuSceneParameter[] = [
-  {id: 'rowCount', label: 'Data: rowCount', min: 3, max: 12, step: 1, default: 7, unit: 'owners'},
-  {id: 'spread', label: 'Data: spread', min: 0, max: 1, step: 0.05, default: 0.6}
+  {
+    id: 'rowCount',
+    label: 'Data: vessel count',
+    min: 3,
+    max: 12,
+    step: 1,
+    default: 7,
+    unit: 'vessels'
+  },
+  {id: 'maximumFixes', label: 'Data: fixes per vessel', min: 4, max: 72, step: 1, default: 36}
 ];

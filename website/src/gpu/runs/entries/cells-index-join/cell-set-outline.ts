@@ -10,7 +10,7 @@ import {
   GPUCellSetOutline
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createClusteredPoints} from '../../inputs';
+import {getHonshuEvents, HONSHU_WINDOW} from '../../../data/point-observations';
 import {
   addCellFill,
   addPointKeys,
@@ -19,19 +19,29 @@ import {
   getCellResolution,
   getCountTableViews
 } from './support/cells';
+import {getWindowCenter} from './support/pointer';
 import {parameters} from './cell-set-outline.parameters';
 
-const TABLE_CAPACITY = 512;
+const TABLE_CAPACITY = 1024;
 const EDGES_PER_CELL = {h3: 10, quadbin: 4};
+const BRUSH_POINTS = 36;
+/** Brush radius in degrees of latitude; longitude is stretched by the cosine of the latitude. */
+const BRUSH_RADIUS = 0.3;
+const LONGITUDE_SCALE = Math.cos((((HONSHU_WINDOW[1] + HONSHU_WINDOW[3]) / 2) * Math.PI) / 180);
 
 export default defineOperationRun({
   parameters,
+  geographicWindow: HONSHU_WINDOW,
   caption: 'Only the edges on the border of the cell set survive.',
-  createInputs: ({random, world}) => createClusteredPoints(random, world, 700, 3, 0.04),
+  createInputs: ({random}) => ({
+    ...getHonshuEvents(random, 700),
+    pointer: [...getWindowCenter(HONSHU_WINDOW)] as [number, number]
+  }),
   build(builder, points, values) {
     const family = getCellFamily(values.family);
     const resolution = getCellResolution(family, values.resolution);
-    const positions = builder.upload('positions', 'float32x2', points.positions);
+    // The epicenters, then a brush of extra points at the pointer; all of them are keyed.
+    const positions = builder.allocate('positions', 'float32x2', points.count + BRUSH_POINTS);
     const keys = addPointKeys(builder, family, resolution, positions);
     const table = allocateCellTable(builder, 'table', TABLE_CAPACITY);
     builder.graph.add(
@@ -66,17 +76,44 @@ export default defineOperationRun({
       })
     );
     return {
-      outputs: {outline, fill: addCellFill(builder, family, table.cells)},
-      update: current =>
-        positions.write(
+      outputs: {outline, table, fill: addCellFill(builder, family, table.cells)},
+      update: current => {
+        const rows = new Float32Array((points.count + BRUSH_POINTS) * 2);
+        rows.set(
           Float32Array.from(points.positions, (value, index) => {
-            const anchor = index % 2 === 0 ? 0.9 : 0.5;
+            const axis = index % 2;
+            const anchor = (HONSHU_WINDOW[axis] + HONSHU_WINDOW[axis + 2]) / 2;
             return anchor + (value - anchor) * current.spread;
           })
-        )
+        );
+        for (let brush = 0; brush < BRUSH_POINTS; brush++) {
+          const reach = Math.sqrt((brush + 0.5) / BRUSH_POINTS) * BRUSH_RADIUS;
+          const angle = brush * 2.399963;
+          rows[(points.count + brush) * 2] =
+            points.pointer[0] + (Math.cos(angle) * reach) / LONGITUDE_SCALE;
+          rows[(points.count + brush) * 2 + 1] = points.pointer[1] + Math.sin(angle) * reach;
+        }
+        positions.write(rows);
+      }
     };
   },
   rebuildOn: ['family', 'resolution'],
+  // The pointer is a brush: its points join the set and the outline re-forms around the new cells.
+  interaction: {
+    kind: 'drag',
+    hint: 'paint cells',
+    rest: [0.62, 0.62],
+    resolve(pointer, {inputs, outputs, peek}) {
+      inputs.pointer = [pointer.x, pointer.y];
+      const cellCount = peek(outputs.table.count);
+      const edgeCount = peek(outputs.outline.count);
+      return {
+        rerun: true,
+        glyphs: [{shape: 'ring', at: inputs.pointer, radius: BRUSH_RADIUS, dashed: true}],
+        readout: `set ${cellCount ? cellCount[0] : '…'} cells · ${edgeCount ? edgeCount[0] : '…'} boundary edges`
+      };
+    }
+  },
   draw: ({outputs}) => [
     {
       layer: 'polygons',

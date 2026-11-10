@@ -17,12 +17,27 @@ import {
   RELAXATION_SLOT_NAMES,
   ShapeBatch
 } from '../../record-demo';
+import {createDimShape, getBoxGlyph, getColumnAt, getDimLayer, type Box} from './_lib/record-probe';
 import {parameters} from './snapshot-arena.parameters';
+
+/** What the last run drew, for the pointer: the grid, the frames it holds and the byte meter. */
+type Latest = {
+  area: Box;
+  meter: Box;
+  capacity: number;
+  slotCount: number;
+  frames: {iteration: number | undefined}[];
+  bytesPerFrame: number;
+};
 
 export default defineOperationRun({
   parameters,
   caption: 'One column per frame the arena collected, one row per slot.',
-  createInputs: ({random, world}) => ({tracts: createRecordTracts(random), world}),
+  createInputs: ({random, world}) => ({
+    tracts: createRecordTracts(random),
+    world,
+    latest: null as Latest | null
+  }),
   build(builder, {tracts}, values) {
     const slotNames = RELAXATION_SLOT_NAMES.slice(0, values.slots);
     const arena = builder.own(
@@ -88,7 +103,16 @@ export default defineOperationRun({
       });
     }
     bytes.addOutline(meter);
+    inputs.latest = {
+      area,
+      meter,
+      capacity: values.capacity,
+      slotCount: slotNames.length,
+      frames: (bySlot.get('state') ?? []).map(frame => ({iteration: frame.iteration})),
+      bytesPerFrame: tracts.count * 4 * slotNames.length
+    };
     return {
+      dim: createDimShape(upload, 'dim', area),
       outlines: outlines.uploadSegments(upload, 'cell-outlines'),
       outlineCount: outlines.segmentCount,
       state: state.uploadShapes(upload, 'state'),
@@ -100,7 +124,44 @@ export default defineOperationRun({
       maximumResidual
     };
   },
-  draw: ({extra, theme}) => [
+  // The pointer is a playhead over the frames the arena collected: later frames are dimmed, and
+  // the bytes the playhead's frame occupies are outlined in the meter.
+  interaction: {
+    kind: 'time',
+    hint: 'scrub the frames',
+    rest: [0.97, 0.5],
+    resolve(pointer, {inputs}) {
+      const latest = inputs.latest;
+      if (!latest || latest.frames.length === 0) return {readout: 'scrub the frames'};
+      const {area, meter, capacity, slotCount, frames} = latest;
+      const column = Math.min(
+        frames.length - 1,
+        getColumnAt(area.x0, area.x1, capacity, pointer.x)
+      );
+      const width = (area.x1 - area.x0) / capacity;
+      const slotWidth = (meter.x1 - meter.x0) / (capacity * slotCount);
+      const iteration = frames[column].iteration;
+      return {
+        curtain: area.x0 + (column + 1) * width,
+        glyphs: [
+          getBoxGlyph({
+            x0: area.x0 + column * width,
+            x1: area.x0 + (column + 1) * width,
+            y0: area.y0,
+            y1: area.y1
+          }),
+          getBoxGlyph({
+            x0: meter.x0 + column * slotCount * slotWidth,
+            x1: meter.x0 + (column + 1) * slotCount * slotWidth,
+            y0: meter.y0,
+            y1: meter.y1
+          })
+        ],
+        readout: `frame ${column + 1} of ${frames.length}${iteration === undefined ? '' : ` · iteration ${iteration}`} · ${slotCount} slots · ${((frames.length * latest.bytesPerFrame) / 1000).toFixed(1)} kB filled`
+      };
+    }
+  },
+  draw: ({extra, theme, interaction}) => [
     {layer: 'lines', context: true, segments: extra.outlines, count: extra.outlineCount, radius: 1},
     {
       layer: 'polygons',
@@ -140,6 +201,9 @@ export default defineOperationRun({
       triangleCount: extra.bytes.triangleCount,
       categories: [theme.categories[0], theme.categories[1], theme.categories[2]]
     },
+    ...(interaction.curtain === undefined
+      ? []
+      : [getDimLayer(extra.dim, theme.background, interaction.curtain)]),
     {layer: 'lines', segments: extra.meter, count: extra.meterCount, radius: 1}
   ]
 });

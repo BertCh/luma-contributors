@@ -8,7 +8,11 @@ picture answers the reader. One run is about 30 to 80 lines.
 ```
 src/gpu/runs/
   define-run.ts    defineOperationRun(spec), layer descriptors, RunBuilder
-  inputs.ts        seeded input generators and upload helpers
+  interaction.ts   pointer gesture contract, glyphs, bindAxes and aimAround
+  pointer-overlay.ts  draws a gesture's glyphs and the probe spotlight
+  pointer-driver.ts   the same gesture behaviour for the hand-written demos
+  pick.ts          CPU lookups under the pointer: cell, point, segment, polygon, chart
+  inputs.ts        observation samples, scenario inputs and upload helpers
   record-demo.ts   shared by the computation-record runs: a recorded relaxation, graph boxes, small multiples
   layers.ts        luma.gl layers the demo kit lacks (polygons, typed edges, charts)
   registry.ts      getRunScene / getRunParameters / hasRun, by entry id
@@ -64,9 +68,10 @@ defineOperationRun<Inputs, Outputs>({
 });
 ```
 
-**`createInputs`** returns seeded CPU data (plain typed arrays, at most about 20k elements). Use the
-generators in `inputs.ts` and the context's `random` (seeded) and `world` (`{width: aspect, height: 1}`;
-all positions live in it, x right, y up).
+**`createInputs`** returns small CPU typed arrays. Related operations sample the same checked-in
+extracts in `../data`, using a deterministic seed where subsampling is needed. The drawing world is
+`{width: aspect, height: 1}`, with x right and y up. Keep geographic inputs in the operation's
+coordinate system and use a common transform for layers drawn together.
 
 **`build`** runs once at start (and again on rebuild). It receives a `RunBuilder`:
 
@@ -121,6 +126,107 @@ build's buffers on rebuild and on destroy. A stateful resource that a run consum
 **`draw`** lists layers in paint order: input context first, then the operation's output. Use a
 function when layers depend on `values` (ranges, counts, which ramp).
 
+### Pointer interaction
+
+Every run declares what the pointer **is** for its operation. On a card the gesture starts on
+hover; on the function page the same gesture runs on the hero and its values move the sliders.
+Without `interaction` a card falls back to scrubbing one slider along x, which the verifier reports.
+
+```ts
+defineOperationRun({
+  ...,
+  interaction: {
+    kind: 'place',                 // place | aim | reach | level | window | swipe | probe | drag | time | pad
+    hint: 'move the observer',     // two or three words, shown before the reader's first move
+    rest: [0.3, 0.55],             // pointer position (0..1 across the canvas, y down) of the poster
+    resolve(pointer, {inputs, outputs, values, world, pixelSize, peek}) {
+      return {values, settle, glyphs, readout, curtain, focus, rerun};   // all optional
+    }
+  }
+});
+```
+
+`resolve` is called at most once per frame with `pointer.x`, `pointer.y` in drawing-world units (y
+up; degrees with `geographicWindow`) and `pointer.unitX`, `pointer.unitY` across the canvas (y down).
+The position is the pointer itself, except for a short glide from `rest` when the pointer first
+arrives. `resolve` is also called again, at the same position, after a slider change, after a
+rebuild (the buffers in `outputs` are then new: compare `state.build` before skipping a rewrite of
+a render-only buffer) and when a `peek` readback arrives. It must be cheap. What it returns:
+
+| field | effect |
+| --- | --- |
+| `values` | Parameter values by id, applied exactly like a slider: `update` writes them and the operation re-runs. Only per-frame parameters. A compile-time id here fails verification |
+| `settle` | Compile-time (`rebuildOn`) parameter values. Applied only after the pointer has rested, so the graph never recompiles under a moving pointer. Snap to at most five values and set `buildCache: 5` on the spec so revisits are instant |
+| `glyphs` | Marks drawn over the picture in the ink color with a halo: `crosshair`, `dot`, `ring` (world radius), `box`, `line`, `arrow`, `curtain`, `polyline`. Positions are world units. They are also drawn in the poster, at `rest` |
+| `readout` | One short line for the chip, built from real prop names, values and units. Cards truncate at about 34 characters, so lead with what changes |
+| `curtain` | World x for a swipe; read it in `draw` as `interaction.curtain` and give layers `clip: {side: 'left' \| 'right', x}` |
+| `focus` | The hovered element, for `draw` (`interaction.focus`) |
+| `rerun` | `true` when `resolve` changed something `update` reads (see "Pointer-owned inputs") |
+| `spotlight` | A bright circle `{at, radius}` in world units; the rest of the picture dims while the reader points. A `probe` gets one around its glyphs automatically; `null` turns it off |
+
+`draw` receives `interaction` (the latest result) and `pointer`.
+
+Rules:
+
+- The pointer drives a **real prop or a real input** of the operation, or reveals structure the
+  operation computed. Never a `Data:` noise knob.
+- `rest` must reproduce the default parameter values, so the poster, the first live frame and the
+  sliders agree. The verifier warns when it does not.
+- Use both axes when y has a meaning. One gesture, no modes.
+- Snap to cells, nodes and features, and use `chooseSticky` so the choice does not flicker.
+- Draw what the hand controls: a handle, a ring of the radius, the box, the curtain.
+
+**Shorthands** (`../../interaction`): `bindAxes(parameters, {kind, hint, x, y})` maps the canvas to
+one or two parameters (inner 90% spans the range; `{parameter, scale: 'logarithmic'}` for props that
+span decades) and derives `rest` from their defaults. `aimAround(parameters, {hint, angle,
+distance})` maps the compass angle around an anchor to one parameter and the distance to another.
+Both derive `rest` for you.
+
+**Pickers** (`../../pick`), all on CPU arrays the run already holds: `getRasterCell`,
+`getRasterCellCenter`, `createPointIndex` (`nearest`, `within`), `chooseSticky`,
+`findNearestSegment`, `findNearestOnPolyline`, `findNearestEdge`, `findPolygonAt` (triangle mesh),
+`isInsideRing`, `getChartPosition`, `getChartWorldX`. Build indexes once in `createInputs`.
+
+**Reading the operation's output.** `peek(outputs.buffer)` returns the latest CPU copy of a buffer
+(a typed array, or `null` until the first readback) and subscribes it: it is read back after every
+run and `resolve` is called again when it arrives. Use it for readouts (`visible 34%`) and for
+probes that follow GPU results (the links, label or path of the hovered element).
+
+**Pointer-owned inputs.** When the pointer is an input that has no slider (one extra query point, a
+dragged vertex, a source cell), keep it in a mutable field of `inputs`, have `update` write the
+buffer from that field, and return `rerun: true` from `resolve` after changing it:
+
+```ts
+createInputs: ctx => ({...createPoints(ctx), query: [0.5, 0.5] as [number, number]}),
+build(builder, inputs) {
+  const query = builder.allocate('query', 'float32x2', 1);
+  ...
+  return {outputs: {query, ...}, update: () => query.write(Float32Array.from(inputs.query))};
+},
+interaction: {
+  kind: 'place', hint: 'move the query point', rest: [0.5, 0.5],
+  resolve(pointer, {inputs}) {
+    inputs.query = [pointer.x, pointer.y];
+    return {rerun: true, glyphs: [{shape: 'crosshair', at: inputs.query}], readout: '...'};
+  }
+}
+```
+
+Patterns by gesture, with a finished example of each:
+
+| gesture | how | example |
+| --- | --- | --- |
+| `place` | cell or node under the pointer to position parameters, or a pointer-owned input | `terrain-relief-light/viewshed.ts` |
+| `aim` | `aimAround` | `terrain-relief-light/slope-aspect-hillshade.ts` |
+| `reach` | distance from the pointer to the nearest input geometry (`findNearestSegment`) or to an anchor becomes the radius, distance or tolerance; draw a ring or a tick | |
+| `level` | the input value under the pointer (read from the CPU inputs) becomes the threshold or level | |
+| `window` | the pointer is the center of the box, mask or kernel footprint | |
+| `swipe` | `curtain` plus `clip` on the before and after layers, both on one fixed `range` | `raster-bands-indices/fill-nodata.ts` |
+| `probe` | pick the hovered element, read its links from `peek` or the inputs, draw them as glyphs | `regression-weights/neighbor-search.ts` |
+| `drag` | pointer-owned input: one site, vertex or feature follows the pointer | |
+| `time` | `bindAxes` with `x` on the time or iteration parameter | |
+| `pad` | `bindAxes` with `x` and `y` on two real props | |
+
 ### Layer descriptors
 
 All layers accept `alpha`, `context`, `color` (solid RGBA 0-1). `context: true` marks an **input**
@@ -128,15 +234,16 @@ layer: it is drawn muted, and the harness's inputs-only render shows only these.
 must not be `context`, otherwise the verifier fails the run ("output is not drawn").
 
 Value layers (`raster`, `dots`, `segments`, `polygons`, `chart` bars) also take `ramp`
-(`'sequential'`, `'diverging'`, `'categorical'`; default categorical for `uint32` buffers), `range`
+(`'sequential'`, `'diverging'`, `'categorical'`, `'cyclic'`, and `'grey'` for illumination and
+hillshade, shadow to lit in both themes; default categorical for `uint32` buffers), `range`
 (`[min, max]` or `'auto'`, the default, which reads the buffer back after each run; diverging auto is
-symmetric about zero), `logarithmic`, `bands`, `fade`. Invalid values (NaN, Infinity, unreached
+symmetric about zero), `logarithmic` (the ramp takes `log2(max(value, 1))`, so it suits counts of 1 and more and `range` is then in log2 units; values under 1 all map to the low end), `bands`, `fade`. Invalid values (NaN, Infinity, unreached
 `0xffffffff`) draw in the muted color or transparent. `uint32` values wrap into 8 categories.
 
 | layer | required | draws |
 | --- | --- | --- |
 | `raster` | `values`, `columns`, `rows` (row 0 at the top) | a grid; `smoothing`, `hillshade`, `elevation` |
-| `dots` | `positions` (float32x2); `values?`, `count?`, `radius?` | circles, solid or by value |
+| `dots` | `positions` (float32x2); `values?`, `count?`, `radius?`, `sizeByValue?` | circles, solid or by value; with `fade`, low values disappear |
 | `segments` | `nodes`, `edges` (uint32x2); `values?` per node | network edges, colored by node value or label |
 | `lines` | `segments` (float32x4); `count?` (number or uint32 buffer) | solid segment list |
 | `paths` | `nodes`, `ids`, `count` | consecutive node ids as a path |
@@ -147,17 +254,19 @@ symmetric about zero), `logarithmic`, `bands`, `fade`. Invalid values (NaN, Infi
 `count` may be a GPU-written `uint32` buffer, so the picture shows exactly what the operation
 produced. Charts plot a buffer's rows; set `range` for the y axis or leave `'auto'`.
 
-### Input generators (`inputs.ts`)
+### Input data
 
-`createSmoothField`, `createFractalRaster` (DEM), `createImageryBands` (green, red, NIR, SWIR and a
-land-cover map), `createUniformPoints`, `createClusteredPoints` (with labels), `createKnnWeights`,
-`createDistanceBandWeights`, `createTracts` (contiguous hexagon-like polygons with values, triangle
-fans, outline and rook contiguity CSR), `createNetwork` (street grid CSR and drawing edges),
-`createTrajectories`, `createPolylines`, `createTimeSeries`, `createPointCloud`, `createHexCells`.
-Upload helpers: `uploadSpatialWeights(builder, csr)` gives a `GPUSpatialWeights`,
-`uploadNetworkTopology(builder, network, costs?)` gives `{topology, weights}`. Need something else?
-Write a small local generator in your entry file (same seeded `random`); do not edit `inputs.ts`.
-Use the `Data:` label prefix for sliders that change input data.
+See the [website data notice](../../../../THIRD-PARTY-DATA.md#website-demo-extracts) for sample
+sizes, dates, units, preparation scripts and provider terms. `createElevationRaster` and
+`createImageryBands` serve different geographic regions. `createTracts` returns Chicago boundaries,
+triangles, demographic estimates and rook contiguity. The network and trajectory helpers provide
+San Francisco streets and vessel reports. Other helpers sample point observations, time series or
+lidar returns. For new extracts, register the data asset in `website/build/demo-data-sources.ts`
+and document how to reproduce it. Identify scenario modifications in the caption or provenance.
+
+`uploadSpatialWeights(builder, csr)` gives a `GPUSpatialWeights`. `uploadNetworkTopology(builder,
+network, costs?)` gives `{topology, weights}`. Use the `Data:` label prefix for sliders that change
+input data.
 
 ## Verify
 
@@ -172,8 +281,15 @@ It starts a harness server (`scripts/harness.vite.config.ts`, port 3301; `--port
 one that is already up), opens `run-harness.html` on real WebGPU, and checks per run: starts on
 WebGPU; no GPU validation errors or console errors; canvas not blank; at least one slider changes
 the picture (inert sliders are listed as warnings); the picture differs from the inputs-only render.
-It writes `site3/runs-report/<group>.json`, a contact sheet `<group>.png`, and full-size
-`<group>/<id>-<theme>.png`. **Read the screenshots**: passing checks do not mean the picture is clear.
+For the pointer gesture it visits five positions: the picture must change, the graph must not
+recompile, and returning to rest must restore the first picture. It warns about a missing
+`interaction`, fewer than three distinct pictures, a missing readout and a `rest` that does not
+reproduce the defaults.
+It writes `.reports/runs/<group>.json`, a contact sheet `<group>.png`, pointer sheets
+`<group>-pointer-<page>.png` (eight runs per page, each at three pointer positions with its
+readouts), and full-size
+`<group>/<id>-<theme>.png` and `<group>/<id>-pointer-<0|1|2>.png`. **Read the screenshots**: passing
+checks do not mean the picture is clear or that the gesture explains the operation.
 Also typecheck: `npx tsc -p website/tsconfig.json --noEmit`.
 
 Wiring into pages is done by the site, not by runs: `hasRun(id)`, `getRunScene(id)` (a loader for
@@ -188,7 +304,7 @@ Per-frame props only (`update` writes the operation's parameter buffer), so slid
 ```ts
 export default defineOperationRun({
   parameters,
-  createInputs: ({random, world}) => createImageryBands(random, world), // seeded NIR, red, ...
+  createInputs: ({random, world}) => createImageryBands(world), // Sentinel-2 NIR, red, ...
   build(builder, imagery) {
     const nearInfrared = builder.upload('nir', 'float32', imagery.nearInfrared);
     const red = builder.upload('red', 'float32', imagery.red);
@@ -272,13 +388,13 @@ draw: ({outputs}) => [
 
 ## Static snapshots and page checks
 
-Function pages show a run's own output before the live canvas starts, so prerendered HTML is never a
-generic stand-in.
+Function pages and catalog cards show their own operation's output before the live canvas starts.
 
-- `node scripts/snapshot-runs.mjs [entry id...]` renders every run on real WebGPU in both themes and
-  writes `public/runs/<entry id>-<theme>.webp` (640 px wide, WebP quality 0.62). Commit the files.
-  Run it again after changing a run's picture. `EntryPreview` uses them as the fallback of any entry
-  with a run, and `catalog.css` shows the one that matches the page theme.
+- `node scripts/snapshot-runs.mjs [entry id...]` renders the catalog's live scenes, including the
+  flagship demos, in both themes on WebGPU. Each capture uses the page's input seed, default
+  parameters and a fixed reduced-motion frame. The script checks for errors and blank images before
+  writing `public/runs/<entry id>-<theme>.webp` (640 px wide, WebP quality 0.62). Regenerate and
+  commit both posters when the scene or its source data changes.
 - `node scripts/check-all-pages.mjs` serves `dist/client` and opens every `/fn/<id>` page, the home
   page and the how-it-works pages in headless Chromium: the live canvas must reach
   `data-ready=true`, nothing may log an error, and moving a slider must change the picture.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Shared pipeline of the zone runs: blob polygons are rasterized to a zone grid by the real
+// Shared pipeline of the zone runs: Chicago tract polygons are rasterized to a zone grid by the real
 // GPUPolygonRasterization, then a downstream operation consumes the zones or the polygons.
 
 import {
@@ -10,23 +10,77 @@ import {
   GPURasterFractionalCoverage
 } from '@luma-contributors/analysis/raster-analysis';
 import type {RunBuilder, RunBuffer, PolygonsRunLayer} from '../../../define-run';
-import {createSmoothField, type Random, type World} from '../../../inputs';
+import {createSmoothField, createTracts, type Random, type World} from '../../../inputs';
+import {findPolygonAt} from '../../../pick';
 import {makeWorldGrid} from './bands';
-import {createBlobFeatures, type BlobFeatures} from './blobs';
+import {createTractFeatures, type TractFeatures} from './tract-zones';
 
 export type ZoneInputs = {
   world: World;
-  features: BlobFeatures;
+  features: TractFeatures;
   /** Smooth value field over the unit square, row 0 at the top. */
   field: (x: number, y: number) => number;
+  /** The tract the pointer last probed; `afterRun` rewrites highlight buffers from it. */
+  focus: {tract: number};
 };
 
 export function createZoneInputs(random: Random, world: World): ZoneInputs {
+  const features = createTractFeatures(createTracts(random, world, 7));
+  const detail = createSmoothField(random, 4, 4);
   return {
     world,
-    features: createBlobFeatures(random, world),
-    field: createSmoothField(random, 4, 3)
+    features,
+    focus: {tract: -1},
+    // A continuous surface, so every tract covers a spread of values: inverse-distance
+    // interpolation of the normalized ACS poverty measure at the tract centers, plus fine detail.
+    field: (x, y) => {
+      let weightSum = 0;
+      let valueSum = 0;
+      for (let row = 0; row < features.featureCount; row++) {
+        const dx = x * world.width - features.centers[row * 2];
+        const dy = (1 - y) * world.height - features.centers[row * 2 + 1];
+        const weight = 1 / (dx * dx + dy * dy + 0.0004) ** 1.5;
+        weightSum += weight;
+        valueSum += weight * features.values[row];
+      }
+      const spread = Math.min(1, Math.max(0, 0.5 + 1.8 * (detail(x, y) - 0.5)));
+      return 0.5 * (valueSum / weightSum) + 0.5 * spread;
+    }
   };
+}
+
+/** The tract under a drawing-world position, or -1. */
+export function getTractAt(features: TractFeatures, x: number, y: number): number {
+  return findPolygonAt(
+    features.meshVertices,
+    features.meshIndices,
+    features.meshOwners,
+    x,
+    y,
+    features.meshTriangleCount
+  );
+}
+
+/** The closed ring of a tract as (x, y) pairs, for a polyline glyph. */
+export function getTractRing(features: TractFeatures, tract: number): Float32Array {
+  return features.positions.slice(
+    features.ringOffsets[tract] * 2,
+    features.ringOffsets[tract + 1] * 2
+  );
+}
+
+/** Segments of a regular grid over the drawing world, as (x0, y0, x1, y1) rows. */
+export function createGridLines(world: World, columns: number, rows: number): Float32Array {
+  const segments: number[] = [];
+  for (let column = 0; column <= columns; column++) {
+    const x = (column / columns) * world.width;
+    segments.push(x, 0, x, world.height);
+  }
+  for (let row = 0; row <= rows; row++) {
+    const y = (row / rows) * world.height;
+    segments.push(0, y, world.width, y);
+  }
+  return Float32Array.from(segments);
 }
 
 /** Field values sampled on a grid of `columns` x `rows` cells (row 0 at the top). */
@@ -45,7 +99,7 @@ export function sampleField(
 }
 
 /** Uploads the polygon mesh for the 'polygons' layer. */
-export function uploadZoneMesh(builder: RunBuilder, features: BlobFeatures) {
+export function uploadZoneMesh(builder: RunBuilder, features: TractFeatures) {
   return {
     vertices: builder.upload('mesh-vertices', 'float32x2', features.meshVertices),
     indices: builder.upload('mesh-indices', 'uint32', features.meshIndices),
@@ -56,7 +110,7 @@ export function uploadZoneMesh(builder: RunBuilder, features: BlobFeatures) {
 
 /** A filled-polygons layer colored by one value per zone. */
 export function drawZones(
-  features: BlobFeatures,
+  features: TractFeatures,
   mesh: ReturnType<typeof uploadZoneMesh>,
   values: RunBuffer,
   look: Partial<PolygonsRunLayer> = {}
@@ -73,7 +127,11 @@ export function drawZones(
 }
 
 /** Adds GPUPolygonRasterization to the graph and returns the grid and the zone raster. */
-export function addZoneRaster(builder: RunBuilder, inputs: ZoneInputs, gridWidth: number) {
+export function addZoneRaster(
+  builder: RunBuilder,
+  inputs: Pick<ZoneInputs, 'features' | 'world'>,
+  gridWidth: number
+) {
   const {world, features} = inputs;
   const worldGrid = makeWorldGrid(world, gridWidth);
   const positions = builder.upload('positions', 'float32x2', features.positions);
@@ -162,4 +220,34 @@ export function addFractionalCoverage(builder: RunBuilder, inputs: ZoneInputs, g
     })
   );
   return {...worldGrid, coverage, output};
+}
+
+type CoverageReadback = {
+  zoneIds: Uint32Array | Float32Array | Int32Array | null;
+  cellIds: Uint32Array | Float32Array | Int32Array | null;
+  fractions: Uint32Array | Float32Array | Int32Array | null;
+  count: Uint32Array | Float32Array | Int32Array | null;
+};
+
+/**
+ * Writes the covered fraction of every cell the zone touches into `target` (NaN elsewhere) from the
+ * (zone, cell, fraction) tuples the operation produced, and summarizes them.
+ */
+export function readZoneCoverage(
+  target: Float32Array,
+  coverage: CoverageReadback,
+  zone: number
+): {cells: number; partial: number; area: number} {
+  target.fill(Number.NaN);
+  const summary = {cells: 0, partial: 0, area: 0};
+  const {zoneIds, cellIds, fractions, count} = coverage;
+  if (!zoneIds || !cellIds || !fractions || !count || zone < 0) return summary;
+  for (let tuple = 0; tuple < count[0]; tuple++) {
+    if (zoneIds[tuple] !== zone) continue;
+    target[cellIds[tuple]] = fractions[tuple];
+    summary.cells++;
+    summary.area += fractions[tuple];
+    if (fractions[tuple] < 0.999) summary.partial++;
+  }
+  return summary;
 }

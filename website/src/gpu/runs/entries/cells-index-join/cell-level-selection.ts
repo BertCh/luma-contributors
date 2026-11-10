@@ -10,7 +10,9 @@ import {
   GPUCellPyramid
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {createClusteredPoints} from '../../inputs';
+import {findParameter} from '../../interaction';
+import type {RunGlyph} from '../../interaction';
+import {getHonshuEvents, HONSHU_WINDOW} from '../../../data/point-observations';
 import {
   addCellFill,
   addPointKeys,
@@ -22,6 +24,13 @@ import {
 import {parameters} from './cell-level-selection.parameters';
 
 const LEVEL_CAPACITY = 2048;
+const LEVEL_COLORS = [
+  [0.35, 0.7, 1, 1],
+  [0.4, 0.85, 0.5, 1],
+  [1, 0.7, 0.3, 1],
+  [0.95, 0.45, 0.6, 1]
+] as const;
+const LEVEL_PARAMETER = findParameter(parameters, 'activeLevel');
 
 /** One inscribed triangle per cell: its wireframe is a marker that is drawn once per counted cell. */
 function createCellMarkers(cellCount: number, stride: number, isHexagon: boolean): Uint32Array {
@@ -35,8 +44,9 @@ function createCellMarkers(cellCount: number, stride: number, isHexagon: boolean
 
 export default defineOperationRun({
   parameters,
+  geographicWindow: HONSHU_WINDOW,
   caption: 'The active level and its cell count are chosen on the GPU from one word.',
-  createInputs: ({random, world}) => createClusteredPoints(random, world, 900, 4, 0.12),
+  createInputs: ({random}) => getHonshuEvents(random, 900),
   build(builder, points, values) {
     const family = getCellFamily(values.family);
     const resolutions = family === 'h3' ? [6, 5, 4, 3] : [11, 10, 9, 8];
@@ -86,6 +96,50 @@ export default defineOperationRun({
     };
   },
   rebuildOn: ['family'],
+  // The pointer's x position along a four-step level ruler is the per-frame activeLevel.
+  interaction: {
+    kind: 'level',
+    hint: 'slide along the levels',
+    rest: () => [(LEVEL_PARAMETER.default + 0.5) / 4, 0.5],
+    resolve(pointer, {outputs, peek}) {
+      // The whole canvas width is four equal bands, one per level.
+      const activeLevel = Math.min(3, Math.max(0, Math.floor(pointer.unitX * 4)));
+      const [west, south, east, north] = HONSHU_WINDOW;
+      const bandWidth = (east - west) / 4;
+      const bottom = south + (north - south) * 0.02;
+      const top = south + (north - south) * 0.1;
+      const glyphs: RunGlyph[] = [];
+      for (let level = 0; level < 4; level++) {
+        const left = west + level * bandWidth;
+        glyphs.push({
+          shape: 'box',
+          minimum: [left + bandWidth * 0.02, bottom],
+          maximum: [left + bandWidth * 0.98, top]
+        });
+      }
+      // The active band is crossed out with an inner box and a diagonal.
+      const left = west + activeLevel * bandWidth;
+      glyphs.push(
+        {
+          shape: 'box',
+          minimum: [left + bandWidth * 0.06, bottom + (top - bottom) * 0.2],
+          maximum: [left + bandWidth * 0.94, top - (top - bottom) * 0.2]
+        },
+        {
+          shape: 'line',
+          from: [left + bandWidth * 0.02, bottom],
+          to: [left + bandWidth * 0.98, top]
+        },
+        {shape: 'line', from: [left + bandWidth * 0.02, top], to: [left + bandWidth * 0.98, bottom]}
+      );
+      const count = peek(outputs.selectedCount);
+      return {
+        values: {activeLevel},
+        glyphs,
+        readout: `activeLevel ${activeLevel} · ${count ? count[0] : '…'} cells drawn (GPU count)`
+      };
+    }
+  },
   draw: ({outputs, values}) => {
     const fill = outputs.levelFills[values.activeLevel];
     return [
@@ -94,17 +148,18 @@ export default defineOperationRun({
         positions: fill.boundaries,
         indices: fill.indices,
         owners: fill.owners,
-        values: outputs.levels[values.activeLevel].sumValues,
+        values: fill.owners,
         triangleCount: fill.triangleCount,
-        range: [0, 8 * Math.pow(3, values.activeLevel)],
-        alpha: 1
+        // One flat color per level, so the four pictures cannot be mistaken for each other.
+        color: LEVEL_COLORS[values.activeLevel],
+        alpha: 0.6
       },
       {
         layer: 'triangles',
         positions: fill.boundaries,
         triangles: outputs.markers,
         count: outputs.selectedCount,
-        color: [1, 1, 1, 0.4]
+        color: [1, 1, 1, 0.9]
       }
     ];
   }

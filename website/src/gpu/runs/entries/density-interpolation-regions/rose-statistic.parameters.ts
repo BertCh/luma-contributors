@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPURoseStatistic's `circular` contract (`mode`, `binCount`); concentration varies the data.
+// Bound to GPURoseStatistic's `circular` contract (`mode`, `binCount`); the data filter removes short legs in scene units.
 export const parameters: GpuSceneParameter[] = [
   {id: 'binCount', label: 'circular.binCount', min: 6, max: 36, step: 2, default: 18},
   {
@@ -15,5 +15,12 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['directional', 'axial']
   },
-  {id: 'concentration', label: 'Data: spread', min: 0.1, max: 1.2, step: 0.05, default: 0.4}
+  {
+    id: 'minimumLength',
+    label: 'Data: minimum leg length',
+    min: 0,
+    max: 0.04,
+    step: 0.002,
+    default: 0
+  }
 ];
