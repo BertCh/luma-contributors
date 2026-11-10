@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DemoDataRouteImport } from './routes/demo-data'
 import { Route as ExploreRouteImport } from './routes/explore'
 import { Route as HowItWorksRouteImport } from './routes/how-it-works'
 import { Route as DocsSplatRouteImport } from './routes/docs/$'
@@ -24,6 +25,11 @@ import { Route as ExploreUseIdRouteImport } from './routes/explore/use.$id'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DemoDataRoute = DemoDataRouteImport.update({
+  id: '/demo-data',
+  path: '/demo-data',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ExploreRoute = ExploreRouteImport.update({
@@ -79,6 +85,7 @@ const ExploreUseIdRoute = ExploreUseIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/demo-data': typeof DemoDataRoute
   '/explore': typeof ExploreRouteWithChildren
   '/how-it-works': typeof HowItWorksRouteWithChildren
   '/docs/$': typeof DocsSplatRoute
@@ -92,6 +99,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/demo-data': typeof DemoDataRoute
   '/docs/$': typeof DocsSplatRoute
   '/fn/$id': typeof FnIdRoute
   '/how-it-works/$topic': typeof HowItWorksTopicRoute
@@ -104,6 +112,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/demo-data': typeof DemoDataRoute
   '/explore': typeof ExploreRouteWithChildren
   '/how-it-works': typeof HowItWorksRouteWithChildren
   '/docs/$': typeof DocsSplatRoute
@@ -119,6 +128,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/demo-data'
     | '/explore'
     | '/how-it-works'
     | '/docs/$'
@@ -132,6 +142,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/demo-data'
     | '/docs/$'
     | '/fn/$id'
     | '/how-it-works/$topic'
@@ -143,6 +154,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/demo-data'
     | '/explore'
     | '/how-it-works'
     | '/docs/$'
@@ -157,6 +169,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DemoDataRoute: typeof DemoDataRoute
   ExploreRoute: typeof ExploreRouteWithChildren
   HowItWorksRoute: typeof HowItWorksRouteWithChildren
   DocsSplatRoute: typeof DocsSplatRoute
@@ -170,6 +183,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/demo-data': {
+      id: '/demo-data'
+      path: '/demo-data'
+      fullPath: '/demo-data'
+      preLoaderRoute: typeof DemoDataRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/explore': {
@@ -278,6 +298,7 @@ const HowItWorksRouteWithChildren = HowItWorksRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DemoDataRoute: DemoDataRoute,
   ExploreRoute: ExploreRouteWithChildren,
   HowItWorksRoute: HowItWorksRouteWithChildren,
   DocsSplatRoute: DocsSplatRoute,

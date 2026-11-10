@@ -23,6 +23,16 @@ export type LensViewNode = {
   writeBytes: number;
   /** GPU time in milliseconds when the record has timestamps. */
   milliseconds?: number;
+  /** Summed maximum invocations over the members, when the kernels report a workload. */
+  invocations?: number;
+  /** Members whose dispatch size comes from a GPU buffer (indirect), so a round can run zero workgroups. */
+  gated?: number;
+  /** Kernel variant such as `classify`; only when the graph is not collapsed. */
+  variant?: string;
+  /** Ids of the buffers the kernel reads; only when the graph is not collapsed. */
+  reads?: string[];
+  /** Ids of the buffers the kernel writes; only when the graph is not collapsed. */
+  writes?: string[];
 };
 
 export type LensViewEdge = {
@@ -63,6 +73,9 @@ export type LensResourceSummary = {
 };
 
 export type LensFormula = {id: string; ascii: string};
+
+/** A series the run recorded per round, such as the frontier size of each iteration. */
+export type LensRoundSeries = {name: string; unit?: string; values: number[]};
 
 export type LensParameter = {name: string; label: string; value: string; unit?: string};
 
@@ -133,4 +146,30 @@ export type LensViewModel = {
   parameters: LensParameter[];
   map?: LensMap;
   series: LensSeries[];
+  /** Per-round series, when the run recorded any. */
+  rounds?: LensRoundSeries[];
+  /** Recorded kernels whose dispatch is gated on the GPU. */
+  gatedNodeCount?: number;
+  /** Size in bytes of every buffer a node reads or writes; only when the graph is not collapsed. */
+  bufferBytes?: Record<string, number>;
+};
+
+/** Totals over every lens record, written to summary.json by generate-view-models.ts. */
+export type LensSummary = {
+  recordCount: number;
+  packs: Record<string, number>;
+  kernels: number;
+  copies: number;
+  gatedKernels: number;
+  dependencies: {raw: number; war: number; waw: number};
+  buffers: number;
+  bufferBytes: number;
+  snapshots: number;
+  formulas: number;
+  recordsWithFormulas: number;
+  kernelsPerRecord: {minimum: number; median: number; maximum: number};
+  smallest: {id: string; kernels: number};
+  largest: {id: string; kernels: number};
+  recordBytes: number;
+  viewModelBytes: number;
 };

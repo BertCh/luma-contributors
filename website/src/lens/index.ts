@@ -3,7 +3,7 @@
 
 // Lens view models: compact, build-time extracts of docs/lens-records/*.json (see
 // generate-view-models.ts). Safe to call from route loaders on the server and in the browser; each
-// model is its own lazily loaded chunk, so the 80 MB of records never ship.
+// model is its own lazily loaded chunk, so the record files (about 29 MB) never ship.
 
 import type {LensViewModel} from './types.ts';
 

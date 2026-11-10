@@ -18,16 +18,24 @@ yarn website-build   # writes website/dist/client (about 560 static pages)
 | `/explore` | All operations, filtered by data type, use case and domain, with search |
 | `/explore/{data,use,domain}/<id>` | Facet landing pages |
 | `/fn/<id>` | One operation: live preview, summary, params, outputs, example, next steps, recorded command graph |
-| `/how-it-works/<topic>` | The system explained with its own recorded graphs and live GPU visuals |
+| `/demo-data` | Sources, provider credits and terms for the website's data extracts |
+| `/how-it-works/<topic>` | Thirteen explainers in reading order: real code, recorded command graphs, stepped figures, workflows |
 | `/docs/<path>` | Long-form reference compiled from `docs/**/*.md` |
 
 ## How it is built
 
-- **Live pictures.** `src/gpu/gpu-canvas.tsx` mounts a luma.gl scene (WebGPU, WebGL2 fallback) over a
-  static SVG fallback drawn from the same seeded data. Prerendered HTML has only the fallback; luma.gl
-  loads with dynamic `import()` when a canvas scrolls into view. Adapters that cannot present a frame
-  keep the fallback. `src/gpu/previews` has a scene for every preview kind; `src/gpu/demos` runs real
-  analysis operations on the GPU.
+- **Live pictures.** Catalog pages and cards start with a theme-matched WebP captured from the
+  operation's GPU output. Hover or keyboard focus starts the card's luma.gl scene. Every scene
+  declares what the pointer is for its operation: an observer or source to place, a sun to aim, a
+  distance to reach, a level to pick, a window to move, a before/after curtain, an element to probe,
+  a site to drag, a playhead, or a pad of two props. Glyphs show the handle and a chip reads out the
+  real prop values. Arrow keys move the same gesture and Home returns it to the poster state. The
+  function page runs the same gesture on its hero, keeps the sliders in step with it, and a click
+  pins it. When a compute adapter is unavailable, the poster stays visible.
+- **Data.** The compact inputs in `src/gpu/data` ship locally with the scene code. The source notes
+  beside the extracts document dates, units, sampling and preparation. The build traces scene inputs
+  to the source registry and includes attribution on each function page. See the
+  [repository data notice](../THIRD-PARTY-DATA.md#website-demo-extracts).
 - **Catalog.** One `CatalogEntry` per operation in `src/catalog/entries/<group>.ts`, organized by
   `src/catalog/taxonomy.ts`. `build/catalog-plugin.ts` serves lightweight summaries for cards and
   filters; function pages load their group's full entries on demand.
@@ -42,14 +50,21 @@ cd website
 node --experimental-strip-types scripts/extract-inventory.ts   # after analysis API changes
 node --experimental-strip-types scripts/check-catalog.ts       # validates every entry against the source
 node --experimental-strip-types src/lens/generate-view-models.ts   # after lens records change
+for page in building-blocks contract iteration lenses upstream-first; do   # how-it-works page data
+  node --experimental-strip-types src/components/meta/pages/$page/generate-data.ts
+done
 ```
 
 Live operation runs (run from `website`; reports land in `website/.reports/`):
 
 ```bash
-node scripts/verify-runs.mjs [--group <group>]   # verify runs on real WebGPU
+node scripts/verify-runs.mjs [--group <group>]   # verify runs and their pointer gestures on real WebGPU
+node scripts/verify-demos.mjs [demo id...]       # verify the flagship demos' gestures (needs the harness server)
+node scripts/audit-card-interactions.mjs         # summarize the gesture measures from the verify reports
 node scripts/snapshot-runs.mjs                   # refresh public/runs snapshots
+node --experimental-strip-types scripts/audit-demo-data.ts [--json]  # trace scene inputs
 node scripts/check-all-pages.mjs                 # check every built page (needs yarn build)
+node scripts/check-card-interactions.mjs http://localhost:3000  # against a running site
 ```
 
 `check-catalog.ts` checks symbols, import paths, prop names, facet ids and length limits, and

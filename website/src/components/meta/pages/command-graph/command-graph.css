@@ -1,0 +1,70 @@
+/* SPDX-License-Identifier: MIT */
+/* SPDX-FileCopyrightText: Copyright (c) vis.gl contributors */
+
+/* The command-graph page. Tokens only: accent = a kernel and a read-after-write edge, signal = a
+   write-after-read hazard, focus (dashed) = write-after-write, muted outline = a buffer from outside. */
+
+/* Kernel picker */
+.command-graph-picker { display: flex; flex-wrap: wrap; gap: 6px; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--color-border); }
+.command-graph-picker button { padding: 3px 10px; border: 1px solid var(--color-border); border-radius: 999px; background: none; color: var(--color-muted); font-family: var(--font-code); font-size: 11.5px; cursor: pointer; }
+.command-graph-picker button span { color: var(--color-muted); opacity: 0.8; }
+.command-graph-picker button:hover { color: var(--color-accent); border-color: var(--color-accent); }
+.command-graph-picker button[aria-pressed='true'] { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent); }
+.command-graph-picker button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
+/* Declared reads and writes */
+.command-graph-declare { display: block; width: 100%; height: auto; }
+.command-graph-head { fill: var(--color-muted); font-family: var(--font-code); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+.command-graph-kernel { cursor: pointer; }
+.command-graph-kernel rect { fill: var(--color-surface); stroke: var(--color-accent); stroke-opacity: 0.3; stroke-width: 1.2; }
+.command-graph-kernel[data-kind='copy'] rect { stroke: var(--color-signal); }
+.command-graph-kernel[data-state='source'] rect { stroke-opacity: 1; stroke-width: 1.8; }
+.command-graph-kernel[data-state='selected'] rect { fill: var(--color-accent-soft); stroke-opacity: 1; stroke-width: 2.4; }
+.command-graph-kernel__index { fill: var(--color-muted); font-family: var(--font-code); font-size: 10px; }
+.command-graph-kernel__label { fill: var(--color-text); font-family: var(--font-code); font-size: 11.5px; }
+.command-graph-chip rect { fill: var(--color-surface); stroke: var(--color-border); stroke-width: 1.2; }
+.command-graph-chip text { fill: var(--color-muted); font-family: var(--font-code); font-size: 11px; }
+.command-graph-chip[data-state='lit'] rect { fill: var(--color-accent-soft); stroke: var(--color-accent); stroke-width: 1.6; }
+.command-graph-chip[data-state='lit'] text { fill: var(--color-text); }
+.command-graph-chip[data-state='outside'] rect { stroke: var(--color-muted); stroke-dasharray: 3 3; }
+.command-graph-chip[data-state='outside'] text { fill: var(--color-text); }
+.command-graph-none { fill: var(--color-muted); font-family: var(--font-code); font-size: 10.5px; font-style: italic; opacity: 0.7; }
+.command-graph-edge { fill: none; stroke: var(--color-muted); stroke-opacity: 0.35; stroke-width: 1.3; transition: stroke 0.15s, stroke-opacity 0.15s; }
+.command-graph-edge[data-lit='true'] { stroke: var(--color-accent); stroke-opacity: 1; stroke-width: 2.2; }
+.command-graph-arrow { fill: var(--color-accent); }
+
+/* Hazard cards */
+.command-graph-hazards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+.command-graph-hazard { display: grid; gap: var(--space-2); align-content: start; padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border); border-top: 3px solid var(--color-accent); border-radius: var(--radius-medium); background: var(--color-surface); color: var(--color-muted); font-size: var(--text-small); line-height: 1.45; }
+.command-graph-hazard[data-hazard='war'] { border-top-color: var(--color-signal); }
+.command-graph-hazard[data-hazard='waw'] { border-top-style: dashed; border-top-color: var(--color-focus); }
+.command-graph-hazard__title { color: var(--color-text); font-family: var(--font-code); font-weight: 500; }
+.command-graph-hazard__pair { display: grid; justify-items: start; gap: 2px; margin: var(--space-2) 0 0; padding: 0; list-style: none; font-family: var(--font-code); }
+.command-graph-hazard__kernel { display: grid; padding: 4px 10px; border: 1.4px solid var(--color-accent); border-radius: 6px; color: var(--color-text); overflow-wrap: anywhere; }
+.command-graph-hazard__step { color: var(--color-muted); font-size: 10px; }
+.command-graph-hazard__verb { padding-left: 14px; border-left: 2px solid var(--color-accent); margin-left: 14px; font-size: 11px; }
+.command-graph-hazard[data-hazard='war'] .command-graph-hazard__verb { border-left-color: var(--color-signal); }
+.command-graph-hazard[data-hazard='waw'] .command-graph-hazard__verb { border-left-style: dashed; border-left-color: var(--color-focus); }
+.command-graph-hazard__buffer { padding: 2px 10px; border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text); font-size: 11px; overflow-wrap: anywhere; }
+.command-graph-hazard__source { font-size: 11px; overflow-wrap: anywhere; }
+.command-graph-hazard__source code { font-family: var(--font-code); }
+
+/* Share over all records */
+.command-graph-share { margin-top: var(--space-4); }
+.command-graph-share__bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--color-border); }
+.command-graph-share__bar span { display: block; height: 100%; background: var(--color-accent); }
+.command-graph-share__bar span[data-hazard='war'] { background: var(--color-signal); }
+.command-graph-share__bar span[data-hazard='waw'] { background: repeating-linear-gradient(90deg, var(--color-focus) 0 4px, transparent 4px 6px); }
+.command-graph-share__key { display: flex; flex-wrap: wrap; gap: 4px var(--space-5); margin: var(--space-2) 0 0; padding: 0; list-style: none; color: var(--color-muted); font-family: var(--font-code); font-size: var(--text-small); }
+.command-graph-share__key i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; background: var(--color-accent); vertical-align: -1px; }
+.command-graph-share__key li[data-hazard='war'] i { background: var(--color-signal); }
+.command-graph-share__key li[data-hazard='waw'] i { background: none; border: 1.5px dashed var(--color-focus); }
+.command-graph-share__key b { color: var(--color-text); font-weight: 500; }
+
+/* Operation picker above the local Moran panel */
+.command-graph-operations { flex-wrap: wrap; margin-bottom: var(--space-3); border-radius: var(--radius-medium); font-family: var(--font-code); font-size: var(--text-small); }
+.command-graph-operations__count { color: var(--color-muted); font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .command-graph-edge { transition: none; }
+}

@@ -7,6 +7,7 @@ import {useMemo} from 'react';
 import {GpuCanvas} from '../../gpu/gpu-canvas';
 import {createFlowSceneLoader, type FlowGraph} from './scenes/flow-scene';
 import './meta.css';
+import './package-layers.css';
 
 type LayerSpec = {name: string; role: string; owner: 'ours' | 'upstream'};
 
@@ -105,7 +106,8 @@ export function makePackageFlowGraph(arrangement: 'card' | 'row' = 'card'): Flow
     : {width: WIDTH, height: HEIGHT, nodes, edges};
 }
 
-export function PackageLayers() {
+/** `version` is the luma.gl release the packages are built on; pages read it from data. */
+export function PackageLayers({version}: {version?: string}) {
   const loader = useMemo(() => createFlowSceneLoader(makePackageFlowGraph('row')), []);
   const groupX = (index: number) => PADDING + index * (NODE_WIDTH + GAP) - 10;
   return (
@@ -147,8 +149,19 @@ export function PackageLayers() {
               this repository
             </text>
             <text className="layer-group-label" x={groupX(3) + 12} y={34}>
-              published luma.gl 10.0.0-alpha.10
+              {version ? `published luma.gl ${version}` : 'published luma.gl'}
             </text>
+            {PACKAGE_LAYERS.slice(0, -1).map((layer, index) => {
+              const x = PADDING + index * (NODE_WIDTH + GAP) + NODE_WIDTH;
+              const y = TOP + NODE_HEIGHT / 2;
+              return (
+                <path
+                  key={`arrow-${layer.name}`}
+                  className="layer-arrow"
+                  d={`M${x + 4} ${y} H${x + GAP - 5} M${x + GAP - 11} ${y - 5} L${x + GAP - 4} ${y} L${x + GAP - 11} ${y + 5}`}
+                />
+              );
+            })}
             {PACKAGE_LAYERS.map((layer, index) => (
               <g
                 key={layer.name}

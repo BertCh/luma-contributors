@@ -1,0 +1,102 @@
+{
+ "rules": [
+  {
+   "id": "bare-assert",
+   "files": 32,
+   "findings": 118
+  },
+  {
+   "id": "internal-export",
+   "files": 5,
+   "findings": 13
+  },
+  {
+   "id": "missing-producer-declaration",
+   "files": 1,
+   "findings": 1
+  },
+  {
+   "id": "multiple-classes",
+   "files": 9,
+   "findings": 21
+  },
+  {
+   "id": "root-file",
+   "files": 21,
+   "findings": 21
+  },
+  {
+   "id": "single-invocation-data-loop",
+   "files": 34,
+   "findings": 46
+  },
+  {
+   "id": "unregistered-contributor",
+   "files": 2,
+   "findings": 2
+  }
+ ],
+ "totalFindings": 222,
+ "ports": [
+  {
+   "name": "candidateOverflow",
+   "doc": "One when refinement may be incomplete because an intermediate capacity was too small.",
+   "group": "GPUCandidateStatusPort"
+  },
+  {
+   "name": "uncertainCount",
+   "doc": "Exact number of classifications resolved through the documented uncertainty fallback.",
+   "group": "GPUUncertaintyStatusPort"
+  },
+  {
+   "name": "antimeridianUncertainCount",
+   "doc": "Rings with an edge whose raw longitude step exceeds 180 (antimeridian crossing, not split).",
+   "group": "GPULonLatPolygonStatusPort"
+  },
+  {
+   "name": "poleUncertainCount",
+   "doc": "Rings whose wrapped longitude steps sum to +-360 (enclose a pole, not capped).",
+   "group": "GPULonLatPolygonStatusPort"
+  },
+  {
+   "name": "invalidCount",
+   "doc": "Number of input rows rejected by validation.",
+   "group": "GPUInvalidStatusPort"
+  },
+  {
+   "name": "iterationCount",
+   "doc": "Number of iterations, rounds or passes actually executed.",
+   "group": "GPUIterationStatusPort"
+  },
+  {
+   "name": "converged",
+   "doc": "One when the operation met its stopping condition.",
+   "group": "GPUIterationStatusPort"
+  },
+  {
+   "name": "iterationLimitReached",
+   "doc": "One when the iteration budget was exhausted before convergence.",
+   "group": "GPUIterationStatusPort"
+  },
+  {
+   "name": "approximation",
+   "doc": "One when the result uses an intentional approximation rather than exact semantics.",
+   "group": "GPUApproximationStatusPort"
+  },
+  {
+   "name": "count",
+   "doc": "Number of usable rows or elements written.",
+   "group": "GPUCardinalityPort"
+  },
+  {
+   "name": "requiredCount",
+   "doc": "Exact unclamped requirement. Omit when the operation cannot compute it exactly.",
+   "group": "GPUCardinalityPort"
+  },
+  {
+   "name": "overflow",
+   "doc": "One when the final result is incomplete because its output capacity was too small.",
+   "group": "GPUOverflowStatusPort"
+  }
+ ]
+}

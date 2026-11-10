@@ -67,47 +67,29 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
       ) : null}
       {slug === 'data-on-the-gpu' ? (
         <g>
-          {[0, 1, 2, 3].map(column =>
-            [0, 1, 2, 3, 4].map(row => (
-              <rect
-                key={`${column}-${row}`}
-                className={`thumb-column thumb-column--${column}`}
-                x={40 + column * 62}
-                y={26 + row * 28 + (row > 2 ? 10 : 0)}
-                width={48}
-                height={20}
-                rx={3}
-                fill="var(--color-accent)"
-                fillOpacity={0.18 + ((column * 5 + row * 3) % 7) * 0.1}
+          {/* an offsets array marks where each row's slice of a flat array starts */}
+          {[0, 3, 7, 9].map((start, index) => (
+            <g key={`offset-${start}`} className={`thumb-column thumb-column--${index}`}>
+              <rect x={62 + index * 50} y={32} width={40} height={26} rx={5} {...STROKE} />
+              <path
+                className="thumb-link"
+                d={`M${82 + index * 50} 58 C${82 + index * 50} 96 ${32 + start * 22} 96 ${32 + start * 22} 128`}
+                {...STROKE}
+                strokeOpacity={0.6}
+                strokeDasharray="3 3"
               />
-            ))
-          )}
-          {[0, 1, 2, 3].map(column => (
-            <rect
-              key={column}
-              className={`thumb-column thumb-column--${column}`}
-              x={36 + column * 62}
-              y={22}
-              width={56}
-              height={86}
-              rx={5}
-              {...STROKE}
-              strokeDasharray="4 3"
-              strokeOpacity={0.6}
-            />
+            </g>
           ))}
-          {[0, 1, 2, 3].map(column => (
+          {Array.from({length: 12}, (_, cell) => (
             <rect
-              key={column}
-              className={`thumb-column thumb-column--${column}`}
-              x={36 + column * 62}
-              y={118}
-              width={56}
-              height={58}
-              rx={5}
-              {...STROKE}
-              strokeDasharray="4 3"
-              strokeOpacity={0.6}
+              key={`cell-${cell}`}
+              x={24 + cell * 22}
+              y={132}
+              width={18}
+              height={30}
+              rx={3}
+              fill="var(--color-accent)"
+              fillOpacity={cell < 3 ? 0.25 : cell < 7 ? 0.85 : cell < 9 ? 0.45 : 0.65}
             />
           ))}
         </g>
@@ -264,6 +246,220 @@ export function TopicThumb({slug}: {slug: TopicSlug}) {
             strokeDasharray="3 4"
           />
           <path className="thumb-arrow" d="M214 150 l8 10 l8 -10" {...STROKE} />
+        </g>
+      ) : null}
+      {slug === 'building-blocks' ? (
+        <g>
+          {/* flags, their running total, and the kept rows packed to the front */}
+          {[1, 0, 1, 1, 0, 0, 1, 0].map((flag, index) => (
+            <rect
+              key={`flag-${index}`}
+              x={34 + index * 32}
+              y={30}
+              width={24}
+              height={24}
+              rx={4}
+              fill="var(--color-accent)"
+              fillOpacity={flag ? 0.85 : 0.12}
+              stroke="var(--color-accent)"
+              strokeOpacity={0.5}
+            />
+          ))}
+          {[0, 1, 1, 2, 3, 3, 3, 4].map((offset, index) => (
+            <text
+              key={`scan-${index}`}
+              x={46 + index * 32}
+              y={98}
+              textAnchor="middle"
+              fontSize={13}
+              fill="var(--color-muted)"
+              fontFamily="var(--font-code)"
+            >
+              {offset}
+            </text>
+          ))}
+          {[0, 2, 3, 6].map((source, slot) => (
+            <g key={`kept-${source}`}>
+              <path
+                className="thumb-link"
+                d={`M${46 + source * 32} 106 L${46 + slot * 32} 142`}
+                {...STROKE}
+                strokeOpacity={0.5}
+                strokeDasharray="3 3"
+              />
+              <rect
+                className={`thumb-step thumb-step--${slot}`}
+                x={34 + slot * 32}
+                y={146}
+                width={24}
+                height={24}
+                rx={4}
+                fill="var(--color-accent)"
+                fillOpacity={0.85}
+              />
+            </g>
+          ))}
+        </g>
+      ) : null}
+      {slug === 'iteration' ? (
+        <g>
+          {/* rounds laid out in advance: the frontier rises and falls, the rest run nothing */}
+          {[2, 5, 9, 14, 18, 15, 10, 6, 3, 1, 0, 0, 0, 0, 0, 0].map((size, index) => (
+            <g key={index}>
+              <rect
+                className={size > 0 ? 'thumb-bar thumb-bar--active' : 'thumb-bar'}
+                x={24 + index * 17.5}
+                y={128 - size * 5}
+                width={11}
+                height={Math.max(2, size * 5)}
+                rx={2}
+                fill="var(--color-accent)"
+                fillOpacity={size > 0 ? 0.8 : 0}
+              />
+              <rect
+                x={24 + index * 17.5}
+                y={146}
+                width={11}
+                height={22}
+                rx={3}
+                fill={size > 0 ? 'var(--color-accent)' : 'none'}
+                fillOpacity={0.3}
+                stroke={size > 0 ? 'var(--color-accent)' : 'var(--color-muted)'}
+                strokeOpacity={size > 0 ? 0.9 : 0.5}
+                strokeWidth={1.2}
+              />
+            </g>
+          ))}
+          <path
+            className="thumb-cursor"
+            d="M112 24 V172"
+            stroke="var(--color-signal)"
+            strokeWidth={1.4}
+            strokeDasharray="4 4"
+          />
+        </g>
+      ) : null}
+      {slug === 'contract' ? (
+        <g>
+          {/* props in, checks, kernels out, status beside */}
+          <rect
+            x={26}
+            y={76}
+            width={66}
+            height={48}
+            rx={8}
+            fill="none"
+            stroke="var(--color-muted)"
+            strokeWidth={1.6}
+          />
+          <rect x={126} y={60} width={78} height={80} rx={8} {...STROKE} />
+          {[0, 1, 2].map(index => (
+            <path
+              key={index}
+              className="thumb-link"
+              d={`M140 ${82 + index * 18} l6 6 l12 -12`}
+              {...STROKE}
+            />
+          ))}
+          {[0, 1, 2].map(index => (
+            <rect
+              key={`out-${index}`}
+              className={`thumb-layer thumb-layer--${index + 1}`}
+              x={238}
+              y={52 + index * 26}
+              width={56}
+              height={18}
+              rx={5}
+              fill="var(--color-accent)"
+              fillOpacity={0.3 + index * 0.25}
+            />
+          ))}
+          <rect
+            className="thumb-sink"
+            x={238}
+            y={136}
+            width={56}
+            height={18}
+            rx={5}
+            fill="none"
+            stroke="var(--color-signal)"
+            strokeWidth={1.6}
+          />
+          <path
+            d="M92 100 H126 M204 88 H238 M204 122 C222 122 222 145 238 145"
+            {...STROKE}
+            strokeOpacity={0.7}
+          />
+        </g>
+      ) : null}
+      {slug === 'workflows' ? (
+        <g>
+          {/* a chain of operations, each with its own picture */}
+          {[0, 1, 2, 3].map(index => (
+            <g
+              key={index}
+              className={index % 2 === 0 ? 'thumb-lane' : 'thumb-lane thumb-lane--step'}
+            >
+              <rect
+                x={20 + index * 74}
+                y={62}
+                width={58}
+                height={76}
+                rx={8}
+                {...STROKE}
+                stroke={index === 3 ? 'var(--color-signal)' : 'var(--color-accent)'}
+              />
+              <rect
+                x={27 + index * 74}
+                y={69}
+                width={44}
+                height={38}
+                rx={4}
+                fill={index === 3 ? 'var(--color-signal)' : 'var(--color-accent)'}
+                fillOpacity={0.18 + index * 0.14}
+              />
+              <path
+                d={`M28 ${118} h30 M28 ${127} h18`}
+                transform={`translate(${index * 74} 0)`}
+                stroke="var(--color-muted)"
+                strokeWidth={1.6}
+                strokeOpacity={0.7}
+              />
+            </g>
+          ))}
+          {[0, 1, 2].map(index => (
+            <path
+              key={`link-${index}`}
+              className="thumb-link"
+              d={`M${78 + index * 74} 100 h16`}
+              {...STROKE}
+              strokeDasharray="3 3"
+            />
+          ))}
+        </g>
+      ) : null}
+      {slug === 'glossary' ? (
+        <g>
+          {[0, 1, 2, 3, 4].map(index => (
+            <g key={index} className={`thumb-layer thumb-layer--${index}`}>
+              <rect
+                x={36}
+                y={32 + index * 28}
+                width={[64, 88, 52, 76, 60][index]}
+                height={14}
+                rx={4}
+                fill="var(--color-accent)"
+                fillOpacity={0.75}
+              />
+              <path
+                d={`M${[116, 140, 104, 128, 112][index]} ${39 + index * 28} H284`}
+                stroke="var(--color-muted)"
+                strokeWidth={1.6}
+                strokeOpacity={0.55}
+                strokeDasharray="2 5"
+              />
+            </g>
+          ))}
         </g>
       ) : null}
     </svg>

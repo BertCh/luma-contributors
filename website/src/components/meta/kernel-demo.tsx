@@ -11,16 +11,23 @@ import {formatCount} from '../../lens/format';
 import {sampleValueRamp} from '../../lens/ramp';
 import {
   describeWorkgroup,
+  getAutomaticWorkgroupSize,
   getKernelLines,
   KERNEL_GRID,
   KERNEL_SOURCE_PATH,
+  MINIMUM_AUTOMATIC_WORKGROUP_SIZE,
   WORKGROUP_SIZES,
   type KernelLineTag
 } from './kernel-source';
 import {createTilingSceneLoader, createTilingStore} from './scenes/tiling-scene';
 import './meta.css';
+import './pages/kernels/kernels.css';
 
-const DEFAULT_SIZE_INDEX = 3;
+/** The size the library picks for this grid's element count. */
+const LIBRARY_WORKGROUP_SIZE = getAutomaticWorkgroupSize(KERNEL_GRID.invocationCount);
+const DEFAULT_SIZE_INDEX = WORKGROUP_SIZES.indexOf(
+  LIBRARY_WORKGROUP_SIZE as (typeof WORKGROUP_SIZES)[number]
+);
 
 /** Lines a workgroup runs, by tag. The guard line is hot only when the workgroup has guarded lanes. */
 function getHotTags(hasGuardedLanes: boolean): ReadonlySet<KernelLineTag> {
@@ -82,6 +89,7 @@ export function KernelDemo() {
   const [sizeIndex, setSizeIndex] = useState(DEFAULT_SIZE_INDEX);
   const [hovered, setHovered] = useState(-1);
   const workgroupSize = WORKGROUP_SIZES[sizeIndex];
+  const codeRef = useRef<HTMLPreElement>(null);
   const storeRef = useRef(createTilingStore(WORKGROUP_SIZES[DEFAULT_SIZE_INDEX]));
   const loader = useMemo(() => createTilingSceneLoader(storeRef.current), []);
   const lines = useMemo(() => getKernelLines(workgroupSize), [workgroupSize]);
@@ -89,6 +97,13 @@ export function KernelDemo() {
   const workgroupCount = Math.ceil(invocationCount / workgroupSize);
   const guardedTotal = workgroupCount * workgroupSize - invocationCount;
 
+  useEffect(() => {
+    // Open the code on the index guard, the first thing every kernel does.
+    const guard = codeRef.current?.querySelector<HTMLElement>('[data-tag="guard"]');
+    if (codeRef.current && guard) {
+      codeRef.current.scrollTop = Math.max(0, guard.offsetTop - codeRef.current.clientHeight / 2);
+    }
+  }, []);
   useEffect(() => {
     storeRef.current.workgroupSize = workgroupSize;
     storeRef.current.hovered = -1;
@@ -119,7 +134,7 @@ export function KernelDemo() {
             WGSL
           </span>
         </div>
-        <pre className="kernel-code" aria-label="WGSL source of the kernel">
+        <pre ref={codeRef} className="kernel-code" aria-label="WGSL source of the kernel">
           <code>
             {lines.map((line, index) => (
               <span
@@ -128,7 +143,7 @@ export function KernelDemo() {
                 data-tag={line.tag}
                 data-hot={hotTags ? hotTags.has(line.tag) : undefined}
                 data-guard-hit={
-                  detail && detail.guarded > 0 && line.tag === 'guard' ? true : undefined
+                  line.tag === 'guard' && (detail ? detail.guarded > 0 : true) ? true : undefined
                 }
               >
                 {line.text || ' '}
@@ -168,6 +183,13 @@ export function KernelDemo() {
             aria-valuetext={`${workgroupSize} invocations per workgroup`}
           />
         </label>
+        <p className="kernels-size-note">
+          {workgroupSize === LIBRARY_WORKGROUP_SIZE
+            ? `The library picks ${LIBRARY_WORKGROUP_SIZE} for ${formatCount(invocationCount)} elements.`
+            : workgroupSize < MINIMUM_AUTOMATIC_WORKGROUP_SIZE
+              ? `The library never picks below ${MINIMUM_AUTOMATIC_WORKGROUP_SIZE}; this is a teaching knob.`
+              : `Teaching knob: the library picks ${LIBRARY_WORKGROUP_SIZE} here, not ${workgroupSize}.`}
+        </p>
         <p className="meta-readout" aria-live="polite">
           {detail ? (
             <>
@@ -196,7 +218,7 @@ export function KernelDemo() {
               ) : (
                 '; none wasted'
               )}
-              . Hover a tile.
+              . The amber lines are the index guard. Hover a tile.
             </>
           )}
         </p>

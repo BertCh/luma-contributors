@@ -1,0 +1,57 @@
+{
+  "featured": [
+    {
+      "id": "gpu-spatial-analysis.kernel-density",
+      "recordBytes": 79090,
+      "viewModelBytes": 31376
+    },
+    {
+      "id": "gpu-spatial-analysis.local-moran",
+      "recordBytes": 268208,
+      "viewModelBytes": 37679
+    },
+    {
+      "id": "gpu-network.network-service-areas",
+      "recordBytes": 93152,
+      "viewModelBytes": 34014
+    }
+  ],
+  "median": {
+    "id": "gpu-spatial-analysis.cell-compaction",
+    "kernels": 20
+  },
+  "bins": [
+    {
+      "label": "1",
+      "count": 42
+    },
+    {
+      "label": "2-4",
+      "count": 78
+    },
+    {
+      "label": "5-9",
+      "count": 41
+    },
+    {
+      "label": "10-19",
+      "count": 44
+    },
+    {
+      "label": "20-49",
+      "count": 72
+    },
+    {
+      "label": "50-99",
+      "count": 43
+    },
+    {
+      "label": "100-299",
+      "count": 62
+    },
+    {
+      "label": "300+",
+      "count": 28
+    }
+  ]
+}

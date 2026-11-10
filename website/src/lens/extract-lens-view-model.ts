@@ -29,7 +29,14 @@ type RecordNode = {
   reads: readonly string[];
   writes: readonly string[];
   dispatch?: {workgroups: readonly [number, number, number]};
-  workload?: {maximumWorkgroupCount?: number; readByteLength?: number; writeByteLength?: number};
+  workload?: {
+    variant?: string;
+    maximumWorkgroupCount?: number;
+    maximumInvocationCount?: number;
+    readByteLength?: number;
+    writeByteLength?: number;
+  };
+  condition?: {source?: string; mode?: string};
 };
 type RecordGraph = {
   id: string;
@@ -73,6 +80,7 @@ export type LensRecordLike = {
     graph: string;
     timebase: 'ns' | 'ms';
     nodes: Record<string, {gpuBegin?: number; gpuEnd?: number}>;
+    series?: readonly {name: string; unit?: string; values: ArrayLike<number>}[];
   }[];
 };
 
@@ -80,6 +88,9 @@ const MAXIMUM_NODES = 30;
 const MAXIMUM_RASTER_CELLS = 2000;
 const MAXIMUM_POINTS = 1200;
 const MAXIMUM_SERIES_VALUES = 200;
+const MAXIMUM_ROUND_VALUES = 512;
+/** A record that lists more formulas than this carries its whole pack's set, not its own. */
+const PACK_FORMULA_COUNT = 8;
 
 export function extractLensViewModel(scenarioId: string, record: LensRecordLike): LensViewModel {
   const graph = record.graphs.find(candidate => candidate.form === 'compiled') ?? record.graphs[0];
@@ -104,7 +115,8 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
       workgroups: sum(members, member => getWorkgroups(member)),
       readBytes: sum(members, member => member.workload?.readByteLength ?? 0),
       writeBytes: sum(members, member => member.workload?.writeByteLength ?? 0),
-      ...(milliseconds === undefined ? {} : {milliseconds})
+      ...(milliseconds === undefined ? {} : {milliseconds}),
+      ...describeMembers(members, grouping.collapsed)
     };
   });
 
@@ -145,10 +157,27 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
     };
   });
 
-  const formulas = (record.refs?.formulas ?? []).slice(0, 3).map(formula => ({
+  const formulas = selectFormulas(scenarioId, record.refs?.formulas ?? []).map(formula => ({
     id: formula.id,
     ascii: truncate(formula.ascii ?? '', 320)
   }));
+  const rounds = (record.metrics ?? [])
+    .flatMap(metrics => (metrics.graph === graph.id ? (metrics.series ?? []) : []))
+    .filter(series => series.values.length > 1 && series.values.length <= MAXIMUM_ROUND_VALUES)
+    .map(series => ({
+      name: series.name,
+      ...(series.unit === undefined ? {} : {unit: series.unit}),
+      values: toArray(series.values)
+    }));
+  const gatedNodeCount = graph.nodes.filter(isGated).length;
+  const bufferBytes: Record<string, number> = {};
+  if (!grouping.collapsed) {
+    for (const node of graph.nodes) {
+      for (const id of [...node.reads, ...node.writes]) {
+        bufferBytes[id] = resourceById.get(id)?.bytes ?? 0;
+      }
+    }
+  }
   const parameters: LensParameter[] = (record.choices ?? [])
     .filter(choice => choice.value !== undefined && typeof choice.value !== 'object')
     .slice(0, 6)
@@ -182,8 +211,46 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
     formulas,
     parameters,
     ...extractMap(scenarioId, snapshots),
-    series: extractSeries(snapshots)
+    series: extractSeries(snapshots),
+    ...(rounds.length > 0 ? {rounds} : {}),
+    ...(gatedNodeCount > 0 ? {gatedNodeCount} : {}),
+    ...(grouping.collapsed ? {} : {bufferBytes})
   };
+}
+
+function isGated(node: RecordNode): boolean {
+  return node.condition?.source === 'gpu' && node.condition.mode === 'indirect';
+}
+
+/** Workload facts of a group; read and write sets only while one node is one kernel. */
+function describeMembers(
+  members: readonly RecordNode[],
+  collapsed: boolean
+): Pick<LensViewNode, 'invocations' | 'gated' | 'variant' | 'reads' | 'writes'> {
+  const invocations = sum(members, member => member.workload?.maximumInvocationCount ?? 0);
+  const gated = members.filter(isGated).length;
+  const single = collapsed ? undefined : members[0];
+  return {
+    ...(invocations > 0 ? {invocations} : {}),
+    ...(gated > 0 ? {gated} : {}),
+    ...(single?.workload?.variant ? {variant: single.workload.variant} : {}),
+    ...(single ? {reads: [...single.reads], writes: [...single.writes]} : {})
+  };
+}
+
+/**
+ * The formulas of this operation. Network records list every formula of their pack, so those keep
+ * only the ones whose topic (the id part after the pack) occurs in the scenario name.
+ */
+function selectFormulas<T extends {id: string}>(scenarioId: string, formulas: readonly T[]): T[] {
+  if (formulas.length <= PACK_FORMULA_COUNT) return formulas.slice(0, 3);
+  const slug = scenarioId.slice(scenarioId.indexOf('.') + 1);
+  return formulas
+    .filter(formula => {
+      const topic = formula.id.split('.')[1];
+      return topic !== undefined && slug.includes(topic);
+    })
+    .slice(0, 3);
 }
 
 // Graph grouping

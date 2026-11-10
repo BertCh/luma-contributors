@@ -25,7 +25,16 @@ export type LensGraphPanelProps = {
   defaultView?: 'graph' | 'buffers';
   /** Step shown first (0 to node count); the last step shows the whole graph. */
   defaultStep?: number;
+  /**
+   * Nodes to keep at full strength. Other nodes, and edges not between two highlighted nodes, are
+   * dimmed. Undefined or empty dims nothing. Applied as SVG attributes, so it prerenders.
+   */
+  highlightNodeIds?: readonly string[];
 };
+
+/** Opacity of nodes and edges outside `highlightNodeIds`. */
+const DIMMED_NODE_OPACITY = 0.28;
+const DIMMED_EDGE_OPACITY = 0.12;
 
 const NODE_LAYOUT = {
   nodeWidth: 188,
@@ -80,7 +89,8 @@ function LensGraphView({
   compact = false,
   showHazards = false,
   defaultView = 'graph',
-  defaultStep
+  defaultStep,
+  highlightNodeIds
 }: {model: LensViewModel} & Omit<LensGraphPanelProps, 'scenario'>) {
   const stepCount = model.nodes.length;
   const hasLifetimes = Boolean(model.lifetimes?.length);
@@ -120,6 +130,13 @@ function LensGraphView({
   const nodeById = useMemo(() => new Map(model.nodes.map(node => [node.id, node])), [model]);
   const heaviest = useMemo(() => getHeaviestEdgeIndices(model.edges, 5), [model]);
   const maximumBytes = Math.max(1, ...model.edges.map(edge => edge.bytes));
+  const highlightKey = highlightNodeIds?.join('\n') ?? '';
+  const highlighted = useMemo(
+    () => (highlightKey ? new Set(highlightKey.split('\n')) : undefined),
+    [highlightKey]
+  );
+  const isEdgeDimmed = (edge: LensViewEdge) =>
+    highlighted !== undefined && !(highlighted.has(edge.from) && highlighted.has(edge.to));
 
   return (
     <figure
@@ -239,7 +256,7 @@ function LensGraphView({
                 aspectRatio: `${layout.width} / ${layout.height}`
               }}
             >
-              {isPartial ? null : (
+              {isPartial || highlighted ? null : (
                 <div className="meta-stage__canvas" aria-hidden="true">
                   <GpuCanvas
                     scene={sceneLoader}
@@ -272,7 +289,10 @@ function LensGraphView({
                         : hover?.kind === 'node' &&
                           (hover.id === data.from || hover.id === data.to);
                     return (
-                      <g key={`${edge.from}>${edge.to}`}>
+                      <g
+                        key={`${edge.from}>${edge.to}`}
+                        opacity={isEdgeDimmed(data) ? DIMMED_EDGE_OPACITY : undefined}
+                      >
                         <path
                           className="lens-edge"
                           data-active={active}
@@ -281,6 +301,13 @@ function LensGraphView({
                           data-hazard={getEdgeHazard(data)}
                           d={getEdgePath(edge)}
                           strokeWidth={getEdgeWidth(data.bytes, maximumBytes)}
+                          // The hazard colours in meta.css also set stroke-opacity, which would
+                          // make dashed layer-skipping edges as strong as direct ones.
+                          style={
+                            showHazards && edge.span > 1 && !active && edgeState !== 'idle'
+                              ? {strokeOpacity: 0.32}
+                              : undefined
+                          }
                         />
                         <path
                           className="lens-edge-hit"
@@ -296,7 +323,7 @@ function LensGraphView({
                   {[...heaviest].map(index => {
                     const edge = layout.edges[index];
                     const data = model.edges[index];
-                    if (edge.x1 <= edge.x0 || edge.span > 1) return null;
+                    if (edge.x1 <= edge.x0 || edge.span > 1 || isEdgeDimmed(data)) return null;
                     return (
                       <text
                         key={index}
@@ -329,6 +356,10 @@ function LensGraphView({
                         data-kind={node.kind}
                         data-state={nodeState}
                         data-active={hover?.kind === 'node' && hover.id === node.id}
+                        data-dimmed={highlighted && !highlighted.has(node.id) ? 'true' : undefined}
+                        opacity={
+                          highlighted && !highlighted.has(node.id) ? DIMMED_NODE_OPACITY : undefined
+                        }
                         transform={`translate(${placed.x} ${placed.y})`}
                         tabIndex={0}
                         onPointerEnter={() => setHover({kind: 'node', id: node.id})}

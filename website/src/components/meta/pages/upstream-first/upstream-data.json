@@ -1,0 +1,68 @@
+{
+  "lumaVersion": "10.0.0-alpha.10",
+  "entryPoints": 11,
+  "sourceFileCount": 1147,
+  "contributorClassCount": 474,
+  "importStatementCount": 1183,
+  "imports": [
+    {
+      "specifier": "@luma.gl/graph/gpu-core",
+      "count": 920
+    },
+    {
+      "specifier": "@luma.gl/graph/gpu-raster",
+      "count": 120
+    },
+    {
+      "specifier": "@luma.gl/core",
+      "count": 94
+    },
+    {
+      "specifier": "@luma.gl/shaders",
+      "count": 16
+    },
+    {
+      "specifier": "@luma.gl/graph/geospatial",
+      "count": 12
+    },
+    {
+      "specifier": "@luma.gl/graph/gpu-data",
+      "count": 6
+    },
+    {
+      "specifier": "@luma.gl/graph/gpu-project",
+      "count": 5
+    },
+    {
+      "specifier": "@luma.gl/graph/gpu-vector-search",
+      "count": 3
+    },
+    {
+      "specifier": "@luma.gl/graph",
+      "count": 2
+    },
+    {
+      "specifier": "@luma.gl/graph/gpu-graph-algorithms",
+      "count": 2
+    },
+    {
+      "specifier": "@luma.gl/core/dynamic",
+      "count": 1
+    },
+    {
+      "specifier": "@luma.gl/core/test-utils",
+      "count": 1
+    },
+    {
+      "specifier": "@luma.gl/graph/arrow",
+      "count": 1
+    }
+  ],
+  "workarounds": {
+    "dropped": 11,
+    "workaround": 15,
+    "accepted regression": 5,
+    "obsolete": 1,
+    "unmeasured": 1
+  }
+}

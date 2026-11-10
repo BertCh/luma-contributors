@@ -128,3 +128,41 @@ export function describeWorkgroup(workgroupSize: number, workgroupIndex: number)
   const guarded = Math.max(0, last - lastActive);
   return {first, last: lastActive, guarded, activeCount: Math.max(0, lastActive - first + 1)};
 }
+
+// Sizing rules, restated from the library so the page can run them for any element count.
+// `getAutomaticWGSLKernelWorkgroupSize` is not exported publicly, and `getBoundedDispatchLayout`
+// is marked @internal in @luma.gl/graph, so neither is imported here.
+
+/** Smallest automatic workgroup size: modules/analysis/src/analysis-core/kernels/wgsl-kernel-nodes.ts:231. */
+export const MINIMUM_AUTOMATIC_WORKGROUP_SIZE = 32;
+
+/** Largest automatic workgroup size: modules/analysis/src/analysis-core/kernels/wgsl-kernel-nodes.ts:33. */
+export const MAXIMUM_AUTOMATIC_WORKGROUP_SIZE = 256;
+
+/** The WebGPU default `maxComputeWorkgroupsPerDimension`; the library reads the device's limit at declaration. */
+export const WEBGPU_DEFAULT_WORKGROUPS_PER_DIMENSION = 65535;
+
+/** Workgroup size a guarded kernel gets when it does not pass one (wgsl-kernel-nodes.ts:536-542). */
+export function getAutomaticWorkgroupSize(invocationCount: number): number {
+  const boundedCount = Math.max(invocationCount, MINIMUM_AUTOMATIC_WORKGROUP_SIZE);
+  return Math.min(MAXIMUM_AUTOMATIC_WORKGROUP_SIZE, 2 ** Math.ceil(Math.log2(boundedCount)));
+}
+
+export type DispatchShape = {x: number; y: number; z: number; workgroupCount: number};
+
+/**
+ * The bounded 3-D grid of workgroups for a count of invocations (wgsl-kernel-nodes.ts:361-366, which
+ * calls `getBoundedDispatchLayout` of @luma.gl/graph, gpu-dispatch-utils): fill x up to the device
+ * limit, then y, then z.
+ */
+export function getDispatchShape(
+  invocationCount: number,
+  workgroupSize: number,
+  maximumPerDimension: number = WEBGPU_DEFAULT_WORKGROUPS_PER_DIMENSION
+): DispatchShape {
+  const workgroupCount = Math.max(1, Math.ceil(invocationCount / workgroupSize));
+  const x = Math.min(workgroupCount, maximumPerDimension);
+  const y = Math.min(Math.ceil(workgroupCount / x), maximumPerDimension);
+  const z = Math.ceil(workgroupCount / x / y);
+  return {x, y, z, workgroupCount};
+}

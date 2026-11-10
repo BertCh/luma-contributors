@@ -9,10 +9,8 @@ import {GpuCanvas} from '../../gpu/gpu-canvas';
 import type {GpuSceneLoader} from '../../gpu/types';
 import {layoutLensGraph} from '../../lens/layout-graph';
 import type {LensViewModel} from '../../lens/types';
-import {COLUMNS_LAYOUT} from './columns-demo';
 import {makeFlowGraph} from './lens-graph-panel';
 import {makePackageFlowGraph} from './package-layers';
-import {createColumnsSceneLoader} from './scenes/columns-scene';
 import {createFlowSceneLoader, type FlowSceneOptions} from './scenes/flow-scene';
 import {createMapSceneLoader} from './scenes/map-scene';
 import {createTilingSceneLoader, createTilingStore} from './scenes/tiling-scene';
@@ -48,8 +46,17 @@ export type TopicCardModels = {
   moran?: LensViewModel;
 };
 
-export function TopicCardVisual({slug, models}: {slug: TopicSlug; models: TopicCardModels}) {
+export function TopicCardVisual({
+  slug,
+  models,
+  live
+}: {
+  slug: TopicSlug;
+  models: TopicCardModels;
+  live: boolean;
+}) {
   const loader = useMemo<GpuSceneLoader | undefined>(() => {
+    if (!live) return undefined;
     switch (slug) {
       case 'anatomy':
         return createWorkgroupSceneLoader(
@@ -68,8 +75,6 @@ export function TopicCardVisual({slug, models}: {slug: TopicSlug; models: TopicC
         return makeGraphLoader(models.density, {interaction: 'scrub'});
       case 'kernels':
         return createTilingSceneLoader(createTilingStore(32));
-      case 'data-on-the-gpu':
-        return createColumnsSceneLoader(COLUMNS_LAYOUT);
       case 'lenses':
         return models.density?.map ? createMapSceneLoader(models.density.map) : undefined;
       case 'this-page':
@@ -91,7 +96,7 @@ export function TopicCardVisual({slug, models}: {slug: TopicSlug; models: TopicC
       default:
         return undefined;
     }
-  }, [slug, models]);
+  }, [slug, models, live]);
 
   const thumb = (
     <div className="topic-card__thumb-svg">

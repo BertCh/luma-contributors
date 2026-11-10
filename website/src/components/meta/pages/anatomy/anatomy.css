@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: MIT */
+/* SPDX-FileCopyrightText: Copyright (c) vis.gl contributors */
+
+/* Anatomy of a run. Accent = GPU work, signal = data leaving the GPU, muted = CPU-side setup. */
+
+.anatomy-sequence { display: block; width: 100%; height: auto; }
+.anatomy-sequence text { font-family: var(--font-code); }
+.anatomy-sequence__actor rect { fill: var(--color-surface); stroke: var(--color-muted); stroke-width: 1.3; }
+.anatomy-sequence__actor[data-actor='gpu'] rect { stroke: var(--color-accent); }
+.anatomy-sequence__actor line { stroke: var(--color-border); stroke-width: 1.3; stroke-dasharray: 3 4; }
+.anatomy-sequence__actor-title { fill: var(--color-text); font-family: var(--font-display); font-size: 15px; font-weight: 600; text-anchor: middle; }
+.anatomy-sequence__actor-meta { fill: var(--color-muted); font-size: 10px; text-anchor: middle; }
+.anatomy-sequence__row { cursor: pointer; outline: none; }
+.anatomy-sequence__band { fill: transparent; stroke: transparent; transition: fill 0.15s, stroke 0.15s; }
+.anatomy-sequence__row[data-active='true'] .anatomy-sequence__band { fill: var(--color-accent-soft); stroke: var(--color-accent); }
+.anatomy-sequence__row:focus-visible .anatomy-sequence__band { stroke: var(--color-focus); stroke-width: 2; }
+.anatomy-sequence__number { fill: var(--color-muted); font-size: 11px; text-anchor: middle; }
+.anatomy-sequence__row[data-active='true'] .anatomy-sequence__number { fill: var(--color-accent); }
+.anatomy-sequence__arrow { stroke: var(--color-muted); stroke-width: 1.6; }
+.anatomy-sequence__dot { fill: var(--color-muted); }
+.anatomy-sequence__row[data-target='gpu'] .anatomy-sequence__arrow { stroke: var(--color-accent); }
+.anatomy-sequence__row[data-target='gpu'] .anatomy-sequence__dot { fill: var(--color-accent); }
+.anatomy-sequence__row[data-target='code'] .anatomy-sequence__arrow { stroke: var(--color-signal); }
+.anatomy-sequence__row[data-target='code'] .anatomy-sequence__dot { fill: var(--color-signal); }
+.anatomy-sequence__label { fill: var(--color-text); font-size: 11.5px; text-anchor: middle; paint-order: stroke; stroke: var(--color-surface); stroke-width: 4px; stroke-linejoin: round; }
+.anatomy-sequence__row[data-active='true'] .anatomy-sequence__label { stroke: none; }
+.anatomy-sequence__effect { fill: var(--color-muted); font-size: 10px; }
+.anatomy-sequence__cadence path { fill: none; stroke: var(--color-muted); stroke-width: 1.2; }
+.anatomy-sequence__cadence text { fill: var(--color-muted); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+
+.anatomy-phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-3); margin: var(--space-5) 0 var(--space-4); padding: 0; list-style: none; }
+.anatomy-phase { position: relative; display: grid; gap: 4px; align-content: start; padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border); border-top: 3px solid var(--color-accent); border-radius: var(--radius-medium); background: var(--color-surface); font-size: var(--text-small); line-height: 1.45; transition: border-color 0.15s, background 0.15s; }
+.anatomy-phase[data-kind='copy'] { border-top-color: var(--color-signal); }
+.anatomy-phase[data-active='true'] { border-color: var(--color-accent); background: var(--color-accent-soft); }
+.anatomy-phase[data-kind='copy'][data-active='true'] { border-color: var(--color-signal); background: var(--color-signal-soft); }
+.anatomy-phase__count { color: var(--color-accent); font-family: var(--font-code); font-size: 11px; letter-spacing: 0.04em; }
+.anatomy-phase[data-kind='copy'] .anatomy-phase__count { color: var(--color-signal); }
+.anatomy-phase__title { padding: 0; border: 0; background: none; color: var(--color-text); font-family: var(--font-display); font-size: 1rem; font-weight: 600; text-align: left; cursor: pointer; }
+.anatomy-phase__title::after { content: ''; position: absolute; inset: 0; }
+.anatomy-phase__title:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.anatomy-phase__foot a { position: relative; z-index: 1; }
+.anatomy-phase__why { color: var(--color-muted); }
+.anatomy-phase__foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px var(--space-3); margin-top: 2px; color: var(--color-muted); font-family: var(--font-code); font-size: 11px; }
+.anatomy-phase__foot a { color: var(--color-accent); }
+
+.anatomy-result { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: var(--space-5); align-items: start; margin-top: var(--space-5); }
+.anatomy-result__map { border: 1px solid var(--color-border); border-radius: var(--radius-medium); background: var(--color-surface); overflow: hidden; --preview-background: var(--color-surface); }
+.anatomy-result .stat-strip { margin-top: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+@media (max-width: 760px) {
+  .anatomy-result { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anatomy-sequence__band, .anatomy-phase { transition: none; }
+}

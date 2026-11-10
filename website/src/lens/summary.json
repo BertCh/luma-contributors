@@ -1,0 +1,38 @@
+{
+  "recordCount": 410,
+  "packs": {
+    "gpu-dataframe": 24,
+    "gpu-network": 38,
+    "gpu-raster": 50,
+    "gpu-spatial-analysis": 252,
+    "gpu-terrain": 46
+  },
+  "kernels": 32936,
+  "copies": 410,
+  "gatedKernels": 9374,
+  "dependencies": {
+    "raw": 111576,
+    "war": 30791,
+    "waw": 2745
+  },
+  "buffers": 22023,
+  "bufferBytes": 487337280,
+  "snapshots": 3330,
+  "formulas": 887,
+  "recordsWithFormulas": 241,
+  "kernelsPerRecord": {
+    "minimum": 1,
+    "median": 20,
+    "maximum": 885
+  },
+  "smallest": {
+    "id": "gpu-dataframe.scalar-scale",
+    "kernels": 1
+  },
+  "largest": {
+    "id": "gpu-dataframe.ripley-envelope",
+    "kernels": 885
+  },
+  "recordBytes": 29148329,
+  "viewModelBytes": 6623084
+}
