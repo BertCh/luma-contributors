@@ -1,12 +1,11 @@
 # Third-party data notice
 
 This file lists the third-party datasets committed to this repository, with source, licence,
-attribution and redistribution status. It was compiled only from licence information recorded in the
-repository itself: `examples/deck/spatial-analysis-showcase/src/data/datasets/*.dataset.ts`,
-the `manifest.json` of each showcase dataset, the READMEs under
-`examples/deck/spatial-analysis-showcase/scripts/data/*/` and the lens data README. Licence
-wording is quoted as recorded there and was not independently re-verified. Where a licence is not
-recorded the entry reads `UNVERIFIED`. Nothing here is legal advice.
+attribution and redistribution status. The website section links to preparation notes and
+provider terms for the distributed extracts. The showcase and lens tables use the licence
+information recorded in `examples/deck/spatial-analysis-showcase/src/data/datasets/*.dataset.ts`,
+the dataset manifests, the READMEs under `examples/deck/spatial-analysis-showcase/scripts/data/*/`
+and the lens data README. Where those records lack a licence the entry reads `UNVERIFIED`.
 
 Nineteen showcase manifests have no `license`/`attribution` fields because oracle fixtures or tests
 pin their SHA-256: `alps-dem`, `celestrak-ground-tracks`, `chicago-311-rats`, `chicago-crashes`,
@@ -17,6 +16,34 @@ pin their SHA-256: `alps-dem`, `celestrak-ground-tracks`, `chicago-311-rats`, `c
 
 Source code ported from other projects is not listed here; it carries SPDX headers in the files
 themselves (and, for example, `PARCELS-LICENSE.txt` beside the Parcels port).
+
+## Website demo extracts
+
+The private `website` workspace ships compact data extracts and WebP captures of GPU operations on
+those inputs. The extracts and derived images retain their source terms. The website's **Demo data**
+page publishes the provider credits, and each function page identifies the sources for its scene.
+The [source registry](website/build/demo-data-sources.ts) maps the distributed assets to their
+providers and terms. The following preparation notes identify the geographic windows, dates,
+units, resampling and modeled inputs.
+
+| Inputs | Preparation and attribution |
+| --- | --- |
+| Rain gauges and earthquakes | [Point observations](website/src/gpu/data/point-sources.md) |
+| Tract boundaries, population, adjacency and building footprints | [Chicago tracts and Amsterdam buildings](website/src/gpu/data/area-sources.md) |
+| DEM, spectral bands, vegetation indices and wind | [Terrain and imagery](website/src/gpu/data/terrain-sources.md) |
+| Streets, vessel tracks, origin–destination flows and datum corrections | [Networks, trajectories and NADCON](website/src/gpu/data/network-sources.md) |
+| Hydrography and city coordinates | [Geometry inputs](website/src/gpu/data/geometry-sources.md) |
+| Events, panels and lidar returns | [Series, tables and point clouds](website/src/gpu/data/series-sources.md) |
+| Regression, rates and space-time statistics | [Statistical inputs](website/src/gpu/data/statistics-sources.md) |
+| Land cover, population and regional scenarios | [Recipe inputs](website/src/gpu/data/recipe-sources.md) |
+
+The Hyde Park land-cover sample is adapted from ESA WorldCover v200 (2021).
+© ESA WorldCover project 2021. Contains modified Copernicus Sentinel data (2021)
+processed by the WorldCover consortium. The website crops, resamples and groups the classes.
+[WorldCover terms](https://esa-worldcover.org/en/data-access) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+
+The Overtoom building outlines and heights are a modified extract of 3DBAG.
+© 3DBAG by tudelft3d and 3DGI. [3DBAG attribution](https://docs.3dbag.nl/en/copyright/) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
 ## Must resolve before merge
 

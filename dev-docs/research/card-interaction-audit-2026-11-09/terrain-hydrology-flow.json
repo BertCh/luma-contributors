@@ -1,0 +1,755 @@
+{
+ "group": "terrain-hydrology-flow",
+ "summary": "The group is in decent shape on the hydrology side: stream order, flow fractions/branching transport, LIC and streamlines are legible posters, and 20 of 23 runs already scrub a per-frame prop. The obvious wins are spatial: cost-distance-path already holds targetColumn/targetRow per frame but the card only moves x over a clamped 62-98% range, and watersheds, catchment summary, cost-distance, distance-field, particle-advection and branching-flow all have a source/pour-point/seed/spawn buffer that update() could write per frame, so 'place' bindings are cheap. The weakest posters are the synthetic-terrain runs (depression-hierarchy is 8-color categorical confetti with a tiny chart, breach shows a few pixel cuts) and DEM coregistration (two-pixel interleaved stripes over an invisible hillshade, an unreferenced single bar, and only Data: knobs). terrain-branching-flow is a pixel duplicate of terrain-flow-fractions (same transport of unit rain through mfd-freeman at flowExponent 1.1), and its flowExponent is mislabelled 'Data:' although it is a real GPUTerrainFlow routing prop. terrain-height-above-drainage and terrain-flow-distance also read alike (bright ridges, dark valleys on magma). Shared fixes belong in shared/terrain.ts (a pointer-to-channel snap and a CPU D8 downstream trace serve watersheds, catchment-summary, flow-distance, HAND and branching-flow), shared/cost.ts (writable source cells), shared/iso.ts (levels anchored at the value under the pointer) and shared/vector-field.ts (speed lookup at the pointer). Most probe proposals need one framework capability: highlight-by-id or threshold mask on a raster layer plus on-demand readback of an output buffer at the pointer cell.",
+ "sharedChanges": [
+  {
+   "file": "src/gpu/runs/entries/terrain-hydrology-flow/shared/terrain.ts",
+   "change": "Add getPointerCell(terrain, x, y), snapToChannelCell(terrain, cell, radius) (lowest/highest-accumulation cell within a few cells, using a CPU D8 on the filled DEM or a readback of accumulation) and traceDownstream(flowDirections, cell) for path glyphs; these drive pour-point placement and downstream-path probes.",
+   "entries": [
+    "terrain-watersheds",
+    "terrain-catchment-summary",
+    "terrain-flow-distance",
+    "terrain-height-above-drainage",
+    "terrain-branching-flow",
+    "terrain-flow-fractions"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/terrain-hydrology-flow/shared/cost.ts",
+   "change": "Allocate sources and source-positions as writable buffers and expose writeSources(cells) so a pointer cell can become source 0 per frame instead of the fixed list uploaded at build.",
+   "entries": [
+    "cost-distance",
+    "cost-distance-path"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/terrain-hydrology-flow/shared/iso.ts",
+   "change": "Add sampleValue(inputs, x, y) on valuesTopDown and getLevelsThrough(value, interval) so the level set always contains the contour through the cursor.",
+   "entries": [
+    "isolines",
+    "isobands",
+    "isoband-rings"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/terrain-hydrology-flow/shared/vector-field.ts",
+   "change": "Return speeds also in the operation's world units (the u,v scaled by 1/100 and cos 28N) and add a sampleSpeed(field, x, y) helper so a pointer can set minimumSpeed or a spawn box directly.",
+   "entries": [
+    "streamlines",
+    "particle-advection",
+    "line-integral-convolution"
+   ]
+  }
+ ],
+ "frameworkNeeds": [
+  "2D pointer binding: pointer world (x, y) or grid cell passed to update() as values (today only x scrubs one parameter)",
+  "glyph layer at the pointer: crosshair/marker dot, ring of a radius, arrow from an anchor, horizontal/vertical curtain line",
+  "render-only curtain: clip a layer to x < pointer and another to x >= pointer without re-running the graph",
+  "highlight-by-id on raster/polygon/dots layers (draw cells whose value equals the hovered id brighter, dim the rest)",
+  "threshold mask on a raster layer (draw only cells with value <= pointer level) without a re-run",
+  "on-demand readback of one output buffer (labels, flowDirections, cellNodes, ringOffsets, fractions) for pointer lookups in probe interactions",
+  "chart linking: highlight a bar group by id and report which group is under the pointer",
+  "snap-and-debounce for compile-time props (pointer drives a rebuild only after it rests, at a few discrete values)",
+  "readout text with prop name, value and unit next to the glyph instead of only the corner chip"
+ ],
+ "entries": [
+  {
+   "id": "cost-distance",
+   "operation": "GPUCostDistance",
+   "currentScrub": {
+    "parameter": "costLimit",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "reach",
+    "binding": "pointer cell -> sources[0] (sourceCount forced to 1 while hovering); costLimit unchanged",
+    "glyph": "white source dot with crosshair at the pointer; wall drawn as context",
+    "readout": "source [col, row] · costLimit 4",
+    "feasibility": "update",
+    "feasibilityNote": "sources is uploaded once in shared/cost.ts; make it a writable buffer and write the pointer cell in update (NaN wall cells must be rejected).",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "cost-distance-path",
+   "operation": "GPUCostDistancePath",
+   "currentScrub": {
+    "parameter": "targetColumn",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "targetColumn is clamped to 62-98%, so a pointer x mapping only covers the right third of the picture.",
+     "fix": "Map pointer (x, y) straight to the target cell over the whole raster; a target left of the wall gives a direct path, which is also instructive."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer cell -> target [targetColumn, targetRow] (percent of columns/rows)",
+    "glyph": "target ring at the pointer; the path already ends there",
+    "readout": "target [col, row] · cost 3.2",
+    "feasibility": "ready",
+    "feasibilityNote": "update already writes target from targetColumn and targetRow; only a 2D binding is needed.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "distance-field",
+   "operation": "GPUDistanceField",
+   "currentScrub": {
+    "parameter": "maximumDistance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "clutter",
+     "detail": "Categorical allocation at alpha 0.45 under faded sequential distance bands mixes into muddy discs; the Voronoi edges the card claims are hard to read.",
+     "fix": "Draw allocation as thin zone boundaries or flat pale fills and the distance bands as the main value, or vice versa, not both at full strength."
+    },
+    {
+     "code": "weak-range",
+     "detail": "At maximumDistance 0.4 every zone is clipped to a disc, hiding the nearest-seed allocation between stations.",
+     "fix": "Default maximumDistance to 0.8 so zones meet, keep the scrub/reach for the cutoff."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "secondary": "reach",
+    "binding": "pointer world (x, y) -> seedPositions[0] (the dragged gauge); other seeds fixed",
+    "glyph": "highlighted seed dot at the pointer with a ring of maximumDistance",
+    "readout": "seed 1 at (x, y) · maximumDistance 0.4",
+    "feasibility": "update",
+    "feasibilityNote": "seedPositions is uploaded at build; writing it per frame in update is a one-line change.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "isoband-rings",
+   "operation": "GPUIsobandRings",
+   "currentScrub": {
+    "parameter": "breakCount",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Ring vertices are drawn as same-colored dots; shells and holes (ringIsHole) and ring identity, the operation's point, are not shown.",
+     "fix": "Draw rings as closed paths, shells and holes in two colors (ringIsHole), or color by ring index."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Reads as a dotted version of isolines.",
+     "fix": "Show ring identity and shell/hole distinction (above) so it is visibly polygons, not lines."
+    },
+    {
+     "code": "clutter",
+     "detail": "Hundreds of 3.2 px dots at card size form noise.",
+     "fix": "Lines instead of dots; fewer breaks by default (3)."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> nearest ring (point-in-ring on readback of ringOffsets/positions)",
+    "glyph": "hovered ring outlined thick and filled faintly; its holes outlined in a second color",
+    "readout": "ring 12 · shell · 2 holes · band 30-48",
+    "feasibility": "render",
+    "feasibilityNote": "Outputs exist; needs readback of ringOffsets/ringIsHole and a highlight on a ring index range.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "isobands",
+   "operation": "GPUIsobands",
+   "currentScrub": {
+    "parameter": "breakCount",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Ordered bands use the categorical ramp (uint32 default), so band order by elevation is not readable.",
+     "fix": "Use a sequential ramp with range [0, breakCount] for triangleBands."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "binding": "value under the pointer -> first break (breaks = value + k * interval), so a band boundary passes through the cursor",
+    "glyph": "crosshair; the band containing the cursor outlined",
+    "readout": "break 46.0 · band 46-60",
+    "feasibility": "update",
+    "feasibilityNote": "breaks are written per frame; needs a pointer value lookup on valuesTopDown (shared/iso.ts).",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "isolines",
+   "operation": "GPUIsolines",
+   "currentScrub": {
+    "parameter": "levelCount",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "level",
+    "binding": "value under the pointer -> levels[0]; other levels at +/- interval",
+    "glyph": "the contour through the cursor drawn brighter (segmentLevels == 0) with a dot at the pointer",
+    "readout": "level 37.5 (value here) · interval 12",
+    "feasibility": "update",
+    "feasibilityNote": "levels are a per-frame buffer; add a pointer value lookup and color segments by segmentLevels.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "line-integral-convolution",
+   "operation": "GPULineIntegralConvolution",
+   "currentScrub": {
+    "parameter": "stepLength",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "swipe",
+    "secondary": "time",
+    "binding": "pointer x -> curtain: left the speed raster alone (input magnitude), right the LIC streaks (output direction)",
+    "glyph": "vertical curtain line at the pointer",
+    "readout": "speed | LIC · stepLength 0.5",
+    "feasibility": "render",
+    "feasibilityNote": "speeds and values are both outputs already; needs a render-only clip between layers.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "particle-advection",
+   "operation": "GPUParticleAdvection",
+   "currentScrub": {
+    "parameter": "timeStep",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Particles spawn uniformly, so previous (white, alpha 0.35) and new positions form a uniform speckle; only the hurricane core is colored and the motion is invisible.",
+     "fix": "Spawn in a small box and draw each frame's positions (or previous-to-new segments) so trails show the advection."
+    },
+    {
+     "code": "auto-range",
+     "detail": "Particle speed color uses range 'auto', so timeStep/speedScale changes do not change color.",
+     "fix": "Fix the speed range to the field's maximum."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer world (x, y) -> spawnBounds as a small box centred on the pointer (reset frame)",
+    "glyph": "release box outline at the pointer; particles stream away from it over 10 frames",
+    "readout": "release at (x, y) · timeStep 1.6",
+    "feasibility": "update",
+    "feasibilityNote": "spawnBounds is already in the per-frame parameter buffer written by update; it is just hard-coded to the whole world.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "streamlines",
+   "operation": "GPUStreamlines",
+   "currentScrub": {
+    "parameter": "stepLength",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "level",
+    "binding": "field speed under the pointer -> minimumSpeed (lines stop wherever wind is slower than here)",
+    "glyph": "crosshair with a small speed swatch; slower areas dim",
+    "readout": "minimumSpeed 0.12 (speed here)",
+    "feasibility": "update",
+    "feasibilityNote": "minimumSpeed is per-frame; needs speed lookup in the operation's units (shared/vector-field.ts).",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "terrain-branching-flow",
+   "operation": "GPUTerrainBranchingFlow",
+   "currentScrub": {
+    "parameter": "flowExponent",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Default (transport, mfd-freeman, flowExponent 1.1, unit rain everywhere) is the same picture as terrain-flow-fractions.",
+     "fix": "Transport mass from one source cell (the pointer) so the picture shows mass fanning out and rejoining, or default to fractional-catchment."
+    },
+    {
+     "code": "data-headline",
+     "detail": "flowExponent is labelled 'Data:' but it is the real routing prop of the upstream fractions.",
+     "fix": "Label it 'GPUTerrainFlowFractions: flowExponent' as in terrain-stream-order."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer cell -> source values (1 at the pointer cell, 0 elsewhere) in transport mode",
+    "glyph": "drop marker at the pointer; transported mass plume downstream",
+    "readout": "source [col, row] · reaches 3 outlets",
+    "feasibility": "update",
+    "feasibilityNote": "source is uploaded at build; write it per frame in update (cellCount floats).",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-breach",
+   "operation": "GPUTerrainBreach",
+   "currentScrub": {
+    "parameter": "maximumCutDepth",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "small",
+     "detail": "Cut channels are 1-3 cells per crater; the picture is dark craters with a few colored pixels.",
+     "fix": "Draw pathCells as paths (like cost-distance-path) in a bright color and mark unresolved pits (pitStatus) differently."
+    },
+    {
+     "code": "weak-range",
+     "detail": "Cut depth range is [0, 0.02] while maximumCutDepth goes to 0.06; and dots mark pits without saying which were breached.",
+     "fix": "Range [0, maximumCutDepth]; color pit dots by pitStatus."
+    },
+    {
+     "code": "slow",
+     "detail": "maximumCutDepth and maximumSteps are compiled into the WGSL, so every scrub step rebuilds.",
+     "fix": "Move the card interaction to a render-only probe; keep the sliders for the panel."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> nearest pit (pitPositions)",
+    "glyph": "hovered pit ringed, its cut path drawn thick with the cut depth along it",
+    "readout": "pit 7 · breached · cut 0.018 over 4 cells",
+    "feasibility": "render",
+    "feasibilityNote": "pathCells, pathLengths and pitStatus are outputs; needs readback and a path highlight.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-catchment-summary",
+   "operation": "GPUTerrainCatchmentSummary",
+   "currentScrub": {
+    "parameter": "pourPointCount",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Basins are a context raster at alpha 0.35 and are invisible in the poster; the bars cannot be tied to any area.",
+     "fix": "Draw basins as the output-strength categorical fill and color each bar group with its basin's category color."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Bars have no axis, no basin labels and all render the same blue; 8 groups of bins with empty trailing groups.",
+     "fix": "Color by basin, draw only active basins, add an elevation axis tick at each group's ends."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The scrub is 'Data: pourPoints' while histogramBins is the real prop (rebuild).",
+     "fix": "Use the probe below as the card interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "place",
+    "binding": "pointer cell -> basin label (readback of basins); the matching histogram group is highlighted, and hovering a bar group highlights its basin",
+    "glyph": "hovered basin outlined/brightened; its bar group in full color, others dimmed",
+    "readout": "basin 3 · 412 cells · median elevation 0.61",
+    "feasibility": "render",
+    "feasibilityNote": "basins and hypsometry are outputs; needs label readback and chart/raster highlight-by-id.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-dem-coregistration",
+   "operation": "GPUTerrainDEMCoregistration",
+   "currentScrub": {
+    "parameter": "bias",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "differences interleaves difference and standard deviation, drawn as a 2x-wide raster, which produces vertical stripes over the glacier.",
+     "fix": "Copy the even rows into a difference buffer (as the shift copy already does) and draw that alone."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "The corrected difference is near zero everywhere at alpha 0.95, hiding the hillshade; the reader cannot see that a bias was removed.",
+     "fix": "Show the raw difference (moving - reference) next to the corrected one, via the swipe below."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "A lone bar of the fitted shift with no reference to the true bias.",
+     "fix": "Draw a tick at the true bias next to the fitted bar, or label both values."
+    },
+    {
+     "code": "data-headline",
+     "detail": "Both sliders are Data: knobs; the operation itself has no per-frame prop, so the explanation has to come from before/after.",
+     "fix": "Card interaction is the swipe; keep bias as a panel slider."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "secondary": "window",
+    "binding": "pointer x -> curtain: left the raw epoch difference (bias + glacier), right the corrected difference",
+    "glyph": "vertical curtain line with 'raw' / 'corrected' labels",
+    "readout": "fitted shift 0.050 · true bias 0.050",
+    "feasibility": "update",
+    "feasibilityNote": "Raw difference must be uploaded in update (CPU moving - reference) and the difference extracted from the interleaved output; then the curtain is render-only.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-depression-hierarchy",
+   "operation": "GPUTerrainDepressionHierarchy",
+   "currentScrub": {
+    "parameter": "nodeCapacity",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Node ids wrap into 8 categorical colors, so the merge tree reads as pixel confetti; nesting is invisible.",
+     "fix": "Color by depth in the tree or by spill level (levels output) on a sequential ramp, outline leaf depressions."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Area/volume curves for all nodes x stages are one tiny bar strip in the corner with no grouping.",
+     "fix": "Show the curve of only the hovered node (probe), as area and volume against stage."
+    },
+    {
+     "code": "slow",
+     "detail": "nodeCapacity scrub rebuilds and only matters when too small (tree rejected).",
+     "fix": "Never scrub nodeCapacity on the card."
+    },
+    {
+     "code": "data-fit",
+     "detail": "Crater terrain with tilt 0.05 and zero noise produces flat regions that fragment into many tiny nodes.",
+     "fix": "Use fewer, larger nested craters (two levels of nesting) so the hierarchy is visible."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "level",
+    "binding": "pointer cell -> cellNodes id; highlight that node and its parent chain (nodes output)",
+    "glyph": "hovered depression filled bright, its parents outlined; chart shows its area/volume curve",
+    "readout": "depression 14 · spill 0.212 · parent 3 · volume 0.8",
+    "feasibility": "render",
+    "feasibilityNote": "cellNodes, nodes, levels, curves are outputs; needs readback and highlight-by-id (stages could also become per-frame for a level secondary).",
+    "effort": "L"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-flow-distance",
+   "operation": "GPUTerrainFlowDistance",
+   "currentScrub": {
+    "parameter": "streamThreshold",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "Distance uses range 'auto', so raising streamThreshold (longer paths) renormalizes and looks the same.",
+     "fix": "Fixed range [0, about 1.0 world units] measured at the maximum threshold."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Looks like terrain-height-above-drainage (bright hillslopes, dark valleys on magma).",
+     "fix": "Draw the stream cells as blue lines and the probe path below so distance-along-path is the visible idea."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer cell -> its D8 flow path down to the first stream cell (terminalCells)",
+    "glyph": "polyline from the pointer to its terminal stream cell, terminal dot",
+    "readout": "flow distance 0.42 · to stream",
+    "feasibility": "render",
+    "feasibilityNote": "Needs readback of flowDirections (or a CPU trace) to draw the path; distance value comes from the output.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "terrain-flow-field",
+   "operation": "GPUTerrainFlowField",
+   "currentScrub": {
+    "parameter": "windDirection",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Speed raster at 0.5 and LIC at 0.6 cover the relief, so deflection around ridges cannot be related to the terrain; a uniform wind would look similar.",
+     "fix": "Lower LIC alpha, keep hillshade visible, and color speed relative to the free-stream wind (speed-up/slow-down on a diverging ramp)."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Same magma streak look as line-integral-convolution.",
+     "fix": "The diverging speed-up coloring and the wind arrow glyph distinguish it."
+    }
+   ],
+   "proposal": {
+    "archetype": "aim",
+    "binding": "angle from picture center to pointer -> windDirection; distance -> verticalExaggeration (0 at center to 30 at the edge)",
+    "glyph": "wind arrow from the center to the pointer",
+    "readout": "wind 135 deg · verticalExaggeration 12",
+    "feasibility": "ready",
+    "feasibilityNote": "Both are written per frame in update.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-flow-fractions",
+   "operation": "GPUTerrainFlowFractions",
+   "currentScrub": {
+    "parameter": "flowExponent",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same picture as terrain-branching-flow at defaults.",
+     "fix": "Change branching-flow (point source) rather than this entry; add the fraction rose probe here."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer cell -> its eight fractions (readback of fractions)",
+    "glyph": "eight-arrow rose at the cursor, arrow length = fraction",
+    "readout": "mfd-freeman · p=1.1 · 3 receivers · max 0.54 SE",
+    "feasibility": "render",
+    "feasibilityNote": "fractions is an output; needs readback (cellCount x 8 floats) and an arrow glyph.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "terrain-height-above-drainage",
+   "operation": "GPUTerrainHeightAboveDrainage",
+   "currentScrub": {
+    "parameter": "streamThreshold",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Reads like terrain-flow-distance and terrain-hydrologic-indices (dark valleys on magma).",
+     "fix": "Use the flood-stage interaction below with a blue water fill so HAND's flood-mapping use is the picture."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "binding": "pointer y (bottom 0 to top 0.2) -> flood stage h; cells with HAND <= h drawn as water",
+    "glyph": "horizontal level line with a water-drop marker; flooded cells blue",
+    "readout": "stage 0.06 · flooded 18%",
+    "feasibility": "render",
+    "feasibilityNote": "No re-run needed; needs a threshold mask on the raster layer.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-hydrologic-indices",
+   "operation": "GPUTerrainHydrologicIndices",
+   "currentScrub": {
+    "parameter": "minimumSlope",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "minimumSlope only alters the few flat cells over most of 0.001-0.2 and saturates the wetness index at the top.",
+     "fix": "Range 0.001-0.05 on a logarithmic step, and keep it off the card."
+    },
+    {
+     "code": "auto-range",
+     "detail": "Index raster uses range 'auto', hiding minimumSlope's effect on magnitudes.",
+     "fix": "Fixed per-index ranges (e.g. TWI [2, 14])."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "secondary": "probe",
+    "binding": "index value under the pointer -> threshold; cells at least as wet (or powerful) as here are highlighted",
+    "glyph": "crosshair; highlighted cells above the threshold",
+    "readout": "wetnessIndex >= 9.4 · 12% of cells",
+    "feasibility": "render",
+    "feasibilityNote": "Needs value readback at the pointer and a threshold mask on the raster.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "terrain-stream-network",
+   "operation": "GPUTerrainStreamNetwork",
+   "currentScrub": {
+    "parameter": "streamThreshold",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Reaches are 3.5 px dots at every vertex, so the network reads as faint dotted cyan; reach boundaries (the point of the operation) are invisible.",
+     "fix": "Draw reaches as polylines from vertexOffsets, each reach in a categorical color, with confluence dots."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> nearest reach (readback of vertexOffsets/positions)",
+    "glyph": "hovered reach thick from source cell to target cell with end markers",
+    "readout": "reach 41 · length 0.18 · headwater -> confluence",
+    "feasibility": "render",
+    "feasibilityNote": "Outputs exist (vertexOffsets, lengths, sourceCells, targetCells); needs readback and a path highlight.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-stream-order",
+   "operation": "GPUTerrainStreamOrder",
+   "currentScrub": {
+    "parameter": "streamThreshold",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> nearest stream cell; highlight all cells of that Strahler order",
+    "glyph": "matching-order cells bright, others dimmed; dot at the snapped cell",
+    "readout": "order 3 · 14% of stream cells",
+    "feasibility": "render",
+    "feasibilityNote": "streamOrder is an output; needs readback at the pointer and highlight-by-value on the raster.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "terrain-tiled-flow",
+   "operation": "GPUTerrainTiledFlow",
+   "currentScrub": {
+    "parameter": "streamThreshold",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "streamThreshold only changes reachIds, drawn at alpha 0.6 and barely visible; accumulation does not change.",
+     "fix": "Make the reach-id coloring the visible output or move the card interaction to the probe."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Accumulation look matches terrain-flow-fractions/branching-flow; the tiles are only two thin lines.",
+     "fix": "Tint each tile strip faintly and draw reaches crossing seams with their reach color continuous across the seam."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> reachIds at the pointer cell; highlight every cell with that reach id across all tiles",
+    "glyph": "hovered reach bright on both sides of a seam, seam lines emphasised",
+    "readout": "reach 17 · spans tiles 1-2 · accumulation 132",
+    "feasibility": "render",
+    "feasibilityNote": "reachIds is assembled into one buffer already; needs readback and highlight-by-id.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "terrain-watersheds",
+   "operation": "GPUTerrainWatersheds",
+   "currentScrub": {
+    "parameter": "pourPointCount",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "small",
+     "detail": "Pour points only run from 97% to 52% of the width, so the basins cover the right ~45% and the rest is bare hillshade.",
+     "fix": "Spread the default pour points over the whole valley, or use the placed pour point below."
+    },
+    {
+     "code": "other",
+     "detail": "Pour points are not drawn, so nothing links a color to its outlet.",
+     "fix": "Draw pour points as dots in their basin color."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer cell snapped to the highest-accumulation cell within 3 cells -> pourPoints[0] (others NONE or the fixed set)",
+    "glyph": "pour-point marker at the snapped cell with a short snap line from the cursor",
+    "readout": "pour point [col, row] · basin 1,240 cells",
+    "feasibility": "update",
+    "feasibilityNote": "pourPoints is already written per frame; needs a CPU snap helper in shared/terrain.ts.",
+    "effort": "S"
+   },
+   "priority": "high"
+  }
+ ]
+}

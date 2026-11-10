@@ -1,0 +1,1419 @@
+{
+ "group": "regression-weights",
+ "summary": "The group splits into 15 weights runs (point or tract link graphs) and 23 regression runs that almost all use one layout: a Chicago tract map of residuals on the left and coefficient bars against true-value dots on the right. Most cards scrub a Data knob: 27 of 38 do, usually the generating process (rho, lambda, noise, contrast). The best pictures are spatial-lag, gwr-nonstationarity-test, geographically-weighted-regression and multiscale-gwr, where the map shows the operation's own output and the slider changes it legibly. The weakest are spatial-regression-diagnostics (its test bars barely render at range [0, 40]), pair-gather, neighborhood-summary (dark on dark), spatial-weights-traces (no spatial picture, a spike artifact) and the chunked-weights family, which colors links by chunk and hides what the operation does. The census is wrong for the 7 runs built through shared/table-model.ts and shared/panel.ts: they do have update(), so the card scrubs `strength` or `unitEffects` per frame, not maximumPower, instrumentOrder or estimator by rebuild. Two shared files would fix many entries at once. In shared/regression.ts, drawCoefficientPanel draws signed coefficients as bars from the bottom of [-3, 3] with no zero line, so negative estimates read as small positive bars in 12 runs. In shared/weights.ts, a per-row highlight of links (`probe`) would serve all 15 weights runs. The table-model and panel runs look alike (duplicates); a probe or period playhead is the cheapest way to tell them apart.",
+ "sharedChanges": [
+  {
+   "file": "src/gpu/runs/entries/regression-weights/shared/regression.ts",
+   "change": "drawCoefficientPanel: draw bars from zero (or add a zero reference line) and use a diverging ramp for signed estimates; label the slots (intercept, x1, x2, rho/lambda). Today a -1.5 slope reads as a short positive bar.",
+   "entries": [
+    "ordinary-least-squares",
+    "probit-regression",
+    "seemingly-unrelated-regression",
+    "spatial-regime-regression",
+    "spatial-error-gm",
+    "spatial-error-maximum-likelihood",
+    "spatial-lag-maximum-likelihood",
+    "spatial-two-stage-least-squares",
+    "spatial-panel-error-ml",
+    "spatial-panel-lag-ml",
+    "spatial-panel-regression",
+    "spatial-lag-impacts"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/regression-weights/shared/regression.ts",
+   "change": "drawTractMap defaults to range 'auto', so residual maps renormalize on every run and hide how the noise and strength sliders change magnitude; pass a fixed symmetric range (for example [-1.5, 1.5]) for residuals.",
+   "entries": [
+    "ordinary-least-squares",
+    "spatial-error-gm",
+    "spatial-error-maximum-likelihood",
+    "spatial-lag-maximum-likelihood",
+    "spatial-two-stage-least-squares",
+    "spatial-panel-error-ml",
+    "spatial-panel-lag-ml",
+    "spatial-panel-regression",
+    "spatial-lag-impacts",
+    "spatial-regression-diagnostics",
+    "instrumental-variables-covariance",
+    "seemingly-unrelated-regression",
+    "restricted-regime-regression",
+    "spatial-regime-regression"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/regression-weights/shared/weights.ts",
+   "change": "Add a helper that, given a focus row written per frame (uint32 one-row buffer), emits the focus row's link segments, so every weights run can highlight the hovered point's or tract's neighbors without a rebuild (addLinkSegments with onlyWhere already does most of this).",
+   "entries": [
+    "contiguity-weights",
+    "fuzzy-contiguity",
+    "lattice-weights",
+    "neighbor-search",
+    "island-attachment",
+    "spatial-weights-transform",
+    "spatial-weights-algebra",
+    "spatial-weights-transpose",
+    "spatial-weights-summary",
+    "spatial-weights-validation",
+    "chunked-weights-algebra",
+    "chunked-weights-transform",
+    "chunked-weights-transpose",
+    "chunked-weights-validation",
+    "neighborhood-summary"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/regression-weights/shared/table-model.ts",
+   "change": "Distinguish the four table-model runs: give each a model-specific secondary picture (for example the lag-ML log-likelihood over rho, the 2SLS instrument WX, the error model's filtered residuals) instead of the same residual map plus bars.",
+   "entries": [
+    "spatial-error-gm",
+    "spatial-error-maximum-likelihood",
+    "spatial-lag-maximum-likelihood",
+    "spatial-two-stage-least-squares"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/regression-weights/shared/panel.ts",
+   "change": "Draw the residual map of one chosen period (a draw-time offset into the period-major residual buffer) so a period playhead can show the panel's time dimension; today only period 0 is drawn and the panels look like the cross-section runs.",
+   "entries": [
+    "spatial-panel-error-ml",
+    "spatial-panel-lag-ml",
+    "spatial-panel-regression"
+   ]
+  }
+ ],
+ "frameworkNeeds": [
+  "setPointer support in defineOperationRun: pointer in world coordinates passed to update() or to a pointer hook, which today only hand-written demos get",
+  "pointer to nearest point / containing tract polygon lookup (CPU, from the run's inputs) returning a row index",
+  "per-frame highlight on polygons, dots and lines layers (a focus row id or a uint32 highlight buffer) without rebuild",
+  "cursor glyphs: ring of a world-space radius, crosshair, vertical boundary line, and kernel-footprint shading",
+  "chart reference marks: zero line, slot labels and a highlighted bar or x position on bars/line charts",
+  "draw-time offset or count on a value buffer so one layer can show period p of a period-major buffer",
+  "debounced snapping or a small pre-built variant cache for compile-time props (bandwidth of weights transforms, tolerance, maximumIterations)",
+  "census.mjs should resolve update() through shared run factories (defineTableModelRun, definePanelRun); it misreports 7 runs as rebuild"
+ ],
+ "entries": [
+  {
+   "id": "chunked-weights-algebra",
+   "operation": "GPUChunkedSpatialWeightsAlgebra",
+   "currentScrub": {
+    "parameter": "chunkCount",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: chunks (1 to 4) by rebuild; the algebra operation is enumerated only.",
+     "fix": "Make the hover a probe of rows; keep chunk count a slider."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "Links are colored by chunk, so the left (kNN) and right (band) inputs and what the algebra kept are invisible.",
+     "fix": "Draw left and right inputs faint in two colors as spatial-weights-algebra does, and the combined links on top; mark chunk boundaries as thin vertical lines."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Reads as a variant of spatial-weights-algebra with chunk colors.",
+     "fix": "Show that the result is the same whatever the chunking: chunk bands as backgrounds, identical combined links."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest point; highlight its left row (blue), right row (green) and combined row (orange), with its chunk band outlined",
+    "glyph": "ring on the focus point, its three link sets bright, other links dimmed",
+    "readout": "row 41 (chunk 2) · union: 5 links (3 kNN, 4 band)",
+    "feasibility": "render",
+    "feasibilityNote": "All CSRs are built; needs a focus-row highlight of link segments.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "chunked-weights-transform",
+   "operation": "GPUChunkedSpatialWeightsTransform",
+   "currentScrub": {
+    "parameter": "bandwidth",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "bandwidth is a constructor prop and is listed in rebuildOn; every scrub step recompiles.",
+     "fix": "Snap to the 13 slider steps with debounce, or pre-build the variants."
+    },
+    {
+     "code": "weak-range",
+     "detail": "bandwidth only matters for operation 'kernel' (default); for the other four operations the card scrub is inert.",
+     "fix": "Show bandwidth only for kernel, or use the probe as the headline."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Same picture as spatial-weights-transform without its kernel-profile scatter.",
+     "fix": "Add the weight vs distance scatter, and draw the chunk boundaries to show global sums for double/variance."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": "probe",
+    "binding": "pointer -> nearest point is the focus; distance from the focus to the pointer -> bandwidth (snapped to 0.01 steps)",
+    "glyph": "ring of radius bandwidth around the focus point, its row's links shaded by transformed weight",
+    "readout": "bandwidth 0.09 · row sum 3.4",
+    "feasibility": "rebuild",
+    "feasibilityNote": "bandwidth is fixed at construction; debounce or pre-build 13 variants, or fall back to probe-only.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "chunked-weights-transpose",
+   "operation": "GPUChunkedSpatialWeightsTranspose",
+   "currentScrub": {
+    "parameter": "k",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Both parameters are Data (k, chunks); the card rebuilds on k.",
+     "fix": "Make the probe the headline interaction."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "Directed input links and transposed links look alike, so the flip of direction is not visible.",
+     "fix": "Draw outgoing and incoming links of a focus row in two colors with arrowheads or tapered lines."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Same as spatial-weights-transpose with chunk-colored links.",
+     "fix": "Show chunk bands as background tints and emphasize that one whole transposed CSR comes out."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest point; its outgoing kNN links (input row) in one color, its incoming links (transpose row) in another",
+    "glyph": "focus ring; outgoing links blue, incoming orange",
+    "readout": "point 87 · out 4 · in 7",
+    "feasibility": "render",
+    "feasibilityNote": "Both CSRs exist; needs focus-row link highlight.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "chunked-weights-validation",
+   "operation": "GPUChunkedSpatialWeightsValidation",
+   "currentScrub": {
+    "parameter": "defects",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Violation kinds (self, out of range, negative, duplicate) are on a sequential ramp with range [0, 7], so categories read as magnitudes.",
+     "fix": "Use four categorical colors with a legend."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: broken rows; the operation has no per-frame prop.",
+     "fix": "Make the probe the headline interaction; defects stays a slider."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Identical to spatial-weights-validation apart from chunk-colored links.",
+     "fix": "Show chunk bands and that flags land in global row order."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest flagged point; draw its offending slot (self loop, dangling link, negative weight, duplicate)",
+    "glyph": "focus ring and the bad link drawn red (self loop as a small circle)",
+    "readout": "row 33 (chunk 1) · duplicate neighbor",
+    "feasibility": "render",
+    "feasibilityNote": "Flags and CSR are on the GPU; needs a focus-row highlight and a flag-name lookup.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "contiguity-weights",
+   "operation": "GPUContiguityWeights",
+   "currentScrub": {
+    "parameter": "snapTolerance",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "With Data: boundary inset at 0 by default the tracts already touch, so snapTolerance (0 to 0.04) changes almost nothing.",
+     "fix": "Default the inset to a small sliver gap (about 0.03) so tolerance visibly joins tracts."
+    },
+    {
+     "code": "slow",
+     "detail": "snapTolerance and criterion are constructor props; each scrub step recompiles.",
+     "fix": "Probe is render-only; keep tolerance a debounced slider."
+    },
+    {
+     "code": "auto-range",
+     "detail": "Tract fill is neighbor count on range 'auto', so queen vs rook count changes are renormalized away.",
+     "fix": "Fix the range (for example [0, 10])."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> containing tract; highlight its neighbor tracts and its links, marking corner-only (queen) links distinctly",
+    "glyph": "focus tract outlined, neighbors filled, corner-only links dashed",
+    "readout": "tract 17 · queen 7 neighbors (2 by corner)",
+    "feasibility": "render",
+    "feasibilityNote": "CSR and links exist; needs tract lookup and focus highlight.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "fuzzy-contiguity",
+   "operation": "GPUFuzzyContiguity",
+   "currentScrub": {
+    "parameter": "tolerance",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "The operation writes `added` (links that exact contiguity would miss) but the run does not draw it, so fuzzy and exact links look the same.",
+     "fix": "Draw added links in a bright second color via addLinkSegments onlyWhere: added."
+    },
+    {
+     "code": "slow",
+     "detail": "tolerance is a constructor prop and rebuilds on every scrub step.",
+     "fix": "Snap to a few tolerances with debounce, or pre-build about 5 variants."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Same tile picture as contiguity-weights.",
+     "fix": "The added-links color distinguishes it."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": "probe",
+    "binding": "pointer -> containing tract is the focus; distance from the pointer to that tract's boundary -> tolerance (snapped)",
+    "glyph": "tolerance band drawn around the focus tract's outline, links it gains shown bright",
+    "readout": "tolerance 0.034 · +3 links across gaps",
+    "feasibility": "rebuild",
+    "feasibilityNote": "tolerance is compile-time; pre-build a handful of variants, or show render-only probe of the added links at the default.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "generalized-gwr",
+   "operation": "GPUGeneralizedGeographicallyWeightedRegression",
+   "currentScrub": {
+    "parameter": "bandwidth",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "Both maps use range 'auto', so bandwidth smoothing of the slope and the fitted means is renormalized away.",
+     "fix": "Fix ranges (slope [0, 2.5], fitted per family)."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Looks like geographically-weighted-regression (two purple tract maps).",
+     "fix": "Show the observed counts or 0/1 outcomes as dots on the right map, so the family is visible."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer -> tract is the regression point; its kernel footprint at the current bandwidth shades the tracts that enter its local fit",
+    "glyph": "ring of radius bandwidth plus tracts tinted by kernel weight",
+    "readout": "local slope 1.4 · fitted mean 3.2 · bandwidth 0.5",
+    "feasibility": "render",
+    "feasibilityNote": "Positions and bandwidth are known on the CPU; needs a kernel-weight highlight on polygons.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "geographically-weighted-regression",
+   "operation": "GPUGeographicallyWeightedRegression",
+   "currentScrub": {
+    "parameter": "bandwidth",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer -> tract is the regression point; tracts shaded by their kernel weight in its local fit at the current bandwidth",
+    "glyph": "ring of radius bandwidth plus kernel-weight tint on the left map; focus tract outlined on both maps",
+    "readout": "local slope 2.1 (true 2.0) · R2 0.83 · bandwidth 0.4",
+    "feasibility": "render",
+    "feasibilityNote": "Bandwidth is per-frame already; the footprint is a CPU kernel over tract centers.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "gwr-nonstationarity-test",
+   "operation": "GPUGeographicallyWeightedRegressionNonstationarityTest",
+   "currentScrub": {
+    "parameter": "permutationCount",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Observed-variation bars use a sequential ramp on a dark background; the low intercept and x2 bars are near invisible next to the white dots.",
+     "fix": "Use one solid light bar color; the dots carry the comparison."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Bars, dots and p-value bars have no labels or 0.05 reference.",
+     "fix": "Label the three coefficients and add a p = 0.05 line on the lower chart."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "secondary": null,
+    "binding": "x -> permutationCount (4 to 32): the simulated means (dots) and pseudo p-values settle as permutations accumulate",
+    "glyph": "playhead tick along the bottom of the chart panel",
+    "readout": "permutationCount 24 · p(x1) 0.04",
+    "feasibility": "ready",
+    "feasibilityNote": "permutationCount is written by update.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "instrumental-variables-covariance",
+   "operation": "GPUInstrumentalVariablesCovariance",
+   "currentScrub": {
+    "parameter": "heteroskedasticity",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Both numeric sliders are Data; the real prop (method) is enumerated and rebuilds.",
+     "fix": "Make a probe the headline interaction; pre-build the three methods if the method must be live."
+    },
+    {
+     "code": "encoding",
+     "detail": "A 3 x 3 covariance drawn as nine flat bars, diverging around zero, mostly grey: a reader cannot see which entry is the slope variance.",
+     "fix": "Draw a 3 x 3 heat grid with row and column labels, or only the three standard errors."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "No comparison with the non-robust covariance.",
+     "fix": "Show the OLS standard errors as dots next to the robust ones."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> tract; highlight the tracts its HAC kernel row couples it to, with their residuals",
+    "glyph": "focus tract outlined, kernel neighbors outlined",
+    "readout": "residual 0.62 · 5 HAC neighbors · se(x1) HAC 0.21 vs HC0 0.14",
+    "feasibility": "render",
+    "feasibilityNote": "Kernel CSR is built on the CPU; needs polygon highlight.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "island-attachment",
+   "operation": "GPUIslandAttachment",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: band radius by rebuild (CPU CSR, capacity changes).",
+     "fix": "Make the probe the headline interaction."
+    },
+    {
+     "code": "small",
+     "detail": "Clustered points sit in a narrow central strip; the added orange links are short and few.",
+     "fix": "Spread the clusters across the frame or zoom to the point bounds."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer -> nearest point; show its band-radius ring and either its band links or, for an island, the attachment link the operation added",
+    "glyph": "ring of band radius around the focus point; added link bright orange",
+    "readout": "island · attached to point 112 at 0.08 (band 0.06)",
+    "feasibility": "render",
+    "feasibilityNote": "added and attachment buffers already exist.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "lattice-weights",
+   "operation": "GPULatticeWeights",
+   "currentScrub": {
+    "parameter": "minimumElevation",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-fit",
+     "detail": "The mask comes from Grand Canyon elevation but no elevation is drawn, so masked holes look like missing data.",
+     "fix": "Draw the elevation hillshade as context under the cardinality raster."
+    },
+    {
+     "code": "clutter",
+     "detail": "At 9 rows the poster is a few bright blocks in corners; links are barely visible.",
+     "fix": "Use more rows (about 16) and a lower default cutoff so most cells are active."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "level",
+    "binding": "pointer -> grid cell; highlight its rook or queen stencil at the current radius and the neighbors the mask leaves",
+    "glyph": "cell outline and its stencil footprint",
+    "readout": "cell [12, 4] · queen r1 · 6 of 8 neighbors",
+    "feasibility": "render",
+    "feasibilityNote": "Cell centers and CSR are on the GPU; cell lookup is trivial.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "local-collinearity",
+   "operation": "GPULocalCollinearity",
+   "currentScrub": {
+    "parameter": "collinearity",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "VIF range [1, 25] leaves almost every tract dark; only a few eastern tracts light up at the default.",
+     "fix": "Use a logarithmic range or [1, 10]."
+    },
+    {
+     "code": "duplicate",
+     "detail": "The VIF and condition-number maps look nearly the same.",
+     "fix": "Replace the right map with a local x1 vs x2 scatter for the focus neighborhood."
+    },
+    {
+     "code": "data-headline",
+     "detail": "Both sliders are Data; neighbors rebuilds.",
+     "fix": "Make the probe the headline interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> tract; highlight the k neighbors that form its local window",
+    "glyph": "focus tract outlined, neighbor tracts outlined on both maps",
+    "readout": "VIF 8.3 · condition 6.1 · k 8",
+    "feasibility": "render",
+    "feasibilityNote": "kNN CSR is built on the CPU; needs polygon highlight.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "multiscale-gwr",
+   "operation": "GPUMultiscaleGeographicallyWeightedRegression",
+   "currentScrub": {
+    "parameter": "firstBandwidth",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "The right map is a uniform grey (constant slope at the diverging midpoint) and the left gradient is faint purple.",
+     "fix": "Use the same sequential slope ramp on both maps over [-2, 3] so constant and drifting surfaces are compared on one scale."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": null,
+    "binding": "x -> firstBandwidth (0.2 to 3), y -> secondBandwidth (0.4 to 3): each map responds to its own axis",
+    "glyph": "crosshair with short axis ticks labelled x1 and x2",
+    "readout": "x1 bandwidth 0.5 · x2 bandwidth 3.0",
+    "feasibility": "ready",
+    "feasibilityNote": "All three bandwidths are written by update.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "neighbor-search",
+   "operation": "GPUNeighborSearch",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "In the default knn mode, radius only sets the search grid bounds, so the card scrub is nearly inert.",
+     "fix": "Default to radius mode, or scrub k in knn mode."
+    },
+    {
+     "code": "small",
+     "detail": "Clustered points sit in a narrow diagonal band.",
+     "fix": "Spread the clusters over the frame."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer -> nearest point; highlight its k nearest or within-radius neighbors",
+    "glyph": "ring of radius (radius mode) or of the k-th neighbor distance (knn mode) around the focus point",
+    "readout": "point 140 · 4 neighbors within 0.09",
+    "feasibility": "render",
+    "feasibilityNote": "CSR with distances exists; radius is already per-frame for radius mode.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "neighborhood-summary",
+   "operation": "GPUNeighborhoodSummary",
+   "currentScrub": {
+    "parameter": "k",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "260 points with mostly low values draw dark on dark; input and summary maps are near invisible.",
+     "fix": "Use larger dots, a light-to-dark ramp, and input values with spatial structure."
+    },
+    {
+     "code": "auto-range",
+     "detail": "The right map is range 'auto' per statistic, so the input and output scales differ.",
+     "fix": "Use the input's range [0, 1] for mean, min, max and median."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The card rebuilds on Data: neighbors.",
+     "fix": "Make the probe the headline interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest point (either side); highlight its k neighbors on the left and its summary value on the right",
+    "glyph": "neighbor links from the focus on the left, matching ring on the right",
+    "readout": "mean of 6 neighbors 0.42 (own 0.80)",
+    "feasibility": "render",
+    "feasibilityNote": "kNN CSR exists; needs focus links and dot highlight.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "ordinary-least-squares",
+   "operation": "GPUOrdinaryLeastSquares",
+   "currentScrub": {
+    "parameter": "ridgeLambda",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "Coefficient bars start at -3 with no zero line, so the -1.5 slope reads as a short positive bar.",
+     "fix": "Shared drawCoefficientPanel fix: bars from zero with labels."
+    },
+    {
+     "code": "auto-range",
+     "detail": "The residual map renormalizes, hiding how ridgeLambda inflates residuals.",
+     "fix": "Use a fixed symmetric residual range."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": null,
+    "binding": "x -> ridgeLambda (0 to 6), y -> Data: spatial dependence rho (0 to 0.9); bars shrink with x, residual clusters grow with y",
+    "glyph": "crosshair with x label ridgeLambda and y label rho",
+    "readout": "ridgeLambda 2.0 · rho 0.5 · R2 0.71",
+    "feasibility": "ready",
+    "feasibilityNote": "Both are written by update.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "pair-gather",
+   "operation": "GPUPairGather",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "clutter",
+     "detail": "Pair lines read as a random graph; query dots are mostly hidden behind them and targets are faint white dots.",
+     "fix": "Distinct glyphs: targets as squares colored by value, queries as rings filled with the gathered value; thinner lines."
+    },
+    {
+     "code": "encoding",
+     "detail": "With how: 'left' unmatched queries draw in the muted color and vanish.",
+     "fix": "Draw unmatched queries as hollow rings so the left join is visible."
+    },
+    {
+     "code": "data-fit",
+     "detail": "Queries and targets come from one uniform sampler and overlap, so a join of two tables is not legible.",
+     "fix": "Use two related real point sets (for example stops and stations) from src/gpu/data."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer -> nearest query; draw its match-radius ring, its candidate targets and the up to `capacity` pairs kept",
+    "glyph": "ring of radius around the query, kept pair lines bright, dropped candidates dashed",
+    "readout": "query 12 · 2 of 3 candidates kept · value 0.71",
+    "feasibility": "render",
+    "feasibilityNote": "Pairs and gathered values exist; radius is per-frame if a reach is wanted.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "probit-regression",
+   "operation": "GPUProbitRegression",
+   "currentScrub": {
+    "parameter": "noise",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: latent noise while maximumIterations is the real prop.",
+     "fix": "Use the iteration playhead."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "The -1.2 intercept and -1.8 slope bars start at -3 with no zero line.",
+     "fix": "Shared coefficient panel fix."
+    },
+    {
+     "code": "other",
+     "detail": "The 0/1 outcomes are not drawn, so fitted probabilities cannot be compared with the data.",
+     "fix": "Overlay observed outcomes as dots on the tract map."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "secondary": null,
+    "binding": "x -> maximumIterations (1 to 12): coefficient bars converge to the truth dots by Fisher scoring",
+    "glyph": "playhead tick on the chart panel",
+    "readout": "iteration 3 of 12 · x1 2.1 (true 2.4)",
+    "feasibility": "rebuild",
+    "feasibilityNote": "maximumIterations is compile-time; pre-build the 12 small graphs or snap with debounce.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "restricted-regime-regression",
+   "operation": "GPURestrictedRegimeRegression",
+   "currentScrub": {
+    "parameter": "contrast",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: regime contrast; the real props are three booleans.",
+     "fix": "Use the boundary level as the headline interaction."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "The mix of shared and paired bars has no labels or truth dots, and the single Chow F bar has no critical value.",
+     "fix": "Label the bars, add truth dots, and draw the F critical value line."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "The regime boundary is not drawn on the map.",
+     "fix": "Draw the west/east boundary line."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "secondary": null,
+    "binding": "pointer x over the map -> regime boundary (regimes buffer rewritten per frame); Chow F peaks when the boundary meets the true break",
+    "glyph": "vertical boundary line on the map with the two regimes tinted",
+    "readout": "break at x 0.52 · Chow F 38",
+    "feasibility": "update",
+    "feasibilityNote": "regimes is an uploaded uint32 buffer; write it from update instead of once.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "seemingly-unrelated-regression",
+   "operation": "GPUSeeminglyUnrelatedRegression",
+   "currentScrub": {
+    "parameter": "correlation",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "Six coefficient bars and four covariance bars without labels or zero line; negative coefficients read as short bars.",
+     "fix": "Shared coefficient panel fix; group the bars by equation."
+    },
+    {
+     "code": "encoding",
+     "detail": "The residual covariance as four bars does not show error correlation.",
+     "fix": "Replace it with a scatter of equation-1 vs equation-2 residuals."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": null,
+    "binding": "x -> Data: error correlation (-0.9 to 0.9), y -> Data: noise; the residual scatter tilts with x",
+    "glyph": "crosshair; residual scatter tilting with the correlation",
+    "readout": "error correlation 0.7 · sigma12 0.18",
+    "feasibility": "ready",
+    "feasibilityNote": "Both are written by update; the operation has no numeric prop.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "spatial-error-gm",
+   "operation": "GPUSpatialErrorGM",
+   "currentScrub": {
+    "parameter": "strength",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Pixel-for-pixel the same layout as error-ML, lag-ML and 2SLS.",
+     "fix": "Shared table-model change: a model-specific secondary picture."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Bars from -3 with no zero line.",
+     "fix": "Shared coefficient panel fix."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: spatial error lambda; estimator is the only prop.",
+     "fix": "Use the probe as the headline interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> tract; highlight its W neighbors and compare its residual with their mean (the spatial correlation the model removes)",
+    "glyph": "focus tract outline and neighbor outlines",
+    "readout": "residual 0.41 · neighbor mean 0.33 · lambda 0.58 (true 0.6)",
+    "feasibility": "render",
+    "feasibilityNote": "Weights CSR and residuals exist; needs polygon highlight.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "spatial-error-maximum-likelihood",
+   "operation": "GPUSpatialErrorMaximumLikelihood",
+   "currentScrub": {
+    "parameter": "strength",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same picture as spatial-error-gm and the lag models.",
+     "fix": "Show filtered vs unfiltered residuals (a swipe) to make the error model distinct."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Bars from -3 with no zero line.",
+     "fix": "Shared coefficient panel fix."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "secondary": null,
+    "binding": "x -> curtain between OLS residuals (left of the line) and the model's filtered residuals (right)",
+    "glyph": "vertical curtain line on the map",
+    "readout": "OLS residuals | filtered residuals · lambda 0.57",
+    "feasibility": "update",
+    "feasibilityNote": "Needs an OLS residual buffer in the same graph and a clip on the polygon layer.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "spatial-lag-impacts",
+   "operation": "GPUSpatialLagImpacts",
+   "currentScrub": {
+    "parameter": "strength",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-fit",
+     "detail": "The map shows residuals, which say nothing about impacts.",
+     "fix": "Map the response to a unit change of x1 at one tract: direct at the tract, spillover in its neighbors."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Range [-4, 6] with no zero line; the negative x2 impacts look positive.",
+     "fix": "Bars from zero, labels direct, indirect and total."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": null,
+    "binding": "pointer -> tract receives a unit x1 shock; the map shows the change in y, ((I - rho W)^-1 e_i) beta1 with the estimated rho",
+    "glyph": "pulse ring on the shocked tract; map in a sequential ramp of the response",
+    "readout": "shock at tract 31 · direct 2.3 · spillover 1.1",
+    "feasibility": "update",
+    "feasibilityNote": "About 100 tracts: a CPU Neumann series per frame (as createResponse does) or a GPUSpatialLag pass seeded from the pointer.",
+    "effort": "L"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "spatial-lag-maximum-likelihood",
+   "operation": "GPUSpatialLagMaximumLikelihood",
+   "currentScrub": {
+    "parameter": "strength",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same layout as the other table models.",
+     "fix": "Plot the log-likelihood over rho from the summary with the estimate marked."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Bars from -3 with no zero line.",
+     "fix": "Shared coefficient panel fix."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: spatial lag rho; maximumPower is a dull rebuild prop.",
+     "fix": "Use a level on the rho axis."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "secondary": null,
+    "binding": "pointer y over the chart -> true rho (the truth dot follows the cursor, the estimate bar chases it)",
+    "glyph": "horizontal line at the cursor height on the rho slot",
+    "readout": "true rho 0.50 · estimate 0.47",
+    "feasibility": "ready",
+    "feasibilityNote": "strength is written by update through defineTableModelRun.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-lag",
+   "operation": "GPUSpatialLag",
+   "currentScrub": {
+    "parameter": "noise",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: noise; normalize is the only prop (boolean).",
+     "fix": "Use the spike placement as the headline interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "probe",
+    "binding": "pointer -> tract gets a high input value (spike added to the noisy buffer); the lag lights up its neighbors, not itself",
+    "glyph": "focus tract outline and neighbor outlines",
+    "readout": "spike at tract 22 · lag in 6 neighbors +0.17",
+    "feasibility": "update",
+    "feasibilityNote": "The noisy input is already rewritten per frame; update() needs the pointer tract.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "spatial-panel-error-ml",
+   "operation": "GPUSpatialPanelErrorMaximumLikelihood",
+   "currentScrub": {
+    "parameter": "strength",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same as the cross-section error models; only period 0 is drawn, so the panel is invisible.",
+     "fix": "Shared panel change: a period playhead."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "The empty intercept slot and bars from -3 are unexplained.",
+     "fix": "Label 'absorbed' on the intercept slot; shared zero-line fix."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "secondary": null,
+    "binding": "x -> period (1 to 6) of the residual map",
+    "glyph": "six period ticks along the bottom with the current one lit",
+    "readout": "period 3 of 6 · lambda 0.48 (true 0.5)",
+    "feasibility": "render",
+    "feasibilityNote": "Residuals for all periods are in one buffer; needs a draw-time offset.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-panel-lag-ml",
+   "operation": "GPUSpatialPanelLagMaximumLikelihood",
+   "currentScrub": {
+    "parameter": "unitEffects",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same as spatial-panel-regression and the table models.",
+     "fix": "Period playhead; show the phi bar labelled."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Five unlabelled bars, including phi.",
+     "fix": "Label slots; shared zero-line fix."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "secondary": null,
+    "binding": "x -> period (1 to 6) of the residual map",
+    "glyph": "period ticks with the current one lit",
+    "readout": "period 2 of 6 · rho 0.38 (true 0.4) · phi 0.5",
+    "feasibility": "render",
+    "feasibilityNote": "Residuals of all periods exist; needs a draw-time offset.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-panel-regression",
+   "operation": "GPUSpatialPanelRegression",
+   "currentScrub": {
+    "parameter": "unitEffects",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same as the other panel runs.",
+     "fix": "Period playhead; show entity effects as a separate map."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Bars from -3 with no zero line.",
+     "fix": "Shared coefficient panel fix."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "secondary": null,
+    "binding": "x -> period (1 to 6) of the residual map",
+    "glyph": "period ticks with the current one lit",
+    "readout": "period 4 of 6 · effects pooled · rho 0.41",
+    "feasibility": "render",
+    "feasibilityNote": "Residuals of all periods exist; needs a draw-time offset.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-regime-regression",
+   "operation": "GPUSpatialRegimeRegression",
+   "currentScrub": {
+    "parameter": "contrast",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "Nine bars for three regimes, unlabelled and starting at -3.",
+     "fix": "Group bars by regime with a gap and tint them with the regime color; shared zero-line fix."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: regime contrast.",
+     "fix": "Use the regime probe as the headline interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "level",
+    "binding": "pointer -> tract; highlight its whole regime on the map and that regime's three bars",
+    "glyph": "regime band outlined, matching bar group lit",
+    "readout": "regime 2 of 3 · x1 slope 0.9 (true 0.9)",
+    "feasibility": "render",
+    "feasibilityNote": "Regime per tract is known on the CPU; needs a polygon and bar highlight.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-regression-diagnostics",
+   "operation": "GPUSpatialRegressionDiagnostics",
+   "currentScrub": {
+    "parameter": "lagRho",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "The six test bars are almost invisible at range [0, 40]; the poster's right half looks empty.",
+     "fix": "Use a range that fits the statistics (for example [0, 10] or a log scale) and check that the test column is the statistic."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "No chi-square critical value and no test labels.",
+     "fix": "Draw the 3.84 line and label LM lag, LM error, robust, SARMA, Moran z."
+    },
+    {
+     "code": "encoding",
+     "detail": "The 35% masked tracts draw as light-grey zero residuals and dominate the map.",
+     "fix": "Draw masked tracts transparent or hatched."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": null,
+    "binding": "x -> Data: spatial lag rho (0 to 0.8), y -> Data: spatial error lambda (0 to 0.8): lag tests rise with x, error tests with y",
+    "glyph": "crosshair labelled rho and lambda",
+    "readout": "rho 0.5 · lambda 0.0 · LM lag 21 · LM error 6",
+    "feasibility": "ready",
+    "feasibilityNote": "Both are written by update; the test is what discriminates the two processes.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "spatial-two-stage-least-squares",
+   "operation": "GPUSpatialTwoStageLeastSquares",
+   "currentScrub": {
+    "parameter": "strength",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same as spatial-lag-maximum-likelihood.",
+     "fix": "Show the instrument (WX) map or the first-stage fit of Wy."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Bars from -3 with no zero line.",
+     "fix": "Shared coefficient panel fix."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> tract; highlight its W neighbors (first and, for instrumentOrder 2, second order) that build its instruments",
+    "glyph": "focus tract; first-order neighbors solid, second-order dashed",
+    "readout": "tract 9 · 5 + 11 instrument neighbors · rho 0.46",
+    "feasibility": "render",
+    "feasibilityNote": "Weights CSR is known; needs polygon highlight.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "spatial-weights-algebra",
+   "operation": "GPUSpatialWeightsAlgebra",
+   "currentScrub": {
+    "parameter": "k",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "clutter",
+     "detail": "Three overlapping link sets at card size; the thick orange result is hard to separate from blue and green.",
+     "fix": "Dim the inputs and show the full sets only around the focus."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: left k by rebuild.",
+     "fix": "Use the probe as the headline interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest point; show its left row, right row and combined row",
+    "glyph": "focus ring; Venn-style colors for the left-only, right-only and both links",
+    "readout": "intersection · kNN 3, band 5 -> 2",
+    "feasibility": "render",
+    "feasibilityNote": "All three CSRs exist; needs focus-row link highlight.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-weights-summary",
+   "operation": "GPUSpatialWeightsSummary",
+   "currentScrub": {
+    "parameter": "noise",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "Six log-count bars without labels; a reader cannot tell slots from isolates.",
+     "fix": "Label the bars, or draw S0, isolates and asymmetric count as text readouts."
+    },
+    {
+     "code": "encoding",
+     "detail": "A sequential ramp across bars of unrelated statistics implies an order.",
+     "fix": "Use one bar color."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: weight noise; symmetryTolerance rebuilds.",
+     "fix": "Use the probe as the headline interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest point; highlight its row and mark which of its links are asymmetric beyond symmetryTolerance",
+    "glyph": "focus ring; symmetric links white, asymmetric red",
+    "readout": "cardinality 7 · 2 asymmetric at tolerance 0.1",
+    "feasibility": "render",
+    "feasibilityNote": "CSR and weights exist; the asymmetry test per slot is a small kernel.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-weights-traces",
+   "operation": "GPUSpatialWeightsTraces",
+   "currentScrub": {
+    "parameter": "maximumPower",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "data-fit",
+     "detail": "No spatial picture: two charts of a tract W that is never drawn.",
+     "fix": "Draw the tract map with W^q reach from one tract next to the charts."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "A spike at q = 2 then a flat line, with no axis or exact reference; the stochastic default hides the probeCount effect.",
+     "fix": "Plot the exact traces as a reference behind the stochastic line, and label q."
+    },
+    {
+     "code": "slow",
+     "detail": "The card scrubs maximumPower by rebuild.",
+     "fix": "Use the render-only axis probe."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "secondary": "probe",
+    "binding": "pointer x along the power axis -> q; highlight that point and bar, and on a tract map shade tracts reached by W^q from the center tract",
+    "glyph": "vertical rule at q across both charts",
+    "readout": "q 3 · tr(W^3) 4.1 · 1'W^3 1 = 112",
+    "feasibility": "render",
+    "feasibilityNote": "Traces and sums exist; the map reach is a CPU walk of the tract CSR.",
+    "effort": "L"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-weights-transform",
+   "operation": "GPUSpatialWeightsTransform",
+   "currentScrub": {
+    "parameter": "bandwidth",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "bandwidth is a constructor prop in rebuildOn.",
+     "fix": "Snap to the 13 steps with debounce or pre-build."
+    },
+    {
+     "code": "weak-range",
+     "detail": "bandwidth only matters for the kernel operation; for others the scrub is inert.",
+     "fix": "Scrub bandwidth only when the operation is 'kernel'."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "The weight vs distance scatter has no axes or a mark at the bandwidth.",
+     "fix": "Draw a vertical rule at bandwidth."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": "probe",
+    "binding": "pointer -> nearest point is the focus; distance from the focus to the pointer -> bandwidth (snapped), and its row is shaded by transformed weight",
+    "glyph": "bandwidth ring on the map and a matching vertical rule on the kernel-profile scatter",
+    "readout": "gaussian · bandwidth 0.08 · row sum 2.7",
+    "feasibility": "rebuild",
+    "feasibilityNote": "bandwidth is compile-time; pre-build 13 variants or debounce, or probe at a fixed bandwidth.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-weights-transpose",
+   "operation": "GPUSpatialWeightsTranspose",
+   "currentScrub": {
+    "parameter": "k",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Only transposed links are drawn, and undirected lines look the same either way, so the transpose cannot be seen.",
+     "fix": "Show a focus point's outgoing and incoming links in two colors."
+    },
+    {
+     "code": "data-headline",
+     "detail": "Both sliders are Data; the card rebuilds on k.",
+     "fix": "Use the probe as the headline interaction."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest point; its k outgoing links (input row) and its incoming links (transpose row)",
+    "glyph": "focus ring; outgoing blue, incoming orange",
+    "readout": "point 64 · out 4 · in 9 (hub)",
+    "feasibility": "render",
+    "feasibilityNote": "Input and transposed CSRs exist; needs input link segments and focus highlight.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "spatial-weights-validation",
+   "operation": "GPUSpatialWeightsValidation",
+   "currentScrub": {
+    "parameter": "defects",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Four violation kinds on a sequential ramp with fade; they read as magnitudes.",
+     "fix": "Use four categorical colors and a legend."
+    },
+    {
+     "code": "data-headline",
+     "detail": "The only slider is Data: broken rows.",
+     "fix": "Use the probe as the headline interaction; the defect share can stay on x secondary via the slider."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest flagged point; draw its offending slot and name the flag",
+    "glyph": "focus ring; bad link red, self loop as a small circle",
+    "readout": "row 18 · neighbor id out of range",
+    "feasibility": "render",
+    "feasibilityNote": "Flags and the CPU copy of the defects are available.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  }
+ ]
+}

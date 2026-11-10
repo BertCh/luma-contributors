@@ -1,0 +1,1008 @@
+{
+ "group": "terrain-relief-light",
+ "summary": "All 31 runs use the same measured Grand Canyon crop through support/terrain.ts, and 27 of them already have per-frame update(), so the change to the pointer is mostly a matter of binding rather than rebuilding: only terrain-rgb-decode, terrain-ruggedness and topographic-position scrub by rebuild, and only peak-prominence, spike-repair and terrain-critical-points scrub a Data: knob. The visibility runs (viewshed, line-of-sight, point-horizon-profile, point-horizon-visibility) already write the observer column and row each frame, so 'place' costs only the binding plus a pointer-to-cell helper. The sun runs (relief-shading, slope-aspect-hillshade, solar-shadow-mask, terrain-cast-shadow) are natural 'aim' pads where angle maps to azimuth and distance maps to altitude, all per-frame today. The strongest posters are geomorphons, terrain-cast-shadow, solar-position and terrain-curvature. The weakest are cumulative-viewshed (towers clustered in one corner, most of the frame dark), peak-prominence and terrain-summits (scattered single pixels), profile-peaks (four profiles concatenated with full-height on/off bars), weiss-landforms (ten classes wrapped into the 8-colour default palette with no legend) and solar-irradiance (Swiss sun table over the Grand Canyon, saturated sun-hours). Two duplicate families hurt the catalog row. In the first, relief-shading, slope-aspect-hillshade, solar-shadow-mask and relief-blend all render as the same magma hillshade because there is no grey ramp. In the second, simple-local-relief, multi-scale-relief and texture-shading are all saturated red/blue diverging maps. Shared fixes in support/terrain.ts (a pointer-to-cell inverse, spread-out summit picking, and a grey relief drawer) and fixed ranges instead of 'auto' on five runs would lift about half of the group.",
+ "sharedChanges": [
+  {
+   "file": "src/gpu/runs/entries/terrain-relief-light/support/terrain.ts",
+   "change": "Add getCellOfWorldPosition(terrain, world, x, y), the inverse of getCellWorldPosition, so runs that take the pointer can map it to an integer column and row (or snap it to the nearest summit/target) instead of percentage sliders.",
+   "entries": [
+    "viewshed",
+    "line-of-sight",
+    "point-horizon-profile",
+    "point-horizon-visibility",
+    "cumulative-viewshed",
+    "peak-snap",
+    "terrain-contours"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/terrain-relief-light/support/terrain.ts",
+   "change": "Add findSpreadLocalMaxima(terrain, count, minimumSpacingCells): the highest maxima with a minimum separation. findLocalMaxima, which takes the highest first, clusters every tower and target on one plateau in the top-right corner.",
+   "entries": [
+    "cumulative-viewshed",
+    "point-horizon-visibility",
+    "peak-snap"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/terrain-relief-light/support/terrain.ts",
+   "change": "Add drawRelief(terrain, values) that draws a [0,1] illumination or hillshade buffer in greyscale with smoothing. Today these fall back to the sequential magma ramp, so four different light operations look identical and none looks like a hillshade.",
+   "entries": [
+    "relief-shading",
+    "slope-aspect-hillshade",
+    "solar-shadow-mask",
+    "relief-blend",
+    "terrain-cast-shadow"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/terrain-relief-light/support/terrain.ts",
+   "change": "Add shared categorical palettes plus legends for the visibility codes (visible / hidden / out of range, with out of range transparent) and for the critical-point classes, the same way geomorphons passes categories.",
+   "entries": [
+    "viewshed",
+    "point-horizon-visibility",
+    "terrain-critical-points",
+    "peak-snap",
+    "weiss-landforms"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/terrain-relief-light/{horizon-angles,local-dominance,vector-ruggedness,topographic-position,terrain-ruggedness}.ts",
+   "change": "Replace the default range: 'auto' with fixed physical ranges, for example sky view [0.5,1], openness [60,100] degrees, VRM [0,0.08] and standardized deviation [-3,3]. With auto, the per-frame zFactor, observerHeight and radius changes are renormalized away.",
+   "entries": [
+    "horizon-angles",
+    "local-dominance",
+    "vector-ruggedness",
+    "topographic-position",
+    "terrain-ruggedness"
+   ]
+  }
+ ],
+ "frameworkNeeds": [
+  "pointer world position and the raster cell under it passed to update() and draw() (values.pointer), so a run can bind place/drag/aim/reach itself",
+  "cursor glyph layer: crosshair/dot at pointer, ring of a radius in world units, annulus (inner/outer radius), 3x3 or NxN box outline, eight spokes",
+  "sun-arrow glyph from the picture centre whose angle is azimuth and whose length encodes altitude",
+  "swipe curtain: draw layer A left of pointer x and layer B right of it, with a vertical line (render-only)",
+  "readback of one value (or a small slice, e.g. horizon[cell*directions..]) under the pointer for the readout text",
+  "GPU-reduced counts available to the readout (visible cells, visible targets, kept peaks)",
+  "highlight mask on a raster layer: emphasize cells equal to a category under the pointer, mute the rest",
+  "grey ramp kind for illumination and hillshade buffers",
+  "chart references: zero/horizon line, x tick labels (N E S W for azimuth), segment separators for multi-profile series",
+  "dots sized by a value buffer (drop, prominence)",
+  "debounced rebuild with snapped values, for rebuild-only props such as searchRadius, featureMaximum and validRange"
+ ],
+ "entries": [
+  {
+   "id": "cumulative-viewshed",
+   "operation": "GPUTerrainCumulativeViewshed",
+   "currentScrub": {
+    "parameter": "observerHeight",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-fit",
+     "detail": "findLocalMaxima picks the 8 highest maxima, and four of five towers sit together in the top-right corner while the fifth sees almost nothing.",
+     "fix": "Pick spread-out summits with a minimum spacing so the coverage overlaps across the frame."
+    },
+    {
+     "code": "small",
+     "detail": "Only the top-right quarter carries any count; the rest is dark context.",
+     "fix": "With spread towers and maximumDistance about 3000 m, the counts 1..N fill the frame."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "secondary": "reach",
+    "binding": "pointer cell -> the nearest tower's [column, row] in the observers buffer (the others stay); pointer distance from that tower is not used",
+    "glyph": "the carried tower as a larger ring with a faint maximumDistance circle",
+    "readout": "tower 3 [col, row] · cells seen by ≥2 towers 41%",
+    "feasibility": "update",
+    "feasibilityNote": "observers is uploaded once in build; writing it in update with the pointer-carried tower is a small change (the count stays a rebuild).",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "geomorphons",
+   "operation": "GPUGeomorphons",
+   "currentScrub": {
+    "parameter": "flatThresholdDegrees",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "Edge cells (form 0) are transparent, so a pale frame of context shows around the classes at card size.",
+     "fix": "Crop the drawn grid by skipRadius+searchRadius or draw invalid edge cells in the muted colour."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "hovered cell -> its landform; eight spokes of length searchRadius drawn from it, each coloured higher/level/lower using flatThresholdDegrees on the CPU elevation",
+    "glyph": "eight spokes of searchRadius around the hovered cell, with all cells of the same form highlighted",
+    "readout": "ridge · 3 up, 4 down, 1 level · searchRadius 12 cells",
+    "feasibility": "render",
+    "feasibilityNote": "Forms are already written; the spokes are a CPU computation from inputs.elevation and the readout needs a value readback.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "horizon-angles",
+   "operation": "GPUTerrainHorizon",
+   "currentScrub": {
+    "parameter": "zFactor",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "drawGrid has no range, so the zFactor scrub is renormalized after every run and barely changes the picture.",
+     "fix": "Fix range per output: sky view [0.5,1], openness [60,100] degrees."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "hovered cell -> its directionCount horizon angles read from the horizon buffer",
+    "glyph": "a polar skyline star at the cursor: one spoke per direction whose length is the horizon angle, with the open sky as the filled remainder",
+    "readout": "sky view 0.82 · openness+ 84° · 16 directions",
+    "feasibility": "render",
+    "feasibilityNote": "The horizon buffer is allocated but not in outputs; expose it and read back one cell's slice.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "line-of-sight",
+   "operation": "GPUTerrainLineOfSight",
+   "currentScrub": {
+    "parameter": "observerColumn",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "No observer dot is drawn (only the converging rays hint at it), unlike viewshed and point-horizon runs.",
+     "fix": "Add an observer dot output like viewshed's observerDot."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "Rays are context lines at alpha 0.5 and the 90 random targets are small, so blocked versus clear reads only from dot colour.",
+     "fix": "Draw the rays to blocked targets darker or omit them; enlarge the target dots and use fewer, terrain-meaningful targets (summits, rims)."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer cell -> observerColumn/observerRow (written as the observer half of every pair)",
+    "glyph": "observer crosshair at the cursor; rays redrawn from it",
+    "readout": "observer [col, row] · 52 of 90 targets clear",
+    "feasibility": "ready",
+    "feasibilityNote": "update already rebuilds pairs and rays from the observer cell each frame.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "local-dominance",
+   "operation": "GPULocalDominance",
+   "currentScrub": {
+    "parameter": "observerHeight",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "No range is set, so the observerHeight scrub is renormalized away.",
+     "fix": "Set a fixed range for dominance (degrees) so a taller observer visibly brightens the map."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "hovered cell -> show the ring of ground it is compared against",
+    "glyph": "annulus between minimumRadius and maximumRadius around the cursor",
+    "readout": "dominance 4.2° · ring 4–20 cells · observerHeight 8 m",
+    "feasibility": "render",
+    "feasibilityNote": "The output already exists; it needs an annulus glyph and a value readback.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "multi-scale-relief",
+   "operation": "GPUMultiScaleRelief",
+   "currentScrub": {
+    "parameter": "verticalExaggeration",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "The diverging range [-40,40] saturates most cells at exaggeration 1, so the map is near-binary red/blue.",
+     "fix": "Widen to about [-120,120] or lower the default exaggeration."
+    },
+    {
+     "code": "duplicate",
+     "detail": "It looks the same as simple-local-relief and texture-shading (saturated red/blue).",
+     "fix": "Show what MSRM adds: a curtain against the elevation, or a radius-band caption from featureMinimum to featureMaximum."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "binding": "pointer x -> curtain between hillshaded elevation (left) and MSRM output (right)",
+    "glyph": "vertical curtain line",
+    "readout": "elevation | multi-scale relief 2–24 cells",
+    "feasibility": "render",
+    "feasibilityNote": "Both buffers are outputs already; it needs the curtain capability (featureMaximum stays a rebuild slider).",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "peak-prominence",
+   "operation": "GPUTerrainPeakProminence",
+   "currentScrub": {
+    "parameter": "relief",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs 'Data: relief'; the operation has no props.",
+     "fix": "Use a probe on peaks instead of a data scrub."
+    },
+    {
+     "code": "small",
+     "detail": "On a 28-row grid, peaks are isolated single pixels, many on the frame edge, so prominence is invisible as a concept.",
+     "fix": "Draw peaks as dots sized by prominence and lower the default noise (20 m, the maximum) so only real peaks remain."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "hovered peak (nearest non-zero prominence cell) -> its parent peak and key saddle",
+    "glyph": "line from the peak to its parentPeak, with the peak ring sized by prominence",
+    "readout": "prominence 46 m · key saddle 1 812 m",
+    "feasibility": "render",
+    "feasibilityNote": "parentPeak is written but not exposed; expose it and add nearest-peak lookup plus readback.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "peak-snap",
+   "operation": "GPUTerrainPeakSnap",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "Nothing links a candidate to where it snapped, and the status colours have no legend.",
+     "fix": "Draw candidate-to-snapped segments and a snapped/unchanged/rejected legend."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "secondary": "reach",
+    "binding": "pointer -> position of one extra candidate written into the candidates buffer; it snaps live",
+    "glyph": "a ring of radius around the cursor, plus a faint maximumMove ring and an arrow to the snapped summit",
+    "readout": "snapped 230 m · Δh 18 m · radius 300 m",
+    "feasibility": "update",
+    "feasibilityNote": "candidates are already rewritten in update; add one pointer-driven slot (count + 1).",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "point-horizon-profile",
+   "operation": "GPUPointHorizonProfile",
+   "currentScrub": {
+    "parameter": "observerColumn",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "The panorama bars have no horizon line or azimuth ticks, so they do not read as a skyline from the dot.",
+     "fix": "Add a 0° line and N/E/S/W ticks; draw it as a filled line rather than bars."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer cell -> observerColumn/observerRow",
+    "glyph": "observer dot with a faint maximumDistance ring",
+    "readout": "observer [col, row] · highest skyline 14° at 220°",
+    "feasibility": "ready",
+    "feasibilityNote": "update writes the observers buffer each frame.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "point-horizon-visibility",
+   "operation": "GPUPointHorizonVisibility",
+   "currentScrub": {
+    "parameter": "observerColumn",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-fit",
+     "detail": "The 14 summit targets cluster in the top-right like cumulative-viewshed's towers.",
+     "fix": "Use spread-out summits."
+    },
+    {
+     "code": "encoding",
+     "detail": "Visible/hidden use default categorical blue/red with no legend.",
+     "fix": "Use the shared visibility palette and legend."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer cell -> observerColumn/observerRow",
+    "glyph": "observer crosshair; rays to visible summits solid, to hidden ones dashed or omitted",
+    "readout": "observer [col, row] · 6 of 14 summits visible",
+    "feasibility": "ready",
+    "feasibilityNote": "update writes observers, targets and rays each frame.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "profile-peaks",
+   "operation": "GPUProfilePeaks",
+   "currentScrub": {
+    "parameter": "minimumProminence",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "The four transects are concatenated into one line with no separators, and kept peaks are full-height 0/1 bars unrelated to the line.",
+     "fix": "Draw four stacked small profiles (or separators) and mark peaks as dots on the line at refinedIndex."
+    },
+    {
+     "code": "other",
+     "detail": "The noise slider is labelled 'Added noise' without the Data: prefix.",
+     "fix": "Rename it 'Data: noise'."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "binding": "pointer y over the chart -> minimumProminence (0–250 m on the profile's own metre axis, measured from the bottom)",
+    "glyph": "horizontal ruler at the cursor with a vertical prominence bar of that length under each kept peak",
+    "readout": "minimumProminence 35 m · 22 peaks",
+    "feasibility": "ready",
+    "feasibilityNote": "minimumProminence is written per frame.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "relief-blend",
+   "operation": "GPUReliefBlend",
+   "currentScrub": {
+    "parameter": "slopeOpacity",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "The VAT result is meant to be greyscale but draws with the magma ramp.",
+     "fix": "Draw it in greyscale (shared drawRelief)."
+    },
+    {
+     "code": "duplicate",
+     "detail": "It is indistinguishable from relief-shading, slope-aspect-hillshade and solar-shadow-mask at card size.",
+     "fix": "Greyscale plus a swipe or pad that shows the layers being mixed."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": "swipe",
+    "binding": "x -> layers[1].opacity (slope), y -> layers[2].opacity (positive openness)",
+    "glyph": "small 2D crosshair with the two opacities as axis ticks",
+    "readout": "slope 0.50 · openness 0.65",
+    "feasibility": "ready",
+    "feasibilityNote": "All layer opacities are in the per-frame parameter buffer.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "relief-shading",
+   "operation": "GPUReliefShading",
+   "currentScrub": {
+    "parameter": "azimuthDegrees",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Shaded relief is drawn with the magma ramp instead of grey.",
+     "fix": "Use greyscale."
+    },
+    {
+     "code": "duplicate",
+     "detail": "It is the same as slope-aspect-hillshade at defaults.",
+     "fix": "Raise the default skyViewStrength so the ambient-occlusion difference shows, and caption it."
+    }
+   ],
+   "proposal": {
+    "archetype": "aim",
+    "binding": "angle of pointer around the picture centre -> lights[0].azimuthDegrees; distance from centre -> altitudeDegrees (far = low sun)",
+    "glyph": "sun arrow from the centre to the cursor",
+    "readout": "sun 315° · 40° up",
+    "feasibility": "update",
+    "feasibilityNote": "Azimuth is per frame; altitude is hard-coded to 40 in update and only needs to come from the pointer.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "simple-local-relief",
+   "operation": "GPUSimpleLocalRelief",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "[-90,90] saturates at the default radius, so the map reads as binary red/blue.",
+     "fix": "Widen the range or make it scale with the radius."
+    },
+    {
+     "code": "duplicate",
+     "detail": "It looks the same as multi-scale-relief and texture-shading.",
+     "fix": "The radius ring at the pointer distinguishes it."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "binding": "pointer y -> radius (1–20 cells, bottom small); the ring is drawn at the pointer position",
+    "glyph": "circle of radius at the cursor showing the window whose mean is subtracted",
+    "readout": "radius 8 cells (≈ 700 m) · relief here +34 m",
+    "feasibility": "ready",
+    "feasibilityNote": "radius is written per frame (maximumRadius 20 at construction).",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "slope-aspect-hillshade",
+   "operation": "GPUTerrainDerivatives",
+   "currentScrub": {
+    "parameter": "azimuthDegrees",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "The hillshade draws with the magma ramp rather than grey.",
+     "fix": "Greyscale for hillshade."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Only the hillshade output is shown on the poster, the same picture as relief-shading.",
+     "fix": "Show slope or aspect beside the hillshade, for example as a swipe with the cyclic aspect wheel."
+    }
+   ],
+   "proposal": {
+    "archetype": "aim",
+    "binding": "angle around the centre -> azimuthDegrees; distance from centre -> altitudeDegrees (5–85°, far = low)",
+    "glyph": "sun arrow from the centre",
+    "readout": "azimuth 315° · altitude 45°",
+    "feasibility": "ready",
+    "feasibilityNote": "Both are written by update.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "solar-irradiance",
+   "operation": "GPUSolarIrradiance",
+   "currentScrub": {
+    "parameter": "latitude",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-fit",
+     "detail": "The sun table uses longitude 7.9 and latitude 46.5 (the Alps) over a Grand Canyon DEM (about 36.1°N, 112.1°W).",
+     "fix": "Default to the DEM's own latitude and longitude."
+    },
+    {
+     "code": "weak-range",
+     "detail": "At June and 46.5°, sun hours nearly fill the [0,14] range, so the map is washed-out pale.",
+     "fix": "Default to a winter month where canyon shadowing dominates, or range [0,16] with a midpoint."
+    },
+    {
+     "code": "auto-range",
+     "detail": "The insolation output uses 'auto', so month and latitude changes are renormalized away.",
+     "fix": "Use a fixed kWh/m² range."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": "time",
+    "binding": "x -> sunTable month (Jan..Dec), y -> sunTable latitude (top = north)",
+    "glyph": "month tick along the bottom and a latitude tick on the left edge at the cursor",
+    "readout": "21 Dec · 36°N · mean 5.8 h sun",
+    "feasibility": "ready",
+    "feasibilityNote": "The sun table is recomputed and written in update.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "solar-position",
+   "operation": "GPUSolarPosition",
+   "currentScrub": {
+    "parameter": "hour",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "drag",
+    "secondary": "time",
+    "binding": "pointer = the subsolar point: x longitude -> hour UTC (12 - longitude/15), y latitude clamped to ±23.4° -> date by solar declination (month, first-half-year branch)",
+    "glyph": "sun disc at the cursor with the terminator following it",
+    "readout": "21 Jun 14:30 UTC · sun overhead 23°N 37°W",
+    "feasibility": "update",
+    "feasibilityNote": "The timestamp is per frame; update needs a declination-to-date mapping instead of an integer month.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "solar-shadow-mask",
+   "operation": "GPUSolarShadowMask",
+   "currentScrub": {
+    "parameter": "azimuthDegrees",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Illumination draws in magma, not grey.",
+     "fix": "Greyscale."
+    },
+    {
+     "code": "duplicate",
+     "detail": "At altitude 25° it looks like a plain hillshade (relief-shading, slope-aspect-hillshade); the cast shadows that make it different are faint.",
+     "fix": "Lower the default altitude to about 10° or draw sunVisibility as a shadow overlay."
+    }
+   ],
+   "proposal": {
+    "archetype": "aim",
+    "binding": "angle around the centre -> azimuthDegrees; distance from centre -> altitudeDegrees (3–80°, far = low)",
+    "glyph": "sun arrow from the centre",
+    "readout": "sun 135° · 25° up · 18% in shadow",
+    "feasibility": "ready",
+    "feasibilityNote": "Both values are in the per-frame parameter buffer; the horizon is precomputed.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "spike-repair",
+   "operation": "GPUTerrainSpikeRepair",
+   "currentScrub": {
+    "parameter": "spikeCount",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs 'Data: spikes'; jump and tolerance are rebuild-only.",
+     "fix": "Use a swipe between the damaged and repaired tiles."
+    },
+    {
+     "code": "other",
+     "detail": "At the defaults, four damaged blocks still show as dark squares in the 'repaired' output, so the poster reads as a failed repair.",
+     "fix": "Check that jump 200 / tolerance 40 repair the ±512 m blocks, or drop the 2-step offsets from the demo damage."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "binding": "pointer x -> curtain between damaged input (left) and repaired output (right)",
+    "glyph": "vertical curtain line",
+    "readout": "damaged | repaired · 8 blocks shifted",
+    "feasibility": "render",
+    "feasibilityNote": "Both buffers are outputs; it needs the curtain capability.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-cast-shadow",
+   "operation": "GPUTerrainCastShadow",
+   "currentScrub": {
+    "parameter": "azimuthDegrees",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "aim",
+    "binding": "angle around the centre -> azimuthDegrees; distance from centre -> altitudeDegrees (3–60°, far = low)",
+    "glyph": "sun arrow from the centre",
+    "readout": "sun 250° · 12° up · 46% shadowed",
+    "feasibility": "ready",
+    "feasibilityNote": "All sun props are written per frame.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "terrain-contours",
+   "operation": "GPUTerrainContours",
+   "currentScrub": {
+    "parameter": "interval",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Thin dim contour lines over a dark hillshade are hard to see at 320 px.",
+     "fix": "Make the lines thicker and brighter, and colour them by level on a sequential ramp."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "binding": "elevation under the pointer -> firstLevel shifted so one level passes exactly through the cursor (interval unchanged)",
+    "glyph": "the contour through the cursor drawn bold, with a dot at the cursor",
+    "readout": "level 1 240 m · interval 150 m",
+    "feasibility": "ready",
+    "feasibilityNote": "Levels are written per frame and the elevation is on the CPU in inputs.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "terrain-critical-points",
+   "operation": "GPUTerrainCriticalPoints",
+   "currentScrub": {
+    "parameter": "noise",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs 'Data: noise'; connectivity is the only prop and it is enumerated.",
+     "fix": "Use a probe on the class chart and map."
+    },
+    {
+     "code": "encoding",
+     "detail": "Peak, pit and saddle draw on a sequential ramp [0,3], and the boundary class makes a bright frame around the picture.",
+     "fix": "Use categorical colours (peak warm, pit cool, saddle neutral) and hide or mute the boundary class."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "The log bar chart in the corner has no labels.",
+     "fix": "Label the bars peak/pit/saddle."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "hovered cell or chart bar -> highlight every cell of that class",
+    "glyph": "3x3 neighbourhood box at the cursor with the + / − sign pattern, and the class highlighted on the map",
+    "readout": "saddle · 4 sign changes · 312 saddles",
+    "feasibility": "render",
+    "feasibilityNote": "classes and counts are already written; it needs the highlight mask and readback.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "terrain-curvature",
+   "operation": "GPUTerrainCurvature",
+   "currentScrub": {
+    "parameter": "zFactor",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "hovered cell -> its curvature value and sign",
+    "glyph": "a short arc at the cursor bending convex or concave along (profile) or across (plan) the slope",
+    "readout": "profile curvature −0.0012 /m · concave",
+    "feasibility": "render",
+    "feasibilityNote": "The output buffer exists; it needs a readback, and the slope direction comes from CPU elevation.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "terrain-rgb-decode",
+   "operation": "GPUTerrainRGBDecode",
+   "currentScrub": {
+    "parameter": "validMaximum",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "validMaximum spans 300–1400 m over terrain of about 650–2300 m, so the low half blanks everything and even the default hides the whole plateau as nodata.",
+     "fix": "Range 700–2400 m with the default at the top, so holes are the only nodata at defaults."
+    },
+    {
+     "code": "slow",
+     "detail": "The scrub rebuilds the graph (no update).",
+     "fix": "Swipe instead of scrubbing."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "binding": "pointer x -> curtain between the stored red byte (input) and the decoded heights (output)",
+    "glyph": "vertical curtain line",
+    "readout": "RGBA tile | decoded metres",
+    "feasibility": "render",
+    "feasibilityNote": "Both storedRed and decoded are outputs; there is no re-run.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "terrain-ruggedness",
+   "operation": "GPUTerrainRuggedness",
+   "currentScrub": {
+    "parameter": "terrainRuggednessAlgorithm",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "The card scrubs an enumerated prop by full rebuild, and there is no update.",
+     "fix": "Use a render-only probe."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "hovered cell -> the 3x3 window the index is computed over",
+    "glyph": "3x3 box outline at the cursor",
+    "readout": "TRI 42 m (riley)",
+    "feasibility": "render",
+    "feasibilityNote": "The output buffer exists; it needs a box glyph and a readback.",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "terrain-summits",
+   "operation": "GPUTerrainSummits",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "small",
+     "detail": "On a 30-row grid, summits are lone square pixels; the drop that the caption promises is not drawn.",
+     "fix": "Draw summits as dots sized by drop and draw the radius disc around each."
+    },
+    {
+     "code": "duplicate",
+     "detail": "It looks the same as peak-prominence (scattered squares on a dark hillshade).",
+     "fix": "Show the radius disc so the metric-neighbourhood rule is visible."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "binding": "pointer y -> radius (200–1200 m); the radius ring follows the cursor",
+    "glyph": "ring of radius at the cursor and on every detected summit",
+    "readout": "radius 350 m · 18 summits",
+    "feasibility": "ready",
+    "feasibilityNote": "radius is written per frame.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "texture-shading",
+   "operation": "GPUTextureShading",
+   "currentScrub": {
+    "parameter": "detail",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "The diverging range [-100,100] at gain 2 saturates to flat red/blue, which hides the fine texture the technique is known for.",
+     "fix": "Draw in greyscale like Brown's texture shading, or widen the range."
+    },
+    {
+     "code": "duplicate",
+     "detail": "It looks the same as simple-local-relief and multi-scale-relief.",
+     "fix": "Greyscale plus a higher-resolution crop (rows 96) would set it apart."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": "swipe",
+    "binding": "x -> detail (0–2), y -> gain (0.5–8)",
+    "glyph": "crosshair with the two values as edge ticks",
+    "readout": "detail 0.5 · gain 2",
+    "feasibility": "ready",
+    "feasibilityNote": "Both are written per frame.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "topographic-position",
+   "operation": "GPUTerrainTopographicPosition",
+   "currentScrub": {
+    "parameter": "smallRadius",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "There is no update, so the scrub rebuilds.",
+     "fix": "Use a probe; radii stay as sliders."
+    },
+    {
+     "code": "auto-range",
+     "detail": "Diverging auto renormalizes a standardized value.",
+     "fix": "Fix the range to [-3,3]."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "hovered cell -> its three scale radii, with the one that gave the maximum deviation highlighted",
+    "glyph": "three concentric rings at the cursor, the winning radius bold",
+    "readout": "deviation +2.1σ at radius 24 cells",
+    "feasibility": "render",
+    "feasibilityNote": "deviation and radius are outputs; it needs rings and a readback.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "vector-ruggedness",
+   "operation": "GPUTerrainVectorRuggedness",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "No range is set, so radius and zFactor changes are renormalized and the scrub barely shows.",
+     "fix": "Use a fixed range, for example [0,0.08]."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "binding": "pointer y -> radius (1–7 cells); the window box follows the cursor",
+    "glyph": "square window of (2·radius+1) cells at the cursor",
+    "readout": "radius 3 cells · VRM 0.031",
+    "feasibility": "ready",
+    "feasibilityNote": "radius is written per frame (maximumRadius 7).",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "viewshed",
+   "operation": "GPUTerrainViewshed",
+   "currentScrub": {
+    "parameter": "observerColumn",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Default categorical colours put out-of-range in solid red over about 60% of the frame, while visible (brown) and hidden (blue) are muddy.",
+     "fix": "Make out-of-range transparent, visible bright and hidden dark, with a legend."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "reach",
+    "binding": "pointer cell -> observer [observerColumn, observerRow]",
+    "glyph": "observer dot with a faint maximumDistance ring",
+    "readout": "observer [col, row] · visible 34% of range",
+    "feasibility": "ready",
+    "feasibilityNote": "The observer is written each frame by update.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "weiss-landforms",
+   "operation": "GPUTerrainWeissLandforms",
+   "currentScrub": {
+    "parameter": "slopeThresholdDegrees",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Ten landform classes draw with the default uint32 categorical palette, which wraps at 8, so two pairs share colours and there is no legend.",
+     "fix": "Pass a 10-colour categories table and legend as geomorphons does (canyon dark blue ... mountain top red)."
+    },
+    {
+     "code": "duplicate",
+     "detail": "It sits next to geomorphons yet is hard to compare.",
+     "fix": "Use matching colours for the shared concepts (valley, ridge, plain)."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "hovered cell -> highlight every cell of its landform class",
+    "glyph": "class highlight mask with the small- and large-scale radius rings at the cursor",
+    "readout": "upland drainage · 12% of cells",
+    "feasibility": "render",
+    "feasibilityNote": "The landforms buffer exists; it needs the highlight mask and readback.",
+    "effort": "M"
+   },
+   "priority": "high"
+  }
+ ]
+}

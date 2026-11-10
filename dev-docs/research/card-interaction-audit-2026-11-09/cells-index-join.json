@@ -1,0 +1,1007 @@
+{
+ "group": "cells-index-join",
+ "summary": "31 runs in four families: H3/Quadbin cell utilities on Honshu epicenters (17), S2 cells (4), spherical geometry on Great Lakes shores (5) and planar joins on Great Lakes zones (6, including buffer selection and nearest joins). Most pictures are honest and legible, but 17 of 31 cards scrub a Data: or Simulated knob, and 9 scrub by full rebuild (resolution, k, level). Best posters are cell-rollup, cell-topology, point-in-polygon-join, spherical-convex-contains and buffer-selection. Worst are cell-geometry (fill by vertexCount is one flat color), s2-cell-hierarchy (48 overlapping seeds), hilbert-keys (random points hide the curve), s2-cell-measures (auto range turns a tiny latitude trend into a full ramp) and spatial-join-prepared (the prepared index is invisible). Several entries are near duplicates: cell-pyramid / cell-level-selection, cell-measures / s2-cell-measures, spherical-arc-overlay / spherical-polygon-overlay, spatial-predicate-join / spatial-join-candidates / spatial-join-prepared. The biggest lever is a shared 'pointer row' helper: append the pointer as one extra point to an existing per-frame positions buffer, so the real operation (GPUPointToCell, the joins, the contains tests) answers for the cursor on the GPU without a CPU H3/S2 port; this serves about 12 entries. Second lever: spherical-surveys.ts helpers taking a pointer longitude and latitude, so the five spherical runs become place/drag of their survey shapes. Third: join.ts drawing zone bounding boxes, so the join family explains candidates versus exact matches.",
+ "sharedChanges": [
+  {
+   "file": "src/gpu/runs/entries/cells-index-join/support/cells.ts",
+   "change": "Add addPointerCell(builder, family, resolution): a one-row positions buffer written per frame from the pointer, keyed with GPUPointToCell and decoded with GPUCellGeometry, returning the cell boundary for a highlight outline and the key for the readout. Lets cell runs probe without a CPU H3/S2 library.",
+   "entries": [
+    "point-to-cell",
+    "cell-geometry",
+    "cell-aggregation",
+    "cell-measures",
+    "h3-cell-identities",
+    "cell-pyramid",
+    "cell-rollup",
+    "s2-cell-measures",
+    "s2-cell-hierarchy"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/cells-index-join/support/join.ts",
+   "change": "Return zone bounding boxes (and bounds grown by a distance) as outline segments from uploadZones, and add a helper that appends one pointer row to a points buffer; candidates vs exact matches and the prepared index then become visible.",
+   "entries": [
+    "spatial-join-candidates",
+    "spatial-predicate-join",
+    "spatial-join-prepared",
+    "point-in-polygon-join"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/cells-index-join/support/spherical-surveys.ts",
+   "change": "Let getSurveySwath take (longitude, latitude) and make every survey shape center a parameter, so the pointer's geographic position can move the operand in 2D; all five runs already rewrite these vertices per frame.",
+   "entries": [
+    "spherical-arc-overlay",
+    "spherical-polygon-overlay",
+    "spherical-convex-intersection",
+    "spherical-convex-contains",
+    "spherical-polygon-contains"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/cells-index-join/support/kernels.ts",
+   "change": "Give addPairSegments / addCsrEdgeSegments an optional highlighted left id (a one-word uniform) that writes a per-segment flag, so the hovered point's or zone's pairs can be drawn bright with no re-run.",
+   "entries": [
+    "spatial-predicate-join",
+    "spatial-join-candidates",
+    "nearest-feature-weights",
+    "nearest-feature-join"
+   ]
+  }
+ ],
+ "frameworkNeeds": [
+  "pointer position passed to update() in world and geographic (longitude, latitude via geographicWindow) coordinates, written per frame without a rebuild",
+  "2D pointer binding: x and y (or a lon/lat pair) drive two parameters or one vector input",
+  "cursor glyphs: ring of a radius in world or kilometer units, crosshair, box/polygon outline, a short tick from the cursor to the nearest feature",
+  "highlight one id on polygons, dots and lines layers (a highlight uniform compared against owners/values) for render-only probes",
+  "pointer to nearest dot / feature index lookup on CPU copies of inputs (stations, zones, seeds)",
+  "draw-time count from the pointer for paths (playhead along sortedRows)",
+  "snap-and-debounce for compile-time parameters (k, resolution, level) or pre-built variants, when a gesture must touch them",
+  "readout chip that can show an operation output value read back for the hovered element (count, area, key)"
+ ],
+ "entries": [
+  {
+   "id": "buffer-selection",
+   "operation": "GPUBufferSelection",
+   "currentScrub": {
+    "parameter": "distance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "reach",
+    "binding": "perpendicular distance from the pointer to the nearest river segment -> distance",
+    "glyph": "tick from the nearest river point to the cursor, plus a faint corridor outline at that distance",
+    "readout": "distance 0.08 · 112 of 900 selected",
+    "feasibility": "ready",
+    "feasibilityNote": "distance is a per-frame view written by update; only the nearest-segment distance on CPU is new.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "cell-aggregation",
+   "operation": "GPUCellAggregation",
+   "currentScrub": {
+    "parameter": "resolution",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "The card scrubs resolution, which recompiles both key and aggregation passes.",
+     "fix": "Make the card gesture a render-only probe and leave resolution to the slider."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> cell under the cursor (pointer row keyed at the run's resolution)",
+    "glyph": "hovered cell outlined bright, its member epicenters enlarged",
+    "readout": "cell 85283473fffffff · count 14 · sum 71.2 · max 6.4",
+    "feasibility": "render",
+    "feasibilityNote": "Table outputs exist; needs the shared pointer-cell helper and a table lookup of the hovered key.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "cell-compaction",
+   "operation": "GPUCellCompaction",
+   "currentScrub": {
+    "parameter": "keep",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: keep, a random mask share.",
+     "fix": "Let the pointer punch holes in the mask instead (see proposal)."
+    },
+    {
+     "code": "clutter",
+     "detail": "Input wireframe of 343 res-6 cells under seven-color fills reads as noise at card size.",
+     "fix": "Draw the input wireframe fainter and color output cells by their resolution (4/5/6) rather than row % 7."
+    }
+   ],
+   "proposal": {
+    "archetype": "window",
+    "binding": "pointer disk (fixed radius) -> mask = 0 for resolution-6 input cells whose centers fall under it",
+    "glyph": "eraser ring at the cursor",
+    "readout": "removed 9 cells · 7 inputs compact to 61 cells",
+    "feasibility": "update",
+    "feasibilityNote": "mask is already rewritten per frame; needs input cell centers (GPUCellGeometry already runs) or a small kernel comparing centers to a pointer uniform.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "cell-cover",
+   "operation": "GPUCellCover",
+   "currentScrub": {
+    "parameter": "size",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: size.",
+     "fix": "Drag a polygon instead (proposal)."
+    },
+    {
+     "code": "small",
+     "detail": "Two thin elongated shore rings fill a narrow horizontal band; most of the frame is empty.",
+     "fix": "Use fatter rings (or a real Great Lake from src/gpu/data) filling about 70% of the height."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "binding": "pointer position -> translation of the nearer polygon's vertices",
+    "glyph": "move cursor with the dragged polygon outline brightened",
+    "readout": "core 48 · border 31 cells",
+    "feasibility": "ready",
+    "feasibilityNote": "positions and outline are rewritten per frame; change the scale to a translation.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "cell-geometry",
+   "operation": "GPUCellGeometry",
+   "currentScrub": {
+    "parameter": "resolution",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Fill is vertexCount, which is 6 for every H3 cell here, so all cells are one flat lavender.",
+     "fix": "Fill by family-agnostic index or drop the fill and show boundaries with vertex dots; keep vertexCount for the readout."
+    },
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: resolution.",
+     "fix": "Bind the pointer to a probe point (proposal)."
+    },
+    {
+     "code": "slow",
+     "detail": "No update; every card step rebuilds.",
+     "fix": "Add an update that writes the pointer row."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer -> one extra input point, keyed and decoded live",
+    "glyph": "decoded boundary of the cursor's cell with its vertices dotted and center marked",
+    "readout": "key 85283473fffffff · 6 vertices · center 141.9°E 37.4°N",
+    "feasibility": "update",
+    "feasibilityNote": "positions are uploaded once; add an update writing the pointer row (shared helper).",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "cell-grid-path",
+   "operation": "GPUCellGridPath",
+   "currentScrub": {
+    "parameter": "spread",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: spread.",
+     "fix": "Pointer becomes the destination (proposal)."
+    },
+    {
+     "code": "small",
+     "detail": "Four short paths occupy small parts of the frame.",
+     "fix": "Use one or two origins and let the path run across the window."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "reach",
+    "binding": "pointer -> destination of every pair (or the nearest pair), snapped to the nearest measured epicenter",
+    "glyph": "destination crosshair; path cells fill toward it, cut at maximumPathLength",
+    "readout": "path 11 cells (max 14)",
+    "feasibility": "ready",
+    "feasibilityNote": "destinations are written per frame in update.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "cell-level-selection",
+   "operation": "GPUCellLevelSelection",
+   "currentScrub": {
+    "parameter": "activeLevel",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Looks the same as cell-pyramid (same data, same fill, same level slider).",
+     "fix": "Make the GPU-written count the subject: a level ruler or bar of levelCounts with the selected bar highlighted next to the map."
+    },
+    {
+     "code": "clutter",
+     "detail": "Inscribed triangle markers over every cell muddy the fill.",
+     "fix": "Draw markers only, or a thin marker over a muted fill."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "binding": "pointer x over a four-step level ruler -> activeLevel",
+    "glyph": "ruler of four level ticks along the bottom with the active tick lit",
+    "readout": "activeLevel 1 · 214 cells drawn (GPU count)",
+    "feasibility": "ready",
+    "feasibilityNote": "activeLevel is a per-frame view; only the ruler glyph is new.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "cell-measures",
+   "operation": "GPUCellMeasures",
+   "currentScrub": {
+    "parameter": "resolution",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: resolution by rebuild.",
+     "fix": "Probe instead."
+    },
+    {
+     "code": "auto-range",
+     "detail": "Auto range stretches a few percent of latitude variation over the full ramp with no scale.",
+     "fix": "Show the range in the readout/legend (km²) or fix the range per resolution."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> cell under the cursor",
+    "glyph": "hovered cell outlined",
+    "readout": "area 252.9 km² · perimeter 59.1 km · 6 edges",
+    "feasibility": "render",
+    "feasibilityNote": "Measures exist per row; needs the shared pointer-cell helper or a nearest-row lookup.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "cell-pyramid",
+   "operation": "GPUCellPyramid",
+   "currentScrub": {
+    "parameter": "level",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same picture as cell-level-selection.",
+     "fix": "Show the nesting: the pyramid card probes a cell across all four levels."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "level",
+    "binding": "pointer -> cell under the cursor at the shown level; its ancestors at all four levels outlined",
+    "glyph": "nested outlines of the cursor's cell at levels 0 to 3",
+    "readout": "level 1 sum 37 · parent 112 · grandparent 290",
+    "feasibility": "render",
+    "feasibilityNote": "All four level tables exist after one run; needs pointer keys at four resolutions.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "cell-rollup",
+   "operation": "GPUCellRollup",
+   "currentScrub": {
+    "parameter": "resolution",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "Card scrubs the target resolution by full rebuild.",
+     "fix": "Use a render-only probe."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> coarse cell under the cursor; its fine children brightened",
+    "glyph": "parent outline bright, child wireframe filled",
+    "readout": "parent sum 96 = Σ 7 children",
+    "feasibility": "render",
+    "feasibilityNote": "Fine and coarse tables both exist; needs the pointer-cell helper at the coarse resolution and a child-membership flag.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "cell-set-outline",
+   "operation": "GPUCellSetOutline",
+   "currentScrub": {
+    "parameter": "spread",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "'Simulated spread' is a data knob without the Data: prefix, so the census treats it as a prop.",
+     "fix": "Label it Data: spread."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "binding": "pointer -> a small cluster of extra points that joins the cell set",
+    "glyph": "brush ring at the cursor; the outline merges around the added cells",
+    "readout": "set 118 cells · 74 boundary edges",
+    "feasibility": "update",
+    "feasibilityNote": "positions are rewritten per frame; append a handful of pointer rows to the positions buffer.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "cell-table-compare",
+   "operation": "GPUCellTableCompare",
+   "currentScrub": {
+    "parameter": "shift",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Most union cells sit near zero (grey); only a few cells read as gained or lost.",
+     "fix": "Use a larger default shift or fewer, denser points so the east edge gains and west edge loses visibly."
+    },
+    {
+     "code": "auto-range",
+     "detail": "Diverging auto range renormalizes after each shift, hiding how much changed.",
+     "fix": "Fix the range (for example ±8 count)."
+    },
+    {
+     "code": "other",
+     "detail": "'Simulated shift' is a data knob without the Data: prefix.",
+     "fix": "Label it Data: shift."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "binding": "pointer offset from the window center -> after-points shift (dx, dy)",
+    "glyph": "arrow from the center to the cursor showing the shift vector",
+    "readout": "shift 0.20°E 0.05°N · +34 / −31 cells",
+    "feasibility": "update",
+    "feasibilityNote": "afterPositions are written per frame; add the y component.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "cell-topology",
+   "operation": "GPUCellTopology",
+   "currentScrub": {
+    "parameter": "k",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "No update; card scrubs k, which fixes the output stride and recompiles.",
+     "fix": "Bind the pointer to a seed position (per frame)."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer -> position of the nearest seed (or a fourth seed), keyed per frame",
+    "glyph": "seed dot under the cursor; disk recolored by grid distance around it",
+    "readout": "seed cell 85283473fffffff · k 3 · 37 cells",
+    "feasibility": "update",
+    "feasibilityNote": "seeds are uploaded once; add an update that writes the seeds buffer.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "h3-cell-identities",
+   "operation": "GPUH3CellIdentities",
+   "currentScrub": {
+    "parameter": "resolution",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Direction/vertex numbers are categorical but drawn on a sequential ramp.",
+     "fix": "Use a categorical ramp with six classes."
+    },
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: resolution by rebuild.",
+     "fix": "Probe instead."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> cell under the cursor",
+    "glyph": "hovered cell's six edges (or vertices) thickened",
+    "readout": "edge 3 · id 115283473fffffff",
+    "feasibility": "render",
+    "feasibilityNote": "Identifiers exist per slot; needs pointer-cell lookup and a highlight id.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "hilbert-keys",
+   "operation": "GPUHilbertKeys",
+   "currentScrub": {
+    "parameter": "jitter",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: jitter.",
+     "fix": "Playhead along key order (proposal)."
+    },
+    {
+     "code": "clutter",
+     "detail": "220 random points make the visiting path a tangle; the curve's locality is not visible.",
+     "fix": "Draw the order-n Hilbert curve faintly as context, or use a regular grid of points."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "binding": "pointer x -> number of sorted rows drawn along the path",
+    "glyph": "path growing in key order, head dot at the current key",
+    "readout": "key 41 of 64 · 140 points visited",
+    "feasibility": "render",
+    "feasibilityNote": "sortedRows exist; needs a draw-time path count from the pointer.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "nearest-feature-join",
+   "operation": "GPUNearestFeatureJoin",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "reach",
+    "binding": "pointer -> one extra query point joined live",
+    "glyph": "ring of radius at the cursor and its k links drawn bold",
+    "readout": "k 1 · nearest station 0.12 (radius 0.30)",
+    "feasibility": "update",
+    "feasibilityNote": "queries are uploaded once; append a pointer row written per frame.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "nearest-feature-weights",
+   "operation": "GPUNearestFeatureWeights",
+   "currentScrub": {
+    "parameter": "k",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "No update; every card step rebuilds both join and weights.",
+     "fix": "Use a render-only probe."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "drag",
+    "binding": "pointer -> nearest point; its CSR row highlighted",
+    "glyph": "hovered point ringed; its k edges bright and labeled by weight",
+    "readout": "row 17 · k 3 · Σ weights 2.41",
+    "feasibility": "render",
+    "feasibilityNote": "CSR edges and row sums exist; needs nearest-dot lookup and a highlighted row on the lines layer.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "point-in-polygon-join",
+   "operation": "GPUPointInPolygonJoin",
+   "currentScrub": {
+    "parameter": "size",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Both sliders are Data:; the card scrubs zone size.",
+     "fix": "Pointer is a query point (proposal)."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "probe",
+    "binding": "pointer -> one extra point in the per-frame points buffer",
+    "glyph": "large cursor dot colored by the zone id the join wrote; that zone outline lit",
+    "readout": "in zone 3 (Lake Michigan) · 38 points (featureCounts)",
+    "feasibility": "update",
+    "feasibilityNote": "points are already written per frame; grow the buffer by one row for the pointer.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "point-to-cell",
+   "operation": "GPUPointToCell",
+   "currentScrub": {
+    "parameter": "resolution",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "No update; card scrubs resolution by rebuild.",
+     "fix": "Add a pointer row written per frame."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "Points are muted context dots and cells are thin outlines; the point-to-cell link is faint.",
+     "fix": "Brighten points and fill hit cells lightly."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "binding": "pointer -> one extra point keyed live",
+    "glyph": "cursor dot with its cell outlined bright",
+    "readout": "key 85283473fffffff · res 5",
+    "feasibility": "update",
+    "feasibilityNote": "positions are uploaded once; add update and a pointer row (shared helper).",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "s2-cap-covering",
+   "operation": "GPUS2CapCovering",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "Cap radius is a real operation input (caps view) but labelled Data: radius.",
+     "fix": "Label it cap radius."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": "place",
+    "binding": "great-circle distance from the nearest cap center to the pointer -> that cap's radius",
+    "glyph": "cap circle following the cursor with a radius line from the center",
+    "readout": "cap radius 0.42° · 23 cells at level 8",
+    "feasibility": "ready",
+    "feasibilityNote": "caps and outline are written per frame; make the radius per cap.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "s2-cell-hierarchy",
+   "operation": "GPUS2CellHierarchy",
+   "currentScrub": {
+    "parameter": "level",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "clutter",
+     "detail": "48 seeds produce overlapping parents in eight wrapped categories; the parent/child relation is unreadable.",
+     "fix": "Use 5 to 8 well-separated seeds."
+    },
+    {
+     "code": "slow",
+     "detail": "No update; card scrubs level by rebuild.",
+     "fix": "Probe instead."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> nearest seed cell; its result cells highlighted",
+    "glyph": "seed outlined bright, its parent/children/neighbors filled, others dimmed",
+    "readout": "seed level 9 → parent at level 7",
+    "feasibility": "render",
+    "feasibilityNote": "results are grouped per seed (sources); needs a highlight id on the polygons layer.",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "s2-cell-measures",
+   "operation": "GPUS2CellMeasures",
+   "currentScrub": {
+    "parameter": "level",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "Auto range stretches a tiny variation across the full ramp, implying large differences.",
+     "fix": "Show relative deviation from the level mean with labeled range, or fix the range."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Same idea and look as cell-measures.",
+     "fix": "Emphasize S2's face distortion: a wider window or show steradians converted to km² in the readout."
+    },
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: level by rebuild.",
+     "fix": "Probe instead."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "binding": "pointer -> cell under the cursor",
+    "glyph": "hovered cell outlined",
+    "readout": "area 2.1e-6 sr (86 km²) · perimeter 0.0058 rad",
+    "feasibility": "render",
+    "feasibilityNote": "Measures exist per row; needs pointer-cell lookup.",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "s2-polygon-covering",
+   "operation": "GPUS2PolygonCovering",
+   "currentScrub": {
+    "parameter": "size",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "All cells share one color, so the mixed-level point of the operation relies on wireframe size only.",
+     "fix": "Color cells by their level (decode from the key)."
+    },
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: size.",
+     "fix": "Drag the polygon (proposal)."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "binding": "pointer -> polygon center (translation of the ring)",
+    "glyph": "polygon outline follows the cursor",
+    "readout": "cover 214 cells · levels 6 to 10",
+    "feasibility": "ready",
+    "feasibilityNote": "positions and outline are written per frame; change scale to translation.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-join-candidates",
+   "operation": "GPUSpatialJoinCandidates",
+   "currentScrub": {
+    "parameter": "distance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "Bounding boxes are not drawn, so why points outside a lake are paired is unexplained.",
+     "fix": "Draw each zone's grown bounds as a rectangle."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Looks like spatial-predicate-join (lines from points to zone centers).",
+     "fix": "The bbox rectangles distinguish it."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "binding": "distance from the pointer to the nearest zone's bounds -> distance",
+    "glyph": "grown bounding boxes of all zones drawn at the current distance",
+    "readout": "distance 0.03 · 412 candidate pairs",
+    "feasibility": "ready",
+    "feasibilityNote": "distance is a per-frame view; bbox glyph from CPU zone bounds.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "spatial-join-prepared",
+   "operation": "GPUSpatialJoinPrepared",
+   "currentScrub": {
+    "parameter": "time",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Both parameters are Data:.",
+     "fix": "Pointer carries the moving points (proposal)."
+    },
+    {
+     "code": "other",
+     "detail": "The prepared index (bounds, BVH) is the subject but is not drawn; the poster looks like a plain within join.",
+     "fix": "Draw the prepared zone bounds as static context."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Similar to spatial-predicate-join and point-in-polygon-join.",
+     "fix": "Static index boxes plus a moving swarm distinguish it."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "binding": "pointer -> center of the point swarm (points written per frame around it)",
+    "glyph": "swarm follows the cursor over static index boxes",
+    "readout": "index built once · 57 pairs this frame",
+    "feasibility": "ready",
+    "feasibilityNote": "points are written per frame in update.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "spatial-predicate-join",
+   "operation": "GPUSpatialPredicateJoin",
+   "currentScrub": {
+    "parameter": "distance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "clutter",
+     "detail": "Hundreds of orange lines to zone centers form dense starbursts over the lakes.",
+     "fix": "Color matched points by zone and drop or thin the lines."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "binding": "distance from the pointer to the nearest zone boundary -> distance",
+    "glyph": "tick from the nearest shore to the cursor and a ring of the distance",
+    "readout": "dwithin 0.06 · 188 pairs",
+    "feasibility": "ready",
+    "feasibilityNote": "distance is a per-frame view; nearest-shore distance computed on CPU.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spherical-arc-overlay",
+   "operation": "GPUSphericalArcOverlay",
+   "currentScrub": {
+    "parameter": "shift",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Nearly the same poster as spherical-polygon-overlay (Superior plus corridor).",
+     "fix": "Use a different default operation and an operand pair without holes, or fill the result."
+    },
+    {
+     "code": "other",
+     "detail": "The corridor is a real operand but is labelled Data:.",
+     "fix": "Label it corridor longitude."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "binding": "pointer longitude, latitude -> corridor center",
+    "glyph": "corridor outline follows the cursor",
+    "readout": "union · 1 ring, 46 vertices",
+    "feasibility": "update",
+    "feasibilityNote": "corridor is written per frame from longitude only; add latitude to getSurveySwath.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spherical-convex-contains",
+   "operation": "GPUSphericalConvexContains",
+   "currentScrub": {
+    "parameter": "size",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: search radius.",
+     "fix": "Pointer places the search area (proposal)."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "reach",
+    "binding": "pointer longitude, latitude -> center of the search polygon (fixed at 142.15°E 37.45°N today)",
+    "glyph": "geodesic hexagon outline at the cursor",
+    "readout": "center 142.2°E 37.5°N · 60 km · 214 inside",
+    "feasibility": "update",
+    "feasibilityNote": "polygon vertices are written per frame; only the hard-coded center moves to the pointer.",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "spherical-convex-intersection",
+   "operation": "GPUSphericalConvexIntersection",
+   "currentScrub": {
+    "parameter": "separation",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "All three parameters are Data:.",
+     "fix": "Drag the footprint (proposal)."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "binding": "pointer longitude, latitude -> survey footprint center (latitude fixed at 47.75 today)",
+    "glyph": "footprint outline follows the cursor",
+    "readout": "intersection 7 vertices",
+    "feasibility": "update",
+    "feasibilityNote": "footprint is written per frame; pass latitude from the pointer.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spherical-polygon-contains",
+   "operation": "GPUSphericalPolygonContains",
+   "currentScrub": {
+    "parameter": "size",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "small",
+     "detail": "Lake Michigan is a narrow shape in the middle; the exclusion hole is tiny and most flashes lie west of the lake.",
+     "fix": "Tighten the window to the lake and enlarge the default hole."
+    },
+    {
+     "code": "data-headline",
+     "detail": "Card scrubs Data: exclusion latitude.",
+     "fix": "Place the hole (proposal)."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "reach",
+    "binding": "pointer longitude, latitude -> exclusion hole center (longitude fixed at -87.1 today)",
+    "glyph": "hole ring at the cursor",
+    "readout": "hole 87.1°W 44.1°N · 16 km · 63 inside",
+    "feasibility": "update",
+    "feasibilityNote": "hole ring is written per frame; pass both coordinates from the pointer.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spherical-polygon-overlay",
+   "operation": "GPUSphericalPolygonOverlay",
+   "currentScrub": {
+    "parameter": "shift",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Looks like spherical-arc-overlay.",
+     "fix": "Make the hole the point: default to difference and fill the result polygon so the hole shows."
+    },
+    {
+     "code": "other",
+     "detail": "The corridor is a real operand but is labelled Data:.",
+     "fix": "Label it corridor longitude."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "binding": "pointer longitude, latitude -> corridor center",
+    "glyph": "corridor outline follows the cursor",
+    "readout": "intersection · 2 rings (1 hole)",
+    "feasibility": "update",
+    "feasibilityNote": "corridor is written per frame from longitude only; add latitude.",
+    "effort": "S"
+   },
+   "priority": "medium"
+  }
+ ]
+}

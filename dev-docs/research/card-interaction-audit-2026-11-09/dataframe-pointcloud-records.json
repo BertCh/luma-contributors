@@ -1,0 +1,1531 @@
+{
+ "group": "dataframe-pointcloud-records",
+ "summary": "Forty-four runs: dataframe operations on Midwest lightning flashes, Chicago tract and workplace tables, point-pattern and variogram charts beside a flash map, King County lidar point clouds, and six computation-record runs. 33 of 44 already scrub with update, but 13 scrub a Data: knob (six of the eleven lidar runs scrub jitter, strays, slump depth or coordinate magnitude), and 11 rebuild on every step (the six record and snapshot runs, ground, smrf, icp, voxel-merge, local-positions). Best pictures: point-buffer, transfer-mask, pointcloud-change, composite-score and temporal-reduction. Worst: pointcloud-smrf (a flat purple raster), class-breaks (flat sorted curve, lone bar), color-scale (fake palette), pointcloud-voxel-merge and pointcloud-statistical-filter (the effect cannot be seen from above). Nine chart-beside-map runs (variogram family, Ripley family, marked points) share one layout, have no reference lines and look alike. One shared distance-axis probe with rings or pair links would fix most of them at once. The lidar runs need a shared nearest-point probe, and a side-profile view in _lib/helpers.ts for operations that work in z.",
+ "sharedChanges": [
+  {
+   "file": "src/gpu/runs/entries/dataframe-pointcloud-records/_lib/helpers.ts",
+   "change": "Add a distance-axis helper for the chart-beside-map runs: map pointer x to the chart lag/radius, return pair segments in that bin (createFieldSample positions) or ring segments of radius r (createPatternSource positions), plus CSR reference curves (K, G, F, zero line).",
+   "entries": [
+    "variogram",
+    "cross-variogram",
+    "variogram-model-fit",
+    "spatial-correlogram",
+    "ripley-k",
+    "ripley-envelope",
+    "ripley-distance-functions",
+    "marked-point-statistics"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/dataframe-pointcloud-records/_lib/helpers.ts",
+   "change": "Give TerrainCloud a side-profile projection (x vs z) and a nearest-point lookup on the footprint, so z-based operations can show what they do and lidar runs can probe a point instead of scrubbing Data: jitter.",
+   "entries": [
+    "pointcloud-features",
+    "pointcloud-neighborhoods",
+    "pointcloud-height",
+    "pointcloud-statistical-filter",
+    "pointcloud-ground",
+    "pointcloud-smrf",
+    "pointcloud-surfaces"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/dataframe-pointcloud-records/_lib/helpers.ts",
+   "change": "Replace \"first N rows\" and hash masks with a spatial-box mask helper (rows inside a rectangle), so mask sliders mean a selection.",
+   "entries": [
+    "column-profile",
+    "bivariate-classification",
+    "group-statistics",
+    "point-pattern-indices"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/entries/dataframe-pointcloud-records/_lib/helpers.ts",
+   "change": "Add a tract hover helper next to uploadTractGeometry (tract under pointer, its member rows by key) for highlight-by-key probes.",
+   "entries": [
+    "group-statistics",
+    "inequality",
+    "key-join",
+    "composite-score",
+    "transfer-mask"
+   ]
+  },
+  {
+   "file": "src/gpu/runs/record-demo.ts",
+   "change": "Add a hit test for createDiagram node and edge shapes, and cache the afterRun readback so snapshots, frames and coalesced variants can be redrawn without rebuilding the graph.",
+   "entries": [
+    "computation-captures",
+    "computation-metrics",
+    "computation-record",
+    "computation-recorder",
+    "snapshot-arena",
+    "snapshot-tap"
+   ]
+  }
+ ],
+ "frameworkNeeds": [
+  "two-axis pointer binding (x and y each to a parameter, including enumerated y bands)",
+  "pointer in world coordinates passed to update/draw (for place, window and drag bindings that write input buffers)",
+  "pointer x mapped through a chart rectangle to the chart x axis, with a vertical rule glyph on the chart",
+  "ring glyph and per-frame ring segment layer at a given world radius",
+  "pointer to nearest dot lookup, and highlight by key or value on dots and polygons layers",
+  "swipe curtain: clip two layer sets at pointer x without a rerun",
+  "snapped and debounced rebuild for compile-time props bound to the pointer",
+  "reference line layer in charts (constant y rule, theoretical curve)",
+  "small scalar readback for the text readout (counts, statistics under the pointer)",
+  "redraw from cached afterRun results without rerunning the graph"
+ ],
+ "entries": [
+  {
+   "id": "bivariate-classification",
+   "operation": "GPUBivariateClassification",
+   "currentScrub": {
+    "parameter": "classCountX",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "The key matrix and the count matrix (dots of radius 17) sit stacked with no labels, so a reader cannot tell key from counts.",
+     "fix": "Draw the counts as numbers or bar heights inside the key cells instead of a second matrix of dots."
+    },
+    {
+     "code": "other",
+     "detail": "mask keeps the first N rows in file order, which is not a meaningful selection.",
+     "fix": "Make the mask spatial (rows inside a box) or drop it from the card."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "pad",
+    "binding": "pointer over a key cell -> that joint class; pointer over the map -> nearest record and its class; outside both, x -> classCountX and y -> classCountY",
+    "glyph": "hovered key cell outlined, its records drawn full size and the rest dimmed",
+    "readout": "class (x 2, y 1) · 214 rows · energy 3-6, area 5-6",
+    "feasibility": "render",
+    "feasibilityNote": "classIds are already GPU output; only a highlight-by-value on the dots layer is needed",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "calendar-buckets",
+   "operation": "GPUCalendarBuckets",
+   "currentScrub": {
+    "parameter": "utcOffsetHours",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "No hour or weekday ticks, so the 24 x 7 grid reads as an abstract heatmap and the offset shift is unexplained.",
+     "fix": "Add hour ticks (0, 6, 12, 18) along x and weekday initials along y."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": "probe",
+    "binding": "pointer x -> utcOffsetHours (-12..12, the grid slides under the pointer), pointer y -> firstDayOfWeek (rows rotate)",
+    "glyph": "vertical line at local midnight and a highlighted first-day row",
+    "readout": "utcOffset -4 h · week starts Monday · Sat 17:00 = 312 departures",
+    "feasibility": "ready",
+    "feasibilityNote": "both values are written per frame by update",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "class-breaks",
+   "operation": "GPUClassBreaks",
+   "currentScrub": {
+    "parameter": "classCount",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "The sorted column is a flat line hugging the axis (heavy tail, auto range), so the breaks have nothing to cut.",
+     "fix": "Plot the sorted values on a log y axis or the spread-adjusted range so the curve has shape."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Breaks are never drawn; the bars alone (one tall, three tiny, the fifth invisible) do not show where classes split.",
+     "fix": "Draw each GPU break as a horizontal rule across the sorted curve and colour the sorted dots by class."
+    },
+    {
+     "code": "encoding",
+     "detail": "Natural breaks on this tail give one class with almost every row, so the bars are a lone bar.",
+     "fix": "Use log1p energy as the column, as the variogram runs do."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "secondary": "pad",
+    "binding": "pointer x -> classCount (2..9); pointer y -> method in five horizontal bands",
+    "glyph": "break rules across the sorted curve, the band for the current method tinted",
+    "readout": "natural-breaks · 5 classes · breaks 12, 31, 58, 104 fJ",
+    "feasibility": "ready",
+    "feasibilityNote": "method and classCount are both per-frame in update",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "color-scale",
+   "operation": "GPUColorScale",
+   "currentScrub": {
+    "parameter": "paletteCount",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "The palette is fake (0xff000000 | index*30) and the class indices are drawn on a sequential ramp, so the scale's colours are never shown.",
+     "fix": "Write a real categorical palette and draw classIndices with those colours, plus a legend strip of domain stops to palette swatches."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "Most rows fall in class 0, so the poster is a dark map with a few bright specks.",
+     "fix": "Feed log energy or use the quantile scale by default so classes are balanced."
+    },
+    {
+     "code": "small",
+     "detail": "The class-size bars occupy a small corner over the map.",
+     "fix": "Give the legend and bars a dedicated bottom strip."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "secondary": "probe",
+    "binding": "pointer x along a legend strip -> paletteCount (2..8), y -> scale (quantize / threshold / quantile bands); hovering a swatch highlights its records",
+    "glyph": "legend strip split into paletteCount swatches with the domain stops ticked",
+    "readout": "threshold · 6 colours · class 3: 412 rows",
+    "feasibility": "ready",
+    "feasibilityNote": "scale, paletteCount and the feeding classCount are per-frame",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "column-profile",
+   "operation": "GPUColumnProfile",
+   "currentScrub": {
+    "parameter": "mask",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "clutter",
+     "detail": "The histogram is drawn over the bottom half of the dot map, so both are half hidden.",
+     "fix": "Split the frame: map on top, histogram strip below."
+    },
+    {
+     "code": "other",
+     "detail": "mask keeps the first N rows in file order, so the bright histogram is an arbitrary subset.",
+     "fix": "Derive the mask from a spatial box so the subset means something."
+    }
+   ],
+   "proposal": {
+    "archetype": "window",
+    "secondary": "level",
+    "binding": "pointer is the centre of a box on the map (size fixed, about a quarter of the frame); rows inside -> mask; in the histogram strip x -> domainMaximum",
+    "glyph": "box outline on the map, kept dots bright, bright bars = rows in the box over faint all-rows bars",
+    "readout": "mask 384 of 2000 rows · mean 21 · domain 0-50",
+    "feasibility": "update",
+    "feasibilityNote": "mask is already written per frame; it only needs computing from the pointer box instead of row order",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "column-quantiles",
+   "operation": "GPUColumnQuantiles",
+   "currentScrub": {
+    "parameter": "filterLower",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "outputMask (uint32) is drawn with the categorical default, two arbitrary colours, over a value-coloured context.",
+     "fix": "Draw kept rows bright and dropped rows muted with explicit colours."
+    },
+    {
+     "code": "small",
+     "detail": "The quantile bars sit in a corner and are on a fixed 0-35 range that the tail exceeds.",
+     "fix": "Show a sorted-value (CDF) strip with quantile ticks along the bottom instead."
+    }
+   ],
+   "proposal": {
+    "archetype": "window",
+    "secondary": "level",
+    "binding": "pointer x along the CDF strip -> centre of filterRange, pointer y -> its width (both clamped to 0-100 %)",
+    "glyph": "shaded band on the CDF strip between filterLower and filterUpper, quantile ticks above",
+    "readout": "filterRange 10-90 % · 1600 rows kept · energy 2.1-48 fJ",
+    "feasibility": "ready",
+    "feasibilityNote": "filterLower and filterUpper are per-frame parameters",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "composite-score",
+   "operation": "GPUCompositeScore",
+   "currentScrub": {
+    "parameter": "weight",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "The score fill uses range auto, so changing a weight renormalizes and the map barely changes.",
+     "fix": "Fix the range per scaler/aggregation pair (min-max weighted sum: [0, sum of weights])."
+    }
+   ],
+   "proposal": {
+    "archetype": "aim",
+    "secondary": "probe",
+    "binding": "pointer angle around the map centre -> which indicator gets the extra weight (four quadrants: poverty, unemployment, 65+, population), distance -> how much (0..4)",
+    "glyph": "four-arm compass with indicator names, the arm under the pointer lengthened",
+    "readout": "weights [1, 2.5, 1, 1] · unemployment emphasised",
+    "feasibility": "ready",
+    "feasibilityNote": "all four weights are in the per-frame parameter buffer; update writes only weight[1] today",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "computation-captures",
+   "operation": "createGPUComputationCaptures",
+   "currentScrub": {
+    "parameter": "snapshots",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "Every scrub step rebuilds the graph, reruns the relaxation and reads back the arena.",
+     "fix": "Read back once with all frames and choose the bundled snapshots in afterRun or draw."
+    },
+    {
+     "code": "clutter",
+     "detail": "Twelve tiny tract maps, a stamp map, three bars and a validity square at 320 px.",
+     "fix": "Show four frames, enlarge the stamp map, label the three bars."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "secondary": "probe",
+    "binding": "pointer x over the frame strip -> playhead over iterations; frames left of it are bundled as snapshots",
+    "glyph": "playhead line, bundled frames bright and the rest dimmed",
+    "readout": "snapshots 4 of 6 · settledAt: 38 tracts by round 3",
+    "feasibility": "rebuild",
+    "feasibilityNote": "snapshots is consumed in afterRun after a rebuild; cache the readback frames and re-bundle without rerunning the graph",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "computation-metrics",
+   "operation": "createGPUComputationMetrics",
+   "currentScrub": {
+    "parameter": "taps",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "Each scrub step rebuilds and afterRun encodes the graph 400 times.",
+     "fix": "Pre-build the few variants (taps 0-4 x coalesced) once and switch between cached results."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Pass-total bars and node bars carry no node names or units.",
+     "fix": "Readout on hover instead of labels."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "secondary": "probe",
+    "binding": "pointer x is a curtain between coalesced=false (left) and coalesced=true (right) timelines; hover a node bar to see its id",
+    "glyph": "vertical curtain line; hovered node bar outlined with its pass colour",
+    "readout": "node relax-3 · pass 2 · 0.004 ms",
+    "feasibility": "rebuild",
+    "feasibilityNote": "coalesced is an encoding flag in afterRun; pre-encode both variants once and swipe between cached extras",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "computation-record",
+   "operation": "createGPUComputationRecord",
+   "currentScrub": {
+    "parameter": "sources",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "Six log-scale bars with no labels; the dedup point (sources passed vs kept) is invisible.",
+     "fix": "Draw passed and kept sources as two adjacent labelled bars."
+    },
+    {
+     "code": "slow",
+     "detail": "Scrub rebuilds the graph each step (cheap but needless: sources is used only in afterRun).",
+     "fix": "Keep the graph and recompute the record in afterRun only."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer over a graph node -> that node; over a lifetime row -> that resource",
+    "glyph": "hovered node outlined, its resources' lifetime rows highlighted and the source colour swatch enlarged",
+    "readout": "node spatial-lag-2 · source wgsl:abc123 · 3 resources",
+    "feasibility": "render",
+    "feasibilityNote": "diagram layout and lifetimes exist in extra; needs a hit test on diagram shapes",
+    "effort": "L"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "computation-recorder",
+   "operation": "GPUComputationRecorder",
+   "currentScrub": {
+    "parameter": "iterations",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: iterations, not sourceText or withScope.",
+     "fix": "Mark scopes as cardScrub or use the probe below."
+    },
+    {
+     "code": "slow",
+     "detail": "No update, so every step rebuilds.",
+     "fix": "Render-only probe needs no rerun."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "pad",
+    "binding": "pointer over a node in either graph -> that node and its twin in the other graph",
+    "glyph": "twin nodes outlined in both diagrams with a connector, scope siblings tinted",
+    "readout": "node 7 · scope iteration-2 · source text 1.2 kB",
+    "feasibility": "render",
+    "feasibilityNote": "both diagrams are already in extra; needs a node hit test",
+    "effort": "L"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "cross-variogram",
+   "operation": "GPUCrossVariogram",
+   "currentScrub": {
+    "parameter": "maximumDistance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "Bars start at the bottom of a [-3, 3] range with no zero line, so positive and negative cross semivariance look the same.",
+     "fix": "Draw a zero rule and bars from zero."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "At mix = 0 the bars are near zero and uniform, so the default shows no relation.",
+     "fix": "Default mix around 0.6 so the curve rises with lag."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer x over the card maps to the chart distance axis [0, maximumDistance]; the lag bin under it is highlighted and up to 40 point pairs at that lag are drawn on the map",
+    "glyph": "vertical rule on the chart, pair segments on the map coloured by product of differences",
+    "readout": "lag 0.12-0.15 · cross γ 0.8 · 340 pairs",
+    "feasibility": "render",
+    "feasibilityNote": "positions are static on the CPU; pair selection per bin is CPU work with no rerun",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "datum-grid-transform",
+   "operation": "GPUDatumGridTransform",
+   "currentScrub": {
+    "parameter": "longitudeOffset",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "\"Test longitude offset\" moves the sample lattice, not a prop of the transform.",
+     "fix": "Replace it with the pointer-placed test location below."
+    },
+    {
+     "code": "small",
+     "detail": "At card size the magnified vectors are short strokes in a regular lattice.",
+     "fix": "Fewer, longer vectors (12 x 6) and a larger tip dot."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": null,
+    "binding": "pointer -> one extra test location (lon, lat) appended to positions",
+    "glyph": "crosshair at the pointer with a thick magnified shift arrow",
+    "readout": "NAD27 -> NAD83 at 92.4°W 41.2°N · shift 14.2 m E, 2.1 m N",
+    "feasibility": "update",
+    "feasibilityNote": "positions are written per frame; reserve one row for the pointer location",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "group-statistics",
+   "operation": "GPUGroupStatistics",
+   "currentScrub": {
+    "parameter": "mask",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "weak-range",
+     "detail": "mask is a random hashed subset, so changing it nudges statistics a little without explaining grouping.",
+     "fix": "Use the probe to show group membership instead."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "Row dots are white at 0.25 alpha and radius 1.2, invisible at card size.",
+     "fix": "Raise to radius 2 and alpha 0.5."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer over a tract -> that group key",
+    "glyph": "tract outline highlighted, its member blocks drawn bright, others dimmed",
+    "readout": "tract 1704 · 23 blocks · mean 410 jobs",
+    "feasibility": "render",
+    "feasibilityNote": "keys are on the CPU; needs a highlight-by-key on the dots and polygons layers",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "inequality",
+   "operation": "GPUInequality",
+   "currentScrub": {
+    "parameter": "epsilon",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "range auto renormalizes Atkinson after every run, hiding that larger epsilon raises it.",
+     "fix": "Fix the range to [0, 1] for gini/atkinson/hoover and [0, ln n] for theilT."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "level",
+    "binding": "pointer over a tract -> that zone; elsewhere x -> epsilon",
+    "glyph": "tract highlighted with an inset Lorenz curve of its blocks",
+    "readout": "tract 1704 · Gini 0.62 · Atkinson(ε 1) 0.48 · Hoover 0.41",
+    "feasibility": "render",
+    "feasibilityNote": "needs a highlight and a CPU Lorenz curve from the rows; epsilon stays per-frame",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "key-join",
+   "operation": "GPUKeyJoin",
+   "currentScrub": {
+    "parameter": "rightMask",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Matched blocks and unmatched grey blocks are hard to tell apart on the dark poster.",
+     "fix": "Draw unmatched blocks as hollow rings and fill matched tracts faintly with the joined value."
+    },
+    {
+     "code": "data-fit",
+     "detail": "Each block takes its own tract value, so the dots repeat the tract choropleth and the join itself is not visible.",
+     "fix": "Draw a link from each hovered block to its right-table row (tract centroid)."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer over a block -> its join; over a tract -> all blocks keyed to it",
+    "glyph": "link lines from blocks to the tract centroid, missing right rows drawn hatched",
+    "readout": "block 3021 -> tract 1704 · value 0.31 (matched)",
+    "feasibility": "render",
+    "feasibilityNote": "matched and rightRows are GPU outputs; needs highlight and link drawing",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "marked-point-statistics",
+   "operation": "GPUMarkedPointStatistics",
+   "currentScrub": {
+    "parameter": "areaThreshold",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: flash area cutoff.",
+     "fix": "Use the distance-axis reach below."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "Three curves on three different y ranges share one plot with no reference (g = 1, mark correlation = 1).",
+     "fix": "Draw a reference rule at 1 for pair and mark correlation and drop the cross K bars."
+    },
+    {
+     "code": "clutter",
+     "detail": "Bars plus three lines in a 0.38-wide plot.",
+     "fix": "Show cross K and pair correlation only on the card."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": "probe",
+    "binding": "pointer x over the card maps to the chart distance axis [0, maximumDistance] -> radius r; rings of r drawn around type-0 points",
+    "glyph": "rings of radius r around type-0 points, type-1 points inside a ring brightened; vertical rule on the chart",
+    "readout": "r 0.06 · cross K 0.04 · g 1.6 · mark corr 1.1",
+    "feasibility": "render",
+    "feasibilityNote": "r is a chart position, no rerun; ring drawing needs a lines layer per frame",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "point-buffer",
+   "operation": "GPUPointBuffer",
+   "currentScrub": {
+    "parameter": "radius",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": null,
+    "binding": "distance from the nearest centre to the pointer -> radius (0.01..0.2)",
+    "glyph": "faint guide line from the centre to the pointer; the rings follow",
+    "readout": "radius 0.07 · 16 vertices per ring",
+    "feasibility": "ready",
+    "feasibilityNote": "radius is written per frame by update",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "point-pattern-indices",
+   "operation": "GPUPointPatternIndices",
+   "currentScrub": {
+    "parameter": "mask",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "encoding",
+     "detail": "Nearest-neighbour distances (all positive) are drawn on a diverging ramp centred at zero, so only half the ramp is used.",
+     "fix": "Use a sequential ramp from 0 to about 0.04."
+    },
+    {
+     "code": "other",
+     "detail": "The Clark-Evans index the card claims is not shown.",
+     "fix": "Show it in the readout."
+    },
+    {
+     "code": "clutter",
+     "detail": "Dots of radius 3.4 over a saturated quadrat raster.",
+     "fix": "Lower raster contrast or dot size."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer over a point -> its nearest neighbour; over empty space -> the quadrat under it",
+    "glyph": "segment to the nearest neighbour, or the hovered quadrat outlined",
+    "readout": "nn 0.012 · quadrat 14 points (expected 11) · Clark-Evans R 0.61",
+    "feasibility": "render",
+    "feasibilityNote": "positions and nearest output exist; nearest-point lookup and a small readback for R",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "pointcloud-change",
+   "operation": "GPUPointCloudChange",
+   "currentScrub": {
+    "parameter": "change",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Data: slump depth is the headline; radius and halfDepth are compile-time.",
+     "fix": "Place the slump with the pointer instead (still the comparison epoch, a real input)."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": null,
+    "binding": "pointer -> centre of the simulated slump in the comparison epoch (depth fixed at the default)",
+    "glyph": "dashed circle of the slump footprint and an M3C2 cylinder ring of radius at the nearest core point",
+    "readout": "slump at (0.9, 0.4) · max change -0.06 · 41 cores changed",
+    "feasibility": "update",
+    "feasibilityNote": "comparison is written per frame; the slump centre just moves from fixed to pointer",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "pointcloud-features",
+   "operation": "GPUPointCloudFeatures",
+   "currentScrub": {
+    "parameter": "noise",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: jitter.",
+     "fix": "Use the probe below."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "Planarity is high almost everywhere, so the poster is a uniform speckle.",
+     "fix": "Default to scattering, or colour by the dominant descriptor (linear / planar / scatter) categorically."
+    },
+    {
+     "code": "data-fit",
+     "detail": "A top-down footprint hides the 3D structure that produces the descriptors.",
+     "fix": "Add a narrow side-profile strip (x vs z) of the same points."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest point",
+    "glyph": "neighbourhood ring of radius 0.05 with its neighbours highlighted and a small ellipse of the two largest eigenvalues",
+    "readout": "linearity 0.12 · planarity 0.81 · scattering 0.07 · 18 neighbours",
+    "feasibility": "render",
+    "feasibilityNote": "indices and shapes are GPU outputs; needs a nearest-point lookup and a small readback",
+    "effort": "L"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "pointcloud-ground",
+   "operation": "GPUPointCloudGround",
+   "currentScrub": {
+    "parameter": "initialThreshold",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "Every prop is compile-time, so scrubbing recompiles each step.",
+     "fix": "Snap to a few values with debounce or cache variants."
+    },
+    {
+     "code": "weak-range",
+     "detail": "initialThreshold 0.005-0.8 is linear with default 0.02; most of the range classifies almost everything as ground.",
+     "fix": "Use a logarithmic range 0.005-0.2."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Looks like pointcloud-smrf (ground orange, removed blue dots).",
+     "fix": "Show the window radii as growing squares here and the inpainted surface in smrf."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "secondary": "level",
+    "binding": "pointer x is a curtain: left of it points are coloured by height (input), right by groundMask (output); y -> initialThreshold snapped to 6 values",
+    "glyph": "vertical curtain line, threshold tick on the right edge",
+    "readout": "initialThreshold 0.02 · ground 6120 of 9000",
+    "feasibility": "render",
+    "feasibilityNote": "curtain is render-only; threshold changes rebuild, so snap and debounce them",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "pointcloud-height",
+   "operation": "GPUPointCloudHeight",
+   "currentScrub": {
+    "parameter": "noise",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: jitter.",
+     "fix": "Use the probe below."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer -> nearest point",
+    "glyph": "outline of the terrain cell (grid.cellSize) under the point and a vertical tick sized by height",
+    "readout": "height 0.12 (about 14 m) · interpolation bilinear",
+    "feasibility": "render",
+    "feasibilityNote": "heights are a GPU output; needs nearest-point lookup and a small readback",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "pointcloud-icp",
+   "operation": "GPUPointCloudICP",
+   "currentScrub": {
+    "parameter": "iterations",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Only the aligned source over the target is drawn, so the result is an exact overlay and the misalignment ICP removed is invisible.",
+     "fix": "Draw the unaligned source faintly as context."
+    },
+    {
+     "code": "auto-range",
+     "detail": "The RMSE line has range auto, so its drop is always full height.",
+     "fix": "Fix the range to [0, initial RMSE]."
+    },
+    {
+     "code": "slow",
+     "detail": "Every prop is compile-time; scrubbing iterations recompiles.",
+     "fix": "Move the source upload to update (see proposal)."
+    }
+   ],
+   "proposal": {
+    "archetype": "aim",
+    "secondary": null,
+    "binding": "pointer angle around the cloud centre -> misalignment rotation (-20..20 deg), distance -> shift",
+    "glyph": "faint unaligned source, rotation arc at the centre, aligned result in orange",
+    "readout": "misalignment 8° · RMSE 0.031 -> 0.002 in 12 iterations",
+    "feasibility": "update",
+    "feasibilityNote": "source is uploaded in build; writing it per frame from the angle avoids rebuilds",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "pointcloud-local-positions",
+   "operation": "makePointCloudLocalPositions",
+   "currentScrub": {
+    "parameter": "originDistance",
+    "kind": "data",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Both sliders are Data:; the helper has no other prop.",
+     "fix": "Acceptable here; make the pad below the interaction."
+    },
+    {
+     "code": "slow",
+     "detail": "No update, so each step rebuilds (CPU only, cheap).",
+     "fix": "Upload the two position buffers per frame in update."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": null,
+    "binding": "pointer x -> originDistance (0.1..10 Mm, log), pointer y -> extent (5..40 m)",
+    "glyph": "float32 grid spacing drawn as faint lattice behind the orange dots",
+    "readout": "4.5 Mm · float32 step 0.5 m · local error < 1 mm",
+    "feasibility": "update",
+    "feasibilityNote": "move the CPU computation into update and write both buffers",
+    "effort": "S"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "pointcloud-neighborhoods",
+   "operation": "GPUPointCloudNeighborhoods",
+   "currentScrub": {
+    "parameter": "noise",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: jitter.",
+     "fix": "Use the probe below."
+    },
+    {
+     "code": "no-contrast",
+     "detail": "Count colours are faint at radius 2.6 and the picture reads as speckle.",
+     "fix": "Larger dots and a fixed range."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer -> nearest point; its 3D neighbours within radius are highlighted",
+    "glyph": "ring of radius at the point, neighbours bright, the truncated ones beyond capacity in another colour",
+    "readout": "radius 0.035 · 21 found, 16 kept (capacity)",
+    "feasibility": "render",
+    "feasibilityNote": "indices and counts are GPU outputs; needs a small readback; radius itself is compile-time (snap if bound)",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "pointcloud-smrf",
+   "operation": "GPUPointCloudSMRF",
+   "currentScrub": {
+    "parameter": "threshold",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "The poster is a uniform purple raster; the ground surface saturates and the dots are invisible.",
+     "fix": "Set the raster range from the surface min/max with hillshade and draw dots at radius 2.4 on top."
+    },
+    {
+     "code": "weak-range",
+     "detail": "threshold 0.01-1.1 with default 0.04; most of the range is dead.",
+     "fix": "Logarithmic 0.01-0.3."
+    },
+    {
+     "code": "slow",
+     "detail": "All props compile-time.",
+     "fix": "Snap and debounce."
+    },
+    {
+     "code": "duplicate",
+     "detail": "Same dot classification as pointcloud-ground.",
+     "fix": "Lead with the inpainted surface here."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "secondary": "level",
+    "binding": "pointer x is a curtain between the inpainted ground surface (left) and the classified points (right); y -> threshold snapped to 6 values",
+    "glyph": "curtain line; threshold tick on the right edge",
+    "readout": "threshold 0.04 · ground 5900 of 9000",
+    "feasibility": "render",
+    "feasibilityNote": "curtain is render-only; threshold needs snapped rebuilds",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "pointcloud-statistical-filter",
+   "operation": "GPUPointCloudStatisticalFilter",
+   "currentScrub": {
+    "parameter": "strays",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: stray points.",
+     "fix": "Bind standardDeviations instead."
+    },
+    {
+     "code": "data-fit",
+     "detail": "Strays are mostly floaters above the ground (z random), which a top-down footprint cannot show, so kept and rejected look evenly mixed.",
+     "fix": "Draw a side profile (x vs z) so floaters stand out above the terrain line."
+    },
+    {
+     "code": "slow",
+     "detail": "standardDeviations is compile-time.",
+     "fix": "Snap to 0.25 steps with debounce, or ask upstream for a per-frame threshold."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "secondary": null,
+    "binding": "pointer y over the side profile -> standardDeviations (0.5..4)",
+    "glyph": "horizontal threshold rule across a mean-distance strip, rejected points blue",
+    "readout": "k 1.5 σ · rejected 212 of 2700",
+    "feasibility": "rebuild",
+    "feasibilityNote": "standardDeviations is fixed at construction; snapped rebuild with debounce",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "pointcloud-surfaces",
+   "operation": "GPUPointCloudSurfaces",
+   "currentScrub": {
+    "parameter": "noise",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: jitter.",
+     "fix": "Use the swipe below."
+    },
+    {
+     "code": "encoding",
+     "detail": "Canopy saturates at the top of a [0, 0.25] range, so tree blobs are flat yellow.",
+     "fix": "Range [0, 0.4] or the data maximum."
+    },
+    {
+     "code": "other",
+     "detail": "Only canopy is drawn although the operation writes terrain and surface too.",
+     "fix": "Copy terrain and surface for the swipe."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "secondary": null,
+    "binding": "pointer x is a curtain: terrain (DTM) left, canopy height right; y picks surface (DSM) in the top half",
+    "glyph": "curtain line with the two output names",
+    "readout": "cell 0.04 · canopy max 0.31",
+    "feasibility": "render",
+    "feasibilityNote": "needs the terrain and surface outputs copied to drawable float buffers; no rerun",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "pointcloud-voxel-merge",
+   "operation": "GPUPointCloudVoxelMerge",
+   "currentScrub": {
+    "parameter": "voxelSize",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 1,
+   "issues": [
+    {
+     "code": "no-contrast",
+     "detail": "Merged centroids look the same as one downsample; the two tiles are never shown.",
+     "fix": "Draw each tile's voxels in its own colour and the merged ones on top."
+    },
+    {
+     "code": "data-fit",
+     "detail": "Tiles are split by a row hash, not space, so there is no seam to merge.",
+     "fix": "Split tiles spatially with an overlap band."
+    },
+    {
+     "code": "slow",
+     "detail": "Both params rebuild.",
+     "fix": "See proposal."
+    }
+   ],
+   "proposal": {
+    "archetype": "drag",
+    "secondary": null,
+    "binding": "pointer x -> the boundary between tile 0 (left) and tile 1 (right)",
+    "glyph": "vertical seam line, tile voxels in two colours, merged voxels on the seam outlined",
+    "readout": "voxelSize 0.08 · tile 0 3100 pts, tile 1 2900 · 18 voxels shared",
+    "feasibility": "update",
+    "feasibilityNote": "allocate both tiles at full size and write positions per frame, moving the other tile's points out of the grid",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "ripley-distance-functions",
+   "operation": "GPURipleyDistanceFunctions",
+   "currentScrub": {
+    "parameter": "maximumDistance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "No CSR references: G and F lack the 1 - exp(-λπr²) curve and J lacks the line at 1.",
+     "fix": "Draw the theoretical CSR curve and J = 1 as faint references."
+    },
+    {
+     "code": "clutter",
+     "detail": "Bars plus three lines.",
+     "fix": "Drop the G bars."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": "probe",
+    "binding": "pointer x over the card maps to the chart distance axis [0, maximumDistance] -> r; rings of r around every event",
+    "glyph": "rings of radius r around events, events whose nearest neighbour is inside r brightened; vertical rule on the chart",
+    "readout": "r 0.03 · G 0.71 · F 0.22 · J 0.37",
+    "feasibility": "render",
+    "feasibilityNote": "chart position only; ring layer needed",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "ripley-envelope",
+   "operation": "GPURipleyEnvelope",
+   "currentScrub": {
+    "parameter": "clustering",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: observed flash share.",
+     "fix": "Use the reach below; keep clustering as a slider."
+    },
+    {
+     "code": "weak-range",
+     "detail": "At the default (all observed) the observed curve clips at the top of the fixed range.",
+     "fix": "Raise the range top to about 0.12."
+    },
+    {
+     "code": "chart-bare",
+     "detail": "The band is drawn as grey bars masked by background-coloured bars and no zero line.",
+     "fix": "Draw the envelope as a filled band between two lines with a zero rule."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": null,
+    "binding": "pointer x over the card maps to the chart distance axis [0, maximumDistance] -> r; rings of r around events",
+    "glyph": "rings of radius r; vertical rule on the chart, marked red when the observed curve is outside the band",
+    "readout": "r 0.05 · L-r 0.031 · band [-0.004, 0.006] · clustered",
+    "feasibility": "render",
+    "feasibilityNote": "chart position only; ring layer needed",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "ripley-k",
+   "operation": "GPURipley",
+   "currentScrub": {
+    "parameter": "maximumDistance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "No zero line, which is the CSR expectation for L(r) - r.",
+     "fix": "Draw a zero rule."
+    },
+    {
+     "code": "weak-range",
+     "detail": "The observed curve saturates the fixed [-0.02, 0.08] range at default clustering.",
+     "fix": "Raise the top to about 0.12."
+    }
+   ],
+   "proposal": {
+    "archetype": "reach",
+    "secondary": null,
+    "binding": "pointer x over the card maps to the chart distance axis [0, maximumDistance] -> r; rings of r around a handful of events",
+    "glyph": "rings of radius r, points counted inside brightened; vertical rule on the chart",
+    "readout": "r 0.08 · K 0.041 · L-r 0.034",
+    "feasibility": "render",
+    "feasibilityNote": "chart position only; ring layer needed",
+    "effort": "M"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "scalar-scale",
+   "operation": "GPUScalarScale",
+   "currentScrub": {
+    "parameter": "domainMaximum",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "The faint \"unscaled\" diagonal uses a 0-80 y range while the output uses 0-30, so the comparison is misleading.",
+     "fix": "Drop the diagonal, or draw it on the output axis."
+    }
+   ],
+   "proposal": {
+    "archetype": "level",
+    "secondary": null,
+    "binding": "pointer x on the chart input axis -> domainMaximum, pointer y on the output axis -> rangeMaximum",
+    "glyph": "crosshair at (domainMaximum, rangeMaximum): the clamp knee of the curve",
+    "readout": "sqrt · domain 1-50 · range 1-20",
+    "feasibility": "ready",
+    "feasibilityNote": "domain and range are per-frame views",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "snapshot-arena",
+   "operation": "GPUSnapshotArena",
+   "currentScrub": {
+    "parameter": "capacity",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "No update; every scrub step rebuilds the relaxation and the arena.",
+     "fix": "Snap capacity (1-8) with debounce."
+    },
+    {
+     "code": "clutter",
+     "detail": "Up to 24 tiny tract maps at card size.",
+     "fix": "Default capacity 5."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "secondary": null,
+    "binding": "pointer x over the frame columns -> playhead over collected frames",
+    "glyph": "playhead line, the hovered column enlarged, its share of the byte meter highlighted",
+    "readout": "frame 3 · iteration 6 · 3 slots · 1.2 kB",
+    "feasibility": "render",
+    "feasibilityNote": "frames are in extra; render-only highlight",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "snapshot-tap",
+   "operation": "GPUSnapshotTap",
+   "currentScrub": {
+    "parameter": "afterNode",
+    "kind": "prop",
+    "mechanism": "rebuild"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "slow",
+     "detail": "afterNode changes the graph, so each step rebuilds.",
+     "fix": "Snap to the six iterations with debounce."
+    },
+    {
+     "code": "clutter",
+     "detail": "Graph diagram, tick row and maps in one 320 px card.",
+     "fix": "Drop the tick row on the card."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": null,
+    "binding": "pointer x over the graph diagram -> afterNode (the iteration column under the pointer)",
+    "glyph": "the tap node and its highlighted edge jump to the hovered iteration",
+    "readout": "tap after iteration 3 · 2 views copied",
+    "feasibility": "rebuild",
+    "feasibilityNote": "the tap is a graph node; rebuild on snapped values, the graph is small",
+    "effort": "M"
+   },
+   "priority": "low"
+  },
+  {
+   "id": "space-time-variogram",
+   "operation": "GPUSpaceTimeVariogram",
+   "currentScrub": {
+    "parameter": "maximumDistance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "The raster uses range auto, so changing maximumDistance or maximumTimeLag rescales away its effect.",
+     "fix": "Fix the range to [0, 2 x field variance]."
+    },
+    {
+     "code": "other",
+     "detail": "No axes and no data: the picture is an abstract smooth blob.",
+     "fix": "Add distance and time-lag ticks, and a small point map of the flashes."
+    }
+   ],
+   "proposal": {
+    "archetype": "pad",
+    "secondary": null,
+    "binding": "pointer x -> maximumTimeLag (columns are time lags), pointer y -> maximumDistance (rows are distance)",
+    "glyph": "corner bracket at the pointer marking the extent of both lags",
+    "readout": "distance ≤ 0.4 · time lag ≤ 12 h · γ 1.9",
+    "feasibility": "ready",
+    "feasibilityNote": "both values are written per frame",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "spatial-correlogram",
+   "operation": "GPUSpatialCorrelogram",
+   "currentScrub": {
+    "parameter": "maximumDistance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "chart-bare",
+     "detail": "No zero line for Moran's I and no z = 1.96 significance line.",
+     "fix": "Draw both references."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer x over the card maps to the chart distance axis [0, maximumDistance]; the band under it is highlighted and an annulus of that band drawn around the point nearest the pointer's y on the map",
+    "glyph": "vertical rule on the chart and an annulus on the map",
+    "readout": "band 0.10-0.13 · I 0.34 · z 8.1",
+    "feasibility": "render",
+    "feasibilityNote": "chart position only",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "temporal-reduction",
+   "operation": "GPUTemporalReduction",
+   "currentScrub": {
+    "parameter": "origin",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "auto-range",
+     "detail": "Counts use range auto, so widening buckets does not visibly raise them.",
+     "fix": "Fix the range to the count at width 2 h."
+    },
+    {
+     "code": "other",
+     "detail": "No time or longitude-band ticks.",
+     "fix": "Add hour ticks along x."
+    }
+   ],
+   "proposal": {
+    "archetype": "time",
+    "secondary": "pad",
+    "binding": "pointer x -> origin (bucket grid slides under the pointer), pointer y -> width (0.5..2 h)",
+    "glyph": "bucket boundary ticks along the top edge",
+    "readout": "origin 3 h · width 1 h · 18 buckets",
+    "feasibility": "ready",
+    "feasibilityNote": "origin and width are per-frame",
+    "effort": "S"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "time-window-filter",
+   "operation": "GPUTimeWindowFilter",
+   "currentScrub": {
+    "parameter": "start",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "other",
+     "detail": "There is no time axis, so the window itself is invisible; only fade weights on the map show.",
+     "fix": "Add a bottom strip with an hourly histogram of flash times and the window bracket."
+    }
+   ],
+   "proposal": {
+    "archetype": "window",
+    "secondary": "time",
+    "binding": "pointer x on the time strip -> window centre (start/end move together), pointer y -> window length",
+    "glyph": "bracket on the time strip with the fade ramp drawn at its start",
+    "readout": "window 6-14 h · fade 3 h · 812 flashes",
+    "feasibility": "ready",
+    "feasibilityNote": "start, end and fade are per-frame",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "transfer-mask",
+   "operation": "GPUTransferMask",
+   "currentScrub": {
+    "parameter": "selectionRadius",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 4,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "Data: selection radius is the headline, though it is the operation's real source input.",
+     "fix": "Bind both centre coordinates to the pointer."
+    }
+   ],
+   "proposal": {
+    "archetype": "place",
+    "secondary": "reach",
+    "binding": "pointer -> selection centre (x and y); radius fixed at 0.22",
+    "glyph": "selection circle outline at the pointer",
+    "readout": "any · 41 blocks -> 9 tracts",
+    "feasibility": "ready",
+    "feasibilityNote": "block flags are written per frame from the centre; add a y centre",
+    "effort": "S"
+   },
+   "priority": "high"
+  },
+  {
+   "id": "variable-standardization",
+   "operation": "GPUVariableStandardization",
+   "currentScrub": {
+    "parameter": "spread",
+    "kind": "data",
+    "mechanism": "update"
+   },
+   "pictureQuality": 2,
+   "issues": [
+    {
+     "code": "data-headline",
+     "detail": "The card scrubs Data: spread; method is compile-time.",
+     "fix": "Use the swipe below."
+    },
+    {
+     "code": "data-fit",
+     "detail": "A map of standardized values does not show what standardization does to the distribution.",
+     "fix": "Add before/after histogram strips."
+    }
+   ],
+   "proposal": {
+    "archetype": "swipe",
+    "secondary": null,
+    "binding": "pointer x is a curtain between raw energy (sequential, left) and standardized values (diverging, right)",
+    "glyph": "curtain line; histogram strip below changes from raw to standardized at the curtain",
+    "readout": "z-score · mean 31 fJ -> 0 · sd 22 -> 1",
+    "feasibility": "render",
+    "feasibilityNote": "both buffers are already outputs; render-only",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "variogram-model-fit",
+   "operation": "GPUVariogramModelFit",
+   "currentScrub": {
+    "parameter": "maximumDistance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same map and chart layout as variogram and cross-variogram.",
+     "fix": "Mark the fitted nugget, sill and range on the chart."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": null,
+    "binding": "pointer x over the card maps to the chart distance axis [0, maximumDistance]; the three model values and the empirical bin under it are read out",
+    "glyph": "vertical rule on the chart with the three model values dotted",
+    "readout": "h 0.2 · empirical 2.1 · spherical 2.0 · exponential 1.9 · gaussian 2.2",
+    "feasibility": "render",
+    "feasibilityNote": "chart position only; readout needs a small readback of the fitted rows",
+    "effort": "M"
+   },
+   "priority": "medium"
+  },
+  {
+   "id": "variogram",
+   "operation": "GPUVariogram",
+   "currentScrub": {
+    "parameter": "maximumDistance",
+    "kind": "prop",
+    "mechanism": "update"
+   },
+   "pictureQuality": 3,
+   "issues": [
+    {
+     "code": "duplicate",
+     "detail": "Same left map and right bars as cross-variogram and spatial-correlogram.",
+     "fix": "Show pair links at the probed lag, which the siblings do not."
+    }
+   ],
+   "proposal": {
+    "archetype": "probe",
+    "secondary": "reach",
+    "binding": "pointer x over the card maps to the chart distance axis [0, maximumDistance]; the lag bin under it is highlighted and up to 40 pairs at that lag are drawn on the map",
+    "glyph": "vertical rule on the chart, pair segments on the map coloured by squared difference",
+    "readout": "lag 0.10-0.125 · γ 1.6 · 410 pairs",
+    "feasibility": "render",
+    "feasibilityNote": "positions are static on the CPU; pairs per bin are CPU work",
+    "effort": "M"
+   },
+   "priority": "high"
+  }
+ ]
+}
