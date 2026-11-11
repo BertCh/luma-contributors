@@ -18,11 +18,13 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUContiguityWeights,
-  type GPUPolygonGeometryPort,
-  type GPUPackedGeometryPort,
   type GPUSpatialWeights,
   type GPUSpatialWeightsOutput
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  type GPUPolygonGeometryPort,
+  type GPUPackedGeometryPort
+} from '@luma-contributors/analysis/analysis-core';
 import {
   parseKeplerPolygonWeightsSettings,
   MAXIMUM_KEPLER_POLYGON_ROWS,

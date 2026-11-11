@@ -37,6 +37,7 @@ for (const external of [false, true]) {
     expect(sourceLengths).toEqual([2, 0, 2]);
     const mask = new GPUVector({
       type: 'data',
+      name: 'mask',
       format: 'uint32',
       data: [new Uint32Array([1, 0]), new Uint32Array(), new Uint32Array([0, 1])].map(
         values =>

@@ -195,7 +195,7 @@ export const PLATFORM4_GEOMETRY_GPU_RUNNERS: Readonly<Record<string, CatalogGpuR
       })
   },
   'k-means': {
-    contributorNames: ['GPUKMeans'],
+    contributorNames: ['GPUSpatialKMeans'],
     run: (context, inputs, values) =>
       runGpuKMeans(context, inputs['points'], {
         clusterCount: values['clusterCount'] as number,

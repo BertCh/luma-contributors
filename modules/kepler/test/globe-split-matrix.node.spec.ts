@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, it} from 'vitest';
-// @ts-expect-error plain ESM script helper without declarations
 import {
   GLOBE_SPLIT_AGGREGATES,
   GLOBE_SPLIT_REGIONS
@@ -21,7 +20,7 @@ describe('globe split aggregate matrix', () => {
   });
 
   it('keeps the left and right regions disjoint with a gap for the divider', () => {
-    const {left, right, full} = GLOBE_SPLIT_REGIONS as Record<string, [number, number]>;
+    const {left, right, full} = GLOBE_SPLIT_REGIONS;
     expect(left[1]).toBeLessThan(right[0]);
     expect(full[0]).toBe(left[0]);
     expect(full[1]).toBeGreaterThanOrEqual(right[1]);

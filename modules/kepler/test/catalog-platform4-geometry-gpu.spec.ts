@@ -581,7 +581,7 @@ test('network-centrality runs on GPUNetworkCentrality and matches CPU closeness'
   });
 });
 
-test('k-means runs on GPUKMeans and finds the CPU partition of separated clusters', async () => {
+test('k-means runs on GPUSpatialKMeans and finds the CPU partition of separated clusters', async () => {
   const random = makeRandom(77);
   const centers = [
     [-122.45, 37.55],
@@ -606,7 +606,7 @@ test('k-means runs on GPUKMeans and finds the CPU partition of separated cluster
     'k-means',
     {clusterCount: 3, maximumIterations: 50, coordinateSystem: 'EPSG:4326'},
     {points},
-    ['GPUKMeans']
+    ['GPUSpatialKMeans']
   );
   // Cluster numbers differ between seedings, so compare the partitions.
   const partition = (result: CatalogRunResult) => {

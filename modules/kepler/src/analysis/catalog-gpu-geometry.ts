@@ -53,9 +53,9 @@ import {
   getGPUOffsetCurveRowsPerVertex,
   getGPURectangleClipParameterValues,
   type GPUPolygonOverlayOperation,
-  type GPUPolygonOverlayOutput,
-  type GPUSpatialContext
+  type GPUPolygonOverlayOutput
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 type FeatureKind = 'polygon' | 'line' | 'point' | 'none';
 
@@ -618,10 +618,9 @@ export async function runGpuRectangleClip(
       const capacity = 8 * polygons.vertexCount + 16;
       const positions = session.output('positions', 'float32x2', capacity);
       const ringOffsets = session.output('ring-offsets', 'uint32', polygons.ringOffsets.length);
-      const count = session.output('count', 'uint32', 1);
-      const overflow = session.output('overflow', 'uint32', 1);
-      const required = session.output('required', 'uint32', 1);
       const lineCount = session.output('line-count', 'uint32', 1);
+      const overflow = session.output('overflow', 'uint32', 1);
+      const requiredVertexCount = session.output('required-vertex-count', 'uint32', 1);
       session.graph.add(
         new GPURectangleClip({
           geometryType: 'polygons',
@@ -634,10 +633,9 @@ export async function runGpuRectangleClip(
             positions: positions.view,
             lineOffsets: ringOffsets.view,
             status: {
-              count: count.view,
+              count: lineCount.view,
               overflow: overflow.view,
-              requiredCount: required.view,
-              lineCount: lineCount.view
+              requiredVertexCount: requiredVertexCount.view
             }
           }
         })
@@ -681,10 +679,9 @@ export async function runGpuRectangleClip(
       const positions = session.output('positions', 'float32x2', capacity);
       const lineOffsets = session.output('line-offsets', 'uint32', lineCapacity + 1);
       const sourceLines = session.output('source-lines', 'uint32', lineCapacity);
-      const count = session.output('count', 'uint32', 1);
-      const overflow = session.output('overflow', 'uint32', 1);
-      const required = session.output('required', 'uint32', 1);
       const lineCount = session.output('line-count', 'uint32', 1);
+      const overflow = session.output('overflow', 'uint32', 1);
+      const requiredVertexCount = session.output('required-vertex-count', 'uint32', 1);
       session.graph.add(
         new GPURectangleClip({
           geometryType: 'lines',
@@ -696,10 +693,9 @@ export async function runGpuRectangleClip(
             lineOffsets: lineOffsets.view,
             sourceLineIndices: sourceLines.view,
             status: {
-              count: count.view,
+              count: lineCount.view,
               overflow: overflow.view,
-              requiredCount: required.view,
-              lineCount: lineCount.view
+              requiredVertexCount: requiredVertexCount.view
             }
           }
         })
@@ -781,10 +777,9 @@ function createOverlayOutputs(session: CatalogGpuSession, capacities: OverlayCap
   const featureOffsets = session.output('result-features', 'uint32', capacities.ringCapacity + 1);
   const polygonOffsets = session.output('result-polygons', 'uint32', capacities.ringCapacity + 1);
   const ringOffsets = session.output('result-rings', 'uint32', capacities.ringCapacity + 1);
-  const sourceIds = session.output('result-source-ids', 'uint32', capacities.ringCapacity);
   const scalar = (name: string) => session.output(name, 'uint32', 1);
   const count = scalar('count');
-  const requiredCount = scalar('required-count');
+  const requiredRingCount = scalar('required-ring-count');
   const overflow = scalar('overflow');
   const candidateOverflow = scalar('candidate-overflow');
   const boundaryCount = scalar('boundary-count');
@@ -797,12 +792,11 @@ function createOverlayOutputs(session: CatalogGpuSession, capacities: OverlayCap
       positions: positions.view,
       featureOffsets: featureOffsets.view,
       polygonOffsets: polygonOffsets.view,
-      ringOffsets: ringOffsets.view,
-      sourceIds: sourceIds.view
+      ringOffsets: ringOffsets.view
     },
     status: {
       count: count.view,
-      requiredCount: requiredCount.view,
+      requiredRingCount: requiredRingCount.view,
       overflow: overflow.view,
       candidateOverflow: candidateOverflow.view
     },
@@ -827,7 +821,7 @@ function createOverlayOutputs(session: CatalogGpuSession, capacities: OverlayCap
     polygonOffsets,
     ringOffsets,
     count,
-    requiredCount,
+    requiredRingCount,
     overflow,
     candidateOverflow,
     boundaryRequired,
@@ -854,7 +848,7 @@ async function readOverlayOutputs(
     session.readScalar(outputs.boundaryOverflow),
     session.readScalar(outputs.boundaryCandidateOverflow)
   ]);
-  const requiredRings = await session.readScalar(outputs.requiredCount);
+  const requiredRings = await session.readScalar(outputs.requiredRingCount);
   const requiredBoundary = await session.readScalar(outputs.boundaryRequired);
   const complete = flags.every(flag => flag === 0);
   if (!complete) return {polygons: [], complete, requiredRings, requiredBoundary};

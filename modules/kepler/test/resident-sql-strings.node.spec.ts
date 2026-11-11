@@ -172,7 +172,7 @@ test('string columns project by zero-copy alias and star does not leak helper co
 });
 
 test('ORDER BY a string sorts by label rank unless the dictionary is already ordered', () => {
-  expect(isResidentSqlDictionarySorted(table.columns.sorted.dictionary!)).toBe(true);
+  expect(isResidentSqlDictionarySorted(table.columns['sorted'].dictionary!)).toBe(true);
   expect(rewriteResidentSql('SELECT sorted FROM places ORDER BY sorted', find)).toBeNull();
   const ordered = rewriteResidentSql('SELECT city, id FROM places ORDER BY city DESC', find)!;
   const rank = ordered.derived[0];

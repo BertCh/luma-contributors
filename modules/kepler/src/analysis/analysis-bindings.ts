@@ -99,12 +99,20 @@ export function addKeplerClassification<Parameters>(
   };
 }
 
-/** Preserves the recipe's inference metadata, convergence/completeness ports and settings updates. */
+/**
+ * Preserves the recipe's inference metadata, convergence/completeness ports and settings updates.
+ *
+ * Host `selfWeight` values are any non-negative number, but the recipe's permutation confirmation
+ * has a fixed focal weight: `'localGStar'` reproduces only `selfWeight` 1 and `'localG'` only 0.
+ * A permutation request with another self weight is rejected here, before any graph work, in host
+ * terms; without `permutation` every self weight is forwarded unchanged.
+ */
 export function addKeplerHotSpots<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: KeplerAnalysisProvenance & {analysis: GPUHotSpotAnalysisRecipeProps}
 ) {
   const provenance = getProvenance(props, props.analysis.source.mask !== undefined);
+  validateKeplerHotSpotPermutation(props.analysis);
   const result = addHotSpotAnalysisRecipe(graph, props.analysis);
   return {
     ...result,
@@ -112,6 +120,20 @@ export function addKeplerHotSpots<Parameters>(
     ...provenance,
     numericalPolicy: 'float32' as const
   };
+}
+
+/** Gi and Gi* confirmations each reproduce one focal weight; other statistics have no such rule. */
+function validateKeplerHotSpotPermutation(analysis: GPUHotSpotAnalysisRecipeProps): void {
+  if (!analysis.permutation) return;
+  const selfWeight = analysis.selfWeight ?? 1;
+  const statistic = analysis.permutation.statistic ?? (selfWeight === 0 ? 'localG' : 'localGStar');
+  if (statistic !== 'localG' && statistic !== 'localGStar') return;
+  const requiredSelfWeight = statistic === 'localG' ? 0 : 1;
+  if (selfWeight !== requiredSelfWeight) {
+    throw new Error(
+      `${analysis.id ?? 'kepler-hot-spots'} analysis.selfWeight must be ${requiredSelfWeight} when analysis.permutation uses '${statistic}', not ${selfWeight}; omit permutation to map another self weight without confirmation`
+    );
+  }
 }
 
 function getProvenance(

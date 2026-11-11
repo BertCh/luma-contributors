@@ -132,10 +132,10 @@ test('H3 selection uses exact retained identity and canonical raw boundary rathe
 });
 
 test('reads one sliced native Arrow XYZ geometry and preserves source null slots', async () => {
-  const coordinate = new arrow.FixedSizeList(
-    3,
-    new arrow.Field('value', new arrow.Float64(), false)
-  );
+  // GeoArrow names the coordinate child after its dimension. Since @luma.gl 10.0.0-alpha.12 the
+  // published adapter refuses a three-component child with any other name, because xyz and xym
+  // cannot be told apart (see the test below).
+  const coordinate = new arrow.FixedSizeList(3, new arrow.Field('xyz', new arrow.Float64(), false));
   const line = new arrow.List(new arrow.Field('vertices', coordinate, false));
   const backing = arrow.vectorFromArray(
     [
@@ -299,5 +299,28 @@ test('unsupported encoding, nongeographic CRS, invalid row and empty editor IDs 
   );
   expect((await readResidentSelectedGeometry({...request, featureId: ''})).status).toBe(
     'unsupported'
+  );
+});
+
+test('reports an unnamed three-component coordinate child as unsupported', async () => {
+  const coordinate = new arrow.FixedSizeList(
+    3,
+    new arrow.Field('value', new arrow.Float64(), false)
+  );
+  const line = new arrow.List(new arrow.Field('vertices', coordinate, false));
+  const vector = arrow.vectorFromArray(
+    [
+      [
+        [1, 2, 3],
+        [4, 5, 6]
+      ]
+    ],
+    line
+  );
+  const {request} = register(tableWithEncoding(vector, 'geoarrow.linestring'));
+  const result = await readResidentSelectedGeometry(request);
+  expect(result.status).toBe('unsupported');
+  expect(result.status === 'unsupported' && result.reason).toMatch(
+    /Ambiguous three-component coordinates/
   );
 });

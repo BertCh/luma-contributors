@@ -23,7 +23,7 @@ const bigLimits = {maxBufferSize: 4 * GIBIBYTE, maxStorageBufferBindingSize: 4 *
 
 function createReport(
   adapterInfo: Record<string, unknown>,
-  limits = bigLimits,
+  limits: Record<string, number> = bigLimits,
   userAgent = 'Chrome'
 ) {
   return {
@@ -44,7 +44,9 @@ test('option parsing applies defaults and enforces bounds', () => {
   expect(options.frameSeconds).toBe(5);
   expect(options.timeoutMilliseconds).toBe(300000);
   expect(options.output.endsWith('acceptance-report.json')).toBe(true);
-  expect(options.markdownOutput.endsWith('acceptance-report.md')).toBe(true);
+  // parseAcceptanceOptions adds markdownOutput after building the options, so its inferred type lacks it.
+  const {markdownOutput} = options as typeof options & {markdownOutput: string};
+  expect(markdownOutput.endsWith('acceptance-report.md')).toBe(true);
   expect(options.targets.endsWith('acceptance-targets.json')).toBe(true);
   const custom = parseAcceptanceOptions([
     '--sizes',
@@ -123,7 +125,7 @@ test('evaluation distinguishes pass, fail, unavailable, and blocked', () => {
     });
   const passing = evaluate({filterLatency: stats(49.9)});
   const filter = (evaluation: ReturnType<typeof evaluate>) =>
-    evaluation.results.find((result: {metric: string}) => result.metric === 'filterLatency');
+    evaluation.results.find((result: {metric: string}) => result.metric === 'filterLatency')!;
   expect(filter(passing).status).toBe('pass');
   expect(filter(passing).origin).toBe('plan');
   expect(filter(evaluate({filterLatency: stats(50.1)})).status).toBe('fail');
@@ -132,7 +134,7 @@ test('evaluation distinguishes pass, fail, unavailable, and blocked', () => {
   expect(filter(unavailable).status).toBe('unavailable');
   expect(filter(unavailable).observed).toBeNull();
   expect(
-    unavailable.results.find((result: {metric: string}) => result.metric === 'warmUploadBytes')
+    unavailable.results.find((result: {metric: string}) => result.metric === 'warmUploadBytes')!
       .status
   ).toBe('pass');
   expect(unavailable.verdict).toBe('incomplete');

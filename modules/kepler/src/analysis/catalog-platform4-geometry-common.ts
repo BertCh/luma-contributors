@@ -97,9 +97,8 @@ export async function runCatalogLineGeometry(
   const outputPositions = session.output('line-positions', 'float32x2', capacities.vertices);
   const outputOffsets = session.output('line-offsets', 'uint32', capacities.lines + 1);
   const outputSources = session.output('line-sources', 'uint32', capacities.lines);
-  const count = session.output('line-count', 'uint32', 1);
+  const outputLineCount = session.output('line-count', 'uint32', 1);
   const overflow = session.output('line-overflow', 'uint32', 1);
-  const outputLineCount = session.output('line-line-count', 'uint32', 1);
   session.graph.add(
     createContributor(
       {
@@ -110,7 +109,7 @@ export async function runCatalogLineGeometry(
         positions: outputPositions.view,
         lineOffsets: outputOffsets.view,
         sourceLineIndices: outputSources.view,
-        status: {count: count.view, overflow: overflow.view, lineCount: outputLineCount.view}
+        status: {count: outputLineCount.view, overflow: overflow.view}
       }
     )
   );

@@ -5,9 +5,9 @@
 import {
   GPUGridGenerator,
   GPUGroupConvexHull,
-  GPUKMeans,
+  GPUSpatialKMeans,
   getGPUGridGeneratorParameterValues,
-  getGPUKMeansParameterValues
+  getGPUSpatialKMeansParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
 import {
@@ -240,7 +240,7 @@ const KMEANS_RESTART_COUNT = 4;
 const KMEANS_MAXIMUM_ITERATIONS = 64;
 
 /**
- * GPUKMeans on the metric local frame. The contributor seeds with k-means++ (best of four seeded
+ * GPUSpatialKMeans on the metric local frame. The contributor seeds with k-means++ (best of four seeded
  * restarts) instead of the CPU's farthest-first start, so for well separated data both reach the
  * same partition while overlapping clusters may settle in different local optima. Clusters are
  * renumbered by first appearance among the points. At most 64 iterations; more use the CPU engine.
@@ -255,7 +255,7 @@ export async function runGpuKMeans(
   }
 ): Promise<CatalogRunOutput> {
   if (parameters.maximumIterations > KMEANS_MAXIMUM_ITERATIONS)
-    throw new CatalogGpuUnsupportedError('GPUKMeans runs at most 64 iterations');
+    throw new CatalogGpuUnsupportedError('GPUSpatialKMeans runs at most 64 iterations');
   const entries = points.features.flatMap((feature, pointIndex) =>
     getPointPositions(feature.geometry).map(position => ({feature, pointIndex, position}))
   );
@@ -276,12 +276,16 @@ export async function runGpuKMeans(
     const squaredDistances = session.output('squared-distances', 'float32', entries.length);
     const iterationCount = session.output('iteration-count', 'uint32', 1);
     session.graph.add(
-      new GPUKMeans({
+      new GPUSpatialKMeans({
         positions: session.input('positions', packed, 'float32x2'),
         k: clusterCount,
         maximumIterations: parameters.maximumIterations,
         restartCount: KMEANS_RESTART_COUNT,
-        parameters: session.input('parameters', getGPUKMeansParameterValues({seed: 1}), 'uint32'),
+        parameters: session.input(
+          'parameters',
+          getGPUSpatialKMeansParameterValues({seed: 1}),
+          'uint32'
+        ),
         output: {
           labels: labels.view,
           centers: centers.view,
@@ -356,6 +360,6 @@ export async function runGpuKMeans(
     tables: [assignmentTable, centroidTable],
     diagnostics,
     summary: {clusterCount, iterations: result.iterations, inertia},
-    dispatchedContributors: ['GPUKMeans']
+    dispatchedContributors: ['GPUSpatialKMeans']
   };
 }

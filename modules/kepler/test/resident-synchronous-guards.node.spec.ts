@@ -9,8 +9,8 @@ test('resident synchronous guards refuse row mutation and report it', () => {
   const reports: string[] = [];
   const table = {appendRows: () => 'ok', getValue: () => 1} as Record<string, unknown>;
   installResidentSynchronousGuards(table, report => reports.push(report.method));
-  expect(() => (table.appendRows as () => void)()).toThrow();
+  expect(() => (table['appendRows'] as () => void)()).toThrow();
   expect(reports).toEqual(['appendRows']);
-  expect((table.getValue as () => number)()).toBe(1);
-  expect(table.upsertRows).toBeUndefined();
+  expect((table['getValue'] as () => number)()).toBe(1);
+  expect(table['upsertRows']).toBeUndefined();
 });

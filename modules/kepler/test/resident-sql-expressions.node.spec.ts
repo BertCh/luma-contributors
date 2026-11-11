@@ -44,7 +44,7 @@ const gather = (derived: ResidentSqlDerivedColumn, codes: number[]) => {
   return codes.map(code => derived.words[code]);
 };
 const labelsOf = (derived: ResidentSqlDerivedColumn, codes: number[]) =>
-  gather(derived, codes).map(word => (derived as {dictionary: string[]}).dictionary[word]);
+  gather(derived, codes).map(word => (derived as {dictionary: readonly string[]}).dictionary[word]);
 const ALL_NAMES = NAMES.map((_, code) => code);
 
 test('BETWEEN becomes two comparisons, NOT BETWEEN two alternatives', () => {
@@ -99,7 +99,7 @@ test('string functions evaluate per dictionary label like the SQL definitions', 
   );
   expect(labelsOf(run("'<' || name || '>'"), ALL_NAMES)).toEqual(NAMES.map(name => `<${name}>`));
   // The result dictionary is deduplicated and sorted, so 'Carol' and 'carol' share a code under LOWER.
-  const lower = run('LOWER(name)') as {dictionary: string[]; words: Uint32Array};
+  const lower = run('LOWER(name)') as {dictionary: readonly string[]; words: Uint32Array};
   expect(new Set(lower.dictionary).size).toBe(lower.dictionary.length);
   expect(lower.words[2]).toBe(lower.words[3]);
   expect([...lower.dictionary]).toEqual([...lower.dictionary].sort());
@@ -117,7 +117,7 @@ test('string function results feed predicates, grouping and deduplicate repeated
     /^SELECT u, COUNT\(\*\) AS n FROM people WHERE \(__luma_sql_mask_\d+ = 1\) AND __luma_sql_expr_\d+ > 3 GROUP BY u$/
   );
   const mask = rewrite.derived.find(spec => spec.name.startsWith('__luma_sql_mask'))!;
-  const upper = rewrite.derived[0] as {words: Uint32Array; dictionary: string[]};
+  const upper = rewrite.derived[0] as {words: Uint32Array; dictionary: readonly string[]};
   // mask is evaluated over the codes of u (the new dictionary).
   expect(rewrite.derived.indexOf(mask)).toBeGreaterThan(0);
   expect((mask as {sourceColumn: string}).sourceColumn).toBe('u');
@@ -263,7 +263,7 @@ test('date/timestamp casts carry Kepler time metadata and string labels parse on
     Date.UTC(2024, 0, 2) / 1000,
     -86400
   ]);
-  expect(fromString.columnMetadata.d).toMatchObject({
+  expect(fromString.columnMetadata['d']).toMatchObject({
     'luma.gl.time.format': 'X',
     'luma.gl.sql.cast': 'DATE'
   });
@@ -272,7 +272,7 @@ test('date/timestamp casts carry Kepler time metadata and string labels parse on
     lookup
   )!;
   expect(fromNumber.derived[0]).toMatchObject({kind: 'cast', target: 'timestamp'});
-  expect(fromNumber.columnMetadata.t['luma.gl.sql.cast']).toBe('TIMESTAMP');
+  expect(fromNumber.columnMetadata['t']['luma.gl.sql.cast']).toBe('TIMESTAMP');
   const expression = rewriteResidentSql(
     'SELECT CAST(epoch * 60 AS TIMESTAMP) AS t FROM events',
     lookup

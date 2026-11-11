@@ -13,7 +13,6 @@ import {
   createNumericRasterTile
 } from '../../../examples/deck/kepler-compute/src/raster-tile-ingest';
 import {encodeCloudOptimizedGeoTIFF} from '../../../examples/deck/kepler-compute/src/interpolation-cog';
-// @ts-expect-error plain JavaScript module
 import {validateCogBytes} from '../../../examples/deck/kepler-compute/scripts/validate-cog.mjs';
 
 const SIZE = 6;
@@ -121,6 +120,8 @@ test('COG validator accepts the encoder output and rejects corruption', async ()
     expect(report.errors).toEqual([]);
     expect(report.levels.length).toBe(3);
     const corrupted = bytes.slice(0, bytes.byteLength - 40);
-    expect(validateCogBytes(corrupted).isValid).toBe(false);
+    // validate-cog.mjs adds `isValid` after building the report, so its inferred type lacks it.
+    const corruptedReport: Record<string, unknown> = validateCogBytes(corrupted);
+    expect(corruptedReport['isValid']).toBe(false);
   }
 });

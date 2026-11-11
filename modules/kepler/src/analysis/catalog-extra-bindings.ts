@@ -883,7 +883,7 @@ export const EXTRA_CPU_BINDINGS: readonly ExtraCpuBinding[] = [
     summary:
       'Lloyd k-means on points with deterministic farthest-first initialization; assignments and centroids.',
     capabilityIds: ['group-and-regional-analysis'],
-    contributorNames: ['GPUKMeans'],
+    contributorNames: ['GPUSpatialKMeans'],
     engine: 'cpu-reference',
     inputs: [makeInput('points', 'Points', ['point'])],
     parameters: [

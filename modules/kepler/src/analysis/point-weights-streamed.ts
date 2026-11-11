@@ -11,7 +11,7 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUNeighborSearch,
   type GPUNeighborSearchStructure,

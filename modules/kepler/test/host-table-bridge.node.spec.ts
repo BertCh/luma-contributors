@@ -264,7 +264,7 @@ describe('Kepler resident table boundary', () => {
     binding.fields = {
       ...binding.fields,
       time: {
-        ...binding.fields.time,
+        ...binding.fields['time'],
         validateRange(minimum, maximum) {
           if (![minimum, maximum].every(Number.isSafeInteger))
             throw new Error('Exact time requires safe integer milliseconds');
@@ -332,7 +332,7 @@ describe('Kepler resident table boundary', () => {
     const binding = makeBinding();
     binding.fields = {
       ...binding.fields,
-      time: {...binding.fields.time, histogramInterval: '1-hour'}
+      time: {...binding.fields['time'], histogramInterval: '1-hour'}
     };
     binding.onPlotRecovery = vi.fn();
     binding.onPlotUnsupported = vi.fn();
@@ -727,7 +727,7 @@ describe('pinned Kepler filter plot hook', () => {
       const binding = makeBinding();
       binding.fields = {
         ...binding.fields,
-        time: {...binding.fields.time, histogramInterval: '1-hour'}
+        time: {...binding.fields['time'], histogramInterval: '1-hour'}
       };
       binding.filterScopedHistograms = true;
       binding.getTimeHistogramInterval = (_field, filter) => filter?.plotType?.interval ?? '1-hour';
@@ -832,7 +832,7 @@ describe('pinned Kepler filter plot hook', () => {
     const binding = makeBinding();
     binding.fields = {
       ...binding.fields,
-      time: {...binding.fields.time, histogramInterval: '1-hour'}
+      time: {...binding.fields['time'], histogramInterval: '1-hour'}
     };
     binding.filterScopedHistograms = true;
     binding.getTimeHistogramInterval = (_field, filter) => filter?.plotType?.interval ?? '1-hour';
@@ -854,9 +854,9 @@ describe('pinned Kepler filter plot hook', () => {
     table.lumaCompute.setFilterHistogram('line', bins, table.lumaCompute.revision, '1-hour');
     const buildLineChart = vi.fn((datasets: Record<string, unknown>, built: unknown) => ({
       datasets,
-      y: (built as {timeBins: Record<string, Record<string, {count?: number}[]>>}).timeBins.source[
-        '1-hour'
-      ].map(bin => bin.count)
+      y: (built as {timeBins: Record<string, Record<string, {count?: number}[]>>}).timeBins[
+        'source'
+      ]['1-hour'].map(bin => bin.count)
     }));
     const result = table.lumaCompute.updateFilterPlot(filter, {buildLineChart});
     // The stub dataset has no y field, so the native builder reads each bin's measure as its value.
@@ -897,13 +897,15 @@ describe('pinned Kepler filter plot hook', () => {
     ];
     table.lumaCompute.setFilterHistogram('numeric-line', bins, table.lumaCompute.revision);
     const buildLineChart = vi.fn((_datasets: Record<string, unknown>, built: unknown) => ({
-      y: (built as {bins: Record<string, {count?: number}[]>}).bins.source.map(bin => bin.count)
+      y: (built as {bins: Record<string, {count?: number}[]>}).bins['source'].map(bin => bin.count)
     }));
     const result = table.lumaCompute.updateFilterPlot(filter, {buildLineChart});
     // Native reads numeric bins from `bins`, so the measures replace the counts there.
     expect(result.lineChart).toEqual({y: [2.5, undefined]});
     expect(prepareNumericPlot).toHaveBeenCalledWith('value', filter);
-    expect(result.lumaComputePlot.status).toBe('ready');
+    // updateFilterPlot adds lumaComputePlot, which the KeplerComputeFilter type does not declare.
+    const {lumaComputePlot} = result as {lumaComputePlot?: {status: string}};
+    expect(lumaComputePlot?.status).toBe('ready');
     prepareNumericPlot.mockImplementation(() => {
       throw new Error('Resident line charts do not support mode');
     });
@@ -926,7 +928,7 @@ describe('pinned Kepler filter plot hook', () => {
     const binding = makeBinding();
     binding.fields = {
       ...binding.fields,
-      time: {...binding.fields.time, histogramInterval: '1-hour'}
+      time: {...binding.fields['time'], histogramInterval: '1-hour'}
     };
     binding.filterScopedHistograms = true;
     binding.groupedLineCharts = true;
@@ -985,7 +987,7 @@ describe('pinned Kepler filter plot hook', () => {
     // The first bin lists every series in first-seen order (b, a, merged Others) to fix discovery order.
     expect(pseudoBins[0].indexes).toEqual([0, 1, 2]);
     expect(pseudoBins[1].indexes).toEqual([3, 4]);
-    const dataset = calls[0].datasets.source as {
+    const dataset = calls[0].datasets['source'] as {
       fields: {name: string; valueAccessor: (row: {index: number}) => unknown}[];
     };
     const group = dataset.fields.find(field => field.name === 'category')!;
@@ -1014,7 +1016,7 @@ describe('pinned Kepler filter plot hook', () => {
       '1-hour'
     );
     table.lumaCompute.updateFilterPlot({...filter, yAxis: undefined}, {buildLineChart});
-    const countField = (calls[0].datasets.source as typeof dataset).fields[1];
+    const countField = (calls[0].datasets['source'] as typeof dataset).fields[1];
     expect(countField.name).toBe('\u0000luma-count');
     expect(read(countField, [0, 1, 2, 3, 4])).toEqual([null, 3, null, 2, 3]);
   });

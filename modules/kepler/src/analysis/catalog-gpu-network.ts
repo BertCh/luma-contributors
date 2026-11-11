@@ -1166,7 +1166,7 @@ export async function runGpuNetworkIsochrones(
     diagnostics,
     'isochrone-bands-exclusive',
     'info',
-    'Each polygon covers costs from minimum_cost (exclusive of earlier bands) up to maximum_cost; union bands for cumulative areas.'
+    'Each polygon covers costs above minimum_cost up to and including maximum_cost (band 0 from 0), so a cost exactly on a budget is in the lower band; union bands for cumulative areas.'
   );
   addCatalogDiagnostic(
     diagnostics,

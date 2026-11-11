@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Existing geographic recipe fields are preserved without adding defaults or projection metadata. */
 export type KeplerGeographicPointWeightCoordinates = Readonly<{

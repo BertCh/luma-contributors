@@ -9,7 +9,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUInverseDistanceWeighting,
   getGPUInverseDistanceWeightingParameterValues

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   addHotSpotAnalysisRecipe

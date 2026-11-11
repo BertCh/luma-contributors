@@ -10,6 +10,15 @@ import {DuckDBRuntime} from '../../../examples/deck/kepler-compute/src/duckdb-ru
 
 const makeTable = (value: number) => arrow.tableFromArrays({value: new Float32Array([value])});
 
+// Promise.withResolvers is ES2024; the test typecheck targets ES2022 lib.
+function createDeferredTable() {
+  let resolve!: (table: arrow.Table) => void;
+  const promise = new Promise<arrow.Table>(promiseResolve => {
+    resolve = promiseResolve;
+  });
+  return {promise, resolve};
+}
+
 async function createFixture() {
   const device = new NullDevice({});
   const session = new KeplerComputeSession({device, memoryBudgetBytes: 1024 * 1024});
@@ -73,7 +82,7 @@ test('a newer query immediately invalidates prepared generations and failed quer
   try {
     await runtime.runSql('first');
     const first = runtime.currentResult!;
-    const next = Promise.withResolvers<arrow.Table>();
+    const next = createDeferredTable();
     connection.query.mockReturnValueOnce(next.promise);
     const pending = runtime.runSql('second');
     expect(runtime.isResultCurrent(first)).toBe(false);
@@ -115,7 +124,7 @@ test('source replacement and runtime destruction invalidate asynchronous publica
 
   const pendingFixture = await createFixture();
   try {
-    const next = Promise.withResolvers<arrow.Table>();
+    const next = createDeferredTable();
     pendingFixture.connection.query.mockReturnValueOnce(next.promise);
     const query = pendingFixture.runtime.runSql('pending');
     await Promise.resolve();

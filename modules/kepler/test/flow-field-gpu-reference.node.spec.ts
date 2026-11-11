@@ -144,7 +144,7 @@ describe('GPU flow field grid design (CPU reference)', () => {
   test('speed is normalized into the texel w channel and altitude is a smoothed cell mean', () => {
     const samples = {
       ...makeSamples('UV'),
-      altitude: makeSamples('UV').first.map((value, index) => 100 + (index % 10))
+      altitude: Array.from(makeSamples('UV').first, (_value, index) => 100 + (index % 10))
     };
     const reference = buildFlowFieldGridReference(samples, {
       mode: 'UV',

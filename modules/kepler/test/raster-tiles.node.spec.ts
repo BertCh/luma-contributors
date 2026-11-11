@@ -284,7 +284,7 @@ test('band math propagates nodata and matches Kepler normalized difference', () 
   const left = source.tiles[0];
   const ndvi = evaluateBandMath(
     left,
-    compileBandMath(KEPLER_BAND_COMBINATION_EXPRESSIONS.normalizedDifference)
+    compileBandMath(KEPLER_BAND_COMBINATION_EXPRESSIONS['normalizedDifference'])
   );
   // (1-1)/(1+1)=0, (2-1)/(2+1), nodata in b1 propagates.
   expect([...ndvi.validity]).toEqual([1, 1, 1, 0]);

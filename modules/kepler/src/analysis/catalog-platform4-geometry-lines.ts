@@ -9,9 +9,9 @@ import {
   GPULineSmooth,
   getGPULineChunkParameterValues,
   getGPULineSimplificationParameterValues,
-  getGPULineSmoothParameterValues,
-  type GPUSpatialContext
+  getGPULineSmoothParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
 import {
   EARTH_RADIUS_METERS,

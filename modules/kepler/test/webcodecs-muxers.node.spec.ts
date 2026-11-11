@@ -93,20 +93,20 @@ test('MP4 muxer writes ftyp, moov before mdat, and correct chunk offset and samp
   );
   const view = new DataView(mp4.buffer, mp4.byteOffset, mp4.byteLength);
   // stco: version/flags, count, offset -> first byte of mdat payload.
-  expect(view.getUint32(tables.stco.payloadStart + 4)).toBe(1);
-  expect(view.getUint32(tables.stco.payloadStart + 8)).toBe(mdat.payloadStart);
+  expect(view.getUint32(tables['stco'].payloadStart + 4)).toBe(1);
+  expect(view.getUint32(tables['stco'].payloadStart + 8)).toBe(mdat.payloadStart);
   // stsz: version/flags, default size 0, count 3, then sizes.
-  expect(view.getUint32(tables.stsz.payloadStart + 8)).toBe(3);
-  expect([12, 16, 20].map(offset => view.getUint32(tables.stsz.payloadStart + offset))).toEqual([
+  expect(view.getUint32(tables['stsz'].payloadStart + 8)).toBe(3);
+  expect([12, 16, 20].map(offset => view.getUint32(tables['stsz'].payloadStart + offset))).toEqual([
     3, 2, 4
   ]);
   // stss lists only the keyframe (1-based).
-  expect(view.getUint32(tables.stss.payloadStart + 4)).toBe(1);
-  expect(view.getUint32(tables.stss.payloadStart + 8)).toBe(1);
+  expect(view.getUint32(tables['stss'].payloadStart + 4)).toBe(1);
+  expect(view.getUint32(tables['stss'].payloadStart + 8)).toBe(1);
   // stts run-length encodes the two equal 33333 deltas and the final 33334.
-  expect(view.getUint32(tables.stts.payloadStart + 4)).toBe(2);
-  expect(view.getUint32(tables.stts.payloadStart + 8)).toBe(2);
-  expect(view.getUint32(tables.stts.payloadStart + 12)).toBe(33333);
+  expect(view.getUint32(tables['stts'].payloadStart + 4)).toBe(2);
+  expect(view.getUint32(tables['stts'].payloadStart + 8)).toBe(2);
+  expect(view.getUint32(tables['stts'].payloadStart + 12)).toBe(33333);
   // avcC is embedded verbatim.
   const text = String.fromCharCode(...mp4.subarray(0, moov.end));
   expect(text).toContain('avcC');
@@ -188,7 +188,7 @@ test('encoder candidates and feature detection', async () => {
     const choice = await detectWebCodecsEncoder('auto', 640, 480, {
       VideoEncoder: {
         isConfigSupported: async (config: Record<string, unknown>) => ({
-          supported: String(config.codec).startsWith('vp09')
+          supported: String(config['codec']).startsWith('vp09')
         })
       }
     });

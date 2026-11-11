@@ -52,8 +52,24 @@ test('selectFilteredRows applies range and multiSelect filters', () => {
     readNumbers: () => Float64Array.from([0, 1, 2, 3]),
     readStrings: () => ['x', 'y', 'x', null]
   };
-  const range = {id: 'r', datasetIds: ['d'], fieldNames: ['v'], type: 'range', value: [1, 2]};
-  const multi = {id: 'm', datasetIds: ['d'], fieldNames: ['s'], type: 'multiSelect', value: ['x']};
+  const range = {
+    id: 'r',
+    datasetIds: ['d'],
+    fieldNames: ['v'],
+    type: 'range',
+    value: [1, 2],
+    layerIds: [],
+    enabled: true
+  };
+  const multi = {
+    id: 'm',
+    datasetIds: ['d'],
+    fieldNames: ['s'],
+    type: 'multiSelect',
+    value: ['x'],
+    layerIds: [],
+    enabled: true
+  };
   expect(Array.from(selectFilteredRows('d', [range], readers))).toEqual([1, 2]);
   expect(Array.from(selectFilteredRows('d', [range, multi], readers))).toEqual([2]);
   expect(Array.from(selectFilteredRows('other', [range], readers))).toEqual([0, 1, 2, 3]);
