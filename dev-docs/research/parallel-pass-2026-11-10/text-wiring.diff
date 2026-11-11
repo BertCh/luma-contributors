@@ -1,0 +1,104 @@
+--- a/website/src/gpu/runs/define-run.ts
++++ b/website/src/gpu/runs/define-run.ts
+@@ -46,6 +46,9 @@
+ } from './interaction';
+ import {ChartLayer, EdgeLayer, MeshLayer} from './layers';
+ import {getGlyphMetrics, getPixelOfWorld, PointerOverlay} from './pointer-overlay';
++import type {TextRunLayer} from './text';
++import {loadFontPixels} from './text/font';
++import {TextLayer} from './text/text-layer';
+ 
+ // ---------------------------------------------------------------------------------------------
+ // Buffers
+@@ -301,7 +304,8 @@
+   | PathsRunLayer
+   | TrianglesRunLayer
+   | PolygonsRunLayer
+-  | ChartRunLayer;
++  | ChartRunLayer
++  | TextRunLayer;
+ 
+ // ---------------------------------------------------------------------------------------------
+ // Spec
+@@ -1041,6 +1045,15 @@
+             owned: []
+           };
+         }
++        case 'text':
++          // Draws again once the lazily loaded atlas arrives (only when it was not preloaded).
++          return {
++            layer: new TextLayer(device, () => {
++              framesToDraw = 3;
++              scheduler.request();
++            }),
++            owned: []
++          };
+       }
+     };
+ 
+@@ -1113,6 +1126,14 @@
+             look: {...look, radius: layer.radius ?? (layer.kind === 'scatter' ? 3 : 1.6)}
+           };
+         }
++        case 'text':
++          // Laid out in TextLayer.update, which reruns the layout only when the text or view changes.
++          (layerObject as TextLayer).setText(layer, {
++            displayWidth: context.displayWidth,
++            context: layer.context,
++            alpha: layer.alpha
++          });
++          return {layer: layerObject, look: {}};
+       }
+     };
+ 
+@@ -1356,6 +1377,9 @@
+         await refreshExtra();
+       }
+     }
++    // A picture with text waits for the font atlas (a lazy chunk) so its first frame, and the
++    // poster, already show the labels. Runs without text never load it.
++    if (getLayerList().some(layer => layer.layer === 'text')) await loadFontPixels();
+     render();
+     await refreshRanges();
+ 
+@@ -1509,5 +1533,7 @@
+       return [layer.positions, layer.indices, layer.owners, layer.values, layer.triangleCount];
+     case 'chart':
+       return [layer.kind, layer.values, layer.xValues];
++    case 'text':
++      return [];
+   }
+ }
+--- a/website/src/gpu/types.ts
++++ b/website/src/gpu/types.ts
+@@ -15,6 +15,11 @@
+   /** Size in device pixels. */
+   width: number;
+   height: number;
++  /**
++   * CSS width the picture is shown at, which sizes its text. Default: `width` over the device
++   * pixel ratio. Posters, captured large and shown on cards, pass the card width.
++   */
++  displayWidth?: number;
+   theme: GpuTheme;
+   /** True when the user prefers reduced motion: render one still frame. */
+   reducedMotion: boolean;
+--- a/website/src/gpu/runs/harness.ts
++++ b/website/src/gpu/runs/harness.ts
+@@ -11,6 +11,7 @@
+ import type {GpuSceneInstance} from '../types';
+ import type {RunDebug} from './define-run';
+ import {getRunParameters, getRunScene, listRunIds} from './registry';
++import {CARD_DISPLAY_WIDTH} from './text/display';
+ 
+ type HarnessState = {
+   status: 'loading' | 'ready' | 'error';
+@@ -138,6 +139,8 @@
+     canvas,
+     width: canvas.width,
+     height: canvas.height,
++    // Posters are shown on catalog cards: size their text for the card, as the live card does.
++    displayWidth: poster ? CARD_DISPLAY_WIDTH : undefined,
+     theme,
+     reducedMotion: poster,
+     seed: Number(query.get('seed') ?? 1),

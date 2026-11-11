@@ -8,6 +8,7 @@
 - Build packages (ESM + CommonJS + types): `yarn build`
 - Verify every package entry point loads: `yarn verify-package-exports` (after `yarn build`)
 - Lint and formatting: `yarn lint`, fix with `yarn lint-fix`
+- Upstream-first rules: `yarn check-upstream-first` (fails on a luma.gl import that is not a published public entry point and on source outside the analysis-owned directories)
 - Contributor contract departures: `yarn check-contributor-contract` (fails on findings not in `scripts/contributor-contract-baseline.json`; `--all` lists everything, `--update-baseline` rewrites it)
 - Tests: `yarn test-node`, `yarn test-headless`, or `yarn test` for both
 - Examples: `cd examples/deck/spatial-analysis-showcase && yarn start`
@@ -17,8 +18,9 @@ Large typechecks need `NODE_OPTIONS=--max-old-space-size=8192` or more.
 ## Relationship to luma.gl (upstream-first)
 - This repository contains only geospatial and analysis code. Everything else comes from **published**
   `@luma.gl/core`, `@luma.gl/shaders`, `@luma.gl/graph` (and, for examples and tests only,
-  `@luma.gl/engine`) at `10.0.0-alpha.10`, through their public package entry points.
-- Never import `@luma.gl/*/_internal/*`, deep `dist` paths, or copied luma.gl source. Never fork,
+  `@luma.gl/engine`) at `10.0.0-alpha.12`, through their public package entry points.
+- Never import a `@luma.gl/*` path with an `_internal` segment (even one listed in the package's
+  exports), deep `dist` paths, or copied luma.gl source. Never fork,
   re-implement or re-export luma.gl APIs. See `dev-docs/upstream-first-plan.md`.
 - When luma.gl lacks something, in order: use the public API even if more verbose; adapt to
   luma.gl's design; drop the feature; last resort, a small helper named for the analysis domain.

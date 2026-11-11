@@ -58,44 +58,44 @@
   "gridFits": {
     "unconstrained": {
       "coefficient": -0.9375,
-      "deviance": 10348.23696733809,
+      "deviance": 10348.236967338848,
       "marginalError": 0
     },
     "origin": {
       "coefficient": -0.9375,
-      "deviance": 7999.395366548565,
-      "marginalError": 4.97172759715522e-16
+      "deviance": 7999.39536654936,
+      "marginalError": 5.00455631936681e-16
     },
     "destination": {
       "coefficient": -0.9375,
-      "deviance": 7461.992266952029,
-      "marginalError": 3.3486550138914883e-16
+      "deviance": 7461.992266952595,
+      "marginalError": 2.5896773968477454e-16
     },
     "doubly": {
       "coefficient": -1.125,
-      "deviance": 4094.211943431924,
-      "marginalError": 8.21691267253715e-9
+      "deviance": 4094.2119434324513,
+      "marginalError": 8.216912276415764e-9
     }
   },
   "boundedFits": {
     "unconstrained": {
       "coefficient": -0.955,
-      "deviance": 10344.799655190765,
+      "deviance": 10344.799655191502,
       "marginalError": 0
     },
     "origin": {
       "coefficient": -0.95,
-      "deviance": 7997.4893740958505,
-      "marginalError": 3.916859180761965e-16
+      "deviance": 7997.4893740966445,
+      "marginalError": 5.527723065880845e-16
     },
     "destination": {
       "coefficient": -0.975,
-      "deviance": 7446.20028860859,
-      "marginalError": 3.8845160952716184e-16
+      "deviance": 7446.200288609125,
+      "marginalError": 3.7031543231796754e-16
     },
     "doubly": {
       "coefficient": -1.03,
-      "deviance": 4034.4348039366173,
+      "deviance": 4034.4348039371957,
       "marginalError": 9.549504626471954e-9
     }
   },

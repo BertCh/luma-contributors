@@ -6,7 +6,7 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
 
 - New packages: `@luma-contributors/analysis` (published), `@luma-contributors/lenses` and
   `@luma-contributors/kepler` (private until dataset licensing is resolved).
-- Runs on published `@luma.gl/*@10.0.0-alpha.10` through public entry points only. No luma.gl code is
+- Runs on published `@luma.gl/*@10.0.0-alpha.12` through public entry points only. No luma.gl code is
   copied or forked. See `dev-docs/upstream-first-plan.md`.
 - Import paths moved from `@luma.gl/graph/*` analysis subpaths to `@luma-contributors/analysis/*`.
   `gpu-raster` analysis became `raster-analysis`, `gpu-dataframe` analysis became
@@ -32,5 +32,23 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
 - Internal: the masked weak-components kernel moved from `gpu-network` to
   `analysis-core/kernels/masked-weak-components.ts`, shared by network statistics, network analytics
   columns and sparse resistance connectivity. No public API change.
+- Math correctness review (2026-11-10 and 2026-11-11): fixes in the regression family, coverage
+  validity, ring assembly, polygon triangulation, the Diggle test, the COLD monitor and others, each
+  pinned against a reference library. Every number a caller can see change is listed in
+  `dev-docs/research/math-correctness-review-2026-11-10/behaviour-changes.md`; the limits left are in
+  `dev-docs/roadmap.md` section 12.7.
+- Breaking, from the contract alignment (`dev-docs/roadmap.md` sections 11.6 and 11.8): the deprecated
+  aliases are removed; `parameters` is required on walking cost and fractional coverage; there is one
+  variable-length geometry output layout; the raster family follows the `mask` rule (about 40 classes
+  renamed props, results unchanged); point-cloud rasters default to `'south'` rows; the k-means
+  contributor is `GPUSpatialKMeans`.
+- CPU twins and mixed CPU/GPU graphs: 125 contributors have an operation form
+  (`GPU<Name>Operation`) for a published luma.gl `GPUGraph`, a float64 CPU twin
+  (`CPU<Name>Operation`) over the same named values, and a `compute<Name>OnCPU` function usable
+  without a graph. `GPUContributorOperation` (`analysis-core`) lowers a contributor into a `GPUGraph`.
+  Rules are in section 14 of `dev-docs/contributor-contract.md`.
+- Website (Gridlight): 532 catalog entries, each with a live picture, and thirteen how-it-works
+  pages. It can be built for a sub-path (`SITE_BASE_PATH`) and `yarn website-deploy` publishes it to
+  GitHub Pages.
 - Documentation moved from `docs/api-reference/experimental` to `docs/api`. Release notes from the
   luma.gl era are in `dev-docs/archive/luma-era-release-notes.md`.

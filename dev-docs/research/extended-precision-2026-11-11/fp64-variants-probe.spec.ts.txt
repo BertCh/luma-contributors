@@ -1,0 +1,301 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Temporary probe, not a gate: compares the published `fp64arithmetic` WGSL variants of
+// `@luma.gl/shaders` with the local double-float of `h3-index-extended-wgsl.ts` on the test GPU.
+// The uniform block of the published module is replaced by a private variable filled from a
+// buffer, so the arithmetic text is the published one and the harness needs no uniform binding.
+
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {fp64arithmetic, preprocess} from '@luma.gl/shaders';
+import {expect, it} from 'vitest';
+import {H3_INDEX_EXTENDED_WGSL} from '../../src/gpu-spatial-analysis/cell-indexing/h3-index-extended-wgsl';
+import {requireTestDevice} from './require-test-device';
+import {createSeededRandom, getFloatWords, runWGSLModuleKernel} from './wgsl-module-harness';
+
+const UNIFORM_DECLARATION =
+  '@group(0) @binding(auto) var<uniform> fp64arithmetic : Fp64ArithmeticUniforms;';
+
+function getPublishedDeclarations(defines: Record<string, boolean>): string {
+  const source = preprocess(fp64arithmetic.source, {defines});
+  if (!source.includes(UNIFORM_DECLARATION)) {
+    throw new Error('fp64arithmetic uniform declaration not found');
+  }
+  return source.replace(
+    UNIFORM_DECLARATION,
+    'var<private> fp64arithmetic: Fp64ArithmeticUniforms;'
+  );
+}
+
+function getLocalDeclarations(): string {
+  const start = H3_INDEX_EXTENDED_WGSL.indexOf('var<private> cellIndexH3ExtOpaqueBits');
+  const end = H3_INDEX_EXTENDED_WGSL.indexOf('// (sin, cos) of an angle');
+  if (start < 0 || end < 0) {
+    throw new Error('local double-float section not found');
+  }
+  return H3_INDEX_EXTENDED_WGSL.slice(start, end);
+}
+
+const PUBLISHED_PREFIX = /* wgsl */ `
+  fp64arithmetic.ONE = constants[0];
+  fp64arithmetic.SPLIT = constants[1];`;
+
+const READ_OPERANDS = /* wgsl */ `
+  let a = vec2f(operands[index * 4u], operands[index * 4u + 1u]);
+  let b = vec2f(operands[index * 4u + 2u], operands[index * 4u + 3u]);`;
+
+const WRITE_RESULTS = /* wgsl */ `
+  output[index * 6u] = bitcast<u32>(s.x);
+  output[index * 6u + 1u] = bitcast<u32>(s.y);
+  output[index * 6u + 2u] = bitcast<u32>(p.x);
+  output[index * 6u + 3u] = bitcast<u32>(p.y);
+  output[index * 6u + 4u] = bitcast<u32>(q.x);
+  output[index * 6u + 5u] = bitcast<u32>(q.y);`;
+
+const PUBLISHED_BODY = /* wgsl */ `${PUBLISHED_PREFIX}${READ_OPERANDS}
+  let s = sum_fp64(a, b);
+  let p = mul_fp64(a, b);
+  let q = div_fp64(a, b);${WRITE_RESULTS}`;
+
+type Variant = {name: string; declarations: string; body: string};
+
+function getVariants(): Variant[] {
+  return [
+    {
+      name: 'plain float32',
+      declarations: '',
+      body: /* wgsl */ `
+  let unusedOne = constants[0];${READ_OPERANDS}
+  let s = vec2f(a.x + b.x, 0.0);
+  let p = vec2f(a.x * b.x, 0.0);
+  let q = vec2f(a.x / b.x, 0.0);${WRITE_RESULTS}`
+    },
+    {
+      name: 'published classic, no workaround',
+      declarations: getPublishedDeclarations({}),
+      body: PUBLISHED_BODY
+    },
+    {
+      name: 'published classic + CODE_ELIMINATION_WORKAROUND',
+      declarations: getPublishedDeclarations({LUMA_FP64_CODE_ELIMINATION_WORKAROUND: true}),
+      body: PUBLISHED_BODY
+    },
+    {
+      name: 'published hybrid',
+      declarations: getPublishedDeclarations({
+        LUMA_FP64_HYBRID_ARITHMETIC: true,
+        LUMA_FP64_CODE_ELIMINATION_WORKAROUND: true
+      }),
+      body: PUBLISHED_BODY
+    },
+    {
+      name: 'published integer',
+      declarations: getPublishedDeclarations({LUMA_FP64_INTEGER_ARITHMETIC: true}),
+      body: PUBLISHED_BODY
+    },
+    {
+      name: 'local double-float (h3-index-extended)',
+      declarations: getLocalDeclarations(),
+      body: /* wgsl */ `
+  cellIndexH3ExtOpaqueBits = u32(constants[0]) - 1u;${READ_OPERANDS}
+  let s = cellIndexH3ExtAdd(a, b);
+  let p = cellIndexH3ExtMultiply(a, b);
+  let q = cellIndexH3ExtDivide(a, b);${WRITE_RESULTS}`
+    }
+  ];
+}
+
+function createOperands(rowCount: number, seed: number): Float32Array {
+  const random = createSeededRandom(seed);
+  const operands = new Float32Array(rowCount * 4);
+  for (let row = 0; row < rowCount; row++) {
+    for (let operand = 0; operand < 2; operand++) {
+      const magnitude = 10 ** (9 * random() - 3);
+      const value = (random() < 0.5 ? -1 : 1) * magnitude * (1 + random());
+      const high = Math.fround(value);
+      operands[row * 4 + operand * 2] = high;
+      operands[row * 4 + operand * 2 + 1] = Math.fround(value - high);
+    }
+  }
+  return operands;
+}
+
+/** Bits of agreement with float64: -log2 of the largest relative error. */
+function getWorstBits(
+  operands: Float32Array,
+  results: Float32Array,
+  rowCount: number
+): {sum: number; product: number; quotient: number} {
+  let sumError = 0;
+  let productError = 0;
+  let quotientError = 0;
+  for (let row = 0; row < rowCount; row++) {
+    const a = operands[row * 4] + operands[row * 4 + 1];
+    const b = operands[row * 4 + 2] + operands[row * 4 + 3];
+    const sum = results[row * 6] + results[row * 6 + 1];
+    const product = results[row * 6 + 2] + results[row * 6 + 3];
+    const quotient = results[row * 6 + 4] + results[row * 6 + 5];
+    sumError = Math.max(sumError, Math.abs(sum - (a + b)) / Math.max(Math.abs(a), Math.abs(b)));
+    productError = Math.max(productError, Math.abs(product - a * b) / Math.abs(a * b));
+    quotientError = Math.max(quotientError, Math.abs(quotient - a / b) / Math.abs(a / b));
+  }
+  const toBits = (error: number) => (error === 0 ? 53 : Math.round(-Math.log2(error) * 10) / 10);
+  return {sum: toBits(sumError), product: toBits(productError), quotient: toBits(quotientError)};
+}
+
+it('probe: published fp64 variants against the local double-float', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const smallRowCount = 4096;
+  const largeRowCount = 1 << 20;
+  const smallOperands = createOperands(smallRowCount, 77);
+  const largeOperands = createOperands(largeRowCount, 78);
+  const constants = new Float32Array([1, 4097]);
+  const report: Record<string, unknown>[] = [];
+  for (const variant of getVariants()) {
+    const run = async (operands: Float32Array, rowCount: number, label: string) => {
+      const start = performance.now();
+      const words = await runWGSLModuleKernel(device, {
+        id: `fp64-probe-${label}-${report.length}`,
+        inputs: {operands, constants},
+        outputLength: rowCount * 6,
+        declarations: variant.declarations,
+        body: variant.body,
+        invocationCount: rowCount
+      });
+      return {words, milliseconds: Math.round(performance.now() - start)};
+    };
+    try {
+      const first = await run(smallOperands, smallRowCount, 'first');
+      const second = await run(smallOperands, smallRowCount, 'second');
+      const large = await run(largeOperands, largeRowCount, 'large');
+      const largeAgain = await run(largeOperands, largeRowCount, 'large-again');
+      report.push({
+        variant: variant.name,
+        declarationLines: variant.declarations.split('\n').length,
+        bits: getWorstBits(largeOperands, getFloatWords(large.words), largeRowCount),
+        firstRunMilliseconds: first.milliseconds,
+        secondRunMilliseconds: second.milliseconds,
+        millionRowsMilliseconds: [large.milliseconds, largeAgain.milliseconds]
+      });
+    } catch (error) {
+      report.push({variant: variant.name, error: String(error).slice(0, 400)});
+    }
+  }
+
+  // Raw binary64 input: exact difference from an origin, rounded once to float32.
+  const positionCount = 65536;
+  const random = createSeededRandom(79);
+  const positions = new Float64Array(positionCount);
+  const origin = 5123456.789012345;
+  for (let row = 0; row < positionCount; row++) {
+    positions[row] = origin + (random() - 0.5) * 2000;
+  }
+  const positionWords = new Uint32Array(positions.buffer);
+  const originWords = new Uint32Array(new Float64Array([origin]).buffer);
+  const differenceWords = await runWGSLModuleKernel(device, {
+    id: 'fp64-probe-binary64-difference',
+    inputs: {positionWords, originWords},
+    outputLength: positionCount,
+    declarations: getPublishedDeclarations({LUMA_FP64_INTEGER_ARITHMETIC: true}),
+    body: /* wgsl */ `
+  let value = vec2u(positionWords[index * 2u + 1u], positionWords[index * 2u]);
+  let reference = vec2u(originWords[1], originWords[0]);
+  output[index] = bitcast<u32>(sub_fp64u32_to_f32(value, reference));`,
+    invocationCount: positionCount
+  });
+  const differences = getFloatWords(differenceWords);
+  let exactCount = 0;
+  let worstNarrowedError = 0;
+  for (let row = 0; row < positionCount; row++) {
+    const expected = Math.fround(positions[row] - origin);
+    exactCount += differences[row] === expected ? 1 : 0;
+    const narrowed = Math.fround(Math.fround(positions[row]) - Math.fround(origin));
+    worstNarrowedError = Math.max(worstNarrowedError, Math.abs(narrowed - expected));
+  }
+  report.push({
+    variant: 'sub_fp64u32_to_f32 on raw Float64Array words',
+    bitExactRows: `${exactCount} of ${positionCount}`,
+    worstErrorOfNarrowingFirst: worstNarrowedError
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(`FP64_PROBE_REPORT ${JSON.stringify({gpu: device.info, report}, null, 1)}`);
+  expect(`FP64_PROBE_REPORT ${JSON.stringify({gpu: device.info, report})}`).toBe('');
+}, 600000);
+
+it('probe: cost of a chained loop of sum, product and quotient', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rowCount = 1 << 20;
+  const iterationCount = 64;
+  const operands = createOperands(rowCount, 80);
+  const constants = new Float32Array([1, 4097]);
+  const write = /* wgsl */ `
+  output[index * 2u] = bitcast<u32>(accumulator.x);
+  output[index * 2u + 1u] = bitcast<u32>(accumulator.y);`;
+  const loops: Record<string, string> = {
+    'plain float32': /* wgsl */ `
+  let unusedOne = constants[0];${READ_OPERANDS}
+  var accumulator = vec2f(0.0, 0.0);
+  for (var step = 0u; step < ${iterationCount}u; step++) {
+    accumulator.x = (accumulator.x * a.x + b.x) / a.x;
+  }${write}`,
+    published: /* wgsl */ `${PUBLISHED_PREFIX}${READ_OPERANDS}
+  var accumulator = vec2f(0.0, 0.0);
+  for (var step = 0u; step < ${iterationCount}u; step++) {
+    accumulator = div_fp64(sum_fp64(mul_fp64(accumulator, a), b), a);
+  }${write}`,
+    local: /* wgsl */ `
+  cellIndexH3ExtOpaqueBits = u32(constants[0]) - 1u;${READ_OPERANDS}
+  var accumulator = vec2f(0.0, 0.0);
+  for (var step = 0u; step < ${iterationCount}u; step++) {
+    accumulator = cellIndexH3ExtDivide(
+      cellIndexH3ExtAdd(cellIndexH3ExtMultiply(accumulator, a), b),
+      a
+    );
+  }${write}`
+  };
+  const report: Record<string, unknown>[] = [];
+  for (const variant of getVariants()) {
+    const body = variant.name.startsWith('published')
+      ? loops.published
+      : variant.name.startsWith('local')
+        ? loops.local
+        : loops['plain float32'];
+    const timings: number[] = [];
+    let worstError = 0;
+    for (let repeat = 0; repeat < 3; repeat++) {
+      const start = performance.now();
+      const words = await runWGSLModuleKernel(device, {
+        id: `fp64-loop-probe-${report.length}-${repeat}`,
+        inputs: {operands, constants},
+        outputLength: rowCount * 2,
+        declarations: variant.declarations,
+        body,
+        invocationCount: rowCount
+      });
+      timings.push(Math.round(performance.now() - start));
+      if (repeat === 0) {
+        const results = getFloatWords(words);
+        for (let row = 0; row < rowCount; row += 17) {
+          const a = operands[row * 4] + operands[row * 4 + 1];
+          const b = operands[row * 4 + 2] + operands[row * 4 + 3];
+          let expected = 0;
+          for (let step = 0; step < iterationCount; step++) {
+            expected = (expected * a + b) / a;
+          }
+          const actual = results[row * 2] + results[row * 2 + 1];
+          worstError = Math.max(worstError, Math.abs(actual - expected) / Math.abs(expected));
+        }
+      }
+    }
+    report.push({
+      variant: variant.name,
+      bits: Math.round(-Math.log2(worstError) * 10) / 10,
+      milliseconds: timings
+    });
+  }
+  expect(`FP64_LOOP_REPORT ${JSON.stringify({report})}`).toBe('');
+}, 600000);

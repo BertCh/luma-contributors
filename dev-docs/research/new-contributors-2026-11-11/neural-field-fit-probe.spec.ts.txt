@@ -1,0 +1,433 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Research probe, not a test of library code: fits a small coordinate network (Fourier features,
+// two hidden layers) to scattered samples of a surface with hand-written backpropagation and Adam
+// in plain WGSL, and reports the time per step and the held-out error. The gradient of a weight is
+// summed in two fixed-order levels (256 rows per tile, then the tiles), so no kernel loops over the
+// whole data. See dev-docs/research/new-contributors-2026-11-11.
+
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {it} from 'vitest';
+import {requireTestDevice} from '../../src/testing/require-test-device';
+
+const TILE_ROW_COUNT = 256;
+const STEPS_PER_SUBMIT = 25;
+const BETA_ONE = 0.9;
+const BETA_TWO = 0.999;
+
+function createRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
+/** A terrain-like surface: six smooth hills and a ripple. */
+function getSurfaceValue(x: number, y: number): number {
+  const hills = [
+    [-0.6, -0.5, 0.35, 1.0],
+    [0.4, 0.6, 0.25, 0.8],
+    [0.7, -0.4, 0.2, -0.6],
+    [-0.2, 0.3, 0.15, 0.5],
+    [0.1, -0.7, 0.3, 0.7],
+    [-0.7, 0.7, 0.2, -0.4]
+  ];
+  let value = 0.15 * Math.sin(7 * x) * Math.cos(5 * y);
+  for (const [centerX, centerY, width, height] of hills) {
+    const squaredDistance = (x - centerX) ** 2 + (y - centerY) ** 2;
+    value += height * Math.exp(-squaredDistance / (width * width));
+  }
+  return value;
+}
+
+type FitCase = {sampleCount: number; frequencyCount: number; hiddenSize: number; stepCount: number};
+
+async function runFitCase(device: GPUDevice, fitCase: FitCase) {
+  const {sampleCount, frequencyCount, hiddenSize, stepCount} = fitCase;
+  const featureCount = 4 * frequencyCount;
+  const secondOffset = hiddenSize * featureCount + hiddenSize;
+  const thirdOffset = secondOffset + hiddenSize * hiddenSize + hiddenSize;
+  const parameterCount = thirdOffset + hiddenSize + 1;
+  const rowStride = featureCount + 4 * hiddenSize + 1;
+  const tileCount = sampleCount / TILE_ROW_COUNT;
+
+  const random = createRandom(11);
+  const samples = new Float32Array(sampleCount * 3);
+  for (let row = 0; row < sampleCount; row++) {
+    const x = random() * 2 - 1;
+    const y = random() * 2 - 1;
+    samples.set([x, y, getSurfaceValue(x, y)], row * 3);
+  }
+  const testCount = 16384;
+  const testPoints = new Float32Array(testCount * 2);
+  const testValues = new Float64Array(testCount);
+  let testMean = 0;
+  for (let row = 0; row < testCount; row++) {
+    testPoints[row * 2] = random() * 2 - 1;
+    testPoints[row * 2 + 1] = random() * 2 - 1;
+    testValues[row] = getSurfaceValue(testPoints[row * 2], testPoints[row * 2 + 1]);
+    testMean += testValues[row] / testCount;
+  }
+  let testVariance = 0;
+  for (let row = 0; row < testCount; row++) {
+    testVariance += (testValues[row] - testMean) ** 2 / testCount;
+  }
+
+  // He-uniform weights, zero biases.
+  const initialParameters = new Float32Array(parameterCount);
+  const fillLayer = (offset: number, count: number, fanIn: number) => {
+    const limit = Math.sqrt(6 / fanIn);
+    for (let index = 0; index < count; index++) {
+      initialParameters[offset + index] = (random() * 2 - 1) * limit;
+    }
+  };
+  fillLayer(0, hiddenSize * featureCount, featureCount);
+  fillLayer(secondOffset, hiddenSize * hiddenSize, hiddenSize);
+  fillLayer(thirdOffset, hiddenSize, hiddenSize);
+
+  const constants = /* wgsl */ `
+const SAMPLE_COUNT = ${sampleCount}u;
+const FREQUENCY_COUNT = ${frequencyCount}u;
+const FEATURE_COUNT = ${featureCount}u;
+const HIDDEN_SIZE = ${hiddenSize}u;
+const SECOND_OFFSET = ${secondOffset}u;
+const THIRD_OFFSET = ${thirdOffset}u;
+const PARAMETER_COUNT = ${parameterCount}u;
+const ROW_STRIDE = ${rowStride}u;
+const TILE_COUNT = ${tileCount}u;
+const TILE_ROW_COUNT = ${TILE_ROW_COUNT}u;
+const FIRST_ACTIVATION = FEATURE_COUNT;
+const SECOND_ACTIVATION = FEATURE_COUNT + HIDDEN_SIZE;
+const FIRST_DELTA = FEATURE_COUNT + 2u * HIDDEN_SIZE;
+const SECOND_DELTA = FEATURE_COUNT + 3u * HIDDEN_SIZE;
+const OUTPUT_DELTA = FEATURE_COUNT + 4u * HIDDEN_SIZE;
+`;
+
+  const forwardBackwardSource = /* wgsl */ `
+${constants}
+@group(0) @binding(0) var<storage, read> samples: array<f32>;
+@group(0) @binding(1) var<storage, read> parameters: array<f32>;
+@group(0) @binding(2) var<storage, read_write> rowState: array<f32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) globalId: vec3u) {
+  let row = globalId.x;
+  if (row >= SAMPLE_COUNT) { return; }
+  let position = vec2f(samples[row * 3u], samples[row * 3u + 1u]);
+  let observedValue = samples[row * 3u + 2u];
+  let base = row * ROW_STRIDE;
+  var features: array<f32, ${featureCount}>;
+  var frequency = 3.14159265;
+  for (var band = 0u; band < FREQUENCY_COUNT; band++) {
+    features[band * 4u] = sin(position.x * frequency);
+    features[band * 4u + 1u] = cos(position.x * frequency);
+    features[band * 4u + 2u] = sin(position.y * frequency);
+    features[band * 4u + 3u] = cos(position.y * frequency);
+    frequency *= 2.0;
+  }
+  var first: array<f32, ${hiddenSize}>;
+  for (var unit = 0u; unit < HIDDEN_SIZE; unit++) {
+    var sum = parameters[HIDDEN_SIZE * FEATURE_COUNT + unit];
+    for (var feature = 0u; feature < FEATURE_COUNT; feature++) {
+      sum += parameters[unit * FEATURE_COUNT + feature] * features[feature];
+    }
+    first[unit] = max(sum, 0.0);
+  }
+  var second: array<f32, ${hiddenSize}>;
+  for (var unit = 0u; unit < HIDDEN_SIZE; unit++) {
+    var sum = parameters[SECOND_OFFSET + HIDDEN_SIZE * HIDDEN_SIZE + unit];
+    for (var source = 0u; source < HIDDEN_SIZE; source++) {
+      sum += parameters[SECOND_OFFSET + unit * HIDDEN_SIZE + source] * first[source];
+    }
+    second[unit] = max(sum, 0.0);
+  }
+  var prediction = parameters[THIRD_OFFSET + HIDDEN_SIZE];
+  for (var unit = 0u; unit < HIDDEN_SIZE; unit++) {
+    prediction += parameters[THIRD_OFFSET + unit] * second[unit];
+  }
+  let outputDelta = prediction - observedValue;
+  var secondDelta: array<f32, ${hiddenSize}>;
+  for (var unit = 0u; unit < HIDDEN_SIZE; unit++) {
+    secondDelta[unit] = select(0.0, parameters[THIRD_OFFSET + unit] * outputDelta, second[unit] > 0.0);
+  }
+  for (var feature = 0u; feature < FEATURE_COUNT; feature++) {
+    rowState[base + feature] = features[feature];
+  }
+  for (var unit = 0u; unit < HIDDEN_SIZE; unit++) {
+    var sum = 0.0;
+    for (var next = 0u; next < HIDDEN_SIZE; next++) {
+      sum += parameters[SECOND_OFFSET + next * HIDDEN_SIZE + unit] * secondDelta[next];
+    }
+    rowState[base + FIRST_ACTIVATION + unit] = first[unit];
+    rowState[base + SECOND_ACTIVATION + unit] = second[unit];
+    rowState[base + FIRST_DELTA + unit] = select(0.0, sum, first[unit] > 0.0);
+    rowState[base + SECOND_DELTA + unit] = secondDelta[unit];
+  }
+  rowState[base + OUTPUT_DELTA] = outputDelta;
+}`;
+
+  const tileGradientSource = /* wgsl */ `
+${constants}
+@group(0) @binding(0) var<storage, read> rowState: array<f32>;
+@group(0) @binding(1) var<storage, read_write> tileGradients: array<f32>;
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
+  let index = (workgroupId.y * 32768u + workgroupId.x) * 256u + localIndex;
+  if (index >= TILE_COUNT * PARAMETER_COUNT) { return; }
+  let tile = index / PARAMETER_COUNT;
+  let parameter = index % PARAMETER_COUNT;
+  var deltaOffset = OUTPUT_DELTA;
+  var activationOffset = 0u;
+  var hasActivation = true;
+  if (parameter < HIDDEN_SIZE * FEATURE_COUNT) {
+    deltaOffset = FIRST_DELTA + parameter / FEATURE_COUNT;
+    activationOffset = parameter % FEATURE_COUNT;
+  } else if (parameter < SECOND_OFFSET) {
+    deltaOffset = FIRST_DELTA + parameter - HIDDEN_SIZE * FEATURE_COUNT;
+    hasActivation = false;
+  } else if (parameter < SECOND_OFFSET + HIDDEN_SIZE * HIDDEN_SIZE) {
+    let local = parameter - SECOND_OFFSET;
+    deltaOffset = SECOND_DELTA + local / HIDDEN_SIZE;
+    activationOffset = FIRST_ACTIVATION + local % HIDDEN_SIZE;
+  } else if (parameter < THIRD_OFFSET) {
+    deltaOffset = SECOND_DELTA + parameter - (SECOND_OFFSET + HIDDEN_SIZE * HIDDEN_SIZE);
+    hasActivation = false;
+  } else if (parameter < THIRD_OFFSET + HIDDEN_SIZE) {
+    activationOffset = SECOND_ACTIVATION + parameter - THIRD_OFFSET;
+  } else {
+    hasActivation = false;
+  }
+  var sum = 0.0;
+  for (var tileRow = 0u; tileRow < TILE_ROW_COUNT; tileRow++) {
+    let base = (tile * TILE_ROW_COUNT + tileRow) * ROW_STRIDE;
+    var activation = 1.0;
+    if (hasActivation) { activation = rowState[base + activationOffset]; }
+    sum += rowState[base + deltaOffset] * activation;
+  }
+  tileGradients[index] = sum;
+}`;
+
+  const adamSource = /* wgsl */ `
+${constants}
+struct StepUniforms { learningRate: f32 };
+@group(0) @binding(0) var<storage, read> tileGradients: array<f32>;
+@group(0) @binding(1) var<storage, read_write> parameters: array<f32>;
+@group(0) @binding(2) var<storage, read_write> firstMoments: array<f32>;
+@group(0) @binding(3) var<storage, read_write> secondMoments: array<f32>;
+@group(0) @binding(4) var<uniform> stepUniforms: StepUniforms;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) globalId: vec3u) {
+  let parameter = globalId.x;
+  if (parameter >= PARAMETER_COUNT) { return; }
+  var sum = 0.0;
+  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+    sum += tileGradients[tile * PARAMETER_COUNT + parameter];
+  }
+  let gradient = sum * 2.0 / f32(SAMPLE_COUNT);
+  let firstMoment = ${BETA_ONE} * firstMoments[parameter] + ${1 - BETA_ONE} * gradient;
+  let secondMoment = ${BETA_TWO} * secondMoments[parameter] + ${(1 - BETA_TWO).toFixed(6)} * gradient * gradient;
+  firstMoments[parameter] = firstMoment;
+  secondMoments[parameter] = secondMoment;
+  parameters[parameter] -= stepUniforms.learningRate * firstMoment / (sqrt(secondMoment) + 1e-8);
+}`;
+
+  const createStorage = (length: number, values?: Float32Array) => {
+    const buffer = device.createBuffer({
+      size: length * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
+    });
+    if (values) device.queue.writeBuffer(buffer, 0, values);
+    return buffer;
+  };
+  const sampleBuffer = createStorage(samples.length, samples);
+  const parameterBuffer = createStorage(parameterCount, initialParameters);
+  const firstMomentBuffer = createStorage(parameterCount);
+  const secondMomentBuffer = createStorage(parameterCount);
+  const rowStateBuffer = createStorage(sampleCount * rowStride);
+  const tileGradientBuffer = createStorage(tileCount * parameterCount);
+  const stepBuffers = Array.from({length: STEPS_PER_SUBMIT}, () =>
+    device.createBuffer({size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST})
+  );
+
+  const compileStarted = performance.now();
+  const createPipeline = (code: string) =>
+    device.createComputePipelineAsync({
+      layout: 'auto',
+      compute: {module: device.createShaderModule({code}), entryPoint: 'main'}
+    });
+  const [forwardBackwardPipeline, tileGradientPipeline, adamPipeline] = await Promise.all([
+    createPipeline(forwardBackwardSource),
+    createPipeline(tileGradientSource),
+    createPipeline(adamSource)
+  ]);
+  const compileMilliseconds = performance.now() - compileStarted;
+
+  const forwardBackwardBindGroup = device.createBindGroup({
+    layout: forwardBackwardPipeline.getBindGroupLayout(0),
+    entries: [
+      {binding: 0, resource: {buffer: sampleBuffer}},
+      {binding: 1, resource: {buffer: parameterBuffer}},
+      {binding: 2, resource: {buffer: rowStateBuffer}}
+    ]
+  });
+  const tileGradientBindGroup = device.createBindGroup({
+    layout: tileGradientPipeline.getBindGroupLayout(0),
+    entries: [
+      {binding: 0, resource: {buffer: rowStateBuffer}},
+      {binding: 1, resource: {buffer: tileGradientBuffer}}
+    ]
+  });
+  const adamBindGroups = stepBuffers.map(stepBuffer =>
+    device.createBindGroup({
+      layout: adamPipeline.getBindGroupLayout(0),
+      entries: [
+        {binding: 0, resource: {buffer: tileGradientBuffer}},
+        {binding: 1, resource: {buffer: parameterBuffer}},
+        {binding: 2, resource: {buffer: firstMomentBuffer}},
+        {binding: 3, resource: {buffer: secondMomentBuffer}},
+        {binding: 4, resource: {buffer: stepBuffer}}
+      ]
+    })
+  );
+
+  const tileGradientWorkgroups = Math.ceil((tileCount * parameterCount) / 256);
+  const tileGradientDispatchX = Math.min(tileGradientWorkgroups, 32768);
+  const tileGradientDispatchY = Math.ceil(tileGradientWorkgroups / tileGradientDispatchX);
+
+  const readParameters = async (): Promise<Float32Array> => {
+    const readBuffer = device.createBuffer({
+      size: parameterCount * 4,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+    });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(parameterBuffer, 0, readBuffer, 0, parameterCount * 4);
+    device.queue.submit([encoder.finish()]);
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const values = new Float32Array(readBuffer.getMappedRange().slice(0));
+    readBuffer.destroy();
+    return values;
+  };
+
+  /** Held-out error from a float64 forward pass on the CPU, as a share of the surface's spread. */
+  const getTestError = (parameters: Float32Array): number => {
+    let squaredError = 0;
+    const features = new Float64Array(featureCount);
+    const first = new Float64Array(hiddenSize);
+    const second = new Float64Array(hiddenSize);
+    for (let row = 0; row < testCount; row++) {
+      let frequency = Math.fround(3.14159265);
+      for (let band = 0; band < frequencyCount; band++) {
+        features[band * 4] = Math.sin(testPoints[row * 2] * frequency);
+        features[band * 4 + 1] = Math.cos(testPoints[row * 2] * frequency);
+        features[band * 4 + 2] = Math.sin(testPoints[row * 2 + 1] * frequency);
+        features[band * 4 + 3] = Math.cos(testPoints[row * 2 + 1] * frequency);
+        frequency *= 2;
+      }
+      for (let unit = 0; unit < hiddenSize; unit++) {
+        let sum = parameters[hiddenSize * featureCount + unit];
+        for (let feature = 0; feature < featureCount; feature++) {
+          sum += parameters[unit * featureCount + feature] * features[feature];
+        }
+        first[unit] = Math.max(sum, 0);
+      }
+      for (let unit = 0; unit < hiddenSize; unit++) {
+        let sum = parameters[secondOffset + hiddenSize * hiddenSize + unit];
+        for (let source = 0; source < hiddenSize; source++) {
+          sum += parameters[secondOffset + unit * hiddenSize + source] * first[source];
+        }
+        second[unit] = Math.max(sum, 0);
+      }
+      let prediction = parameters[thirdOffset + hiddenSize];
+      for (let unit = 0; unit < hiddenSize; unit++) {
+        prediction += parameters[thirdOffset + unit] * second[unit];
+      }
+      squaredError += (prediction - testValues[row]) ** 2 / testCount;
+    }
+    return Math.sqrt(squaredError / testVariance);
+  };
+
+  const checkpoints = [100, 250, 500, 1000, 2000, 4000].filter(step => step <= stepCount);
+  const history: {step: number; seconds: number; relativeTestError: number}[] = [
+    {step: 0, seconds: 0, relativeTestError: getTestError(await readParameters())}
+  ];
+  let trainingMilliseconds = 0;
+  let step = 0;
+  const learningRate = 0.005;
+  while (step < stepCount) {
+    const started = performance.now();
+    const encoder = device.createCommandEncoder();
+    for (let slot = 0; slot < STEPS_PER_SUBMIT; slot++) {
+      step++;
+      const correctedRate =
+        (learningRate * Math.sqrt(1 - BETA_TWO ** step)) / (1 - BETA_ONE ** step);
+      device.queue.writeBuffer(stepBuffers[slot], 0, new Float32Array([correctedRate, 0, 0, 0]));
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(forwardBackwardPipeline);
+      pass.setBindGroup(0, forwardBackwardBindGroup);
+      pass.dispatchWorkgroups(Math.ceil(sampleCount / 64));
+      pass.setPipeline(tileGradientPipeline);
+      pass.setBindGroup(0, tileGradientBindGroup);
+      pass.dispatchWorkgroups(tileGradientDispatchX, tileGradientDispatchY);
+      pass.setPipeline(adamPipeline);
+      pass.setBindGroup(0, adamBindGroups[slot]);
+      pass.dispatchWorkgroups(Math.ceil(parameterCount / 64));
+      pass.end();
+    }
+    device.queue.submit([encoder.finish()]);
+    // The mapped read of the parameters is the clock, so it cannot stop early.
+    const parameters = await readParameters();
+    trainingMilliseconds += performance.now() - started;
+    if (checkpoints.includes(step)) {
+      history.push({
+        step,
+        seconds: Math.round(trainingMilliseconds) / 1000,
+        relativeTestError: Math.round(getTestError(parameters) * 10000) / 10000
+      });
+    }
+  }
+  for (const buffer of [
+    sampleBuffer,
+    parameterBuffer,
+    firstMomentBuffer,
+    secondMomentBuffer,
+    rowStateBuffer,
+    tileGradientBuffer,
+    ...stepBuffers
+  ]) {
+    buffer.destroy();
+  }
+  const multiplyAccumulatesPerStep =
+    sampleCount *
+    (featureCount * hiddenSize +
+      2 * hiddenSize * hiddenSize +
+      2 * hiddenSize +
+      parameterCount);
+  return {
+    case: `${sampleCount} samples, ${featureCount} -> ${hiddenSize} -> ${hiddenSize} -> 1, ${parameterCount} parameters`,
+    rowStateMegabytes: Math.round((sampleCount * rowStride * 4) / 104857.6) / 10,
+    tileGradientMegabytes: Math.round((tileCount * parameterCount * 4) / 104857.6) / 10,
+    compileMilliseconds: Math.round(compileMilliseconds),
+    millisecondsPerStep: Math.round((trainingMilliseconds / stepCount) * 100) / 100,
+    billionMultiplyAccumulatesPerStep: Math.round(multiplyAccumulatesPerStep / 1e7) / 100,
+    history
+  };
+}
+
+it('reports the fit of a coordinate network trained in plain WGSL', {timeout: 600000}, async () => {
+  const lumaDevice = await getWebGPUTestDevice();
+  requireTestDevice(lumaDevice);
+  const device = (lumaDevice as unknown as {handle: GPUDevice}).handle;
+  const report: unknown[] = [];
+  for (const fitCase of [
+    {sampleCount: 65536, frequencyCount: 6, hiddenSize: 64, stepCount: 2000},
+    {sampleCount: 65536, frequencyCount: 6, hiddenSize: 32, stepCount: 2000},
+    {sampleCount: 262144, frequencyCount: 6, hiddenSize: 64, stepCount: 1000},
+    {sampleCount: 4096, frequencyCount: 6, hiddenSize: 64, stepCount: 2000}
+  ]) {
+    report.push(await runFitCase(device, fitCase));
+  }
+  // Fails on purpose: the headless runner does not print console output, a failure message it does.
+  throw new Error(`NEURAL_FIT_PROBE ${JSON.stringify(report)}`);
+});

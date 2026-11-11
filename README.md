@@ -1,7 +1,7 @@
 # luma.gl contributors
 
 GPU analysis operations, computation lenses and kepler.gl adapters built on
-[luma.gl](https://luma.gl). They run against published luma.gl `10.0.0-alpha.10`.
+[luma.gl](https://luma.gl). They run against published luma.gl `10.0.0-alpha.12`.
 
 | Package | Contents |
 | --- | --- |

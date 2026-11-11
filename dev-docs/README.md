@@ -16,6 +16,7 @@ Planning, decisions and research for `@luma-contributors/*`. User documentation 
 | [upstream-first-recording.md](./upstream-first-recording.md) | Computation records built from public `GPUCommandGraph` data |
 | [upstream-proposal-gpu-resident-iteration.md](./upstream-proposal-gpu-resident-iteration.md) | Draft proposal, not sent upstream: batched indirect dispatch (PLAT-04) |
 | [upstream-proposal-adapter-limits-subgroups.md](./upstream-proposal-adapter-limits-subgroups.md) | Draft proposal, not sent upstream: adapter limits, subgroups, buffer_view (PLAT-05) |
+| [upstream-proposal-math-review.md](./upstream-proposal-math-review.md) | Draft proposal, not sent upstream: 13 luma.gl pull requests from the math correctness review (grid cell coordinate, graph algorithms on caller CSR, haversine, finite difference, morphology, histogram, k-means, contours, 64-bit keys, exact point-in-ring, 64-bit words, `count`, compensated sums) |
 
 ## Research
 

@@ -57,6 +57,36 @@ createGPUComputationMetrics({timing, passIndices?, ...}) // accepts published ms
 The recorder is per graph. Create it only when a caller asks for a record; pass it down as an
 optional prop, exactly like the old `recording` option.
 
+### Kernel facts through `createWGSLKernelNode` (LN-REC, 2026-11-10)
+
+Decision: no `recorder?` prop on the ~430 contributor classes. Almost every analysis kernel is built
+by `createWGSLKernelNode`, so that helper is the one capture point:
+
+- `recordWGSLKernelNodes(graph)` (analysis-core) opts one graph in; `recorder.recordKernels(graph)`
+  does the same and remembers the graph. Lens graphs (`LensCommandGraph`, the network lens graphs)
+  opt in in their constructors.
+- While a graph is opted in, `createWGSLKernelNode` stores `{props, source, workgroupSize, layout}`
+  under the node id in a `WeakMap` keyed by the graph: only references the node's closures already
+  hold. A graph that is not opted in pays one `WeakMap` lookup per kernel and keeps nothing.
+- Keyed by id, not by node object: the compiled graph publishes node ids only, and `graph.add` /
+  `addGPUCommandNode` copy node objects.
+- `describeGPUCommandGraph(compiled, {graph | recorder, sourceText})` turns each entry into the
+  annotation `createGPUKernelAnnotation` would build (op, source with hash and `bodyHash`,
+  workgroup size, dispatch, per-node `constants`, bindings) and states the real ownership of every
+  bound resource. Explicit `recordNode` annotations win field by field.
+- Timings: `submitGPUCommandGraphWithTimings` sets the public `timeProfilingQuerySet` when the
+  device has `timestamp-query`; lens harnesses pass the report to `createGPUComputationMetrics`.
+  No timestamps means an empty node table, never zeros.
+- Still pack-level, because no shared helper knows them: formulas, `derivedFrom`, loop coordinates,
+  datum bindings. Dispatch gates and unrolled rounds are built by shared helpers but do not carry the
+  loop id or iteration; a cheap generic source would be an optional `loop` prop on
+  `createWGSLDispatchGate`, adopted family by family (wave 2 or later).
+- Not covered: nodes of published `@luma.gl/graph` primitives (`GPUScan`, `GPUSort`, `GPUReduction`,
+  `GPUGroupAggregation`, `GPURasterNeighborhood`, `GPURasterTextureToBuffer`). The luma.gl hook that
+  would cover them is a public per-node shader description (source, entry point, workgroup size,
+  bindings) on `compiled.preflight.nodes[]`; per-resource transient aliasing (`allocation`) also
+  needs luma.gl to publish its allocation plan.
+
 ## Before and after
 
 ### Marking a graph as recording

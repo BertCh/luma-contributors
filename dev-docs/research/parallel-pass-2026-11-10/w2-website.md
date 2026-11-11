@@ -1,0 +1,33 @@
+# w2-website report
+
+## Done
+Typecheck: `npx tsc -p website/tsconfig.json --noEmit` 0 errors (was 28 in 23 files).
+
+Per file:
+- Imports moved to `@luma-contributors/analysis/analysis-core` (GPUParameterBuffer, createGPULocalFrame, GPUMultipleTestingMethod, GPUTemporalContext): kernel-density.example.ts, compile-once.example.ts, drainage-network.example.ts, local-frame-projection.ts, space-time-hot-spots / hot-spot-analysis / spatial-regression / rate-cluster-map recipes, parameter-buffer.ts, space-time-cross-correlation.ts, _lib/gtwr-data.ts.
+- k-means rename (GPUKMeans -> GPUSpatialKMeans, getGPUSpatialKMeansParameterValues, GPU_SPATIAL_KMEANS_PARAMETER_LENGTH): gpu/demos/k-means.ts, demos/index.ts, catalog/entries/spatial-statistics.ts (symbol, example, `lensScenario: 'gpu-spatial-analysis.spatial-k-means'`).
+- Line output `count` is lines, `vertexCount` vertices: geometry-construction-overlay/shared/lines.ts (status {count: lineCount, vertexCount: count}), geometry-processing/rectangle-clip.ts (new line-count buffer).
+- Polygon output: removed `geometry.sourceIds`, `requiredCount` -> `requiredRingCount`: shared/polygons.ts, cells-index-join/spherical-polygon-overlay.ts.
+- linear-referencing.ts status `candidateOverflow`; shared-paths.ts and building-adjacency-recipe.ts `leftSourceIds/rightSourceIds`.
+- Point cloud: datum-grid-transform.ts `validity` -> `mask`; pointcloud-statistical-filter.ts `mask` -> `validity`; pointcloud-surfaces.ts and pointcloud-smrf.ts display flip removed (new `'south'` default); `_lib/helpers.ts createCloudGrid` now passes `rowDirection: 'south'` explicitly. Corrected default kept, picture orientation unchanged (checked against the poster).
+- walking-cost.ts: `frictionWeight` is now packed with getGPURasterWalkingCostParameterValues into a per-frame `parameters` buffer (slider no longer in `rebuildOn`, no recompile); GRASS coefficients too. raster-bands-indices/support/zones.ts and recipes-trajectories/dasymetric-redistribution-recipe.ts: required coverage `parameters` (uploaded from getGPURasterFractionalCoverageParameterValues).
+- space-time-variogram.ts (runtime failure, not a type error; failed in group run): the library parameter layout is 8 floats with `bounds` and the output is (lagCount+1) x (temporalLagCount+1) bins with zero-lag class 0. Run now uses getGPUSpaceTimeVariogramParameterValues({bounds: [0,0,width,1], ...}) and an (L+1)x(T+1) grid; caption mentions the zero-lag first row and column.
+- Text: trajectory-outlier-flags run header, caption and catalog summary now state the displaced-fix rule (speed bit, acceleration bit); terrain-relief-light.ts derivatives rowDirection default (from grid affine) and borderMode ('one-sided' default, curvature union); network-coarsening `fixedPointScale` optional, no default 65536.
+- Catalog: validity -> mask for raster-reclassify, raster-sampling, raster-profile, contrast-stretch, isolines, isobands, datum-grid-transform; thinning output `mask` -> `validity` (trajectory-mobility.ts); statistical filter prop and output `validity`; walking-cost and fractional-coverage `parameters`; dasymetric example comment; GPUParameterBuffer examples and entry importPath moved to analysis-core (51 example imports in 7 entry files plus the raster entries' generated imports; unused SPATIAL_IMPORT_PATH constants removed).
+- Regenerated `website/src/catalog/generated/inventory.json` (532 symbols). `check-catalog.ts`: 532/532 covered (0 uncovered, includes addRasterResistanceConnectivityRecipe, already added by the other agent), 0 errors.
+- biome formatted src (no lint errors).
+
+Decisions, not restored: terrain border default `'one-sided'` accepted for relief-blend, slope-aspect-hillshade, support/horizon.ts, terrain-curvature and demos/terrain-hydrology.ts (no text stated the old rule; relief-blend now differs from GPUReliefShading only in the outer ring, which that run does not draw). Equalized stretch, Louvain, k-means++ seeding, K envelope, conditional simulation, scan replicates, coarsening exact sums, isochrone `(a,b]` bands, drive-time own-road demand, Whittaker: accepted, new numbers shown; captions are generic and state no old number.
+
+## Verified
+- Edited set plus the behaviour-list runs (122 run-theme renders, dark and light): 122/122 pass. Screenshots read for pointcloud-surfaces, pointcloud-smrf, walking-cost, space-time-variogram, trajectory-outlier-flags, rectangle-clip, fractional-coverage, terrain-curvature: they match their captions. Not every other screenshot was read.
+- Whole groups, dark+light (`--out .reports/w2-website/groups`), runs x themes passed: categories-cells-tests 28/28, cells-index-join 62/62, dataframe-pointcloud-records 86/88 (space-time-variogram, since fixed and re-run 2/2), density-interpolation-regions 76/76, flows-cubes 20/20, geometry-construction-overlay 72/72, geometry-processing 72/72, network-routing-access 78/78, raster-bands-indices 86/86, raster-composites-climate 18/18, raster-embeddings-flow 26/26, raster-time-series 20/20, recipes-trajectories 86/86, regression-weights 76/76, space-time-events 20/20, space-time-models 26/26, spatial-statistics 54/54, terrain-hydrology-flow 46/46, terrain-relief-light 62/62, trajectory-mobility 26/26. Warnings seen: pointcloud-statistical-filter and trajectory-modal-split pointer gesture gives 2 distinct pictures.
+
+## Posters to regenerate (rest picture differs, or may differ)
+Library-driven: terrain-curvature, slope-aspect-hillshade, relief-blend, solar-shadow-mask, solar-irradiance, relief-shading (horizon support), contrast-stretch (if equalize), network-isochrones, drive-time-catchment, network-louvain, network-k-function, network-coarsening, whittaker-smoother, phenology-metrics, conditional-gaussian-simulation, expectation-based-space-time-scan, k-means demo, trajectory-outlier-flags (only if acceleration used: default not), space-time-variogram (was broken; new picture), pointcloud-surfaces (poster cells coarser than current default, regenerate), pointcloud-smrf, line-* runs (no picture change expected). Not measured: I had no pre-change render to diff. Run `node scripts/snapshot-runs.mjs` for these.
+
+## Suspected library regressions
+None found. Noted: the library changed `GPUSpaceTimeVariogram` bins and parameter layout earlier than today, so the run had been broken since; no code regression.
+
+## Not verified
+Individual screenshots of most runs in the behaviour list; check-all-pages.mjs; posters; the example-code strings in catalog entries beyond GPUParameterBuffer (other moved names, such as GPU_*_RADIUS constants, were not searched for in example text).

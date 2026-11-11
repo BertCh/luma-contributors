@@ -1,0 +1,346 @@
+{
+ "date": "2026-11-11",
+ "machine": "Apple M3 Pro, 18 GPU cores, headless Chromium through yarn vitest run --project headless",
+ "layerThroughput": [
+  {
+   "limits": {
+    "maxStorageBufferBindingSize": 4294967292,
+    "maxBufferSize": 4294967292,
+    "maxComputeWorkgroupsPerDimension": 65535,
+    "maxStorageBuffersPerShaderStage": 10
+   },
+   "features": [
+    "timestamp-query",
+    "shader-f16",
+    "subgroups"
+   ],
+   "device": {
+    "type": "webgpu",
+    "vendor": "apple",
+    "renderer": "",
+    "version": "",
+    "gpu": "apple",
+    "gpuType": "unknown",
+    "gpuBackend": "unknown",
+    "gpuArchitecture": "metal-3",
+    "fallback": false,
+    "featureLevel": "max",
+    "subgroupMinSize": 32,
+    "subgroupMaxSize": 32,
+    "shadingLanguage": "wgsl",
+    "shadingLanguageVersion": 100
+   }
+  },
+  {
+   "case": "dense layer, one invocation per output: 262144 rows, 64 -> 64",
+   "multiplyAccumulatesInBillions": 1.073741824,
+   "inputMegabytes": 64,
+   "outputMegabytes": 64,
+   "compileMilliseconds": 14,
+   "firstMilliseconds": 26,
+   "medianMilliseconds": 8.8,
+   "readbackVerifiedMilliseconds": 8.2,
+   "billionMultiplyAccumulatesPerSecond": 122,
+   "maximumRelativeError": 4.5593254949238826e-08
+  },
+  {
+   "case": "dense layer, one invocation per row: 262144 rows, 64 -> 64",
+   "multiplyAccumulatesInBillions": 1.073741824,
+   "inputMegabytes": 64,
+   "outputMegabytes": 64,
+   "compileMilliseconds": 13,
+   "firstMilliseconds": 5,
+   "medianMilliseconds": 2.2,
+   "readbackVerifiedMilliseconds": 1.8,
+   "billionMultiplyAccumulatesPerSecond": 488.1,
+   "maximumRelativeError": 4.5593254949238826e-08
+  },
+  {
+   "case": "dense layer, one invocation per output: 1048576 rows, 16 -> 16",
+   "multiplyAccumulatesInBillions": 0.268435456,
+   "inputMegabytes": 64,
+   "outputMegabytes": 64,
+   "compileMilliseconds": 9,
+   "firstMilliseconds": 5,
+   "medianMilliseconds": 1.7,
+   "readbackVerifiedMilliseconds": 1.4,
+   "billionMultiplyAccumulatesPerSecond": 157.9,
+   "maximumRelativeError": 6.5711135144308486e-09
+  },
+  {
+   "case": "dense layer, one invocation per row: 1048576 rows, 16 -> 16",
+   "multiplyAccumulatesInBillions": 0.268435456,
+   "inputMegabytes": 64,
+   "outputMegabytes": 64,
+   "compileMilliseconds": 19,
+   "firstMilliseconds": 4,
+   "medianMilliseconds": 1.3,
+   "readbackVerifiedMilliseconds": 1.1,
+   "billionMultiplyAccumulatesPerSecond": 206.5,
+   "maximumRelativeError": 6.5711135144308486e-09
+  },
+  {
+   "case": "coordinate network in one kernel: 1048576 points, 32 -> 64 -> 64 -> 1",
+   "multiplyAccumulatesInBillions": 6.509559808,
+   "inputMegabytes": 8,
+   "outputMegabytes": 4,
+   "compileMilliseconds": 36,
+   "firstMilliseconds": 11,
+   "medianMilliseconds": 10.6,
+   "readbackVerifiedMilliseconds": 9.8,
+   "billionMultiplyAccumulatesPerSecond": 614.1,
+   "maximumRelativeError": 6.262720742139516e-07
+  },
+  {
+   "case": "coordinate network in one kernel: 4194304 points, 16 -> 32 -> 32 -> 1",
+   "multiplyAccumulatesInBillions": 6.576668672,
+   "inputMegabytes": 32,
+   "outputMegabytes": 16,
+   "compileMilliseconds": 29,
+   "firstMilliseconds": 12,
+   "medianMilliseconds": 11.9,
+   "readbackVerifiedMilliseconds": 11.6,
+   "billionMultiplyAccumulatesPerSecond": 552.7,
+   "maximumRelativeError": 3.3596879334130136e-08
+  },
+  {
+   "case": "3x3 convolution: 256 x 256, 32 -> 32 channels",
+   "multiplyAccumulatesInBillions": 0.603979776,
+   "inputMegabytes": 8,
+   "outputMegabytes": 8,
+   "compileMilliseconds": 18,
+   "firstMilliseconds": 7,
+   "medianMilliseconds": 6.6,
+   "readbackVerifiedMilliseconds": 6.3,
+   "billionMultiplyAccumulatesPerSecond": 91.5,
+   "maximumRelativeError": 3.913036039637774e-08
+  },
+  {
+   "case": "3x3 convolution: 512 x 512, 32 -> 32 channels",
+   "multiplyAccumulatesInBillions": 2.415919104,
+   "inputMegabytes": 32,
+   "outputMegabytes": 32,
+   "compileMilliseconds": 20,
+   "firstMilliseconds": 26,
+   "medianMilliseconds": 24.8,
+   "readbackVerifiedMilliseconds": 24.5,
+   "billionMultiplyAccumulatesPerSecond": 97.4,
+   "maximumRelativeError": 1.9104585179594023e-07
+  },
+  {
+   "case": "3x3 convolution: 256 x 256, 64 -> 64 channels",
+   "multiplyAccumulatesInBillions": 2.415919104,
+   "inputMegabytes": 16,
+   "outputMegabytes": 16,
+   "compileMilliseconds": 18,
+   "firstMilliseconds": 26,
+   "medianMilliseconds": 24.8,
+   "readbackVerifiedMilliseconds": 24.6,
+   "billionMultiplyAccumulatesPerSecond": 97.4,
+   "maximumRelativeError": 2.62019989372142e-07
+  },
+  {
+   "case": "3x3 convolution: 1024 x 1024, 8 -> 8 channels",
+   "multiplyAccumulatesInBillions": 0.603979776,
+   "inputMegabytes": 32,
+   "outputMegabytes": 32,
+   "compileMilliseconds": 21,
+   "firstMilliseconds": 8,
+   "medianMilliseconds": 6.8,
+   "readbackVerifiedMilliseconds": 6.5,
+   "billionMultiplyAccumulatesPerSecond": 88.8,
+   "maximumRelativeError": 2.5216286003715283e-08
+  }
+ ],
+ "coordinateNetworkFit": [
+  {
+   "case": "65536 samples, 24 -> 64 -> 64 -> 1, 5825 parameters",
+   "rowStateMegabytes": 70.3,
+   "tileGradientMegabytes": 5.7,
+   "compileMilliseconds": 99,
+   "millisecondsPerStep": 3.98,
+   "billionMultiplyAccumulatesPerStep": 1.03,
+   "history": [
+    {
+     "step": 0,
+     "seconds": 0,
+     "relativeTestError": 2.754639697097611
+    },
+    {
+     "step": 100,
+     "seconds": 0.411,
+     "relativeTestError": 0.4615
+    },
+    {
+     "step": 250,
+     "seconds": 1.015,
+     "relativeTestError": 0.2576
+    },
+    {
+     "step": 500,
+     "seconds": 2.017,
+     "relativeTestError": 0.1619
+    },
+    {
+     "step": 1000,
+     "seconds": 4.003,
+     "relativeTestError": 0.0979
+    },
+    {
+     "step": 2000,
+     "seconds": 7.96,
+     "relativeTestError": 0.0606
+    }
+   ]
+  },
+  {
+   "case": "65536 samples, 24 -> 32 -> 32 -> 1, 1889 parameters",
+   "rowStateMegabytes": 38.3,
+   "tileGradientMegabytes": 1.8,
+   "compileMilliseconds": 61,
+   "millisecondsPerStep": 2.16,
+   "billionMultiplyAccumulatesPerStep": 0.31,
+   "history": [
+    {
+     "step": 0,
+     "seconds": 0,
+     "relativeTestError": 3.593141073686945
+    },
+    {
+     "step": 100,
+     "seconds": 0.223,
+     "relativeTestError": 0.5514
+    },
+    {
+     "step": 250,
+     "seconds": 0.541,
+     "relativeTestError": 0.2959
+    },
+    {
+     "step": 500,
+     "seconds": 1.072,
+     "relativeTestError": 0.1814
+    },
+    {
+     "step": 1000,
+     "seconds": 2.146,
+     "relativeTestError": 0.1086
+    },
+    {
+     "step": 2000,
+     "seconds": 4.316,
+     "relativeTestError": 0.0639
+    }
+   ]
+  },
+  {
+   "case": "262144 samples, 24 -> 64 -> 64 -> 1, 5825 parameters",
+   "rowStateMegabytes": 281,
+   "tileGradientMegabytes": 22.8,
+   "compileMilliseconds": 79,
+   "millisecondsPerStep": 14.56,
+   "billionMultiplyAccumulatesPerStep": 4.11,
+   "history": [
+    {
+     "step": 0,
+     "seconds": 0,
+     "relativeTestError": 3.1646598880577828
+    },
+    {
+     "step": 100,
+     "seconds": 1.466,
+     "relativeTestError": 0.415
+    },
+    {
+     "step": 250,
+     "seconds": 3.659,
+     "relativeTestError": 0.2357
+    },
+    {
+     "step": 500,
+     "seconds": 7.293,
+     "relativeTestError": 0.1457
+    },
+    {
+     "step": 1000,
+     "seconds": 14.565,
+     "relativeTestError": 0.0878
+    }
+   ]
+  },
+  {
+   "case": "4096 samples, 24 -> 64 -> 64 -> 1, 5825 parameters",
+   "rowStateMegabytes": 4.4,
+   "tileGradientMegabytes": 0.4,
+   "compileMilliseconds": 78,
+   "millisecondsPerStep": 0.32,
+   "billionMultiplyAccumulatesPerStep": 0.06,
+   "history": [
+    {
+     "step": 0,
+     "seconds": 0,
+     "relativeTestError": 6.5378264654598315
+    },
+    {
+     "step": 100,
+     "seconds": 0.039,
+     "relativeTestError": 0.653
+    },
+    {
+     "step": 250,
+     "seconds": 0.085,
+     "relativeTestError": 0.457
+    },
+    {
+     "step": 500,
+     "seconds": 0.169,
+     "relativeTestError": 0.3589
+    },
+    {
+     "step": 1000,
+     "seconds": 0.332,
+     "relativeTestError": 0.2878
+    },
+    {
+     "step": 2000,
+     "seconds": 0.648,
+     "relativeTestError": 0.2375
+    }
+   ]
+  }
+ ],
+ "forestInference": [
+  {
+   "case": "1048576 cells, 16 features, 100 trees of depth 6",
+   "forestMegabytes": 0.1,
+   "billionNodeVisits": 0.63,
+   "medianMilliseconds": 9.6,
+   "billionNodeVisitsPerSecond": 66,
+   "maximumError": 5.522742867469788e-07
+  },
+  {
+   "case": "1048576 cells, 16 features, 500 trees of depth 8",
+   "forestMegabytes": 1.5,
+   "billionNodeVisits": 4.19,
+   "medianMilliseconds": 68.9,
+   "billionNodeVisitsPerSecond": 61,
+   "maximumError": 3.630993887782097e-06
+  },
+  {
+   "case": "1048576 cells, 16 features, 1000 trees of depth 10",
+   "forestMegabytes": 11.7,
+   "billionNodeVisits": 10.49,
+   "medianMilliseconds": 308.4,
+   "billionNodeVisitsPerSecond": 34,
+   "maximumError": 3.5420525819063187e-06
+  },
+  {
+   "case": "4194304 cells, 8 features, 100 trees of depth 6",
+   "forestMegabytes": 0.1,
+   "billionNodeVisits": 2.52,
+   "medianMilliseconds": 16.7,
+   "billionNodeVisitsPerSecond": 151,
+   "maximumError": 6.998889148235321e-07
+  }
+ ]
+}

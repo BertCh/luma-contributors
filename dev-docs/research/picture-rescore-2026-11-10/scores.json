@@ -1,0 +1,2998 @@
+[
+ {
+  "id": "buffer-selection",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 4,
+  "note": "River, points and selected band read at once; reach corridor grows with the hand and the count follows."
+ },
+ {
+  "id": "cell-aggregation",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Hex heat map is legible; the probe only outlines the hovered cell and reports \"empty\" at two of three shown positions, so it rarely shows the points behind a count."
+ },
+ {
+  "id": "cell-compaction",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 3,
+  "note": "Mixed-resolution compaction reads well; the erase window changes under 5% and the compacted parents shown barely change between positions."
+ },
+ {
+  "id": "cell-cover",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Core against border cells is clear; dragging re-covers the polygon live."
+ },
+ {
+  "id": "cell-geometry",
+  "group": "cells-index-join",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Same picture as point-to-cell (blue hexes on Honshu) and nothing shows decoded geometry; only a tiny marker moves (0.6%). Fix: draw the decoded boundary, vertices and centre of the placed cell large, and drop the duplicate scene."
+ },
+ {
+  "id": "cell-grid-path",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Grid paths to a placed destination re-route clearly. Readout says \"paths up to 18 cells (max 14)\", see defects."
+ },
+ {
+  "id": "cell-level-selection",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Level strip and coarsening triangulated cells change strongly with x; y does nothing, acceptable for a level gesture."
+ },
+ {
+  "id": "cell-measures",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Dim purple ramp with a soft glow; the area trend is hard to read and the probe mostly moves a spotlight."
+ },
+ {
+  "id": "cell-pyramid",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Busy palette at rest, but the probe draws the nested parent outlines and per-level sums."
+ },
+ {
+  "id": "cell-rollup",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Children inside parents and parent sum equals children sum in the readout; good probe."
+ },
+ {
+  "id": "cell-set-outline",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Outline of a cell set reads; painting changes a few cells only (under 6%)."
+ },
+ {
+  "id": "cell-table-compare",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Before/after difference reads, but the pad shifts the synthetic \"after\" points (an input-data knob) and the centre position is an empty all-grey map. Fix: probe a cell to show its before and after counts, keep the shift as a slider."
+ },
+ {
+  "id": "cell-topology",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 3,
+  "note": "Rings of k neighbours are clear; moving the seed only translates an identical ring set."
+ },
+ {
+  "id": "h3-cell-identities",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Coloured edges of cells are abstract; the probe outlines one cell and gives its edge id, a small change."
+ },
+ {
+  "id": "hilbert-keys",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Constructed 8 by 8 grid shows the curve; the playhead reveals the prefix in order, under 3% change."
+ },
+ {
+  "id": "nearest-feature-join",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Sparse (3% non-background), query points nearly invisible; the placed query, ring and nearest link do follow."
+ },
+ {
+  "id": "nearest-feature-weights",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "k-nearest graph readable; probe lights one point's neighbours."
+ },
+ {
+  "id": "point-in-polygon-join",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Points coloured by lake read, but the pointer is outside every lake at most positions and the single placed point is tiny (2 distinct pictures). Fix: rest inside a lake and light every point in the hovered zone."
+ },
+ {
+  "id": "point-to-cell",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Only a small marker moves (0.5%); the hovered cell is not lit and the picture is the same as cell-geometry. Fix: highlight the hovered cell and its points."
+ },
+ {
+  "id": "s2-cap-covering",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Cap covering on several faces is abstract (colours unexplained), but the cap radius follows the reach and cell count changes a lot."
+ },
+ {
+  "id": "s2-cell-hierarchy",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Six seeds with child-in-parent squares; probe lifts one seed, little else changes."
+ },
+ {
+  "id": "s2-cell-measures",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Full-frame ramp still stretches a small area trend; probe is a spotlight with the area readout."
+ },
+ {
+  "id": "s2-polygon-covering",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Mixed-level covering inside the polygon is clear; dragging re-covers live."
+ },
+ {
+  "id": "spatial-join-candidates",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Boxes and candidate spokes are cluttered; the reach grows boxes and the pair count moves."
+ },
+ {
+  "id": "spatial-join-prepared",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Near duplicate of candidates; the \"prepared\" index is only in the readout. Dragging the swarm does move the pairs."
+ },
+ {
+  "id": "spatial-predicate-join",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Lake shores with faint orange spokes; the three distances look alike and no corridor is drawn. Fix: draw the dwithin band along the shores and dim unmatched points."
+ },
+ {
+  "id": "spherical-arc-overlay",
+  "group": "cells-index-join",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Outlines only (lake and corridor), so the overlay output is a thin white ring. Fix: fill the intersection and tint the operands."
+ },
+ {
+  "id": "spherical-convex-contains",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Points inside the hexagon turn orange; placing it re-tests on the GPU."
+ },
+ {
+  "id": "spherical-convex-intersection",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Outline-only hull and footprint; the intersection polygon follows the drag."
+ },
+ {
+  "id": "spherical-polygon-contains",
+  "group": "cells-index-join",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Inside/outside colours read; the exclusion hole moves but the change is small."
+ },
+ {
+  "id": "spherical-polygon-overlay",
+  "group": "cells-index-join",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Filled difference with the corridor cut follows the drag."
+ },
+ {
+  "id": "bivariate-classification",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Faint tinted flashes with a 3 by 3 legend; hovering a legend class lights its members clearly."
+ },
+ {
+  "id": "calendar-buckets",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Week by hour heat map without axis labels; the pad rotates the calendar (UTC offset, week start), which reads as a shift rather than a result."
+ },
+ {
+  "id": "class-breaks",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Sorted values, break rules and class bars read together; the pad changes method and class count."
+ },
+ {
+  "id": "color-scale",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Speckled flash scatter in categorical colours says little about a colour scale; y (scale) has no effect and 3 of 5 positions are distinct. Fix: show the ramp against a sorted value strip and make the second axis act."
+ },
+ {
+  "id": "column-profile",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Box and histogram are legible, but moving the box changes under 2% and the masked histogram is nearly the full one. Fix: contrast the masked rows' histogram against the total in a second colour on a fixed axis."
+ },
+ {
+  "id": "column-quantiles",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Quantile curve with a range box; the window moves the kept range and the map dims the rest."
+ },
+ {
+  "id": "composite-score",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Tract choropleth with an aim arrow toward an indicator; weights shift visibly."
+ },
+ {
+  "id": "computation-captures",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Ten tiny unlabelled thumbnails and a tract mosaic; the playhead selects a frame. Fix: one large capture with the thumbnails as the time strip."
+ },
+ {
+  "id": "computation-metrics",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Rows of unlabelled bars and two big teal bars; hover only adds a dashed outline (x 0%, 3 distinct). Fix: highlight the hovered pass across both charts with a value rule, and label units."
+ },
+ {
+  "id": "computation-record",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Abstract node graph plus timeline without labels; hovering outlines one node and the readout barely changes (\"source none\" everywhere). Fix: light the hovered node's resources on the timeline."
+ },
+ {
+  "id": "computation-recorder",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Graph with scope colours; the probe draws a dashed link from node to its scope."
+ },
+ {
+  "id": "cross-variogram",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same pairs and same flat curve as variogram (same pair counts); nothing shows two variables. Fix: plot both variables' marks and the cross semivariance against each single variogram."
+ },
+ {
+  "id": "datum-grid-transform",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Shift arrows on a Midwest grid are tiny; placing a test point moves one arrow (0.5%) and maximumIterations is inert. Fix: enlarge the shift field (colour by magnitude) and draw the interpolating grid cell around the test point."
+ },
+ {
+  "id": "group-statistics",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tract choropleth with block dots; hover outlines the tract and shows its blocks, change under 2%."
+ },
+ {
+  "id": "inequality",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Choropleth with a tiny Lorenz inset; hover gives the Atkinson index of a tract, the inset is too small to read."
+ },
+ {
+  "id": "key-join",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Mostly grey map where matched and unmatched blocks are hard to tell apart. Fix: colour matched blocks by joined value and unmatched in one clear neutral."
+ },
+ {
+  "id": "marked-point-statistics",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Sample circles and K/g/mark curves; radius rule and circles follow, y does nothing."
+ },
+ {
+  "id": "point-buffer",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Eight points with small rings fill 2% of the frame at rest. Fix: more points and a larger rest radius so the buffers and their overlaps read."
+ },
+ {
+  "id": "point-pattern-indices",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Quadrat heat map with points; probe reports nearest-neighbour and quadrat counts."
+ },
+ {
+  "id": "pointcloud-change",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Placed slump lights changed cores under the ring; good place gesture."
+ },
+ {
+  "id": "pointcloud-features",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Orange and blue speckle over the tile; linearity, planarity and scatter cannot be read from the colours. Fix: colour by dominant feature on a tile with roofs and edges, with a three-colour key."
+ },
+ {
+  "id": "pointcloud-ground",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Swipe doubles as a threshold that barely changes the classification (7710 to 7663 of 9000), and slope and maximumThreshold are inert. Fix: a pure curtain, or a level gesture on a tile with intermediate relief (WEB-PIC-09)."
+ },
+ {
+  "id": "pointcloud-height",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Dim speckle; the probe reads \"height 0.00 (0 m)\" at all three positions shown, most likely because it lands on ground points. Fix: colour points by normalized height on a visible ramp and rest the probe on a tree."
+ },
+ {
+  "id": "pointcloud-icp",
+  "group": "dataframe-pointcloud-records",
+  "rest": 1,
+  "gesture": 2,
+  "note": "Uniform speckle where source and target clouds cannot be told apart; only a small RMSE curve changes. Fix: two contrasting colours, fewer points, correspondence lines and the aligned result."
+ },
+ {
+  "id": "pointcloud-local-positions",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Uniform orange speckle at rest; the float32 quantization grid only appears at the far end of the pad. Fix: zoom in and draw the plain cast against the local positions in two colours."
+ },
+ {
+  "id": "pointcloud-neighborhoods",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Speckled tile; the hovered point gets a tiny ring and 3 to 8 neighbours that cannot be seen. Fix: an enlarged inset of the neighbourhood, or brighter linked points with spokes."
+ },
+ {
+  "id": "pointcloud-smrf",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Surface left and classified points right read as a curtain; the threshold the swipe also drives barely changes ground (7712 to 7685) and window is inert."
+ },
+ {
+  "id": "pointcloud-statistical-filter",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 1,
+  "note": "Rejected points are a few red dots among orange; the level ticks move but the picture has 2 distinct states (threshold settles, x 0%). Fix: per-frame threshold on the computed distances and rejected points drawn large and bright."
+ },
+ {
+  "id": "pointcloud-surfaces",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Canopy surface against terrain as a curtain is clear; readout gives canopy height under the hand."
+ },
+ {
+  "id": "pointcloud-voxel-merge",
+  "group": "dataframe-pointcloud-records",
+  "rest": 1,
+  "gesture": 2,
+  "note": "Sparse dots on black; tiles, voxels and the merge are invisible and the seam drag changes 3%. Fix: colour points by source tile, draw voxel cells and highlight shared voxels on the seam."
+ },
+ {
+  "id": "ripley-distance-functions",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Sample circles and G, F, J curves with a radius rule."
+ },
+ {
+  "id": "ripley-envelope",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Observed L curve far above an envelope that collapses to a flat line, so the envelope is unreadable; radius reach works."
+ },
+ {
+  "id": "ripley-k",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same layout and same circles as ripley-envelope and ripley-distance-functions. Fix: draw K against the Poisson reference pi r squared to separate it from the siblings."
+ },
+ {
+  "id": "scalar-scale",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Scale curve with a clamp knee; the pad moves domain and range."
+ },
+ {
+  "id": "snapshot-arena",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Fifteen small thumbnails and a slot strip; the frame box moves along. Fix: show the selected snapshot large."
+ },
+ {
+  "id": "snapshot-tap",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Abstract graph and two small maps; picking the tapped iteration changes little (3 of 5 distinct). Fix: show the tapped view large and diff it against the final result."
+ },
+ {
+  "id": "space-time-variogram",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Full-frame contour surface without axes, the raw points squeezed into a corner; at the right end of the pad a blocky band appears at the edge. Fix: axes for lag and distance and a smaller surface panel."
+ },
+ {
+  "id": "spatial-correlogram",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Distance band circle and Moran bars with z line; probe moves the band."
+ },
+ {
+  "id": "temporal-reduction",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "A dim diagonal of cells on black; most of the frame is empty. Fix: fit the active time range to the frame and use a brighter ramp."
+ },
+ {
+  "id": "time-window-filter",
+  "group": "dataframe-pointcloud-records",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Flashes inside the time window light, histogram box follows; clear."
+ },
+ {
+  "id": "transfer-mask",
+  "group": "dataframe-pointcloud-records",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Blocks selected under the ring transfer to tracts in yellow; clear."
+ },
+ {
+  "id": "variable-standardization",
+  "group": "dataframe-pointcloud-records",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Raw against standardized as a curtain, but the histogram is a single orange bar. Fix: histogram of z-scores with a zero line and the raw histogram beside it."
+ },
+ {
+  "id": "variogram",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Pairs at the hovered lag and semivariance bars; works but bars are nearly flat."
+ },
+ {
+  "id": "variogram-model-fit",
+  "group": "dataframe-pointcloud-records",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Fitted model curves read; hovering only moves a rule (0.8%) and the map beside it is empty. Fix: show the pairs at the hovered distance on the map as variogram does."
+ },
+ {
+  "id": "areal-interpolation",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tracts against nine target zones as a curtain; the zones are huge blocks running off the frame, but source and target read."
+ },
+ {
+  "id": "azp-regions",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Regions are colourful and clear; the iteration playhead snaps to three builds and the regions barely change between them. Fix: show the swaps per iteration (moved tracts outlined) or an objective trace."
+ },
+ {
+  "id": "class-assignment",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Class map with histogram and break rule; sliding a break reassigns tracts."
+ },
+ {
+  "id": "classification-fit",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Class map with fit bars; hovering a class outlines its tracts, the bars do not highlight."
+ },
+ {
+  "id": "conditional-gaussian-simulation",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Noisy field with small conditioning points; playing replicates changes the whole field, conditioning is hard to see."
+ },
+ {
+  "id": "continuous-spatial-sample",
+  "group": "density-interpolation-regions",
+  "rest": 4,
+  "gesture": 3,
+  "note": "Grid sample over tracts is clear; the spacing reach thins it, y does nothing."
+ },
+ {
+  "id": "dot-density",
+  "group": "density-interpolation-regions",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Both populations (65+ and under 65) draw as similar orange dots on black. Fix: two contrasting dot colours and a brighter dot size."
+ },
+ {
+  "id": "focal-statistics",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Focal field fills the frame; the window disc hides the cells under it, radius and position follow the hand."
+ },
+ {
+  "id": "geographic-distribution",
+  "group": "density-interpolation-regions",
+  "rest": 2,
+  "gesture": 3,
+  "note": "A small point cluster at the top with overlapping ellipses fills 2% of the frame. Fix: fit the points and ellipses to the frame and dim the extra standard-deviation rings."
+ },
+ {
+  "id": "inhomogeneous-point-pattern",
+  "group": "density-interpolation-regions",
+  "rest": 2,
+  "gesture": 3,
+  "note": "The estimated intensity is not drawn, only tinted points and a corner chart. Fix: draw the kernel intensity as a raster under the points."
+ },
+ {
+  "id": "kriging",
+  "group": "density-interpolation-regions",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Kriged surface, samples and a range ring that follows the reach; clear."
+ },
+ {
+  "id": "line-density",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Line density cells along routes; probe reports length over area per cell."
+ },
+ {
+  "id": "line-length-per-polygon",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Dragging the workplace re-routes flows and recolours tracts by length."
+ },
+ {
+  "id": "lisa-markov",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 4,
+  "note": "LISA map and transition matrix; hovering a cell lights the tracts that moved."
+ },
+ {
+  "id": "local-kriging",
+  "group": "density-interpolation-regions",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Hovered cell's neighbours drawn as spokes with the estimate and error; clear."
+ },
+ {
+  "id": "local-rbf",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Same scene as local-kriging with dashed spokes that clutter; works."
+ },
+ {
+  "id": "max-p-regions",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Regions change strongly with the threshold, but the region bars are tiny against their axis (WEB-PIC-16) and 3 of 5 positions are distinct."
+ },
+ {
+  "id": "natural-neighbor",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Interpolated hull with samples; carrying one sample changes the surface locally."
+ },
+ {
+  "id": "pick-region-mask",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Picked rows light inside the ring; small change."
+ },
+ {
+  "id": "point-density",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Event density cells; probe reads one cell's count."
+ },
+ {
+  "id": "point-pattern-envelope",
+  "group": "density-interpolation-regions",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Bare curves with no shaded envelope and no points map; only the rule moves (0.9%). Fix: shade the envelope band, mark where observed leaves it, show the pattern."
+ },
+ {
+  "id": "pycnophylactic",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tract totals against the smooth surface as a curtain; clear but no re-run."
+ },
+ {
+  "id": "random-points-in-polygon",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Random points coloured by tract; hover outlines a tract."
+ },
+ {
+  "id": "random-points-on-line",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tangled routes; hover lights one line and its points."
+ },
+ {
+  "id": "rank-markov",
+  "group": "density-interpolation-regions",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Map, matrix and bars look the same for periods 2, 4 and 5. Fix: colour tracts by rank change for the period and light the matrix cell it fills."
+ },
+ {
+  "id": "region-mask",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Star lasso over points; carrying it counts points inside."
+ },
+ {
+  "id": "region-partition-evaluation",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Regions with a spotlight; pseudo-F is constant (a partition score), the lone bar at the corner is bare."
+ },
+ {
+  "id": "region-statistics",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Same scene as readback with a value bar chart; works."
+ },
+ {
+  "id": "region-statistics-readback",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Region circle with histogram readback; the histogram follows the window."
+ },
+ {
+  "id": "rose-statistic",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Leg directions and a rose; pointing at a direction lights the legs in that sector."
+ },
+ {
+  "id": "skater-regions",
+  "group": "density-interpolation-regions",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Spanning tree cuts and regions change strongly with the pad; clear."
+ },
+ {
+  "id": "spatial-balanced-sample",
+  "group": "density-interpolation-regions",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Sample points and population are both small yellow dots; moving the split changes nothing visible (\"west 60 east 100\" at every split). Fix: colour the two strata and sampled points distinctly, and recount per stratum as the split moves."
+ },
+ {
+  "id": "spatial-markov",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Map with four conditional matrices; hover frames the lag-class matrix."
+ },
+ {
+  "id": "spatial-weights-minimum-spanning-tree",
+  "group": "density-interpolation-regions",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Tree over tracts with the hovered tract's tree edges against its neighbours; clear."
+ },
+ {
+  "id": "transition-diagnostics",
+  "group": "density-interpolation-regions",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Unlabelled matrices and bars; raising the threshold only adds stripes on sparse rows (2.9%). Fix: grey out sparse rows in the matrix and show the count against the threshold on a labelled bar."
+ },
+ {
+  "id": "transition-matrix",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Map and matrix; hovering a matrix cell lights its tracts."
+ },
+ {
+  "id": "ward-regions",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Regions read, but walking the merges changes 3% and only small regions merge between the three builds. Fix: outline the two regions merged at each step and step through every merge."
+ },
+ {
+  "id": "zonal-statistics",
+  "group": "density-interpolation-regions",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tract choropleth with block dots in the hovered tract; same layout as group-statistics."
+ },
+ {
+  "id": "buffer-surface",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Buffer outline around two lines reads, but the reach gives 0.090, 0.085, 0.083 at three positions (0.5% change) because every test position sits at a similar distance. Fix: map the reach over a wider range (log) so the edge visibly follows the hand."
+ },
+ {
+  "id": "building-adjacency-recipe",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Building outlines only, in a strip at the top; no adjacency or terrace link is drawn, and two of three positions read \"no building hovered\". Fix: draw shared walls as links, fit the block to the frame and snap the probe to the nearest building."
+ },
+ {
+  "id": "building-tessellation-recipe",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Territories around buildings re-form as one is dragged; outlines only."
+ },
+ {
+  "id": "concave-hull",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Hull and points read, but carrying one of hundreds of points barely moves the hull (0.5%). Fix: let the reach set maximumCircumradius, or carry a hull vertex outward."
+ },
+ {
+  "id": "constrained-delaunay-triangulation",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Six triangulated rings; dragging one vertex changes one small shape (0.4%) and constraint edges are not distinguished from free edges."
+ },
+ {
+  "id": "coverage-dissolve",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Coverage outlines read; two of three positions show \"(no readout)\" and the dissolved district highlight is faint. Fix: snap the probe to the nearest tract and fill the dissolved district."
+ },
+ {
+  "id": "coverage-simplification",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Constructed jagged coverage; tolerance follows the reach and shared edges stay shared."
+ },
+ {
+  "id": "coverage-validity",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Grey coverage with a few orange invalid edges; gap stays 0.012 and the picture changes 0.3%. Fix: mark the gaps and overlaps as filled red slivers and let the reach set gapWidth across them."
+ },
+ {
+  "id": "dorling-cartogram",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Circles over faint tracts; iterations 5, 20 and 50 look almost the same. Fix: start the relaxation from overlapping centroid circles and draw displacement tails."
+ },
+ {
+  "id": "great-circle-arcs",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Arcs to a placed destination re-draw clearly; the base map is very faint."
+ },
+ {
+  "id": "grid-generator",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Hex grid over faint points; sliding the origin moves an identical lattice. Fix: count points per generated cell and colour the cells so moving the origin changes the result."
+ },
+ {
+  "id": "group-concave-hull",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 1,
+  "note": "Group hulls read; carrying one point changes nothing visible (2 distinct, 0.2%). Fix: carry a whole group or drive the circumradius by reach."
+ },
+ {
+  "id": "group-convex-hull",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Group hulls read; the carried point stays inside its hull at most positions (3 distinct). Fix: carry a hull vertex so the hull visibly re-forms."
+ },
+ {
+  "id": "group-geometry",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Standard-deviation ellipses run far off the frame and overlap the bounding boxes in a tangle. Fix: clip to the frame, show one group bright and the rest dim."
+ },
+ {
+  "id": "isovists-recipe",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Moving the viewpoint redraws the isovist against the buildings; clear."
+ },
+ {
+  "id": "line-chunk",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Chunk colours change with the reach; lines are thin."
+ },
+ {
+  "id": "line-clip-by-polygon",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Clipped pieces inside polygons are coloured; dragging shifts the polygon layer."
+ },
+ {
+  "id": "line-locate",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Located points along routes follow the measure offset."
+ },
+ {
+  "id": "line-merge",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Hover lights one merged chain and its fragments."
+ },
+ {
+  "id": "line-segmentize",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Inserted vertices are tiny dots that cannot be seen at card size; the picture changes 0.2%. Fix: draw original vertices large and inserted ones in a second colour."
+ },
+ {
+  "id": "line-simplification",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Original (dashed, faint) against simplified lines; the three positions keep 15, 19 and 15 vertices and look alike (0.4%). Fix: widen the tolerance range and brighten the original."
+ },
+ {
+  "id": "line-smooth",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Smoothed against original lines; the ratio changes but the curves look alike (2.1%). Fix: show the original angular line in a contrasting colour and allow more iterations."
+ },
+ {
+  "id": "line-split",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Crossing lines split into coloured pieces; reads as a coloured grid, dragging re-splits."
+ },
+ {
+  "id": "linear-referencing",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Faint roads with tiny measure ticks; moving the query point changes 0.4% (3 distinct). Fix: draw the projection from the query point to the road and the measure along it."
+ },
+ {
+  "id": "map-coloring",
+  "group": "geometry-construction-overlay",
+  "rest": 4,
+  "gesture": 3,
+  "note": "Four-colour map is clear; the probe outlines a tract and its neighbours, x and y change near 0%."
+ },
+ {
+  "id": "offset-curve",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Offset against input line; the distance follows the side and reach."
+ },
+ {
+  "id": "offset-expansion",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Abstract bars mapping fixes to vessels with no labels. Fix: label the two strips and draw the expansion as arrows between them."
+ },
+ {
+  "id": "outline-geometry",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Blue discs with no visible input points; the reach returns the same 0.100 at two of three positions. Fix: draw the input points and the outline edge distinctly and widen the range."
+ },
+ {
+  "id": "parameter-buffer",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 1,
+  "note": "Shows a line-simplified shoreline whose tolerance lives in a GPUParameterBuffer; nothing in the picture says the value is written per frame without recompiling. The reach saturates at the 0.1 maximum at every test position (\"tolerance 0.100 · kept 9\" throughout) because the pointer is never within 0.1 of the shore. Fix: map the reach logarithmically from the shore so the full range is reachable, and show a frame counter against a \"compiled once\" badge."
+ },
+ {
+  "id": "polygon-overlay",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Intersections of two layers fill as the orange layer is dragged; clear."
+ },
+ {
+  "id": "polygon-triangulation",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Same picture and same drag as constrained-delaunay-triangulation; one vertex moves (0.4%). Fix: a different input (a polygon with holes from real data) and an edge-type encoding."
+ },
+ {
+  "id": "segment-ring-assembly",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Assembled rings and input segments are both thin blue lines; hovering lights one joint (1.8%). Fix: colour each assembled ring and show the dangling input segments distinctly."
+ },
+ {
+  "id": "shape-generator",
+  "group": "geometry-construction-overlay",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Generated circles at vessel positions over faint tracks, cut off at the top. Fix: fit to frame and show the vessel the shape is generated for."
+ },
+ {
+  "id": "shared-paths",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Shared stretches between routes light as the departure point moves."
+ },
+ {
+  "id": "street-profiles-recipe",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Street profile samples between facades; two of three positions read \"no facade in reach\". Fix: constrain the probe to the street axis and rest on a sample with facades."
+ },
+ {
+  "id": "visibility-graph-recipe",
+  "group": "geometry-construction-overlay",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Visibility graph with the hovered node's visible links; dense grey background graph."
+ },
+ {
+  "id": "affine-transform",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Transformed rings are white over faint originals, hard to tell apart; the aim arrow rotates and scales them clearly."
+ },
+ {
+  "id": "bounds-filter",
+  "group": "geometry-processing",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Selected polygons fill inside the moving box; clear window."
+ },
+ {
+  "id": "canonical-geometry-equality",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Small mixed glyphs with tolerance circles; what \"equal\" means is not visible at rest. Fix: pair each input with its canonical twin and tick the equal pairs."
+ },
+ {
+  "id": "canonical-polygon-equality",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Equal pairs turn blue as the tolerance loosens; tolerance circles add clutter."
+ },
+ {
+  "id": "convex-straight-skeleton",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Skeletons and offset rings in small shapes; the reach changes the offset visibly."
+ },
+ {
+  "id": "geodesic-destination",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Destination fan around a placed origin on a faint world map; follows the hand."
+ },
+ {
+  "id": "geodesic-pairs",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Geodesics to cities from a placed target; the faint map makes the arcs float."
+ },
+ {
+  "id": "geometry-cleanup",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Grid-snapped coastline against the faint input; the reach changes gridSize strongly. Near duplicate of line-precision-reduction."
+ },
+ {
+  "id": "geometry-measures",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Parcels filled by area; dragging a corner reshapes one parcel and the readout follows."
+ },
+ {
+  "id": "geometry-orientation",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Thin rings with tiny direction arrows; the curtain shows \"14 rings reversed\" at every position. Fix: draw large winding arrows and colour clockwise against counter-clockwise."
+ },
+ {
+  "id": "geometry-predicates",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Coloured outlines with no key for which predicate each colour means; hover lights one shape."
+ },
+ {
+  "id": "geometry-validity",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Faint rings in many colours; invalid shapes and the reason are not marked at rest. Fix: mark the invalid location (self-intersection point, wrong winding) on each shape."
+ },
+ {
+  "id": "label-point",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Label points in crescent shapes read; refinement rounds move them imperceptibly (distance 0.052 to 0.047). Fix: draw the candidate search grid for each round."
+ },
+ {
+  "id": "line-loop-removal",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Faint input with small loops under a white output; the readout stays \"240 -> 129\" at every position. Fix: draw removed loops in red and let the drag create a loop."
+ },
+ {
+  "id": "line-noding",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Crossing lines with coloured pieces; the readout stays \"101 noded segments · 94 splits\" and nodes are not marked. Fix: draw node dots and recount as the crossing moves."
+ },
+ {
+  "id": "line-precision-reduction",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Grid-snapped line follows the reach; sibling of geometry-cleanup."
+ },
+ {
+  "id": "local-frame-projection",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Projected Europe grid changes with the origin latitude; x does nothing."
+ },
+ {
+  "id": "lon-lat-polygon-preparation",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Abstract date-line diagram; the dragged polygon reads \"whole\" at every position and never shows a split. Fix: rest across the antimeridian and draw the split pieces."
+ },
+ {
+  "id": "make-valid",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Bow-tie rings are repaired as a vertex is dragged across; the bow-ties are small."
+ },
+ {
+  "id": "maximum-inscribed-circle",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Circles in thin shapes; pushing the boundary changes the circle very little (0.7%). Fix: larger shapes and a drag that visibly narrows the shape."
+ },
+ {
+  "id": "minimum-bounds",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Circle, rectangle and diameter per shape; pulling a vertex updates all three."
+ },
+ {
+  "id": "minimum-clearance",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Clearance is a tiny white tick on filled shapes; squeezing a vertex changes 0.5%. Fix: draw the clearance segment large with its two end points and colour shapes by clearance."
+ },
+ {
+  "id": "normalize-geometry",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Tiny glyphs of mixed types; hover draws a dashed link from input to canonical (1.4%). Fix: two aligned columns, input and canonical, with the hovered pair enlarged."
+ },
+ {
+  "id": "normalize-polygons",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Start-vertex dots are barely visible; the aim moves the input start and the readout says \"canonical start fixed\" every time. Fix: draw the input and canonical start vertices large in two colours."
+ },
+ {
+  "id": "offset-curve-components",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Offset components around a river line; two of three positions give the same distance and joinStyle is inert. Fix: widen the reach range and show the components in separate colours."
+ },
+ {
+  "id": "polygon-precision-reduction",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Grid-snapped polygons against the faint grid; the reach changes gridSize."
+ },
+ {
+  "id": "polygonize",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Faces are outlines only and the readout stays \"6 faces\" as the crossing moves. Fix: fill each face in its own colour so the drag visibly re-forms them."
+ },
+ {
+  "id": "ratio-concave-hull",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Hull tightens and loosens with the level; clear."
+ },
+ {
+  "id": "rectangle-clip",
+  "group": "geometry-processing",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Clipped lines and polygons inside the moving rectangle; clear."
+ },
+ {
+  "id": "segment-intersection",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Crossings marked as dots; moving the crossing keeps \"28 crossings\" and changes 0.1%. Fix: drag one whole line so crossings appear and disappear."
+ },
+ {
+  "id": "segment-snap",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Snapped line with reference dots; the readout says \"left out\" at most positions (3 distinct). Fix: draw the snap tolerance ring and the inserted vertex."
+ },
+ {
+  "id": "shape-descriptors",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Slivers turn orange as the threshold rises; the value axis is bare."
+ },
+ {
+  "id": "study-window-preparation",
+  "group": "geometry-processing",
+  "rest": 2,
+  "gesture": 3,
+  "note": "A thin window outline and three unlabelled bars; at the far drag the bars overlap the window. Fix: fit the window, label the bars and keep them clear of the geometry."
+ },
+ {
+  "id": "subdivide-polygons",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Subdivided pieces read; pushing a vertex keeps \"4 pieces\" and changes 1%. Fix: let the gesture set maximumVertices or drag a vertex that adds pieces."
+ },
+ {
+  "id": "vector-straight-skeleton",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Skeleton and offset rings; two of three positions give the same offset (3 distinct). Fix: map the reach over the full depth of the shape."
+ },
+ {
+  "id": "vertex-snap",
+  "group": "geometry-processing",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Snapped vertices in orange against inputs; the snap radius follows."
+ },
+ {
+  "id": "adjacency-matrix",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Sparse matrix with no network beside it; hovering draws a dashed crosshair and a link count (1.2%). Fix: an inset network with the hovered rows' and columns' nodes and links lit."
+ },
+ {
+  "id": "adjacency-matrix-order",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Unlabelled full-frame matrix; input order reads as noise and the five bands are not marked. Fix: draw band boundaries and a node strip coloured by band."
+ },
+ {
+  "id": "alternative-routes",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Three alternative routes to a placed target re-route clearly."
+ },
+ {
+  "id": "bounded-facility-allocation",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Hovering a facility draws links to the demand it serves with its load."
+ },
+ {
+  "id": "catchment-accessibility",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Demand dots and one dashed arc; the catchment itself is not filled and dragging changes 1.7%. Fix: colour network edges or demand by accessibility within the catchment."
+ },
+ {
+  "id": "drive-time-catchment",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Catchments drawn as Euclidean dashed circles over the street network, not as network-shaped bands; cluttered. Fix: colour edges by drive-time band from the dragged facility."
+ },
+ {
+  "id": "edge-bundling",
+  "group": "network-routing-access",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Bundling tightens across iterations; clear and attractive."
+ },
+ {
+  "id": "facility-scenario",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Closing the hovered site recolours its demand; small change (0.6%)."
+ },
+ {
+  "id": "flow-aggregation",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Zone flows as arrows over a heat grid; dense grey flow lines behind."
+ },
+ {
+  "id": "huff-trade-areas",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Demand dots coloured by most likely facility; dragging one changes under 1% and probabilities are drawn as hard classes. Fix: tint dots by probability for the dragged facility."
+ },
+ {
+  "id": "location-allocation",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Facilities with coverage rings; the reach gives coverage 0.10, 0.10, 0.15 (3 distinct) and covered share 14 to 17%. Fix: widen the coverage range and light covered demand."
+ },
+ {
+  "id": "map-matching",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 2,
+  "note": "GPS fixes and matched path are both orange tangles; dragging a fix changes 0.5%. Fix: raw track and matched route in contrasting colours with fix-to-road links."
+ },
+ {
+  "id": "network-accessibility",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Edges tinted by accessibility; dragging a facility changes 1.3% with a Euclidean dashed ring. Fix: make the dragged facility's contribution visible (edge colour change near it)."
+ },
+ {
+  "id": "network-analytics-columns",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Components coloured; probe lights one component with its size."
+ },
+ {
+  "id": "network-centrality",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Dim purple betweenness; the reach sets the cost limit and the map empties at small limits."
+ },
+ {
+  "id": "network-coarsening",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Original network, super-edges and grid lines overlap in a cluttered tangle. Fix: dim the original network and draw super-nodes and super-edges bold."
+ },
+ {
+  "id": "network-cost-matrix",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Full-frame unlabelled colour grid with no network; hovering moves a crosshair (2.6%). Fix: show the origin and destination on an inset network and the path between them."
+ },
+ {
+  "id": "network-cost-table",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Hovered origin's reachable targets within the cutoff light on the network."
+ },
+ {
+  "id": "network-cost-weights",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 3,
+  "note": "A lone decay curve on black (2% non-background), no axes. Fix: axes and the weights applied to a network neighbourhood beside the curve."
+ },
+ {
+  "id": "network-disruption",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Closed roads under the ring and access loss on nodes; works."
+ },
+ {
+  "id": "network-facility-optimization",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Candidate sites and demand dots; dragging a site changes 0.6% and the readout stays near \"backup 83%\". Fix: light the demand that switches when the site moves."
+ },
+ {
+  "id": "network-flow",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Max flow to a placed sink with cut capacity; flows are thin."
+ },
+ {
+  "id": "network-inhomogeneous-k",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "K curve with a radius rule and a circle on the inset network; the circle is Euclidean."
+ },
+ {
+  "id": "network-isochrones",
+  "group": "network-routing-access",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Isochrone bands follow the placed origin; clear."
+ },
+ {
+  "id": "network-k-function",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Sibling of network-inhomogeneous-k with an envelope; Euclidean circle glyph for a network distance."
+ },
+ {
+  "id": "network-kernel-density",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Dim purple edges where density is hard to read; dragging an event changes 1.4%. Fix: brighter ramp, thicker edges, and the event's kernel footprint lit along the network."
+ },
+ {
+  "id": "network-line-graph",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dense multi-coloured edges; the turn costs the pad sets are not visible as turns. Fix: show turn penalties at intersections around one route."
+ },
+ {
+  "id": "network-louvain",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 3,
+  "note": "A small abstract star graph in the centre of the frame. Fix: lay the communities out on the street network or fit the graph to the frame."
+ },
+ {
+  "id": "network-neighborhood",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Hop neighbourhood from a placed start lights the network; clear."
+ },
+ {
+  "id": "network-noding",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Nodes merge as the reach tolerance grows; small scene."
+ },
+ {
+  "id": "network-point-routing",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Cost from a placed source along roads; at one position \"max cost 0.01\" and the whole network draws white (see defects)."
+ },
+ {
+  "id": "network-rational-access",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Demand tinted by access; dragging a facility changes 2% and tau, rho stay fixed. Fix: make the dragged facility's change in access visible (difference tint)."
+ },
+ {
+  "id": "network-service-areas",
+  "group": "network-routing-access",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Service areas re-form as a facility is dragged; clear."
+ },
+ {
+  "id": "network-snapping",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Snap links are invisible at card size among many points; the reach gives 0.050, 0.044, 0.050 (80% snapped). Fix: fewer points, bold snap links, and a wider distance range."
+ },
+ {
+  "id": "network-statistics",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Degree-class bars; hovering a bar lights its intersections."
+ },
+ {
+  "id": "network-structure",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Hovering a bridge lights what it cuts off."
+ },
+ {
+  "id": "network-subgraph-filter",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Kept roads light inside the speed window."
+ },
+ {
+  "id": "network-time-routing",
+  "group": "network-routing-access",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Arrival times along the network for a departure playhead; 3 of 5 distinct."
+ },
+ {
+  "id": "track-quality",
+  "group": "network-routing-access",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Spaghetti of fixes where flagged fixes are not distinct; \"flagged 70\" at every position. Fix: draw flagged jumps in red and let the drag create a speed outlier."
+ },
+ {
+  "id": "cell-statistics",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dark muted raster with a spotlight; the per-cell statistic across the stack is only in tiny corner bars and the readout. Fix: a readable bar chart of the hovered cell's stack with the statistic marked."
+ },
+ {
+  "id": "change-detection",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Change classes against the split date; moving the split re-classifies strongly."
+ },
+ {
+  "id": "conservative-remapping",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim grid where the fine source and the coarse destination cannot be told apart. Fix: draw the coarse cell outlines bold and the source raster at full contrast."
+ },
+ {
+  "id": "contrast-stretch",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Stretch and gamma change the raster strongly with a transfer curve inset."
+ },
+ {
+  "id": "enhanced-vegetation-index",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "NDVI against EVI as a curtain; both halves look alike in the same ramp. Same scene as soil-adjusted-vegetation-index."
+ },
+ {
+  "id": "extrema-pyramid",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Minimum and maximum halves of the curtain look the same at this block size. Fix: show the pyramid level side by side (min, max) with a coarser block or a difference ramp."
+ },
+ {
+  "id": "fill-holes",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Modeled shape with holes; stamping a ring of land fills the enclosed cells."
+ },
+ {
+  "id": "fill-nodata",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Gaps against filled raster as a curtain; clear but the readout is constant."
+ },
+ {
+  "id": "focal-correlation-regression",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Correlation surface with a moving window and inset scatter with fitted line."
+ },
+ {
+  "id": "fractional-category-composition",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tract categories with a spotlight; readout gives the composition."
+ },
+ {
+  "id": "fractional-coverage",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "At rest only tract outlines on a grid; coverage appears only for the hovered tract. Fix: show coverage of all cells dimly at rest."
+ },
+ {
+  "id": "fractional-zonal-distribution",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tract quantile map with a probability level; changes are moderate."
+ },
+ {
+  "id": "fractional-zonal-statistics",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tract means with the hovered tract's partial cells lit."
+ },
+ {
+  "id": "glcm-texture",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 2,
+  "note": "The texture output is not drawn, only the input raster and a moving box (1.5%). Fix: draw the texture metric as a raster on one side of a curtain or as an inset."
+ },
+ {
+  "id": "make-raster-band",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Raw against calibrated look like the same image in two ramps; the scene has no open water (WEB-PIC-09). Fix: a scene with water and a labelled DN-to-reflectance strip."
+ },
+ {
+  "id": "make-raster-grid",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Placing the origin moves the grid; at the far end the grid leaves the frame."
+ },
+ {
+  "id": "medial-axis",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "The axis is lost in a bright distance fill with a speckled interior. Fix: draw the axis as a thin bright line on a dim shape."
+ },
+ {
+  "id": "morphological-reconstruction",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Input and reconstruction look the same at rest. Fix: show the removed peaks (input minus reconstruction) in a contrasting colour."
+ },
+ {
+  "id": "normalized-burn-ratio",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Pre and post fire as a curtain with a constructed post-fire scenario."
+ },
+ {
+  "id": "normalized-difference-water-index",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "No open water in the scene, so the two indices look unrelated (WEB-PIC-09). Fix: a scene with water."
+ },
+ {
+  "id": "patch-metrics",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Patches with metric bars; probe lifts one patch, bars are tiny."
+ },
+ {
+  "id": "polygon-rasterization",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Rasterized zones with the hovered zone's cells and boundary lit."
+ },
+ {
+  "id": "rank-filter",
+  "group": "raster-bands-indices",
+  "rest": 4,
+  "gesture": 3,
+  "note": "Speckle against filtered raster as a curtain; clear, readout constant."
+ },
+ {
+  "id": "raster-arithmetic",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "A flat salmon field; the inputs are not shown so the arithmetic is invisible. Fix: show bands A and B as insets or a curtain and the result beside them."
+ },
+ {
+  "id": "raster-conditional",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "NIR taken where NDVI is in range; at one end the range is empty and the picture blanks."
+ },
+ {
+  "id": "raster-join",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tract values joined to points; spotlight and readout."
+ },
+ {
+  "id": "raster-profile",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Profile line over terrain with a small profile inset; dragging changes 2%."
+ },
+ {
+  "id": "raster-reclassify",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Breaks and class count change the classes strongly."
+ },
+ {
+  "id": "raster-registration",
+  "group": "raster-bands-indices",
+  "rest": 1,
+  "gesture": 2,
+  "note": "An empty grid with a dot; neither raster is shown (5% non-background). Fix: overlay the two rasters with the true and recovered shift as arrows."
+ },
+ {
+  "id": "raster-reprojection",
+  "group": "raster-bands-indices",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Rotated grid over the source with an aim arrow; clear."
+ },
+ {
+  "id": "raster-sampling",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Bilinear support cells under the placed sample; small change."
+ },
+ {
+  "id": "raster-zonal-statistics",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Same layout as fractional-zonal-statistics; probe lights the tract's cells."
+ },
+ {
+  "id": "region-adjacency-graph",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "The blue background is one region adjacent to everything, so the graph is a star of long edges across the map. Fix: exclude or draw the background as its own node and keep edges between touching regions."
+ },
+ {
+  "id": "seasonal-break-detection",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Break map with a tiny series inset; every probed cell reads \"break at month 20\" because the modeled pre/post-fire series share one break date. Fix: enlarge the series and vary the modeled break date across the map so the map and probe say something."
+ },
+ {
+  "id": "sieve",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Sieved patches merge as the size threshold rises."
+ },
+ {
+  "id": "skeleton",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Modeled shape with its skeleton; stamping land changes the skeleton only a little (1.3%)."
+ },
+ {
+  "id": "soil-adjusted-vegetation-index",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same scene, ramp and curtain as enhanced-vegetation-index. Fix: show soil-dominated cells where the two indices differ most."
+ },
+ {
+  "id": "spectral-unmixing",
+  "group": "raster-bands-indices",
+  "rest": 1,
+  "gesture": 2,
+  "note": "A dim purple field with a spotlight; the water, soil and vegetation fractions are not mapped and the bars are unlabelled grey. Fix: an RGB composite of the three fractions with a three-colour key."
+ },
+ {
+  "id": "temporal-composite",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "One cloudy date against the composite as a curtain."
+ },
+ {
+  "id": "tile-mosaic-reprojection",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Tiles in a rotated mosaic; hovering outlines one tile (1.1%). Fix: light the hovered tile's source footprint and show the missing tile as a hole."
+ },
+ {
+  "id": "walking-cost",
+  "group": "raster-bands-indices",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Travel time from a placed walker re-runs clearly."
+ },
+ {
+  "id": "watershed-segmentation",
+  "group": "raster-bands-indices",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Placing a marker grows a basin; small basins at two positions."
+ },
+ {
+  "id": "weighted-overlay",
+  "group": "raster-bands-indices",
+  "rest": 2,
+  "gesture": 3,
+  "note": "One raster with no inputs shown; at NIR 0 and SWIR 0 the green layer (weight 0.5, normalized) still carries a bright picture, which the reader cannot know. Fix: show the three input layers as small insets with their weights."
+ },
+ {
+  "id": "cell-flow-topology-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Hex cells with flow links; hovering lights one cell's in and out flows."
+ },
+ {
+  "id": "change-of-support-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Source zones mapped to targets; hover shows the contributing sources."
+ },
+ {
+  "id": "clock-encounters",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Faint tracks with tiny encounter marks and a histogram; the pad changes 4.3% and the scene matches its two encounter siblings. Fix: draw met pairs as bright links at the current clock step and give the trio distinct scenes (WEB-PIC-15)."
+ },
+ {
+  "id": "cluster-and-outline-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Clusters and outlines change as epsilon stretches; outlines are small."
+ },
+ {
+  "id": "dasymetric-redistribution-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Muddy overlay of built-up raster and zones where input and output cannot be told apart; moving the peak keeps \"largest target 472\". Fix: show the redistributed counts on target zones with a fixed ramp and the built-up raster dimmed."
+ },
+ {
+  "id": "drainage-network-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Channels from the threshold under the cursor; the rest picture has sparse dim channels."
+ },
+ {
+  "id": "excess-risk-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Raw against shrunk excess risk as a curtain; the halves look nearly identical (1.8%). Fix: a difference ramp or highlight tracts where shrinkage flips the class."
+ },
+ {
+  "id": "exposure-by-zone-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Hazard levels change exposed zones; the readout stays \"up to 100%\"."
+ },
+ {
+  "id": "fleet-dwell-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Moving a zone counts stops and dwell; tracks are faint."
+ },
+ {
+  "id": "fleet-dwell-zone-events-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same scene as fleet-dwell-recipe and zone-events (WEB-PIC-15). Fix: show the dwell timeline per zone to separate it from its siblings."
+ },
+ {
+  "id": "hot-spot-analysis-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 2,
+  "note": "One red blob on a grey field, points invisible; moving the window changes 1.4%. Fix: show Gi* z on a diverging ramp with cold spots and the window's neighbours lit."
+ },
+ {
+  "id": "interpolation-diagnostics-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Kriged surface with range ring; RMSE stays 0.139 at every range and the surface barely changes. Fix: show the cross-validation residuals at the samples so the range visibly matters."
+ },
+ {
+  "id": "landscape-metrics-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Land-cover classes with a spotlight on the hovered class and metric bars."
+ },
+ {
+  "id": "local-variability-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dark, dim purple tract map where LOSH values are hard to read. Fix: a brighter ramp with a fixed range."
+ },
+ {
+  "id": "patch-proximity-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Patches eroded by edge depth around the window."
+ },
+ {
+  "id": "period-comparison-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Sparse dim cells on black; lost and gained cells are hard to see. Fix: a diverging lost/gained encoding at higher contrast."
+ },
+ {
+  "id": "points-in-polygons-choropleth-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Choropleth with a large white spotlight halo that washes out neighbours."
+ },
+ {
+  "id": "population-support-alignment-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Matched, absent and mismatched units; hover reports the match."
+ },
+ {
+  "id": "quantile-lisa",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Significant tracts in one red; the level gives quantile 3 at two of three positions and significanceLevel is inert. Fix: use the gesture for the significance level and show cluster types."
+ },
+ {
+  "id": "raster-zonal-distribution-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Zone quantiles change with the probability level."
+ },
+ {
+  "id": "rate-cluster-map-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Rate clusters with the hovered zone's neighbours lit."
+ },
+ {
+  "id": "regional-raster-change-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Noisy pale-blue raster with dots and zone lines; the change regions are hard to read. Fix: show changed cells only, in one strong colour, over a dim base."
+ },
+ {
+  "id": "resistance-connectivity-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dots on a grid show current magnitude; the potential is still nearly flat (WEB-PIC-16). Moving the gap reroutes the current."
+ },
+ {
+  "id": "segregation-counterfactual-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Dim map with four unlabelled bars; hovering a scenario only outlines a bar and the map does not change. Fix: redraw the map for the hovered scenario."
+ },
+ {
+  "id": "segregation-decomposition-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim map with unlabelled bars and a permutation histogram. Fix: label the components and brighten the map."
+ },
+ {
+  "id": "space-time-hot-spots-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Blue-grey blocks under a big glow; the trend classes are not readable. Fix: a categorical hot/cold trend palette with a key."
+ },
+ {
+  "id": "sparse-resistance-connectivity-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dark grid with a few bright points; the current between them is invisible. Fix: a brighter current ramp and bolder wall."
+ },
+ {
+  "id": "spatial-rate-recipe",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Patchwork with grey tracts; raw and smoothed rates are not distinguishable. Fix: a curtain or paired encoding of raw against smoothed."
+ },
+ {
+  "id": "spatial-regression-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Local fit map with kernel rings that run off the frame; local R2 barely changes."
+ },
+ {
+  "id": "straight-line-catchments-recipe",
+  "group": "recipes-trajectories",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Catchments re-form as a station is dragged; clear."
+ },
+ {
+  "id": "surface-preparation-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Input with gaps against prepared surface as a curtain."
+ },
+ {
+  "id": "track-similarity",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Frechet matrix; hovering a pair draws the two tracks, over the matrix."
+ },
+ {
+  "id": "track-similarity-search",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Matrix with hovered tracks drawn over it; tracks and matrix compete. Fix: draw the tracks in an inset or beside the matrix."
+ },
+ {
+  "id": "trajectory-closest-approach",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Faint tracks and bars; hovering lights one pair, readout stays near \"400 s within 0.05\" (2%). Fix: draw the closest-approach segment between the pair and the time on a strip."
+ },
+ {
+  "id": "trajectory-encounters",
+  "group": "recipes-trajectories",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Faint tracks; the reach gives 0.120 at two positions and changes 3.6%; sibling of clock-encounters. Fix: draw met pairs as links and widen the distance range."
+ },
+ {
+  "id": "trajectory-kalman",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Model against fixes changes with the pad; the tangle of blue and yellow is busy."
+ },
+ {
+  "id": "trajectory-metrics",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Speed-tinted tracks with stops; the level gives 19, 20, 20 stops (1.8%). Fix: widen the speed range so stops appear and vanish."
+ },
+ {
+  "id": "trajectory-playhead",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Vessel positions follow the playhead; active and finished counts change."
+ },
+ {
+  "id": "trajectory-resample",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Resampled track over raw fixes; hover lights one track (2%, 3 distinct). Fix: draw raw fixes and resampled points in two colours for the hovered track."
+ },
+ {
+  "id": "trajectory-restriction",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Tracks inside the moving box light; clear."
+ },
+ {
+  "id": "zonal-distribution-recipe",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Zone quantiles; grey zones have no points (quantile \"no points\")."
+ },
+ {
+  "id": "zone-events",
+  "group": "recipes-trajectories",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Entries and exits mark as a zone is dragged."
+ },
+ {
+  "id": "chunked-weights-algebra",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Faint graph with scattered orange intersection edges and chunk lines; the algebra result is not legible at rest. Fix: draw operand A and B edges in two colours and their intersection bold."
+ },
+ {
+  "id": "chunked-weights-transform",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dense faint purple graph; hover lights a row's links with its sum. Fix: thicker edges coloured by transformed weight."
+ },
+ {
+  "id": "chunked-weights-transpose",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Faint graph; the out and in arrows of the hovered point bunch into a tiny cluster. Fix: longer arrows in two colours and a dimmer background graph."
+ },
+ {
+  "id": "chunked-weights-validation",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Flagged points are barely distinguishable among grey points. Fix: mark each flag type in a bold colour with a key."
+ },
+ {
+  "id": "contiguity-weights",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Orange links cross the whole map between tracts that do not touch (see defects); hover lights one tract's neighbours."
+ },
+ {
+  "id": "fuzzy-contiguity",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Even denser cross-map links than contiguity-weights (see defects); hover works."
+ },
+ {
+  "id": "generalized-gwr",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Two coefficient maps with a bandwidth ring; the middle position shows \"(no readout)\" and the maps do not change (3 distinct). Fix: snap the probe to a tract and draw the local kernel weights."
+ },
+ {
+  "id": "geographically-weighted-regression",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Same layout as generalized-gwr; the middle position shows \"(no readout)\" (3 distinct). Fix: as generalized-gwr."
+ },
+ {
+  "id": "gwr-nonstationarity-test",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Dim map with unlabelled bars; the permutation axis (x) changes 0.3%. Fix: show the permutation distribution with the observed statistic marked."
+ },
+ {
+  "id": "instrumental-variables-covariance",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim residual map and unlabelled bars; hover lights HAC neighbours, \"(no readout)\" at one position."
+ },
+ {
+  "id": "island-attachment",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Sparse faint graph with orange island links; hover reads the attachment."
+ },
+ {
+  "id": "lattice-weights",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Lattice over raster; two of three positions hover masked cells with \"0 neighbors\". Fix: rest and snap to valid cells."
+ },
+ {
+  "id": "local-collinearity",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Two VIF maps; the middle position shows \"(no readout)\" (3 distinct). Fix: snap to the nearest tract."
+ },
+ {
+  "id": "multiscale-gwr",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 1,
+  "note": "Two flat coefficient maps (one all pink, one all dark); the pad gives 2 distinct pictures and interceptBandwidth is inert. Fix: a scene with spatially varying coefficients and an intercept surface."
+ },
+ {
+  "id": "neighbor-search",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Faint graph on black; hover draws the k nearest links and a ring."
+ },
+ {
+  "id": "neighborhood-summary",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Two near-identical dot maps; hover changes under 2% (x 0%). Fix: one map with the hovered point's neighbourhood mean drawn against its own value."
+ },
+ {
+  "id": "ordinary-least-squares",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Residual map and coefficient bars with true values; ridgeLambda shrinks the bars."
+ },
+ {
+  "id": "pair-gather",
+  "group": "regression-weights",
+  "rest": 1,
+  "gesture": 2,
+  "note": "1% non-background: scattered faint segments and dots that do not show two related point sets (WEB-PIC-09). Fix: two real related point sets and bold gathered pairs."
+ },
+ {
+  "id": "probit-regression",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Map and bars converge by iteration 8, so two of three positions are identical (1.3%). Fix: show early iterations on a log scale and the latent probability map."
+ },
+ {
+  "id": "restricted-regime-regression",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Regime break moves and the Chow F reads; bars change."
+ },
+ {
+  "id": "seemingly-unrelated-regression",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Same residual map and bar layout as six siblings; hover outlines a tract and one position shows \"(no readout)\". Fix: show the two equations' residual maps side by side."
+ },
+ {
+  "id": "spatial-error-gm",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same layout as its siblings; hover lights the tract's neighbours."
+ },
+ {
+  "id": "spatial-error-maximum-likelihood",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "OLS and filtered residual halves of the curtain look the same. Fix: a difference encoding or the spatially filtered residual on a fixed ramp."
+ },
+ {
+  "id": "spatial-lag",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Placing a spike lights the lagged neighbours."
+ },
+ {
+  "id": "spatial-lag-impacts",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Placing a shock lights the tract and its spillover; bars compare direct and indirect."
+ },
+ {
+  "id": "spatial-lag-maximum-likelihood",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same layout as its siblings; hover lights neighbours, one position \"(no readout)\"."
+ },
+ {
+  "id": "spatial-panel-error-ml",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Coarse county blocks; the bars stay the same across periods (pooled), only the map changes. Same as the two other panel runs."
+ },
+ {
+  "id": "spatial-panel-lag-ml",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same scene as spatial-panel-error-ml."
+ },
+ {
+  "id": "spatial-panel-regression",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same scene as the two other panel runs."
+ },
+ {
+  "id": "spatial-regime-regression",
+  "group": "regression-weights",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Regimes as boxes with per-regime slopes; one position \"(no readout)\"."
+ },
+ {
+  "id": "spatial-regression-diagnostics",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Grey and blue map with unlabelled test bars; hovering a test changes the map little. Fix: label the tests and draw the critical value as a labelled line."
+ },
+ {
+  "id": "spatial-two-stage-least-squares",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Same layout as its siblings; hover lights the instrument tracts."
+ },
+ {
+  "id": "spatial-weights-algebra",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Faint graph; the readout stays \"kNN 3, band 1 -> 1\" at every position. Fix: as chunked-weights-algebra."
+ },
+ {
+  "id": "spatial-weights-summary",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Faint graph with unlabelled bars; hover lights a point's links."
+ },
+ {
+  "id": "spatial-weights-traces",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Flat orange map and a spike curve; the readout gives \"tr(W^q) 0.00 · sum 0\" for q 11 and 16 (see defects). Fix: plot traces on a log axis."
+ },
+ {
+  "id": "spatial-weights-transform",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dense graph and an unlabelled kernel curve; hover lights a row."
+ },
+ {
+  "id": "spatial-weights-transpose",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Faint graph; hover draws out and in arrows."
+ },
+ {
+  "id": "spatial-weights-validation",
+  "group": "regression-weights",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Sibling of chunked-weights-validation; flagged points are hard to see."
+ },
+ {
+  "id": "assuncao-reis-standardization",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim blue tract map where the standardized rates are hard to read. Fix: a diverging ramp centred on zero at full contrast."
+ },
+ {
+  "id": "emerging-hot-spots",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Hot and cold trend cells with a time-series strip; hover classifies the cell."
+ },
+ {
+  "id": "empirical-bayes-rates",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Raw against smoothed as a curtain; the halves look alike and readouts show \"12% -> 12%\". Fix: highlight the small-population tracts that shrink most."
+ },
+ {
+  "id": "gamma-statistic",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Crowded points with two lone bars (observed against expected). Fix: the permutation distribution with the observed Gamma marked."
+ },
+ {
+  "id": "global-permutation-test",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Histogram of shuffles with the observed value; sweeping shuffles fills the histogram slightly (2.3%)."
+ },
+ {
+  "id": "global-spatial-statistics",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Points with three unlabelled bars; hover draws neighbour links while Moran's I stays the same (0.6%). Fix: a Moran scatter plot with the hovered point and its lag."
+ },
+ {
+  "id": "hdbscan-clustering",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Clusters, noise and core distance under the hand."
+ },
+ {
+  "id": "knox-test",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 2,
+  "note": "A narrow band of events at the top and a histogram; two of three positions hover off the events (\"0 of 1 within\"). Fix: fit events to the frame and snap to the nearest event."
+ },
+ {
+  "id": "local-gearys-c",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Sparse dim points; hover draws neighbours and reads c."
+ },
+ {
+  "id": "local-outlier-factor",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Outliers bright with the hovered point's reach neighbourhood."
+ },
+ {
+  "id": "local-permutation-test",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim points with no significance marking at rest; hover reads p."
+ },
+ {
+  "id": "local-spatial-heteroscedasticity",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim points; hover draws neighbours with LOSH."
+ },
+ {
+  "id": "losh-residual-permutation-test",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Faint points (3% non-background); hover reads LOSH and p."
+ },
+ {
+  "id": "mantel-test",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Same scene as knox-test; two of three positions hover off the events (1 and 0 neighbours). Fix: as knox-test, and plot space against time distances."
+ },
+ {
+  "id": "multiple-testing-adjustment",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Bare p-value curve with dots pinned at the top; every method gives \"0 significant\". Fix: data with some significant tests and a labelled alpha line."
+ },
+ {
+  "id": "multivariate-local-geary-permutation-test",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim points in mixed colours; hover reads p."
+ },
+ {
+  "id": "multivariate-local-gearys-c",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim points and three small bars; hover draws neighbours and reads c."
+ },
+ {
+  "id": "nested-interpolation-validation",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 1,
+  "note": "Faint dots in two panels with no fold boundaries; the readout is \"outer fold 1/3 · epsilon 2 · RMSE 0.13\" at every position and no station lights. Fix: colour stations by fold and light the hovered station's fold and error."
+ },
+ {
+  "id": "optics-clustering",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Clusters and reachability plot read; every probed point is \"no cluster\" and the change is 0.9%. Fix: rest on a clustered point and light its cluster in the plot."
+ },
+ {
+  "id": "segregation-indices",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Entropy map with spotlight; H and D are global and constant."
+ },
+ {
+  "id": "similar-locations",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dark map with white outlines of similar tracts; similarity is not shaded. Fix: shade every tract by similarity to the reference."
+ },
+ {
+  "id": "spatial-cross-validated-ols",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Points and unlabelled fold bars; probing gives fold 1/4 at two positions (3 distinct). Fix: draw test, buffer and training points in three clear colours for the hovered fold."
+ },
+ {
+  "id": "spatial-cross-validation",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Folds in colours with buffered points; x has no effect (3 distinct)."
+ },
+ {
+  "id": "spatial-empirical-bayes-rates",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Dim purple map; raw and smoothed rates are not shown together. Fix: curtain or paired encoding as for empirical-bayes-rates."
+ },
+ {
+  "id": "spatial-interaction",
+  "group": "spatial-statistics",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Sparse abstract scatter (2% non-background); the readout gives fitted equal to observed at every tract. Fix: draw flows on the map with width by fitted value and the residual."
+ },
+ {
+  "id": "spatial-pearson",
+  "group": "spatial-statistics",
+  "rest": 1,
+  "gesture": 2,
+  "note": "A lone bar with a whisker under two point maps that look the same; the curtain changes 2.6% and the readout is constant. Fix: a scatter of x against its spatial lag of y with the coefficient line."
+ },
+ {
+  "id": "spatial-scan-statistic",
+  "group": "spatial-statistics",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Most likely cluster circle with LLR read for the hovered county."
+ },
+ {
+  "id": "cost-distance",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Dark cost ramp where near costs are hard to separate; moving the source re-runs strongly."
+ },
+ {
+  "id": "cost-distance-path",
+  "group": "terrain-hydrology-flow",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Least-cost path to a placed target routes through the wall gap; clear."
+ },
+ {
+  "id": "distance-field",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Allocation zones and distance field re-form as a station is dragged."
+ },
+ {
+  "id": "isoband-rings",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Ring outlines read; hovering a ring changes little (3 distinct) and the hovered ring is not filled. Fix: fill the hovered ring and its holes."
+ },
+ {
+  "id": "isobands",
+  "group": "terrain-hydrology-flow",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Bands change with the level under the cursor; clear."
+ },
+ {
+  "id": "isolines",
+  "group": "terrain-hydrology-flow",
+  "rest": 4,
+  "gesture": 4,
+  "note": "The contour through the cursor is drawn bold; clear."
+ },
+ {
+  "id": "line-integral-convolution",
+  "group": "terrain-hydrology-flow",
+  "rest": 4,
+  "gesture": 3,
+  "note": "Speed against streaks as a curtain; the curtain also changes stepLength, mixing two jobs."
+ },
+ {
+  "id": "particle-advection",
+  "group": "terrain-hydrology-flow",
+  "rest": 2,
+  "gesture": 3,
+  "note": "A white smear of trails with a speckled release block on grey. Fix: fewer, longer coloured trails from the release point over the speed field."
+ },
+ {
+  "id": "streamlines",
+  "group": "terrain-hydrology-flow",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Streamlines appear above the speed under the cursor; clear."
+ },
+ {
+  "id": "terrain-branching-flow",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "A single plume path; it fans out only modestly (WEB-PIC-16)."
+ },
+ {
+  "id": "terrain-breach",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Pits with breach cuts; hovering reads the cut."
+ },
+ {
+  "id": "terrain-catchment-summary",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Catchments with per-basin bars; hover lifts a basin and its bar."
+ },
+ {
+  "id": "terrain-dem-coregistration",
+  "group": "terrain-hydrology-flow",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Raw (a dark pit) against corrected (flat) as a curtain; the readout never changes and a blue disc appears on the corrected side at one position only (see defects). Fix: show the elevation difference before and after on a diverging ramp."
+ },
+ {
+  "id": "terrain-depression-hierarchy",
+  "group": "terrain-hydrology-flow",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Modeled nested craters in a confusing palette; hovering repaints the whole background yellow or dark. Fix: draw the hovered depression and its parent as outlines on a fixed palette."
+ },
+ {
+  "id": "terrain-flow-distance",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Flow distance with the stream network; hover lights the path to the stream."
+ },
+ {
+  "id": "terrain-flow-field",
+  "group": "terrain-hydrology-flow",
+  "rest": 2,
+  "gesture": 3,
+  "note": "A noisy textured field that is hard to read; at the centre (exaggeration 0) it becomes stripes. Fix: smoother flow-direction encoding over a hillshade."
+ },
+ {
+  "id": "terrain-flow-fractions",
+  "group": "terrain-hydrology-flow",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Hovering a cell lights its downstream receivers with fractions; clear."
+ },
+ {
+  "id": "terrain-height-above-drainage",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Flooded cells follow a stage set by y; x has no effect."
+ },
+ {
+  "id": "terrain-hydrologic-indices",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Wetness index cells above the level; y only."
+ },
+ {
+  "id": "terrain-stream-network",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Reaches coloured; hover lights one reach with its type."
+ },
+ {
+  "id": "terrain-stream-order",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Stream orders; hover lights one order's streams."
+ },
+ {
+  "id": "terrain-tiled-flow",
+  "group": "terrain-hydrology-flow",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Tiled flow with seams; hover lights a reach across tiles."
+ },
+ {
+  "id": "terrain-watersheds",
+  "group": "terrain-hydrology-flow",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Placing a pour point carves a new watershed; clear."
+ },
+ {
+  "id": "cumulative-viewshed",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Areas seen by one or more towers; carrying a tower changes the count slightly."
+ },
+ {
+  "id": "geomorphons",
+  "group": "terrain-relief-light",
+  "rest": 4,
+  "gesture": 3,
+  "note": "Landform classes with the hovered cell's eight-direction pattern; clear. Hover sometimes re-tints the whole map."
+ },
+ {
+  "id": "horizon-angles",
+  "group": "terrain-relief-light",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Sky view under the hovered cell with the horizon outline; clear."
+ },
+ {
+  "id": "line-of-sight",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Sight lines from a placed observer to targets, clear or blocked; thin lines on dark terrain."
+ },
+ {
+  "id": "local-dominance",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Dominance with the annulus around the hovered cell."
+ },
+ {
+  "id": "multi-scale-relief",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Elevation against multi-scale relief as a curtain."
+ },
+ {
+  "id": "peak-prominence",
+  "group": "terrain-relief-light",
+  "rest": 2,
+  "gesture": 3,
+  "note": "Faint peak dots on dark terrain; hover draws the key-saddle link. Fix: size and brighten peaks by prominence."
+ },
+ {
+  "id": "peak-snap",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 2,
+  "note": "Survey points and peaks; dropping a point changes 1.4% and the snap is not drawn. Fix: draw the snap line from survey point to the chosen peak."
+ },
+ {
+  "id": "point-horizon-profile",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Horizon profile chart for a placed observer changes clearly."
+ },
+ {
+  "id": "point-horizon-visibility",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Summits visible from the observer with sight lines; targetHeight is inert."
+ },
+ {
+  "id": "profile-peaks",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Peaks above the prominence bar on four profiles; y only, 3 of 5 distinct."
+ },
+ {
+  "id": "relief-blend",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Slope and openness blend changes with the pad."
+ },
+ {
+  "id": "relief-shading",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Light aims with the arrow; the picture is identical to slope-aspect-hillshade."
+ },
+ {
+  "id": "simple-local-relief",
+  "group": "terrain-relief-light",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Relief over the window radius set by reach; clear."
+ },
+ {
+  "id": "slope-aspect-hillshade",
+  "group": "terrain-relief-light",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Sun azimuth and altitude follow the aim; clear."
+ },
+ {
+  "id": "solar-irradiance",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Sun hours change with month and latitude; a warm ramp with little contrast."
+ },
+ {
+  "id": "solar-position",
+  "group": "terrain-relief-light",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Placing the sun overhead moves day and night on the world map; clear."
+ },
+ {
+  "id": "solar-shadow-mask",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Shadow mask follows the sun aim."
+ },
+ {
+  "id": "spike-repair",
+  "group": "terrain-relief-light",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Damaged and repaired halves look nearly the same; the spikes are barely visible and jump and tolerance are inert. Fix: larger, brighter spikes and a difference view."
+ },
+ {
+  "id": "terrain-cast-shadow",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Binary cast shadow follows the sun aim; harsh black and white."
+ },
+ {
+  "id": "terrain-contours",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Contour through the cursor is bold; same picture as isolines."
+ },
+ {
+  "id": "terrain-critical-points",
+  "group": "terrain-relief-light",
+  "rest": 2,
+  "gesture": 2,
+  "note": "Scattered yellow cells on grey; peaks, pits and saddles are not told apart and the readout is the same at every position (0.5%). Fix: three distinct glyphs with a key and snap to the nearest critical point."
+ },
+ {
+  "id": "terrain-curvature",
+  "group": "terrain-relief-light",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Concave and convex curvature with the hovered patch lit; clear."
+ },
+ {
+  "id": "terrain-rgb-decode",
+  "group": "terrain-relief-light",
+  "rest": 2,
+  "gesture": 3,
+  "note": "The encoded side is drawn through the same ramp as the decoded metres, so the RGB encoding is not shown. Fix: draw the raw RGB tile on the left."
+ },
+ {
+  "id": "terrain-ruggedness",
+  "group": "terrain-relief-light",
+  "rest": 4,
+  "gesture": 4,
+  "note": "Ruggedness with the hovered window lit; clear."
+ },
+ {
+  "id": "terrain-summits",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Summits appear and vanish with the radius reach."
+ },
+ {
+  "id": "texture-shading",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Detail and gain change the texture; one end saturates to black and white."
+ },
+ {
+  "id": "topographic-position",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Position index with inner and outer rings around the hovered cell."
+ },
+ {
+  "id": "vector-ruggedness",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Window size follows the reach; sibling of terrain-ruggedness."
+ },
+ {
+  "id": "viewshed",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 4,
+  "note": "Visible cells within the range ring follow the observer."
+ },
+ {
+  "id": "weiss-landforms",
+  "group": "terrain-relief-light",
+  "rest": 3,
+  "gesture": 3,
+  "note": "Landform classes with the probe rings; ten classes and no key."
+ }
+]

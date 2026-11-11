@@ -45,6 +45,9 @@ processed by the WorldCover consortium. The website crops, resamples and groups 
 The Overtoom building outlines and heights are a modified extract of 3DBAG.
 © 3DBAG by tudelft3d and 3DGI. [3DBAG attribution](https://docs.3dbag.nl/en/copyright/) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
+The label font of the website's pictures, "Gridlight Label Atlas" (`website/src/gpu/runs/text/font-metrics.ts` and `font-pixels.ts`), is a Modified Version (a subset rendered as a signed distance field) of KaTeX_SansSerif-Regular and KaTeX_Main-Regular from KaTeX 0.16.47.
+© 2009-2010 Design Science, Inc.; © 2014-2018 Khan Academy. Reserved Font Names KaTeX_SansSerif and KaTeX_Main, which the atlas does not use. [SIL Open Font License 1.1](https://openfontlicense.org) (`OFL-1.1`); the full text ships with the data (`FONT_LICENSE`). Regenerate with `website/src/gpu/runs/text/generate-font-atlas.mjs`. The reading of the licence behind this notice (a format change and a subset make a Modified Version) has not had a legal review.
+
 ## Must resolve before merge
 
 The following datasets carry non-commercial terms or OpenStreetMap / ODbL obligations that conflict

@@ -1,0 +1,170 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+// Research probe, not a test of library code: how fast a plain WGSL kernel walks a forest of
+// complete binary trees for every cell of a raster stack. One invocation per cell loops over the
+// trees (a capacity, not a data-sized range). See dev-docs/research/new-contributors-2026-11-11.
+
+import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {expect, it} from 'vitest';
+import {requireTestDevice} from '../../src/testing/require-test-device';
+
+type ForestCase = {cellCount: number; featureCount: number; treeCount: number; depth: number};
+
+async function runForestCase(device: GPUDevice, forestCase: ForestCase) {
+  const {cellCount, featureCount, treeCount, depth} = forestCase;
+  const internalCount = (1 << depth) - 1;
+  const leafCount = 1 << depth;
+  let state = 17;
+  const random = () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  const features = new Float32Array(cellCount * featureCount);
+  for (let index = 0; index < features.length; index++) features[index] = random();
+  const nodeFeatures = new Uint32Array(treeCount * internalCount);
+  const nodeThresholds = new Float32Array(treeCount * internalCount);
+  for (let index = 0; index < nodeFeatures.length; index++) {
+    nodeFeatures[index] = Math.floor(random() * featureCount);
+    nodeThresholds[index] = 0.2 + 0.6 * random();
+  }
+  const leafValues = new Float32Array(treeCount * leafCount);
+  for (let index = 0; index < leafValues.length; index++) leafValues[index] = random() - 0.5;
+
+  const source = /* wgsl */ `
+const CELL_COUNT = ${cellCount}u;
+const FEATURE_COUNT = ${featureCount}u;
+const TREE_COUNT = ${treeCount}u;
+const DEPTH = ${depth}u;
+const INTERNAL_COUNT = ${internalCount}u;
+const LEAF_COUNT = ${leafCount}u;
+@group(0) @binding(0) var<storage, read> features: array<f32>;
+@group(0) @binding(1) var<storage, read> nodeFeatures: array<u32>;
+@group(0) @binding(2) var<storage, read> nodeThresholds: array<f32>;
+@group(0) @binding(3) var<storage, read> leafValues: array<f32>;
+@group(0) @binding(4) var<storage, read_write> predictions: array<f32>;
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) localIndex: u32) {
+  let cell = (workgroupId.y * 32768u + workgroupId.x) * 256u + localIndex;
+  if (cell >= CELL_COUNT) { return; }
+  let featureBase = cell * FEATURE_COUNT;
+  var sum = 0.0;
+  for (var tree = 0u; tree < TREE_COUNT; tree++) {
+    let nodeBase = tree * INTERNAL_COUNT;
+    var node = 0u;
+    for (var level = 0u; level < DEPTH; level++) {
+      let value = features[featureBase + nodeFeatures[nodeBase + node]];
+      node = 2u * node + 1u + u32(value > nodeThresholds[nodeBase + node]);
+    }
+    sum += leafValues[tree * LEAF_COUNT + node - INTERNAL_COUNT];
+  }
+  predictions[cell] = sum;
+}`;
+  const getReference = (cell: number): number => {
+    let sum = 0;
+    for (let tree = 0; tree < treeCount; tree++) {
+      let node = 0;
+      for (let level = 0; level < depth; level++) {
+        const value = features[cell * featureCount + nodeFeatures[tree * internalCount + node]];
+        node = 2 * node + 1 + (value > nodeThresholds[tree * internalCount + node] ? 1 : 0);
+      }
+      sum += leafValues[tree * leafCount + node - internalCount];
+    }
+    return sum;
+  };
+
+  const createStorage = (values: Float32Array | Uint32Array | null, length: number) => {
+    const buffer = device.createBuffer({
+      size: length * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
+    });
+    if (values) device.queue.writeBuffer(buffer, 0, values);
+    return buffer;
+  };
+  const buffers = [
+    createStorage(features, features.length),
+    createStorage(nodeFeatures, nodeFeatures.length),
+    createStorage(nodeThresholds, nodeThresholds.length),
+    createStorage(leafValues, leafValues.length),
+    createStorage(null, cellCount)
+  ];
+  const pipeline = await device.createComputePipelineAsync({
+    layout: 'auto',
+    compute: {module: device.createShaderModule({code: source}), entryPoint: 'main'}
+  });
+  const bindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: buffers.map((buffer, binding) => ({binding, resource: {buffer}}))
+  });
+  const workgroupCount = Math.ceil(cellCount / 256);
+  const dispatchX = Math.min(workgroupCount, 32768);
+  const dispatchY = Math.ceil(workgroupCount / dispatchX);
+  const readPrediction = async (cell: number): Promise<number> => {
+    const readBuffer = device.createBuffer({
+      size: 4,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+    });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(buffers[4], cell * 4, readBuffer, 0, 4);
+    device.queue.submit([encoder.finish()]);
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const value = new Float32Array(readBuffer.getMappedRange().slice(0))[0];
+    readBuffer.destroy();
+    return value;
+  };
+  const dispatch = () => {
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(dispatchX, dispatchY);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+  };
+  dispatch();
+  await readPrediction(0);
+  // The mapped read is the clock, so it cannot stop early.
+  const samples: number[] = [];
+  for (let iteration = 0; iteration < 5; iteration++) {
+    const started = performance.now();
+    dispatch();
+    await readPrediction(cellCount - 1);
+    samples.push(performance.now() - started);
+  }
+  samples.sort((first, second) => first - second);
+  let maximumError = 0;
+  for (const cell of [0, 1, Math.floor(cellCount / 3), cellCount - 1]) {
+    maximumError = Math.max(maximumError, Math.abs((await readPrediction(cell)) - getReference(cell)));
+  }
+  for (const buffer of buffers) buffer.destroy();
+  const nodeVisits = cellCount * treeCount * depth;
+  return {
+    case: `${cellCount} cells, ${featureCount} features, ${treeCount} trees of depth ${depth}`,
+    forestMegabytes:
+      Math.round(((nodeFeatures.length * 2 + leafValues.length) * 4) / 104857.6) / 10,
+    billionNodeVisits: Math.round(nodeVisits / 1e7) / 100,
+    medianMilliseconds: Math.round(samples[2] * 10) / 10,
+    billionNodeVisitsPerSecond: Math.round(nodeVisits / 1e9 / (samples[2] / 1000)),
+    maximumError
+  };
+}
+
+it('reports the throughput of forest inference in plain WGSL', {timeout: 600000}, async () => {
+  const lumaDevice = await getWebGPUTestDevice();
+  requireTestDevice(lumaDevice);
+  const device = (lumaDevice as unknown as {handle: GPUDevice}).handle;
+  const report: unknown[] = [];
+  for (const forestCase of [
+    {cellCount: 1048576, featureCount: 16, treeCount: 100, depth: 6},
+    {cellCount: 1048576, featureCount: 16, treeCount: 500, depth: 8},
+    {cellCount: 1048576, featureCount: 16, treeCount: 1000, depth: 10},
+    {cellCount: 4194304, featureCount: 8, treeCount: 100, depth: 6}
+  ]) {
+    const result = await runForestCase(device, forestCase);
+    expect(result.maximumError).toBeLessThan(1e-3);
+    report.push(result);
+  }
+  // Fails on purpose: the headless runner does not print console output, a failure message it does.
+  throw new Error(`FOREST_PROBE ${JSON.stringify(report)}`);
+});
