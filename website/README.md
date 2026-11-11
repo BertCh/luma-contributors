@@ -26,6 +26,11 @@ node scripts/check-all-pages.mjs --base /luma-contributors
 node scripts/deploy-pages.mjs --skip-build
 ```
 
+After a deploy, the same checker can open the published pages:
+`node scripts/check-all-pages.mjs --origin https://<owner>.github.io --base /luma-contributors`.
+Pages serves from the `gh-pages` branch; if a push there does not start a build, request one with
+`gh api -X POST repos/<owner>/<repository>/pages/builds`.
+
 `SITE_BASE_PATH` becomes Vite's `base`: the router, asset URLs and links in rendered docs follow
 it. A plain `src` or `href` to a file in `public/` must go through `getPublicUrl`
 (`src/public-url.ts`). Without the variable the site builds for `/`, as before.

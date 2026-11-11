@@ -10,7 +10,9 @@
 //   node scripts/check-all-pages.mjs <entry id>...    specific function pages
 // Options: --port 4177, --workers 3, --out <json file>, --only fn|home|how,
 //   --base /luma-contributors (serve the build under the sub-path it was built for with
-//   SITE_BASE_PATH; requests outside it get 404, as on GitHub Pages)
+//   SITE_BASE_PATH; requests outside it get 404, as on GitHub Pages),
+//   --origin https://<owner>.github.io (check the deployed site instead of serving dist/client;
+//   the page list still comes from the local build, so build the same commit first)
 // Exit code 1 when any page fails.
 
 import fs from 'node:fs';
@@ -35,7 +37,7 @@ const MIME = {
 };
 
 function parseArguments(argv) {
-  const options = {port: 4177, workers: 3, out: DEFAULT_OUT, only: null, base: '', ids: []};
+  const options = {port: 4177, workers: 3, out: DEFAULT_OUT, only: null, base: '', origin: null, ids: []};
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     if (argument === '--port') options.port = Number(argv[++index]);
@@ -43,6 +45,7 @@ function parseArguments(argv) {
     else if (argument === '--out') options.out = argv[++index];
     else if (argument === '--only') options.only = argv[++index];
     else if (argument === '--base') options.base = argv[++index].replace(/\/$/, '');
+    else if (argument === '--origin') options.origin = argv[++index].replace(/\/$/, '');
     else options.ids.push(argument);
   }
   return options;
@@ -160,7 +163,8 @@ async function checkPage(browser, options, spec) {
   });
   page.on('pageerror', error => result.errors.push(`pageerror: ${String(error).slice(0, 200)}`));
   try {
-    await page.goto(`http://localhost:${options.port}${options.base}${spec.url}`, {waitUntil: 'load'});
+    const origin = options.origin ?? `http://localhost:${options.port}`;
+    await page.goto(`${origin}${options.base}${spec.url}`, {waitUntil: 'load'});
     const selector = spec.kind === 'fn' ? '.function-visual .gpu-canvas' : '.gpu-canvas';
     const canvases = page.locator(selector);
     const count = await canvases.count();
@@ -244,7 +248,7 @@ async function main() {
       }
     }
   }
-  const server = await serve(options.port, options.base);
+  const server = options.origin ? null : await serve(options.port, options.base);
   const results = [];
   async function work(browser, queue) {
     for (let spec = queue.shift(); spec; spec = queue.shift()) {
@@ -276,7 +280,7 @@ async function main() {
       }
     }
   } finally {
-    server.close();
+    server?.close();
   }
   results.sort((a, b) => a.url.localeCompare(b.url));
   const functionResults = results.filter(result => result.kind === 'fn');
