@@ -83,7 +83,7 @@ defineLensScenario({
                 role: 'intermediate',
                 keySpace: 'statistic',
                 meaning:
-                  'crossings before repair, crossings remaining, vertices restored, pair-capacity overflow (0 or 1)'
+                  'conflicts before repair (crossing segment pairs plus spans swept over another part), conflicts remaining, vertices restored, pair-capacity overflow (0 or 1)'
               },
               overflow: {view: output.status.overflow, role: 'intermediate'},
               converged: {view: output.status.converged, role: 'intermediate'},

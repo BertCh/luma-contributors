@@ -136,7 +136,7 @@ export const STATISTICS_SUMMARY_OPERATORS: SpatialFamilyOperators = {
 &\term{priorVariance}{a_i}&=\max\!\left(\frac{\term{deviationSum}{\sum_j b_j(y_j-m_i)^2}}{B_i}-\frac{m_i}{B_i/\term{count}{n_i}},0\right)
 \end{aligned}`,
       ascii:
-        'r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours that are included (unmasked, finite e, finite b > 0); only the structure of the weights counts. E_i, B_i = sums of e and b over the n_i members. The spatial rate is m_i itself. Excluded rows are NaN.',
+        'r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours that are included (unmasked, finite e, finite b > 0) and whose slot has a positive weight (a zero-weight slot is not a neighbour; a slot naming row i itself is skipped); only the structure of the weights counts, each such slot once whatever its weight. E_i, B_i = sums of e and b over the n_i members. The spatial rate is m_i itself. Excluded rows are NaN.',
       symbols: [
         {id: 'smoothed', role: 'output', binding: 'wgsl:smoothed'},
         {id: 'weight', role: 'intermediate', binding: 'wgsl:weight'},
@@ -225,7 +225,7 @@ export const STATISTICS_SUMMARY_OPERATORS: SpatialFamilyOperators = {
         name: 'ellipseConvention',
         label: 'Ellipse convention',
         stage: 'operator',
-        alternatives: ['arcgis', 'standard'],
+        alternatives: ['root-two', 'standard'],
         sweepable: true
       }
     ],
@@ -241,7 +241,7 @@ export const STATISTICS_SUMMARY_OPERATORS: SpatialFamilyOperators = {
 \term{ellipses}{(\sigma_x,\sigma_y)}&=\term{scale}{k\,c}\left(\sqrt{h-\rho},\ \sqrt{h+\rho}\right)
 \end{aligned}`,
       ascii:
-        'M = sum w p / W; Sxx, Syy, Sxy = weighted second moments about M divided by W (not W - 1); SD = k sqrt(Sxx + Syy); h = (Sxx + Syy)/2; d = (Sxx - Syy)/2; rho = sqrt(d^2 + Sxy^2); ellipse semi-axes (sigmaX, sigmaY) = k c (sqrt(h - rho), sqrt(h + rho)) with c = sqrt(2) for the arcgis convention and 1 for standard; k = standardDeviations. Planar coordinates only; rows with a non-finite position or a non-positive weight are excluded.',
+        'M = sum w p / W; Sxx, Syy, Sxy = weighted second moments about M divided by W (not W - 1); SD = k sqrt(Sxx + Syy); h = (Sxx + Syy)/2; d = (Sxx - Syy)/2; rho = sqrt(d^2 + Sxy^2); ellipse semi-axes (sigmaX, sigmaY) = k c (sqrt(h - rho), sqrt(h + rho)) with c = sqrt(2) for the root-two convention and 1 for standard; k = standardDeviations. Planar coordinates only; rows with a non-finite position or a non-positive weight are excluded.',
       symbols: [
         {id: 'meanCenters', role: 'output', binding: 'wgsl:meanCentersOut'},
         {id: 'total', role: 'intermediate', label: 'weight sum', binding: 'wgsl:total'},

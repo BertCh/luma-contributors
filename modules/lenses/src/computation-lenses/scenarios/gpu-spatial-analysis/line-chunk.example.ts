@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPULineChunk,
-  type GPULineGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPULineChunk} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded Chicago geometry and parameters for GPULineChunk. */
 export type LineChunkExampleInput = {
@@ -38,7 +36,7 @@ export async function runExample(graph: GPUCommandGraph<undefined>, input: LineC
     status: {
       count: createTransientView(graph, 'count', 'uint32', 1, usage),
       overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage),
-      lineCount: createTransientView(graph, 'lineCount', 'uint32', 1, usage)
+      vertexCount: createTransientView(graph, 'vertexCount', 'uint32', 1, usage)
     }
   };
   // #region example

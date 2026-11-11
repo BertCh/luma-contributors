@@ -4,11 +4,11 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPULineClipByPolygon} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  GPULineClipByPolygon,
   type GPULineGeometryFields,
   type GPUPolygonGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded Chicago geometry and parameters for GPULineClipByPolygon. */
 export type LineClipByPolygonExampleInput = {

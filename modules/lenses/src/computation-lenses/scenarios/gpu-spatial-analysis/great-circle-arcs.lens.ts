@@ -87,6 +87,7 @@ defineLensScenario({
                 meaning: 'source route index (zero-based) of each output arc'
               },
               count: {view: output.status.count, role: 'intermediate'},
+              vertexCount: {view: output.status.vertexCount, role: 'intermediate'},
               overflow: {view: output.status.overflow, role: 'intermediate'},
               arcs: {
                 view: output.arcs,

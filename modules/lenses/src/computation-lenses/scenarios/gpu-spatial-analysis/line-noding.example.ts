@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPULineNoding,
-  type GPULineGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPULineNoding} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Street centrelines in UTM 16N metres and the noded-segment slots to write into. */
 export type LineNodingExampleInput = {

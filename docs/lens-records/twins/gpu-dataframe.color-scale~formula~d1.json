@@ -14,7 +14,7 @@
     "value": "4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUColorScale</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{classIndices}{c}=\\min\\left(\\sum_{\\term{edge}{i}=1}^{\\term{domainCount}{D}-2}\\mathbf{1}[\\term{domain}{e_i}\\leq\\term{values}{x}],\\term{paletteCount}{P}-1\\right),\\quad \\term{colors}{C}=\\term{palette}{\\mathrm{palette}}[\\term{classIndices}{c}]</pre><p class=\"lens-ascii\">threshold: class=min(number of inner domain edges &lt;= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up.</p></div><div class=\"lens-worked-example\"><h4>Entity 1</h4><div><pre class=\"lens-tex\">\\term{classIndices}{4}=\\min\\left(\\sum_{\\term{edge}{i}=1}^{\\term{domainCount}{D}-2}\\mathbf{1}[\\term{domain}{e_i}\\leq\\term{values}{\\left(43\\right)}],\\term{paletteCount}{P}-1\\right),\\quad \\term{colors}{4286528776}=\\term{palette}{\\mathrm{palette}}[\\term{classIndices}{4}]</pre><p class=\"lens-ascii\">threshold: class=min(number of inner domain edges &lt;= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up.</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"classIndices\">classIndices · output · unknown — wgsl classes not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"colors\">colors · output · unknown — wgsl colors not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"edge\">edge · index · unknown — wgsl middle not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"domainCount\">domainCount · parameter · unknown — wgsl domainCount not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"paletteCount\">paletteCount · parameter · unknown — wgsl paletteCount not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"domain\">domain · input · unknown — wgsl domain not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"values\">values · input · unknown — wgsl values not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"palette\">palette · input · unknown — wgsl palette not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUColorScale</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{classIndices}{c}=\\min\\left(\\sum_{\\term{edge}{i}=1}^{\\term{domainCount}{D}-2}\\mathbf{1}[\\term{domain}{e_i}\\leq\\term{values}{x}],\\term{paletteCount}{P}-1\\right),\\quad \\term{colors}{C}=\\term{palette}{\\mathrm{palette}}[\\term{classIndices}{c}]</pre><p class=\"lens-ascii\">threshold: class=min(number of inner domain edges &lt;= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up.</p></div><div class=\"lens-worked-example\"><h4>Entity 1</h4><div><pre class=\"lens-tex\">\\term{classIndices}{4}=\\min\\left(\\sum_{\\term{edge}{i}=1}^{\\term{domainCount}{D}-2}\\mathbf{1}[\\term{domain}{e_i}\\leq\\term{values}{\\left(43\\right)}],\\term{paletteCount}{P}-1\\right),\\quad \\term{colors}{4286528776}=\\term{palette}{\\mathrm{palette}}[\\term{classIndices}{4}]</pre><p class=\"lens-ascii\">threshold: class=min(number of inner domain edges &lt;= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"classIndices\">classIndices · output · classes<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-colorize\" data-value=\"colors\">colors · output · colors<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"edge\">edge · index · middle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"domainCount\">domainCount · parameter · domainCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"paletteCount\">paletteCount · parameter · paletteCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"domain\">domain · input · domain</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"values\">values · input · values<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-colorize\" data-value=\"palette\">palette · input · palette</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,56 +30,56 @@
       [
         "classIndices",
         "output",
-        "unknown",
+        "classes",
         "4",
         "readback"
       ],
       [
         "colors",
         "output",
-        "unknown",
+        "colors",
         "4286528776",
         "readback"
       ],
       [
         "edge",
         "index",
-        "unknown",
+        "middle",
         "—",
         "metadata"
       ],
       [
         "domainCount",
         "parameter",
-        "unknown",
+        "domainCount",
         "—",
         "metadata"
       ],
       [
         "paletteCount",
         "parameter",
-        "unknown",
+        "paletteCount",
         "—",
         "metadata"
       ],
       [
         "domain",
         "input",
-        "unknown",
+        "domain",
         "—",
         "metadata"
       ],
       [
         "values",
         "input",
-        "unknown",
+        "values",
         "43",
         "readback"
       ],
       [
         "palette",
         "input",
-        "unknown",
+        "palette",
         "—",
         "metadata"
       ]
@@ -113,7 +113,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:15.720Z",
+    "date": "2026-11-11T15:20:10.701Z",
     "runId": "run-475b0a93",
     "observerEffects": []
   },

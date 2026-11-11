@@ -15,10 +15,8 @@ import {
   GPU_COLOR_SCALE_PARAMETER_LENGTH,
   packGPUColor
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {
-  addPeriodComparisonRecipe,
-  GPUParameterBuffer
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {addPeriodComparisonRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`, split by day of year. */
 export type PeriodComparisonRecipeExampleInput = {

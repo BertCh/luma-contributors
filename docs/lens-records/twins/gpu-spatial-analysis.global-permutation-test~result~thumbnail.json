@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.global-permutation-test: values.geometry → refer…",
   "description": "Result of gpu-spatial-analysis.global-permutation-test: values.geometry → referenceDistribution. values: 99. values read back from the GPU run. input values.geometry: 791 polygons.",
-  "llms": "Result of gpu-spatial-analysis.global-permutation-test: values.geometry → referenceDistribution\n\n- values: 99\n- input values.geometry: 791 polygons\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 99 values, 16 shown\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.global-permutation-test: values.geometry → referenceDistribution\n\n- values: 99\n- input values.geometry: 791 polygons\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 99 values, 16 shown\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "values",
     "value": "99"
@@ -19,9 +19,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:22.025Z",
+    "date": "2026-11-11T15:20:44.979Z",
     "runId": "run-75cf4b86",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-75cf4b86",

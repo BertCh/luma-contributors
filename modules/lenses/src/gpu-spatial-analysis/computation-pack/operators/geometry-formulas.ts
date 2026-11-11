@@ -297,27 +297,46 @@ export const GEOMETRY_FORMULAS = {
   GPUShapeGenerator: {
     id: 's3.shape-generator',
     derivation: 'curated',
-    tex: String.raw`\begin{aligned}\term{latitude-out}{\phi'}&=\arcsin\!\left(\operatorname{clamp}\left(\sin\term{latitude}{\phi}\cos\term{angle}{\delta}+\cos\term{latitude}{\phi}\sin\term{angle}{\delta}\cos\term{bearing}{\beta},-1,1\right)\right),\quad\term{angle}{\delta}=\term{distance}{d}/\term{radius}{R}\\\term{output}{p'}&=\begin{cases}\term{center}{c}+\term{distance}{d}(\sin\term{bearing}{\beta},\cos\term{bearing}{\beta})&\text{planar}\\\left(\term{center}{c_x}+\dfrac{180}{\pi}\operatorname{atan2}\left(\sin\term{bearing}{\beta}\sin\term{angle}{\delta}\cos\term{latitude}{\phi},\cos\term{angle}{\delta}-\sin\term{latitude}{\phi}\sin\term{latitude-out}{\phi'}\right),\dfrac{180}{\pi}\term{latitude-out}{\phi'}\right)&\text{longitude/latitude}\end{cases}\end{aligned}`,
+    // Geodesic rings call the shared half-angle geodesicDestination (geodesic-wgsl.ts).
+    tex: String.raw`\begin{aligned}\term{angle}{\delta}&=\term{distance}{d}/\term{radius}{R},\quad\term{sine-change}{\Delta_s}=-2\sin\term{latitude}{\phi}\sin^2\tfrac{\term{angle}{\delta}}{2}+\cos\term{latitude}{\phi}\sin\term{angle}{\delta}\cos\term{bearing}{\beta},\quad\term{latitude-out-sine}{\sin\phi'}=\operatorname{clamp}\left(\sin\term{latitude}{\phi}+\term{sine-change}{\Delta_s},-1,1\right)\\\term{latitude-change}{\Delta\phi}&=2\arcsin\!\left(\dfrac{\term{sine-change}{\Delta_s}}{2\cos\frac{\phi+\phi'}{2}}\right),\quad\term{longitude-change}{\Delta\lambda}=\operatorname{atan2}\left(\sin\term{bearing}{\beta}\sin\term{angle}{\delta}\cos\term{latitude}{\phi},\cos\term{angle}{\delta}-\sin\term{latitude}{\phi}\,\term{latitude-out-sine}{\sin\phi'}\right)\\\term{output}{p'}&=\begin{cases}\term{center}{c}+\term{distance}{d}(\sin\term{bearing}{\beta},\cos\term{bearing}{\beta})&\text{planar}\\\term{center}{c}+\dfrac{180}{\pi}\left(\term{longitude-change}{\Delta\lambda},\term{latitude-change}{\Delta\phi}\right)&\text{longitude/latitude}\end{cases}\end{aligned}`,
     ascii:
-      'Given the sampled distance d and clockwise-from-north bearing beta, planar p=c+d*(sin(beta),cos(beta)). On a sphere, phi=pi*c.y/180, delta=d/R, phi2=asin(clamp(sin(phi)*cos(delta)+cos(phi)*sin(delta)*cos(beta),-1,1)), and p=(c.x+180/pi*atan2(sin(beta)*sin(delta)*cos(phi),cos(delta)-sin(phi)*sin(phi2)),180/pi*phi2). Circles sample negative full-turn bearings, sectors sample their clockwise sweep with center spokes, and ellipses derive d and beta from rotated scaled axes (optionally using the arc-length table). This is the destination core for finite centers; invalid centers emit NaN.',
+      'Given the sampled distance d and clockwise-from-north bearing beta, planar p=c+d*(sin(beta),cos(beta)). On a sphere the shared half-angle destination is used: phi=pi*c.y/180, delta=d/R, sineChange=-2*sin(phi)*sin(delta/2)^2+cos(phi)*sin(delta)*cos(beta) (sin(phi2)-sin(phi) without cancellation), sin(phi2)=clamp(sin(phi)+sineChange,-1,1), deltaPhi=2*asin(sineChange/(2*cos((phi+phi2)/2))) (asin(sin(phi2))-phi when that cosine is at most 1e-3), deltaLambda=atan2(sin(beta)*sin(delta)*cos(phi),cos(delta)-sin(phi)*sin(phi2)), and p=c+180/pi*(deltaLambda,deltaPhi). Circles sample negative full-turn bearings, sectors sample their clockwise sweep with center spokes, and ellipses derive d and beta from rotated scaled axes (optionally using the arc-length table). This is the destination core for finite centers; invalid centers emit NaN.',
     symbols: [
       {
-        id: 'latitude-out',
+        id: 'angle',
         role: 'intermediate',
-        label: 'Destination latitude in radians',
-        binding: 'wgsl:latitude2'
+        label: 'Angular distance',
+        binding: 'wgsl:angle'
       },
       {
         id: 'latitude',
         role: 'intermediate',
         label: 'Center latitude in radians',
-        binding: 'wgsl:latitude'
+        binding: 'wgsl:phi1'
       },
       {
-        id: 'angle',
+        id: 'sine-change',
         role: 'intermediate',
-        label: 'Angular distance',
-        binding: 'wgsl:angularDistance'
+        label: 'Change of the sine of latitude',
+        binding: 'wgsl:sinDelta'
+      },
+      {
+        id: 'latitude-out-sine',
+        role: 'intermediate',
+        label: 'Sine of the destination latitude',
+        binding: 'wgsl:sinPhi2'
+      },
+      {
+        id: 'latitude-change',
+        role: 'intermediate',
+        label: 'Latitude change in radians',
+        binding: 'wgsl:deltaPhi'
+      },
+      {
+        id: 'longitude-change',
+        role: 'intermediate',
+        label: 'Longitude change in radians',
+        binding: 'wgsl:deltaLambda'
       },
       {
         id: 'bearing',

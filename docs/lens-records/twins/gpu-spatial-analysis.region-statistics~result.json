@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.region-statistics: positions, values, lassoVertices, lassoVertexCount → mask.geometry. polygons: 791. values read back from the GPU run. input positions: 1582 values.",
   "description": "Result of gpu-spatial-analysis.region-statistics: positions, values, lassoVertices, lassoVertexCount → mask.geometry. polygons: 791. values read back from the GPU run. input positions: 1582 values.",
-  "llms": "Result of gpu-spatial-analysis.region-statistics: positions, values, lassoVertices, lassoVertexCount → mask.geometry\n\n- polygons: 791\n- input positions: 1582 values\n- input values: 791 values\n- input lassoVertices: 10 values\n- input lassoVertexCount: 1 values\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 1582 values, 16 shown\n- 791 values, 16 shown\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.region-statistics: positions, values, lassoVertices, lassoVertexCount → mask.geometry\n\n- polygons: 791\n- input positions: 1582 values\n- input values: 791 values\n- input lassoVertices: 10 values\n- input lassoVertexCount: 1 values\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 1582 values, 16 shown\n- 791 values, 16 shown\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "791"
@@ -37,9 +37,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:26.819Z",
+    "date": "2026-11-11T15:21:15.600Z",
     "runId": "run-8a069cf6",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-8a069cf6",

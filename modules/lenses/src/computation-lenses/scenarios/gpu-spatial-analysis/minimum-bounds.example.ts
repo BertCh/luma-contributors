@@ -4,10 +4,8 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUMinimumBounds,
-  type GPUPolygonGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUMinimumBounds} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Parks uploaded by the lens scenario, in UTM 16N metres (planar, as the element requires). */
 export type MinimumBoundsExampleInput = {parks: GPUPolygonGeometryFields};

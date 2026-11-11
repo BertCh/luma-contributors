@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.streamlines: streamlinesWindSpeed → streamlinesPositions.",
   "description": "Result of gpu-raster.streamlines: streamlinesWindSpeed → streamlinesPositions. lines: 24. values read back from the GPU run. input streamlinesWindSpeed: 3072 cells.",
-  "llms": "Result of gpu-raster.streamlines: streamlinesWindSpeed → streamlinesPositions\n\n- lines: 24\n- input streamlinesWindSpeed: 3072 cells\n- Simple equirectangular projection (x scaled by cos 36.13°); not equal-area.\n- cell size 0.25 deg\n- 22 categories; 5 largest coloured\n- 1200 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.streamlines: streamlinesWindSpeed → streamlinesPositions\n\n- lines: 24\n- input streamlinesWindSpeed: 3072 cells\n- Simple equirectangular projection (x scaled by cos 36.13°); not equal-area.\n- cell size 0.25 deg\n- 22 categories; 5 largest coloured\n- 1200 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "24"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:18.080Z",
+    "date": "2026-11-11T15:20:15.943Z",
     "runId": "run-48923460",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

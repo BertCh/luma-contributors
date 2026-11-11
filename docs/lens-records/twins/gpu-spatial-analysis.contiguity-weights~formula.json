@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within…",
   "description": "Formula Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within…",
-  "llms": "Formula Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within capacity are emitted.\n\n- bound symbols: 0/2\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within capacity are emitted.\n\n- bound symbols: 2/2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/2"
+    "value": "2/2"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>contiguity-weights</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\mathbf{1}[i\\ne j\\ \\land\\ \\term{keys}{K_i}\\cap K_j\\ne\\varnothing]</pre><p class=\"lens-ascii\">Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within capacity are emitted.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">weight · output · unknown — wgsl weights not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"keys\">keys · intermediate · unknown — wgsl groupId not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>contiguity-weights</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\mathbf{1}[i\\ne j\\ \\land\\ \\term{keys}{K_i}\\cap K_j\\ne\\varnothing]</pre><p class=\"lens-ascii\">Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within capacity are emitted.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.contiguity-weights-compiled:contiguity-weights-emit\" data-value=\"weight\">weight · output · weights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.contiguity-weights-compiled:contiguity-weights-pair-counts\" data-value=\"keys\">keys · intermediate · groupId</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,14 +29,14 @@
       [
         "weight",
         "output",
-        "unknown",
+        "weights",
         "—",
         "metadata"
       ],
       [
         "keys",
         "intermediate",
-        "unknown",
+        "groupId",
         "—",
         "metadata"
       ]
@@ -64,9 +64,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:20.441Z",
+    "date": "2026-11-11T15:20:32.374Z",
     "runId": "run-7c62ebcf",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-7c62ebcf",

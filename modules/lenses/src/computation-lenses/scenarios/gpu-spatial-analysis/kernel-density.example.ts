@@ -11,10 +11,12 @@ import {
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPUKernelDensityParameterValues,
-  GPUKernelDensity,
+  GPUKernelDensity
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`. */
 export type KernelDensityExampleInput = {

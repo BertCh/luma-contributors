@@ -12,11 +12,17 @@ import {
   type GraphBufferHandle
 } from '@luma.gl/graph/gpu-core';
 import {
+  createGPUComputationMetrics,
+  getGPUCommandGraphPassIndices,
   GPUSnapshotArena,
   GPUSnapshotTap,
+  submitGPUCommandGraphWithTimings,
+  type GPUCommandGraphTimedSubmission,
   type GPUComputationCapture,
-  type GPUComputationCaptureElementType
+  type GPUComputationCaptureElementType,
+  type GPUComputationMetrics
 } from '@luma-contributors/analysis/computation-record';
+import {recordWGSLKernelNodes} from '@luma-contributors/analysis/analysis-core';
 
 /**
  * Observer effect: every lens graph differs from its production graph. Each transient gains
@@ -31,9 +37,37 @@ import {
  * any intermediate. Observation-only allocation choice; production graphs keep their declarations.
  */
 export class LensCommandGraph<Parameters = void> extends GPUCommandGraph<Parameters> {
+  constructor(device: Device, props: ConstructorParameters<typeof GPUCommandGraph>[1] = {}) {
+    super(device, props);
+    // Lens records carry the source, dispatch and bindings of every createWGSLKernelNode kernel.
+    recordWGSLKernelNodes(this);
+  }
+
   override createTransientBuffer(descriptor: GraphBufferDescriptor): GraphBufferHandle {
     return super.createTransientBuffer({...descriptor, usage: descriptor.usage | Buffer.COPY_SRC});
   }
+}
+
+/**
+ * Whether lens records keep the full WGSL text of their kernels (the how-it-works pages show it).
+ * Sources are deduplicated by text hash; false keeps only hashes, module ids and entry points.
+ */
+export const LENS_RECORD_SOURCE_TEXT = true;
+
+/**
+ * Scenarios whose records keep only source hashes, module ids and entry points: with the text
+ * they exceed the 512 KB per-record budget (record-budget.node.spec.ts). Scenario id → reason.
+ */
+export const LENS_RECORDS_WITHOUT_SOURCE_TEXT: Readonly<Record<string, string>> = {
+  'gpu-terrain.terrain-height-above-drainage':
+    '42 distinct hydrology kernels; 527 KB with source text (budget 512 KB)',
+  'gpu-terrain.terrain-hydrologic-indices':
+    '36 distinct hydrology kernels; 534 KB with source text (budget 512 KB)'
+};
+
+/** The `sourceText` option of a lens scenario's `describeGPUCommandGraph` call. */
+export function getLensRecordSourceText(scenarioId: string): boolean {
+  return LENS_RECORD_SOURCE_TEXT && !(scenarioId in LENS_RECORDS_WITHOUT_SOURCE_TEXT);
 }
 
 /** Named packed views or whole buffers a lens snapshots at the end of its graph. */
@@ -137,4 +171,41 @@ export function submitLensGraph<Parameters>(
   } finally {
     commandEncoder.destroy();
   }
+}
+
+/**
+ * Encodes and submits a compiled lens graph once, with per-node GPU timestamps when the device has
+ * `timestamp-query`. Read the result with {@link readLensRunMetrics}, which frees the query set.
+ */
+export function submitTimedLensGraph<Parameters>(
+  device: Device,
+  compiled: CompiledGPUCommandGraph<Parameters>,
+  encodeOptions: GPUCommandGraphEncodeOptions<Parameters>
+): GPUCommandGraphTimedSubmission {
+  return submitGPUCommandGraphWithTimings(device, compiled, encodeOptions);
+}
+
+/**
+ * Builds the metrics sidecar of a timed lens run. Without timestamps the node table stays empty:
+ * timings are absent, never zero or estimated. Observer effects are read from the encoding.
+ */
+export async function readLensRunMetrics(
+  submission: GPUCommandGraphTimedSubmission,
+  props: {runId: string; graphId: string; taps: number; retained?: readonly string[]}
+): Promise<GPUComputationMetrics> {
+  const timing = await submission.readTimings();
+  const stats = submission.encoding.stats;
+  return createGPUComputationMetrics({
+    runId: props.runId,
+    graph: props.graphId,
+    timing: timing ?? {nodes: []},
+    encoding: {
+      coalesced: stats.coalescedComputeNodeCount > 0,
+      timestamped: timing !== undefined,
+      taps: props.taps,
+      lensTwin: true,
+      ...(props.retained && {retained: props.retained})
+    },
+    ...(timing && {passIndices: getGPUCommandGraphPassIndices(stats)})
+  });
 }

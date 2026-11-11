@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Q = sum over conditions c, from-classes a, to-classes b of (n_cab - e_cab)^2 / e_cab, e_cab = n_ca * n_ab / n_a, n_ab pooled over conditions. Terms with n_ab = 0 are skipped; a from-class without transitions is skipped. nu = sum over a of (r…",
   "description": "Formula Q = sum over conditions c, from-classes a, to-classes b of (n_cab - e_cab)^2 / e_cab, e_cab = n_ca * n_ab / n_a, n_ab pooled over conditions. Terms with n_ab = 0 are skipped; a from-class without transitions is skipped. nu = sum over a of (r…",
-  "llms": "Formula Q = sum over conditions c, from-classes a, to-classes b of (n_cab - e_cab)^2 / e_cab, e_cab = n_ca * n_ab / n_a, n_ab pooled over conditions. Terms with n_ab = 0 are skipped; a from-class without transitions is skipped. nu = sum over a of (regimes_a - 1)(nonZeroCells_a - 1). p = upper chi-square tail of Q (one-sided, greater); no multiple-testing correction.\n\n- bound symbols: 0/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Q = sum over conditions c, from-classes a, to-classes b of (n_cab - e_cab)^2 / e_cab, e_cab = n_ca * n_ab / n_a, n_ab pooled over conditions. Terms with n_ab = 0 are skipped; a from-class without transitions is skipped. nu = sum over a of (regimes_a - 1)(nonZeroCells_a - 1). p = upper chi-square tail of Q (one-sided, greater); no multiple-testing correction.\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/7"
+    "value": "7/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.transition-diagnostics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{q}{Q} = \\sum_{c,a,b} \\frac{(\\term{observed}{n_{cab}} - \\term{expected}{e_{cab}})^2}{e_{cab}}, \\quad \\term{expected}{e_{cab}} = \\term{regimeTotal}{n_{ca}}\\,\\frac{\\term{pooled}{n_{ab}}}{\\term{pooledTotal}{n_{a}}}, \\quad p = 1 - F_{\\chi^2}(Q;\\ \\term{dof}{\\nu})</pre><p class=\"lens-ascii\">Q = sum over conditions c, from-classes a, to-classes b of (n_cab - e_cab)^2 / e_cab, e_cab = n_ca * n_ab / n_a, n_ab pooled over conditions. Terms with n_ab = 0 are skipped; a from-class without transitions is skipped. nu = sum over a of (regimes_a - 1)(nonZeroCells_a - 1). p = upper chi-square tail of Q (one-sided, greater); no multiple-testing correction.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"q\">Q · output · unknown — wgsl q not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"observed\">n_cab · input · unknown — wgsl observed not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"expected\">e_cab · intermediate · unknown — wgsl expected not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"regimeTotal\">n_ca · intermediate · unknown — wgsl regimeTotal not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pooled\">n_ab · intermediate · unknown — wgsl pooledRow not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pooledTotal\">n_a · intermediate · unknown — wgsl pooledTotal not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"dof\">nu · intermediate · unknown — wgsl degreesOfFreedom not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.transition-diagnostics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{q}{Q} = \\sum_{c,a,b} \\frac{(\\term{observed}{n_{cab}} - \\term{expected}{e_{cab}})^2}{e_{cab}}, \\quad \\term{expected}{e_{cab}} = \\term{regimeTotal}{n_{ca}}\\,\\frac{\\term{pooled}{n_{ab}}}{\\term{pooledTotal}{n_{a}}}, \\quad p = 1 - F_{\\chi^2}(Q;\\ \\term{dof}{\\nu})</pre><p class=\"lens-ascii\">Q = sum over conditions c, from-classes a, to-classes b of (n_cab - e_cab)^2 / e_cab, e_cab = n_ca * n_ab / n_a, n_ab pooled over conditions. Terms with n_ab = 0 are skipped; a from-class without transitions is skipped. nu = sum over a of (regimes_a - 1)(nonZeroCells_a - 1). p = upper chi-square tail of Q (one-sided, greater); no multiple-testing correction.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-diagnostics-compiled:transition-diagnostics-summary\" data-value=\"q\">Q · output · q</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-diagnostics-compiled:transition-diagnostics-summary\" data-value=\"observed\">n_cab · input · observed</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-diagnostics-compiled:transition-diagnostics-summary\" data-value=\"expected\">e_cab · intermediate · expected</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-diagnostics-compiled:transition-diagnostics-summary\" data-value=\"regimeTotal\">n_ca · intermediate · regimeTotal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-diagnostics-compiled:transition-diagnostics-summary\" data-value=\"pooled\">n_ab · intermediate · pooledRow</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-diagnostics-compiled:transition-diagnostics-summary\" data-value=\"pooledTotal\">n_a · intermediate · pooledTotal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-diagnostics-compiled:transition-diagnostics-summary\" data-value=\"dof\">nu · intermediate · degreesOfFreedom</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,49 +29,49 @@
       [
         "Q",
         "output",
-        "unknown",
+        "q",
         "—",
         "metadata"
       ],
       [
         "n_cab",
         "input",
-        "unknown",
+        "observed",
         "—",
         "metadata"
       ],
       [
         "e_cab",
         "intermediate",
-        "unknown",
+        "expected",
         "—",
         "metadata"
       ],
       [
         "n_ca",
         "intermediate",
-        "unknown",
+        "regimeTotal",
         "—",
         "metadata"
       ],
       [
         "n_ab",
         "intermediate",
-        "unknown",
+        "pooledRow",
         "—",
         "metadata"
       ],
       [
         "n_a",
         "intermediate",
-        "unknown",
+        "pooledTotal",
         "—",
         "metadata"
       ],
       [
         "nu",
         "intermediate",
-        "unknown",
+        "degreesOfFreedom",
         "—",
         "metadata"
       ]
@@ -104,7 +104,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.404Z",
+    "date": "2026-11-11T15:21:32.294Z",
     "runId": "run-dc48e10c",
     "observerEffects": []
   },

@@ -14,7 +14,7 @@
     "value": "0.3067"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUInequality</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{G}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})</pre><p class=\"lens-ascii\">P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.</p></div><div class=\"lens-worked-example\"><h4>Entity 27</h4><div><pre class=\"lens-tex\">\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{0.306713}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})</pre><p class=\"lens-ascii\">P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"populationShare\">populationShare · intermediate · unknown — wgsl nextP not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cumulativeWeight\">cumulativeWeight · intermediate · unknown — wgsl cumulativeWeight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"totalWeight\">totalWeight · intermediate · unknown — wgsl totalWeight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"incomeShare\">incomeShare · intermediate · unknown — wgsl nextL not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cumulativeIncome\">cumulativeIncome · intermediate · unknown — wgsl cumulativeIncome not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"totalIncome\">totalIncome · intermediate · unknown — wgsl totalIncome not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gini\">gini · output · unknown — wgsl gini not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"previousP\">previousP · intermediate · unknown — wgsl previousP not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"previousL\">previousL · intermediate · unknown — wgsl previousL not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUInequality</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{G}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})</pre><p class=\"lens-ascii\">P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.</p></div><div class=\"lens-worked-example\"><h4>Entity 27</h4><div><pre class=\"lens-tex\">\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{0.306713}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})</pre><p class=\"lens-ascii\">P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"populationShare\">populationShare · intermediate · nextP</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-gini-tile-prefix\" data-value=\"cumulativeWeight\">cumulativeWeight · intermediate · cumulativeWeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-gini-tile-area\" data-value=\"totalWeight\">totalWeight · intermediate · totalWeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"incomeShare\">incomeShare · intermediate · nextL</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-gini-tile-prefix\" data-value=\"cumulativeIncome\">cumulativeIncome · intermediate · cumulativeIncome</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-gini-tile-area\" data-value=\"totalIncome\">totalIncome · intermediate · totalIncome</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-publish-indices\" data-value=\"gini\">gini · output · gini<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"previousP\">previousP · intermediate · previousP</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"previousL\">previousL · intermediate · previousL</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,63 +30,63 @@
       [
         "populationShare",
         "intermediate",
-        "unknown",
+        "nextP",
         "—",
         "metadata"
       ],
       [
         "cumulativeWeight",
         "intermediate",
-        "unknown",
+        "cumulativeWeight",
         "—",
         "metadata"
       ],
       [
         "totalWeight",
         "intermediate",
-        "unknown",
+        "totalWeight",
         "—",
         "metadata"
       ],
       [
         "incomeShare",
         "intermediate",
-        "unknown",
+        "nextL",
         "—",
         "metadata"
       ],
       [
         "cumulativeIncome",
         "intermediate",
-        "unknown",
+        "cumulativeIncome",
         "—",
         "metadata"
       ],
       [
         "totalIncome",
         "intermediate",
-        "unknown",
+        "totalIncome",
         "—",
         "metadata"
       ],
       [
         "gini",
         "output",
-        "unknown",
+        "gini",
         "0.3067132830619812",
         "readback"
       ],
       [
         "previousP",
         "intermediate",
-        "unknown",
+        "previousP",
         "—",
         "metadata"
       ],
       [
         "previousL",
         "intermediate",
-        "unknown",
+        "previousL",
         "—",
         "metadata"
       ]
@@ -110,7 +110,7 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:15.906Z",
+    "date": "2026-11-11T15:20:11.166Z",
     "runId": "run-44411664",
     "observerEffects": []
   },

@@ -13,7 +13,7 @@ const CLUSTERING_ROOT = `${SOURCE_ROOT}/spatial-clustering`;
 const kernelSources: Record<string, string[]> = {
   GPURoseStatistic: [`${SOURCE_ROOT}/geographic-distribution/gpu-rose-statistic.ts`],
   GPUSpatialClustering: [`${CLUSTERING_ROOT}/spatial-clustering-kernels.ts`],
-  GPUKMeans: [`${CLUSTERING_ROOT}/gpu-kmeans.ts`],
+  GPUSpatialKMeans: [`${CLUSTERING_ROOT}/gpu-spatial-kmeans.ts`],
   GPUHierarchicalDensityClustering: [
     `${CLUSTERING_ROOT}/hierarchical-density-clustering-kernels.ts`
   ],

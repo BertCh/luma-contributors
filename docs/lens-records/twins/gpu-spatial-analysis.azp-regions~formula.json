@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Objective, not the procedure: SSD = sum over regions A of sum over tracts i in A of |x_i - mean_A|^2, in standardized units unless standardize is false. A move of tract i from region A to adjacent region B gains g = (S_A - x_i)^2/(n_A - 1) +…",
   "description": "Formula Objective, not the procedure: SSD = sum over regions A of sum over tracts i in A of |x_i - mean_A|^2, in standardized units unless standardize is false. A move of tract i from region A to adjacent region B gains g = (S_A - x_i)^2/(n_A - 1) +…",
-  "llms": "Formula Objective, not the procedure: SSD = sum over regions A of sum over tracts i in A of |x_i - mean_A|^2, in standardized units unless standardize is false. A move of tract i from region A to adjacent region B gains g = (S_A - x_i)^2/(n_A - 1) + (S_B + x_i)^2/(n_B + 1) - S_A^2/n_A - S_B^2/n_B, summed over columns, where S is a region column sum and n its size. A move needs g above a small fraction of the four terms and must keep A connected.\n\n- bound symbols: 0/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Objective, not the procedure: SSD = sum over regions A of sum over tracts i in A of |x_i - mean_A|^2, in standardized units unless standardize is false. A move of tract i from region A to adjacent region B gains g = (S_A - x_i)^2/(n_A - 1) + (S_B + x_i)^2/(n_B + 1) - S_A^2/n_A - S_B^2/n_B, summed over columns, where S is a region column sum and n its size. A move needs g above a small fraction of the four terms and must keep A connected.\n\n- bound symbols: 6/6\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/6"
+    "value": "6/6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>azp-objective</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{objective}{\\mathrm{SSD}}&amp;=\\sum_{A}\\sum_{i\\in A}\\lVert x_i-\\bar{x}_A\\rVert^2\\\\\n\\term{gain}{g_{i\\to B}}&amp;=\\term{sourceAfter}{\\tfrac{(S_A-x_i)^2}{n_A-1}}+\\term{destinationAfter}{\\tfrac{(S_B+x_i)^2}{n_B+1}}-\\term{sourceBefore}{\\tfrac{S_A^2}{n_A}}-\\term{destinationBefore}{\\tfrac{S_B^2}{n_B}}\n\\end{aligned}</pre><p class=\"lens-ascii\">Objective, not the procedure: SSD = sum over regions A of sum over tracts i in A of |x_i - mean_A|^2, in standardized units unless standardize is false. A move of tract i from region A to adjacent region B gains g = (S_A - x_i)^2/(n_A - 1) + (S_B + x_i)^2/(n_B + 1) - S_A^2/n_A - S_B^2/n_B, summed over columns, where S is a region column sum and n its size. A move needs g above a small fraction of the four terms and must keep A connected.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"objective\">objective · output · unknown — wgsl objective not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gain\">gain · intermediate · unknown — wgsl gainBits not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sourceAfter\">sourceAfter · intermediate · unknown — wgsl sourceAfter not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"destinationAfter\">destinationAfter · intermediate · unknown — wgsl destinationAfter not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sourceBefore\">sourceBefore · intermediate · unknown — wgsl sourceBefore not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"destinationBefore\">destinationBefore · intermediate · unknown — wgsl destinationBefore not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>azp-objective</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{objective}{\\mathrm{SSD}}&amp;=\\sum_{A}\\sum_{i\\in A}\\lVert x_i-\\bar{x}_A\\rVert^2\\\\\n\\term{gain}{g_{i\\to B}}&amp;=\\term{sourceAfter}{\\tfrac{(S_A-x_i)^2}{n_A-1}}+\\term{destinationAfter}{\\tfrac{(S_B+x_i)^2}{n_B+1}}-\\term{sourceBefore}{\\tfrac{S_A^2}{n_A}}-\\term{destinationBefore}{\\tfrac{S_B^2}{n_B}}\n\\end{aligned}</pre><p class=\"lens-ascii\">Objective, not the procedure: SSD = sum over regions A of sum over tracts i in A of |x_i - mean_A|^2, in standardized units unless standardize is false. A move of tract i from region A to adjacent region B gains g = (S_A - x_i)^2/(n_A - 1) + (S_B + x_i)^2/(n_B + 1) - S_A^2/n_A - S_B^2/n_B, summed over columns, where S is a region column sum and n its size. A move needs g above a small fraction of the four terms and must keep A connected.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.azp-regions-compiled:azp-regions-initialize-status\" data-value=\"objective\">objective · output · objective</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.azp-regions-compiled:azp-regions-iteration-0-candidates\" data-value=\"gain\">gain · intermediate · gainBits</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.azp-regions-compiled:azp-regions-iteration-0-candidates\" data-value=\"sourceAfter\">sourceAfter · intermediate · sourceAfter</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.azp-regions-compiled:azp-regions-iteration-0-candidates\" data-value=\"destinationAfter\">destinationAfter · intermediate · destinationAfter</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.azp-regions-compiled:azp-regions-iteration-0-candidates\" data-value=\"sourceBefore\">sourceBefore · intermediate · sourceBefore</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.azp-regions-compiled:azp-regions-iteration-0-candidates\" data-value=\"destinationBefore\">destinationBefore · intermediate · destinationBefore</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,42 +29,42 @@
       [
         "objective",
         "output",
-        "unknown",
+        "objective",
         "—",
         "metadata"
       ],
       [
         "gain",
         "intermediate",
-        "unknown",
+        "gainBits",
         "—",
         "metadata"
       ],
       [
         "sourceAfter",
         "intermediate",
-        "unknown",
+        "sourceAfter",
         "—",
         "metadata"
       ],
       [
         "destinationAfter",
         "intermediate",
-        "unknown",
+        "destinationAfter",
         "—",
         "metadata"
       ],
       [
         "sourceBefore",
         "intermediate",
-        "unknown",
+        "sourceBefore",
         "—",
         "metadata"
       ],
       [
         "destinationBefore",
         "intermediate",
-        "unknown",
+        "destinationBefore",
         "—",
         "metadata"
       ]
@@ -85,9 +85,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:18.349Z",
+    "date": "2026-11-11T15:20:16.814Z",
     "runId": "run-1afc3b29",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-1afc3b29",

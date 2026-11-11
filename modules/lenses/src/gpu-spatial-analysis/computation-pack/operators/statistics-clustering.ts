@@ -155,7 +155,7 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
     },
     metadata: PLANAR_METRES
   },
-  GPUKMeans: {
+  GPUSpatialKMeans: {
     family: 'statistics',
     descriptor: {scope: 'solver', scopeSecondary: 'zonal', reduction: 'solve'},
     variables: {

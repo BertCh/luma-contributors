@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUAffineTransform,
-  type GPUPolygonGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUAffineTransform} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Parks in UTM 16N metres and the packed affine matrix for GPUAffineTransform. */
 export type AffineTransformExampleInput = {

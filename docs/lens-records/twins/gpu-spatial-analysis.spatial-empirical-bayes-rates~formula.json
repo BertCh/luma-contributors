@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours…",
   "description": "Formula r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours…",
-  "llms": "Formula r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours that are included (unmasked, finite e, finite b > 0); only the structure of the weights counts. E_i, B_i = sums of e and b over the n_i members. The spatial rate is m_i itself. Excluded rows are NaN.\n\n- bound symbols: 0/10\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours that are included (unmasked, finite e, finite b > 0) and whose slot has a positive weight (a zero-weight slot is not a neighbour; a slot naming row i itself is skipped); only the structure of the weights counts, each such slot once whatever its weight. E_i, B_i = sums of e and b over the n_i members. The spatial rate is m_i itself. Excluded rows are NaN.\n\n- bound symbols: 10/10\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/10"
+    "value": "10/10"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-empirical-bayes-rates</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{smoothed}{r_i}&amp;=\\term{weight}{w_i}\\,\\term{ownRate}{y_i}+(1-w_i)\\,\\term{priorMean}{m_i},\n&amp;\\term{weight}{w_i}&amp;=\\frac{\\term{priorVariance}{a_i}}{a_i+m_i/\\term{ownPopulation}{b_i}}\\\\\n\\term{priorMean}{m_i}&amp;=\\frac{\\term{eventSum}{E_i}}{\\term{populationSum}{B_i}},\n&amp;\\term{priorVariance}{a_i}&amp;=\\max\\!\\left(\\frac{\\term{deviationSum}{\\sum_j b_j(y_j-m_i)^2}}{B_i}-\\frac{m_i}{B_i/\\term{count}{n_i}},0\\right)\n\\end{aligned}</pre><p class=\"lens-ascii\">r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours that are included (unmasked, finite e, finite b &gt; 0); only the structure of the weights counts. E_i, B_i = sums of e and b over the n_i members. The spatial rate is m_i itself. Excluded rows are NaN.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"smoothed\">smoothed · output · unknown — wgsl smoothed not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">weight · intermediate · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"ownRate\">ownRate · intermediate · unknown — wgsl ownRate not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"priorMean\">priorMean · intermediate · unknown — wgsl priorMean not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"priorVariance\">priorVariance · intermediate · unknown — wgsl priorVariance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"ownPopulation\">ownPopulation · input · unknown — wgsl ownPopulation not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"eventSum\">eventSum · intermediate · unknown — wgsl eventSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"populationSum\">populationSum · intermediate · unknown — wgsl populationSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"deviationSum\">deviationSum · intermediate · unknown — wgsl deviationSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">neighbourhood size · intermediate · unknown — wgsl count not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-empirical-bayes-rates</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{smoothed}{r_i}&amp;=\\term{weight}{w_i}\\,\\term{ownRate}{y_i}+(1-w_i)\\,\\term{priorMean}{m_i},\n&amp;\\term{weight}{w_i}&amp;=\\frac{\\term{priorVariance}{a_i}}{a_i+m_i/\\term{ownPopulation}{b_i}}\\\\\n\\term{priorMean}{m_i}&amp;=\\frac{\\term{eventSum}{E_i}}{\\term{populationSum}{B_i}},\n&amp;\\term{priorVariance}{a_i}&amp;=\\max\\!\\left(\\frac{\\term{deviationSum}{\\sum_j b_j(y_j-m_i)^2}}{B_i}-\\frac{m_i}{B_i/\\term{count}{n_i}},0\\right)\n\\end{aligned}</pre><p class=\"lens-ascii\">r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours that are included (unmasked, finite e, finite b &gt; 0) and whose slot has a positive weight (a zero-weight slot is not a neighbour; a slot naming row i itself is skipped); only the structure of the weights counts, each such slot once whatever its weight. E_i, B_i = sums of e and b over the n_i members. The spatial rate is m_i itself. Excluded rows are NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"smoothed\">smoothed · output · smoothed</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"weight\">weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"ownRate\">ownRate · intermediate · ownRate</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"priorMean\">priorMean · intermediate · priorMean</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"priorVariance\">priorVariance · intermediate · priorVariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"ownPopulation\">ownPopulation · input · ownPopulation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"eventSum\">eventSum · intermediate · eventSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"populationSum\">populationSum · intermediate · populationSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:spatial-empirical-bayes-rates-smooth-0\" data-value=\"deviationSum\">deviationSum · intermediate · deviationSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-empirical-bayes-rates-compiled:contiguity-weights-pair-counts\" data-value=\"count\">neighbourhood size · intermediate · count</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,70 +29,70 @@
       [
         "smoothed",
         "output",
-        "unknown",
+        "smoothed",
         "—",
         "metadata"
       ],
       [
         "weight",
         "intermediate",
-        "unknown",
+        "weight",
         "—",
         "metadata"
       ],
       [
         "ownRate",
         "intermediate",
-        "unknown",
+        "ownRate",
         "—",
         "metadata"
       ],
       [
         "priorMean",
         "intermediate",
-        "unknown",
+        "priorMean",
         "—",
         "metadata"
       ],
       [
         "priorVariance",
         "intermediate",
-        "unknown",
+        "priorVariance",
         "—",
         "metadata"
       ],
       [
         "ownPopulation",
         "input",
-        "unknown",
+        "ownPopulation",
         "—",
         "metadata"
       ],
       [
         "eventSum",
         "intermediate",
-        "unknown",
+        "eventSum",
         "—",
         "metadata"
       ],
       [
         "populationSum",
         "intermediate",
-        "unknown",
+        "populationSum",
         "—",
         "metadata"
       ],
       [
         "deviationSum",
         "intermediate",
-        "unknown",
+        "deviationSum",
         "—",
         "metadata"
       ],
       [
         "neighbourhood size",
         "intermediate",
-        "unknown",
+        "count",
         "—",
         "metadata"
       ]
@@ -112,7 +112,7 @@
   },
   "formula": {
     "tex": "\\begin{aligned}\n\\term{smoothed}{r_i}&=\\term{weight}{w_i}\\,\\term{ownRate}{y_i}+(1-w_i)\\,\\term{priorMean}{m_i},\n&\\term{weight}{w_i}&=\\frac{\\term{priorVariance}{a_i}}{a_i+m_i/\\term{ownPopulation}{b_i}}\\\\\n\\term{priorMean}{m_i}&=\\frac{\\term{eventSum}{E_i}}{\\term{populationSum}{B_i}},\n&\\term{priorVariance}{a_i}&=\\max\\!\\left(\\frac{\\term{deviationSum}{\\sum_j b_j(y_j-m_i)^2}}{B_i}-\\frac{m_i}{B_i/\\term{count}{n_i}},0\\right)\n\\end{aligned}",
-    "ascii": "r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours that are included (unmasked, finite e, finite b > 0); only the structure of the weights counts. E_i, B_i = sums of e and b over the n_i members. The spatial rate is m_i itself. Excluded rows are NaN.",
+    "ascii": "r_i = w_i y_i + (1 - w_i) m_i; w_i = a_i / (a_i + m_i / b_i), 0 where the denominator is not positive; m_i = E_i / B_i; a_i = max(sum_j b_j (y_j - m_i)^2 / B_i - m_i / (B_i / n_i), 0). The neighbourhood j is row i plus its listed neighbours that are included (unmasked, finite e, finite b > 0) and whose slot has a positive weight (a zero-weight slot is not a neighbour; a slot naming row i itself is skipped); only the structure of the weights counts, each such slot once whatever its weight. E_i, B_i = sums of e and b over the n_i members. The spatial rate is m_i itself. Excluded rows are NaN.",
     "derivation": "curated"
   },
   "verdicts": [
@@ -137,12 +137,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:27.534Z",
-    "runId": "run-12ddeaac",
-    "observerEffects": []
+    "date": "2026-11-11T15:21:20.015Z",
+    "runId": "run-28c39f9e",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
-    "runId": "run-12ddeaac",
+    "runId": "run-28c39f9e",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

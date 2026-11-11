@@ -14,7 +14,7 @@
     "value": "0.0003445"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.kernel-density</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{density}{\\hat\\lambda(u)} = \\frac{1}{\\term{mass}{e_h(u)}} \\sum_{i\\,:\\,\\lVert u - x_i \\rVert &lt; 5h} \\term{weight}{w_i}\\, \\term{kernel}{K_h}\\big(\\lVert u - \\term{position}{x_i} \\rVert\\big), \\qquad K_h(d) = \\frac{e^{-d^2 / (2\\term{bandwidth}{h}^2)}}{2\\pi h^2}</pre><p class=\"lens-ascii\">density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| &lt; 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window</p></div><div class=\"lens-worked-example\"><h4>Entity 4887</h4><div><pre class=\"lens-tex\">\\term{density}{0.000344537} = \\frac{1}{\\term{mass}{e_h(u)}} \\sum_{i\\,:\\,\\lVert u - x_i \\rVert &lt; 5h} \\term{weight}{w_i}\\, \\term{kernel}{K_h}\\big(\\lVert u - \\term{position}{x_i} \\rVert\\big), \\qquad K_h(d) = \\frac{e^{-d^2 / (2\\term{bandwidth}{h}^2)}}{2\\pi h^2}</pre><p class=\"lens-ascii\">density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| &lt; 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"density\">λ̂(u) · output · unknown — wgsl valuesOut not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"position\">x_i · input · unknown — wgsl positions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">w_i · input · unknown — wgsl pointWeights not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"kernel\">K_h · intermediate · unknown — wgsl getKernelValue not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mass\">e_h(u) · intermediate · unknown — wgsl getWindowMass not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"bandwidth\">h · parameter · unknown — wgsl bandwidth not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.kernel-density</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{density}{\\hat\\lambda(u)} = \\frac{1}{\\term{mass}{e_h(u)}} \\sum_{i\\,:\\,\\lVert u - x_i \\rVert &lt; 5h} \\term{weight}{w_i}\\, \\term{kernel}{K_h}\\big(\\lVert u - \\term{position}{x_i} \\rVert\\big), \\qquad K_h(d) = \\frac{e^{-d^2 / (2\\term{bandwidth}{h}^2)}}{2\\pi h^2}</pre><p class=\"lens-ascii\">density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| &lt; 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window</p></div><div class=\"lens-worked-example\"><h4>Entity 4887</h4><div><pre class=\"lens-tex\">\\term{density}{0.000344537} = \\frac{1}{\\term{mass}{e_h(u)}} \\sum_{i\\,:\\,\\lVert u - x_i \\rVert &lt; 5h} \\term{weight}{w_i}\\, \\term{kernel}{K_h}\\big(\\lVert u - \\term{position}{x_i} \\rVert\\big), \\qquad K_h(d) = \\frac{e^{-d^2 / (2\\term{bandwidth}{h}^2)}}{2\\pi h^2}</pre><p class=\"lens-ascii\">density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| &lt; 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-gather\" data-value=\"density\">λ̂(u) · output · valuesOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-point-weights\" data-value=\"position\">x_i · input · positions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-point-weights\" data-value=\"weight\">w_i · input · pointWeights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-gather\" data-value=\"kernel\">K_h · intermediate · getKernelValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-gather\" data-value=\"mass\">e_h(u) · intermediate · getWindowMass</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-point-weights\" data-value=\"bandwidth\">h · parameter · bandwidth</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,42 +30,42 @@
       [
         "λ̂(u)",
         "output",
-        "unknown",
+        "valuesOut",
         "0.00034453708212822676",
         "readback"
       ],
       [
         "x_i",
         "input",
-        "unknown",
+        "positions",
         "—",
         "metadata"
       ],
       [
         "w_i",
         "input",
-        "unknown",
+        "pointWeights",
         "—",
         "metadata"
       ],
       [
         "K_h",
         "intermediate",
-        "unknown",
+        "getKernelValue",
         "—",
         "metadata"
       ],
       [
         "e_h(u)",
         "intermediate",
-        "unknown",
+        "getWindowMass",
         "—",
         "metadata"
       ],
       [
         "h",
         "parameter",
-        "unknown",
+        "bandwidth",
         "—",
         "metadata"
       ]
@@ -99,12 +99,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:22.943Z",
-    "runId": "run-c6c916fd",
+    "date": "2026-11-11T15:20:50.137Z",
+    "runId": "run-ddccdddc",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-c6c916fd",
+    "runId": "run-ddccdddc",
     "rung": "formula",
     "bindings": {
       "entity": 4887

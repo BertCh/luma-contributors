@@ -15,11 +15,13 @@ import {
 } from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUArealInterpolation,
+  GPUSpatialLag
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
-  GPUSpatialLag,
   type GPUPolygonGeometryFields,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from the tract and community-area data files. */
 export type ArealInterpolationExampleInput = {

@@ -11,11 +11,13 @@ import {
 import {
   getGPUSpatialClusteringParameterValues,
   GPUGroupConvexHull,
-  GPUParameterBuffer,
   GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  type GPUSpatialContext
+  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUParameterBuffer,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Label slots of the example; DBSCAN labels at or above it are left out of every hull. */
 export const GROUP_CONVEX_HULL_GROUP_COUNT = 64;

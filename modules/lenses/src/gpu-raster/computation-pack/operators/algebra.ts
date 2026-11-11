@@ -101,7 +101,7 @@ export const RASTER_ALGEBRA_OPERATORS: RasterOperatorTable = {
       derivation: 'curated',
       tex: String.raw`\term{result}{f}=\begin{cases}0.4&\term{condition}{L}=50\\1&L\ne50\end{cases}\quad(\text{valid condition and chosen branch; otherwise NaN})`,
       ascii:
-        'condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata.',
+        'condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value is neither NaN nor the optional noDataValue (0 here) and the chosen branch is not missing, otherwise NaN; a chosen branch from a raster is missing when NaN or equal to noDataValue, but a per-frame constant (as here, 0.4 and 1) is missing only when NaN: the sentinel never applies to constants; the unchosen branch does not propagate nodata.',
       symbols: [
         {id: 'result', role: 'output', label: 'friction', binding: 'wgsl:valuesOut'},
         {id: 'condition', role: 'input', label: 'land cover', binding: 'wgsl:conditionValue'}

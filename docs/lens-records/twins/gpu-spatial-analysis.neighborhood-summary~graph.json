@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis.neighborhood-summary. nodes: 139. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis.neighborhood-summary. nodes: 139. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis.neighborhood-summary\n\n- nodes: 139\n- 24 visible units vs budget 24\n- 138 hidden nodes\n- Edges by kind: raw 243, war 42, waw 28\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis.neighborhood-summary\n\n- nodes: 139\n- 24 visible units vs budget 24\n- 138 hidden nodes\n- Edges by kind: raw 243, war 42, waw 28\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "139"
@@ -30,9 +30,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:24.955Z",
+    "date": "2026-11-11T15:21:00.467Z",
     "runId": "run-f61f6ec4",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-f61f6ec4",

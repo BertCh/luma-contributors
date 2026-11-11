@@ -177,11 +177,15 @@ export async function buildGlobalCoordinateScenario(
       polygonOffsets: input(name + 'Polygons', 'uint32', [0, 1]),
       featureOffsets: input(name + 'Features', 'uint32', [0, 1])
     });
-    const status = (name: string) => ({
+    // The overlay result has no feature requirement (`requiredCount`); its boundary has one.
+    const resultStatus = (name: string) => ({
       count: output(name + 'Count', 'uint32', 1),
-      requiredCount: output(name + 'Required', 'uint32', 1),
       overflow: output(name + 'Overflow', 'uint32', 1),
       candidateOverflow: output(name + 'CandidateOverflow', 'uint32', 1)
+    });
+    const status = (name: string) => ({
+      ...resultStatus(name),
+      requiredCount: output(name + 'Required', 'uint32', 1)
     });
     await runSphericalPolygonOverlay(graph, {
       left: operand('left'),
@@ -196,10 +200,9 @@ export async function buildGlobalCoordinateScenario(
           positions: output('intersectionVertices', 'float32x3', 64),
           ringOffsets: output('rings', 'uint32', 9),
           polygonOffsets: output('polygons', 'uint32', 9),
-          featureOffsets: output('features', 'uint32', 9),
-          sourceIds: output('sourceIds', 'uint32', 8)
+          featureOffsets: output('features', 'uint32', 9)
         },
-        status: status('result'),
+        status: resultStatus('result'),
         complement: output('complement', 'uint32', 1),
         boundary: {
           endpoints: output('boundaryEndpoints', 'float32x4', 64),

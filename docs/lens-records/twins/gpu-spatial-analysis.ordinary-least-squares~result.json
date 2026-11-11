@@ -12,7 +12,7 @@
   "viewId": "gpu-core-array-result",
   "caption": "Read captured inputs into recorded array outputs. max coefficients: 5.731. values read back from the GPU run. 3 output panels from the recorded run.",
   "description": "Read captured inputs into recorded array outputs. max coefficients: 5.731. values read back from the GPU run. 3 output panels from the recorded run.",
-  "llms": "Read captured inputs into recorded array outputs\n\n- max coefficients: 5.731\n- 3 output panels from the recorded run\n- coefficients: 4 captured values (4 shown)\n- standardErrors: 4 captured values (4 shown)\n- tStatistics: 4 captured values (4 shown)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max coefficients: 5.731\n- 3 output panels from the recorded run\n- coefficients: 4 captured values (4 shown)\n- standardErrors: 4 captured values (4 shown)\n- tStatistics: 4 captured values (4 shown)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max coefficients",
     "value": "5.731"
@@ -24,9 +24,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:25.368Z",
+    "date": "2026-11-11T15:21:01.285Z",
     "runId": "run-e9fd6573",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-e9fd6573",

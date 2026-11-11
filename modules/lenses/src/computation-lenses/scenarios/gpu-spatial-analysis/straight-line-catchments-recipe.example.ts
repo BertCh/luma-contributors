@@ -13,11 +13,11 @@ import {
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
+import {addStraightLineCatchmentsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  addStraightLineCatchmentsRecipe,
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from the Chicago North Side facilities and observations. */
 export type StraightLineCatchmentsRecipeExampleInput = {

@@ -10,10 +10,10 @@ import {
   getGPUSolarShadowMaskParameterValues,
   getGPUTerrainHorizonParameterValues,
   getSolarPosition,
-  GPUParameterBuffer,
   GPUSolarShadowMask,
   GPUTerrainHorizon
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Graph, grid and caller-owned views the example wires together. */
 export type SolarShadowMaskExampleInput = {

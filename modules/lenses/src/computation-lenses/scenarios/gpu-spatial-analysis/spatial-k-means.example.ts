@@ -8,7 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GPUKMeans, type GPUSpatialContext} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUSpatialKMeans} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Number of clusters of the example. */
 export const K_MEANS_CLUSTER_COUNT = 6;
@@ -19,7 +20,7 @@ export type KMeansExampleInput = {
   observations: GraphDataView<'float32x2'>;
   /** Planar context of the local frame. */
   spatialContext: GPUSpatialContext;
-  /** `getGPUKMeansParameterValues({seed: 3})`, uploaded as `uint32` words. */
+  /** `getGPUSpatialKMeansParameterValues({seed: 3})`, uploaded as `uint32` words. */
   parameters: GraphDataView<'uint32'>;
 };
 
@@ -43,7 +44,7 @@ export async function runExample(
   const converged = create('converged', 'uint32', 1);
   // #region example
   graph.add(
-    new GPUKMeans({
+    new GPUSpatialKMeans({
       spatialContext,
       positions: observations,
       k: 6,

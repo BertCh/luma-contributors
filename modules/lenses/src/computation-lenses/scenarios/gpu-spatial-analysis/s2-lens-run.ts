@@ -19,15 +19,13 @@ import {
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   addLensViewSnapshot,
+  LENS_RECORD_SOURCE_TEXT,
   LensCommandGraph,
   readLensViewSnapshot,
   submitLensGraph
 } from '../../lens-view-snapshot';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-import {
-  createGPULocalFrame,
-  type GPULocalFrame
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createGPULocalFrame, type GPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {
   createSpatialChoice,
   getSpatialOperatorEntry,
@@ -157,7 +155,11 @@ export async function runS2Lens(
         keySpace: keySpace.id,
         ...(keySpace.size !== undefined && {size: keySpace.size})
       }));
-      const description = describeGPUCommandGraph(compiled, {domain: SPATIAL_COMPUTATION_PACK_ID});
+      const description = describeGPUCommandGraph(compiled, {
+        domain: SPATIAL_COMPUTATION_PACK_ID,
+        graph,
+        sourceText: LENS_RECORD_SOURCE_TEXT
+      });
       const record = createGPUComputationRecord({
         id: props.scenarioId,
         adapter: getGPUComputationAdapter(device),

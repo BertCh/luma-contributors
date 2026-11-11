@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count >= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Her…",
   "description": "Formula Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count >= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Her…",
-  "llms": "Formula Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count >= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Here two reflectance layers, propagate, minimumValidCount=2; DN 0 is uploaded as NaN and valid DN is scaled by 0.0001.\n\n- bound symbols: 0/3\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count >= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Here two reflectance layers, propagate, minimumValidCount=2; DN 0 is uploaded as NaN and valid DN is scaled by 0.0001.\n\n- bound symbols: 3/3\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/3"
+    "value": "3/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-cell-statistics.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{mean}{\\mu}=\\frac{\\term{sum}{\\sum_{\\ell\\in V} x_\\ell}}{\\max(\\term{count}{|V|},1)}\\quad(|V|=2;\\ \\text{otherwise NaN})</pre><p class=\"lens-ascii\">Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count &gt;= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Here two reflectance layers, propagate, minimumValidCount=2; DN 0 is uploaded as NaN and valid DN is scaled by 0.0001.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mean\">mean · output · unknown — wgsl meanOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sum\">sum · intermediate · unknown — wgsl sum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">count · intermediate · unknown — wgsl count not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-cell-statistics.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{mean}{\\mu}=\\frac{\\term{sum}{\\sum_{\\ell\\in V} x_\\ell}}{\\max(\\term{count}{|V|},1)}\\quad(|V|=2;\\ \\text{otherwise NaN})</pre><p class=\"lens-ascii\">Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count &gt;= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Here two reflectance layers, propagate, minimumValidCount=2; DN 0 is uploaded as NaN and valid DN is scaled by 0.0001.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-cell-statistics-compiled:raster-cell-statistics-moments\" data-value=\"mean\">mean · output · meanOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-cell-statistics-compiled:raster-cell-statistics-moments\" data-value=\"sum\">sum · intermediate · sum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-cell-statistics-compiled:raster-cell-statistics-moments\" data-value=\"count\">count · intermediate · count</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "mean",
         "output",
-        "unknown",
+        "meanOut",
         "—",
         "metadata"
       ],
       [
         "sum",
         "intermediate",
-        "unknown",
+        "sum",
         "—",
         "metadata"
       ],
       [
         "count",
         "intermediate",
-        "unknown",
+        "count",
         "—",
         "metadata"
       ]
@@ -61,10 +61,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.603Z",
+    "date": "2026-11-11T15:20:14.187Z",
     "runId": "run-cd7759f5",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

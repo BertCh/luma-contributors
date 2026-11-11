@@ -49,6 +49,13 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         alternatives: ['evans-young', 'zevenbergen-thorne', 'florinsky'],
         sweepable: false
       },
+      {
+        stage: 'neighbourhood',
+        name: 'borderMode',
+        value: 'one-sided',
+        alternatives: ['one-sided', 'clamp', 'nodata'],
+        sweepable: false
+      },
       {stage: 'operator', name: 'zFactor', value: 1, sweepable: true},
       {stage: 'operator', name: 'flatGradient', value: 1e-6, sweepable: false}
     ],

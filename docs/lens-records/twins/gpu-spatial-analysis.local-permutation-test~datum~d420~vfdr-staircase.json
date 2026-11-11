@@ -9,7 +9,7 @@
   "viewId": "fdr-staircase",
   "caption": "Benjamini–Hochberg staircase. BH rejections: 0. values read back from the GPU run. 788 valid tests.",
   "description": "Benjamini–Hochberg staircase. BH rejections: 0. values read back from the GPU run. 788 valid tests.",
-  "llms": "Benjamini–Hochberg staircase\n\n- BH rejections: 0\n- 788 valid tests\n- achievable floor 0.01\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Benjamini–Hochberg staircase\n\n- BH rejections: 0\n- 788 valid tests\n- achievable floor 0.01\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "BH rejections",
     "value": "0"
@@ -41,9 +41,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:24.091Z",
+    "date": "2026-11-11T15:20:55.540Z",
     "runId": "run-4412ecf1",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-4412ecf1",

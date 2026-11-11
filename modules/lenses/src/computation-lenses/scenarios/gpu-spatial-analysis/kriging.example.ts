@@ -11,10 +11,12 @@ import {
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPUKriging,
-  getGPUKrigingParameterValues,
+  getGPUKrigingParameterValues
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 export type KrigingExampleInput = {
   stations: GraphDataView<'float32x2'>;

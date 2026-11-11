@@ -80,7 +80,10 @@ defineLensScenario({
               },
               ringOffsets: {view: parks.ringOffsets, role: 'intermediate'},
               bufferCount: {view: output.status.count, role: 'intermediate'},
-              bufferRequiredCount: {view: output.status.requiredCount, role: 'intermediate'},
+              bufferRequiredRingCount: {
+                view: output.status.requiredRingCount,
+                role: 'intermediate'
+              },
               bufferOverflow: {view: output.status.overflow, role: 'intermediate'},
               bufferCandidateOverflow: {
                 view: output.status.candidateOverflow,

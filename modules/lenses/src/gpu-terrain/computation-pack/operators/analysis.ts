@@ -23,6 +23,12 @@ export const TERRAIN_ANALYSIS_OPERATORS: RasterOperatorTable = {
         alternatives: ['uniform', 'web-mercator', 'geographic'],
         sweepable: false
       },
+      {
+        stage: 'neighbourhood',
+        name: 'borderMode',
+        alternatives: ['one-sided', 'clamp', 'reflect', 'constant', 'nodata'],
+        sweepable: false
+      },
       {stage: 'operator', name: 'zFactor', label: 'z factor', sweepable: true},
       {stage: 'presentation', name: 'azimuthDegrees', unit: 'deg', sweepable: true},
       {stage: 'presentation', name: 'altitudeDegrees', unit: 'deg', sweepable: true}
@@ -34,7 +40,7 @@ export const TERRAIN_ANALYSIS_OPERATORS: RasterOperatorTable = {
       id: 'gpu-terrain.terrain-derivatives.horn',
       tex: String.raw`\term{slope}{\theta} = \arctan\sqrt{p^2 + q^2},\quad p = \frac{\term{zFactor}{\zeta}\,\term{gradientX}{G_x}}{8\,\term{groundCell}{\Delta x}},\quad q = \term{northSign}{\sigma_n}\,\frac{\term{zFactor}{\zeta}\,\term{gradientY}{G_y}}{8\,\term{groundCell}{\Delta y}},\quad \term{hillshade}{H} = \max\!\left(0,\ \frac{(-p,\,-q,\,1)}{\lVert(-p,\,-q,\,1)\rVert}\cdot\hat{\ell}\right)`,
       ascii:
-        'slope = atan(sqrt(p^2 + q^2)) in degrees; p = zFactor * Gx / (8 * dx); q = northSign * zFactor * Gy / (8 * dy); Gx, Gy = 3x3 Sobel sums; aspect = atan2(-p, -q) in [0, 360) (-1 when flat); hillshade = max(0, normalize(-p, -q, 1) . light)',
+        'slope = atan(sqrt(p^2 + q^2)) in degrees; p = zFactor * Gx / (8 * dx); q = northSign * zFactor * Gy / (8 * dy); Gx, Gy = 3x3 Sobel sums; aspect = atan2(-p, -q) in [0, 360) (-1 when flat); hillshade = max(0, normalize(-p, -q, 1) . light). borderMode one-sided (the default) extends the DEM by one cell with the quadratic through the three nearest in-grid samples, so the difference across the edge is the second-order one-sided stencil (-3 f0 + 4 f1 - f2) / (2 h) and slope and aspect are exact on a plane up to the border; clamp repeats the edge sample and halves the gradient across the edge',
       derivation: 'curated',
       symbols: [
         {id: 'slope', role: 'output', label: 'θ', binding: 'wgsl:slopeValues'},

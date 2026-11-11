@@ -15,9 +15,9 @@ import {
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {
   GPUClassAssignment,
-  GPUClassificationFit,
-  GPUParameterBuffer
+  GPUClassificationFit
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-midwest-counties.json`. */
 export type ClassificationFitExampleInput = {

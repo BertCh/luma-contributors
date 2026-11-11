@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.raster-tile-reprojection: input → values. cells: 9. values read back from the GPU run. input input: 9 cells.",
   "description": "Result of gpu-raster.raster-tile-reprojection: input → values. cells: 9. values read back from the GPU run. input input: 9 cells.",
-  "llms": "Result of gpu-raster.raster-tile-reprojection: input → values\n\n- cells: 9\n- input input: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.raster-tile-reprojection: input → values\n\n- cells: 9\n- input input: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "9"
@@ -24,10 +24,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:18.037Z",
+    "date": "2026-11-11T15:20:15.795Z",
     "runId": "run-da1eb982",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

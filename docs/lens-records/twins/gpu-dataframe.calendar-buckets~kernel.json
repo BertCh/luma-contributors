@@ -4,119 +4,22 @@
   "rung": "kernel",
   "size": "full",
   "scenarioId": "gpu-dataframe.calendar-buckets",
-  "viewId": "table",
-  "disabled": {
-    "reason": "no compute node with a recorded dispatch shape and workgroup size"
-  },
-  "caption": "kernel unavailable: no compute node with a recorded dispatch shape and workgroup size. Typed tables of record gpu-dataframe.calendar-buckets. nodes: 3. values read back from the GPU run. gpu-dataframe-calendar-buckets: 3 rows.",
-  "description": "kernel unavailable: no compute node with a recorded dispatch shape and workgroup size. Typed tables of record gpu-dataframe.calendar-buckets. nodes: 3. values read back from the GPU run. gpu-dataframe-calendar-buckets: 3 rows.",
-  "llms": "Typed tables of record gpu-dataframe.calendar-buckets\n\n- nodes: 3\n- gpu-dataframe-calendar-buckets: 3 rows\n- resources: 6 rows\n- captures: 5 rows\n- decisions: 0 rows\n- choices: 2 rows\n- metrics: 0 rows\n- edges: 5 rows\n- formulas: 1 rows\n- sources: 0 rows\n- axes: 1 rows\n- key spaces: 3 rows\n- relations: 1 rows\n- kernel unavailable: no compute node with a recorded dispatch shape and workgroup size\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "viewId": "dispatch-view",
+  "caption": "Dispatch of calendar-buckets-fill-matrix. invocations: 256. structure metadata only. workgroups 1.",
+  "description": "Dispatch of calendar-buckets-fill-matrix. invocations: 256. structure metadata only. workgroups 1.",
+  "llms": "Dispatch of calendar-buckets-fill-matrix\n\n- invocations: 256\n- workgroups 1\n- lanes per workgroup 256\n- Lane grid rasterized; first 15 and pinned lane labelled\n- idle lanes 88\n- expanded workgroup 0\n- id probe not recorded\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
-    "label": "nodes",
-    "value": "3"
+    "label": "invocations",
+    "value": "256"
   },
   "figure": {
-    "html": "<section class=\"lens-table\"><div data-section=\"graph:gpu-dataframe.calendar-buckets-compiled\"><table><caption>gpu-dataframe-calendar-buckets</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">label</th><th scope=\"col\">namespace</th><th scope=\"col\">kind</th><th scope=\"col\">op</th><th scope=\"col\">reads</th><th scope=\"col\">writes</th><th scope=\"col\">loop</th><th scope=\"col\">dispatch</th><th scope=\"col\">formula</th><th scope=\"col\">source</th><th scope=\"col\">bindings</th></tr></thead><tbody><tr><td>calendar-buckets-fill-matrix</td><td>calendar-buckets-fill-matrix</td><td>—</td><td>compute</td><td>GPUCalendarBuckets</td><td>hourWeekdayCounts</td><td>hourWeekdayCounts</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>calendar-buckets-decode-0</td><td>calendar-buckets-decode-0</td><td>—</td><td>compute</td><td>GPUCalendarBuckets</td><td>timestamps, calendar-parameters, month, hour, weekday, hourWeekdayCounts</td><td>month, hour, weekday, hourWeekdayCounts</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>—</td><td>copy</td><td>—</td><td>timestamps, month, weekday, hour, hourWeekdayCounts</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table></div><div data-section=\"resources\"><table><caption>resources</caption><thead><tr><th scope=\"col\">graph</th><th scope=\"col\">id</th><th scope=\"col\">kind</th><th scope=\"col\">bytes</th><th scope=\"col\">ownership</th><th scope=\"col\">allocation</th><th scope=\"col\">firstNode</th><th scope=\"col\">lastNode</th><th scope=\"col\">retained</th></tr></thead><tbody><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>hourWeekdayCounts</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">672</td><td>imported</td><td>—</td><td>calendar-buckets-fill-matrix</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>—</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>timestamps</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">12000</td><td>imported</td><td>—</td><td>calendar-buckets-decode-0</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>—</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>calendar-parameters</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">8</td><td>imported</td><td>—</td><td>calendar-buckets-decode-0</td><td>calendar-buckets-decode-0</td><td>—</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>month</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">6000</td><td>imported</td><td>—</td><td>calendar-buckets-decode-0</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>—</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>hour</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">6000</td><td>imported</td><td>—</td><td>calendar-buckets-decode-0</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>—</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>weekday</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">6000</td><td>imported</td><td>—</td><td>calendar-buckets-decode-0</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>—</td></tr></tbody></table></div><div data-section=\"captures\"><table><caption>captures</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">name</th><th scope=\"col\">keySpace</th><th scope=\"col\">iteration</th><th scope=\"col\">elementType</th><th scope=\"col\">count</th><th scope=\"col\">min</th><th scope=\"col\">max</th><th scope=\"col\">NaN count</th><th scope=\"col\">Inf count</th><th scope=\"col\">provenance</th></tr></thead><tbody><tr><td>gpu-dataframe-calendar-buckets-snapshots-timestampWords-0</td><td>timestampWords</td><td>row</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>u32</td><td class=\"lens-table-number\" style=\"text-align: right\">3000</td><td class=\"lens-table-number\" style=\"text-align: right\">389</td><td class=\"lens-table-number\" style=\"text-align: right\">4293265376</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr><tr><td>gpu-dataframe-calendar-buckets-snapshots-month-0</td><td>month</td><td>row</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>u32</td><td class=\"lens-table-number\" style=\"text-align: right\">1500</td><td class=\"lens-table-number\" style=\"text-align: right\">1</td><td class=\"lens-table-number\" style=\"text-align: right\">12</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr><tr><td>gpu-dataframe-calendar-buckets-snapshots-weekday-0</td><td>weekday</td><td>row</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>u32</td><td class=\"lens-table-number\" style=\"text-align: right\">1500</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">6</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr><tr><td>gpu-dataframe-calendar-buckets-snapshots-hour-0</td><td>hour</td><td>row</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>u32</td><td class=\"lens-table-number\" style=\"text-align: right\">1500</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">23</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr><tr><td>gpu-dataframe-calendar-buckets-snapshots-weekdayHourCounts-0</td><td>weekdayHourCounts</td><td>weekdayHour</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>u32</td><td class=\"lens-table-number\" style=\"text-align: right\">168</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">48</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr></tbody></table></div><div data-section=\"decisions\"><table><caption>decisions</caption><thead><tr></tr></thead><tbody></tbody></table></div><div data-section=\"choices\"><table><caption>choices</caption><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">name</th><th scope=\"col\">value</th><th scope=\"col\">alternatives</th></tr></thead><tbody><tr><td>derive</td><td>utcOffsetMinutes</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>—</td></tr><tr><td>derive</td><td>firstDayOfWeek</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>0, 1, 2, 3, 4, 5, 6</td></tr></tbody></table></div><div data-section=\"metrics\"><table><caption>metrics</caption><thead><tr></tr></thead><tbody></tbody></table></div><div data-section=\"edges\"><table><caption>edges</caption><thead><tr><th scope=\"col\">graph</th><th scope=\"col\">from</th><th scope=\"col\">to</th><th scope=\"col\">kind</th><th scope=\"col\">resource</th></tr></thead><tbody><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>calendar-buckets-fill-matrix</td><td>calendar-buckets-decode-0</td><td>raw</td><td>hourWeekdayCounts</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>calendar-buckets-decode-0</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>raw</td><td>month</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>calendar-buckets-decode-0</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>raw</td><td>weekday</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>calendar-buckets-decode-0</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>raw</td><td>hour</td></tr><tr><td>gpu-dataframe.calendar-buckets-compiled</td><td>calendar-buckets-decode-0</td><td>gpu-dataframe-calendar-buckets-snapshot-tap</td><td>raw</td><td>hourWeekdayCounts</td></tr></tbody></table></div><div data-section=\"formulas\"><table><caption>formulas</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">derivation</th><th scope=\"col\">tex</th><th scope=\"col\">ascii</th><th scope=\"col\">symbols</th></tr></thead><tbody><tr><td>gpu-dataframe:GPUCalendarBuckets</td><td>curated</td><td>\\term{days}{d}=\\left\\lfloor\\frac{\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)}}{86400000}\\right\\rfloor,\\quad \\term{hour}{h}=\\left\\lfloor\\frac{(\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)})\\bmod86400000}{3600000}\\right\\rfloor,\\quad \\term{weekday}{v}=(\\term{days}{d}+3-\\term{firstDay}{f})\\bmod7,\\quad \\term{hourWeekdayCounts}{C_{24v+h}}=\\sum_{\\text{valid rows}}\\mathbf{1}[\\term{weekday}{v_{\\rm row}}=\\term{weekday}{v}\\land\\term{hour}{h_{\\rm row}}=\\term{hour}{h}]</td><td>local=t+offsetMilliseconds(t); day=floor(local/86400000); hour=floor(mod(local,86400000)/3600000); weekday=mod(day+3-firstDay,7); count[weekday*24+hour]++; transitions use upper_bound(t).</td><td>{&quot;id&quot;:&quot;days&quot;,&quot;role&quot;:&quot;intermediate&quot;,&quot;binding&quot;:&quot;wgsl:days&quot;}, {&quot;id&quot;:&quot;timestamps&quot;,&quot;role&quot;:&quot;input&quot;,&quot;binding&quot;:&quot;wgsl:timestamps&quot;}, {&quot;id&quot;:&quot;offsetMilliseconds&quot;,&quot;role&quot;:&quot;intermediate&quot;,&quot;binding&quot;:&quot;wgsl:offsetMilliseconds&quot;}, {&quot;id&quot;:&quot;hour&quot;,&quot;role&quot;:&quot;output&quot;,&quot;binding&quot;:&quot;wgsl:hour&quot;}, {&quot;id&quot;:&quot;weekday&quot;,&quot;role&quot;:&quot;output&quot;,&quot;binding&quot;:&quot;wgsl:weekday&quot;}, {&quot;id&quot;:&quot;firstDay&quot;,&quot;role&quot;:&quot;parameter&quot;,&quot;binding&quot;:&quot;wgsl:firstDay&quot;}, {&quot;id&quot;:&quot;hourWeekdayCounts&quot;,&quot;role&quot;:&quot;output&quot;,&quot;binding&quot;:&quot;wgsl:hourWeekdayCountsOut&quot;}</td></tr></tbody></table></div><div data-section=\"sources\"><table><caption>sources</caption><thead><tr></tr></thead><tbody></tbody></table></div><div data-section=\"axes\"><table><caption>axes</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">label</th><th scope=\"col\">kind</th><th scope=\"col\">keySpace</th><th scope=\"col\">size</th></tr></thead><tbody><tr><td>entity</td><td>Observation</td><td>data</td><td>row</td><td class=\"lens-table-number\" style=\"text-align: right\">1500</td></tr></tbody></table></div><div data-section=\"key-spaces\"><table><caption>key spaces</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">label</th><th scope=\"col\">size</th><th scope=\"col\">indexSpace</th></tr></thead><tbody><tr><td>row</td><td>Observation</td><td class=\"lens-table-number\" style=\"text-align: right\">1500</td><td>1d</td></tr><tr><td>invocation</td><td>Compute invocation</td><td class=\"lens-table-number\" style=\"text-align: right\">1500</td><td>1d</td></tr><tr><td>weekdayHour</td><td>Weekday and hour bucket</td><td class=\"lens-table-number\" style=\"text-align: right\">168</td><td>1d</td></tr></tbody></table></div><div data-section=\"relations\"><table><caption>relations</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">from</th><th scope=\"col\">to</th><th scope=\"col\">cardinality</th><th scope=\"col\">kind</th><th scope=\"col\">ref</th><th scope=\"col\">timeDependent</th></tr></thead><tbody><tr><td>invocation-row</td><td>invocation</td><td>row</td><td>1:1</td><td>function</td><td>{&quot;function&quot;:&quot;identity&quot;}</td><td>false</td></tr></tbody></table></div></section>",
+    "html": "<section class=\"lens-view lens-dispatch-view\"><h3>calendar-buckets-fill-matrix · 1×1×1 workgroups × 256×1×1 lanes = 256 invocations</h3><svg class=\"lens-workgroups\" viewBox=\"0 0 640 24\" role=\"img\" aria-label=\"Workgroups\"><defs><pattern id=\"lens-gpu-dataframe-calendar-buckets-kernel-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><rect x=\"1\" y=\"1\" width=\"17\" height=\"17\" data-provenance=\"metadata\" fill=\"none\" stroke=\"#181818\" stroke-width=\"3\" data-state=\"selection\" data-action=\"bind\" data-axis=\"workgroup\" data-key=\"0\"></rect></svg><h4>Workgroup 0 (default)</h4><svg class=\"lens-lanes\" viewBox=\"0 0 1280 256\" role=\"img\" aria-label=\"Lanes in expanded workgroup\"><defs><pattern id=\"lens-gpu-dataframe-calendar-buckets-kernel-lanes-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><image width=\"1280\" height=\"256\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" data-provenance=\"metadata\" data-raster-width=\"32\" data-raster-height=\"8\" data-sampling=\"nearest\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAICAMAAACvWw2dAAAABlBMVEVfZnLZ2dmiVvOOAAABE0lEQVR4AQEIAff+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBEKQAWe1Jqw0AAAAASUVORK5CYII=\"></image><g data-action=\"pick\" data-axis=\"lane\" data-key=\"0\"><text x=\"5\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">0</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"1\"><text x=\"45\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">1</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"2\"><text x=\"85\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">2</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"3\"><text x=\"125\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">3</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"4\"><text x=\"165\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">4</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"5\"><text x=\"205\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">5</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"6\"><text x=\"245\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">6</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"7\"><text x=\"285\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">7</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"8\"><text x=\"325\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">8</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"9\"><text x=\"365\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">9</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"10\"><text x=\"405\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">10</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"11\"><text x=\"445\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">11</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"12\"><text x=\"485\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">12</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"13\"><text x=\"525\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">13</text></g><g data-action=\"pick\" data-axis=\"lane\" data-key=\"14\"><text x=\"565\" y=\"21\" fill=\"currentColor\" data-provenance=\"metadata\">14</text></g></svg><p>256 lanes; first 15 and pinned lane labelled. Grey cells are idle or unavailable.</p><p>id probe not recorded; lane ids are computed from the dispatch shape · apple</p><figure class=\"lens-kernel-source\"><pre><code data-language=\"wgsl\"><span class=\"lens-source-line\" data-line=\"1\">\n</span><span class=\"lens-source-line\" data-line=\"2\">override INVOCATION_COUNT: u32;\n</span><span class=\"lens-source-line\" data-line=\"3\">override WGSL_KERNEL_DISPATCH_X: u32;\n</span><span class=\"lens-source-line\" data-line=\"4\">override WGSL_KERNEL_DISPATCH_Y: u32;\n</span><span class=\"lens-source-line\" data-line=\"5\">const fillTargetOffset: u32 = 0u;\n</span><span class=\"lens-source-line lens-source-line--binding\" data-line=\"6\">@group(0) @binding(0) var&lt;storage, read_write&gt; fillTarget: array&lt;u32&gt;;\n</span><span class=\"lens-source-line\" data-line=\"7\">\n</span><span class=\"lens-source-line\" data-line=\"8\">\n</span><span class=\"lens-source-line lens-source-line--workgroup-size\" data-line=\"9\">@compute @workgroup_size(256)\n</span><span class=\"lens-source-line lens-source-line--entry-point\" data-line=\"10\">fn main(\n</span><span class=\"lens-source-line\" data-line=\"11\">  @builtin(local_invocation_index) localInvocationIndex: u32,\n</span><span class=\"lens-source-line\" data-line=\"12\">  @builtin(workgroup_id) workgroupId: vec3&lt;u32&gt;\n</span><span class=\"lens-source-line\" data-line=\"13\">) {\n</span><span class=\"lens-source-line\" data-line=\"14\">  _ = &amp;fillTarget;\n</span><span class=\"lens-source-line\" data-line=\"15\">  _ = INVOCATION_COUNT;\n</span><span class=\"lens-source-line\" data-line=\"16\">  let workgroupIndex =\n</span><span class=\"lens-source-line\" data-line=\"17\">    (workgroupId.z * WGSL_KERNEL_DISPATCH_Y + workgroupId.y) * WGSL_KERNEL_DISPATCH_X +\n</span><span class=\"lens-source-line\" data-line=\"18\">    workgroupId.x;\n</span><span class=\"lens-source-line\" data-line=\"19\">  if (workgroupIndex &gt;= 16777216u) { return; }\n</span><span class=\"lens-source-line\" data-line=\"20\">  let index = workgroupIndex * 256u + localInvocationIndex;\n</span><span class=\"lens-source-line\" data-line=\"21\">  if (index &gt;= INVOCATION_COUNT) {\n</span><span class=\"lens-source-line\" data-line=\"22\">    return;\n</span><span class=\"lens-source-line\" data-line=\"23\">  }\n</span><span class=\"lens-source-line\" data-line=\"24\">  fillTarget[fillTargetOffset + index] = 0u;\n</span><span class=\"lens-source-line\" data-line=\"25\">}\n</span></code></pre><table><thead><tr><th>Name</th><th>Resource</th><th>Access</th><th>Element type</th></tr></thead><tbody><tr><td>fillTarget<span class=\"lens-provenance lens-provenance--metadata\" title=\"Static metadata, not an execution measurement.\">metadata</span></td><td data-action=\"bind\" data-axis=\"buffer\" data-key=\"hourWeekdayCounts\">hourWeekdayCounts</td><td>read_write</td><td>u32</td></tr></tbody></table><figcaption>GPUCalendarBuckets/fill · main · 4948f634</figcaption></figure></section>",
     "width": 640,
     "height": 0
   },
-  "receipt": {
-    "columns": [
-      "id",
-      "name",
-      "keySpace",
-      "iteration",
-      "elementType",
-      "count",
-      "min",
-      "max",
-      "NaN count",
-      "Inf count",
-      "provenance"
-    ],
-    "rows": [
-      [
-        "gpu-dataframe-calendar-buckets-snapshots-timestampWords-0",
-        "timestampWords",
-        "row",
-        "0",
-        "u32",
-        "3000",
-        "389",
-        "4293265376",
-        "0",
-        "0",
-        "GPU readback"
-      ],
-      [
-        "gpu-dataframe-calendar-buckets-snapshots-month-0",
-        "month",
-        "row",
-        "0",
-        "u32",
-        "1500",
-        "1",
-        "12",
-        "0",
-        "0",
-        "GPU readback"
-      ],
-      [
-        "gpu-dataframe-calendar-buckets-snapshots-weekday-0",
-        "weekday",
-        "row",
-        "0",
-        "u32",
-        "1500",
-        "0",
-        "6",
-        "0",
-        "0",
-        "GPU readback"
-      ],
-      [
-        "gpu-dataframe-calendar-buckets-snapshots-hour-0",
-        "hour",
-        "row",
-        "0",
-        "u32",
-        "1500",
-        "0",
-        "23",
-        "0",
-        "0",
-        "GPU readback"
-      ],
-      [
-        "gpu-dataframe-calendar-buckets-snapshots-weekdayHourCounts-0",
-        "weekdayHourCounts",
-        "weekdayHour",
-        "0",
-        "u32",
-        "168",
-        "0",
-        "48",
-        "0",
-        "0",
-        "GPU readback"
-      ]
-    ],
-    "provenance": [
-      "readback",
-      "readback",
-      "readback",
-      "readback",
-      "readback"
-    ]
-  },
-  "formula": {
-    "tex": "\\term{days}{d}=\\left\\lfloor\\frac{\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)}}{86400000}\\right\\rfloor,\\quad \\term{hour}{h}=\\left\\lfloor\\frac{(\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)})\\bmod86400000}{3600000}\\right\\rfloor,\\quad \\term{weekday}{v}=(\\term{days}{d}+3-\\term{firstDay}{f})\\bmod7,\\quad \\term{hourWeekdayCounts}{C_{24v+h}}=\\sum_{\\text{valid rows}}\\mathbf{1}[\\term{weekday}{v_{\\rm row}}=\\term{weekday}{v}\\land\\term{hour}{h_{\\rm row}}=\\term{hour}{h}]",
-    "ascii": "local=t+offsetMilliseconds(t); day=floor(local/86400000); hour=floor(mod(local,86400000)/3600000); weekday=mod(day+3-firstDay,7); count[weekday*24+hour]++; transitions use upper_bound(t).",
-    "derivation": "curated"
-  },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:15.669Z",
+    "date": "2026-11-11T15:20:10.501Z",
     "runId": "run-bad65036",
     "observerEffects": []
   },

@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.assuncao-reis-standardization: events.geometry, populations → standardizedRates.geometry. polygons: 791. values read back from the GPU run. input events.geometry: 791 polygons.",
   "description": "Result of gpu-spatial-analysis.assuncao-reis-standardization: events.geometry, populations → standardizedRates.geometry. polygons: 791. values read back from the GPU run. input events.geometry: 791 polygons.",
-  "llms": "Result of gpu-spatial-analysis.assuncao-reis-standardization: events.geometry, populations → standardizedRates.geometry\n\n- polygons: 791\n- input events.geometry: 791 polygons\n- input populations: 791 values\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 791 values, 16 shown\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.assuncao-reis-standardization: events.geometry, populations → standardizedRates.geometry\n\n- polygons: 791\n- input events.geometry: 791 polygons\n- input populations: 791 values\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 791 values, 16 shown\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "791"
@@ -44,9 +44,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:18.223Z",
+    "date": "2026-11-11T15:20:16.451Z",
     "runId": "run-f50c1fc0",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-f50c1fc0",

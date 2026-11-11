@@ -7,11 +7,11 @@ import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
-  GPUParameterBuffer,
   GPUTerrainWeissLandforms,
   getGPUTerrainWeissLandformsParameterValues,
   GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Graph, grid and caller-owned views the example wires together. */
 export type TerrainWeissLandformsExampleInput = {

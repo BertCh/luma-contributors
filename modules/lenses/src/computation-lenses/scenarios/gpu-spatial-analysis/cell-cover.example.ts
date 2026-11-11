@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUCellCover,
-  type GPUPolygonGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCellCover} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Community areas in longitude/latitude degrees and the cell column to write into. */
 export type CellCoverExampleInput = {

@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Cell c is in zone z when its zone ID is below zoneCapacity and not ignoredZone; it is valid when its calibrated value is finite and validity is nonzero. sums = valid values added in a fixed sorted tree (sumOrder sorted), means = sum / valueC…",
   "description": "Formula Cell c is in zone z when its zone ID is below zoneCapacity and not ignoredZone; it is valid when its calibrated value is finite and validity is nonzero. sums = valid values added in a fixed sorted tree (sumOrder sorted), means = sum / valueC…",
-  "llms": "Formula Cell c is in zone z when its zone ID is below zoneCapacity and not ignoredZone; it is valid when its calibrated value is finite and validity is nonzero. sums = valid values added in a fixed sorted tree (sumOrder sorted), means = sum / valueCount, minimums/maximums over valid cells; a zone with no valid cell gives sum 0 and NaN mean, minimum and maximum; cellCounts counts every in-zone cell. Uniform cell weights (projected grid).\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Cell c is in zone z when its zone ID is below zoneCapacity and not ignoredZone; it is valid when its calibrated value is finite and validity is nonzero. sums = valid values added in a fixed sorted tree (sumOrder sorted), means = sum / valueCount, minimums/maximums over valid cells; a zone with no valid cell gives sum 0 and NaN mean, minimum and maximum; cellCounts counts every in-zone cell. Uniform cell weights (projected grid).\n\n- bound symbols: 5/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-zonal-statistics.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{mean}{\\bar v_z}=\\frac{\\term{sum}{\\sum_{c:\\,\\mathrm{zone}(c)=z,\\ \\mathrm{valid}} v_c}}{\\term{count}{n_z}},\\quad \\term{minimum}{v_z^{\\min}}=\\min_{c\\in z,\\ \\mathrm{valid}} v_c,\\quad \\term{maximum}{v_z^{\\max}}=\\max_{c\\in z,\\ \\mathrm{valid}} v_c</pre><p class=\"lens-ascii\">Cell c is in zone z when its zone ID is below zoneCapacity and not ignoredZone; it is valid when its calibrated value is finite and validity is nonzero. sums = valid values added in a fixed sorted tree (sumOrder sorted), means = sum / valueCount, minimums/maximums over valid cells; a zone with no valid cell gives sum 0 and NaN mean, minimum and maximum; cellCounts counts every in-zone cell. Uniform cell weights (projected grid).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mean\">mean · output · unknown — wgsl means not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sum\">sum · intermediate · unknown — wgsl sums not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">valid count · intermediate · unknown — wgsl valueCounts not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"minimum\">minimum · output · unknown — wgsl minimums not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"maximum\">maximum · output · unknown — wgsl maximums not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-zonal-statistics.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{mean}{\\bar v_z}=\\frac{\\term{sum}{\\sum_{c:\\,\\mathrm{zone}(c)=z,\\ \\mathrm{valid}} v_c}}{\\term{count}{n_z}},\\quad \\term{minimum}{v_z^{\\min}}=\\min_{c\\in z,\\ \\mathrm{valid}} v_c,\\quad \\term{maximum}{v_z^{\\max}}=\\max_{c\\in z,\\ \\mathrm{valid}} v_c</pre><p class=\"lens-ascii\">Cell c is in zone z when its zone ID is below zoneCapacity and not ignoredZone; it is valid when its calibrated value is finite and validity is nonzero. sums = valid values added in a fixed sorted tree (sumOrder sorted), means = sum / valueCount, minimums/maximums over valid cells; a zone with no valid cell gives sum 0 and NaN mean, minimum and maximum; cellCounts counts every in-zone cell. Uniform cell weights (projected grid).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-zonal-statistics-compiled:raster-zonal-statistics-means\" data-value=\"mean\">mean · output · means</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-zonal-statistics-compiled:raster-zonal-statistics-means\" data-value=\"sum\">sum · intermediate · sums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-zonal-statistics-compiled:raster-zonal-statistics-zone-reduce-init\" data-value=\"count\">valid count · intermediate · valueCounts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-zonal-statistics-compiled:raster-zonal-statistics-zone-reduce-init\" data-value=\"minimum\">minimum · output · minimums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-zonal-statistics-compiled:raster-zonal-statistics-zone-reduce-init\" data-value=\"maximum\">maximum · output · maximums</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "mean",
         "output",
-        "unknown",
+        "means",
         "—",
         "metadata"
       ],
       [
         "sum",
         "intermediate",
-        "unknown",
+        "sums",
         "—",
         "metadata"
       ],
       [
         "valid count",
         "intermediate",
-        "unknown",
+        "valueCounts",
         "—",
         "metadata"
       ],
       [
         "minimum",
         "output",
-        "unknown",
+        "minimums",
         "—",
         "metadata"
       ],
       [
         "maximum",
         "output",
-        "unknown",
+        "maximums",
         "—",
         "metadata"
       ]
@@ -77,10 +77,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:18.059Z",
+    "date": "2026-11-11T15:20:15.878Z",
     "runId": "run-27f4ff10",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

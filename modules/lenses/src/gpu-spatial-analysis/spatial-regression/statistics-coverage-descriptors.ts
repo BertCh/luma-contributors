@@ -231,7 +231,7 @@ export const STATISTICS_COVERAGE_OPERATORS: SpatialFamilyOperators = {
     formula: {
       formula: 'none',
       reason:
-        'Seeded block assignment and exact pair-distance exclusions produce distinct test/training masks with empty-fold status.'
+        'Seeded block assignment (each block ranked by a Philox key, fold = rank modulo foldCount, so folds differ by at most one block and none is empty when blocks >= folds) and exact pair-distance exclusions produce distinct test/training masks with empty-fold status.'
     },
     metadata: {
       backlog: 'ST10',

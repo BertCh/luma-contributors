@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of Chicago tract 300. poverty150PctTValue: 6.391848087310791. values read back from the GPU run. result: 7 quantities.",
   "description": "Receipt of Chicago tract 300. poverty150PctTValue: 6.391848087310791. values read back from the GPU run. result: 7 quantities.",
-  "llms": "Receipt of Chicago tract 300\n\n- poverty150PctTValue: 6.391848087310791\n- result: 7 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of Chicago tract 300\n\n- poverty150PctTValue: 6.391848087310791\n- result: 7 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "poverty150PctTValue",
     "value": "6.391848087310791"
@@ -120,9 +120,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:21.671Z",
+    "date": "2026-11-11T15:20:42.863Z",
     "runId": "run-93183832",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-93183832",

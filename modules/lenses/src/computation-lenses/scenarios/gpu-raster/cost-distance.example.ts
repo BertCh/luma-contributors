@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUCostDistance,
   GPU_COST_DISTANCE_PARAMETER_LENGTH,

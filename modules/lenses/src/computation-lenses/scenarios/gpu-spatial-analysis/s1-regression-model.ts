@@ -13,9 +13,8 @@ import {
   type GPUCommandGraphEncodeOptions,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createGPULocalFrame, createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import type {SpatialOperatorEntry} from '../../../gpu-spatial-analysis/computation-pack/types';
-import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import {LensCommandGraph} from '../../lens-view-snapshot';
 import {loadChicagoTracts, type ChicagoTracts} from './spatial-lens-data';
 import {

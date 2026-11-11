@@ -10,11 +10,13 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPURandomPointsOnLine,
+  getGPUDotDensityParameterValues
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
-  getGPUDotDensityParameterValues,
   type GPULineGeometryFields,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 export type RandomPointsOnLineExampleInput = {
   geometry: GPULineGeometryFields;

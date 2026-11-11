@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard devi…",
   "description": "Formula z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard devi…",
-  "llms": "Formula z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard deviation of the n analysis rows. Row-standardized weights are re-divided by what remains of the row sum. With selfWeight = 0 (Gi) the mean and variance of the n-1 other rows replace X and S^2. NaN when n < 2, S = 0, n S1_i <= W_i^2 or fewer than minimumNeighbors neighbors. Two-sided normal p-value; bins use p (or the adjusted p) at 0.10, 0.05, 0.01.\n\n- bound symbols: 0/9\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard deviation of the n analysis rows. Row-standardized weights are re-divided by what remains of the row sum. With selfWeight = 0 (Gi) the mean and variance of the n-1 other rows replace X and S^2. NaN when n < 2, S = 0, n S1_i <= W_i^2 or fewer than minimumNeighbors neighbors. Two-sided normal p-value; bins use p (or the adjusted p) at 0.10, 0.05, 0.01.\n\n- bound symbols: 9/9\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/9"
+    "value": "9/9"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>hot-spot-gi-star</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{zScores}{z_i}&amp;=\\frac{\\term{weightedSum}{\\sum_j w_{ij}c_j}}{\\sqrt{\\term{variance}{S^2}}\\sqrt{\\term{spread}{\\Delta_i}}},\n&amp;\\term{spread}{\\Delta_i}&amp;=\\frac{\\term{count}{n}\\,\\term{squareSum}{S_{1i}}-\\term{weightSum}{W_i}^2}{\\term{count}{n}-1}\\\\\n\\term{weightSum}{W_i}&amp;=\\sum_j w_{ij}+\\term{selfWeight}{w_{ii}},\n&amp;\\term{squareSum}{S_{1i}}&amp;=\\sum_j w_{ij}^2+\\term{selfWeight}{w_{ii}}^2\\\\\n\\term{centered}{c_j}&amp;=x_j-\\bar{x},\n&amp;\\term{weightedSum}{\\sum_j w_{ij}c_j}&amp;=\\sum_{j\\ne i}w_{ij}c_j+\\term{selfWeight}{w_{ii}}c_i\n\\end{aligned}</pre><p class=\"lens-ascii\">z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard deviation of the n analysis rows. Row-standardized weights are re-divided by what remains of the row sum. With selfWeight = 0 (Gi) the mean and variance of the n-1 other rows replace X and S^2. NaN when n &lt; 2, S = 0, n S1_i &lt;= W_i^2 or fewer than minimumNeighbors neighbors. Two-sided normal p-value; bins use p (or the adjusted p) at 0.10, 0.05, 0.01.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"zScores\">zScores · output · unknown — wgsl zScores not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weightedSum\">weightedSum · intermediate · unknown — wgsl weightedSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"variance\">variance · intermediate · unknown — wgsl variance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"spread\">spread · intermediate · unknown — wgsl spread not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">analysis rows · intermediate · unknown — wgsl count not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"squareSum\">squareSum · intermediate · unknown — wgsl squareSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weightSum\">weightSum · intermediate · unknown — wgsl weightSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"selfWeight\">selfWeight · parameter · unknown — wgsl SELF_WEIGHT not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"centered\">centered · intermediate · unknown — wgsl centered not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>hot-spot-gi-star</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{zScores}{z_i}&amp;=\\frac{\\term{weightedSum}{\\sum_j w_{ij}c_j}}{\\sqrt{\\term{variance}{S^2}}\\sqrt{\\term{spread}{\\Delta_i}}},\n&amp;\\term{spread}{\\Delta_i}&amp;=\\frac{\\term{count}{n}\\,\\term{squareSum}{S_{1i}}-\\term{weightSum}{W_i}^2}{\\term{count}{n}-1}\\\\\n\\term{weightSum}{W_i}&amp;=\\sum_j w_{ij}+\\term{selfWeight}{w_{ii}},\n&amp;\\term{squareSum}{S_{1i}}&amp;=\\sum_j w_{ij}^2+\\term{selfWeight}{w_{ii}}^2\\\\\n\\term{centered}{c_j}&amp;=x_j-\\bar{x},\n&amp;\\term{weightedSum}{\\sum_j w_{ij}c_j}&amp;=\\sum_{j\\ne i}w_{ij}c_j+\\term{selfWeight}{w_{ii}}c_i\n\\end{aligned}</pre><p class=\"lens-ascii\">z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard deviation of the n analysis rows. Row-standardized weights are re-divided by what remains of the row sum. With selfWeight = 0 (Gi) the mean and variance of the n-1 other rows replace X and S^2. NaN when n &lt; 2, S = 0, n S1_i &lt;= W_i^2 or fewer than minimumNeighbors neighbors. Two-sided normal p-value; bins use p (or the adjusted p) at 0.10, 0.05, 0.01.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"zScores\">zScores · output · zScores</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"weightedSum\">weightedSum · intermediate · weightedSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-moments-variance\" data-value=\"variance\">variance · intermediate · variance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"spread\">spread · intermediate · spread</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:contiguity-weights-pair-counts\" data-value=\"count\">analysis rows · intermediate · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"squareSum\">squareSum · intermediate · squareSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"weightSum\">weightSum · intermediate · weightSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"selfWeight\">selfWeight · parameter · SELF_WEIGHT</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-center\" data-value=\"centered\">centered · intermediate · centered</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,63 +29,63 @@
       [
         "zScores",
         "output",
-        "unknown",
+        "zScores",
         "—",
         "metadata"
       ],
       [
         "weightedSum",
         "intermediate",
-        "unknown",
+        "weightedSum",
         "—",
         "metadata"
       ],
       [
         "variance",
         "intermediate",
-        "unknown",
+        "variance",
         "—",
         "metadata"
       ],
       [
         "spread",
         "intermediate",
-        "unknown",
+        "spread",
         "—",
         "metadata"
       ],
       [
         "analysis rows",
         "intermediate",
-        "unknown",
+        "count",
         "—",
         "metadata"
       ],
       [
         "squareSum",
         "intermediate",
-        "unknown",
+        "squareSum",
         "—",
         "metadata"
       ],
       [
         "weightSum",
         "intermediate",
-        "unknown",
+        "weightSum",
         "—",
         "metadata"
       ],
       [
         "selfWeight",
         "parameter",
-        "unknown",
+        "SELF_WEIGHT",
         "—",
         "metadata"
       ],
       [
         "centered",
         "intermediate",
-        "unknown",
+        "centered",
         "—",
         "metadata"
       ]
@@ -129,9 +129,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:22.517Z",
+    "date": "2026-11-11T15:20:47.573Z",
     "runId": "run-991e472d",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-991e472d",

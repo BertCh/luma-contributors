@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of grid cells 2930. pathMask2: 0. values read back from the GPU run. result: 8 quantities.",
   "description": "Receipt of grid cells 2930. pathMask2: 0. values read back from the GPU run. result: 8 quantities.",
-  "llms": "Receipt of grid cells 2930\n\n- pathMask2: 0\n- result: 8 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of grid cells 2930\n\n- pathMask2: 0\n- result: 8 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "pathMask2",
     "value": "0"
@@ -109,10 +109,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.425Z",
+    "date": "2026-11-11T15:20:13.534Z",
     "runId": "run-fbd65c88",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

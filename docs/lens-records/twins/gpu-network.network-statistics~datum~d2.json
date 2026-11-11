@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of out-degree bin 2. outDegreeHistogram: 527. values read back from the GPU run. summary: 1 quantities.",
   "description": "Receipt of out-degree bin 2. outDegreeHistogram: 527. values read back from the GPU run. summary: 1 quantities.",
-  "llms": "Receipt of out-degree bin 2\n\n- outDegreeHistogram: 527\n- summary: 1 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients summary retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of out-degree bin 2\n\n- outDegreeHistogram: 527\n- summary: 1 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients summary retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "outDegreeHistogram",
     "value": "527"
@@ -41,10 +41,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.234Z",
+    "date": "2026-11-11T15:20:13.174Z",
     "runId": "run-db13c3c5",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients summary retained instead of aliased"
     ]

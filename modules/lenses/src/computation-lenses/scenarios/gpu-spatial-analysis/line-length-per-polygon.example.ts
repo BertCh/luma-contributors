@@ -4,11 +4,11 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPULineLengthPerPolygon} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  GPULineLengthPerPolygon,
   type GPULineGeometryFields,
   type GPUPolygonGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Roads and community areas uploaded by the lens scenario, in UTM 16N metres (planar). */
 export type LineLengthPerPolygonExampleInput = {

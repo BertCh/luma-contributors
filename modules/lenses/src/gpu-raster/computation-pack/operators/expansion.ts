@@ -13,7 +13,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
       values: 'elevation',
       validity: 'category',
       filled: 'category',
-      unresolvedCount: 'measure'
+      invalidCount: 'measure'
     },
     stages: ['representation', 'operator'],
     datumKinds: [{kind: 'cell', label: 'grid cell', indexSpace: '2d'}],
@@ -124,7 +124,7 @@ export const RASTER_EXPANSION_OPERATORS: RasterOperatorTable = {
       derivation: 'curated',
       tex: String.raw`R_{t+1}(c)=\min(M(c),\max_{d\in N(c)}R_t(d))`,
       ascii:
-        'Geodesic dilation iterates min(mask, neighborhood maximum) until a verified fixed point; erosion is the dual.',
+        'Geodesic dilation iterates min(mask, neighborhood maximum) until a verified fixed point; erosion is the dual. N(c) is c and its 8 neighbours by default (connectivity 8, so regions touching at a corner are connected); connectivity 4 uses the 4 edge neighbours.',
       symbols: []
     },
     sources: ['modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts']

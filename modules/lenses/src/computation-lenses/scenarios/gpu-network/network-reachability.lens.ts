@@ -6,7 +6,6 @@ import {assert, type Device, type Buffer} from '@luma.gl/core';
 import {
   createGPUComputationCaptures,
   describeGPUCommandGraph,
-  createGPUComputationMetrics,
   type GPUComputationCapture,
   type GPUComputationRecordWithSidecars
 } from '@luma-contributors/analysis/computation-record';
@@ -28,8 +27,10 @@ import {
 import {assertValidLensSidecars} from '../../validate-lens-record';
 import {
   addLensViewSnapshot,
+  LENS_RECORD_SOURCE_TEXT,
+  readLensRunMetrics,
   readLensViewSnapshot,
-  submitLensGraph,
+  submitTimedLensGraph,
   type LensViewSnapshot
 } from '../../lens-view-snapshot';
 
@@ -110,7 +111,11 @@ async function buildScenario(device: Device, chained: boolean, structureOnly: bo
       }
     });
     compiled = example.compiled;
-    const description = describeGPUCommandGraph(compiled, {domain: 'gpu-network'});
+    const description = describeGPUCommandGraph(compiled, {
+      domain: 'gpu-network',
+      graph,
+      sourceText: LENS_RECORD_SOURCE_TEXT
+    });
     const localIterations = example.reachability.localIterations;
     const record = assembleNetworkLensRecord(device, {
       id: scenarioId,
@@ -207,7 +212,16 @@ export async function runReachabilityScenario(
   const built = await buildScenario(device, chained, false);
   const {compiled, record, data} = built;
   try {
-    submitLensGraph(device, compiled, {parameters: undefined, coalesceComputePasses: false});
+    const submission = submitTimedLensGraph(device, compiled, {
+      parameters: undefined,
+      coalesceComputePasses: false
+    });
+    const timedMetrics = await readLensRunMetrics(submission, {
+      runId: record.runId,
+      graphId: record.graphs[0].id,
+      taps: 1,
+      retained
+    });
     const captured = await readLensViewSnapshot(built.snapshot, {graphId: record.graphs[0].id});
     options?.signal?.throwIfAborted();
     const final = (name: string) => getNetworkFinalCapture(captured, name);
@@ -255,11 +269,8 @@ export async function runReachabilityScenario(
       stamps: [stamp]
     });
     const metrics = [
-      createGPUComputationMetrics({
-        runId: record.runId,
-        graph: record.graphs[0].id,
-        timing: {nodes: []},
-        encoding: {coalesced: false, timestamped: false, taps: 1, lensTwin: true, retained},
+      {
+        ...timedMetrics,
         series: [
           {
             name: 'frontier-size',
@@ -268,7 +279,7 @@ export async function runReachabilityScenario(
             values: Array.from(final('control').values).slice(4, 5 + iterationCount)
           }
         ]
-      })
+      }
     ];
     const result = {...record, captures, metrics};
     assertValidLensSidecars(record, result);

@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.network-line-graph: no recorded inputs → legalTurns. nodes: 2,810. values read back from the GPU run. Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.",
   "description": "Result of gpu-network.network-line-graph: no recorded inputs → legalTurns. nodes: 2,810. values read back from the GPU run. Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.",
-  "llms": "Result of gpu-network.network-line-graph: no recorded inputs → legalTurns\n\n- nodes: 2,810\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 2810 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 5635 edges; stride decimation for the figure budget\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients lineOffsets, lineNeighbors, lineWeights, arcCount, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.network-line-graph: no recorded inputs → legalTurns\n\n- nodes: 2,810\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 2810 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 5635 edges; stride decimation for the figure budget\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients lineOffsets, lineNeighbors, lineWeights, arcCount, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "2,810"
@@ -24,10 +24,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.012Z",
+    "date": "2026-11-11T15:20:12.768Z",
     "runId": "run-fa808e9b",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients lineOffsets, lineNeighbors, lineWeights, arcCount, overflow retained instead of aliased"
     ]

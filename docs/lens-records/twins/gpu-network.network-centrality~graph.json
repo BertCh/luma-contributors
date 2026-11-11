@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-network.network-centrality. nodes: 40. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of gpu-network.network-centrality. nodes: 40. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-network.network-centrality\n\n- nodes: 40\n- 24 visible units vs budget 24\n- 32 hidden nodes\n- Edges by kind: raw 204, war 31\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients closeness, reachedCounts, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-network.network-centrality\n\n- nodes: 40\n- 24 visible units vs budget 24\n- 32 hidden nodes\n- Edges by kind: raw 204, war 31\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients closeness, reachedCounts, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "40"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.803Z",
+    "date": "2026-11-11T15:20:12.439Z",
     "runId": "run-8742290b",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients closeness, reachedCounts, converged retained instead of aliased"
     ]

@@ -6,10 +6,10 @@ import {Buffer} from '@luma.gl/core';
 import {createTransientView, GPUHistogram, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUSpatialPredicateJoin,
-  type GPUSpatialContext,
   type GPUSpatialPredicateJoinProps,
   type GPUPointInPolygonJoinProps
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded inputs and caller-owned outputs for this recorded example. */
 export type SpatialPredicateJoinExampleInput = {

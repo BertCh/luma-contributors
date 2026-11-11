@@ -7,7 +7,7 @@
   "viewId": "formula-card",
   "caption": "Formula Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area…",
   "description": "Formula Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area…",
-  "llms": "Formula Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area pixels). Equal heights count as high; flat or invalid-corner cells emit nothing; saddle pairing uses the asymptotic determinant with high-diagonal tie; counts clamp to capacity and overflow reports truncation.\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Each crossed edge uses u=clamp((level-first)/(second-first),0,1); if differences overflow, divide all heights by max(1,abs(level),abs(first),abs(second)); zero scaled denominator gives u=0.5. Positions are local pixel centers (+0.5 for area pixels). Equal heights count as high; flat or invalid-corner cells emit nothing; saddle pairing uses the asymptotic determinant with high-diagonal tie; counts clamp to capacity and overflow reports truncation.\n\n- bound symbols: 0/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
     "value": "0/5"
@@ -77,10 +77,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.973Z",
+    "date": "2026-11-11T15:21:34.326Z",
     "runId": "run-74962407",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

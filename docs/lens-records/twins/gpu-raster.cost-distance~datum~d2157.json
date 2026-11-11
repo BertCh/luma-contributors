@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of grid cells 2157. costSettledAt: 2. values read back from the GPU run. result: 5 quantities.",
   "description": "Receipt of grid cells 2157. costSettledAt: 2. values read back from the GPU run. result: 5 quantities.",
-  "llms": "Receipt of grid cells 2157\n\n- costSettledAt: 2\n- result: 5 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of grid cells 2157\n\n- costSettledAt: 2\n- result: 5 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "costSettledAt",
     "value": "2"
@@ -95,10 +95,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.372Z",
+    "date": "2026-11-11T15:20:13.465Z",
     "runId": "run-4f52233e",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

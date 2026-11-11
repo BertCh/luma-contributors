@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of facility 0. weightRowCounts: 823. values read back from the GPU run. result: 2 quantities.",
   "description": "Receipt of facility 0. weightRowCounts: 823. values read back from the GPU run. result: 2 quantities.",
-  "llms": "Receipt of facility 0\n\n- weightRowCounts: 823\n- result: 2 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of facility 0\n\n- weightRowCounts: 823\n- result: 2 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "weightRowCounts",
     "value": "823"
@@ -49,10 +49,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.883Z",
+    "date": "2026-11-11T15:20:12.541Z",
     "runId": "run-dad1a381",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased"
     ]

@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Bonferroni: min(1, m p). Holm: min(1, max_{l<=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l>=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]);…",
   "description": "Formula Bonferroni: min(1, m p). Holm: min(1, max_{l<=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l>=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]);…",
-  "llms": "Formula Bonferroni: min(1, m p). Holm: min(1, max_{l<=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l>=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]); the family size is m = max(tested rows, minimumFamilySize). A row is significant at level alpha exactly when its adjusted p-value is <= alpha; ties get identical adjusted values; untested rows are NaN. Equal to statsmodels multipletests.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Bonferroni: min(1, m p). Holm: min(1, max_{l<=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l>=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]); the family size is m = max(tested rows, minimumFamilySize). A row is significant at level alpha exactly when its adjusted p-value is <= alpha; ties get identical adjusted values; untested rows are NaN. Equal to statsmodels multipletests.\n\n- bound symbols: 5/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>multiple-testing-adjustment</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{adjusted}{\\tilde{p}_{(k)}}&amp;=\\min\\Bigl(1,\\;\\min_{l\\ge k}\\;\\term{stepValue}{\\frac{p_{(l)}\\,m\\,c}{l}}\\Bigr),\n&amp;c&amp;=\\begin{cases}1&amp;\\text{Benjamini-Hochberg}\\\\\\term{scale}{\\textstyle\\sum_{i=1}^{m}1/i}&amp;\\text{Benjamini-Yekutieli}\\end{cases}\\\\\n\\term{adjusted}{\\tilde{p}_{(k)}}&amp;=\\min\\Bigl(1,\\;\\max_{l\\le k}\\,(\\term{family}{m}-l+1)\\,p_{(l)}\\Bigr),\n&amp;\\term{adjusted}{\\tilde{p}}&amp;=\\min(1,\\;\\term{family}{m}\\,\\term{pValues}{p})\n\\end{aligned}</pre><p class=\"lens-ascii\">Bonferroni: min(1, m p). Holm: min(1, max_{l&lt;=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l&gt;=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]); the family size is m = max(tested rows, minimumFamilySize). A row is significant at level alpha exactly when its adjusted p-value is &lt;= alpha; ties get identical adjusted values; untested rows are NaN. Equal to statsmodels multipletests.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"adjusted\">adjusted · output · unknown — wgsl adjusted not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"stepValue\">stepValue · intermediate · unknown — wgsl getStepValue not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"scale\">c(m) · intermediate · unknown — wgsl familyScale not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"family\">family size m · intermediate · unknown — wgsl family not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pValues\">pValues · input · unknown — wgsl pValues not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>multiple-testing-adjustment</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{adjusted}{\\tilde{p}_{(k)}}&amp;=\\min\\Bigl(1,\\;\\min_{l\\ge k}\\;\\term{stepValue}{\\frac{p_{(l)}\\,m\\,c}{l}}\\Bigr),\n&amp;c&amp;=\\begin{cases}1&amp;\\text{Benjamini-Hochberg}\\\\\\term{scale}{\\textstyle\\sum_{i=1}^{m}1/i}&amp;\\text{Benjamini-Yekutieli}\\end{cases}\\\\\n\\term{adjusted}{\\tilde{p}_{(k)}}&amp;=\\min\\Bigl(1,\\;\\max_{l\\le k}\\,(\\term{family}{m}-l+1)\\,p_{(l)}\\Bigr),\n&amp;\\term{adjusted}{\\tilde{p}}&amp;=\\min(1,\\;\\term{family}{m}\\,\\term{pValues}{p})\n\\end{aligned}</pre><p class=\"lens-ascii\">Bonferroni: min(1, m p). Holm: min(1, max_{l&lt;=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l&gt;=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]); the family size is m = max(tested rows, minimumFamilySize). A row is significant at level alpha exactly when its adjusted p-value is &lt;= alpha; ties get identical adjusted values; untested rows are NaN. Equal to statsmodels multipletests.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:multiple-testing-adjustment-scatter\" data-value=\"adjusted\">adjusted · output · adjusted</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:multiple-testing-adjustment-block-scan\" data-value=\"stepValue\">stepValue · intermediate · getStepValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:multiple-testing-adjustment-family\" data-value=\"scale\">c(m) · intermediate · familyScale</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:multiple-testing-adjustment-family\" data-value=\"family\">family size m · intermediate · family</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:hot-spot-analysis-neighbors\" data-value=\"pValues\">pValues · input · pValues</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "adjusted",
         "output",
-        "unknown",
+        "adjusted",
         "—",
         "metadata"
       ],
       [
         "stepValue",
         "intermediate",
-        "unknown",
+        "getStepValue",
         "—",
         "metadata"
       ],
       [
         "c(m)",
         "intermediate",
-        "unknown",
+        "familyScale",
         "—",
         "metadata"
       ],
       [
         "family size m",
         "intermediate",
-        "unknown",
+        "family",
         "—",
         "metadata"
       ],
       [
         "pValues",
         "input",
-        "unknown",
+        "pValues",
         "—",
         "metadata"
       ]
@@ -88,9 +88,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:24.777Z",
+    "date": "2026-11-11T15:20:59.689Z",
     "runId": "run-9e0af673",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-9e0af673",

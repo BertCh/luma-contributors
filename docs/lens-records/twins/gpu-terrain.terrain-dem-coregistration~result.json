@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume. values: 3. values read back from the GPU run. input reference: 9 cells.",
   "description": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume. values: 3. values read back from the GPU run. input reference: 9 cells.",
-  "llms": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume\n\n- values: 3\n- input reference: 9 cells\n- input moving: 9 cells\n- input stableMask: 9 cells\n- input differenceVariance: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-dem-coregistration: reference, moving, stableMask, differenceVariance → volume\n\n- values: 3\n- input reference: 9 cells\n- input moving: 9 cells\n- input stableMask: 9 cells\n- input differenceVariance: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "values",
     "value": "3"
@@ -24,16 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.044Z",
-    "runId": "run-02f408f5",
+    "date": "2026-11-11T15:21:34.578Z",
+    "runId": "run-c7c09bd6",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
   },
   "state": {
-    "runId": "run-02f408f5",
+    "runId": "run-c7c09bd6",
     "rung": "result",
     "bindings": {},
     "clauses": [],

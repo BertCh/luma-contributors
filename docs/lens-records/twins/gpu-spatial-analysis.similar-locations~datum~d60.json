@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of Chicago tract 60. ranks: 8. values read back from the GPU run. result: 3 quantities.",
   "description": "Receipt of Chicago tract 60. ranks: 8. values read back from the GPU run. result: 3 quantities.",
-  "llms": "Receipt of Chicago tract 60\n\n- ranks: 8\n- result: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of Chicago tract 60\n\n- ranks: 8\n- result: 3 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "ranks",
     "value": "8"
@@ -57,9 +57,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:27.358Z",
+    "date": "2026-11-11T15:21:19.115Z",
     "runId": "run-730d2709",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-730d2709",

@@ -26,6 +26,7 @@ import {
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   addLensViewSnapshot,
+  LENS_RECORD_SOURCE_TEXT,
   LensCommandGraph,
   readLensViewSnapshot,
   submitLensGraph
@@ -192,7 +193,12 @@ export async function capturePairStatisticsViews(
   });
   const compiled = graph.compile();
   try {
-    const description = describeGPUCommandGraph(compiled, {graphId, domain: 'gpu-dataframe'});
+    const description = describeGPUCommandGraph(compiled, {
+      graphId,
+      domain: 'gpu-dataframe',
+      graph,
+      sourceText: LENS_RECORD_SOURCE_TEXT
+    });
     submitLensGraph(device, compiled, {parameters: undefined});
     const readback = await readLensViewSnapshot(snapshot, {graphId});
     const captures = readback.map(capture => {

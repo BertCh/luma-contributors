@@ -7,11 +7,11 @@ import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
-  GPUParameterBuffer,
   GPUPointHorizonProfile,
   GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH,
   getGPUPointHorizonProfileParameterValues
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Graph, grid and caller-owned views used by this example. */
 export type PointHorizonProfileExampleInput = {

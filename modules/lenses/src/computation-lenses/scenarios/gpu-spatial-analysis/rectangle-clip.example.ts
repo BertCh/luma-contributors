@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPURectangleClip,
-  type GPULineGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPURectangleClip} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Roads in UTM 16N metres (planar), the clip rectangle and the output capacities. */
 export type RectangleClipExampleInput = {
@@ -42,7 +40,7 @@ export async function runExample(
     status: {
       count: createTransientView(graph, 'count', 'uint32', 1, usage),
       overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage),
-      lineCount: createTransientView(graph, 'lineCount', 'uint32', 1, usage)
+      vertexCount: createTransientView(graph, 'vertexCount', 'uint32', 1, usage)
     }
   };
   graph.add(new GPURectangleClip({...roads, geometryType: 'lines', parameters, output}));

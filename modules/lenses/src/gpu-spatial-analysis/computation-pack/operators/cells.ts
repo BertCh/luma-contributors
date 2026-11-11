@@ -309,7 +309,7 @@ export const CELLS_OPERATORS: SpatialFamilyOperators = {
       sphere: 'WGS84 authalic',
       exactness: 'float32',
       fallbackAccuracy:
-        'Pentagon and face-crossing boundary-vector measures are unreliable beyond resolution 5.'
+        'Pentagon and face-crossing cells use f32 boundary unit vectors: relative error at most 5e-4 up to resolution 8 and 2e-2 at resolutions 9 and 10 (areas 1.5e-4 at 8, 5e-3 at 9 and 10); unreliable beyond resolution 10.'
     }
   },
   GPUCellCover: {

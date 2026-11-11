@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.track-quality-recipe: positions, timestamps, trackOffsets, thresholds → flaggedCounts. rows: 1. values read back from the GPU run. input positions: 4 points.",
   "description": "Result of gpu-network.track-quality-recipe: positions, timestamps, trackOffsets, thresholds → flaggedCounts. rows: 1. values read back from the GPU run. input positions: 4 points.",
-  "llms": "Result of gpu-network.track-quality-recipe: positions, timestamps, trackOffsets, thresholds → flaggedCounts\n\n- rows: 1\n- input positions: 4 points\n- input timestamps: 4 rows\n- input trackOffsets: 2 rows\n- input thresholds: 2 rows\n- Planar coordinates (unit unknown); uniform scale.\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients track-quality-recipe-speeds, track-quality-recipe-lengths, track-quality-recipe-durations, track-quality-recipe-maximum-speeds, track-quality-recipe-flags, track-quality-recipe-flagged-counts retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.track-quality-recipe: positions, timestamps, trackOffsets, thresholds → flaggedCounts\n\n- rows: 1\n- input positions: 4 points\n- input timestamps: 4 rows\n- input trackOffsets: 2 rows\n- input thresholds: 2 rows\n- Planar coordinates (unit unknown); uniform scale.\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients track-quality-recipe-speeds, track-quality-recipe-lengths, track-quality-recipe-durations, track-quality-recipe-maximum-speeds, track-quality-recipe-flags, track-quality-recipe-flagged-counts retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "1"
@@ -24,10 +24,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.269Z",
+    "date": "2026-11-11T15:20:13.237Z",
     "runId": "run-eaa7e5cc",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients track-quality-recipe-speeds, track-quality-recipe-lengths, track-quality-recipe-durations, track-quality-recipe-maximum-speeds, track-quality-recipe-flags, track-quality-recipe-flagged-counts retained instead of aliased"
     ]

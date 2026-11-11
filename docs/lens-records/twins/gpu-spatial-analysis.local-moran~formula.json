@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula I_i = (n-1) c_i L_i / M2; L_i = sum_j w_ij c_j; z_i = sign(c_i) (L_i - W_i mu) / sqrt(V_i); V_i = sigma^2 (N S1_i - W_i^2)/(N-1); N = n-1; mu = -c_i/N; sigma^2 = (M2-c_i^2)/N-mu^2; W_i = sum_j w_ij; S1_i = sum_j w_ij^2. c = x - mean; M2 = su…",
   "description": "Formula I_i = (n-1) c_i L_i / M2; L_i = sum_j w_ij c_j; z_i = sign(c_i) (L_i - W_i mu) / sqrt(V_i); V_i = sigma^2 (N S1_i - W_i^2)/(N-1); N = n-1; mu = -c_i/N; sigma^2 = (M2-c_i^2)/N-mu^2; W_i = sum_j w_ij; S1_i = sum_j w_ij^2. c = x - mean; M2 = su…",
-  "llms": "Formula I_i = (n-1) c_i L_i / M2; L_i = sum_j w_ij c_j; z_i = sign(c_i) (L_i - W_i mu) / sqrt(V_i); V_i = sigma^2 (N S1_i - W_i^2)/(N-1); N = n-1; mu = -c_i/N; sigma^2 = (M2-c_i^2)/N-mu^2; W_i = sum_j w_ij; S1_i = sum_j w_ij^2. c = x - mean; M2 = sum c^2 over analysis rows. Positive weights to other analysis rows only; row weights are re-standardized over unmasked neighbors. Undefined z when n < 3, c_i = 0, too few neighbors, or nonpositive variance.\n\n- bound symbols: 0/14\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula I_i = (n-1) c_i L_i / M2; L_i = sum_j w_ij c_j; z_i = sign(c_i) (L_i - W_i mu) / sqrt(V_i); V_i = sigma^2 (N S1_i - W_i^2)/(N-1); N = n-1; mu = -c_i/N; sigma^2 = (M2-c_i^2)/N-mu^2; W_i = sum_j w_ij; S1_i = sum_j w_ij^2. c = x - mean; M2 = sum c^2 over analysis rows. Positive weights to other analysis rows only; row weights are re-standardized over unmasked neighbors. Undefined z when n < 3, c_i = 0, too few neighbors, or nonpositive variance.\n\n- bound symbols: 14/14\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/14"
+    "value": "14/14"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>local-moran</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{localI}{I_i}&amp;=\\frac{(\\term{count}{n}-1)\\term{centered}{c_i}\\term{spatialLag}{L_i}}{\\term{sumOfSquares}{M_2}},\n&amp;\\term{spatialLag}{L_i}&amp;=\\sum_j\\term{weight}{w_{ij}}\\term{neighborCentered}{c_j}\\\\\n\\term{zScores}{z_i}&amp;=\\frac{\\operatorname{sign}(\\term{centered}{c_i})(\\term{spatialLag}{L_i}-\\term{weightSum}{W_i}\\term{otherMean}{\\mu})}{\\sqrt{\\term{lagVariance}{V_i}}},\n&amp;\\term{lagVariance}{V_i}&amp;=\\term{otherVariance}{\\sigma^2}\\frac{\\term{others}{N}\\term{squareSum}{S_{1i}}-\\term{weightSum}{W_i}^2}{\\term{others}{N}-1}\\\\\n\\term{others}{N}&amp;=\\term{count}{n}-1,\n&amp;\\term{otherMean}{\\mu}&amp;=-\\frac{\\term{centered}{c_i}}{\\term{others}{N}},\n&amp;\\term{otherVariance}{\\sigma^2}&amp;=\\frac{\\term{sumOfSquares}{M_2}-\\term{centered}{c_i}^2}{\\term{others}{N}}-\\term{otherMean}{\\mu}^2\\\\\n\\term{weightSum}{W_i}&amp;=\\sum_j\\term{weight}{w_{ij}},\n&amp;\\term{squareSum}{S_{1i}}&amp;=\\sum_j\\term{weight}{w_{ij}}^2\n\\end{aligned}</pre><p class=\"lens-ascii\">I_i = (n-1) c_i L_i / M2; L_i = sum_j w_ij c_j; z_i = sign(c_i) (L_i - W_i mu) / sqrt(V_i); V_i = sigma^2 (N S1_i - W_i^2)/(N-1); N = n-1; mu = -c_i/N; sigma^2 = (M2-c_i^2)/N-mu^2; W_i = sum_j w_ij; S1_i = sum_j w_ij^2. c = x - mean; M2 = sum c^2 over analysis rows. Positive weights to other analysis rows only; row weights are re-standardized over unmasked neighbors. Undefined z when n &lt; 3, c_i = 0, too few neighbors, or nonpositive variance.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"localI\">localI · output · unknown — wgsl localI not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">analysis row count · intermediate · unknown — wgsl total not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"centered\">centered · intermediate · unknown — wgsl centered not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"spatialLag\">spatialLag · intermediate · unknown — wgsl lag not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sumOfSquares\">sumOfSquares · intermediate · unknown — wgsl sumOfSquares not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">weight · input · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"neighborCentered\">centered neighbor value · intermediate · unknown — wgsl statistics not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"zScores\">zScores · output · unknown — wgsl zScore not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weightSum\">weightSum · intermediate · unknown — wgsl weightSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"otherMean\">otherMean · intermediate · unknown — wgsl otherMean not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lagVariance\">lagVariance · intermediate · unknown — wgsl lagVariance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"otherVariance\">otherVariance · intermediate · unknown — wgsl otherVariance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"others\">others · intermediate · unknown — wgsl others not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"squareSum\">squareSum · intermediate · unknown — wgsl squareSum not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>local-moran</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{localI}{I_i}&amp;=\\frac{(\\term{count}{n}-1)\\term{centered}{c_i}\\term{spatialLag}{L_i}}{\\term{sumOfSquares}{M_2}},\n&amp;\\term{spatialLag}{L_i}&amp;=\\sum_j\\term{weight}{w_{ij}}\\term{neighborCentered}{c_j}\\\\\n\\term{zScores}{z_i}&amp;=\\frac{\\operatorname{sign}(\\term{centered}{c_i})(\\term{spatialLag}{L_i}-\\term{weightSum}{W_i}\\term{otherMean}{\\mu})}{\\sqrt{\\term{lagVariance}{V_i}}},\n&amp;\\term{lagVariance}{V_i}&amp;=\\term{otherVariance}{\\sigma^2}\\frac{\\term{others}{N}\\term{squareSum}{S_{1i}}-\\term{weightSum}{W_i}^2}{\\term{others}{N}-1}\\\\\n\\term{others}{N}&amp;=\\term{count}{n}-1,\n&amp;\\term{otherMean}{\\mu}&amp;=-\\frac{\\term{centered}{c_i}}{\\term{others}{N}},\n&amp;\\term{otherVariance}{\\sigma^2}&amp;=\\frac{\\term{sumOfSquares}{M_2}-\\term{centered}{c_i}^2}{\\term{others}{N}}-\\term{otherMean}{\\mu}^2\\\\\n\\term{weightSum}{W_i}&amp;=\\sum_j\\term{weight}{w_{ij}},\n&amp;\\term{squareSum}{S_{1i}}&amp;=\\sum_j\\term{weight}{w_{ij}}^2\n\\end{aligned}</pre><p class=\"lens-ascii\">I_i = (n-1) c_i L_i / M2; L_i = sum_j w_ij c_j; z_i = sign(c_i) (L_i - W_i mu) / sqrt(V_i); V_i = sigma^2 (N S1_i - W_i^2)/(N-1); N = n-1; mu = -c_i/N; sigma^2 = (M2-c_i^2)/N-mu^2; W_i = sum_j w_ij; S1_i = sum_j w_ij^2. c = x - mean; M2 = sum c^2 over analysis rows. Positive weights to other analysis rows only; row weights are re-standardized over unmasked neighbors. Undefined z when n &lt; 3, c_i = 0, too few neighbors, or nonpositive variance.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"localI\">localI · output · localI</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:contiguity-weights-pair-total\" data-value=\"count\">analysis row count · intermediate · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-center\" data-value=\"centered\">centered · intermediate · centered</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"spatialLag\">spatialLag · intermediate · lag</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-moments-variance\" data-value=\"sumOfSquares\">sumOfSquares · intermediate · sumOfSquares</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-row-states\" data-value=\"weight\">weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-row-states\" data-value=\"neighborCentered\">centered neighbor value · intermediate · statistics</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"zScores\">zScores · output · zScore</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"weightSum\">weightSum · intermediate · weightSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"otherMean\">otherMean · intermediate · otherMean</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"lagVariance\">lagVariance · intermediate · lagVariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"otherVariance\">otherVariance · intermediate · otherVariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"others\">others · intermediate · others</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"chicago-local-moran-compiled:local-moran-neighbors\" data-value=\"squareSum\">squareSum · intermediate · squareSum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,98 +29,98 @@
       [
         "localI",
         "output",
-        "unknown",
+        "localI",
         "—",
         "metadata"
       ],
       [
         "analysis row count",
         "intermediate",
-        "unknown",
+        "total",
         "—",
         "metadata"
       ],
       [
         "centered",
         "intermediate",
-        "unknown",
+        "centered",
         "—",
         "metadata"
       ],
       [
         "spatialLag",
         "intermediate",
-        "unknown",
+        "lag",
         "—",
         "metadata"
       ],
       [
         "sumOfSquares",
         "intermediate",
-        "unknown",
+        "sumOfSquares",
         "—",
         "metadata"
       ],
       [
         "weight",
         "input",
-        "unknown",
+        "weight",
         "—",
         "metadata"
       ],
       [
         "centered neighbor value",
         "intermediate",
-        "unknown",
+        "statistics",
         "—",
         "metadata"
       ],
       [
         "zScores",
         "output",
-        "unknown",
+        "zScore",
         "—",
         "metadata"
       ],
       [
         "weightSum",
         "intermediate",
-        "unknown",
+        "weightSum",
         "—",
         "metadata"
       ],
       [
         "otherMean",
         "intermediate",
-        "unknown",
+        "otherMean",
         "—",
         "metadata"
       ],
       [
         "lagVariance",
         "intermediate",
-        "unknown",
+        "lagVariance",
         "—",
         "metadata"
       ],
       [
         "otherVariance",
         "intermediate",
-        "unknown",
+        "otherVariance",
         "—",
         "metadata"
       ],
       [
         "others",
         "intermediate",
-        "unknown",
+        "others",
         "—",
         "metadata"
       ],
       [
         "squareSum",
         "intermediate",
-        "unknown",
+        "squareSum",
         "—",
         "metadata"
       ]
@@ -178,9 +178,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:23.995Z",
+    "date": "2026-11-11T15:20:55.141Z",
     "runId": "run-0d516fbc",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-0d516fbc",

@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis-hot-spot-analysis-recipe. nodes: 140. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis-hot-spot-analysis-recipe. nodes: 140. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis-hot-spot-analysis-recipe\n\n- nodes: 140\n- 24 visible units vs budget 24\n- 140 hidden nodes\n- Edges by kind: raw 261, war 55, waw 36\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis-hot-spot-analysis-recipe\n\n- nodes: 140\n- 24 visible units vs budget 24\n- 140 hidden nodes\n- Edges by kind: raw 261, war 54, waw 36\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "140"
@@ -50,7 +50,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:22.680Z",
+    "date": "2026-11-11T15:20:48.899Z",
     "runId": "run-45ae4cb6",
     "observerEffects": []
   },

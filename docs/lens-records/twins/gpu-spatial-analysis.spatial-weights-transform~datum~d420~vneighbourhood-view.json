@@ -9,7 +9,7 @@
   "viewId": "neighbourhood-view",
   "caption": "Neighbourhood connectivity. islands: 1. derived values. core 420; row sum 1.0000000149011612.",
   "description": "Neighbourhood connectivity. islands: 1. derived values. core 420; row sum 1.0000000149011612.",
-  "llms": "Neighbourhood connectivity\n\n- islands: 1\n- core 420; row sum 1.0000000149011612\n- 1 islands, hatched\n\nProvenance: derived values.\nAdapter: apple (unknown).",
+  "llms": "Neighbourhood connectivity\n\n- islands: 1\n- core 420; row sum 1.0000000149011612\n- 1 islands, hatched\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: derived values.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "islands",
     "value": "1"
@@ -41,9 +41,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:28.775Z",
+    "date": "2026-11-11T15:21:28.228Z",
     "runId": "run-e7b7e623",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-e7b7e623",

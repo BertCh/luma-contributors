@@ -7,7 +7,7 @@
   "viewId": "gpu-core-array-result",
   "caption": "Read captured inputs into recorded array outputs.",
   "description": "Read captured inputs into recorded array outputs. max intersectionVertices: 1. values read back from the GPU run. 3 output panels from the recorded run.",
-  "llms": "Read captured inputs into recorded array outputs\n\n- max intersectionVertices: 1\n- 3 output panels from the recorded run\n- Thumbnail shows 4 of 25 array panels; the full result retains every captured panel.\n- leftVertices: 3 captured values (3 shown)\n- intersectionVertices: 64 captured values (8 shown)\n- rings: 9 captured values (8 shown)\n- polygons: 9 captured values (8 shown)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max intersectionVertices: 1\n- 3 output panels from the recorded run\n- Thumbnail shows 4 of 23 array panels; the full result retains every captured panel.\n- leftVertices: 3 captured values (3 shown)\n- intersectionVertices: 64 captured values (8 shown)\n- rings: 9 captured values (8 shown)\n- polygons: 9 captured values (8 shown)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max intersectionVertices",
     "value": "1"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.002Z",
-    "runId": "run-b62bbca4",
+    "date": "2026-11-11T15:21:28.956Z",
+    "runId": "run-796c093a",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-b62bbca4",
+    "runId": "run-796c093a",
     "rung": "result",
     "bindings": {},
     "clauses": [],

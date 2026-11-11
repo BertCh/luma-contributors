@@ -30,7 +30,7 @@ export const NETWORK_OPTIMIZATION_PACK: NetworkPackPart = {
     GPUNetworkLouvain: {
       formula: 'none',
       reason:
-        'Ascending or seeded local moves reevaluate directed/undirected weighted modularity and contract immutable vertex groups; the objective trace documents accepted sweeps.'
+        'Ascending or seeded (Philox Fisher-Yates visit order) local moves reevaluate directed/undirected weighted modularity and contract immutable vertex groups; the objective trace documents accepted sweeps.'
     },
     GPUNetworkFacilityOptimization: {
       formula: 'none',

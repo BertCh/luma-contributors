@@ -7,7 +7,7 @@
   "viewId": "formula-card",
   "caption": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A i…",
   "description": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A i…",
-  "llms": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a <= 0 gives -Infinity\n\n- bound symbols: 0/6\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a <= 0 gives -Infinity\n\n- bound symbols: 0/6\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
     "value": "0/6"
@@ -97,10 +97,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.267Z",
+    "date": "2026-11-11T15:21:35.138Z",
     "runId": "run-36a7b0bc",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

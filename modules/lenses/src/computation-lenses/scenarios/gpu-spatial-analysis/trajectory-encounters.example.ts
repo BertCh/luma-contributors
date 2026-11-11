@@ -10,9 +10,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUTrajectoryEncounters,
-  GPUTrajectoryResample,
-  type GPUTrajectoryGeometryFields
+  GPUTrajectoryResample
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUTrajectoryGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded AIS tracks, shared clock and distance for GPUTrajectoryEncounters. */
 export type TrajectoryEncountersExampleInput = {

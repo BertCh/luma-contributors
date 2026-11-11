@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of GPUTerrainCatchmentSummary. nodes: 12. structure metadata only. 12 visible units vs budget 24.",
   "description": "compiled command graph of GPUTerrainCatchmentSummary. nodes: 12. structure metadata only. 12 visible units vs budget 24.",
-  "llms": "compiled command graph of GPUTerrainCatchmentSummary\n\n- nodes: 12\n- 12 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 18, war 3\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of GPUTerrainCatchmentSummary\n\n- nodes: 12\n- 12 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 18, war 3\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "12"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.944Z",
+    "date": "2026-11-11T15:21:34.193Z",
     "runId": "run-b90bbd9c",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

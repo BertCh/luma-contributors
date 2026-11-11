@@ -22,9 +22,11 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   addLensViewSnapshot,
+  LENS_RECORD_SOURCE_TEXT,
   LensCommandGraph,
+  readLensRunMetrics,
   readLensViewSnapshot,
-  submitLensGraph
+  submitTimedLensGraph
 } from '../../lens-view-snapshot';
 import {createSpatialChoice} from '../../../gpu-spatial-analysis/computation-pack/choices';
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
@@ -143,7 +145,7 @@ export type SpatialScenarioRun = {
 /**
  * Compiles once, captures at the end and validates both record and readback sidecar.
  * Imported buffers remain caller-owned; compiled transients are always released here.
- * The capture API exposes no timings, so timing metrics are left absent rather than estimated.
+ * Node timings are recorded when the device writes timestamps and are absent otherwise, never estimated.
  */
 export async function runSpatialScenario(
   props: SpatialScenarioRun
@@ -154,7 +156,10 @@ export async function runSpatialScenario(
   });
   const compiled = props.graph.compile();
   try {
-    const description = describeGPUCommandGraph(compiled);
+    const description = describeGPUCommandGraph(compiled, {
+      graph: props.graph,
+      sourceText: LENS_RECORD_SOURCE_TEXT
+    });
     const record = createGPUComputationRecord({
       id: props.id,
       adapter: getGPUComputationAdapter(props.graph.device),
@@ -179,7 +184,13 @@ export async function runSpatialScenario(
       ]
     });
     assertValidLensRecord(record);
-    submitLensGraph(props.graph.device, compiled, props.encodeOptions);
+    const submission = submitTimedLensGraph(props.graph.device, compiled, props.encodeOptions);
+    // Node timings are present only when the device wrote timestamps; never estimated.
+    const metrics = await readLensRunMetrics(submission, {
+      runId: record.runId,
+      graphId: description.graph.id,
+      taps: 1
+    });
     const captured = {
       captures: await readLensViewSnapshot(snapshot, {
         graphId: description.graph.id,
@@ -206,8 +217,8 @@ export async function runSpatialScenario(
         provenance: 'gpu-replay' as const
       }))
     });
-    assertValidLensSidecars(record, {captures});
-    return {...record, captures};
+    assertValidLensSidecars(record, {captures, metrics: [metrics]});
+    return {...record, captures, metrics: [metrics]};
   } finally {
     compiled.destroy();
   }

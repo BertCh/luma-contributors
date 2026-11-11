@@ -13,10 +13,12 @@ import {
   getGPUGeographicDistributionParameterValues,
   getGPUSpatialClusteringParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
+  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`. */
 export type ClusterAndOutlineRecipeExampleInput = {

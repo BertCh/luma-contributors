@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.raster-zonal-statistics: zonalElevation, zonalZones → zoneMaximums. rows: 5. values read back from the GPU run. input zonalElevation: 4096 cells.",
   "description": "Result of gpu-raster.raster-zonal-statistics: zonalElevation, zonalZones → zoneMaximums. rows: 5. values read back from the GPU run. input zonalElevation: 4096 cells.",
-  "llms": "Result of gpu-raster.raster-zonal-statistics: zonalElevation, zonalZones → zoneMaximums\n\n- rows: 5\n- input zonalElevation: 4096 cells\n- input zonalZones: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.raster-zonal-statistics: zonalElevation, zonalZones → zoneMaximums\n\n- rows: 5\n- input zonalElevation: 4096 cells\n- input zonalZones: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "5"
@@ -24,10 +24,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:18.059Z",
+    "date": "2026-11-11T15:20:15.878Z",
     "runId": "run-27f4ff10",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

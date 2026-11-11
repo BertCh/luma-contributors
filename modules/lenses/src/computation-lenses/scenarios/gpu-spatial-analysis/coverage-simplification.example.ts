@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUCoverageSimplification,
-  type GPUPolygonGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUCoverageSimplification} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded Chicago community areas and tolerance for GPUCoverageSimplification. */
 export type CoverageSimplificationExampleInput = {

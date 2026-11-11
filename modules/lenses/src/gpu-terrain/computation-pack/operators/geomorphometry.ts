@@ -31,6 +31,12 @@ export const TERRAIN_GEOMORPHOMETRY_OPERATORS: RasterOperatorTable = {
         alternatives: ['evans-young', 'zevenbergen-thorne', 'florinsky'],
         sweepable: false
       },
+      {
+        stage: 'neighbourhood',
+        name: 'borderMode',
+        alternatives: ['one-sided', 'clamp', 'nodata'],
+        sweepable: false
+      },
       {stage: 'operator', name: 'zFactor', label: 'z factor', sweepable: true},
       {stage: 'operator', name: 'flatGradient', sweepable: false}
     ],
@@ -41,7 +47,7 @@ export const TERRAIN_GEOMORPHOMETRY_OPERATORS: RasterOperatorTable = {
       id: 'gpu-terrain.terrain-curvature.evans-young',
       tex: String.raw`\term{profile}{\kappa_{\mathrm{prof}}} = -\frac{\term{p}{p}^2\,\term{r}{r} + 2\,p\,\term{q}{q}\,\term{s}{s} + q^2\,\term{t}{t}}{\term{gradientSquared}{G}\,\term{weight}{W}^{3/2}},\quad \term{plan}{\kappa_{\mathrm{plan}}} = -\frac{q^2 r - 2\,p\,q\,s + p^2 t}{G^{3/2}},\quad G = p^2 + q^2,\ W = 1 + G`,
       ascii:
-        'Evans-Young 3x3 least squares on heights minus the centre, z factor and ground cell sizes wx, wy: p = (z3+z6+z9-z1-z4-z7)/(6 wx); q = (z1+z2+z3-z7-z8-z9)/(6 wy); r = (z1+z3+z4+z6+z7+z9-2(z2+z8))/(3 wx^2); t = (z1+z2+z3+z7+z8+z9-2(z4+z6))/(3 wy^2); s = (z3+z7-z1-z9)/(4 wx wy) with z1 NW, z2 N, z3 NE, z4 W, z6 E, z7 SW, z8 S, z9 SE. profile = -(p^2 r + 2pqs + q^2 t)/(G W^1.5); plan = -(q^2 r - 2pqs + p^2 t)/G^1.5, so a convex hill top is positive. G <= flatGradient^2 gives 0 for both; an invalid or non-finite window sample (or a window leaving the raster with borderMode nodata) gives NaN.',
+        'Evans-Young 3x3 least squares on heights minus the centre, z factor and ground cell sizes wx, wy: p = (z3+z6+z9-z1-z4-z7)/(6 wx); q = (z1+z2+z3-z7-z8-z9)/(6 wy); r = (z1+z3+z4+z6+z7+z9-2(z2+z8))/(3 wx^2); t = (z1+z2+z3+z7+z8+z9-2(z4+z6))/(3 wy^2); s = (z3+z7-z1-z9)/(4 wx wy) with z1 NW, z2 N, z3 NE, z4 W, z6 E, z7 SW, z8 S, z9 SE. profile = -(p^2 r + 2pqs + q^2 t)/(G W^1.5); plan = -(q^2 r - 2pqs + p^2 t)/G^1.5, so a convex hill top is positive. G <= flatGradient^2 gives 0 for both; an invalid or non-finite window sample (or a window leaving the raster with borderMode nodata) gives NaN. With borderMode one-sided (the default) a sample outside the raster is the quadratic through the three nearest in-grid samples along that axis, so every curvature is 0 on a plane and exact on a quadratic surface up to the border; clamp repeats edge samples.',
       derivation: 'curated',
       symbols: [
         {id: 'profile', role: 'output', label: 'profile curvature', binding: 'wgsl:profile'},

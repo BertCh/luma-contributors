@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of grid cells 2832. sunShadowVisibility: 1.2514526304130413e-8. values read back from the GPU run. result: 2 quantities.",
   "description": "Receipt of grid cells 2832. sunShadowVisibility: 1.2514526304130413e-8. values read back from the GPU run. result: 2 quantities.",
-  "llms": "Receipt of grid cells 2832\n\n- sunShadowVisibility: 1.2514526304130413e-8\n- result: 2 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of grid cells 2832\n\n- sunShadowVisibility: 1.2514526304130413e-8\n- result: 2 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "sunShadowVisibility",
     "value": "1.2514526304130413e-8"
@@ -49,10 +49,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.885Z",
+    "date": "2026-11-11T15:21:33.942Z",
     "runId": "run-2f59ade1",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

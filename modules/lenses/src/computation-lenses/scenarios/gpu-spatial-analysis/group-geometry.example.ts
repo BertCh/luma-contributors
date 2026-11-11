@@ -12,12 +12,14 @@ import {
   getGPUGeographicDistributionParameterValues,
   getGPUSpatialClusteringParameterValues,
   GPUGroupGeometry,
-  GPUParameterBuffer,
   GPUSpatialClustering,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  type GPUSpatialContext
+  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUParameterBuffer,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Label slots of the example; DBSCAN labels at or above it are left out of every group. */
 export const GROUP_GEOMETRY_GROUP_COUNT = 64;

@@ -10,9 +10,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUOutlineGeometry,
-  getGPUOutlineGeometryVerticesPerInput,
-  type GPUPolygonGeometryFields
+  getGPUOutlineGeometryVerticesPerInput
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Parks in UTM 16N metres and the packed outline distance (100 m) for GPUOutlineGeometry. */
 export type OutlineGeometryExampleInput = {

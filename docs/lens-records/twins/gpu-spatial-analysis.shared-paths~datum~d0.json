@@ -14,7 +14,7 @@
     "value": "0"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of run 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-leftLineIds-0\" title=\"left boundary index (0 is West Town); unused slots are 0xffffffff\">leftLineIds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-rightLineIds-0\" title=\"right boundary index in the other 16 areas; unused slots are 0xffffffff\">rightLineIds</button></td><td>12</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-forward-0\" title=\"relative direction code (unitless): 1 same, 0 opposite; only count runs are valid\">forward</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of run 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-leftSourceIds-0\" title=\"left boundary index (0 is West Town); unused slots are 0xffffffff\">leftSourceIds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-rightSourceIds-0\" title=\"right boundary index in the other 16 areas; unused slots are 0xffffffff\">rightSourceIds</button></td><td>12</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-forward-0\" title=\"relative direction code (unitless): 1 same, 0 opposite; only count runs are valid\">forward</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,14 +29,14 @@
     "rows": [
       [
         "result",
-        "leftLineIds",
+        "leftSourceIds",
         "0",
         "0",
         "readback"
       ],
       [
         "result",
-        "rightLineIds",
+        "rightSourceIds",
         "12",
         "0",
         "readback"
@@ -57,12 +57,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:27.332Z",
-    "runId": "run-9fd14d9c",
+    "date": "2026-11-11T15:21:19.006Z",
+    "runId": "run-f71bd5b0",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-9fd14d9c",
+    "runId": "run-f71bd5b0",
     "rung": "datum",
     "bindings": {
       "entity": 0

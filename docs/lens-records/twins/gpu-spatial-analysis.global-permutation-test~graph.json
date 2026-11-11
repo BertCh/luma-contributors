@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis.global-permutation-test. nodes: 161. structure metadata only. 23 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis.global-permutation-test. nodes: 161. structure metadata only. 23 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis.global-permutation-test\n\n- nodes: 161\n- 23 visible units vs budget 24\n- 161 hidden nodes\n- Edges by kind: raw 286, war 44, waw 28\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis.global-permutation-test\n\n- nodes: 161\n- 23 visible units vs budget 24\n- 161 hidden nodes\n- Edges by kind: raw 286, war 44, waw 28\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "161"
@@ -39,9 +39,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:22.025Z",
+    "date": "2026-11-11T15:20:44.979Z",
     "runId": "run-75cf4b86",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-75cf4b86",

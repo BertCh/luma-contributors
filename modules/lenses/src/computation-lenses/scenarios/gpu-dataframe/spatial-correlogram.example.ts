@@ -10,7 +10,7 @@ import {
   GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
   GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Station columns the lens scenario reads from `f-ghcn-stations.json`. */
 export type SpatialCorrelogramExampleInput = {

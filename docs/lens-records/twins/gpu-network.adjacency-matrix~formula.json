@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -> v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are…",
   "description": "Formula getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -> v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are…",
-  "llms": "Formula getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -> v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are target positions, and slots whose positions fall outside the window [start, end) are dropped. Counts are exact integers, so the matrix does not depend on thread order; with fewer bins than nodes, each bin covers several consecutive matrix positions.\n\n- bound symbols: 0/5\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients order, matrixCounts, maximumCount retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -> v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are target positions, and slots whose positions fall outside the window [start, end) are dropped. Counts are exact integers, so the matrix does not depend on thread order; with fewer bins than nodes, each bin covers several consecutive matrix positions.\n\n- bound symbols: 5/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients order, matrixCounts, maximumCount retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.adjacency-matrix.bin</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{getBin}{b}(\\term{position}{p},\\term{start}{s},\\term{end}{e})=\\left\\lfloor\\frac{(\\term{position}{p}-\\term{start}{s})\\,\\term{RESOLUTION}{R}}{\\term{end}{e}-\\term{start}{s}}\\right\\rfloor</pre><p class=\"lens-ascii\">getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -&gt; v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are target positions, and slots whose positions fall outside the window [start, end) are dropped. Counts are exact integers, so the matrix does not depend on thread order; with fewer bins than nodes, each bin covers several consecutive matrix positions.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"getBin\">matrix bin · output · unknown — wgsl getBin not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"position\">matrix position · input · unknown — wgsl position not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"start\">window start · parameter · unknown — wgsl start not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"end\">window end · parameter · unknown — wgsl end not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"RESOLUTION\">bins per axis · parameter · unknown — wgsl RESOLUTION not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.adjacency-matrix.bin</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{getBin}{b}(\\term{position}{p},\\term{start}{s},\\term{end}{e})=\\left\\lfloor\\frac{(\\term{position}{p}-\\term{start}{s})\\,\\term{RESOLUTION}{R}}{\\term{end}{e}-\\term{start}{s}}\\right\\rfloor</pre><p class=\"lens-ascii\">getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -&gt; v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are target positions, and slots whose positions fall outside the window [start, end) are dropped. Counts are exact integers, so the matrix does not depend on thread order; with fewer bins than nodes, each bin covers several consecutive matrix positions.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"getBin\">matrix bin · output · getBin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"position\">matrix position · input · position</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"start\">window start · parameter · start</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"end\">window end · parameter · end</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"RESOLUTION\">bins per axis · parameter · RESOLUTION</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "matrix bin",
         "output",
-        "unknown",
+        "getBin",
         "—",
         "metadata"
       ],
       [
         "matrix position",
         "input",
-        "unknown",
+        "position",
         "—",
         "metadata"
       ],
       [
         "window start",
         "parameter",
-        "unknown",
+        "start",
         "—",
         "metadata"
       ],
       [
         "window end",
         "parameter",
-        "unknown",
+        "end",
         "—",
         "metadata"
       ],
       [
         "bins per axis",
         "parameter",
-        "unknown",
+        "RESOLUTION",
         "—",
         "metadata"
       ]
@@ -77,10 +77,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.640Z",
+    "date": "2026-11-11T15:20:12.136Z",
     "runId": "run-2c767630",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients order, matrixCounts, maximumCount retained instead of aliased"
     ]

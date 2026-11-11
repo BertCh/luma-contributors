@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q < 3e38, otherwise zero. Binary mode stores 1. No row standardisation…",
   "description": "Formula Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q < 3e38, otherwise zero. Binary mode stores 1. No row standardisation…",
-  "llms": "Formula Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q < 3e38, otherwise zero. Binary mode stores 1. No row standardisation.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q < 3e38, otherwise zero. Binary mode stores 1. No row standardisation.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.nearest-feature-weights</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\begin{cases}\\term{raw}{q_{ij}}&amp;\\term{raw}{q_{ij}}&lt;3\\cdot10^{38}\\\\0&amp;\\text{otherwise}\\end{cases},\\quad\\term{raw}{q_{ij}}=\\max(\\term{distance}{d_{ij}},\\term{floor}{\\delta})^{-\\term{power}{p}}</pre><p class=\"lens-ascii\">Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q &lt; 3e38, otherwise zero. Binary mode stores 1. No row standardisation.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">stored weight · output · unknown — wgsl values not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"raw\">raw weight · intermediate · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distance\">join distance · input · unknown — wgsl keptDistances not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"floor\">distance floor · parameter · unknown — wgsl FLOOR not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"power\">power · parameter · unknown — wgsl POWER not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.nearest-feature-weights</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\begin{cases}\\term{raw}{q_{ij}}&amp;\\term{raw}{q_{ij}}&lt;3\\cdot10^{38}\\\\0&amp;\\text{otherwise}\\end{cases},\\quad\\term{raw}{q_{ij}}=\\max(\\term{distance}{d_{ij}},\\term{floor}{\\delta})^{-\\term{power}{p}}</pre><p class=\"lens-ascii\">Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q &lt; 3e38, otherwise zero. Binary mode stores 1. No row standardisation.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-emit\" data-value=\"weight\">stored weight · output · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-emit\" data-value=\"raw\">raw weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-emit\" data-value=\"distance\">join distance · input · keptDistances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-counts\" data-value=\"floor\">distance floor · parameter · FLOOR</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-counts\" data-value=\"power\">power · parameter · POWER</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "stored weight",
         "output",
-        "unknown",
+        "values",
         "—",
         "metadata"
       ],
       [
         "raw weight",
         "intermediate",
-        "unknown",
+        "weight",
         "—",
         "metadata"
       ],
       [
         "join distance",
         "input",
-        "unknown",
+        "keptDistances",
         "—",
         "metadata"
       ],
       [
         "distance floor",
         "parameter",
-        "unknown",
+        "FLOOR",
         "—",
         "metadata"
       ],
       [
         "power",
         "parameter",
-        "unknown",
+        "POWER",
         "—",
         "metadata"
       ]
@@ -90,7 +90,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:24.885Z",
+    "date": "2026-11-11T15:21:00.189Z",
     "runId": "run-245c33c4",
     "observerEffects": []
   },

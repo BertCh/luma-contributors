@@ -32,7 +32,8 @@ export async function runExample(
     sourceLineIndices: createTransientView(graph, 'arcSources', 'uint32', pairCount, usage),
     status: {
       count: createTransientView(graph, 'count', 'uint32', 1, usage),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage)
+      overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage),
+      vertexCount: createTransientView(graph, 'vertexCount', 'uint32', 1, usage)
     }
   };
   // #region example

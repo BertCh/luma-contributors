@@ -10,10 +10,12 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   addSpaceTimeHotSpotsRecipe,
-  GPUParameterBuffer,
-  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
-  type GPUSpatialContext
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUParameterBuffer,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Slices of the cube: one per month of 2023. */
 export const SPACE_TIME_SLICE_COUNT = 12;

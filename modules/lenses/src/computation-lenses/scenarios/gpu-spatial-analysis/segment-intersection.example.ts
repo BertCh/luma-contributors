@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUSegmentIntersection,
-  type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUSegmentIntersection} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-roads.json`. */
 export type SegmentIntersectionExampleInput = {

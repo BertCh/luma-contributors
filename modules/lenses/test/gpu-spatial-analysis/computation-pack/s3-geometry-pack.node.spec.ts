@@ -81,7 +81,11 @@ const ELEMENT_KERNEL_SOURCES: Record<GeometryElement, string[]> = {
     'modules/analysis/src/analysis-core/kernels/sorted-segment-sums.ts'
   ],
   GPUGridGenerator: [`${SOURCE_ROOT}/grid-generators/gpu-grid-generator.ts`],
-  GPUShapeGenerator: [`${SOURCE_ROOT}/grid-generators/gpu-shape-generator.ts`],
+  // Geodesic rings call the shared half-angle `geodesicDestination`.
+  GPUShapeGenerator: [
+    `${SOURCE_ROOT}/grid-generators/gpu-shape-generator.ts`,
+    `${SOURCE_ROOT}/geometry-measures/geodesic-wgsl.ts`
+  ],
   GPUHilbertKeys: [
     `${SOURCE_ROOT}/hilbert-keys/gpu-hilbert-keys.ts`,
     `${SOURCE_ROOT}/hilbert-keys/bounds-reduction.ts`

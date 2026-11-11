@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.line-smooth",
   "viewId": "formula-card",
-  "caption": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied. bound symbols: 0/5. str…",
-  "description": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied. bound symbols: 0/5. str…",
-  "llms": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied. bound symbols: 5/5. str…",
+  "description": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied. bound symbols: 5/5. str…",
+  "llms": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-smooth</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{first}{q}=(1-\\term{ratio}{r})\\term{start}{a}+\\term{ratio}{r}\\term{end}{b},\\qquad \\term{second}{s}=\\term{ratio}{r}\\term{start}{a}+(1-\\term{ratio}{r})\\term{end}{b}</pre><p class=\"lens-ascii\">Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"first\">first · output · unknown — wgsl destination not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"second\">second · output · unknown — wgsl destination not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"start\">start · input · unknown — wgsl start not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"end\">end · input · unknown — wgsl end not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"ratio\">ratio · parameter · unknown — wgsl ratio not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-smooth</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{first}{q}=(1-\\term{ratio}{r})\\term{start}{a}+\\term{ratio}{r}\\term{end}{b},\\qquad \\term{second}{s}=\\term{ratio}{r}\\term{start}{a}+(1-\\term{ratio}{r})\\term{end}{b}</pre><p class=\"lens-ascii\">Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"first\">first · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"second\">second · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-prepare\" data-value=\"start\">start · input · start</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-prepare\" data-value=\"end\">end · input · end</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"ratio\">ratio · parameter · ratio</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "first",
         "output",
-        "unknown",
+        "destination",
         "—",
         "metadata"
       ],
       [
         "second",
         "output",
-        "unknown",
+        "destination",
         "—",
         "metadata"
       ],
       [
         "start",
         "input",
-        "unknown",
+        "start",
         "—",
         "metadata"
       ],
       [
         "end",
         "input",
-        "unknown",
+        "end",
         "—",
         "metadata"
       ],
       [
         "ratio",
         "parameter",
-        "unknown",
+        "ratio",
         "—",
         "metadata"
       ]
@@ -77,12 +77,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:23.798Z",
-    "runId": "run-2fb89068",
+    "date": "2026-11-11T15:20:54.459Z",
+    "runId": "run-0245a0fa",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-2fb89068",
+    "runId": "run-0245a0fa",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

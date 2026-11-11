@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis.skater-regions. nodes: 244. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis.skater-regions. nodes: 244. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis.skater-regions\n\n- nodes: 244\n- 24 visible units vs budget 24\n- 242 hidden nodes\n- Edges by kind: raw 783, war 270, waw 24\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis.skater-regions\n\n- nodes: 244\n- 24 visible units vs budget 24\n- 242 hidden nodes\n- Edges by kind: raw 783, war 270, waw 24\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "244"
@@ -19,9 +19,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:27.415Z",
+    "date": "2026-11-11T15:21:19.437Z",
     "runId": "run-8ffbbe1f",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-8ffbbe1f",

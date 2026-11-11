@@ -99,9 +99,23 @@ for (const constructionCase of CASES) {
       const record = await lens.describeStructure(device);
       expect(validateGPUComputationRecord(record).issues).toEqual([]);
       expect(record.graphs[0].nodes.length).toBeGreaterThan(0);
-      // Dropped coverage: node-level formula, `wgsl:` source-binding and loop assertions. The
-      // network operators in modules/analysis do not yet accept a GPUComputationRecorder, so no
-      // node carries an annotation; restore them when the operators record their kernels.
+      // Kernels built by createWGSLKernelNode carry a `wgsl:` source and their bindings even on a
+      // null device; the rest are published @luma.gl/graph primitives (GPUScan, GPUGroupAggregation,
+      // GPUSort passes, which name no operation). Formula and loop provenance stay pack-level.
+      const computeNodes = record.graphs[0].nodes.filter(node => node.kind === 'compute');
+      const kernelNodes = computeNodes.filter(node => node.source?.startsWith('wgsl:'));
+      expect(kernelNodes.length).toBeGreaterThan(0);
+      for (const node of kernelNodes) expect(node.bindings?.length, node.id).toBeGreaterThan(0);
+      expect(
+        computeNodes
+          .filter(
+            node =>
+              !node.source &&
+              node.op !== undefined &&
+              !['GPUScan', 'GPUGroupAggregation'].includes(node.op)
+          )
+          .map(node => node.id)
+      ).toEqual([]);
       if (constructionCase.formula) {
         const formula = NETWORK_FORMULA_REFS[constructionCase.formula];
         // The element's own formula comes first so the formula rung shows it by default.

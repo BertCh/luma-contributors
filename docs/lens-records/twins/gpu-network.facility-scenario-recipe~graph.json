@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-network.facility-scenario-recipe. nodes: 5. structure metadata only. 5 visible units vs budget 24.",
   "description": "compiled command graph of gpu-network.facility-scenario-recipe. nodes: 5. structure metadata only. 5 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-network.facility-scenario-recipe\n\n- nodes: 5\n- 5 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 8\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients facility-scenario-recipe-accessibility, facility-scenario-recipe-nearest-costs, facility-scenario-recipe-nearest-facilities, facility-scenario-recipe-covered, facility-scenario-recipe-uncovered, facility-scenario-recipe-invalid retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-network.facility-scenario-recipe\n\n- nodes: 5\n- 5 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 8\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients facility-scenario-recipe-accessibility, facility-scenario-recipe-nearest-costs, facility-scenario-recipe-nearest-facilities, facility-scenario-recipe-covered, facility-scenario-recipe-uncovered, facility-scenario-recipe-invalid retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "5"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.711Z",
+    "date": "2026-11-11T15:20:12.243Z",
     "runId": "run-c20150ab",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients facility-scenario-recipe-accessibility, facility-scenario-recipe-nearest-costs, facility-scenario-recipe-nearest-facilities, facility-scenario-recipe-covered, facility-scenario-recipe-uncovered, facility-scenario-recipe-invalid retained instead of aliased"
     ]

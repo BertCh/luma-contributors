@@ -6,9 +6,9 @@ import {Buffer} from '@luma.gl/core';
 import {createTransientView, GPUGather, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUPolygonTriangulation,
-  getPolygonTriangulationIndexCount,
-  type GPUPolygonGeometryFields
+  getPolygonTriangulationIndexCount
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Parks uploaded by the lens scenario, in UTM 16N metres (planar, as the element requires). */
 export type PolygonTriangulationExampleInput = {parks: GPUPolygonGeometryFields};

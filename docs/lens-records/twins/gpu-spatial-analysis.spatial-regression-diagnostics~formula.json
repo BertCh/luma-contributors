@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula sigma2 = e'e/n; d_e = e'We/sigma2; d_l = e'Wy/sigma2; T = tr(W'W + WW); J = (W Zb)' M (W Zb)/sigma2 + T with Z = [1, X], M = I - Z(Z'Z)^-1 Z'. LM-error = d_e^2/T; LM-lag = d_l^2/J (df 1); robust LM-error = (d_e - T d_l/J)^2/(T - T^2/J); robu…",
   "description": "Formula sigma2 = e'e/n; d_e = e'We/sigma2; d_l = e'Wy/sigma2; T = tr(W'W + WW); J = (W Zb)' M (W Zb)/sigma2 + T with Z = [1, X], M = I - Z(Z'Z)^-1 Z'. LM-error = d_e^2/T; LM-lag = d_l^2/J (df 1); robust LM-error = (d_e - T d_l/J)^2/(T - T^2/J); robu…",
-  "llms": "Formula sigma2 = e'e/n; d_e = e'We/sigma2; d_l = e'Wy/sigma2; T = tr(W'W + WW); J = (W Zb)' M (W Zb)/sigma2 + T with Z = [1, X], M = I - Z(Z'Z)^-1 Z'. LM-error = d_e^2/T; LM-lag = d_l^2/J (df 1); robust LM-error = (d_e - T d_l/J)^2/(T - T^2/J); robust LM-lag = (d_l - d_e)^2/(J - T); LM-SARMA = LM-lag + robust LM-error (df 2). Moran I of the residuals = (n/S0) e'We/e'e with the regression-residual mean and variance, two-sided normal p. Tracts with a non-finite residual are dropped with their links.\n\n- bound symbols: 0/12\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula sigma2 = e'e/n; d_e = e'We/sigma2; d_l = e'Wy/sigma2; T = tr(W'W + WW); J = (W Zb)' M (W Zb)/sigma2 + T with Z = [1, X], M = I - Z(Z'Z)^-1 Z'. LM-error = d_e^2/T; LM-lag = d_l^2/J (df 1); robust LM-error = (d_e - T d_l/J)^2/(T - T^2/J); robust LM-lag = (d_l - d_e)^2/(J - T); LM-SARMA = LM-lag + robust LM-error (df 2). Moran I of the residuals = (n/S0) e'We/e'e with the regression-residual mean and variance, two-sided normal p. Tracts with a non-finite residual are dropped with their links.\n\n- bound symbols: 12/12\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/12"
+    "value": "12/12"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-regression-diagnostics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{errorGradient}{d_e}&amp;=\\frac{e^\\top We}{\\term{sigmaSquared}{\\hat\\sigma^2}},\n&amp;\\term{lagGradient}{d_l}&amp;=\\frac{e^\\top Wy}{\\hat\\sigma^2},\n&amp;\\term{traceT}{T}&amp;=\\operatorname{tr}(W^\\top W+W^2)\\\\\n\\term{information}{J}&amp;=\\frac{(WZb)^\\top M\\,(WZb)}{\\hat\\sigma^2}+T\\\\\n\\term{errorStatistic}{\\mathrm{LM}_{\\mathrm{err}}}&amp;=\\frac{d_e^2}{T},\n&amp;\\term{lagStatistic}{\\mathrm{LM}_{\\mathrm{lag}}}&amp;=\\frac{d_l^2}{J}\\\\\n\\term{robustError}{\\mathrm{LM}^{*}_{\\mathrm{err}}}&amp;=\\frac{(d_e-T d_l/J)^2}{T-T^2/J},\n&amp;\\term{robustLag}{\\mathrm{LM}^{*}_{\\mathrm{lag}}}&amp;=\\frac{(d_l-d_e)^2}{J-T}\\\\\n\\term{sarma}{\\mathrm{SARMA}}&amp;=\\mathrm{LM}_{\\mathrm{lag}}+\\mathrm{LM}^{*}_{\\mathrm{err}},\n&amp;\\term{moranI}{I}&amp;=\\frac{n}{S_0}\\,\\frac{e^\\top We}{e^\\top e},\n&amp;\\term{moranZ}{z_I}&amp;=\\frac{I-\\mathrm{E}[I]}{\\sqrt{\\mathrm{Var}[I]}}\n\\end{aligned}</pre><p class=\"lens-ascii\">sigma2 = e&#39;e/n; d_e = e&#39;We/sigma2; d_l = e&#39;Wy/sigma2; T = tr(W&#39;W + WW); J = (W Zb)&#39; M (W Zb)/sigma2 + T with Z = [1, X], M = I - Z(Z&#39;Z)^-1 Z&#39;. LM-error = d_e^2/T; LM-lag = d_l^2/J (df 1); robust LM-error = (d_e - T d_l/J)^2/(T - T^2/J); robust LM-lag = (d_l - d_e)^2/(J - T); LM-SARMA = LM-lag + robust LM-error (df 2). Moran I of the residuals = (n/S0) e&#39;We/e&#39;e with the regression-residual mean and variance, two-sided normal p. Tracts with a non-finite residual are dropped with their links.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"errorGradient\">errorGradient · intermediate · unknown — wgsl errorGradient not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sigmaSquared\">sigmaSquared · intermediate · unknown — wgsl sigmaSquared not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lagGradient\">lagGradient · intermediate · unknown — wgsl lagGradient not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"traceT\">traceT · intermediate · unknown — wgsl traceT not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"information\">information · intermediate · unknown — wgsl information not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"errorStatistic\">errorStatistic · output · unknown — wgsl errorStatistic not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lagStatistic\">lagStatistic · output · unknown — wgsl lagStatistic not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"robustError\">robustError · output · unknown — wgsl robustError not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"robustLag\">robustLag · output · unknown — wgsl robustLag not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sarma\">sarma · output · unknown — wgsl sarma not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"moranI\">moranI · output · unknown — wgsl moranI not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"moranZ\">moranZ · output · unknown — wgsl moranZ not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-regression-diagnostics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{errorGradient}{d_e}&amp;=\\frac{e^\\top We}{\\term{sigmaSquared}{\\hat\\sigma^2}},\n&amp;\\term{lagGradient}{d_l}&amp;=\\frac{e^\\top Wy}{\\hat\\sigma^2},\n&amp;\\term{traceT}{T}&amp;=\\operatorname{tr}(W^\\top W+W^2)\\\\\n\\term{information}{J}&amp;=\\frac{(WZb)^\\top M\\,(WZb)}{\\hat\\sigma^2}+T\\\\\n\\term{errorStatistic}{\\mathrm{LM}_{\\mathrm{err}}}&amp;=\\frac{d_e^2}{T},\n&amp;\\term{lagStatistic}{\\mathrm{LM}_{\\mathrm{lag}}}&amp;=\\frac{d_l^2}{J}\\\\\n\\term{robustError}{\\mathrm{LM}^{*}_{\\mathrm{err}}}&amp;=\\frac{(d_e-T d_l/J)^2}{T-T^2/J},\n&amp;\\term{robustLag}{\\mathrm{LM}^{*}_{\\mathrm{lag}}}&amp;=\\frac{(d_l-d_e)^2}{J-T}\\\\\n\\term{sarma}{\\mathrm{SARMA}}&amp;=\\mathrm{LM}_{\\mathrm{lag}}+\\mathrm{LM}^{*}_{\\mathrm{err}},\n&amp;\\term{moranI}{I}&amp;=\\frac{n}{S_0}\\,\\frac{e^\\top We}{e^\\top e},\n&amp;\\term{moranZ}{z_I}&amp;=\\frac{I-\\mathrm{E}[I]}{\\sqrt{\\mathrm{Var}[I]}}\n\\end{aligned}</pre><p class=\"lens-ascii\">sigma2 = e&#39;e/n; d_e = e&#39;We/sigma2; d_l = e&#39;Wy/sigma2; T = tr(W&#39;W + WW); J = (W Zb)&#39; M (W Zb)/sigma2 + T with Z = [1, X], M = I - Z(Z&#39;Z)^-1 Z&#39;. LM-error = d_e^2/T; LM-lag = d_l^2/J (df 1); robust LM-error = (d_e - T d_l/J)^2/(T - T^2/J); robust LM-lag = (d_l - d_e)^2/(J - T); LM-SARMA = LM-lag + robust LM-error (df 2). Moran I of the residuals = (n/S0) e&#39;We/e&#39;e with the regression-residual mean and variance, two-sided normal p. Tracts with a non-finite residual are dropped with their links.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"errorGradient\">errorGradient · intermediate · errorGradient</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:ordinary-least-squares-finish\" data-value=\"sigmaSquared\">sigmaSquared · intermediate · sigmaSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"lagGradient\">lagGradient · intermediate · lagGradient</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"traceT\">traceT · intermediate · traceT</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"information\">information · intermediate · information</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"errorStatistic\">errorStatistic · output · errorStatistic</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"lagStatistic\">lagStatistic · output · lagStatistic</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"robustError\">robustError · output · robustError</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"robustLag\">robustLag · output · robustLag</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"sarma\">sarma · output · sarma</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"moranI\">moranI · output · moranI</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-regression-diagnostics-compiled:spatial-regression-diagnostics-finish\" data-value=\"moranZ\">moranZ · output · moranZ</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,84 +29,84 @@
       [
         "errorGradient",
         "intermediate",
-        "unknown",
+        "errorGradient",
         "—",
         "metadata"
       ],
       [
         "sigmaSquared",
         "intermediate",
-        "unknown",
+        "sigmaSquared",
         "—",
         "metadata"
       ],
       [
         "lagGradient",
         "intermediate",
-        "unknown",
+        "lagGradient",
         "—",
         "metadata"
       ],
       [
         "traceT",
         "intermediate",
-        "unknown",
+        "traceT",
         "—",
         "metadata"
       ],
       [
         "information",
         "intermediate",
-        "unknown",
+        "information",
         "—",
         "metadata"
       ],
       [
         "errorStatistic",
         "output",
-        "unknown",
+        "errorStatistic",
         "—",
         "metadata"
       ],
       [
         "lagStatistic",
         "output",
-        "unknown",
+        "lagStatistic",
         "—",
         "metadata"
       ],
       [
         "robustError",
         "output",
-        "unknown",
+        "robustError",
         "—",
         "metadata"
       ],
       [
         "robustLag",
         "output",
-        "unknown",
+        "robustLag",
         "—",
         "metadata"
       ],
       [
         "sarma",
         "output",
-        "unknown",
+        "sarma",
         "—",
         "metadata"
       ],
       [
         "moranI",
         "output",
-        "unknown",
+        "moranI",
         "—",
         "metadata"
       ],
       [
         "moranZ",
         "output",
-        "unknown",
+        "moranZ",
         "—",
         "metadata"
       ]
@@ -153,9 +153,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:28.487Z",
+    "date": "2026-11-11T15:21:26.017Z",
     "runId": "run-2b602219",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-2b602219",

@@ -9,10 +9,10 @@ import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   getGPUTerrainCastShadowParameterValues,
   getSolarPosition,
-  GPUParameterBuffer,
   GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH,
   GPUTerrainCastShadow
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Graph, grid and caller-owned views the example wires together. */
 export type TerrainCastShadowExampleInput = {

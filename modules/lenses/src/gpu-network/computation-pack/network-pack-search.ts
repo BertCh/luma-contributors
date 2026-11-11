@@ -42,7 +42,7 @@ const SEARCH_FORMULA_REFS: Record<string, GPUComputationFormulaRef> = {
     derivation: 'curated',
     tex: String.raw`\term{cost}{c}=\left|\term{sourceCost}{d_u}+\term{t}{t}\,\term{weight}{w_{uv}}+\term{walk}{a}\,\term{pixelDistance}{r}\right|,\qquad \text{pixel}=\min c`,
     ascii:
-      'Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached.',
+      'Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached. Bands of the raster are upper-inclusive, (a, b]: each break is moved to the next float32 above it before GPUIsobands. In max mode a sample cost is first the cheaper direction of its road, min(cost[u] + t*weight, cost[v] + (1 - t)*reverseWeight), and each pixel keeps the maximum.',
     symbols: [
       {id: 'cost', role: 'output', label: 'pixel cost candidate', binding: 'wgsl:cost'},
       {id: 'sourceCost', role: 'input', label: 'cost at edge source', binding: 'wgsl:sourceCost'},
@@ -60,9 +60,9 @@ const SEARCH_FORMULA_REFS: Record<string, GPUComputationFormulaRef> = {
   'gpu-network.catchment.band': {
     id: 'gpu-network.catchment.band',
     derivation: 'curated',
-    tex: String.raw`\term{band}{b}=\min\{k:\ \term{time}{t}<\term{bandBreaks}{B}[\term{k}{k}]\}`,
+    tex: String.raw`\term{band}{b}=\min\{k:\ \term{time}{t}\le\term{bandBreaks}{B}[\term{k}{k}]\}`,
     ascii:
-      'band = first k with time < bandBreaks[k], else 0xffffffff (no band). Upper bounds are strict; unreached, unsnapped or non-finite demand times (>= 3.0e38) get no band. time = min(cost[source] + sourceCost, cost[target] + targetCost) on the snapped edge, from the demand-time kernel.',
+      'band = first k with time <= bandBreaks[k], else 0xffffffff (no band), so band k holds (bandBreaks[k-1], bandBreaks[k]] and a time exactly on a break is in the lower band, the rule of GPUNetworkReachability and GPUNetworkIsochrones. Unreached, unsnapped or non-finite demand times (>= 3.0e38; unreached demand is written as +Infinity) get no band. time = min(cost[source] + fraction * forwardCost, cost[target] + (1 - fraction) * reverseCost) on the snapped edge (each direction only when its cost is >= 0), and also the direct along-road cost |ahead| * forwardCost or reverseCost to every facility snapped to the same road, so demand on a facility road is not routed through the end nodes.',
     symbols: [
       {id: 'band', role: 'output', label: 'drive-time band', binding: 'wgsl:bands'},
       {id: 'time', role: 'input', label: 'demand drive time', binding: 'wgsl:time'},

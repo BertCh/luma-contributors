@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-network.map-matching. nodes: 22. structure metadata only. 22 visible units vs budget 24.",
   "description": "compiled command graph of gpu-network.map-matching. nodes: 22. structure metadata only. 22 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-network.map-matching\n\n- nodes: 22\n- 22 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 39\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-network.map-matching\n\n- nodes: 22\n- 22 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 39\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "22"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-10T01:38:03.221Z",
+    "date": "2026-11-11T15:20:12.328Z",
     "runId": "run-e0aa4a4e",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased"
     ]

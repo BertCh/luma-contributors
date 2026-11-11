@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.skater-regions",
   "viewId": "formula-card",
-  "caption": "Formula Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e and the remainder, lowering the within-region sum of squares by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), with SSD(S) = sum_i sum_c x_ic^2 - sum_c (sum_i…",
-  "description": "Formula Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e and the remainder, lowering the within-region sum of squares by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), with SSD(S) = sum_i sum_c x_ic^2 - sum_c (sum_i…",
-  "llms": "Formula Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e and the remainder, lowering the within-region sum of squares by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), with SSD(S) = sum_i sum_c x_ic^2 - sum_c (sum_i x_ic)^2 / n_S. Each step applies the largest gain (ties to the lowest edge slot) whose two sides both keep minimumRegionSize rows, until the target region count is reached.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e (A) and the remainder (B). The within-region sum of squares falls by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), computed in the direct Ward form g_e = nA n…",
+  "description": "Formula Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e (A) and the remainder (B). The within-region sum of squares falls by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), computed in the direct Ward form g_e = nA n…",
+  "llms": "Formula Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e (A) and the remainder (B). The within-region sum of squares falls by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), computed in the direct Ward form g_e = nA nB / nR * sum_c (S_Ac / nA - (S_Rc - S_Ac) / nB)^2, with nB = nR - nA and S the per-column attribute sums of the child subtree and of the region (no cancellation of sums of squares). A NaN or infinite gain is not a candidate. Each step applies the largest gain (ties to the lowest edge slot) whose two sides both keep minimumRegionSize rows, until the target region count is reached.\n\n- bound symbols: 8/8\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "8/8"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>skater-cut-gain</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{gain}{g_e}&amp;=\\term{ssd}{\\mathrm{SSD}}(R)-\\mathrm{SSD}(C_e)-\\mathrm{SSD}(R\\setminus C_e)\\\\\n\\mathrm{SSD}(S)&amp;=\\term{squares}{\\sum_{i\\in S}\\sum_c x_{ic}^2}-\\frac{\\term{sumSquares}{\\sum_c\\left(\\sum_{i\\in S}x_{ic}\\right)^2}}{\\term{size}{n_S}}\n\\end{aligned}</pre><p class=\"lens-ascii\">Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e and the remainder, lowering the within-region sum of squares by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), with SSD(S) = sum_i sum_c x_ic^2 - sum_c (sum_i x_ic)^2 / n_S. Each step applies the largest gain (ties to the lowest edge slot) whose two sides both keep minimumRegionSize rows, until the target region count is reached.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gain\">gain · output · unknown — wgsl gain not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"ssd\">ssd · intermediate · unknown — wgsl getSsd not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"squares\">squares · intermediate · unknown — wgsl squares not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sumSquares\">sumSquares · intermediate · unknown — wgsl sumSquares not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"size\">size · intermediate · unknown — wgsl count not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>skater-cut-gain</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{gain}{g_e}&amp;=\\mathrm{SSD}(R)-\\mathrm{SSD}(C_e)-\\mathrm{SSD}(R\\setminus C_e)=\\frac{\\term{childCount}{n_A}\\,\\term{remainder}{n_B}}{\\term{regionCount}{n_R}}\\,\\term{squaredDifference}{D^2},\\qquad n_B=n_R-n_A\\\\\nD^2&amp;=\\sum_c\\term{difference}{d_c}^2,\\qquad d_c=\\frac{\\term{childSum}{S_{Ac}}}{n_A}-\\frac{\\term{regionSum}{S_{Rc}}-S_{Ac}}{n_B}\n\\end{aligned}</pre><p class=\"lens-ascii\">Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e (A) and the remainder (B). The within-region sum of squares falls by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), computed in the direct Ward form g_e = nA nB / nR * sum_c (S_Ac / nA - (S_Rc - S_Ac) / nB)^2, with nB = nR - nA and S the per-column attribute sums of the child subtree and of the region (no cancellation of sums of squares). A NaN or infinite gain is not a candidate. Each step applies the largest gain (ties to the lowest edge slot) whose two sides both keep minimumRegionSize rows, until the target region count is reached.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.skater-regions-compiled:skater-regions-tree-stats\" data-value=\"gain\">gain · output · gain</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.skater-regions-compiled:minimum-spanning-tree-standardize\" data-value=\"childCount\">childCount · intermediate · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.skater-regions-compiled:skater-regions-step-0-candidates\" data-value=\"remainder\">remainder · intermediate · remainder</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.skater-regions-compiled:skater-regions-step-0-candidates\" data-value=\"regionCount\">regionCount · intermediate · regionCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.skater-regions-compiled:skater-regions-step-0-candidates\" data-value=\"squaredDifference\">squaredDifference · intermediate · squaredDifference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.skater-regions-compiled:skater-regions-step-0-candidates\" data-value=\"difference\">difference · intermediate · difference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.skater-regions-compiled:skater-regions-step-0-candidates\" data-value=\"childSum\">childSum · intermediate · childSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.skater-regions-compiled:skater-regions-step-0-candidates\" data-value=\"regionSum\">regionSum · intermediate · regionSum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,56 @@
       [
         "gain",
         "output",
-        "unknown",
+        "gain",
         "—",
         "metadata"
       ],
       [
-        "ssd",
+        "childCount",
         "intermediate",
-        "unknown",
+        "count",
         "—",
         "metadata"
       ],
       [
-        "squares",
+        "remainder",
         "intermediate",
-        "unknown",
+        "remainder",
         "—",
         "metadata"
       ],
       [
-        "sumSquares",
+        "regionCount",
         "intermediate",
-        "unknown",
+        "regionCount",
         "—",
         "metadata"
       ],
       [
-        "size",
+        "squaredDifference",
         "intermediate",
-        "unknown",
+        "squaredDifference",
+        "—",
+        "metadata"
+      ],
+      [
+        "difference",
+        "intermediate",
+        "difference",
+        "—",
+        "metadata"
+      ],
+      [
+        "childSum",
+        "intermediate",
+        "childSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "regionSum",
+        "intermediate",
+        "regionSum",
         "—",
         "metadata"
       ]
@@ -67,19 +88,26 @@
       "metadata",
       "metadata",
       "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
       "metadata"
     ]
   },
   "formula": {
-    "tex": "\\begin{aligned}\n\\term{gain}{g_e}&=\\term{ssd}{\\mathrm{SSD}}(R)-\\mathrm{SSD}(C_e)-\\mathrm{SSD}(R\\setminus C_e)\\\\\n\\mathrm{SSD}(S)&=\\term{squares}{\\sum_{i\\in S}\\sum_c x_{ic}^2}-\\frac{\\term{sumSquares}{\\sum_c\\left(\\sum_{i\\in S}x_{ic}\\right)^2}}{\\term{size}{n_S}}\n\\end{aligned}",
-    "ascii": "Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e and the remainder, lowering the within-region sum of squares by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), with SSD(S) = sum_i sum_c x_ic^2 - sum_c (sum_i x_ic)^2 / n_S. Each step applies the largest gain (ties to the lowest edge slot) whose two sides both keep minimumRegionSize rows, until the target region count is reached.",
+    "tex": "\\begin{aligned}\n\\term{gain}{g_e}&=\\mathrm{SSD}(R)-\\mathrm{SSD}(C_e)-\\mathrm{SSD}(R\\setminus C_e)=\\frac{\\term{childCount}{n_A}\\,\\term{remainder}{n_B}}{\\term{regionCount}{n_R}}\\,\\term{squaredDifference}{D^2},\\qquad n_B=n_R-n_A\\\\\nD^2&=\\sum_c\\term{difference}{d_c}^2,\\qquad d_c=\\frac{\\term{childSum}{S_{Ac}}}{n_A}-\\frac{\\term{regionSum}{S_{Rc}}-S_{Ac}}{n_B}\n\\end{aligned}",
+    "ascii": "Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e (A) and the remainder (B). The within-region sum of squares falls by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), computed in the direct Ward form g_e = nA nB / nR * sum_c (S_Ac / nA - (S_Rc - S_Ac) / nB)^2, with nB = nR - nA and S the per-column attribute sums of the child subtree and of the region (no cancellation of sums of squares). A NaN or infinite gain is not a candidate. Each step applies the largest gain (ties to the lowest edge slot) whose two sides both keep minimumRegionSize rows, until the target region count is reached.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:27.415Z",
+    "date": "2026-11-11T15:21:19.437Z",
     "runId": "run-8ffbbe1f",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-8ffbbe1f",

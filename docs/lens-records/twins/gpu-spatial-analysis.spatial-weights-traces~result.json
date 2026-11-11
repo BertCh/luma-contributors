@@ -12,7 +12,7 @@
   "viewId": "gpu-core-array-result",
   "caption": "Read captured inputs into recorded array outputs. max powerTraces: 122.2. values read back from the GPU run. 2 output panels from the recorded run.",
   "description": "Read captured inputs into recorded array outputs. max powerTraces: 122.2. values read back from the GPU run. 2 output panels from the recorded run.",
-  "llms": "Read captured inputs into recorded array outputs\n\n- max powerTraces: 122.2\n- 2 output panels from the recorded run\n- powerTraces: 12 captured values (12 shown)\n- powerSums: 12 captured values (12 shown)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max powerTraces: 122.2\n- 2 output panels from the recorded run\n- powerTraces: 12 captured values (12 shown)\n- powerSums: 12 captured values (12 shown)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max powerTraces",
     "value": "122.2"
@@ -35,9 +35,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:28.759Z",
+    "date": "2026-11-11T15:21:28.192Z",
     "runId": "run-f3d63cae",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-f3d63cae",

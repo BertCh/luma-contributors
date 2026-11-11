@@ -45,7 +45,7 @@ export const RASTER_ISOLINES_OPERATORS: RasterOperatorTable = {
       derivation: 'curated',
       tex: String.raw`\term{vertex}{p}=p_a+\term{t}{t}\,(p_b-p_a),\qquad \term{t}{t}=\frac{\term{level}{L}-\term{startValue}{v_a}}{\term{endValue}{v_b}-\term{startValue}{v_a}}`,
       ascii:
-        'Samples sit at cell centres; a corner is high when value >= level. On each cell edge whose ends differ, with a and b the canonical start and end samples (+x or +y), the vertex is p_a + t (p_b - p_a), t = (level - v_a) / (v_b - v_a). A segment joins each high-to-low exit edge to its paired entry edge (saddles are joined when the mean of the four corners >= level); a cell with a nodata corner emits nothing; vertices are relative to localOrigin; segments sharing an edge are stitched into polylines.',
+        'Samples sit at cell centres; a corner is high when value >= level. On each cell edge whose ends differ, with a and b the canonical start and end samples (+x or +y), the vertex is p_a + t (p_b - p_a), t = (level - v_a) / (v_b - v_a). A segment joins each high-to-low exit edge to its paired entry edge (on a saddle cell the high corners are joined when the bilinear saddle value (v0 v2 - v1 v3) / (v0 + v2 - v1 - v3) >= level, decided by the sign of (v0 - L)(v2 - L) - (v1 - L)(v3 - L)); a cell with a nodata corner emits nothing; vertices are relative to localOrigin; segments sharing an edge are stitched into polylines.',
       symbols: [
         {id: 'vertex', role: 'output', label: 'vertex', binding: 'wgsl:segments'},
         {id: 't', role: 'intermediate', label: 't', binding: 'wgsl:t'},

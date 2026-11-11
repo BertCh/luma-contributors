@@ -209,17 +209,20 @@ export const STATISTICS_REGION_OPERATORS: SpatialFamilyOperators = {
       id: 'skater-cut-gain',
       derivation: 'curated',
       tex: String.raw`\begin{aligned}
-\term{gain}{g_e}&=\term{ssd}{\mathrm{SSD}}(R)-\mathrm{SSD}(C_e)-\mathrm{SSD}(R\setminus C_e)\\
-\mathrm{SSD}(S)&=\term{squares}{\sum_{i\in S}\sum_c x_{ic}^2}-\frac{\term{sumSquares}{\sum_c\left(\sum_{i\in S}x_{ic}\right)^2}}{\term{size}{n_S}}
+\term{gain}{g_e}&=\mathrm{SSD}(R)-\mathrm{SSD}(C_e)-\mathrm{SSD}(R\setminus C_e)=\frac{\term{childCount}{n_A}\,\term{remainder}{n_B}}{\term{regionCount}{n_R}}\,\term{squaredDifference}{D^2},\qquad n_B=n_R-n_A\\
+D^2&=\sum_c\term{difference}{d_c}^2,\qquad d_c=\frac{\term{childSum}{S_{Ac}}}{n_A}-\frac{\term{regionSum}{S_{Rc}}-S_{Ac}}{n_B}
 \end{aligned}`,
       ascii:
-        'Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e and the remainder, lowering the within-region sum of squares by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), with SSD(S) = sum_i sum_c x_ic^2 - sum_c (sum_i x_ic)^2 / n_S. Each step applies the largest gain (ties to the lowest edge slot) whose two sides both keep minimumRegionSize rows, until the target region count is reached.',
+        'Cut gain, not the procedure: cutting tree edge e splits region R into the child side C_e (A) and the remainder (B). The within-region sum of squares falls by g_e = SSD(R) - SSD(C_e) - SSD(R \\ C_e), computed in the direct Ward form g_e = nA nB / nR * sum_c (S_Ac / nA - (S_Rc - S_Ac) / nB)^2, with nB = nR - nA and S the per-column attribute sums of the child subtree and of the region (no cancellation of sums of squares). A NaN or infinite gain is not a candidate. Each step applies the largest gain (ties to the lowest edge slot) whose two sides both keep minimumRegionSize rows, until the target region count is reached.',
       symbols: [
         {id: 'gain', role: 'output', binding: 'wgsl:gain'},
-        {id: 'ssd', role: 'intermediate', binding: 'wgsl:getSsd'},
-        {id: 'squares', role: 'intermediate', binding: 'wgsl:squares'},
-        {id: 'sumSquares', role: 'intermediate', binding: 'wgsl:sumSquares'},
-        {id: 'size', role: 'intermediate', binding: 'wgsl:count'}
+        {id: 'childCount', role: 'intermediate', binding: 'wgsl:count'},
+        {id: 'remainder', role: 'intermediate', binding: 'wgsl:remainder'},
+        {id: 'regionCount', role: 'intermediate', binding: 'wgsl:regionCount'},
+        {id: 'squaredDifference', role: 'intermediate', binding: 'wgsl:squaredDifference'},
+        {id: 'difference', role: 'intermediate', binding: 'wgsl:difference'},
+        {id: 'childSum', role: 'intermediate', binding: 'wgsl:childSum'},
+        {id: 'regionSum', role: 'intermediate', binding: 'wgsl:regionSum'}
       ]
     }
   },

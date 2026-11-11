@@ -139,7 +139,7 @@ export async function buildRemoteSensingScenario(
           meaning: 'Cell-major quadratic observations at nine regular acquisition dates'
         }
       ),
-      validity: session.input(
+      mask: session.input(
         'observationQA',
         'uint32',
         Array.from({length}, (_, index) => (index % slices === 2 ? 0 : 1)),
@@ -229,7 +229,7 @@ export async function buildRemoteSensingScenario(
         reference.map((_, index) => (index % 4 === 0 ? 0 : reference[index - 1])),
         'Reference image shifted one column right with an invalid first column'
       ),
-      movingValidity: session.input(
+      movingMask: session.input(
         'movingQA',
         'uint32',
         reference.map((_, index) => (index % 4 === 0 ? 0 : 1)),
@@ -353,16 +353,18 @@ export async function buildRemoteSensingScenario(
           },
           4
         ),
-        status: session.output(
-          'status',
-          'uint32',
-          {
-            role: 'context',
-            keySpace: 'alignment',
-            meaning: 'One means another eligible adaptive merge remains'
-          },
-          1
-        )
+        status: {
+          iterationLimitReached: session.output(
+            'status',
+            'uint32',
+            {
+              role: 'context',
+              keySpace: 'alignment',
+              meaning: 'One means another eligible adaptive merge remains'
+            },
+            1
+          )
+        }
       }
     });
     return;

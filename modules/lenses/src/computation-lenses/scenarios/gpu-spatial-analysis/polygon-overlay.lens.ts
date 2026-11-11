@@ -128,7 +128,10 @@ defineLensScenario({
               boundaryCount: {view: output.boundary.status.count, role: 'intermediate'},
               boundaryOverflow: {view: output.boundary.status.overflow, role: 'intermediate'},
               overlayCount: {view: output.status.count, role: 'intermediate'},
-              overlayRequiredCount: {view: output.status.requiredCount, role: 'intermediate'},
+              overlayRequiredRingCount: {
+                view: output.status.requiredRingCount,
+                role: 'intermediate'
+              },
               overlayOverflow: {view: output.status.overflow, role: 'intermediate'},
               overlayCandidateOverflow: {
                 view: output.status.candidateOverflow,

@@ -19,7 +19,7 @@ defineLensScenario({
         import('./spatial-scan-statistic.example'),
         import('../../data/s2-midwest-counties.json').then(module => module.default),
         import('../../data/s2-midwest-county-shapes.json').then(module => module.default),
-        import('@luma-contributors/analysis/gpu-spatial-analysis')
+        import('@luma-contributors/analysis/analysis-core')
       ]);
     return {
       run: device => {

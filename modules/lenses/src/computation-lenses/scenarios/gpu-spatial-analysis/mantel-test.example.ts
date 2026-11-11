@@ -13,10 +13,12 @@ import {
   getGPUSpaceTimeParameterValues,
   GPU_SPACE_TIME_SUMMARY_LENGTH,
   GPUMantelTest,
-  GPUNeighborSearch,
+  GPUNeighborSearch
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`. */
 export type MantelTestExampleInput = {

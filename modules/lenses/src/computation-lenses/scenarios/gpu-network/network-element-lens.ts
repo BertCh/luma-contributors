@@ -6,7 +6,6 @@ import {assert, Buffer, type Device} from '@luma.gl/core';
 import {
   createGPUComputationCaptures,
   describeGPUCommandGraph,
-  createGPUComputationMetrics,
   type GPUAnalysisChoice,
   type GPUComputationCapture,
   type GPUComputationKeySpace,
@@ -34,10 +33,13 @@ import {
 import {assertValidLensSidecars} from '../../validate-lens-record';
 import {
   addLensViewSnapshot,
+  LENS_RECORD_SOURCE_TEXT,
+  readLensRunMetrics,
   readLensViewSnapshot,
-  submitLensGraph,
+  submitTimedLensGraph,
   type LensViewSnapshot
 } from '../../lens-view-snapshot';
+import {recordWGSLKernelNodes} from '@luma-contributors/analysis/analysis-core';
 
 /** The prepared Chicago Loop road extract, or a deterministic transformation of it. */
 export type NetworkRoads = ReturnType<typeof loadChicagoLoopRoads>;
@@ -136,6 +138,8 @@ class ElementLensGraph extends GPUCommandGraph {
     super(device, {id});
     this.observed = new Set(retain);
     this.structureOnly = structureOnly;
+    // Kernel facts come from createWGSLKernelNode, so structure-only records carry them too.
+    recordWGSLKernelNodes(this);
   }
 
   override createTransientBuffer(descriptor: GraphBufferDescriptor): GraphBufferHandle {
@@ -217,7 +221,11 @@ async function buildNetworkElement(
     });
     compiled = structureOnly ? graph.compile() : await graph.compileAsync();
     const own = scenario.formulas.map(id => NETWORK_FORMULA_REFS[id]);
-    const description = describeGPUCommandGraph(compiled, {domain: 'gpu-network'});
+    const description = describeGPUCommandGraph(compiled, {
+      domain: 'gpu-network',
+      graph,
+      sourceText: LENS_RECORD_SOURCE_TEXT
+    });
     const graphs = [
       {
         ...description,
@@ -287,7 +295,16 @@ export async function recordNetworkElement(
   );
   try {
     const {topology} = context;
-    submitLensGraph(device, compiled, {parameters: undefined, coalesceComputePasses: false});
+    const submission = submitTimedLensGraph(device, compiled, {
+      parameters: undefined,
+      coalesceComputePasses: false
+    });
+    const timedMetrics = await readLensRunMetrics(submission, {
+      runId: record.runId,
+      graphId: record.graphs[0].id,
+      taps: 1,
+      retained: scenario.retain
+    });
     const captured = await readLensViewSnapshot(snapshot, {graphId: record.graphs[0].id});
     const final: NetworkFinalReader = name => getNetworkFinalCapture(captured, name);
     const hasRoadContext = topology && scenario.roadContext !== false;
@@ -319,20 +336,7 @@ export async function recordNetworkElement(
       ...scenario.capture(final, context, captured)
     ];
     const captures = createGPUComputationCaptures({runId: record.runId, snapshots});
-    const metrics = [
-      createGPUComputationMetrics({
-        runId: record.runId,
-        graph: record.graphs[0].id,
-        timing: {nodes: []},
-        encoding: {
-          coalesced: false,
-          timestamped: false,
-          taps: 1,
-          lensTwin: true,
-          retained: scenario.retain
-        }
-      })
-    ];
+    const metrics = [timedMetrics];
     const result = {...record, captures, metrics};
     assertValidLensSidecars(record, result);
     return result;

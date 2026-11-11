@@ -7,7 +7,7 @@
   "viewId": "skeleton-view",
   "caption": "Declared structure of GPUTerrainFlow on the Dixie Fire DEM. depth: 445. structure metadata only. work 573 nodes.",
   "description": "Declared structure of GPUTerrainFlow on the Dixie Fire DEM. depth: 445. structure metadata only. work 573 nodes.",
-  "llms": "Declared structure of GPUTerrainFlow on the Dixie Fire DEM\n\n- depth: 445\n- work 573 nodes\n- loops 0\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Declared structure of GPUTerrainFlow on the Dixie Fire DEM\n\n- depth: 445\n- work 573 nodes\n- loops 0\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "depth",
     "value": "445"
@@ -41,10 +41,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.105Z",
+    "date": "2026-11-11T15:21:34.771Z",
     "runId": "run-c4744640",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

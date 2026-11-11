@@ -6,7 +6,7 @@
 export {};
 import './rose-statistic.lens';
 import './spatial-clustering.lens';
-import './k-means.lens';
+import './spatial-k-means.lens';
 import './hierarchical-density-clustering.lens';
 import './group-geometry.lens';
 import './group-convex-hull.lens';

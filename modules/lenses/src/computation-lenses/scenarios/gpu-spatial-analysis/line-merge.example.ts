@@ -4,10 +4,8 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPULineMerge,
-  type GPULineGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPULineMerge} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded Chicago geometry and parameters for GPULineMerge. */
 export type LineMergeExampleInput = {

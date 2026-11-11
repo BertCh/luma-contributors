@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis.spatial-weights-transform. nodes: 164. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis.spatial-weights-transform. nodes: 164. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis.spatial-weights-transform\n\n- nodes: 164\n- 24 visible units vs budget 24\n- 164 hidden nodes\n- Edges by kind: raw 289, war 45, waw 30\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis.spatial-weights-transform\n\n- nodes: 164\n- 24 visible units vs budget 24\n- 164 hidden nodes\n- Edges by kind: raw 289, war 45, waw 30\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "164"
@@ -39,9 +39,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:28.775Z",
+    "date": "2026-11-11T15:21:28.228Z",
     "runId": "run-e7b7e623",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-e7b7e623",

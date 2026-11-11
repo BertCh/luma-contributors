@@ -10,7 +10,7 @@ import {
   GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   splitTimestamps
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Observation columns the lens scenario reads from `f-chicago-nature.json`. */
 export type TimeWindowFilterExampleInput = {

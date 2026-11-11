@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
-import type {GPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {createS2ChicagoFrame, projectS2Positions} from './s2-lens-run';
 
 /** iNaturalist observations of Chicago's North Side, projected to local metres. */

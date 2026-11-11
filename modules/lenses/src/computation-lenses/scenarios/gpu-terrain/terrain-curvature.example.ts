@@ -7,11 +7,11 @@ import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
-  GPUParameterBuffer,
   GPUTerrainCurvature,
   getGPUTerrainCurvatureParameterValues,
   GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Graph, grid and caller-owned views the example wires together. */
 export type TerrainCurvatureExampleInput = {
@@ -39,6 +39,8 @@ export async function runExample(device: Device, input: TerrainCurvatureExampleI
       parameters: parameters.importToGraph(graph),
       method: 'evans-young',
       cellSizeMode: 'uniform',
+      // borderMode defaults to 'one-sided': outside samples extend the surface quadratically, so
+      // the outer ring is 0 on a plane ('clamp' gave a spurious border curvature).
       output: {curvatures: {profile: curvatureProfile, plan: curvaturePlan}} // 1/m, convex positive
     })
   );

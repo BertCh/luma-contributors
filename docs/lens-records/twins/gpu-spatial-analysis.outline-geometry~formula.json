@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use…",
   "description": "Formula Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use…",
-  "llms": "Formula Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use u=0. Distance d is clamped nonnegative. This is an equirectangular drawing approximation, not spherical destination.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use u=0. Distance d is clamped nonnegative. This is an equirectangular drawing approximation, not spherical destination.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.outline-geometry</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{p&#39;}=\\term{point}{p}+\\term{distance}{d}\\begin{cases}\\term{direction}{u}&amp;\\text{planar}\\\\\\dfrac{180}{\\pi\\term{radius}{R}}\\left(\\dfrac{\\term{direction}{u_x}}{\\max(\\cos(\\pi\\term{point}{p_y}/180),10^{-6})},\\term{direction}{u_y}\\right)&amp;\\text{longitude/latitude}\\end{cases}</pre><p class=\"lens-ascii\">Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use u=0. Distance d is clamped nonnegative. This is an equirectangular drawing approximation, not spherical destination.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"output\">Emitted triangle vertex · output · unknown — wgsl outputPositions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"point\">Endpoint or disc center in offsetPoint · input · unknown — wgsl p not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distance\">Nonnegative outline distance · parameter · unknown — wgsl distance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"direction\">Disc direction or signed segment normal · intermediate · unknown — wgsl direction not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"radius\">Context sphere radius in length units · constant · unknown — wgsl RADIUS not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.outline-geometry</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{p&#39;}=\\term{point}{p}+\\term{distance}{d}\\begin{cases}\\term{direction}{u}&amp;\\text{planar}\\\\\\dfrac{180}{\\pi\\term{radius}{R}}\\left(\\dfrac{\\term{direction}{u_x}}{\\max(\\cos(\\pi\\term{point}{p_y}/180),10^{-6})},\\term{direction}{u_y}\\right)&amp;\\text{longitude/latitude}\\end{cases}</pre><p class=\"lens-ascii\">Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use u=0. Distance d is clamped nonnegative. This is an equirectangular drawing approximation, not spherical destination.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"output\">Emitted triangle vertex · output · outputPositions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"point\">Endpoint or disc center in offsetPoint · input · p</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"distance\">Nonnegative outline distance · parameter · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"direction\">Disc direction or signed segment normal · intermediate · direction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"radius\">Context sphere radius in length units · constant · RADIUS</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "Emitted triangle vertex",
         "output",
-        "unknown",
+        "outputPositions",
         "—",
         "metadata"
       ],
       [
         "Endpoint or disc center in offsetPoint",
         "input",
-        "unknown",
+        "p",
         "—",
         "metadata"
       ],
       [
         "Nonnegative outline distance",
         "parameter",
-        "unknown",
+        "distance",
         "—",
         "metadata"
       ],
       [
         "Disc direction or signed segment normal",
         "intermediate",
-        "unknown",
+        "direction",
         "—",
         "metadata"
       ],
       [
         "Context sphere radius in length units",
         "constant",
-        "unknown",
+        "RADIUS",
         "—",
         "metadata"
       ]
@@ -90,7 +90,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:25.380Z",
+    "date": "2026-11-11T15:21:01.324Z",
     "runId": "run-a3c19d2a",
     "observerEffects": []
   },

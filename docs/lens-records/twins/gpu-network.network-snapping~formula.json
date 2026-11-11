@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d < bestDistance (strict, so ties go to the smallest edge row;…",
   "description": "Formula For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d < bestDistance (strict, so ties go to the smallest edge row;…",
-  "llms": "Formula For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d < bestDistance (strict, so ties go to the smallest edge row; NaN never wins). Distances are in the spatial context length unit (meters for a great-circle longitude/latitude context); with a maximum snap distance, edges beyond it are skipped and an unsnapped point gets NONE.\n\n- bound symbols: 0/3\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d < bestDistance (strict, so ties go to the smallest edge row; NaN never wins). Distances are in the spatial context length unit (meters for a great-circle longitude/latitude context); with a maximum snap distance, edges beyond it are skipped and an unsnapped point gets NONE.\n\n- bound symbols: 3/3\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/3"
+    "value": "3/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.snapping.nearest</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{bestEdge}{e^*}=\\operatorname*{argmin}_{e}\\ \\term{distance}{d(p,e)}</pre><p class=\"lens-ascii\">For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d &lt; bestDistance (strict, so ties go to the smallest edge row; NaN never wins). Distances are in the spatial context length unit (meters for a great-circle longitude/latitude context); with a maximum snap distance, edges beyond it are skipped and an unsnapped point gets NONE.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"bestEdge\">snapped edge row · output · unknown — wgsl bestEdge not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distance\">distance to edge · intermediate · unknown — wgsl distance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"bestDistance\">smallest distance so far · intermediate · unknown — wgsl bestDistance not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.snapping.nearest</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{bestEdge}{e^*}=\\operatorname*{argmin}_{e}\\ \\term{distance}{d(p,e)}</pre><p class=\"lens-ascii\">For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d &lt; bestDistance (strict, so ties go to the smallest edge row; NaN never wins). Distances are in the spatial context length unit (meters for a great-circle longitude/latitude context); with a maximum snap distance, edges beyond it are skipped and an unsnapped point gets NONE.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-snapping-compiled:network-snapping-scan\" data-value=\"bestEdge\">snapped edge row · output · bestEdge</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-snapping-compiled:network-snapping-scan\" data-value=\"distance\">distance to edge · intermediate · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-snapping-compiled:network-snapping-scan\" data-value=\"bestDistance\">smallest distance so far · intermediate · bestDistance</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "snapped edge row",
         "output",
-        "unknown",
+        "bestEdge",
         "—",
         "metadata"
       ],
       [
         "distance to edge",
         "intermediate",
-        "unknown",
+        "distance",
         "—",
         "metadata"
       ],
       [
         "smallest distance so far",
         "intermediate",
-        "unknown",
+        "bestDistance",
         "—",
         "metadata"
       ]
@@ -61,10 +61,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.219Z",
+    "date": "2026-11-11T15:20:13.149Z",
     "runId": "run-0c61ec96",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased"
     ]

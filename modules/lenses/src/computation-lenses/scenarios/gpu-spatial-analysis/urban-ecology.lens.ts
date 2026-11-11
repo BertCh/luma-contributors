@@ -81,6 +81,16 @@ registerS2LensScenarios(
       id: 'gpu-spatial-analysis.population-support-alignment-recipe',
       element: 'addPopulationSupportAlignmentRecipe',
       title: 'Explicit population support identifiers reordered with completeness evidence'
+    },
+    {
+      id: 'gpu-spatial-analysis.sparse-resistance-connectivity-recipe',
+      element: 'addSparseResistanceConnectivityRecipe',
+      title: 'Corner-to-corner current through a 3 x 3 conductance lattice'
+    },
+    {
+      id: 'gpu-spatial-analysis.raster-resistance-connectivity-recipe',
+      element: 'addRasterResistanceConnectivityRecipe',
+      title: 'Current through the gap of a no-data wall on a resistance raster'
     }
   ]
 );

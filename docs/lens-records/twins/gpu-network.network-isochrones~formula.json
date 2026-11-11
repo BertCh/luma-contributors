@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bit…",
   "description": "Formula Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bit…",
-  "llms": "Formula Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached.\n\n- bound symbols: 0/6\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached. Bands of the raster are upper-inclusive, (a, b]: each break is moved to the next float32 above it before GPUIsobands. In max mode a sample cost is first the cheaper direction of its road, min(cost[u] + t*weight, cost[v] + (1 - t)*reverseWeight), and each pixel keeps the maximum.\n\n- bound symbols: 6/6\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/6"
+    "value": "6/6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.isochrones.cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{cost}{c}=\\left|\\term{sourceCost}{d_u}+\\term{t}{t}\\,\\term{weight}{w_{uv}}+\\term{walk}{a}\\,\\term{pixelDistance}{r}\\right|,\\qquad \\text{pixel}=\\min c</pre><p class=\"lens-ascii\">Per edge sample at fraction t along u-&gt;v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cost\">pixel cost candidate · output · unknown — wgsl cost not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sourceCost\">cost at edge source · input · unknown — wgsl sourceCost not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"t\">sample fraction · intermediate · unknown — wgsl t not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">edge travel time · input · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"walk\">walk cost per metre · parameter · unknown — wgsl walk not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"pixelDistance\">sample-to-pixel distance · intermediate · unknown — wgsl pixelDistance not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.isochrones.cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{cost}{c}=\\left|\\term{sourceCost}{d_u}+\\term{t}{t}\\,\\term{weight}{w_{uv}}+\\term{walk}{a}\\,\\term{pixelDistance}{r}\\right|,\\qquad \\text{pixel}=\\min c</pre><p class=\"lens-ascii\">Per edge sample at fraction t along u-&gt;v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached. Bands of the raster are upper-inclusive, (a, b]: each break is moved to the next float32 above it before GPUIsobands. In max mode a sample cost is first the cheaper direction of its road, min(cost[u] + t*weight, cost[v] + (1 - t)*reverseWeight), and each pixel keeps the maximum.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-search-seed\" data-value=\"cost\">pixel cost candidate · output · cost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-search-relax-0\" data-value=\"sourceCost\">cost at edge source · input · sourceCost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-splat\" data-value=\"t\">sample fraction · intermediate · t</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-search-relax-0\" data-value=\"weight\">edge travel time · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-splat\" data-value=\"walk\">walk cost per metre · parameter · walk</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-splat\" data-value=\"pixelDistance\">sample-to-pixel distance · intermediate · pixelDistance</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,42 +29,42 @@
       [
         "pixel cost candidate",
         "output",
-        "unknown",
+        "cost",
         "—",
         "metadata"
       ],
       [
         "cost at edge source",
         "input",
-        "unknown",
+        "sourceCost",
         "—",
         "metadata"
       ],
       [
         "sample fraction",
         "intermediate",
-        "unknown",
+        "t",
         "—",
         "metadata"
       ],
       [
         "edge travel time",
         "input",
-        "unknown",
+        "weight",
         "—",
         "metadata"
       ],
       [
         "walk cost per metre",
         "parameter",
-        "unknown",
+        "walk",
         "—",
         "metadata"
       ],
       [
         "sample-to-pixel distance",
         "intermediate",
-        "unknown",
+        "pixelDistance",
         "—",
         "metadata"
       ]
@@ -80,21 +80,21 @@
   },
   "formula": {
     "tex": "\\term{cost}{c}=\\left|\\term{sourceCost}{d_u}+\\term{t}{t}\\,\\term{weight}{w_{uv}}+\\term{walk}{a}\\,\\term{pixelDistance}{r}\\right|,\\qquad \\text{pixel}=\\min c",
-    "ascii": "Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached.",
+    "ascii": "Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached. Bands of the raster are upper-inclusive, (a, b]: each break is moved to the next float32 above it before GPUIsobands. In max mode a sample cost is first the cheaper direction of its road, min(cost[u] + t*weight, cost[v] + (1 - t)*reverseWeight), and each pixel keeps the maximum.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.948Z",
-    "runId": "run-839e5081",
+    "date": "2026-11-11T15:20:12.662Z",
+    "runId": "run-0ba3e5fb",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-839e5081",
+    "runId": "run-0ba3e5fb",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

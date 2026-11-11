@@ -95,7 +95,7 @@ defineLensScenario({
                 keySpace: 'place',
                 meaning: 'distance to nearest road in m; -1 means unmatched'
               },
-              overflow: {view: output.status.overflow, role: 'intermediate'},
+              candidateOverflow: {view: output.status.candidateOverflow, role: 'intermediate'},
               footPoints: {
                 view: output.footPoints,
                 role: 'output',

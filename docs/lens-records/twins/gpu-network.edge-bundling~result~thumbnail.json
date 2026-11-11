@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.edge-bundling: straightFlows → bundledPaths.",
   "description": "Result of gpu-network.edge-bundling: straightFlows → bundledPaths. lines: 150. values read back from the GPU run. input straightFlows: 150 lines.",
-  "llms": "Result of gpu-network.edge-bundling: straightFlows → bundledPaths\n\n- lines: 150\n- input straightFlows: 150 lines\n- Simple equirectangular projection (x scaled by cos 41.87°); not equal-area.\n- 300 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2400 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients bundledPaths, bundleOffsets retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.edge-bundling: straightFlows → bundledPaths\n\n- lines: 150\n- input straightFlows: 150 lines\n- Simple equirectangular projection (x scaled by cos 41.87°); not equal-area.\n- 300 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2400 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients bundledPaths, bundleOffsets retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "150"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.704Z",
+    "date": "2026-11-11T15:20:12.231Z",
     "runId": "run-cae14da7",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients bundledPaths, bundleOffsets retained instead of aliased"
     ]

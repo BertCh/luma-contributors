@@ -105,14 +105,14 @@ defineLensScenario({
               leftOffsets: {view: left.lineOffsets, role: 'intermediate'},
               rightOffsets: {view: right.lineOffsets, role: 'intermediate'},
               runOffsets: {view: output.runOffsets, role: 'intermediate'},
-              leftLineIds: {
-                view: output.runs.leftLineIds,
+              leftSourceIds: {
+                view: output.runs.leftSourceIds,
                 role: 'intermediate',
                 keySpace: 'run',
                 meaning: 'left boundary index (0 is West Town); unused slots are 0xffffffff'
               },
-              rightLineIds: {
-                view: output.runs.rightLineIds,
+              rightSourceIds: {
+                view: output.runs.rightSourceIds,
                 role: 'intermediate',
                 keySpace: 'run',
                 meaning: 'right boundary index in the other 16 areas; unused slots are 0xffffffff'

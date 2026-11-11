@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of origin-destination row 10. bundleStart: 160. values read back from the GPU run. result: 3 quantities.",
   "description": "Receipt of origin-destination row 10. bundleStart: 160. values read back from the GPU run. result: 3 quantities.",
-  "llms": "Receipt of origin-destination row 10\n\n- bundleStart: 160\n- result: 3 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients bundledPaths, bundleOffsets retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of origin-destination row 10\n\n- bundleStart: 160\n- result: 3 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients bundledPaths, bundleOffsets retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bundleStart",
     "value": "160"
@@ -57,10 +57,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.704Z",
+    "date": "2026-11-11T15:20:12.231Z",
     "runId": "run-cae14da7",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients bundledPaths, bundleOffsets retained instead of aliased"
     ]

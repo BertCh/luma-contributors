@@ -13,11 +13,11 @@ import {
   getGPUTerrainHorizonParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
   GPU_TERRAIN_HORIZON_PARAMETER_LENGTH,
-  GPUParameterBuffer,
   GPUSolarIrradiance,
   GPUTerrainDerivatives,
   GPUTerrainHorizon
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Graph, grid and caller-owned views the example wires together. */
 export type SolarIrradianceExampleInput = {
@@ -57,6 +57,7 @@ export async function runExample(device: Device, input: SolarIrradianceExampleIn
     })
   );
   // Prerequisite: Horn slope and aspect tilt each cell's surface toward or away from the sun.
+  // The default one-sided border keeps the outer ring's slope exact on a plane.
   const derivativeSettings = new GPUParameterBuffer(device, {
     id: 'derivative-settings',
     format: 'float32',

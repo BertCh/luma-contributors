@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops > 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min ov…",
   "description": "Formula r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops > 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min ov…",
-  "llms": "Formula r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops > 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min over neighbours of zf(n) + epsilon) with boundary cells keeping z; A(c) = w(c) + sum of A(u) over donors u with r(u) = c, w = runoff (1 here), solved by pull rounds: a thread finalizes a cell once every donor is final and then walks downstream (up to 1024 steps); streams = A >= threshold\n\n- bound symbols: 0/7\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops > 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min over neighbours of zf(n) + epsilon) with boundary cells keeping z; A(c) = w(c) + sum of A(u) over donors u with r(u) = c, w = runoff (1 here), solved by pull rounds: a thread finalizes a cell once every donor is final and then walks downstream (up to 1024 steps); streams = A >= threshold\n\n- bound symbols: 7/7\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/7"
+    "value": "7/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-flow.d8</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{receiver}{r}(c) = \\operatorname*{arg\\,max}_{k}\\ \\frac{\\term{surface}{\\tilde z_c} - \\term{neighborSurface}{\\tilde z_k}}{\\term{groundDistance}{d_k}},\\quad \\tilde z_c = \\max\\!\\bigl(z_c,\\ \\min_n \\tilde z_n + \\term{epsilon}{\\varepsilon}\\bigr),\\quad \\term{accumulation}{A}(c) = \\term{weight}{w_c} + \\sum_{u:\\ r(u) = c} A(u)</pre><p class=\"lens-ascii\">r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops &gt; 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min over neighbours of zf(n) + epsilon) with boundary cells keeping z; A(c) = w(c) + sum of A(u) over donors u with r(u) = c, w = runoff (1 here), solved by pull rounds: a thread finalizes a cell once every donor is final and then walks downstream (up to 1024 steps); streams = A &gt;= threshold</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"receiver\">r · output · unknown — wgsl bestNeighbor not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"surface\">z̃_c · input · unknown — wgsl centerSurface not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"neighborSurface\">z̃_k · input · unknown — wgsl neighborSurface not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"groundDistance\">d_k · parameter · unknown — wgsl getD8Distance not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"epsilon\">ε · parameter · unknown — wgsl epsilon not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"accumulation\">A · output · unknown — wgsl acc not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">w_c · parameter · unknown — wgsl getWeight not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-flow.d8</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{receiver}{r}(c) = \\operatorname*{arg\\,max}_{k}\\ \\frac{\\term{surface}{\\tilde z_c} - \\term{neighborSurface}{\\tilde z_k}}{\\term{groundDistance}{d_k}},\\quad \\tilde z_c = \\max\\!\\bigl(z_c,\\ \\min_n \\tilde z_n + \\term{epsilon}{\\varepsilon}\\bigr),\\quad \\term{accumulation}{A}(c) = \\term{weight}{w_c} + \\sum_{u:\\ r(u) = c} A(u)</pre><p class=\"lens-ascii\">r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops &gt; 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min over neighbours of zf(n) + epsilon) with boundary cells keeping z; A(c) = w(c) + sum of A(u) over donors u with r(u) = c, w = runoff (1 here), solved by pull rounds: a thread finalizes a cell once every donor is final and then walks downstream (up to 1024 steps); streams = A &gt;= threshold</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-flow-direction\" data-value=\"receiver\">r · output · bestNeighbor</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-flow-direction\" data-value=\"surface\">z̃_c · input · centerSurface</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-flow-direction\" data-value=\"neighborSurface\">z̃_k · input · neighborSurface</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-fill-init\" data-value=\"groundDistance\">d_k · parameter · getD8Distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-spill-select\" data-value=\"epsilon\">ε · parameter · epsilon</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-accumulate-round-0\" data-value=\"accumulation\">A · output · acc</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-accumulate-round-0\" data-value=\"weight\">w_c · parameter · getWeight</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,49 +29,49 @@
       [
         "r",
         "output",
-        "unknown",
+        "bestNeighbor",
         "—",
         "metadata"
       ],
       [
         "z̃_c",
         "input",
-        "unknown",
+        "centerSurface",
         "—",
         "metadata"
       ],
       [
         "z̃_k",
         "input",
-        "unknown",
+        "neighborSurface",
         "—",
         "metadata"
       ],
       [
         "d_k",
         "parameter",
-        "unknown",
+        "getD8Distance",
         "—",
         "metadata"
       ],
       [
         "ε",
         "parameter",
-        "unknown",
+        "epsilon",
         "—",
         "metadata"
       ],
       [
         "A",
         "output",
-        "unknown",
+        "acc",
         "—",
         "metadata"
       ],
       [
         "w_c",
         "parameter",
-        "unknown",
+        "getWeight",
         "—",
         "metadata"
       ]
@@ -115,10 +115,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.105Z",
+    "date": "2026-11-11T15:21:34.771Z",
     "runId": "run-c4744640",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

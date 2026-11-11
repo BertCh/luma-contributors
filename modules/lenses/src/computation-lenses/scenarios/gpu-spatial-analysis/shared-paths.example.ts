@@ -4,10 +4,8 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUSharedPaths,
-  type GPULineGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUSharedPaths} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded Chicago geometry and parameters for GPUSharedPaths. */
 export type SharedPathsExampleInput = {
@@ -32,8 +30,20 @@ export async function runExample(
       usage
     ),
     offsets: createTransientView(graph, 'runOffsets', 'uint32', intersectionCapacity + 1, usage),
-    leftLineIds: createTransientView(graph, 'leftLineIds', 'uint32', intersectionCapacity, usage),
-    rightLineIds: createTransientView(graph, 'rightLineIds', 'uint32', intersectionCapacity, usage),
+    leftSourceIds: createTransientView(
+      graph,
+      'leftSourceIds',
+      'uint32',
+      intersectionCapacity,
+      usage
+    ),
+    rightSourceIds: createTransientView(
+      graph,
+      'rightSourceIds',
+      'uint32',
+      intersectionCapacity,
+      usage
+    ),
     forward: createTransientView(graph, 'forward', 'uint32', intersectionCapacity, usage)
   };
   const status = {

@@ -15,10 +15,12 @@ import {
 } from '@luma-contributors/analysis/raster-analysis';
 import {
   addChangeOfSupportRecipe,
-  GPUParameterBuffer,
-  type GPUChangeOfSupportZones,
-  type GPUSpatialContext
+  type GPUChangeOfSupportZones
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUParameterBuffer,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Zone systems the lens scenario uploads from the Chicago North Side tracts and areas. */
 export type ChangeOfSupportRecipeExampleInput = {

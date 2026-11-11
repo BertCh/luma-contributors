@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUBufferSurface,
-  type GPUPolygonGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUBufferSurface} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Parks in UTM 16N metres, the packed distance (50 m) and the output capacities. */
 export type BufferSurfaceExampleInput = {
@@ -44,12 +42,11 @@ export async function runExample(
       positions: view('bufferPositions', 'float32x2', capacity.vertices),
       featureOffsets: view('bufferFeatureOffsets', 'uint32', capacity.rings + 1),
       polygonOffsets: view('bufferPolygonOffsets', 'uint32', capacity.rings + 1),
-      ringOffsets: view('bufferRingOffsets', 'uint32', capacity.rings + 1),
-      sourceIds: view('bufferSourceIds', 'uint32', capacity.rings)
+      ringOffsets: view('bufferRingOffsets', 'uint32', capacity.rings + 1)
     },
     status: {
       count: scalar('bufferCount'),
-      requiredCount: scalar('bufferRequiredCount'),
+      requiredRingCount: scalar('bufferRequiredRingCount'),
       overflow: scalar('bufferOverflow'),
       candidateOverflow: scalar('bufferCandidateOverflow')
     },

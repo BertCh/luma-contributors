@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUComputationKeySpace} from '@luma-contributors/analysis/computation-record';
-import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createGPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {defineLensScenario} from '../../define-lens-scenarios';
 import {S2_DATASETS} from './s2-datasets';
 import type {S2CaptureSpec} from './s2-lens-run';

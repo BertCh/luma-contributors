@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1'(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s < 1; otherwise NaN, a…",
   "description": "Formula D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1'(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s < 1; otherwise NaN, a…",
-  "llms": "Formula D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1'(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s < 1; otherwise NaN, as for a failed fit.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1'(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s < 1; otherwise NaN, as for a failed fit.\n\n- bound symbols: 5/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-lag-impacts</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{direct}{D_k}&amp;=\\frac{\\term{beta}{\\beta_k}}{n}\\Big(n+\\sum_{q=1}^{Q}\\term{rho}{\\rho}^q\\operatorname{tr}W^q\\Big)=\\frac{\\beta_k}{n}\\operatorname{tr}(I-\\rho W)^{-1}\\\\\n\\term{total}{T_k}&amp;=\\frac{\\beta_k}{n}\\Big(n+\\sum_{q=1}^{Q}\\rho^q\\,\\mathbf 1^\\top W^q\\mathbf 1\\Big)=\\frac{\\beta_k}{n}\\mathbf 1^\\top(I-\\rho W)^{-1}\\mathbf 1\\\\\n\\term{indirect}{N_k}&amp;=T_k-D_k\n\\end{aligned}</pre><p class=\"lens-ascii\">D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1&#39;(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s &lt; 1; otherwise NaN, as for a failed fit.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"direct\">direct · output · unknown — wgsl direct not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"beta\">coefficient · input · unknown — wgsl beta not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"rho\">spatial lag parameter · input · unknown — wgsl rho not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"total\">total · output · unknown — wgsl total not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"indirect\">indirect · output · unknown — wgsl impacts not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-lag-impacts</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{direct}{D_k}&amp;=\\frac{\\term{beta}{\\beta_k}}{n}\\Big(n+\\sum_{q=1}^{Q}\\term{rho}{\\rho}^q\\operatorname{tr}W^q\\Big)=\\frac{\\beta_k}{n}\\operatorname{tr}(I-\\rho W)^{-1}\\\\\n\\term{total}{T_k}&amp;=\\frac{\\beta_k}{n}\\Big(n+\\sum_{q=1}^{Q}\\rho^q\\,\\mathbf 1^\\top W^q\\mathbf 1\\Big)=\\frac{\\beta_k}{n}\\mathbf 1^\\top(I-\\rho W)^{-1}\\mathbf 1\\\\\n\\term{indirect}{N_k}&amp;=T_k-D_k\n\\end{aligned}</pre><p class=\"lens-ascii\">D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1&#39;(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s &lt; 1; otherwise NaN, as for a failed fit.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-impacts-impacts\" data-value=\"direct\">direct · output · direct</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-maximum-likelihood-ols-response-finish\" data-value=\"beta\">coefficient · input · beta</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-maximum-likelihood-rho-search\" data-value=\"rho\">spatial lag parameter · input · rho</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-maximum-likelihood-ols-response-moments-tiles\" data-value=\"total\">total · output · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-impacts-impacts\" data-value=\"indirect\">indirect · output · impacts</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "direct",
         "output",
-        "unknown",
+        "direct",
         "—",
         "metadata"
       ],
       [
         "coefficient",
         "input",
-        "unknown",
+        "beta",
         "—",
         "metadata"
       ],
       [
         "spatial lag parameter",
         "input",
-        "unknown",
+        "rho",
         "—",
         "metadata"
       ],
       [
         "total",
         "output",
-        "unknown",
+        "total",
         "—",
         "metadata"
       ],
       [
         "indirect",
         "output",
-        "unknown",
+        "impacts",
         "—",
         "metadata"
       ]
@@ -88,12 +88,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:28.025Z",
-    "runId": "run-4fa4057e",
-    "observerEffects": []
+    "date": "2026-11-11T15:21:23.055Z",
+    "runId": "run-d9c22510",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
-    "runId": "run-4fa4057e",
+    "runId": "run-d9c22510",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

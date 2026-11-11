@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of grid cells 1893. conditionalFriction: 0.4000000059604645. values read back from the GPU run. result: 3 quantities.",
   "description": "Receipt of grid cells 1893. conditionalFriction: 0.4000000059604645. values read back from the GPU run. result: 3 quantities.",
-  "llms": "Receipt of grid cells 1893\n\n- conditionalFriction: 0.4000000059604645\n- result: 3 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of grid cells 1893\n\n- conditionalFriction: 0.4000000059604645\n- result: 3 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "conditionalFriction",
     "value": "0.4000000059604645"
@@ -57,10 +57,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.615Z",
+    "date": "2026-11-11T15:20:14.203Z",
     "runId": "run-8bcaf6c2",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

@@ -26,7 +26,7 @@ defineLensScenario({
       import('./local-frame-projection.example'),
       import('./s3-lens-data').then(module => module.loadS3ChicagoRoads())
     ]);
-    const {createGPULocalFrame} = await import('@luma-contributors/analysis/gpu-spatial-analysis');
+    const {createGPULocalFrame} = await import('@luma-contributors/analysis/analysis-core');
     const longitudes = data.positionsLonLat.filter((_, index) => index % 2 === 0);
     const latitudes = data.positionsLonLat.filter((_, index) => index % 2 === 1);
     const bounds: [number, number, number, number] = [

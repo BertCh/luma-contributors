@@ -19,6 +19,8 @@ const elements = [
   'addLandscapeMetricsRecipe',
   'addPatchProximityRecipe',
   'addResistanceConnectivityRecipe',
+  'addSparseResistanceConnectivityRecipe',
+  'addRasterResistanceConnectivityRecipe',
   'addSegregationDecompositionRecipe',
   'addSegregationCounterfactualRecipe',
   'addPopulationSupportAlignmentRecipe'
@@ -117,6 +119,25 @@ for (const element of elements)
         close('output-currents', reference.resistance.currents);
         expect(read('status')[0]).toBe(1);
         break;
+      case 'addSparseResistanceConnectivityRecipe': {
+        // Unit current enters at corner 0 and leaves at corner 8 of the 3 x 3 lattice.
+        const status = read('status');
+        expect(status[0]).toBe(1);
+        expect(status[1]).toBeGreaterThan(0);
+        expect(status.slice(2)).toEqual([1, 0]);
+        const currents = read('output-vertexCurrents');
+        expect(currents[0]).toBeCloseTo(1, 4);
+        expect(currents[8]).toBeCloseTo(1, 4);
+        break;
+      }
+      case 'addRasterResistanceConnectivityRecipe': {
+        // The no-data wall in column 3 has one gap (cell 21), which carries the whole current.
+        expect(read('output-solverStatus')[0]).toBe(1);
+        expect(read('output-vertexCurrents')[21]).toBeCloseTo(1, 4);
+        const potentials = read('output-potentials');
+        for (const wall of [3, 9, 15, 27]) expect(potentials[wall], `cell ${wall}`).toBeNaN();
+        break;
+      }
       case 'addSegregationDecompositionRecipe':
         close('output-indices', reference.decomposition.indices);
         close('output-decomposition', reference.decomposition.decomposition);

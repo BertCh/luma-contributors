@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUTrajectoryClosestApproach,
-  type GPUTrajectoryGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUTrajectoryClosestApproach} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUTrajectoryGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded AIS tracks and distance for GPUTrajectoryClosestApproach. */
 export type TrajectoryClosestApproachExampleInput = {

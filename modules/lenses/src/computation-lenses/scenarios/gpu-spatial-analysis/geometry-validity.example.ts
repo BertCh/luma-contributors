@@ -6,9 +6,9 @@ import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUGeometryValidity,
-  type GPUGeometryValidityProps,
-  type GPUSpatialContext
+  type GPUGeometryValidityProps
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-parks.json`. */
 export type GeometryValidityExampleInput = {

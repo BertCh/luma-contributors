@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of network node 648. matrix-row-nodes: -87.65442657470703, 41.88420104980469. values read back from the GPU run. search: 1 quantities.",
   "description": "Receipt of network node 648. matrix-row-nodes: -87.65442657470703, 41.88420104980469. values read back from the GPU run. search: 1 quantities.",
-  "llms": "Receipt of network node 648\n\n- matrix-row-nodes: -87.65442657470703, 41.88420104980469\n- search: 1 quantities\n- result: 2 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of network node 648\n\n- matrix-row-nodes: -87.65442657470703, 41.88420104980469\n- search: 1 quantities\n- result: 2 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "matrix-row-nodes",
     "value": "-87.65442657470703, 41.88420104980469"
@@ -57,10 +57,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.841Z",
+    "date": "2026-11-11T15:20:12.487Z",
     "runId": "run-cfce734e",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts retained instead of aliased"
     ]

@@ -7,11 +7,11 @@ import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
-  GPUParameterBuffer,
   GPUTerrainDerivatives,
   getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Graph, grid and caller-owned views the example wires together. */
 export type TerrainDerivativesExampleInput = {
@@ -41,6 +41,8 @@ export async function runExample(device: Device, input: TerrainDerivativesExampl
       grid, // 64 × 64 cells of 120 m, UTM 10N
       elevation: makeGPURasterBand(dem, grid),
       parameters: parameters.importToGraph(graph),
+      // borderMode defaults to 'one-sided': the outer ring uses second-order one-sided
+      // differences, exact on a plane ('clamp' halves the gradient across the edge).
       output: {slope, aspect, hillshade} // degrees, degrees from north, 0–1
     })
   );

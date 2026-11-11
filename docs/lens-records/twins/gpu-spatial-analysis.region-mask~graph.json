@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis.region-mask. nodes: 3. structure metadata only. 3 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis.region-mask. nodes: 3. structure metadata only. 3 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis.region-mask\n\n- nodes: 3\n- 3 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 2\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis.region-mask\n\n- nodes: 3\n- 3 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "3"
@@ -32,9 +32,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:26.756Z",
+    "date": "2026-11-11T15:21:15.266Z",
     "runId": "run-3587e340",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-3587e340",

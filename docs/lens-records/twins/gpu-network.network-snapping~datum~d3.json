@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of point to snap 3. snappedPositions: -87.6278076171875, 41.87693786621094. values read back from the GPU run. assignment: 1 quantities.",
   "description": "Receipt of point to snap 3. snappedPositions: -87.6278076171875, 41.87693786621094. values read back from the GPU run. assignment: 1 quantities.",
-  "llms": "Receipt of point to snap 3\n\n- snappedPositions: -87.6278076171875, 41.87693786621094\n- assignment: 1 quantities\n- result: 3 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of point to snap 3\n\n- snappedPositions: -87.6278076171875, 41.87693786621094\n- assignment: 1 quantities\n- result: 3 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "snappedPositions",
     "value": "-87.6278076171875, 41.87693786621094"
@@ -65,10 +65,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.219Z",
+    "date": "2026-11-11T15:20:13.149Z",
     "runId": "run-0c61ec96",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased"
     ]

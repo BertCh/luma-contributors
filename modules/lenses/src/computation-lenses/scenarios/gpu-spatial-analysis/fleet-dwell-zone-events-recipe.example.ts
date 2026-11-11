@@ -4,11 +4,11 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {addFleetDwellZoneEventsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  addFleetDwellZoneEventsRecipe,
   type GPUPolygonGeometryFields,
   type GPUTrajectoryGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded AIS tracks and harbour zones for the zone events fleet dwell recipe. */
 export type FleetDwellZoneEventsRecipeExampleInput = {

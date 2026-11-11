@@ -343,8 +343,8 @@ export const LINES_OPERATORS: SpatialFamilyOperators = {
     descriptor: {scope: 'pairwise', reduction: 'select'},
     variables: {
       'runs.positions': 'coordinate',
-      'runs.leftLineIds': 'category',
-      'runs.rightLineIds': 'category',
+      'runs.leftSourceIds': 'category',
+      'runs.rightSourceIds': 'category',
       'runs.forward': 'category'
     },
     stages: ['representation', 'operator'],
@@ -429,7 +429,7 @@ export const LINES_OPERATORS: SpatialFamilyOperators = {
     formula: {
       formula: 'none',
       reason:
-        'Shared arcs are owned and simplified once, then junction and ring-size constraints and bounded intersection-repair rounds restore vertices; the graph and iterations rungs explain this topology-dependent selection.'
+        'Shared arcs are owned and simplified once, then junction and ring-size constraints and bounded intersection-repair rounds restore vertices (a conflict is a crossing pair of simplified segments or a span swept over a kept vertex of another part); the graph and iterations rungs explain this topology-dependent selection.'
     }
   },
   GPUCoverageDissolve: {

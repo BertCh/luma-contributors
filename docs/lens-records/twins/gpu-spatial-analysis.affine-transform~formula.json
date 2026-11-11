@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.affine-transform",
   "viewId": "formula-card",
-  "caption": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff). bound symbols: 0/…",
-  "description": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff). bound symbols: 0/…",
-  "llms": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff).\n\n- bound symbols: 0/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff). bound symbols: 8/…",
+  "description": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff). bound symbols: 8/…",
+  "llms": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff).\n\n- bound symbols: 8/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/8"
+    "value": "8/8"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.affine-transform</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{p&#39;}=\\begin{pmatrix}\\term{a}{a}&amp;\\term{b}{b}\\\\\\term{d}{d}&amp;\\term{e}{e}\\end{pmatrix}(\\term{point}{p}-\\term{origin}{o})+\\term{origin}{o}+\\term{translation}{t}</pre><p class=\"lens-ascii\">p&#39; = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input&#39;s fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"output\">Transformed vertex · output · unknown — wgsl outputPositions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"point\">Input vertex · input · unknown — wgsl point not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"a\">Matrix coefficient a · parameter · unknown — wgsl a not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"b\">Matrix coefficient b · parameter · unknown — wgsl b not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"d\">Matrix coefficient d · parameter · unknown — wgsl d not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"e\">Matrix coefficient e · parameter · unknown — wgsl e not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"origin\">Resolved origin · intermediate · unknown — wgsl origin not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"translation\">Translation vector · parameter · unknown — wgsl translation not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.affine-transform</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{p&#39;}=\\begin{pmatrix}\\term{a}{a}&amp;\\term{b}{b}\\\\\\term{d}{d}&amp;\\term{e}{e}\\end{pmatrix}(\\term{point}{p}-\\term{origin}{o})+\\term{origin}{o}+\\term{translation}{t}</pre><p class=\"lens-ascii\">p&#39; = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input&#39;s fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-transform\" data-value=\"output\">Transformed vertex · output · outputPositions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"point\">Input vertex · input · point</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"a\">Matrix coefficient a · parameter · a</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"b\">Matrix coefficient b · parameter · b</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-transform\" data-value=\"d\">Matrix coefficient d · parameter · d</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"e\">Matrix coefficient e · parameter · e</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"origin\">Resolved origin · intermediate · origin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-transform\" data-value=\"translation\">Translation vector · parameter · translation</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,56 +29,56 @@
       [
         "Transformed vertex",
         "output",
-        "unknown",
+        "outputPositions",
         "—",
         "metadata"
       ],
       [
         "Input vertex",
         "input",
-        "unknown",
+        "point",
         "—",
         "metadata"
       ],
       [
         "Matrix coefficient a",
         "parameter",
-        "unknown",
+        "a",
         "—",
         "metadata"
       ],
       [
         "Matrix coefficient b",
         "parameter",
-        "unknown",
+        "b",
         "—",
         "metadata"
       ],
       [
         "Matrix coefficient d",
         "parameter",
-        "unknown",
+        "d",
         "—",
         "metadata"
       ],
       [
         "Matrix coefficient e",
         "parameter",
-        "unknown",
+        "e",
         "—",
         "metadata"
       ],
       [
         "Resolved origin",
         "intermediate",
-        "unknown",
+        "origin",
         "—",
         "metadata"
       ],
       [
         "Translation vector",
         "parameter",
-        "unknown",
+        "translation",
         "—",
         "metadata"
       ]
@@ -101,7 +101,7 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:18.122Z",
+    "date": "2026-11-11T15:20:16.070Z",
     "runId": "run-6fcc6b79",
     "observerEffects": []
   },

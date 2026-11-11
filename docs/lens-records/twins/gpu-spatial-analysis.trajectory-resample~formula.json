@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n>1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks o…",
   "description": "Formula Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n>1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks o…",
-  "llms": "Formula Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n>1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks output zero; absent clock samples are NaN. Clock sampleTimes are k*clockStep relative to clock start, while other sampleTimes are relative to track start.\n\n- bound symbols: 0/11\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n>1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks output zero; absent clock samples are NaN. Clock sampleTimes are k*clockStep relative to clock start, while other sampleTimes are relative to track start.\n\n- bound symbols: 8/11\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/11"
+    "value": "8/11"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-resample</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{progress}{q_k}=\\begin{cases}\\term{total}{Q}\\term{index}{k}/(\\term{count}{n}-1)&amp;\\text{time or arc length},\\ \\term{count}{n}&gt;1\\\\\\term{offset}{c}+\\term{index}{k}\\term{step}{h}&amp;\\text{clock}\\end{cases},\\quad \\term{position}{p_k}=\\term{interpolate}{I}(\\term{start}{a},\\term{end}{b},\\term{fraction}{t})</pre><p class=\"lens-ascii\">Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n&gt;1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks output zero; absent clock samples are NaN. Clock sampleTimes are k*clockStep relative to clock start, while other sampleTimes are relative to track start.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"progress\">progress · intermediate · unknown — wgsl targetProgress not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"total\">total · input · unknown — wgsl total not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">count · parameter · unknown — wgsl SAMPLE_COUNT not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"offset\">offset · parameter · unknown — wgsl getClockOffset not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"step\">step · parameter · unknown — wgsl clockStep not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"position\">position · output · unknown — wgsl samples not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"start\">start · input · unknown — wgsl startPosition not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"end\">end · input · unknown — wgsl endPosition not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"fraction\">fraction · input · unknown — wgsl fraction not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"interpolate\">interpolate · intermediate · unknown — wgsl interpolatePosition not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-resample</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{progress}{q_k}=\\begin{cases}\\term{total}{Q}\\term{index}{k}/(\\term{count}{n}-1)&amp;\\text{time or arc length},\\ \\term{count}{n}&gt;1\\\\\\term{offset}{c}+\\term{index}{k}\\term{step}{h}&amp;\\text{clock}\\end{cases},\\quad \\term{position}{p_k}=\\term{interpolate}{I}(\\term{start}{a},\\term{end}{b},\\term{fraction}{t})</pre><p class=\"lens-ascii\">Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n&gt;1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks output zero; absent clock samples are NaN. Clock sampleTimes are k*clockStep relative to clock start, while other sampleTimes are relative to track start.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"progress\">progress · intermediate · targetProgress</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"total\">total · input · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"count\">count · parameter · SAMPLE_COUNT</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"offset\">offset · parameter · unknown — wgsl getClockOffset not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"step\">step · parameter · unknown — wgsl clockStep not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"position\">position · output · samples</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"start\">start · input · startPosition</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"end\">end · input · endPosition</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-arc-length\" data-value=\"fraction\">fraction · input · fraction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-arc-length\" data-value=\"interpolate\">interpolate · intermediate · interpolatePosition</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "progress",
         "intermediate",
-        "unknown",
+        "targetProgress",
         "—",
         "metadata"
       ],
       [
         "total",
         "input",
-        "unknown",
+        "total",
         "—",
         "metadata"
       ],
       [
         "count",
         "parameter",
-        "unknown",
+        "SAMPLE_COUNT",
         "—",
         "metadata"
       ],
@@ -64,35 +64,35 @@
       [
         "position",
         "output",
-        "unknown",
+        "samples",
         "—",
         "metadata"
       ],
       [
         "start",
         "input",
-        "unknown",
+        "startPosition",
         "—",
         "metadata"
       ],
       [
         "end",
         "input",
-        "unknown",
+        "endPosition",
         "—",
         "metadata"
       ],
       [
         "fraction",
         "input",
-        "unknown",
+        "fraction",
         "—",
         "metadata"
       ],
       [
         "interpolate",
         "intermediate",
-        "unknown",
+        "interpolatePosition",
         "—",
         "metadata"
       ],
@@ -138,7 +138,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.383Z",
+    "date": "2026-11-11T15:21:32.207Z",
     "runId": "run-b518dbf1",
     "observerEffects": []
   },

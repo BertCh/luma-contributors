@@ -5,7 +5,6 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {
   createGPUComputationCaptures,
-  createGPUComputationMetrics,
   createGPUComputationRecord,
   describeGPUCommandGraph,
   getGPUComputationAdapter,
@@ -25,9 +24,11 @@ import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs
 import type {LensScenarioResult} from '../../types';
 import {
   addLensViewSnapshot,
+  getLensRecordSourceText,
   LensCommandGraph,
+  readLensRunMetrics,
   readLensViewSnapshot,
-  submitLensGraph
+  submitTimedLensGraph
 } from '../../lens-view-snapshot';
 
 /** Storage formats a lens can upload or capture. */
@@ -187,7 +188,9 @@ export async function runRasterLens(props: RunRasterLensProps): Promise<LensScen
     try {
       const description = describeGPUCommandGraph(compiled, {
         label: props.label,
-        domain: props.domain
+        domain: props.domain,
+        graph,
+        sourceText: getLensRecordSourceText(props.scenarioId)
       });
       const record = createGPUComputationRecord({
         id: props.scenarioId,
@@ -212,21 +215,18 @@ export async function runRasterLens(props: RunRasterLensProps): Promise<LensScen
         datasetVersion: `${props.dataset.id}@${props.dataset.version}`
       });
       const graphId = description.graph.id;
-      submitLensGraph(device, compiled, {parameters: undefined, coalesceComputePasses: false});
+      const submission = submitTimedLensGraph(device, compiled, {
+        parameters: undefined,
+        coalesceComputePasses: false
+      });
+      // Node timings are present only when the device wrote timestamps; never estimated.
+      const metrics = await readLensRunMetrics(submission, {
+        runId: record.runId,
+        graphId,
+        taps: 1
+      });
       const readback = await readLensViewSnapshot(snapshot, {graphId, runId: record.runId});
       const sidecar = arrangeCaptures(props, captures, readback);
-      const metrics = createGPUComputationMetrics({
-        runId: record.runId,
-        graph: graphId,
-        // No timestamp queries are written by lens runs: node timings stay absent, never estimated.
-        timing: {nodes: []},
-        encoding: {
-          coalesced: false,
-          timestamped: false,
-          taps: 1,
-          lensTwin: true
-        }
-      });
       const captureSidecar = createGPUComputationCaptures({
         runId: record.runId,
         snapshots: sidecar.snapshots,

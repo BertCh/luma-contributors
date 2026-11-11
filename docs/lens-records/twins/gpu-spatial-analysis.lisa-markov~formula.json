@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i): s(t, i) = a, s(t + 1, i) = b}. s(t, i) is the local Moran quadrant of county i in period t (signs of the centred value and of the spatial lag; HH=1, LH=2, LL=3, HL=4; state 0 stays empty without significan…",
   "description": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i): s(t, i) = a, s(t + 1, i) = b}. s(t, i) is the local Moran quadrant of county i in period t (signs of the centred value and of the spatial lag; HH=1, LH=2, LL=3, HL=4; state 0 stays empty without significan…",
-  "llms": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i): s(t, i) = a, s(t + 1, i) = b}. s(t, i) is the local Moran quadrant of county i in period t (signs of the centred value and of the spatial lag; HH=1, LH=2, LL=3, HL=4; state 0 stays empty without significance gating). Rows without a finite value or a neighbour have no state and are counted in ignored.\n\n- bound symbols: 0/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i): s(t, i) = a, s(t + 1, i) = b}. s(t, i) is the local Moran quadrant of county i in period t (signs of the centred value and of the spatial lag; HH=1, LH=2, LL=3, HL=4; state 0 stays empty without significance gating). Rows without a finite value or a neighbour have no state and are counted in ignored.\n\n- bound symbols: 3/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/3"
+    "value": "3/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.lisa-markov</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{probability}{p_{ab}} = \\frac{\\term{count}{n_{ab}}}{n_a}, \\quad n_{ab} = \\#\\{(t, i) : \\term{state}{s_{t,i}} = a,\\ s_{t+1,i} = b\\}, \\quad s_{t,i} \\in \\{\\mathrm{HH}, \\mathrm{LH}, \\mathrm{LL}, \\mathrm{HL}\\}</pre><p class=\"lens-ascii\">p_ab = n_ab / n_a; n_ab = #{(t, i): s(t, i) = a, s(t + 1, i) = b}. s(t, i) is the local Moran quadrant of county i in period t (signs of the centred value and of the spatial lag; HH=1, LH=2, LL=3, HL=4; state 0 stays empty without significance gating). Rows without a finite value or a neighbour have no state and are counted in ignored.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"probability\">p_ab · output · unknown — wgsl probabilities not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">n_ab · intermediate · unknown — wgsl counts not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"state\">s · intermediate · unknown — wgsl quadrants not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.lisa-markov</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{probability}{p_{ab}} = \\frac{\\term{count}{n_{ab}}}{n_a}, \\quad n_{ab} = \\#\\{(t, i) : \\term{state}{s_{t,i}} = a,\\ s_{t+1,i} = b\\}, \\quad s_{t,i} \\in \\{\\mathrm{HH}, \\mathrm{LH}, \\mathrm{LL}, \\mathrm{HL}\\}</pre><p class=\"lens-ascii\">p_ab = n_ab / n_a; n_ab = #{(t, i): s(t, i) = a, s(t + 1, i) = b}. s(t, i) is the local Moran quadrant of county i in period t (signs of the centred value and of the spatial lag; HH=1, LH=2, LL=3, HL=4; state 0 stays empty without significance gating). Rows without a finite value or a neighbour have no state and are counted in ignored.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-lisa-markov-compiled:lisa-markov-transitions-normalize\" data-value=\"probability\">p_ab · output · probabilities</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-lisa-markov-compiled:lisa-markov-transitions-clear\" data-value=\"count\">n_ab · intermediate · counts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-lisa-markov-compiled:lisa-markov-moran-0-neighbors\" data-value=\"state\">s · intermediate · quadrants</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "p_ab",
         "output",
-        "unknown",
+        "probabilities",
         "—",
         "metadata"
       ],
       [
         "n_ab",
         "intermediate",
-        "unknown",
+        "counts",
         "—",
         "metadata"
       ],
       [
         "s",
         "intermediate",
-        "unknown",
+        "quadrants",
         "—",
         "metadata"
       ]
@@ -81,7 +81,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:23.896Z",
+    "date": "2026-11-11T15:20:54.975Z",
     "runId": "run-033d7c79",
     "observerEffects": []
   },

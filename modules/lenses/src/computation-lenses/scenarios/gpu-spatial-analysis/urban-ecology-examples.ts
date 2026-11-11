@@ -5,6 +5,7 @@
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
+import {getRasterResistanceConnectivityParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {S2Uploads, S2CaptureSpec} from './s2-lens-run';
 import {runExample as runStreetProfiles} from './street-profiles-recipe.example';
 import {runExample as runBuildingAdjacency} from './building-adjacency-recipe.example';
@@ -14,6 +15,8 @@ import {runExample as runBuildingTessellation} from './building-tessellation-rec
 import {runExample as runLandscapeMetrics} from './landscape-metrics-recipe.example';
 import {runExample as runPatchProximity} from './patch-proximity-recipe.example';
 import {runExample as runResistanceConnectivity} from './resistance-connectivity-recipe.example';
+import {runExample as runSparseResistanceConnectivity} from './sparse-resistance-connectivity-recipe.example';
+import {runExample as runRasterResistanceConnectivity} from './raster-resistance-connectivity-recipe.example';
 import {runExample as runSegregationDecomposition} from './segregation-decomposition-recipe.example';
 
 import {runExample as runaddSegregationCounterfactualRecipe} from './segregation-counterfactual-recipe.example';
@@ -99,8 +102,8 @@ export async function buildUrbanEcologyScenario(
             runs: {
               positions: input('wall-positions', 'float32x2', [0, 0, 0, 2]),
               offsets: input('wall-offsets', 'uint32', [0, 2]),
-              leftLineIds: input('left-lines', 'uint32', [0]),
-              rightLineIds: input('right-lines', 'uint32', [1]),
+              leftSourceIds: input('left-lines', 'uint32', [0]),
+              rightSourceIds: input('right-lines', 'uint32', [1]),
               forward: input('forward', 'uint32', [0])
             },
             status: {count: input('wall-count', 'uint32', [1])}
@@ -202,6 +205,83 @@ export async function buildUrbanEcologyScenario(
           sink: 2
         })
       );
+    case 'addSparseResistanceConnectivityRecipe':
+      // A 3 x 3 lattice with unit conductances and one weak diagonal chord, corner to corner.
+      return finish(
+        await runSparseResistanceConnectivity(graph, {
+          edges: input(
+            'edges',
+            'uint32x2',
+            [0, 1, 1, 2, 3, 4, 4, 5, 6, 7, 7, 8, 0, 3, 3, 6, 1, 4, 4, 7, 2, 5, 5, 8, 0, 4]
+          ),
+          conductances: input(
+            'conductances',
+            'float32',
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0.25]
+          ),
+          vertexCount: 9,
+          source: 0,
+          sink: 8,
+          tolerance: 1e-5,
+          maximumIterations: 64
+        })
+      );
+    case 'addRasterResistanceConnectivityRecipe': {
+      // A 6 x 5 resistance raster: a no-data wall in column 3 with a gap in row 3, and a
+      // high-resistance cell beside the gap. Unit current flows from the west to the east edge.
+      const width = 6;
+      const height = 5;
+      const cellCount = width * height;
+      const grid = {
+        width,
+        height,
+        affine: [1, 0, 0, 0, -1, 0] as const,
+        pixelInterpretation: 'area' as const
+      };
+      const resistance = Array.from({length: cellCount}, (_, cell) => (cell === 14 ? 8 : 1));
+      const validity = resistance.map((_, cell) => (cell % width === 3 && cell !== 21 ? 0 : 1));
+      const output = <Format extends GPUVectorFormat>(
+        name: string,
+        format: Format,
+        length: number
+      ) =>
+        uploads.view(
+          `urban-ecology-output-${name}-${serial++}`,
+          format.startsWith('uint')
+            ? new Uint32Array(length * Number(format.match(/x([234])$/)?.[1] ?? 1))
+            : new Float32Array(length * Number(format.match(/x([234])$/)?.[1] ?? 1)),
+          format,
+          length
+        );
+      const result = await runRasterResistanceConnectivity(graph, {
+        grid,
+        resistance: {
+          id: 'resistance',
+          format: 'float32',
+          storage: {kind: 'buffer', values: input('resistance', 'float32', resistance)},
+          validity: input('validity', 'uint32', validity)
+        },
+        parameters: input(
+          'parameters',
+          'float32',
+          Array.from(getRasterResistanceConnectivityParameterValues(grid))
+        ),
+        neighborhood: 8,
+        source: 2 * width,
+        sink: 2 * width + width - 1,
+        tolerance: 1e-5,
+        // The solve converges in 17 iterations; 64 keeps the unrolled solver (and its record) docs-sized.
+        maximumIterations: 64,
+        output: {
+          potentials: output('potentials', 'float32', cellCount),
+          vertexCurrents: output('vertex-currents', 'float32', cellCount),
+          diagnostics: output('diagnostics', 'float32x4', 1),
+          solverStatus: output('solver-status', 'uint32x4', 1)
+        }
+      });
+      capture(result.intermediates.conductances, 'intermediate-conductances');
+      return finish(result);
+    }
     case 'addSegregationDecompositionRecipe':
       return finish(
         await runSegregationDecomposition(graph, {

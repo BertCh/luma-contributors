@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.network-service-areas: facility-nodes → served-nodes. points: 1,199. values read back from the GPU run. input facility-nodes: 4 points.",
   "description": "Result of gpu-network.network-service-areas: facility-nodes → served-nodes. points: 1,199. values read back from the GPU run. input facility-nodes: 4 points.",
-  "llms": "Result of gpu-network.network-service-areas: facility-nodes → served-nodes\n\n- points: 1,199\n- input facility-nodes: 4 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients assignments, costs, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.network-service-areas: facility-nodes → served-nodes\n\n- points: 1,199\n- input facility-nodes: 4 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients assignments, costs, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "1,199"
@@ -24,10 +24,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.204Z",
+    "date": "2026-11-11T15:20:13.128Z",
     "runId": "run-fce4e049",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients assignments, costs, converged retained instead of aliased"
     ]

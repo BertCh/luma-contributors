@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.focal-statistics: elevation → mean.",
   "description": "Result of gpu-spatial-analysis.focal-statistics: elevation → mean. cells: 1,024. values read back from the GPU run. input elevation: 1024 cells.",
-  "llms": "Result of gpu-spatial-analysis.focal-statistics: elevation → mean\n\n- cells: 1,024\n- input elevation: 1024 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.focal-statistics: elevation → mean\n\n- cells: 1,024\n- input elevation: 1024 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "1,024"
@@ -19,9 +19,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:21.410Z",
+    "date": "2026-11-11T15:20:41.642Z",
     "runId": "run-b0def586",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-b0def586",

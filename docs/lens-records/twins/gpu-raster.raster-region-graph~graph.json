@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of GPURasterRegionGraph. nodes: 19. structure metadata only. 19 visible units vs budget 24.",
   "description": "compiled command graph of GPURasterRegionGraph. nodes: 19. structure metadata only. 19 visible units vs budget 24.",
-  "llms": "compiled command graph of GPURasterRegionGraph\n\n- nodes: 19\n- 19 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 47, war 7\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of GPURasterRegionGraph\n\n- nodes: 19\n- 19 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 47, war 7\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "19"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.936Z",
+    "date": "2026-11-11T15:20:15.326Z",
     "runId": "run-c9ef3d79",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

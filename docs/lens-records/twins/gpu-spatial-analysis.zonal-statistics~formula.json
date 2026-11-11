@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f < 2). Unweighted form. The deviation sum is a second pass a…",
   "description": "Formula S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f < 2). Unweighted form. The deviation sum is a second pass a…",
-  "llms": "Formula S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f < 2). Unweighted form. The deviation sum is a second pass about the mean. Points whose zone row is not below featureCount are unassigned and contribute to no zone.\n\n- bound symbols: 0/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f < 2). Unweighted form. The deviation sum is a second pass about the mean. Points whose zone row is not below featureCount are unassigned and contribute to no zone.\n\n- bound symbols: 8/8\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/8"
+    "value": "8/8"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>zonal-statistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{sums}{S_f}&amp;=\\sum_{i:\\ \\term{row}{z_i}=f,\\ \\term{valid}{v_i\\ \\text{finite}}}\\term{values}{v_i},\n&amp;\\term{means}{\\bar{v}_f}&amp;=\\frac{S_f}{\\term{valueCounts}{N_f}}\\\\\n\\term{standardDeviations}{s_f}&amp;=\\sqrt{\\frac{\\term{squaredDeviationSums}{\\sum_i(v_i-\\bar{v}_f)^2}}{N_f-1}}\n\\end{aligned}</pre><p class=\"lens-ascii\">S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f &lt; 2). Unweighted form. The deviation sum is a second pass about the mean. Points whose zone row is not below featureCount are unassigned and contribute to no zone.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sums\">sums · output · unknown — wgsl sums not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"row\">row · input · unknown — wgsl row not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"valid\">valid · intermediate · unknown — wgsl valid not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"values\">values · input · unknown — wgsl values not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"means\">means · output · unknown — wgsl means not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"valueCounts\">valueCounts · intermediate · unknown — wgsl valueCounts not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"standardDeviations\">standardDeviations · output · unknown — wgsl standardDeviations not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"squaredDeviationSums\">squaredDeviationSums · intermediate · unknown — wgsl squaredDeviationSums not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>zonal-statistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{sums}{S_f}&amp;=\\sum_{i:\\ \\term{row}{z_i}=f,\\ \\term{valid}{v_i\\ \\text{finite}}}\\term{values}{v_i},\n&amp;\\term{means}{\\bar{v}_f}&amp;=\\frac{S_f}{\\term{valueCounts}{N_f}}\\\\\n\\term{standardDeviations}{s_f}&amp;=\\sqrt{\\frac{\\term{squaredDeviationSums}{\\sum_i(v_i-\\bar{v}_f)^2}}{N_f-1}}\n\\end{aligned}</pre><p class=\"lens-ascii\">S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f &lt; 2). Unweighted form. The deviation sum is a second pass about the mean. Points whose zone row is not below featureCount are unassigned and contribute to no zone.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-means\" data-value=\"sums\">sums · output · sums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-reduce-sums\" data-value=\"row\">row · input · row</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-prepare\" data-value=\"valid\">valid · intermediate · valid</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-prepare\" data-value=\"values\">values · input · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-means\" data-value=\"means\">means · output · means</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-means\" data-value=\"valueCounts\">valueCounts · intermediate · valueCounts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-variances\" data-value=\"standardDeviations\">standardDeviations · output · standardDeviations</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-variances\" data-value=\"squaredDeviationSums\">squaredDeviationSums · intermediate · squaredDeviationSums</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,56 +29,56 @@
       [
         "sums",
         "output",
-        "unknown",
+        "sums",
         "—",
         "metadata"
       ],
       [
         "row",
         "input",
-        "unknown",
+        "row",
         "—",
         "metadata"
       ],
       [
         "valid",
         "intermediate",
-        "unknown",
+        "valid",
         "—",
         "metadata"
       ],
       [
         "values",
         "input",
-        "unknown",
+        "values",
         "—",
         "metadata"
       ],
       [
         "means",
         "output",
-        "unknown",
+        "means",
         "—",
         "metadata"
       ],
       [
         "valueCounts",
         "intermediate",
-        "unknown",
+        "valueCounts",
         "—",
         "metadata"
       ],
       [
         "standardDeviations",
         "output",
-        "unknown",
+        "standardDeviations",
         "—",
         "metadata"
       ],
       [
         "squaredDeviationSums",
         "intermediate",
-        "unknown",
+        "squaredDeviationSums",
         "—",
         "metadata"
       ]
@@ -121,9 +121,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.696Z",
+    "date": "2026-11-11T15:21:33.297Z",
     "runId": "run-e8642f83",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-e8642f83",

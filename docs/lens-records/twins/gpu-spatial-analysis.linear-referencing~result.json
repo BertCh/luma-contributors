@@ -4,9 +4,9 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const output = {\n  footPoints: createTransientView(graph, 'footPoints', 'float32x2', placeCount, usage),\n  lineIndices: createTransientView(graph, 'lineIndices', 'uint32', placeCount, usage),\n  measures: createTransientView(graph, 'measures', 'float32', placeCount, usage),\n  distances: createTransientView(graph, 'distances', 'float32', placeCount, usage),\n  status: {overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage)}\n};\n// Search within 500 m of each of the 40 selected places.\ngraph.add(\n  new GPULinearReferencing({\n    ...roads,\n    queryPositions: places,\n    radius,\n    candidateCapacity: roads.positions.length * placeCount,\n    output\n  })\n);\nconst {footPoints, measures, distances} = output;",
+    "code": "const output = {\n  footPoints: createTransientView(graph, 'footPoints', 'float32x2', placeCount, usage),\n  lineIndices: createTransientView(graph, 'lineIndices', 'uint32', placeCount, usage),\n  measures: createTransientView(graph, 'measures', 'float32', placeCount, usage),\n  distances: createTransientView(graph, 'distances', 'float32', placeCount, usage),\n  status: {\n    candidateOverflow: createTransientView(graph, 'candidateOverflow', 'uint32', 1, usage)\n  }\n};\n// Search within 500 m of each of the 40 selected places.\ngraph.add(\n  new GPULinearReferencing({\n    ...roads,\n    queryPositions: places,\n    radius,\n    candidateCapacity: roads.positions.length * placeCount,\n    output\n  })\n);\nconst {footPoints, measures, distances} = output;",
     "language": "ts",
-    "lineCount": 18
+    "lineCount": 20
   },
   "scenarioId": "gpu-spatial-analysis.linear-referencing",
   "viewId": "result-view",
@@ -37,12 +37,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:23.862Z",
-    "runId": "run-9a167ddf",
+    "date": "2026-11-11T15:20:54.796Z",
+    "runId": "run-a7897dbe",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-9a167ddf",
+    "runId": "run-a7897dbe",
     "rung": "result",
     "bindings": {},
     "clauses": [],

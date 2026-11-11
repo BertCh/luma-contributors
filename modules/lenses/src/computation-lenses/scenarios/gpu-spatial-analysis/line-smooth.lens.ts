@@ -77,7 +77,7 @@ defineLensScenario({
                 meaning: 'source road index (zero-based); unused slots are 0xffffffff'
               },
               count: {view: output.status.count, role: 'intermediate'},
-              lineCount: {view: output.status.lineCount, role: 'intermediate'},
+              vertexCount: {view: output.status.vertexCount, role: 'intermediate'},
               overflow: {view: output.status.overflow, role: 'intermediate'},
               smoothed: {
                 view: output.smoothed,

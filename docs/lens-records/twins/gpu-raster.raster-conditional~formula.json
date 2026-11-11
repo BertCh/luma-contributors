@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-raster.raster-conditional",
   "viewId": "formula-card",
-  "caption": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata. bound sy…",
-  "description": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata. bound sy…",
-  "llms": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata.\n\n- bound symbols: 0/2\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value is neither NaN nor the optional noDataValue (0 here) and the chosen branch is not missing, otherwise NaN; a chosen branch from a raster is miss…",
+  "description": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value is neither NaN nor the optional noDataValue (0 here) and the chosen branch is not missing, otherwise NaN; a chosen branch from a raster is miss…",
+  "llms": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value is neither NaN nor the optional noDataValue (0 here) and the chosen branch is not missing, otherwise NaN; a chosen branch from a raster is missing when NaN or equal to noDataValue, but a per-frame constant (as here, 0.4 and 1) is missing only when NaN: the sentinel never applies to constants; the unchosen branch does not propagate nodata.\n\n- bound symbols: 2/2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/2"
+    "value": "2/2"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-conditional.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{f}=\\begin{cases}0.4&amp;\\term{condition}{L}=50\\\\1&amp;L\\ne50\\end{cases}\\quad(\\text{valid condition and chosen branch; otherwise NaN})</pre><p class=\"lens-ascii\">condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"result\">friction · output · unknown — wgsl valuesOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"condition\">land cover · input · unknown — wgsl conditionValue not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-conditional.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{f}=\\begin{cases}0.4&amp;\\term{condition}{L}=50\\\\1&amp;L\\ne50\\end{cases}\\quad(\\text{valid condition and chosen branch; otherwise NaN})</pre><p class=\"lens-ascii\">condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value is neither NaN nor the optional noDataValue (0 here) and the chosen branch is not missing, otherwise NaN; a chosen branch from a raster is missing when NaN or equal to noDataValue, but a per-frame constant (as here, 0.4 and 1) is missing only when NaN: the sentinel never applies to constants; the unchosen branch does not propagate nodata.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-conditional-compiled:raster-conditional-select\" data-value=\"result\">friction · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-conditional-compiled:raster-conditional-select\" data-value=\"condition\">land cover · input · conditionValue</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,14 +29,14 @@
       [
         "friction",
         "output",
-        "unknown",
+        "valuesOut",
         "—",
         "metadata"
       ],
       [
         "land cover",
         "input",
-        "unknown",
+        "conditionValue",
         "—",
         "metadata"
       ]
@@ -48,15 +48,15 @@
   },
   "formula": {
     "tex": "\\term{result}{f}=\\begin{cases}0.4&\\term{condition}{L}=50\\\\1&L\\ne50\\end{cases}\\quad(\\text{valid condition and chosen branch; otherwise NaN})",
-    "ascii": "condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata.",
+    "ascii": "condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value is neither NaN nor the optional noDataValue (0 here) and the chosen branch is not missing, otherwise NaN; a chosen branch from a raster is missing when NaN or equal to noDataValue, but a per-frame constant (as here, 0.4 and 1) is missing only when NaN: the sentinel never applies to constants; the unchosen branch does not propagate nodata.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.615Z",
+    "date": "2026-11-11T15:20:14.203Z",
     "runId": "run-8bcaf6c2",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

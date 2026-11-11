@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Table mode here: r_l = remapValues[l,k_l], k_l counts active breaks <= x_l; score is fixed-order f32 sum 0.7*r_landCover + 0.3*r_elevation, no normalization. Land-cover breaks [20,35,45,65] map to [0.25,0.75,1,0.5,0]; elevation breaks [1100,…",
   "description": "Formula Table mode here: r_l = remapValues[l,k_l], k_l counts active breaks <= x_l; score is fixed-order f32 sum 0.7*r_landCover + 0.3*r_elevation, no normalization. Land-cover breaks [20,35,45,65] map to [0.25,0.75,1,0.5,0]; elevation breaks [1100,…",
-  "llms": "Formula Table mode here: r_l = remapValues[l,k_l], k_l counts active breaks <= x_l; score is fixed-order f32 sum 0.7*r_landCover + 0.3*r_elevation, no normalization. Land-cover breaks [20,35,45,65] map to [0.25,0.75,1,0.5,0]; elevation breaks [1100,1400,1700] m map to [1,0.75,0.5,0.25]. With propagate, any NaN/sentinel input yields NaN; a NaN remap is restricted under either policy; no contributing layers or a NaN sum also yields NaN. With ignore skip nodata layers; if normalizeWeights is enabled divide by sum(abs(contributing weights)), requiring that sum > 0.\n\n- bound symbols: 0/3\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Table mode here: r_l = remapValues[l,k_l], k_l counts active breaks <= x_l; score is fixed-order f32 sum 0.7*r_landCover + 0.3*r_elevation, no normalization. Land-cover breaks [20,35,45,65] map to [0.25,0.75,1,0.5,0]; elevation breaks [1100,1400,1700] m map to [1,0.75,0.5,0.25]. With propagate, any NaN/sentinel input yields NaN; a NaN remap is restricted under either policy; no contributing layers or a NaN sum also yields NaN. With ignore skip nodata layers; if normalizeWeights is enabled divide by sum(abs(contributing weights)), requiring that sum > 0.\n\n- bound symbols: 3/3\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/3"
+    "value": "3/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.weighted-overlay.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{score}{S}=\\sum_{\\ell=0}^{1}\\term{weight}{w_\\ell}\\term{remap}{r_\\ell}=0.7r_0+0.3r_1\\quad(\\text{both inputs and remaps valid; otherwise NaN})</pre><p class=\"lens-ascii\">Table mode here: r_l = remapValues[l,k_l], k_l counts active breaks &lt;= x_l; score is fixed-order f32 sum 0.7*r_landCover + 0.3*r_elevation, no normalization. Land-cover breaks [20,35,45,65] map to [0.25,0.75,1,0.5,0]; elevation breaks [1100,1400,1700] m map to [1,0.75,0.5,0.25]. With propagate, any NaN/sentinel input yields NaN; a NaN remap is restricted under either policy; no contributing layers or a NaN sum also yields NaN. With ignore skip nodata layers; if normalizeWeights is enabled divide by sum(abs(contributing weights)), requiring that sum &gt; 0.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"score\">score · output · unknown — wgsl scoreOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">weight · parameter · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"remap\">remapped · intermediate · unknown — wgsl remapped not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.weighted-overlay.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{score}{S}=\\sum_{\\ell=0}^{1}\\term{weight}{w_\\ell}\\term{remap}{r_\\ell}=0.7r_0+0.3r_1\\quad(\\text{both inputs and remaps valid; otherwise NaN})</pre><p class=\"lens-ascii\">Table mode here: r_l = remapValues[l,k_l], k_l counts active breaks &lt;= x_l; score is fixed-order f32 sum 0.7*r_landCover + 0.3*r_elevation, no normalization. Land-cover breaks [20,35,45,65] map to [0.25,0.75,1,0.5,0]; elevation breaks [1100,1400,1700] m map to [1,0.75,0.5,0.25]. With propagate, any NaN/sentinel input yields NaN; a NaN remap is restricted under either policy; no contributing layers or a NaN sum also yields NaN. With ignore skip nodata layers; if normalizeWeights is enabled divide by sum(abs(contributing weights)), requiring that sum &gt; 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-weighted-overlay-compiled:weighted-overlay-score\" data-value=\"score\">score · output · scoreOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-weighted-overlay-compiled:weighted-overlay-score\" data-value=\"weight\">weight · parameter · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-weighted-overlay-compiled:weighted-overlay-score\" data-value=\"remap\">remapped · intermediate · remapped</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,21 +29,21 @@
       [
         "score",
         "output",
-        "unknown",
+        "scoreOut",
         "—",
         "metadata"
       ],
       [
         "weight",
         "parameter",
-        "unknown",
+        "weight",
         "—",
         "metadata"
       ],
       [
         "remapped",
         "intermediate",
-        "unknown",
+        "remapped",
         "—",
         "metadata"
       ]
@@ -61,10 +61,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:18.093Z",
+    "date": "2026-11-11T15:20:15.969Z",
     "runId": "run-b893266e",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

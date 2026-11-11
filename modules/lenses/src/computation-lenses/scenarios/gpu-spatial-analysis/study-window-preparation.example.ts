@@ -4,11 +4,11 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUStudyWindowPreparation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  GPUStudyWindowPreparation,
   type GPUPolygonGeometryFields,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 export type StudyWindowPreparationExampleInput = {
   communityAreas: GPUPolygonGeometryFields;

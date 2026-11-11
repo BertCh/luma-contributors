@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula L[c]=sum of retained clipped-piece lengths in cell c; D[c]=L[c]/A[c]. Planar A=w*h. Longitude/latitude A=R_A^2*(pi*w/180)*(sin(pi*(south+h)/180)-sin(pi*south/180)), using the context authalic area radius. Piece length is (t1-t0)*length(b-a)…",
   "description": "Formula L[c]=sum of retained clipped-piece lengths in cell c; D[c]=L[c]/A[c]. Planar A=w*h. Longitude/latitude A=R_A^2*(pi*w/180)*(sin(pi*(south+h)/180)-sin(pi*south/180)), using the context authalic area radius. Piece length is (t1-t0)*length(b-a)…",
-  "llms": "Formula L[c]=sum of retained clipped-piece lengths in cell c; D[c]=L[c]/A[c]. Planar A=w*h. Longitude/latitude A=R_A^2*(pi*w/180)*(sin(pi*(south+h)/180)-sin(pi*south/180)), using the context authalic area radius. Piece length is (t1-t0)*length(b-a) in planar coordinates or context sphere radius times geodesicCentralAngle of the degree-linear clipped endpoints. Overflow omits pieces; sums use stable sorting and fixed-order reduction.\n\n- bound symbols: 0/10\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula L[c]=sum of retained clipped-piece lengths in cell c; D[c]=L[c]/A[c]. Planar A=w*h. Longitude/latitude A=R_A^2*(pi*w/180)*(sin(pi*(south+h)/180)-sin(pi*south/180)), using the context authalic area radius. Piece length is (t1-t0)*length(b-a) in planar coordinates or context sphere radius times geodesicCentralAngle of the degree-linear clipped endpoints. Overflow omits pieces; sums use stable sorting and fixed-order reduction.\n\n- bound symbols: 8/10\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/10"
+    "value": "8/10"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-density</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{lengths}{L_c}&amp;=\\sum_{\\term{piece}{k}\\in\\term{support}{K_c}}\\term{piece-length}{\\ell_k},\\qquad\\term{densities}{D_c}=\\dfrac{\\term{lengths}{L_c}}{\\term{area}{A_c}}\\\\\\term{area}{A_c}&amp;=\\begin{cases}\\term{width}{w}\\term{height}{h}&amp;\\text{planar}\\\\\\term{radius}{R_A}^2\\dfrac{\\pi\\term{width}{w}}{180}\\left[\\sin\\dfrac{\\pi(\\term{south}{s}+\\term{height}{h})}{180}-\\sin\\dfrac{\\pi\\term{south}{s}}{180}\\right]&amp;\\text{longitude/latitude}\\end{cases}\\end{aligned}</pre><p class=\"lens-ascii\">L[c]=sum of retained clipped-piece lengths in cell c; D[c]=L[c]/A[c]. Planar A=w*h. Longitude/latitude A=R_A^2*(pi*w/180)*(sin(pi*(south+h)/180)-sin(pi*south/180)), using the context authalic area radius. Piece length is (t1-t0)*length(b-a) in planar coordinates or context sphere radius times geodesicCentralAngle of the degree-linear clipped endpoints. Overflow omits pieces; sums use stable sorting and fixed-order reduction.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lengths\">Cell lengths · output · unknown — wgsl lengths not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"piece\">Clipped piece · index · unbound — no binding declared</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"support\">Retained records with this cell key · intermediate · unknown — wgsl keys not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"piece-length\">Clipped-piece metric length · intermediate · unknown — wgsl getPieceLength not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"densities\">Length per area · output · unknown — wgsl densities not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"area\">Cell area · intermediate · unknown — wgsl area not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"width\">Cell width in position units · parameter · unknown — wgsl width not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"height\">Cell height in position units · parameter · unknown — wgsl height not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"radius\">Authalic area radius in context units · constant · unknown — wgsl AREA_RADIUS not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"south\">Southern latitude of cell in degrees · intermediate · unknown — wgsl south not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-density</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{lengths}{L_c}&amp;=\\sum_{\\term{piece}{k}\\in\\term{support}{K_c}}\\term{piece-length}{\\ell_k},\\qquad\\term{densities}{D_c}=\\dfrac{\\term{lengths}{L_c}}{\\term{area}{A_c}}\\\\\\term{area}{A_c}&amp;=\\begin{cases}\\term{width}{w}\\term{height}{h}&amp;\\text{planar}\\\\\\term{radius}{R_A}^2\\dfrac{\\pi\\term{width}{w}}{180}\\left[\\sin\\dfrac{\\pi(\\term{south}{s}+\\term{height}{h})}{180}-\\sin\\dfrac{\\pi\\term{south}{s}}{180}\\right]&amp;\\text{longitude/latitude}\\end{cases}\\end{aligned}</pre><p class=\"lens-ascii\">L[c]=sum of retained clipped-piece lengths in cell c; D[c]=L[c]/A[c]. Planar A=w*h. Longitude/latitude A=R_A^2*(pi*w/180)*(sin(pi*(south+h)/180)-sin(pi*south/180)), using the context authalic area radius. Piece length is (t1-t0)*length(b-a) in planar coordinates or context sphere radius times geodesicCentralAngle of the degree-linear clipped endpoints. Overflow omits pieces; sums use stable sorting and fixed-order reduction.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-density-compiled:line-density-density\" data-value=\"lengths\">Cell lengths · output · lengths</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"piece\">Clipped piece · index · unbound — no binding declared</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-density-compiled:line-density-emit\" data-value=\"support\">Retained records with this cell key · intermediate · keys</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-density-compiled:line-density-count\" data-value=\"piece-length\">Clipped-piece metric length · intermediate · getPieceLength</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-density-compiled:line-density-density\" data-value=\"densities\">Length per area · output · densities</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-density-compiled:line-density-density\" data-value=\"area\">Cell area · intermediate · area</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-density-compiled:line-density-density\" data-value=\"width\">Cell width in position units · parameter · width</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-density-compiled:line-density-density\" data-value=\"height\">Cell height in position units · parameter · height</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-density-compiled:line-density-density\" data-value=\"radius\">Authalic area radius in context units · constant · AREA_RADIUS</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"south\">Southern latitude of cell in degrees · intermediate · unknown — wgsl south not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,7 +29,7 @@
       [
         "Cell lengths",
         "output",
-        "unknown",
+        "lengths",
         "—",
         "metadata"
       ],
@@ -43,49 +43,49 @@
       [
         "Retained records with this cell key",
         "intermediate",
-        "unknown",
+        "keys",
         "—",
         "metadata"
       ],
       [
         "Clipped-piece metric length",
         "intermediate",
-        "unknown",
+        "getPieceLength",
         "—",
         "metadata"
       ],
       [
         "Length per area",
         "output",
-        "unknown",
+        "densities",
         "—",
         "metadata"
       ],
       [
         "Cell area",
         "intermediate",
-        "unknown",
+        "area",
         "—",
         "metadata"
       ],
       [
         "Cell width in position units",
         "parameter",
-        "unknown",
+        "width",
         "—",
         "metadata"
       ],
       [
         "Cell height in position units",
         "parameter",
-        "unknown",
+        "height",
         "—",
         "metadata"
       ],
       [
         "Authalic area radius in context units",
         "constant",
-        "unknown",
+        "AREA_RADIUS",
         "—",
         "metadata"
       ],
@@ -148,7 +148,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:23.392Z",
+    "date": "2026-11-11T15:20:52.134Z",
     "runId": "run-f6d4f8b7",
     "observerEffects": []
   },

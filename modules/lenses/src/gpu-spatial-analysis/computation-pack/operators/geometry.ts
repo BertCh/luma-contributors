@@ -83,7 +83,6 @@ export const GEOMETRY_OPERATORS: SpatialFamilyOperators = {
     descriptor: {scope: 'pairwise', scopeSecondary: 'global', reduction: 'select'},
     variables: {
       'geometry.positions': 'coordinate',
-      'geometry.sourceIds': 'category',
       'boundary.endpoints': 'coordinate',
       'boundary.operandIds': 'category',
       'boundary.sourceFeatureIds': 'category'
@@ -121,7 +120,6 @@ export const GEOMETRY_OPERATORS: SpatialFamilyOperators = {
     descriptor: {scope: 'global', scopeSecondary: 'focal', reduction: 'select'},
     variables: {
       'geometry.positions': 'coordinate',
-      'geometry.sourceIds': 'category',
       'boundary.endpoints': 'coordinate',
       'boundary.operandIds': 'category',
       'boundary.sourceFeatureIds': 'category'

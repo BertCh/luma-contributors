@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of pivot intersection 3. pivotNodes: 449. values read back from the GPU run. summary: 2 quantities.",
   "description": "Receipt of pivot intersection 3. pivotNodes: 449. values read back from the GPU run. summary: 2 quantities.",
-  "llms": "Receipt of pivot intersection 3\n\n- pivotNodes: 449\n- summary: 2 quantities\n- result: 1 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients closeness, reachedCounts, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of pivot intersection 3\n\n- pivotNodes: 449\n- summary: 2 quantities\n- result: 1 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients closeness, reachedCounts, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "pivotNodes",
     "value": "449"
@@ -57,10 +57,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.803Z",
+    "date": "2026-11-11T15:20:12.439Z",
     "runId": "run-8742290b",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients closeness, reachedCounts, converged retained instead of aliased"
     ]

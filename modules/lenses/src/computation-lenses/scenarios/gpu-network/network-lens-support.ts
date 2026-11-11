@@ -21,6 +21,7 @@ import {
   type GraphBufferDescriptor,
   type GraphBufferHandle
 } from '@luma.gl/graph/gpu-core';
+import {recordWGSLKernelNodes} from '@luma-contributors/analysis/analysis-core';
 import roads from '../../data/n-chicago-loop-roads.json';
 
 /** Shared, versioned provenance of the deterministic Chicago Loop extract. */
@@ -265,6 +266,8 @@ class NetworkLensGraph extends GPUCommandGraph {
   constructor(device: Device, props: {id: string}, observed: ReadonlySet<string>) {
     super(device, props);
     this.observed = observed;
+    // Lens records carry the source, dispatch and bindings of every createWGSLKernelNode kernel.
+    recordWGSLKernelNodes(this);
   }
 
   override createTransientBuffer(descriptor: GraphBufferDescriptor): GraphBufferHandle {

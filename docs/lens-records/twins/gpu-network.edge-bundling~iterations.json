@@ -7,7 +7,7 @@
   "viewId": "skeleton-view",
   "caption": "Declared structure of gpu-network.edge-bundling. depth: 28. structure metadata only. work 31 nodes.",
   "description": "Declared structure of gpu-network.edge-bundling. depth: 28. structure metadata only. work 31 nodes.",
-  "llms": "Declared structure of gpu-network.edge-bundling\n\n- depth: 28\n- work 31 nodes\n- loops 0\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients bundledPaths, bundleOffsets retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Declared structure of gpu-network.edge-bundling\n\n- depth: 28\n- work 31 nodes\n- loops 0\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients bundledPaths, bundleOffsets retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "depth",
     "value": "28"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.704Z",
+    "date": "2026-11-11T15:20:12.231Z",
     "runId": "run-cae14da7",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients bundledPaths, bundleOffsets retained instead of aliased"
     ]

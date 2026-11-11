@@ -7,7 +7,7 @@
   "viewId": "gpu-core-array-result",
   "caption": "Read captured inputs into recorded array outputs.",
   "description": "Read captured inputs into recorded array outputs. max observedStandardDeviation: 3.583. values read back from the GPU run. 4 output panels from the recorded run.",
-  "llms": "Read captured inputs into recorded array outputs\n\n- max observedStandardDeviation: 3.583\n- 4 output panels from the recorded run\n- observedStandardDeviation: 4 captured values (4 shown)\n- pseudoPValue: 4 captured values (4 shown)\n- simulatedMean: 4 captured values (4 shown)\n- zSimulated: 4 captured values (4 shown)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max observedStandardDeviation: 3.583\n- 4 output panels from the recorded run\n- observedStandardDeviation: 4 captured values (4 shown)\n- pseudoPValue: 4 captured values (4 shown)\n- simulatedMean: 4 captured values (4 shown)\n- zSimulated: 4 captured values (4 shown)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max observedStandardDeviation",
     "value": "3.583"
@@ -19,9 +19,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:21.828Z",
+    "date": "2026-11-11T15:20:43.362Z",
     "runId": "run-196a3038",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-196a3038",

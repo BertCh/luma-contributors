@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUBufferSelection,
-  type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUBufferSelection} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded inputs and caller-owned outputs for this recorded example. */
 export type BufferSelectionExampleInput = {

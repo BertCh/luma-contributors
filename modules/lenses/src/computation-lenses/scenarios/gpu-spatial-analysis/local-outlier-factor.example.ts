@@ -10,9 +10,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPULocalOutlierFactor,
-  GPUNeighborSearch,
-  type GPUSpatialContext
+  GPUNeighborSearch
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Neighbours per observation in the kNN table. */
 export const LOCAL_OUTLIER_FACTOR_NEIGHBOR_COUNT = 10;

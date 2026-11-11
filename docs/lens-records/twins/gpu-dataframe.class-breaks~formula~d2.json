@@ -14,7 +14,7 @@
     "value": "32.12"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUClassBreaks</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{breaks}{e_i}=\\term{minimum}{a}+\\frac{\\term{maximum}{b}-\\term{minimum}{a}}{\\term{classCount}{k}}\\term{edge}{i},\\quad \\term{classIndex}{c(x)}=\\sum_{\\term{edge}{i}=1}^{\\term{classCount}{k}-1}\\mathbf{1}[\\term{breaks}{e_i}\\leq\\term{values}{x}]</pre><p class=\"lens-ascii\">equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges &lt;= x (bisect-right, end-clamped).</p></div><div class=\"lens-worked-example\"><h4>Entity 2</h4><div><pre class=\"lens-tex\">\\term{breaks}{32.12}=\\term{minimum}{a}+\\frac{\\term{maximum}{b}-\\term{minimum}{a}}{\\term{classCount}{k}}\\term{edge}{i},\\quad \\term{classIndex}{c(x)}=\\sum_{\\term{edge}{i}=1}^{\\term{classCount}{k}-1}\\mathbf{1}[\\term{breaks}{32.12}\\leq\\term{values}{x}]</pre><p class=\"lens-ascii\">equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges &lt;= x (bisect-right, end-clamped).</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"breaks\">breaks · output · unknown — wgsl breaksOut not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"minimum\">minimum · intermediate · unknown — wgsl minimum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"maximum\">maximum · intermediate · unknown — wgsl maximum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"classCount\">classCount · output · unknown — wgsl classCountOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"edge\">edge · index · unknown — wgsl edge not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"classIndex\">bisect-right low minus one · intermediate · unknown — wgsl low not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"values\">values · input · unknown — wgsl values not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUClassBreaks</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{breaks}{e_i}=\\term{minimum}{a}+\\frac{\\term{maximum}{b}-\\term{minimum}{a}}{\\term{classCount}{k}}\\term{edge}{i},\\quad \\term{classIndex}{c(x)}=\\sum_{\\term{edge}{i}=1}^{\\term{classCount}{k}-1}\\mathbf{1}[\\term{breaks}{e_i}\\leq\\term{values}{x}]</pre><p class=\"lens-ascii\">equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges &lt;= x (bisect-right, end-clamped).</p></div><div class=\"lens-worked-example\"><h4>Entity 2</h4><div><pre class=\"lens-tex\">\\term{breaks}{32.12}=\\term{minimum}{a}+\\frac{\\term{maximum}{b}-\\term{minimum}{a}}{\\term{classCount}{k}}\\term{edge}{i},\\quad \\term{classIndex}{c(x)}=\\sum_{\\term{edge}{i}=1}^{\\term{classCount}{k}-1}\\mathbf{1}[\\term{breaks}{32.12}\\leq\\term{values}{x}]</pre><p class=\"lens-ascii\">equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges &lt;= x (bisect-right, end-clamped).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-publish\" data-value=\"breaks\">breaks · output · breaksOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-finish\" data-value=\"minimum\">minimum · intermediate · minimum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-finish\" data-value=\"maximum\">maximum · intermediate · maximum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-publish\" data-value=\"classCount\">classCount · output · classCountOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-finish\" data-value=\"edge\">edge · index · edge</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-quantiles-histogram-0\" data-value=\"classIndex\">bisect-right low minus one · intermediate · low</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-extremes\" data-value=\"values\">values · input · values</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,49 +30,49 @@
       [
         "breaks",
         "output",
-        "unknown",
+        "breaksOut",
         "32.119998931884766",
         "readback"
       ],
       [
         "minimum",
         "intermediate",
-        "unknown",
+        "minimum",
         "—",
         "metadata"
       ],
       [
         "maximum",
         "intermediate",
-        "unknown",
+        "maximum",
         "—",
         "metadata"
       ],
       [
         "classCount",
         "output",
-        "unknown",
+        "classCountOut",
         "—",
         "metadata"
       ],
       [
         "edge",
         "index",
-        "unknown",
+        "edge",
         "—",
         "metadata"
       ],
       [
         "bisect-right low minus one",
         "intermediate",
-        "unknown",
+        "low",
         "—",
         "metadata"
       ],
       [
         "values",
         "input",
-        "unknown",
+        "values",
         "—",
         "metadata"
       ]
@@ -105,7 +105,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:15.706Z",
+    "date": "2026-11-11T15:20:10.662Z",
     "runId": "run-67d9d1ba",
     "observerEffects": []
   },

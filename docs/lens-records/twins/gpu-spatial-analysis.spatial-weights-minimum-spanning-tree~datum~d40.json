@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of Chicago tract 40. weightsRowOffsets: 221. values read back from the GPU run. result: 4 quantities.",
   "description": "Receipt of Chicago tract 40. weightsRowOffsets: 221. values read back from the GPU run. result: 4 quantities.",
-  "llms": "Receipt of Chicago tract 40\n\n- weightsRowOffsets: 221\n- result: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of Chicago tract 40\n\n- weightsRowOffsets: 221\n- result: 4 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "weightsRowOffsets",
     "value": "221"
@@ -65,9 +65,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:28.717Z",
+    "date": "2026-11-11T15:21:28.099Z",
     "runId": "run-49930433",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-49930433",

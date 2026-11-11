@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.skater-regions: values.geometry → labels.geometry. polygons: 136. values read back from the GPU run. input values.geometry: 136 polygons.",
   "description": "Result of gpu-spatial-analysis.skater-regions: values.geometry → labels.geometry. polygons: 136. values read back from the GPU run. input values.geometry: 136 polygons.",
-  "llms": "Result of gpu-spatial-analysis.skater-regions: values.geometry → labels.geometry\n\n- polygons: 136\n- input values.geometry: 136 polygons\n- Simple equirectangular projection (x scaled by cos 41.95°); not equal-area.\n- 1730 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1730 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.skater-regions: values.geometry → labels.geometry\n\n- polygons: 136\n- input values.geometry: 136 polygons\n- Simple equirectangular projection (x scaled by cos 41.95°); not equal-area.\n- 1730 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1730 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "136"
@@ -24,9 +24,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:27.415Z",
+    "date": "2026-11-11T15:21:19.437Z",
     "runId": "run-8ffbbe1f",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-8ffbbe1f",

@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis.empirical-bayes-rates. nodes: 6. structure metadata only. 6 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis.empirical-bayes-rates. nodes: 6. structure metadata only. 6 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis.empirical-bayes-rates\n\n- nodes: 6\n- 6 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis.empirical-bayes-rates\n\n- nodes: 6\n- 6 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 8\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "6"
@@ -39,9 +39,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:21.207Z",
+    "date": "2026-11-11T15:20:40.361Z",
     "runId": "run-1ce1fa04",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-1ce1fa04",

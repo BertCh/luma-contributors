@@ -11,10 +11,12 @@ import {
 import {
   getGPUSpatialScanStatisticParameterValues,
   GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH,
-  GPUParameterBuffer,
-  GPUSpatialScanStatistic,
-  type GPUSpatialContext
+  GPUSpatialScanStatistic
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUParameterBuffer,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-midwest-counties.json`. */
 export type SpatialScanStatisticExampleInput = {

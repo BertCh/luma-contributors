@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPULinearReferencing,
-  type GPULineGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPULinearReferencing} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded Chicago geometry and parameters for GPULinearReferencing. */
 export type LinearReferencingExampleInput = {
@@ -34,7 +32,9 @@ export async function runExample(
     lineIndices: createTransientView(graph, 'lineIndices', 'uint32', placeCount, usage),
     measures: createTransientView(graph, 'measures', 'float32', placeCount, usage),
     distances: createTransientView(graph, 'distances', 'float32', placeCount, usage),
-    status: {overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage)}
+    status: {
+      candidateOverflow: createTransientView(graph, 'candidateOverflow', 'uint32', 1, usage)
+    }
   };
   // Search within 500 m of each of the 40 selected places.
   graph.add(

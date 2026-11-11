@@ -127,7 +127,7 @@ export const INTERPOLATION_EXPANSION_OPERATORS: SpatialFamilyOperators = {
       derivation: 'curated',
       tex: String.raw`\term{values}{Z_*\mid z}=m_*+C_{*o}(C_{oo}+E)^{-1}(z-m_o)+L_c\epsilon`,
       ascii:
-        'Known-mean exact bounded Gaussian conditioning; Lc*transpose(Lc) is joint conditional covariance. Philox supplies independent standard normals.',
+        'Known-mean exact bounded Gaussian conditioning; Lc*transpose(Lc) is joint conditional covariance. Philox supplies independent standard normals by Box-Muller whose radius uniform is open, (0, 1), so log never sees 0 or 1 and no draw is exactly zero.',
       symbols: [{id: 'values', role: 'output', binding: 'wgsl:values'}]
     },
     metadata: {

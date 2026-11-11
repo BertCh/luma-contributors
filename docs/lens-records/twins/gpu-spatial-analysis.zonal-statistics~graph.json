@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis.zonal-statistics. nodes: 29. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis.zonal-statistics. nodes: 29. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis.zonal-statistics\n\n- nodes: 29\n- 24 visible units vs budget 24\n- 10 hidden nodes\n- Edges by kind: raw 44\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis.zonal-statistics\n\n- nodes: 29\n- 24 visible units vs budget 24\n- 10 hidden nodes\n- Edges by kind: raw 44\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "29"
@@ -39,9 +39,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.696Z",
+    "date": "2026-11-11T15:21:33.297Z",
     "runId": "run-e8642f83",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-e8642f83",

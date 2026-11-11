@@ -14,7 +14,7 @@
     "value": "0.9713"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUSpatialCorrelogram</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{moransI}{I_h}=\\frac{\\term{count}{n}}{\\term{weightSum}{S_{0,h}}}\\frac{\\term{productSum}{\\sum_{i\\ne j}w_{ij,h}(x_i-\\bar x)(x_j-\\bar x)}}{\\term{sumOfSquares}{\\sum_i(x_i-\\bar x)^2}},\\quad \\term{expectedI}{E[I]}=-\\frac{1}{\\term{count}{n}-1}</pre><p class=\"lens-ascii\">I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products.</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{moransI}{0.971307}=\\frac{\\term{count}{\\left(1200\\right)}}{\\term{weightSum}{S_{0,h}}}\\frac{\\term{productSum}{\\sum_{i\\ne j}w_{ij,h}(x_i-\\bar x)(x_j-\\bar x)}}{\\term{sumOfSquares}{\\left(3228040\\right)}},\\quad \\term{expectedI}{-0.000834028}=-\\frac{1}{\\term{count}{\\left(1200\\right)}-1}</pre><p class=\"lens-ascii\">I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products.</p></div></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"moransI\">moransI · output · unknown — wgsl moransI not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">count · intermediate · unknown — wgsl count not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weightSum\">weightSum · intermediate · unknown — wgsl weightSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"productSum\">productSum · intermediate · unknown — wgsl productSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sumOfSquares\">sumOfSquares · intermediate · unknown — wgsl sumOfSquares not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"expectedI\">expectedI · output · unknown — wgsl expected not found in this record<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUSpatialCorrelogram</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{moransI}{I_h}=\\frac{\\term{count}{n}}{\\term{weightSum}{S_{0,h}}}\\frac{\\term{productSum}{\\sum_{i\\ne j}w_{ij,h}(x_i-\\bar x)(x_j-\\bar x)}}{\\term{sumOfSquares}{\\sum_i(x_i-\\bar x)^2}},\\quad \\term{expectedI}{E[I]}=-\\frac{1}{\\term{count}{n}-1}</pre><p class=\"lens-ascii\">I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products.</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{moransI}{0.971307}=\\frac{\\term{count}{\\left(1200\\right)}}{\\term{weightSum}{S_{0,h}}}\\frac{\\term{productSum}{\\sum_{i\\ne j}w_{ij,h}(x_i-\\bar x)(x_j-\\bar x)}}{\\term{sumOfSquares}{\\left(3228040\\right)}},\\quad \\term{expectedI}{-0.000834028}=-\\frac{1}{\\term{count}{\\left(1200\\right)}-1}</pre><p class=\"lens-ascii\">I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-finish\" data-value=\"moransI\">moransI · output · moransI<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-value-sum-blocks\" data-value=\"count\">count · intermediate · count<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-finish\" data-value=\"weightSum\">weightSum · intermediate · weightSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-finish\" data-value=\"productSum\">productSum · intermediate · productSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-statistics\" data-value=\"sumOfSquares\">sumOfSquares · intermediate · sumOfSquares<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-finish\" data-value=\"expectedI\">expectedI · output · expected<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -30,42 +30,42 @@
       [
         "moransI",
         "output",
-        "unknown",
+        "moransI",
         "0.9713066220283508",
         "readback"
       ],
       [
         "count",
         "intermediate",
-        "unknown",
+        "count",
         "1200",
         "readback"
       ],
       [
         "weightSum",
         "intermediate",
-        "unknown",
+        "weightSum",
         "—",
         "metadata"
       ],
       [
         "productSum",
         "intermediate",
-        "unknown",
+        "productSum",
         "—",
         "metadata"
       ],
       [
         "sumOfSquares",
         "intermediate",
-        "unknown",
+        "sumOfSquares",
         "3228039.5",
         "readback"
       ],
       [
         "expectedI",
         "output",
-        "unknown",
+        "expected",
         "-0.0008340283529832959",
         "readback"
       ]
@@ -108,7 +108,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.155Z",
+    "date": "2026-11-11T15:20:11.659Z",
     "runId": "run-27e38fb4",
     "observerEffects": []
   },

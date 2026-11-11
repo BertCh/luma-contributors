@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUTrajectoryMetrics,
-  type GPUTrajectoryGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUTrajectoryMetrics} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUTrajectoryGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded AIS tracks and stop parameters for GPUTrajectoryMetrics. */
 export type TrajectoryMetricsExampleInput = {

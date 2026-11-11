@@ -12,10 +12,12 @@ import {
   getGPUHuffTradeAreasParameterValues,
   getGPUNeighborSearchParameterValues,
   GPUHuffTradeAreas,
-  GPUNeighborSearch,
+  GPUNeighborSearch
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from the park and tract data files. */
 export type HuffTradeAreasExampleInput = {

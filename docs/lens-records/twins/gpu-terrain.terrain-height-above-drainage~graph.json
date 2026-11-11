@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of GPUTerrainHeightAboveDrainage on the Dixie Fire DEM. nodes: 619. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of GPUTerrainHeightAboveDrainage on the Dixie Fire DEM. nodes: 619. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of GPUTerrainHeightAboveDrainage on the Dixie Fire DEM\n\n- nodes: 619\n- 24 visible units vs budget 24\n- 619 hidden nodes\n- Edges by kind: raw 2833, war 891\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of GPUTerrainHeightAboveDrainage on the Dixie Fire DEM\n\n- nodes: 619\n- 24 visible units vs budget 24\n- 619 hidden nodes\n- Edges by kind: raw 2833, war 891\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "619"
@@ -31,10 +31,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.192Z",
+    "date": "2026-11-11T15:21:34.989Z",
     "runId": "run-3b10f5de",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

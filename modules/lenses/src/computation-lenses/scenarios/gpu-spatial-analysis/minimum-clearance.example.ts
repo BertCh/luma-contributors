@@ -6,9 +6,9 @@ import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPUMinimumClearance,
-  type GPUMinimumClearanceProps,
-  type GPUSpatialContext
+  type GPUMinimumClearanceProps
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-parks.json`. */
 export type MinimumClearanceExampleInput = {

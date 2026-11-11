@@ -37,7 +37,7 @@ export const URBAN_ECOLOGY_OPERATORS: SpatialFamilyOperators = {
     formula: {
       formula: 'none',
       reason:
-        'Building boundary sampling feeds half-plane-clipped sample cells in a convex bound with optional nonconvex enclosure overlay; GPUPolygonOverlay dissolves same-building fragments on an explicit snap lattice. Published geometry carries stable building IDs and independent sampling/overlay completeness.'
+        'Building boundary sampling feeds half-plane-clipped sample cells in a convex bound with optional nonconvex enclosure overlay; GPUPolygonOverlay dissolves same-building fragments on an explicit snap lattice. The geometry of each building is its own overlay output, indexed by building row, with independent sampling/overlay completeness.'
     },
     metadata: {
       coordinateModel: 'projected',
@@ -271,6 +271,93 @@ export const URBAN_ECOLOGY_OPERATORS: SpatialFamilyOperators = {
       injection: 1,
       disconnectedPotential: 'NaN',
       convergence: 'true-maximum-current-residual'
+    }
+  },
+  addSparseResistanceConnectivityRecipe: {
+    family: 'recipes',
+    descriptor: {scope: 'global', reduction: 'solve'},
+    variables: {
+      edges: 'category',
+      conductances: 'rate',
+      potentials: 'score',
+      currents: 'score',
+      vertexCurrents: 'score',
+      diagnostics: 'score',
+      status: 'category'
+    },
+    stages: ['support', 'operator'],
+    datumKinds: [
+      {kind: 'vertex', label: 'conductance vertex', indexSpace: '1d'},
+      {kind: 'edge', label: 'resistor edge', indexSpace: '1d'}
+    ],
+    guards: [],
+    choices: [
+      {name: 'tolerance', stage: 'operator', sweepable: true},
+      {name: 'maximumIterations', stage: 'operator', sweepable: true},
+      {name: 'connectivityIterations', stage: 'operator', sweepable: true}
+    ],
+    formula: {
+      id: 'gpu-spatial-analysis.sparse-resistance-connectivity-recipe',
+      derivation: 'curated',
+      tex: String.raw`\sum_{j}g_{ij}\left(\term{potentials}{v_i}-v_j\right)=[i=s]-[i=t],\quad v_t=0,\quad R_{\mathrm{eff}}=v_s,\quad \term{vertexCurrents}{I_i}=\tfrac12\Big(\sum_j\left|g_{ij}(v_i-v_j)\right|+[i\in\{s,t\}]\Big)`,
+      ascii:
+        'Unit current enters at the source s and leaves at the sink t, held at potential 0. Potentials solve the grounded conductance Laplacian by Jacobi-preconditioned conjugate gradients; the effective resistance is the source potential and the node current is half the summed absolute branch currents plus the injection.',
+      symbols: [
+        {id: 'potentials', role: 'output', label: 'v_i', binding: 'wgsl:potentials'},
+        {id: 'vertexCurrents', role: 'output', label: 'I_i', binding: 'wgsl:vertexCurrents'}
+      ]
+    },
+    metadata: {
+      maximumVertices: 1048576,
+      maximumEdges: 2097152,
+      injection: 1,
+      solver: 'grounded-jacobi-conjugate-gradient',
+      disconnectedPotential: 'NaN',
+      convergence: 'true-maximum-current-residual'
+    }
+  },
+  addRasterResistanceConnectivityRecipe: {
+    family: 'recipes',
+    descriptor: {scope: 'global', reduction: 'solve'},
+    variables: {
+      resistance: 'rate',
+      validity: 'category',
+      edges: 'category',
+      conductances: 'rate',
+      potentials: 'score',
+      currents: 'score',
+      vertexCurrents: 'score',
+      diagnostics: 'score',
+      solverStatus: 'category'
+    },
+    stages: ['support', 'neighbourhood', 'operator'],
+    datumKinds: [{kind: 'cell', label: 'raster cell', indexSpace: '2d'}],
+    guards: [],
+    choices: [
+      {name: 'neighborhood', stage: 'neighbourhood', sweepable: false},
+      {name: 'cellSizeMode', stage: 'support', sweepable: false},
+      {name: 'tolerance', stage: 'operator', sweepable: true},
+      {name: 'maximumIterations', stage: 'operator', sweepable: true}
+    ],
+    formula: {
+      id: 'gpu-spatial-analysis.raster-resistance-connectivity-recipe',
+      derivation: 'curated',
+      tex: String.raw`\term{conductances}{g_{ab}}=\frac{2}{\term{resistance}{R_a}+R_b}\cdot\frac{1}{\ell_{ab}},\quad \sum_{b\sim a}g_{ab}\left(\term{potentials}{v_a}-v_b\right)=[a=s]-[a=t],\quad v_t=0`,
+      ascii:
+        'Neighbouring cells a and b with data (4 or 8 neighbours) are joined by the conductance 2 / (R(a) + R(b)) / edgeLength, the edge length being the ground distance between cell centres under the grid and cellSizeMode. No-data cells are removed; zero or negative resistance is invalid. Unit current from source cell s to sink cell t is solved by the sparse resistance recipe.',
+      symbols: [
+        {id: 'resistance', role: 'input', label: 'R_a', binding: 'wgsl:resistance'},
+        {id: 'conductances', role: 'intermediate', label: 'g_ab', binding: 'wgsl:conductances'},
+        {id: 'potentials', role: 'output', label: 'v_a', binding: 'wgsl:potentials'}
+      ]
+    },
+    metadata: {
+      maximumCells: 1048576,
+      maximumEdgeSlots: 2097152,
+      conductance: '2 / (R(a) + R(b)) / edgeLength',
+      noData: 'removed',
+      nonPositiveResistance: 'invalid',
+      solver: 'addSparseResistanceConnectivityRecipe'
     }
   },
   addSegregationDecompositionRecipe: {

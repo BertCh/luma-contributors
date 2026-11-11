@@ -121,7 +121,10 @@ defineLensScenario({
                 keySpace: 'place',
                 meaning: 'nearest-road foot point in UTM 16N m'
               },
-              overflow: {view: referenced.status.overflow, role: 'intermediate'},
+              candidateOverflow: {
+                view: referenced.status.candidateOverflow,
+                role: 'intermediate'
+              },
               statuses: {
                 view: output.statuses,
                 role: 'intermediate',

@@ -4,7 +4,7 @@
 
 import type {Device} from '@luma.gl/core';
 import {getGPUNetworkIsochronesParameterValues} from '@luma-contributors/analysis/gpu-network';
-import {createGPULocalFrame} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createGPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 import {
   describeNetworkElement,
   recordNetworkElement,
@@ -17,7 +17,7 @@ import {gatherNodePoints, getSearchKeySpaces} from './search-lens-support';
 
 const scenarioId = 'gpu-network.network-isochrones';
 const roads = loadChicagoLoopRoads();
-/** Cost breaks in seconds; band k holds costs in [breaks[k - 1], breaks[k]). */
+/** Cost breaks in seconds; band k holds costs in (breaks[k - 1], breaks[k]], upper-inclusive. */
 const COST_BREAKS = [90, 180, 300];
 /** Walk cost in seconds per meter off the network (about 1.4 m/s). */
 const WALK_SECONDS_PER_METER = 0.7;

@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula skyView = 1 - mean over N sectors of sin(max(h, 0)); h = atan(max over steps s of (zFactor * (z_s - z_0) - c * d_s^2) / d_s) in degrees, d_s = ground distance of step s; 0 when no sample is valid, NaN when the centre is nodata; the ray stops…",
   "description": "Formula skyView = 1 - mean over N sectors of sin(max(h, 0)); h = atan(max over steps s of (zFactor * (z_s - z_0) - c * d_s^2) / d_s) in degrees, d_s = ground distance of step s; 0 when no sample is valid, NaN when the centre is nodata; the ray stops…",
-  "llms": "Formula skyView = 1 - mean over N sectors of sin(max(h, 0)); h = atan(max over steps s of (zFactor * (z_s - z_0) - c * d_s^2) / d_s) in degrees, d_s = ground distance of step s; 0 when no sample is valid, NaN when the centre is nodata; the ray stops at the grid edge or maximumDistance\n\n- bound symbols: 0/6\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula skyView = 1 - mean over N sectors of sin(max(h, 0)); h = atan(max over steps s of (zFactor * (z_s - z_0) - c * d_s^2) / d_s) in degrees, d_s = ground distance of step s; 0 when no sample is valid, NaN when the centre is nodata; the ray stops at the grid edge or maximumDistance\n\n- bound symbols: 6/6\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/6"
+    "value": "6/6"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-horizon.sky-view</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{skyView}{S} = 1 - \\frac{1}{\\term{directionCount}{N}}\\sum_{k=0}^{N-1}\\sin\\max(\\term{horizonAngle}{h_k},\\,0),\\quad h_k = \\arctan\\max_{s}\\frac{\\term{zFactor}{\\zeta}\\,(z_s - z_0) - \\term{curvature}{c}\\,\\term{groundDistance}{d_s}^2}{d_s}</pre><p class=\"lens-ascii\">skyView = 1 - mean over N sectors of sin(max(h, 0)); h = atan(max over steps s of (zFactor * (z_s - z_0) - c * d_s^2) / d_s) in degrees, d_s = ground distance of step s; 0 when no sample is valid, NaN when the centre is nodata; the ray stops at the grid edge or maximumDistance</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"skyView\">S · output · unknown — wgsl skyView not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"directionCount\">N · parameter · unknown — wgsl DIRECTION_COUNT not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"horizonAngle\">h_k · intermediate · unknown — wgsl horizonAngle not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"zFactor\">ζ · parameter · unknown — wgsl zFactor not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"curvature\">c · parameter · unknown — wgsl curvature not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"groundDistance\">d_s · intermediate · unknown — wgsl groundDistance not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-horizon.sky-view</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{skyView}{S} = 1 - \\frac{1}{\\term{directionCount}{N}}\\sum_{k=0}^{N-1}\\sin\\max(\\term{horizonAngle}{h_k},\\,0),\\quad h_k = \\arctan\\max_{s}\\frac{\\term{zFactor}{\\zeta}\\,(z_s - z_0) - \\term{curvature}{c}\\,\\term{groundDistance}{d_s}^2}{d_s}</pre><p class=\"lens-ascii\">skyView = 1 - mean over N sectors of sin(max(h, 0)); h = atan(max over steps s of (zFactor * (z_s - z_0) - c * d_s^2) / d_s) in degrees, d_s = ground distance of step s; 0 when no sample is valid, NaN when the centre is nodata; the ray stops at the grid edge or maximumDistance</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-horizon-compiled:terrain-horizon-sky-view\" data-value=\"skyView\">S · output · skyView</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-horizon-compiled:terrain-horizon-horizon-march-0\" data-value=\"directionCount\">N · parameter · DIRECTION_COUNT</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-horizon-compiled:terrain-horizon-horizon-march-0\" data-value=\"horizonAngle\">h_k · intermediate · horizonAngle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-horizon-compiled:terrain-horizon-horizon-march-0\" data-value=\"zFactor\">ζ · parameter · zFactor</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-horizon-compiled:terrain-horizon-horizon-march-0\" data-value=\"curvature\">c · parameter · curvature</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-horizon-compiled:terrain-horizon-horizon-march-0\" data-value=\"groundDistance\">d_s · intermediate · groundDistance</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,42 +29,42 @@
       [
         "S",
         "output",
-        "unknown",
+        "skyView",
         "—",
         "metadata"
       ],
       [
         "N",
         "parameter",
-        "unknown",
+        "DIRECTION_COUNT",
         "—",
         "metadata"
       ],
       [
         "h_k",
         "intermediate",
-        "unknown",
+        "horizonAngle",
         "—",
         "metadata"
       ],
       [
         "ζ",
         "parameter",
-        "unknown",
+        "zFactor",
         "—",
         "metadata"
       ],
       [
         "c",
         "parameter",
-        "unknown",
+        "curvature",
         "—",
         "metadata"
       ],
       [
         "d_s",
         "intermediate",
-        "unknown",
+        "groundDistance",
         "—",
         "metadata"
       ]
@@ -97,10 +97,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.223Z",
+    "date": "2026-11-11T15:21:35.053Z",
     "runId": "run-7644b04c",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

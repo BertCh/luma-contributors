@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula d_c(n+1) = (T_z / M'_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M'_z the zone mass after the clamp, A_z t…",
   "description": "Formula d_c(n+1) = (T_z / M'_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M'_z the zone mass after the clamp, A_z t…",
-  "llms": "Formula d_c(n+1) = (T_z / M'_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M'_z the zone mass after the clamp, A_z the zone cell count. Initial density is T_z / A_z.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula d_c(n+1) = (T_z / M'_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M'_z the zone mass after the clamp, A_z the zone cell count. Initial density is T_z / A_z.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.pycnophylactic</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{density}{d_c^{(n+1)}}=\\frac{T_z}{M&#39;_z}\\,\\max\\!\\Big(0,\\ \\term{smooth}{\\bar d_c^{(n)}}+\\frac{\\term{total}{T_z}-\\term{mass}{M_z}}{\\term{area}{A_z}}\\Big)</pre><p class=\"lens-ascii\">d_c(n+1) = (T_z / M&#39;_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M&#39;_z the zone mass after the clamp, A_z the zone cell count. Initial density is T_z / A_z.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"density\">d_c · output · unknown — wgsl destination not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"smooth\">focal mean · intermediate · unknown — wgsl source not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"total\">T_z · input · unknown — wgsl totals not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mass\">M_z · intermediate · unknown — wgsl zoneSums not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"area\">A_z · intermediate · unknown — wgsl zoneAreas not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.pycnophylactic</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{density}{d_c^{(n+1)}}=\\frac{T_z}{M&#39;_z}\\,\\max\\!\\Big(0,\\ \\term{smooth}{\\bar d_c^{(n)}}+\\frac{\\term{total}{T_z}-\\term{mass}{M_z}}{\\term{area}{A_z}}\\Big)</pre><p class=\"lens-ascii\">d_c(n+1) = (T_z / M&#39;_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M&#39;_z the zone mass after the clamp, A_z the zone cell count. Initial density is T_z / A_z.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-initialize\" data-value=\"density\">d_c · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-0-smooth\" data-value=\"smooth\">focal mean · intermediate · source</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-initialize\" data-value=\"total\">T_z · input · totals</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-0-restore-apply\" data-value=\"mass\">M_z · intermediate · zoneSums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-zone-areas\" data-value=\"area\">A_z · intermediate · zoneAreas</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "d_c",
         "output",
-        "unknown",
+        "destination",
         "—",
         "metadata"
       ],
       [
         "focal mean",
         "intermediate",
-        "unknown",
+        "source",
         "—",
         "metadata"
       ],
       [
         "T_z",
         "input",
-        "unknown",
+        "totals",
         "—",
         "metadata"
       ],
       [
         "M_z",
         "intermediate",
-        "unknown",
+        "zoneSums",
         "—",
         "metadata"
       ],
       [
         "A_z",
         "intermediate",
-        "unknown",
+        "zoneAreas",
         "—",
         "metadata"
       ]
@@ -99,7 +99,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:26.281Z",
+    "date": "2026-11-11T15:21:10.537Z",
     "runId": "run-c92fcbba",
     "observerEffects": []
   },

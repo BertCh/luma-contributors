@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.transition-matrix",
   "viewId": "formula-card",
-  "caption": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored). bound symbols: 0/5…",
-  "description": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored). bound symbols: 0/5…",
-  "llms": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored).\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored). bound symbols: 5/5…",
+  "description": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored). bound symbols: 5/5…",
+  "llms": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored).\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/5"
+    "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.transition-matrix</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{probability}{p_{ab}} = \\frac{\\term{count}{n_{ab}}}{\\term{rowTotal}{n_{a}}}, \\quad n_{ab} = \\#\\{(t, i) : \\term{fromClass}{x_{t,i}} = a,\\ \\term{toClass}{x_{t+\\ell,i}} = b\\}, \\quad n_a = \\sum_b n_{ab}</pre><p class=\"lens-ascii\">p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class &gt;= K are not counted (see ignored).</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"probability\">p_ab · output · unknown — wgsl probabilities not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">n_ab · intermediate · unknown — wgsl counts not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"rowTotal\">n_a · intermediate · unknown — wgsl total not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"fromClass\">class at t · input · unknown — wgsl fromClass not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"toClass\">class at t + lag · input · unknown — wgsl toClass not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.transition-matrix</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{probability}{p_{ab}} = \\frac{\\term{count}{n_{ab}}}{\\term{rowTotal}{n_{a}}}, \\quad n_{ab} = \\#\\{(t, i) : \\term{fromClass}{x_{t,i}} = a,\\ \\term{toClass}{x_{t+\\ell,i}} = b\\}, \\quad n_a = \\sum_b n_{ab}</pre><p class=\"lens-ascii\">p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class &gt;= K are not counted (see ignored).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:transition-matrix-normalize\" data-value=\"probability\">p_ab · output · probabilities</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:transition-matrix-clear\" data-value=\"count\">n_ab · intermediate · counts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:class-breaks-quantiles-select-0\" data-value=\"rowTotal\">n_a · intermediate · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:transition-matrix-count\" data-value=\"fromClass\">class at t · input · fromClass</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:transition-matrix-count\" data-value=\"toClass\">class at t + lag · input · toClass</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,35 +29,35 @@
       [
         "p_ab",
         "output",
-        "unknown",
+        "probabilities",
         "—",
         "metadata"
       ],
       [
         "n_ab",
         "intermediate",
-        "unknown",
+        "counts",
         "—",
         "metadata"
       ],
       [
         "n_a",
         "intermediate",
-        "unknown",
+        "total",
         "—",
         "metadata"
       ],
       [
         "class at t",
         "input",
-        "unknown",
+        "fromClass",
         "—",
         "metadata"
       ],
       [
         "class at t + lag",
         "input",
-        "unknown",
+        "toClass",
         "—",
         "metadata"
       ]
@@ -77,7 +77,7 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:29.416Z",
+    "date": "2026-11-11T15:21:32.307Z",
     "runId": "run-103abd42",
     "observerEffects": []
   },

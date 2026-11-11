@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPULineSegmentize,
-  type GPULineGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPULineSegmentize} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded Chicago geometry and parameters for GPULineSegmentize. */
 export type LineSegmentizeExampleInput = {
@@ -41,7 +39,7 @@ export async function runExample(
     status: {
       count: createTransientView(graph, 'count', 'uint32', 1, usage),
       overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage),
-      lineCount: createTransientView(graph, 'lineCount', 'uint32', 1, usage)
+      vertexCount: createTransientView(graph, 'vertexCount', 'uint32', 1, usage)
     }
   };
   // #region example

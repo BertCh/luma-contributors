@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula K(d_k) = 2 * cumulative * networkLength / (count * count) for count >= 2 snapped events, else 0. cumulative is the number of unordered event pairs whose network distance is strictly below the band threshold d_k = maximumDistance * k / (bandC…",
   "description": "Formula K(d_k) = 2 * cumulative * networkLength / (count * count) for count >= 2 snapped events, else 0. cumulative is the number of unordered event pairs whose network distance is strictly below the band threshold d_k = maximumDistance * k / (bandC…",
-  "llms": "Formula K(d_k) = 2 * cumulative * networkLength / (count * count) for count >= 2 snapped events, else 0. cumulative is the number of unordered event pairs whose network distance is strictly below the band threshold d_k = maximumDistance * k / (bandCount - 1) (a prefix sum of the per-band pair histogram); networkLength is the length of every road counted once. The denominator is count squared (the spaghetti GlobalAutoK normalisation), not count * (count - 1). With zero simulations only the observed row exists.\n\n- bound symbols: 0/4\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula K(d_k) = 2 * cumulative * networkLength / (count * count) for count >= 2 snapped events, else 0. cumulative is the number of unordered event pairs whose network distance is strictly below the band threshold d_k = maximumDistance * k / (bandCount - 1) (a prefix sum of the per-band pair histogram); networkLength is the length of every road counted once. The denominator is count squared (the spaghetti GlobalAutoK normalisation), not count * (count - 1). With zero simulations only the observed row exists.\n\n- bound symbols: 4/4\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/4"
+    "value": "4/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.k-function.k</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{k}{K(d_k)}=2\\,\\term{cumulative}{P(d_k)}\\,\\term{networkLength}{L}\\,/\\,\\term{count}{n}^{2}\\qquad(n\\ge 2,\\ \\text{else }0)</pre><p class=\"lens-ascii\">K(d_k) = 2 * cumulative * networkLength / (count * count) for count &gt;= 2 snapped events, else 0. cumulative is the number of unordered event pairs whose network distance is strictly below the band threshold d_k = maximumDistance * k / (bandCount - 1) (a prefix sum of the per-band pair histogram); networkLength is the length of every road counted once. The denominator is count squared (the spaghetti GlobalAutoK normalisation), not count * (count - 1). With zero simulations only the observed row exists.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"k\">K value of the band · output · unknown — wgsl k not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cumulative\">pairs closer than the threshold · intermediate · unknown — wgsl cumulative not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"networkLength\">total network length · parameter · unknown — wgsl networkLength not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"count\">snapped event count · input · unknown — wgsl count not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.k-function.k</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{k}{K(d_k)}=2\\,\\term{cumulative}{P(d_k)}\\,\\term{networkLength}{L}\\,/\\,\\term{count}{n}^{2}\\qquad(n\\ge 2,\\ \\text{else }0)</pre><p class=\"lens-ascii\">K(d_k) = 2 * cumulative * networkLength / (count * count) for count &gt;= 2 snapped events, else 0. cumulative is the number of unordered event pairs whose network distance is strictly below the band threshold d_k = maximumDistance * k / (bandCount - 1) (a prefix sum of the per-band pair histogram); networkLength is the length of every road counted once. The denominator is count squared (the spaghetti GlobalAutoK normalisation), not count * (count - 1). With zero simulations only the observed row exists.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-k-function-compiled:network-k-function-block-0-batch-0-relax-0\" data-value=\"k\">K value of the band · output · k</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-k-function-compiled:network-k-function-finalize\" data-value=\"cumulative\">pairs closer than the threshold · intermediate · cumulative</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-k-function-compiled:network-k-function-finalize\" data-value=\"networkLength\">total network length · parameter · networkLength</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-k-function-compiled:network-k-function-finalize\" data-value=\"count\">snapped event count · input · count</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,28 +29,28 @@
       [
         "K value of the band",
         "output",
-        "unknown",
+        "k",
         "—",
         "metadata"
       ],
       [
         "pairs closer than the threshold",
         "intermediate",
-        "unknown",
+        "cumulative",
         "—",
         "metadata"
       ],
       [
         "total network length",
         "parameter",
-        "unknown",
+        "networkLength",
         "—",
         "metadata"
       ],
       [
         "snapped event count",
         "input",
-        "unknown",
+        "count",
         "—",
         "metadata"
       ]
@@ -69,16 +69,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.990Z",
-    "runId": "run-4f137e6f",
+    "date": "2026-11-11T15:20:12.733Z",
+    "runId": "run-26dcc2d3",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-4f137e6f",
+    "runId": "run-26dcc2d3",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

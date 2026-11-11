@@ -6,15 +6,15 @@ import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenario
 import {S2_DATASETS} from './s2-datasets';
 
 defineLensScenario({
-  id: 'gpu-spatial-analysis.k-means',
-  element: 'GPUKMeans',
+  id: 'gpu-spatial-analysis.spatial-k-means',
+  element: 'GPUSpatialKMeans',
   title: 'Six k-means clusters of iNaturalist observations, Chicago North Side',
   rungs: FORMULA_LENS_RUNGS,
   dataset: S2_DATASETS.nature,
   load: async () => {
     const [{runS2Lens}, {runExample, K_MEANS_CLUSTER_COUNT}, support, spatial] = await Promise.all([
       import('./s2-lens-run'),
-      import('./k-means.example'),
+      import('./spatial-k-means.example'),
       import('./s1-clustering-support'),
       import('@luma-contributors/analysis/gpu-spatial-analysis')
     ]);
@@ -22,8 +22,8 @@ defineLensScenario({
     return {
       run: device =>
         runS2Lens(device, {
-          scenarioId: 'gpu-spatial-analysis.k-means',
-          element: 'GPUKMeans',
+          scenarioId: 'gpu-spatial-analysis.spatial-k-means',
+          element: 'GPUSpatialKMeans',
           datasets: ['s2-chicago-north-nature'],
           seed: 3,
           keySpaces: [
@@ -42,7 +42,7 @@ defineLensScenario({
             const observations = uploads.view('observations', points.positions, 'float32x2');
             const parameters = uploads.view(
               'parameters',
-              spatial.getGPUKMeansParameterValues({seed: 3}),
+              spatial.getGPUSpatialKMeansParameterValues({seed: 3}),
               'uint32'
             );
             const result = await runExample(graph, {

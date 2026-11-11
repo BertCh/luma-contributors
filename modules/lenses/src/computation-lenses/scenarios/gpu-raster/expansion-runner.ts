@@ -18,7 +18,11 @@ import {runExample as runRasterFractionalZonalStatisticsExample} from './raster-
 import {runExample as runTerrainFlowDistanceExample} from '../gpu-terrain/terrain-flow-distance.example';
 import {runExample as runTerrainStreamNetworkExample} from '../gpu-terrain/terrain-stream-network.example';
 import type * as raster from '@luma.gl/graph/gpu-raster';
-import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
+import {
+  getGPURasterFractionalCoverageParameterValues,
+  getGPURasterWalkingCostParameterValues,
+  makeGPURasterBand
+} from '@luma-contributors/analysis/raster-analysis';
 import {runRasterLens, type RasterLensSession} from './raster-lens-harness';
 import {getRasterOperatorEntries} from '../../../gpu-raster/computation-pack/index';
 import {getTerrainOperatorEntries} from '../../../gpu-terrain/computation-pack/index';
@@ -80,7 +84,7 @@ export async function buildRasterExpansionScenario(
           values: values(),
           validity: validity(),
           filled: session.output('filled', 'uint32'),
-          unresolvedCount: scalar('unresolvedCount')
+          status: {invalidCount: scalar('invalidCount')}
         }
       });
       break;
@@ -112,6 +116,8 @@ export async function buildRasterExpansionScenario(
       });
       break;
     case 'GPURasterReconstruction':
+      // connectivity defaults to 8: the corner marker floods the uniform mask through diagonals,
+      // reaching the far corner in 2 dilations where connectivity 4 needs 4.
       await runRasterReconstructionExample(session.graph, {
         grid,
         marker: session.input('marker', 'float32', [1, 0, 0, 0, 0, 0, 0, 0, 0]),
@@ -161,6 +167,12 @@ export async function buildRasterExpansionScenario(
           grid
         ),
         sources: session.input('sources', 'uint32', [1, 0, 0, 0, 0, 0, 0, 0, 0]),
+        parameters: session.input(
+          'parameters',
+          'float32',
+          Array.from(getGPURasterWalkingCostParameterValues({}, grid)),
+          {role: 'context', meaning: 'georeference, friction weight and model coefficients'}
+        ),
         maximumIterations: 12,
         output: {costs: values(), validity: validity(), status: {converged: scalar('converged')}}
       });
@@ -204,6 +216,12 @@ export async function buildRasterExpansionScenario(
       };
       await runRasterFractionalCoverageExample(session.graph, {
         grid,
+        parameters: session.input(
+          'parameters',
+          'float32',
+          Array.from(getGPURasterFractionalCoverageParameterValues(grid)),
+          {role: 'context', meaning: 'affine georeference words'}
+        ),
         zones: {
           positions,
           featureOffsets: session.input('featureOffsets', 'uint32', [0, 1], false),

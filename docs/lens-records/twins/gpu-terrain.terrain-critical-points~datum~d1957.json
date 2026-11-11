@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of grid cells 1957. criticalSignChanges: 4. values read back from the GPU run. result: 3 quantities.",
   "description": "Receipt of grid cells 1957. criticalSignChanges: 4. values read back from the GPU run. result: 3 quantities.",
-  "llms": "Receipt of grid cells 1957\n\n- criticalSignChanges: 4\n- result: 3 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of grid cells 1957\n\n- criticalSignChanges: 4\n- result: 3 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "criticalSignChanges",
     "value": "4"
@@ -57,10 +57,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.005Z",
+    "date": "2026-11-11T15:21:34.382Z",
     "runId": "run-9264a364",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

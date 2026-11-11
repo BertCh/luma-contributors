@@ -10,9 +10,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUOffsetCurve,
-  getGPUOffsetCurveRowsPerVertex,
-  type GPULineGeometryFields
+  getGPUOffsetCurveRowsPerVertex
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Streets in UTM 16N metres and the packed offset distance (20 m) for GPUOffsetCurve. */
 export type OffsetCurveExampleInput = {

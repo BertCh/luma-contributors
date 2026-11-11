@@ -15,7 +15,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
    * The mathematical sum is
    * realized by quantized 64-bit accumulators (2^24 units per robust variance, large terms at
    * 2^12); empty bins are NaN and overflow is reported, not silently interpreted as exact data.
-   * Optional robustSemivariances use (mean sqrt(abs(difference)))^4/(2*(0.457+0.494/N)).
+   * Optional robustSemivariances use (mean sqrt(abs(difference)))^4/(2*(0.457+0.494/N+0.045/N^2)).
    */
   GPUVariogram: {
     family: 'pair-statistics',
@@ -403,16 +403,16 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       'modules/analysis/src/dataframe-analysis/pair-statistics/gpu-space-time-variogram.ts'
     ]
   },
-  /** Rectangular translation-corrected cross-type K; supplied intensity uses inverse-intensity normalization. Pair correlation is annular, mark correlation uses product marks. */
+  /** Rectangular translation-corrected K (cross-type n_a n_b, same-type n (n - 1)); supplied intensity uses inverse-intensity normalization. Pair correlation is annular, mark correlation uses product marks. */
   GPUMarkedPointStatistics: {
     family: 'pair-statistics',
     descriptor: {scope: 'pairwise', reduction: 'sum'},
     formula: {
       id: 'gpu-dataframe:GPUMarkedPointStatistics',
       derivation: 'curated',
-      tex: String.raw`\term{estimate}{K(r)}=\frac{A}{n_a n_b}\sum_{i\in a,j\in b,i\ne j}\frac{A\,1[d_{ij}\le r]}{(W-|\Delta x|)(H-|\Delta y|)}`,
+      tex: String.raw`\term{estimate}{K(r)}=\frac{A}{N}\sum_{i\in a,j\in b,i\ne j}\frac{A\,1[d_{ij}\le r]}{(W-|\Delta x|)(H-|\Delta y|)},\quad N=\begin{cases}n_a n_b&a\ne b\\n(n-1)&a=b\end{cases}`,
       ascii:
-        'Rectangular translation-corrected cross-type K; supplied intensity uses inverse-intensity normalization. Pair correlation is annular, mark correlation uses product marks.',
+        'Rectangular translation-corrected K over ordered non-self pairs, normalised by N: n_a n_b for two different types (cross-type K), n (n - 1) when focus and neighbour are the same set (a single point type, or equal typePair); a same-type set of one point has no K. Supplied intensity uses inverse-intensity normalization instead. Pair correlation is annular, mark correlation uses product marks.',
       symbols: [{id: 'estimate', role: 'output', binding: 'wgsl:result'}]
     },
     stages: ['filter', 'aggregate', 'summarise'],

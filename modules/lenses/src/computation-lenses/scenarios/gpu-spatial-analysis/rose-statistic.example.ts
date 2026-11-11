@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPURoseStatistic,
-  type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPURoseStatistic} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Street segment ends in local metres, the segment lengths and the planar context of the frame. */
 export type RoseStatisticExampleInput = {

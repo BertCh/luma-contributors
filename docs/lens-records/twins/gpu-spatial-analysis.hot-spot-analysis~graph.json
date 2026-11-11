@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis.hot-spot-analysis. nodes: 175. structure metadata only. 22 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis.hot-spot-analysis. nodes: 175. structure metadata only. 22 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis.hot-spot-analysis\n\n- nodes: 175\n- 22 visible units vs budget 24\n- 175 hidden nodes\n- Edges by kind: raw 310, war 61, waw 40\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis.hot-spot-analysis\n\n- nodes: 175\n- 22 visible units vs budget 24\n- 175 hidden nodes\n- Edges by kind: raw 310, war 60, waw 40\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "175"
@@ -39,9 +39,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:22.517Z",
+    "date": "2026-11-11T15:20:47.573Z",
     "runId": "run-991e472d",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-991e472d",

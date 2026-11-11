@@ -10,9 +10,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   addHotSpotAnalysisRecipe,
-  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
-  GPUParameterBuffer
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from the Chicago North Side observations and areas. */
 export type HotSpotAnalysisRecipeExampleInput = {

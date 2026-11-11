@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.raster-sampling: samplingDem, samplingPoints → samplingSam…",
   "description": "Result of gpu-raster.raster-sampling: samplingDem, samplingPoints → samplingSampledPoints. points: 25. values read back from the GPU run. input samplingDem: 4096 cells.",
-  "llms": "Result of gpu-raster.raster-sampling: samplingDem, samplingPoints → samplingSampledPoints\n\n- points: 25\n- input samplingDem: 4096 cells\n- input samplingPoints: 25 points\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 25 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 25 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.raster-sampling: samplingDem, samplingPoints → samplingSampledPoints\n\n- points: 25\n- input samplingDem: 4096 cells\n- input samplingPoints: 25 points\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 25 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 25 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "25"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.960Z",
+    "date": "2026-11-11T15:20:15.404Z",
     "runId": "run-cab881f1",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

@@ -9,7 +9,7 @@ import {
   GPUVariogram,
   GPU_VARIOGRAM_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Station columns the lens scenario reads from `f-ghcn-stations.json`. */
 export type VariogramExampleInput = {

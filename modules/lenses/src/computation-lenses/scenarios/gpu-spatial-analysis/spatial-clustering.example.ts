@@ -10,11 +10,13 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   getGPUSpatialClusteringParameterValues,
-  GPUParameterBuffer,
   GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  type GPUSpatialContext
+  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUParameterBuffer,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`. */
 export type SpatialClusteringExampleInput = {

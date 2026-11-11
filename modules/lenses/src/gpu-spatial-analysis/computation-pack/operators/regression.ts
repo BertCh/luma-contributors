@@ -300,10 +300,10 @@ export const REGRESSION_OPERATORS: SpatialFamilyOperators = {
 \term{sigmaSquared}{\hat\sigma^2}&=\frac{u^\top u}{n},\ u=y-Z\hat\delta,
 &\term{zStatistic}{z_j}&=\frac{\hat\delta_j}{\term{standardError}{\mathrm{se}_j}},\ \mathrm{se}_j^2=\hat\sigma^2[(Z^\top PZ)^{-1}]_{jj}\\
 \term{moranI}{I_u}&=\frac{n}{S_0}\,\frac{u^\top Wu}{u^\top u},
-&\term{anselinKelejian}{\mathrm{AK}}&=\frac{n\,I_u^2}{\term{phiSquared}{\varphi^2}}
+&\term{anselinKelejian}{\mathrm{AK}}&=\frac{(u^\top Wu/\hat\sigma^2)^2}{\term{traceT}{T}+4\,\term{estimationTerm}{a}/\hat\sigma^2}
 \end{aligned}`,
       ascii:
-        "Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H'H)^-1 H'. delta = (Z'PZ)^-1 Z'P y; u = y - Z delta; sigma2 = u'u/n; se_j = sqrt(sigma2 [(Z'PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant is centred out; the intercept is ybar - mean(Z) delta. Anselin-Kelejian AK = n I_u^2/phi2 with I_u = (n/S0) u'Wu/u'u tests the residuals for spatial autocorrelation. Classical (non-robust) standard errors.",
+        "Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H'H)^-1 H'. delta = (Z'PZ)^-1 Z'P y; u = y - Z delta; sigma2 = u'u/n; se_j = sqrt(sigma2 [(Z'PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant is centred out; the intercept is ybar - mean(Z) delta. Anselin-Kelejian AK = (u'Wu/sigma2)^2 / (T + 4a/sigma2), with T = tr(W'W + WW) and a the estimation-variance term, tests the residuals for spatial autocorrelation; it equals n I_u^2/phi2 and does not depend on the total weight S0. Moran's I_u = (n/S0) u'Wu/u'u is undefined when S0 = 0. Classical (non-robust) standard errors.",
       symbols: [
         {id: 'delta', role: 'output', label: 'coefficients with rho last', binding: 'wgsl:delta'},
         {id: 'sigmaSquared', role: 'intermediate', binding: 'wgsl:sigmaSquared'},
@@ -311,7 +311,8 @@ export const REGRESSION_OPERATORS: SpatialFamilyOperators = {
         {id: 'standardError', role: 'output', binding: 'wgsl:standardError'},
         {id: 'moranI', role: 'intermediate', binding: 'wgsl:moranI'},
         {id: 'anselinKelejian', role: 'output', binding: 'wgsl:anselinKelejian'},
-        {id: 'phiSquared', role: 'intermediate', binding: 'wgsl:phiSquared'}
+        {id: 'traceT', role: 'intermediate', binding: 'wgsl:traceT'},
+        {id: 'estimationTerm', role: 'intermediate', binding: 'wgsl:estimationTerm'}
       ]
     }
   },

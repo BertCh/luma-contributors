@@ -4,10 +4,8 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUPolygonOverlay,
-  type GPUPolygonGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUPolygonOverlay} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Parks and one community area in the shared UTM 16N frame (metres), with the output capacities. */
 export type PolygonOverlayExampleInput = {
@@ -40,12 +38,11 @@ export async function runExample(
       positions: view('overlayPositions', 'float32x2', capacity.vertices),
       featureOffsets: view('overlayFeatureOffsets', 'uint32', capacity.rings + 1),
       polygonOffsets: view('overlayPolygonOffsets', 'uint32', capacity.rings + 1),
-      ringOffsets: view('overlayRingOffsets', 'uint32', capacity.rings + 1),
-      sourceIds: view('overlaySourceIds', 'uint32', capacity.rings)
+      ringOffsets: view('overlayRingOffsets', 'uint32', capacity.rings + 1)
     },
     status: {
       count: scalar('overlayCount'),
-      requiredCount: scalar('overlayRequiredCount'),
+      requiredRingCount: scalar('overlayRequiredRingCount'),
       overflow: scalar('overlayOverflow'),
       candidateOverflow: scalar('overlayCandidateOverflow')
     },

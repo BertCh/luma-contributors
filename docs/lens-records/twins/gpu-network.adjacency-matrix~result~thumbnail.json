@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-network.adjacency-matrix: no recorded inputs → matrixCounts.",
   "description": "Result of gpu-network.adjacency-matrix: no recorded inputs → matrixCounts. cells: 64. values read back from the GPU run. Planar coordinates (unit unknown); uniform scale.",
-  "llms": "Result of gpu-network.adjacency-matrix: no recorded inputs → matrixCounts\n\n- cells: 64\n- Planar coordinates (unit unknown); uniform scale.\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients order, matrixCounts, maximumCount retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.adjacency-matrix: no recorded inputs → matrixCounts\n\n- cells: 64\n- Planar coordinates (unit unknown); uniform scale.\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients order, matrixCounts, maximumCount retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "64"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:16.640Z",
+    "date": "2026-11-11T15:20:12.136Z",
     "runId": "run-2c767630",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients order, matrixCounts, maximumCount retained instead of aliased"
     ]

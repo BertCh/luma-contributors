@@ -10,10 +10,8 @@ import {
   GPUGather,
   GPUScan
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPULineSimplification,
-  type GPULineGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPULineSimplification} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPULineGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded Chicago geometry and parameters for GPULineSimplification. */
 export type LineSimplificationExampleInput = {

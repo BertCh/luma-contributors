@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distanc…",
   "description": "Formula d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distanc…",
-  "llms": "Formula d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distance > maximumDistance gives +Infinity; distances are cell-centre to cell-centre, ties prefer smallest seed ID. This run uses exact mode, not jump flooding.\n\n- bound symbols: 0/4\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distance > maximumDistance gives +Infinity; distances are cell-centre to cell-centre, ties prefer smallest seed ID. This run uses exact mode, not jump flooding.\n\n- bound symbols: 4/4\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/4"
+    "value": "4/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.distance-field.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{distance}{d(c)}=\\term{cellSize}{h}\\min_{\\term{seed}{s}\\in S}\\lVert\\term{cell}{c}-s\\rVert_2</pre><p class=\"lens-ascii\">d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distance &gt; maximumDistance gives +Infinity; distances are cell-centre to cell-centre, ties prefer smallest seed ID. This run uses exact mode, not jump flooding.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distance\">d · output · unknown — wgsl distanceBits not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cell\">c · input · unknown — wgsl index not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"seed\">s · intermediate · unknown — wgsl nearestCell not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cellSize\">h · parameter · unknown — wgsl settings not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.distance-field.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{distance}{d(c)}=\\term{cellSize}{h}\\min_{\\term{seed}{s}\\in S}\\lVert\\term{cell}{c}-s\\rVert_2</pre><p class=\"lens-ascii\">d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distance &gt; maximumDistance gives +Infinity; distances are cell-centre to cell-centre, ties prefer smallest seed ID. This run uses exact mode, not jump flooding.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-distance-field-compiled:distance-field-finalize\" data-value=\"distance\">d · output · distanceBits</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-distance-field-compiled:distance-field-seed-clear\" data-value=\"cell\">c · input · index</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-distance-field-compiled:distance-field-finalize\" data-value=\"seed\">s · intermediate · nearestCell</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-distance-field-compiled:distance-field-row-bands\" data-value=\"cellSize\">h · parameter · settings</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,28 +29,28 @@
       [
         "d",
         "output",
-        "unknown",
+        "distanceBits",
         "—",
         "metadata"
       ],
       [
         "c",
         "input",
-        "unknown",
+        "index",
         "—",
         "metadata"
       ],
       [
         "s",
         "intermediate",
-        "unknown",
+        "nearestCell",
         "—",
         "metadata"
       ],
       [
         "h",
         "parameter",
-        "unknown",
+        "settings",
         "—",
         "metadata"
       ]
@@ -81,10 +81,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.455Z",
+    "date": "2026-11-11T15:20:13.571Z",
     "runId": "run-82419c23",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

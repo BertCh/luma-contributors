@@ -14,8 +14,10 @@ export const INDICATORS_OPERATORS: DataFrameFamilyOperators = {
    * rank with averaged ties divided by n-1 (a singleton gets 0.5). Geometric aggregation is exp(sum(w*ln(s+epsilon))/
    * sum(w)) for positive weights; invalid shifted values or zero total weight give NaN.
    * Principal-component aggregation projects direction-adjusted z-scores on the correlation
-   * matrix's first eigenvector: 64 power iterations starting at 1/sqrt(d), signed to nonnegative
-   * loading sum, ignoring weights and scaler. Rank/PCA require their compile-time enable flags.
+   * matrix's first eigenvector (largest eigenvalue): closed form for two indicators, otherwise
+   * cyclic Jacobi rotations polished by a few power steps. The sign makes the loading sum
+   * positive; when that sum is zero to rounding, the first loading tying the largest magnitude is
+   * positive. Weights and scaler are ignored. Rank/PCA require their compile-time enable flags.
    */
   GPUCompositeScore: {
     family: 'indicators',

@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths. values: 72. values read back from the GPU run. input elevation: 9 cells.",
   "description": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths. values: 72. values read back from the GPU run. input elevation: 9 cells.",
-  "llms": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths\n\n- values: 72\n- input elevation: 9 cells\n- input flowDirections: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- 72 values, 16 shown\n- 72 values, 16 shown\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths\n\n- values: 72\n- input elevation: 9 cells\n- input flowDirections: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- 72 values, 16 shown\n- 72 values, 16 shown\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "values",
     "value": "72"
@@ -24,10 +24,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.151Z",
+    "date": "2026-11-11T15:21:34.892Z",
     "runId": "run-d396ef09",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

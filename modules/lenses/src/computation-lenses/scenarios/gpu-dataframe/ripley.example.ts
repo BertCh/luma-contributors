@@ -9,7 +9,7 @@ import {
   GPURipley,
   GPU_RIPLEY_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Observation columns the lens scenario reads from `f-chicago-nature.json`. */
 export type RipleyExampleInput = {

@@ -8,10 +8,8 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  GPUPointDensity,
-  type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 export type PointDensityExampleInput = {
   observations: GraphDataView<'float32x2'>;

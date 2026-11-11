@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of GPURasterPatchMetrics on the Dixie Fire window. nodes: 64. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of GPURasterPatchMetrics on the Dixie Fire window. nodes: 64. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of GPURasterPatchMetrics on the Dixie Fire window\n\n- nodes: 64\n- 24 visible units vs budget 24\n- 60 hidden nodes\n- Edges by kind: raw 172, war 29\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of GPURasterPatchMetrics on the Dixie Fire window\n\n- nodes: 64\n- 24 visible units vs budget 24\n- 60 hidden nodes\n- Edges by kind: raw 172, war 29\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "64"
@@ -31,10 +31,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.891Z",
+    "date": "2026-11-11T15:20:15.193Z",
     "runId": "run-1f2baf8f",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

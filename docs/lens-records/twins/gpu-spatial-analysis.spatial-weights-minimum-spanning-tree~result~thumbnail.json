@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.spatial-weights-minimum-spanning-tree: values.ge…",
   "description": "Result of gpu-spatial-analysis.spatial-weights-minimum-spanning-tree: values.geometry → treeSegments. lines: 135. values read back from the GPU run. input values.geometry: 136 polygons.",
-  "llms": "Result of gpu-spatial-analysis.spatial-weights-minimum-spanning-tree: values.geometry → treeSegments\n\n- lines: 135\n- input values.geometry: 136 polygons\n- Simple equirectangular projection (x scaled by cos 41.95°); not equal-area.\n- 1730 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 270 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.spatial-weights-minimum-spanning-tree: values.geometry → treeSegments\n\n- lines: 135\n- input values.geometry: 136 polygons\n- Simple equirectangular projection (x scaled by cos 41.95°); not equal-area.\n- 1730 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 270 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "135"
@@ -19,9 +19,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:28.717Z",
+    "date": "2026-11-11T15:21:28.099Z",
     "runId": "run-49930433",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-49930433",

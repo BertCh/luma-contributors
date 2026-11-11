@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of grid cells 3181. weissLargePosition: 3.4907617568969727. values read back from the GPU run. result: 4 quantities.",
   "description": "Receipt of grid cells 3181. weissLargePosition: 3.4907617568969727. values read back from the GPU run. result: 4 quantities.",
-  "llms": "Receipt of grid cells 3181\n\n- weissLargePosition: 3.4907617568969727\n- result: 4 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of grid cells 3181\n\n- weissLargePosition: 3.4907617568969727\n- result: 4 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "weissLargePosition",
     "value": "3.4907617568969727"
@@ -77,10 +77,10 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.614Z",
+    "date": "2026-11-11T15:21:36.242Z",
     "runId": "run-c4e8efd3",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

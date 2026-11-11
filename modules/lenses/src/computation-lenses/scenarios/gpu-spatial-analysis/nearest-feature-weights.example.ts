@@ -10,9 +10,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUNearestFeatureWeights,
-  type GPUSpatialContext,
   GPUNearestFeatureJoin
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded inputs and caller-owned outputs for this recorded example. */
 export type NearestFeatureWeightsExampleInput = {

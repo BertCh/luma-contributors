@@ -12,10 +12,12 @@ import {
   addFleetDwellRecipe,
   getGPUTrajectoryMetricsParameterValues,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
-  GPUParameterBuffer,
-  type GPUFleetDwellPolygonZones,
-  type GPUSpatialContext
+  type GPUFleetDwellPolygonZones
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUParameterBuffer,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from the New York harbor AIS tracks and anchorage zones. */
 export type FleetDwellRecipeExampleInput = {

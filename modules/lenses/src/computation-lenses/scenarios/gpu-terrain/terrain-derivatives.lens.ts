@@ -42,6 +42,13 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         alternatives: ['uniform', 'web-mercator', 'geographic'],
         sweepable: false
       },
+      {
+        stage: 'neighbourhood',
+        name: 'borderMode',
+        value: 'one-sided',
+        alternatives: ['one-sided', 'clamp', 'reflect', 'constant', 'nodata'],
+        sweepable: false
+      },
       {stage: 'operator', name: 'zFactor', value: 1, sweepable: true},
       {stage: 'presentation', name: 'azimuthDegrees', value: 315, unit: 'deg', sweepable: true},
       {stage: 'presentation', name: 'altitudeDegrees', value: 45, unit: 'deg', sweepable: true}

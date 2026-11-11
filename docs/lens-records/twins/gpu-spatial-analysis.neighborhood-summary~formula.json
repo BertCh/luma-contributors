@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to a…",
   "description": "Formula mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to a…",
-  "llms": "Formula mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to another unmasked row (numeric statistics also need a finite value). With row-standardised weights the slot weights are re-divided by the sum of the active slot weights. NaN when W_i = 0; zero-weight slots are not members.\n\n- bound symbols: 0/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to another unmasked row (numeric statistics also need a finite value). With row-standardised weights the slot weights are re-divided by the sum of the active slot weights. NaN when W_i = 0; zero-weight slots are not members.\n\n- bound symbols: 7/7\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/7"
+    "value": "7/7"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>neighborhood-summary</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{mean}{\\bar{x}_i}&amp;=\\frac{\\term{weightedSum}{\\sum_s w_s x_s}}{\\term{weightSum}{W_i}},\n&amp;\\term{weightSum}{W_i}&amp;=\\sum_s \\term{weight}{w_s}\\\\\n\\term{entropy}{H_i}&amp;=-\\sum_c \\term{share}{p_c}\\ln p_c,\n&amp;\\term{share}{p_c}&amp;=\\frac{\\term{frequency}{f_c}}{W_i},\n&amp;\\term{frequency}{f_c}&amp;=\\sum_{s:\\,c_s=c} w_s\n\\end{aligned}</pre><p class=\"lens-ascii\">mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to another unmasked row (numeric statistics also need a finite value). With row-standardised weights the slot weights are re-divided by the sum of the active slot weights. NaN when W_i = 0; zero-weight slots are not members.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mean\">mean · output · unknown — wgsl mean not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weightedSum\">weightedSum · intermediate · unknown — wgsl weightedSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weightSum\">weightSum · intermediate · unknown — wgsl weightSum not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weight\">weight · input · unknown — wgsl weight not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"entropy\">entropy · output · unknown — wgsl entropyTotal not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"share\">share · intermediate · unknown — wgsl share not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"frequency\">frequency · intermediate · unknown — wgsl frequency not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>neighborhood-summary</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{mean}{\\bar{x}_i}&amp;=\\frac{\\term{weightedSum}{\\sum_s w_s x_s}}{\\term{weightSum}{W_i}},\n&amp;\\term{weightSum}{W_i}&amp;=\\sum_s \\term{weight}{w_s}\\\\\n\\term{entropy}{H_i}&amp;=-\\sum_c \\term{share}{p_c}\\ln p_c,\n&amp;\\term{share}{p_c}&amp;=\\frac{\\term{frequency}{f_c}}{W_i},\n&amp;\\term{frequency}{f_c}&amp;=\\sum_{s:\\,c_s=c} w_s\n\\end{aligned}</pre><p class=\"lens-ascii\">mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to another unmasked row (numeric statistics also need a finite value). With row-standardised weights the slot weights are re-divided by the sum of the active slot weights. NaN when W_i = 0; zero-weight slots are not members.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-numeric\" data-value=\"mean\">mean · output · mean</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-numeric\" data-value=\"weightedSum\">weightedSum · intermediate · weightedSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-numeric\" data-value=\"weightSum\">weightSum · intermediate · weightSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-numeric\" data-value=\"weight\">weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-categorical\" data-value=\"entropy\">entropy · output · entropyTotal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-categorical\" data-value=\"share\">share · intermediate · share</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-categorical\" data-value=\"frequency\">frequency · intermediate · frequency</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,49 +29,49 @@
       [
         "mean",
         "output",
-        "unknown",
+        "mean",
         "—",
         "metadata"
       ],
       [
         "weightedSum",
         "intermediate",
-        "unknown",
+        "weightedSum",
         "—",
         "metadata"
       ],
       [
         "weightSum",
         "intermediate",
-        "unknown",
+        "weightSum",
         "—",
         "metadata"
       ],
       [
         "weight",
         "input",
-        "unknown",
+        "weight",
         "—",
         "metadata"
       ],
       [
         "entropy",
         "output",
-        "unknown",
+        "entropyTotal",
         "—",
         "metadata"
       ],
       [
         "share",
         "intermediate",
-        "unknown",
+        "share",
         "—",
         "metadata"
       ],
       [
         "frequency",
         "intermediate",
-        "unknown",
+        "frequency",
         "—",
         "metadata"
       ]
@@ -104,9 +104,13 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:24.955Z",
+    "date": "2026-11-11T15:21:00.467Z",
     "runId": "run-f61f6ec4",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-f61f6ec4",

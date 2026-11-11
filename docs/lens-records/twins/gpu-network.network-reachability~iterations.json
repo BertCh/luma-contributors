@@ -7,7 +7,7 @@
   "viewId": "skeleton-view",
   "caption": "Declared structure of gpu-network.network-reachability. depth: 267. structure metadata only. work 272 nodes.",
   "description": "Declared structure of gpu-network.network-reachability. depth: 267. structure metadata only. work 272 nodes.",
-  "llms": "Declared structure of gpu-network.network-reachability\n\n- depth: 267\n- work 272 nodes\n- loops 0\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients costs, bands, predecessors, bandCounts, converged, iterationCount, reachability-queued-round, reachability-control retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown) · single-hop.",
+  "llms": "Declared structure of gpu-network.network-reachability\n\n- depth: 267\n- work 272 nodes\n- loops 0\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients costs, bands, predecessors, bandCounts, converged, iterationCount, reachability-queued-round, reachability-control retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown) · single-hop.",
   "keyNumber": {
     "label": "depth",
     "value": "267"
@@ -19,11 +19,11 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.145Z",
+    "date": "2026-11-11T15:20:13.040Z",
     "variant": "single-hop",
     "runId": "run-b72e7aac",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients costs, bands, predecessors, bandCounts, converged, iterationCount, reachability-queued-round, reachability-control retained instead of aliased"
     ]

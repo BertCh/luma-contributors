@@ -46,7 +46,7 @@ defineLensScenario({
             tracts,
             entry: STATISTICS_OPERATORS['GPUGeographicDistribution'],
             columns: {weights: 'population'},
-            choices: {standardDeviations: 1, ellipseConvention: 'arcgis'},
+            choices: {standardDeviations: 1, ellipseConvention: 'root-two'},
             metadata: {
               // Centroids are metres in a local azimuthal-equidistant frame, not degrees.
               coordinateModel: 'projected',
@@ -64,7 +64,7 @@ defineLensScenario({
                 'parameters',
                 spatial.getGPUGeographicDistributionParameterValues({
                   standardDeviations: 1,
-                  ellipseConvention: 'arcgis'
+                  ellipseConvention: 'root-two'
                 }),
                 'float32'
               );

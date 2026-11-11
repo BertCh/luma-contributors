@@ -10,11 +10,13 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUDotDensity,
+  getGPUDotDensityParameterValues
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
-  getGPUDotDensityParameterValues,
   type GPUPolygonGeometryFields,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 export type DotDensityExampleInput = {
   geometry: GPUPolygonGeometryFields;

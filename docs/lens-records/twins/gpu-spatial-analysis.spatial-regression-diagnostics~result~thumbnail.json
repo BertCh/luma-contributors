@@ -7,7 +7,7 @@
   "viewId": "gpu-core-array-result",
   "caption": "Read captured inputs into recorded array outputs.",
   "description": "Read captured inputs into recorded array outputs. max statistics: 764.7. values read back from the GPU run. 3 output panels from the recorded run.",
-  "llms": "Read captured inputs into recorded array outputs\n\n- max statistics: 764.7\n- 3 output panels from the recorded run\n- statistics: 6 captured values (6 shown)\n- degreesOfFreedom: 6 captured values (6 shown)\n- pValues: 6 captured values (6 shown)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max statistics: 764.7\n- 3 output panels from the recorded run\n- statistics: 6 captured values (6 shown)\n- degreesOfFreedom: 6 captured values (6 shown)\n- pValues: 6 captured values (6 shown)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max statistics",
     "value": "764.7"
@@ -19,9 +19,13 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:28.487Z",
+    "date": "2026-11-11T15:21:26.017Z",
     "runId": "run-2b602219",
-    "observerEffects": []
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
     "runId": "run-2b602219",

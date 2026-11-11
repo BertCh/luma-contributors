@@ -11,7 +11,7 @@ import {
   GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
   GPU_QUADRAT_STATISTICS_LENGTH
 } from '@luma-contributors/analysis/dataframe-analysis';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Observation columns the lens scenario reads from `f-chicago-nature.json`. */
 export type PointPatternIndicesExampleInput = {

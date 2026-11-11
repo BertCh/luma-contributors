@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of grid cells 3181. textureShade: 154.15542602539062. values read back from the GPU run. result: 2 quantities.",
   "description": "Receipt of grid cells 3181. textureShade: 154.15542602539062. values read back from the GPU run. result: 2 quantities.",
-  "llms": "Receipt of grid cells 3181\n\n- textureShade: 154.15542602539062\n- result: 2 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of grid cells 3181\n\n- textureShade: 154.15542602539062\n- result: 2 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "textureShade",
     "value": "154.15542602539062"
@@ -49,10 +49,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.640Z",
+    "date": "2026-11-11T15:21:36.358Z",
     "runId": "run-e64e6a80",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

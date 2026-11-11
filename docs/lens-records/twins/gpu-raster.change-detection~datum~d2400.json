@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of grid cells 2400. swirChangeDifference: 0.06480000168085098. values read back from the GPU run. result: 7 quantities.",
   "description": "Receipt of grid cells 2400. swirChangeDifference: 0.06480000168085098. values read back from the GPU run. result: 7 quantities.",
-  "llms": "Receipt of grid cells 2400\n\n- swirChangeDifference: 0.06480000168085098\n- result: 7 quantities\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of grid cells 2400\n\n- swirChangeDifference: 0.06480000168085098\n- result: 7 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "swirChangeDifference",
     "value": "0.06480000168085098"
@@ -89,10 +89,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.340Z",
+    "date": "2026-11-11T15:20:13.422Z",
     "runId": "run-f6ef8c4f",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]

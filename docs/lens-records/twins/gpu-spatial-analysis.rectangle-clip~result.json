@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const usage = Buffer.STORAGE | Buffer.COPY_SRC;\nconst output = {\n  positions: createTransientView(graph, 'clipped', 'float32x2', vertexCapacity, usage),\n  lineOffsets: createTransientView(graph, 'clippedOffsets', 'uint32', lineCapacity + 1, usage),\n  sourceLineIndices: createTransientView(\n    graph,\n    'sourceLineIndices',\n    'uint32',\n    lineCapacity,\n    usage\n  ),\n  status: {\n    count: createTransientView(graph, 'count', 'uint32', 1, usage),\n    overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage),\n    lineCount: createTransientView(graph, 'lineCount', 'uint32', 1, usage)\n  }\n};\ngraph.add(new GPURectangleClip({...roads, geometryType: 'lines', parameters, output}));\n// sourceLineIndices: the road each clipped line came from; a road can leave and re-enter\nconst {positions: clipped, lineOffsets, sourceLineIndices} = output;",
+    "code": "const usage = Buffer.STORAGE | Buffer.COPY_SRC;\nconst output = {\n  positions: createTransientView(graph, 'clipped', 'float32x2', vertexCapacity, usage),\n  lineOffsets: createTransientView(graph, 'clippedOffsets', 'uint32', lineCapacity + 1, usage),\n  sourceLineIndices: createTransientView(\n    graph,\n    'sourceLineIndices',\n    'uint32',\n    lineCapacity,\n    usage\n  ),\n  status: {\n    count: createTransientView(graph, 'count', 'uint32', 1, usage),\n    overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage),\n    vertexCount: createTransientView(graph, 'vertexCount', 'uint32', 1, usage)\n  }\n};\ngraph.add(new GPURectangleClip({...roads, geometryType: 'lines', parameters, output}));\n// sourceLineIndices: the road each clipped line came from; a road can leave and re-enter\nconst {positions: clipped, lineOffsets, sourceLineIndices} = output;",
     "language": "ts",
     "lineCount": 20
   },
@@ -24,7 +24,7 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:26.742Z",
+    "date": "2026-11-11T15:21:15.239Z",
     "runId": "run-e86b71cd",
     "observerEffects": []
   },

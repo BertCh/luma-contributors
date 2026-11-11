@@ -6,10 +6,10 @@ import type {Device} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   getGPUSolarPositionParameterValues,
-  GPUParameterBuffer,
   GPUSolarPosition,
   GPU_SOLAR_POSITION_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-terrain';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 /** Graph and caller-owned views the example wires together. */
 export type SolarPositionExampleInput = {

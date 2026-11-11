@@ -11,9 +11,9 @@ import {
 import {
   getGPUGridCellCount,
   getGPUGridVerticesPerCell,
-  GPUGridGenerator,
-  type GPUPolygonGeometryFields
+  GPUGridGenerator
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {type GPUPolygonGeometryFields} from '@luma-contributors/analysis/analysis-core';
 
 /** Grid size, origin parameters and the area the intersection mask tests against (UTM 16N, m). */
 export type GridGeneratorExampleInput = {

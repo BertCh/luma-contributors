@@ -7,7 +7,7 @@
   "viewId": "gpu-core-array-result",
   "caption": "Read captured inputs into recorded array outputs.",
   "description": "Read captured inputs into recorded array outputs. max networkStatistics: 2,810. values read back from the GPU run. 2 output panels from the recorded run.",
-  "llms": "Read captured inputs into recorded array outputs\n\n- max networkStatistics: 2,810\n- 2 output panels from the recorded run\n- networkStatistics: 14 captured values (8 shown)\n- outDegreeHistogram: 8 captured values (8 shown)\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: transients summary retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max networkStatistics: 2,810\n- 2 output panels from the recorded run\n- networkStatistics: 14 captured values (8 shown)\n- outDegreeHistogram: 8 captured values (8 shown)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients summary retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "max networkStatistics",
     "value": "2,810"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:17.234Z",
+    "date": "2026-11-11T15:20:13.174Z",
     "runId": "run-db13c3c5",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: transients summary retained instead of aliased"
     ]

@@ -17,10 +17,12 @@ import {
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {
   addPointsInPolygonsChoroplethRecipe,
-  GPUParameterBuffer,
-  type GPUChoroplethPolygons,
-  type GPUSpatialContext
+  type GPUChoroplethPolygons
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUParameterBuffer,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from the Chicago North Side observations and tracts. */
 export type PointsInPolygonsChoroplethRecipeExampleInput = {

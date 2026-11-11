@@ -44,8 +44,7 @@ function isDroppedScenario(scenario: string | undefined): boolean {
     scenario !== undefined &&
     (/^(?:gpu-core|gpu-sql)\./.test(scenario) ||
       /^gpu-dataframe\.data-frame-[a-z-]*query$/.test(scenario) ||
-      scenario === 'gpu-graph.graph-strongly-connected-components' ||
-      /^gpu-spatial-analysis\.(?:sparse|raster)-resistance-connectivity-recipe$/.test(scenario))
+      scenario === 'gpu-graph.graph-strongly-connected-components')
   );
 }
 
@@ -65,8 +64,6 @@ const GPU_DATAFRAME_PENDING: Readonly<Record<string, string>> = {
   GPUValueCube: SPATIOTEMPORAL_REVIEW_PENDING
 };
 const GPU_SPATIAL_ANALYSIS_PENDING: Readonly<Record<string, string>> = {
-  addSparseResistanceConnectivityRecipe:
-    'lenses: pack operator, formula, scenario, directives and records (EC03 follow-up)',
   GPUEnsembleScores: SPATIOTEMPORAL_REVIEW_PENDING,
   GPUGaussianPredictiveScores: SPATIOTEMPORAL_REVIEW_PENDING,
   GPUJacquezTest: SPATIOTEMPORAL_REVIEW_PENDING,
@@ -347,10 +344,7 @@ function collectSlotFailures(
       if (marker.file !== conceptsFile) {
         failures.push(`${marker.file}:${marker.line}: execution-model belongs in concepts.md`);
       }
-    } else if (
-      !exported.has(marker.name) &&
-      !/^addRasterResistanceConnectivityRecipe$/.test(marker.name)
-    ) {
+    } else if (!exported.has(marker.name)) {
       failures.push(`${marker.file}:${marker.line}: marker ${marker.name} is not exported`);
     }
   }

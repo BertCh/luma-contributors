@@ -4,11 +4,11 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUZoneEvents} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
-  GPUZoneEvents,
   type GPUPolygonGeometryFields,
   type GPUTrajectoryGeometryFields
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Uploaded AIS tracks and harbour zones for GPUZoneEvents. */
 export type ZoneEventsExampleInput = {

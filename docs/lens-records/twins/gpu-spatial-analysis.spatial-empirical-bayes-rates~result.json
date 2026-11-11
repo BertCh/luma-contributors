@@ -12,7 +12,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.spatial-empirical-bayes-rates: events, populations → smoothedRates.geometry. polygons: 791. values read back from the GPU run. input events: 791 values.",
   "description": "Result of gpu-spatial-analysis.spatial-empirical-bayes-rates: events, populations → smoothedRates.geometry. polygons: 791. values read back from the GPU run. input events: 791 values.",
-  "llms": "Result of gpu-spatial-analysis.spatial-empirical-bayes-rates: events, populations → smoothedRates.geometry\n\n- polygons: 791\n- input events: 791 values\n- input populations: 791 values\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 791 values, 16 shown\n- 791 values, 16 shown\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.spatial-empirical-bayes-rates: events, populations → smoothedRates.geometry\n\n- polygons: 791\n- input events: 791 values\n- input populations: 791 values\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 791 values, 16 shown\n- 791 values, 16 shown\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "791"
@@ -44,12 +44,16 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:27.534Z",
-    "runId": "run-12ddeaac",
-    "observerEffects": []
+    "date": "2026-11-11T15:21:20.015Z",
+    "runId": "run-28c39f9e",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
   },
   "state": {
-    "runId": "run-12ddeaac",
+    "runId": "run-28c39f9e",
     "rung": "result",
     "bindings": {},
     "clauses": [],

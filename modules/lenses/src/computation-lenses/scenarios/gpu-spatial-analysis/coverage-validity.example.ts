@@ -6,11 +6,13 @@ import {Buffer} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getGPUCoverageValidityParameterValues,
-  GPUCoverageValidity,
+  GPUCoverageValidity
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   GPUParameterBuffer,
   type GPUPolygonGeometryFields,
   type GPUSpatialContext
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-tracts.json`. */
 export type CoverageValidityExampleInput = {

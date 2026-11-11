@@ -11,7 +11,7 @@ const STRUCTURE_FORMULA_REFS: Record<string, GPUComputationFormulaRef> = {
     derivation: 'curated',
     tex: String.raw`\term{normalized}{s}=\begin{cases}(\term{degree}{x}-\term{lowest}{a})/(\term{highest}{b}-\term{lowest}{a})&\term{highest}{b}>\term{lowest}{a}\\0&\text{otherwise}\end{cases}`,
     ascii:
-      'normalized = highest > lowest ? (raw - lowest) / (highest - lowest) : 0, in f32. lowest and highest are the two words of the extent reduction (minimum, maximum of the raw column over all nodes); a column with a single value (no range) normalizes to 0 for every node. The raw degree is the outgoing CSR row length from the degree algorithm.',
+      'normalized = highest > lowest ? (raw - lowest) / (highest - lowest) : 0, in f32. lowest and highest are the two words of the extent reduction (minimum, maximum of the raw column over all nodes); a column with a single value (no range) normalizes to 0 for every node. The raw degree is the number of live slots of the outgoing CSR row of the node (neighbours below the node count) from the degree algorithm; a self-loop slot counts once.',
     symbols: [
       {id: 'normalized', role: 'output', label: 'scaled degree', binding: 'wgsl:normalized'},
       {id: 'degree', role: 'input', label: 'raw column value', binding: 'wgsl:raw'},
@@ -110,7 +110,7 @@ export const NETWORK_STRUCTURE_PACK: NetworkPackPart = {
     GPUNetworkCoarsening: {
       formula: 'none',
       reason:
-        'fixed-point group accumulation and the sort-and-segment superedge build are procedural; the graph rung shows the fills, sort, scans and publish'
+        'two-word 64-bit fixed-point group sums (with fixedPointScale left out, the unit follows the largest summed term, so every sum is the exact sum rounded to float32) and the sort-and-segment superedge build are procedural; the graph rung shows the fills, the sum-scale reductions, sort, scans and publish'
     },
     GPUAdjacencyMatrix: STRUCTURE_FORMULA_REFS['gpu-network.adjacency-matrix.bin'],
     GPUAdjacencyMatrixOrder: {

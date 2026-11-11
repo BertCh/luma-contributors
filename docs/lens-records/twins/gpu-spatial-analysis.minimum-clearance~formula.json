@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.minimum-clearance",
   "viewId": "formula-card",
-  "caption": "Formula C_f = min over vertices v of feature f of the distance from v to every segment s of f that does not have v as an endpoint, or to its other endpoint when v is an endpoint of s. Infinity when nothing can be measured. bound symbols: 0/2. struct…",
-  "description": "Formula C_f = min over vertices v of feature f of the distance from v to every segment s of f that does not have v as an endpoint, or to its other endpoint when v is an endpoint of s. Infinity when nothing can be measured. bound symbols: 0/2. struct…",
-  "llms": "Formula C_f = min over vertices v of feature f of the distance from v to every segment s of f that does not have v as an endpoint, or to its other endpoint when v is an endpoint of s. Infinity when nothing can be measured.\n\n- bound symbols: 0/2\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula C_f = min over vertices v of feature f of the distance from v to every segment s of f that does not have v as an endpoint, or to its other endpoint when v is an endpoint of s. Infinity when nothing can be measured. bound symbols: 2/2. struct…",
+  "description": "Formula C_f = min over vertices v of feature f of the distance from v to every segment s of f that does not have v as an endpoint, or to its other endpoint when v is an endpoint of s. Infinity when nothing can be measured. bound symbols: 2/2. struct…",
+  "llms": "Formula C_f = min over vertices v of feature f of the distance from v to every segment s of f that does not have v as an endpoint, or to its other endpoint when v is an endpoint of s. Infinity when nothing can be measured.\n\n- bound symbols: 2/2\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "0/2"
+    "value": "2/2"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.minimum-clearance</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{clearance}{C_f}=\\min_{v\\in f}\\ \\min_{s\\in f,\\ v\\notin s}\\ \\term{distance}{d(v,s)}</pre><p class=\"lens-ascii\">C_f = min over vertices v of feature f of the distance from v to every segment s of f that does not have v as an endpoint, or to its other endpoint when v is an endpoint of s. Infinity when nothing can be measured.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"clearance\">C_f · output · unknown — wgsl clearances not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"distance\">d(v, s) · intermediate · unknown — wgsl segmentCandidate not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.minimum-clearance</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{clearance}{C_f}=\\min_{v\\in f}\\ \\min_{s\\in f,\\ v\\notin s}\\ \\term{distance}{d(v,s)}</pre><p class=\"lens-ascii\">C_f = min over vertices v of feature f of the distance from v to every segment s of f that does not have v as an endpoint, or to its other endpoint when v is an endpoint of s. Infinity when nothing can be measured.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-minimum-clearance-compiled:minimum-clearance-write\" data-value=\"clearance\">C_f · output · clearances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-minimum-clearance-compiled:minimum-clearance-probe\" data-value=\"distance\">d(v, s) · intermediate · segmentCandidate</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,14 +29,14 @@
       [
         "C_f",
         "output",
-        "unknown",
+        "clearances",
         "—",
         "metadata"
       ],
       [
         "d(v, s)",
         "intermediate",
-        "unknown",
+        "segmentCandidate",
         "—",
         "metadata"
       ]
@@ -66,7 +66,7 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:24.756Z",
+    "date": "2026-11-11T15:20:59.629Z",
     "runId": "run-d125108b",
     "observerEffects": []
   },

@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of GPUTerrainTiledFlow. nodes: 176. structure metadata only. 22 visible units vs budget 24.",
   "description": "compiled command graph of GPUTerrainTiledFlow. nodes: 176. structure metadata only. 22 visible units vs budget 24.",
-  "llms": "compiled command graph of GPUTerrainTiledFlow\n\n- nodes: 176\n- 22 visible units vs budget 24\n- 176 hidden nodes\n- Edges by kind: raw 894, war 131\n- compute passes were not coalesced as in production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of GPUTerrainTiledFlow\n\n- nodes: 176\n- 22 visible units vs budget 24\n- 176 hidden nodes\n- Edges by kind: raw 894, war 131\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "176"
@@ -19,10 +19,10 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-07T14:55:30.506Z",
+    "date": "2026-11-11T15:21:35.951Z",
     "runId": "run-a69dcb78",
     "observerEffects": [
-      "compute passes were not coalesced as in production",
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
       "lens twin: docs-sized data"
     ]
