@@ -7,8 +7,28 @@ palette, type and voice are in [BRAND.md](./BRAND.md); routes, ownership and con
 
 ```bash
 yarn website-dev     # http://localhost:3000
-yarn website-build   # writes website/dist/client (about 560 static pages)
+yarn website-build   # writes website/dist/client (about 680 static pages)
+yarn website-deploy  # builds for the GitHub Pages sub-path and publishes to the gh-pages branch
 ```
+
+## Deploying
+
+The site is published on GitHub Pages at `https://<owner>.github.io/<repository>/`, served from
+the `gh-pages` branch. `yarn website-deploy` (`scripts/deploy-pages.mjs`) builds with
+`SITE_BASE_PATH=/<repository>/` and force-pushes the build as a single commit to that branch; it
+does not touch the working tree. The site reads `modules/*/dist`, so run `yarn build` first when
+package sources changed. To check a sub-path build before publishing:
+
+```bash
+cd website
+SITE_BASE_PATH=/luma-contributors/ yarn build
+node scripts/check-all-pages.mjs --base /luma-contributors
+node scripts/deploy-pages.mjs --skip-build
+```
+
+`SITE_BASE_PATH` becomes Vite's `base`: the router, asset URLs and links in rendered docs follow
+it. A plain `src` or `href` to a file in `public/` must go through `getPublicUrl`
+(`src/public-url.ts`). Without the variable the site builds for `/`, as before.
 
 ## What is on the site
 

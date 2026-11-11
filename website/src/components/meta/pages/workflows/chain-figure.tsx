@@ -7,6 +7,7 @@
 
 import {Link} from '@tanstack/react-router';
 import {getEntry} from '../../../../catalog';
+import {getPublicUrl} from '../../../../public-url';
 import type {WorkflowStep} from './workflows';
 
 function StepPicture({id, title}: {id: string; title: string}) {
@@ -16,7 +17,7 @@ function StepPicture({id, title}: {id: string; title: string}) {
         <img
           key={theme}
           className={`workflows-poster-${theme}`}
-          src={`/runs/${id}-${theme}.webp`}
+          src={getPublicUrl(`runs/${id}-${theme}.webp`)}
           width={640}
           height={360}
           alt={`${title}: the picture of its own recorded run`}

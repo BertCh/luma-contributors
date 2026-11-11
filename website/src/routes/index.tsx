@@ -13,6 +13,7 @@ import {Card} from '../components/ui/card';
 import {getChipClassName} from '../components/ui/chip';
 import {Section} from '../components/ui/section';
 import {GpuCanvas} from '../gpu/gpu-canvas';
+import {getPublicUrl} from '../public-url';
 
 export const Route = createFileRoute('/')({
   component: HomePage
@@ -81,7 +82,13 @@ function HomePage() {
         <div className="hero__canvas">
           <GpuCanvas
             scene={HERO_SCENE}
-            fallback={<img className="hero__poster" src="/runs/kernel-density-dark.webp" alt="" />}
+            fallback={
+              <img
+                className="hero__poster"
+                src={getPublicUrl('runs/kernel-density-dark.webp')}
+                alt=""
+              />
+            }
             seed={getEntrySeed(HERO_ENTRY)}
             theme="dark"
             label="Kernel density of magnitude 4 and larger earthquakes around Japan, 2020–2024"

@@ -58,10 +58,16 @@ export function listDocPagePaths(docsDirectory: string): string[] {
 
 export function markdownPlugin({docsDirectory}: {docsDirectory: string}): Plugin {
   const resolvedDocsDirectory = path.resolve(docsDirectory);
+  // The site may be served under a sub-path (Vite `base`); rendered links carry it.
+  let basePath = '/';
 
   return {
     name: 'luma-contributors-markdown',
     enforce: 'pre',
+
+    configResolved(config) {
+      basePath = config.base;
+    },
 
     resolveId(id) {
       return id === DOCS_INDEX_ID ? RESOLVED_DOCS_INDEX_ID : null;
@@ -85,21 +91,25 @@ export function markdownPlugin({docsDirectory}: {docsDirectory: string}): Plugin
       }
       const relativeFile = path.relative(resolvedDocsDirectory, filePath).split(path.sep).join('/');
       const slug = getSlugFromFile(relativeFile);
-      const html = await renderMarkdown(source, relativeFile);
+      const html = await renderMarkdown(source, relativeFile, basePath);
       const page = {slug, title: getTitle(source, relativeFile), html};
       return {code: `export default ${JSON.stringify(page)};`, map: null};
     }
   };
 }
 
-async function renderMarkdown(source: string, relativeFile: string): Promise<string> {
+async function renderMarkdown(
+  source: string,
+  relativeFile: string,
+  basePath: string
+): Promise<string> {
   const file = await unified()
     .use(remarkParse)
     .use(remarkFrontmatter, ['yaml'])
     .use(remarkGfm)
     .use(remarkRehype, {allowDangerousHtml: true})
     .use(rehypeSlug)
-    .use(rehypeRewriteLinks, {relativeFile})
+    .use(rehypeRewriteLinks, {relativeFile, basePath})
     .use(rehypeShiki, {
       themes: {light: 'github-light', dark: 'github-dark'},
       defaultColor: false,
@@ -127,12 +137,13 @@ function getTitle(source: string, relativeFile: string): string {
 }
 
 /** Rewrites links to markdown files (relative or `/docs/...`) into site routes. */
-function rehypeRewriteLinks({relativeFile}: {relativeFile: string}) {
+function rehypeRewriteLinks({relativeFile, basePath}: {relativeFile: string; basePath: string}) {
   const directory = path.posix.dirname(relativeFile);
+  const routePrefix = basePath.replace(/\/$/, '');
   return (tree: HastNode) => {
     const visit = (node: HastNode) => {
       if (node.tagName === 'a' && typeof node.properties?.href === 'string') {
-        node.properties.href = rewriteHref(node.properties.href, directory);
+        node.properties.href = rewriteHref(node.properties.href, directory, routePrefix);
       }
       node.children?.forEach(visit);
     };
@@ -140,7 +151,7 @@ function rehypeRewriteLinks({relativeFile}: {relativeFile: string}) {
   };
 }
 
-function rewriteHref(href: string, directory: string): string {
+function rewriteHref(href: string, directory: string, routePrefix: string): string {
   if (/^[a-z]+:/i.test(href) || href.startsWith('#')) {
     return href;
   }
@@ -152,5 +163,5 @@ function rewriteHref(href: string, directory: string): string {
     ? target.slice('/docs/'.length)
     : path.posix.normalize(path.posix.join(directory, target));
   const slug = getSlugFromFile(docsPath.endsWith('.md') ? docsPath : `${docsPath}.md`);
-  return `/docs/${slug}${hash ? `#${hash}` : ''}`;
+  return `${routePrefix}/docs/${slug}${hash ? `#${hash}` : ''}`;
 }

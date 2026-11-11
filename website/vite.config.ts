@@ -28,7 +28,12 @@ const pages = [
   ...TOPIC_SLUGS.map(slug => `/how-it-works/${slug}`)
 ].map(pagePath => ({path: pagePath}));
 
+// The path the site is served from, with leading and trailing slash. GitHub Pages serves a
+// project site under `/<repository>/`; the deploy workflow sets SITE_BASE_PATH to that.
+const basePath = process.env.SITE_BASE_PATH || '/';
+
 export default defineConfig({
+  base: basePath,
   server: {
     port: 3000,
     fs: {allow: [repositoryDirectory]}

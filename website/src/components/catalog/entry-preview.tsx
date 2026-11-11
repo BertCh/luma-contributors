@@ -7,6 +7,7 @@ import {getEntrySeed} from '../../catalog/entry-seed';
 import {GpuCanvas} from '../../gpu/gpu-canvas';
 import {getDemo} from '../../gpu/demos';
 import {getRunParameters, getRunScene, hasRun} from '../../gpu/runs/registry';
+import {getPublicUrl} from '../../public-url';
 
 // Only entries awaiting a real run need the illustration builders.
 const IllustrativePreview = lazy(() => import('./illustrative-preview'));
@@ -26,7 +27,7 @@ function RunSnapshot({entry}: {entry: CatalogEntryReference}) {
         <img
           key={theme}
           className={`run-snapshot-${theme}`}
-          src={`/runs/${entry.id}-${theme}.webp`}
+          src={getPublicUrl(`runs/${entry.id}-${theme}.webp`)}
           width={640}
           height={360}
           alt=""
